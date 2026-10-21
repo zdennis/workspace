@@ -1,3 +1,4 @@
+require "yaml"
 require "open3"
 require "shellwords"
 
@@ -28,10 +29,16 @@ module Workspace
     #   agent workspace reads by scraping the pane itself (Codex); nil skips that check
     # @param name_migration [Workspace::NameMigration, nil] says which mixed-case workspaces are still to be renamed; nil skips that check
     # @param project_catalog [Workspace::ProjectCatalog, nil] lists the known projects' repositories for the leftover promote snapshot check; nil skips it
+    # @param agent_commands [Workspace::AgentCommands, nil] says which program each agent's configured command
+    #   starts, which is what must be on PATH; nil looks for each agent's own executable
+    # @param project_config [Workspace::ProjectConfig, nil] lists and rewrites the tmuxinator configs for the
+    #   stale agent pane check; nil skips that check
+    # @param main_agent [Workspace::MainAgent, nil] says which agent a config's pane runs; nil skips the stale pane check
+    # @param file_backup [Workspace::FileBackup, nil] copies a config aside before `--fix` rewrites it; nil builds one
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -46,6 +53,10 @@ module Workspace
       @snapshot_client = snapshot_client
       @name_migration = name_migration
       @project_catalog = project_catalog
+      @agent_commands = agent_commands
+      @project_config = project_config
+      @main_agent = main_agent
+      @file_backup = file_backup || FileBackup.new(output: output)
       @working_dir = working_dir
       @output = output
       @rows = []
@@ -80,7 +91,9 @@ module Workspace
     # @return [Hash] `:mode` (`headless`, `reason`), `:rows` and `:issues`
     def report(headless: nil, fix: false)
       @rows = []
-      apply_fixes if fix
+      stale = stale_agent_panes
+      fixed = fix ? fix_agent_panes(stale) : []
+      apply_fixes(fixed.size) if fix
       mode = @launch_mode.resolve(headless)
 
       dependency_checks.each { |entry| run_dependency_check(entry, mode) }
@@ -89,6 +102,7 @@ module Workspace
       check_mixed_case_workspaces
       check_promote_snapshots
       check_session_monitoring
+      check_agent_panes(stale - fixed)
       # A failed --fix is a `fix` row, so `doctor --fix` still exits non-zero
       # when there was nothing it could actually do.
       issues = @rows.count { |row| row[:status] == "fail" }
@@ -187,20 +201,21 @@ module Workspace
     # An agent whose context workspace reads by scraping its own pane (Codex)
     # needs no routing, so a machine with only that agent on PATH has nothing
     # to fix -- and no failure counted for it.
-    def apply_fixes
+    def apply_fixes(panes_fixed = 0)
       project = @project_detector.detect(@working_dir)
       unless project
+        return if panes_fixed.positive?
         add_row("fix", "fail", "--fix: not inside a workspace project here, so there's nothing to fix")
         return
       end
 
-      capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
+      capable = AgentProvider.all.select { |p| p.supports_hooks? && on_path?(p, project) }
       hooks_fixed = install_user_hooks(capable.select(&:user_scoped?))
       statusline_capable = capable.select(&:supports_statusline?)
       if statusline_capable.empty?
         return if hooks_fixed
 
-        scraped = scraped_context_providers
+        scraped = scraped_context_providers(project)
         if scraped.any?
           @output.puts "--fix: nothing to fix: #{scraped.map(&:label).join(", ")} " \
             "read context usage from their own panes (no statusLine to route)"
@@ -233,8 +248,85 @@ module Workspace
 
     # The providers on PATH whose context usage workspace reads by scraping
     # the pane itself (Codex), rather than through a routed status line.
-    def scraped_context_providers
-      AgentProvider.all.select { |p| p.context_pattern && @which.call(p.executable) }
+    def scraped_context_providers(project)
+      AgentProvider.all.select { |p| p.context_pattern && on_path?(p, project) }
+    end
+
+    # Whether the program the project's configured command starts for +provider+ is on PATH.
+    def on_path?(provider, project)
+      @which.call(@agent_commands ? @agent_commands.executable_for(project, provider.key) : provider.executable)
+    end
+
+    # Warns about each tmuxinator config whose agent pane runs a different program than the command
+    # configured for its agent kind (`agent.commands.<kind>`, read for that workspace). Says nothing for a
+    # config that runs the right one or one whose pane can't be found.
+    def check_agent_panes(stale)
+      stale.each do |entry|
+        fix = "run 'workspace doctor --fix' to rewrite it to #{entry[:wanted]}; a running session keeps the old program until you relaunch it"
+        add_row("agent-pane-command", "warn",
+          "#{entry[:workspace]}: agent pane runs #{entry[:running]}, but agent.commands.#{entry[:kind]} is #{entry[:wanted]}",
+          fix: fix, fix_command: "workspace doctor --fix", project: entry[:workspace])
+      end
+    end
+
+    # Rewrites the agent pane line of each stale config through a temp file and rename, after a backup, and
+    # adds an ok row for each. A config that can't be backed up or written is a failed fix and the others go on.
+    #
+    # @return [Array<Hash>] the entries that were rewritten
+    def fix_agent_panes(stale)
+      stale.select do |entry|
+        backup = @file_backup.backup(entry[:path])
+        write_atomically(entry[:path], entry[:content])
+        message = "#{entry[:workspace]}: agent pane now runs #{entry[:wanted]}"
+        message += " (backup: #{backup})" if backup
+        @output.puts "--fix: #{message}; a running session keeps the old program until you relaunch it"
+        add_row("agent-pane-command", "ok", message, project: entry[:workspace])
+        true
+      rescue SystemCallError, IOError => e
+        add_row("fix", "fail", "--fix: #{entry[:workspace]}'s agent pane not rewritten: #{e.message}")
+        false
+      end
+    end
+
+    def write_atomically(path, content)
+      tmp = "#{path}.tmp#{Process.pid}"
+      File.write(tmp, content)
+      File.rename(tmp, path)
+    ensure
+      File.delete(tmp) if tmp && File.exist?(tmp)
+    end
+
+    # @return [Array<Hash>] for each stale config: `workspace`, `path`, `kind`, `running`, `wanted` (programs)
+    #   and `content`, the config as {ProjectConfig#rewrite_agent_pane} would write it
+    def stale_agent_panes
+      return [] unless @project_config && @main_agent
+
+      @project_config.available_projects.filter_map do |workspace|
+        path = @project_config.config_path_for(workspace)
+        content = File.read(path)
+        kind = @main_agent.kind(workspace)
+        next if kind == "none"
+        rewritten = @project_config.rewrite_agent_pane(content, kind, workspace)
+        next unless rewritten && rewritten != content
+        running, wanted = changed_pane_programs(content, rewritten)
+        next if running.nil? || wanted.nil? || running == wanted
+        {workspace: workspace, path: path, kind: kind, running: running, wanted: wanted, content: rewritten}
+      rescue SystemCallError, IOError, Psych::Exception
+        nil
+      end
+    end
+
+    # @return [Array<String, nil>] the programs of the one pane line that differs between two contents
+    def changed_pane_programs(before, after)
+      old_line, new_line = before.lines.zip(after.lines).find { |old, new| old != new }
+      [pane_program(old_line), pane_program(new_line)]
+    end
+
+    def pane_program(line)
+      item = YAML.safe_load(line.to_s.strip)&.first
+      item.is_a?(String) ? AgentCommands.program_for(item.split(" || ").first) : nil
+    rescue Psych::Exception
+      nil
     end
 
     def check_duplicate_window_ids
@@ -320,7 +412,7 @@ module Workspace
         return
       end
 
-      all_capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
+      all_capable = AgentProvider.all.select { |p| p.supports_hooks? && on_path?(p, project) }
       user_capable, capable = all_capable.partition(&:user_scoped?)
       if all_capable.empty?
         add_row("hooks", "skipped", "session monitoring hooks (no hook-capable agent detected, skipped)", project: project)
@@ -389,7 +481,7 @@ module Workspace
     def check_statusline(capable, project)
       statusline_capable = capable.select(&:supports_statusline?)
       if statusline_capable.empty?
-        scraped_context_providers.each do |provider|
+        scraped_context_providers(project).each do |provider|
           add_row("statusline", "ok", "#{provider.label} context usage read from its own pane (no statusLine to route)", project: project)
         end
         return

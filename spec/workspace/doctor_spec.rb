@@ -1,3 +1,4 @@
+require "tmpdir"
 require "stringio"
 
 RSpec.describe Workspace::Doctor do
@@ -926,6 +927,222 @@ RSpec.describe Workspace::Doctor do
 
       expect(rows(doctor.report(headless: true))).to be_empty
       expect(rows(build_doctor(git: git).report(headless: true))).to be_empty
+    end
+  end
+  describe "agent commands" do
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:global) { {} }
+    let(:workspace_settings) { {} }
+    let(:settings) do
+      Class.new do
+        def initialize(global, files) = (@global, @files = global, files)
+
+        def load_global = @global
+
+        def load(name) = @files.fetch(name, {})
+      end.new(global, workspace_settings)
+    end
+    let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)) }
+    let(:project_config) { Workspace::ProjectConfig.new(config: config, git: double("git"), output: StringIO.new, agent_commands: agent_commands) }
+    let(:main_agent) { Workspace::MainAgent.new(project_config: project_config, agent_commands: agent_commands) }
+    let(:pane) { "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions" }
+
+    before { allow(config).to receive(:tmuxinator_dir).and_return(tmpdir) }
+
+    after { FileUtils.remove_entry(tmpdir) }
+
+    def write_config(name, pane_line)
+      path = File.join(tmpdir, "workspace.#{name}.yml")
+      File.write(path, "name: #{name}\nwindows:\n  - w:\n      panes:\n        - echo hi\n        - #{pane_line}\n")
+      path
+    end
+
+    def doctor_with(which: ->(_exe) { true }, **overrides)
+      build_doctor(agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, which: which, **overrides)
+    end
+
+    def pane_rows(result) = result[:rows].select { |row| row[:id] == "agent-pane-command" }
+
+    describe "the PATH check" do
+      before do
+        allow(project_detector).to receive(:detect).and_return("myapp")
+        allow(hook_installer).to receive(:installed?).and_return(true)
+        allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+      end
+
+      let(:workspace_settings) { {"myapp" => {"agent" => {"commands" => {"claude" => "FOO=1 claude-dev --x"}}}} }
+
+      it "looks for the configured command's program, not the bare agent" do
+        rows = doctor_with(which: ->(exe) { exe == "claude-dev" }).report(headless: true)[:rows]
+
+        expect(rows.find { |row| row[:id] == "hooks" }).to include(status: "ok")
+      end
+
+      it "finds no hook-capable agent when only the bare agent is on PATH" do
+        rows = doctor_with(which: ->(exe) { exe == "claude" }).report(headless: true)[:rows]
+
+        expect(rows.find { |row| row[:id] == "hooks" }).to include(status: "skipped")
+      end
+
+      it "looks for the bare agent when nothing is configured" do
+        agent_commands_unset = Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:x) {
+          def load_global = {}
+
+          def load(_name) = {}
+        }.new))
+        rows = build_doctor(agent_commands: agent_commands_unset, which: ->(exe) { exe == "claude" }).report(headless: true)[:rows]
+
+        expect(rows.find { |row| row[:id] == "hooks" }).to include(status: "ok")
+      end
+    end
+
+    describe "the stale agent pane check" do
+      let(:global) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+
+      it "reports a config whose pane runs another command than the configured one" do
+        write_config("myapp", pane)
+
+        rows = pane_rows(doctor_with.report(headless: true))
+
+        expect(rows.size).to eq(1)
+        expect(rows.first).to include(status: "warn", project: "myapp", fix_command: "workspace doctor --fix")
+        expect(rows.first[:message]).to eq("myapp: agent pane runs claude, but agent.commands.claude is claude-dev")
+        expect(rows.first[:fix]).to include("workspace doctor --fix")
+      end
+
+      it "is not an issue and shows in the json document" do
+        write_config("myapp", pane)
+
+        result = doctor_with.report(headless: true)
+        check = described_class.document(result)["checks"].find { |c| c["id"] == "agent-pane-command" }
+
+        expect(check).to include("ok" => true, "status" => "warn", "project" => "myapp", "fix_command" => "workspace doctor --fix")
+        expect(result[:issues]).to eq(result[:rows].count { |row| row[:status] == "fail" })
+      end
+
+      it "uses each workspace's own configured command" do
+        write_config("myapp", pane.gsub("claude", "claude-dev"))
+        write_config("other", pane)
+        workspace_settings["other"] = {"agent" => {"commands" => {"claude" => "claude"}}}
+
+        expect(pane_rows(doctor_with.report(headless: true))).to be_empty
+      end
+
+      it "does not report a config that runs the configured command" do
+        write_config("myapp", pane.gsub("claude", "claude-dev"))
+
+        expect(pane_rows(doctor_with.report(headless: true))).to be_empty
+      end
+
+      it "does not report a config whose pane can't be found" do
+        File.write(File.join(tmpdir, "workspace.myapp.yml"), "name: myapp\nwindows:\n  - w:\n      panes:\n        - echo hi\n")
+
+        expect(pane_rows(doctor_with.report(headless: true))).to be_empty
+      end
+
+      it "reports nothing when no command is configured" do
+        global.clear
+        write_config("myapp", pane)
+
+        expect(pane_rows(doctor_with.report(headless: true))).to be_empty
+      end
+
+      it "reports nothing when the check is not wired" do
+        write_config("myapp", pane)
+
+        expect(pane_rows(build_doctor.report(headless: true))).to be_empty
+      end
+    end
+
+    describe "--fix" do
+      let(:global) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+
+      it "rewrites the stale pane line after backing the file up" do
+        path = write_config("myapp", pane)
+        original = File.read(path)
+
+        result = doctor_with.report(headless: true, fix: true)
+
+        expect(File.read(path)).to include("- claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions")
+        expect(File.read(path)).to include("- echo hi")
+        backups = Dir.glob("#{path}.workspace-backup-*")
+        expect(backups.size).to eq(1)
+        expect(File.read(backups.first)).to eq(original)
+        expect(output.string).to include("--fix: myapp: agent pane now runs claude-dev")
+        expect(pane_rows(result).map { |row| row[:status] }).to eq(["ok"])
+      end
+
+      it "leaves a matching config and a config without an agent pane alone" do
+        good = write_config("good", pane.gsub("claude", "claude-dev"))
+        bare = File.join(tmpdir, "workspace.bare.yml")
+        File.write(bare, "windows:\n  - w:\n      panes:\n        - echo hi\n")
+        before = [File.read(good), File.read(bare)]
+
+        doctor_with.report(headless: true, fix: true)
+
+        expect([File.read(good), File.read(bare)]).to eq(before)
+        expect(Dir.glob(File.join(tmpdir, "*.workspace-backup-*"))).to be_empty
+      end
+
+      it "adds an ok row per rewritten file naming the new program and the backup, and no warning" do
+        path = write_config("myapp", pane)
+
+        result = doctor_with.report(headless: true, fix: true)
+
+        rows = pane_rows(result)
+        expect(rows.map { |row| row[:status] }).to eq(["ok"])
+        backup = Dir.glob("#{path}.workspace-backup-*").first
+        expect(rows.first).to include(project: "myapp")
+        expect(rows.first[:message]).to eq("myapp: agent pane now runs claude-dev (backup: #{backup})")
+        expect(output.string).to include("until you relaunch it")
+        expect(Dir.glob("#{path}.tmp*")).to be_empty
+      end
+
+      it "reads each config once per run" do
+        write_config("myapp", pane)
+        allow(main_agent).to receive(:kind).and_call_original
+
+        doctor_with.report(headless: true, fix: true)
+
+        expect(main_agent).to have_received(:kind).once
+      end
+
+      it "reports a file it can't back up as a failed fix and goes on to the next config" do
+        first = write_config("aaa", pane)
+        second = write_config("bbb", pane)
+        failing = instance_double(Workspace::FileBackup)
+        allow(failing).to receive(:backup) { |path| (path == first) ? raise(Errno::EACCES, path) : "#{path}.bak" }
+
+        result = doctor_with(file_backup: failing).report(headless: true, fix: true)
+
+        expect(result[:rows].find { |row| row[:id] == "fix" }).to include(status: "fail")
+        expect(result[:rows].find { |row| row[:id] == "fix" }[:message]).to include("aaa's agent pane not rewritten")
+        expect(File.read(first)).to include("- claude --dangerously")
+        expect(File.read(second)).to include("- claude-dev --dangerously")
+        expect(pane_rows(result).map { |row| [row[:project], row[:status]] }).to contain_exactly(["aaa", "warn"], ["bbb", "ok"])
+      end
+
+      it "skips a config that can't be parsed, and one whose agent kind is none" do
+        broken = File.join(tmpdir, "workspace.broken.yml")
+        File.write(broken, "windows: [unclosed\n")
+        other = File.join(tmpdir, "workspace.other.yml")
+        File.write(other, "windows:\n  - w:\n      panes:\n        - htop\n")
+        before = [File.read(broken), File.read(other)]
+
+        result = doctor_with.report(headless: true, fix: true)
+
+        expect([File.read(broken), File.read(other)]).to eq(before)
+        expect(pane_rows(result)).to be_empty
+        expect(result[:rows].map { |row| row[:message].to_s }.grep(/not rewritten/)).to be_empty
+      end
+
+      it "does not count as a failure outside a workspace project when a pane was fixed" do
+        write_config("myapp", pane)
+
+        result = doctor_with.report(headless: true, fix: true)
+
+        expect(result[:rows].map { |row| row[:id] }).not_to include("fix")
+      end
     end
   end
 end

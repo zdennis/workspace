@@ -57,6 +57,16 @@ module Workspace
       end
     end
 
+    # @param workspace [String, nil] a workspace or worktree workspace name; nil reads the global layer alone
+    # @param kind [String] an {AgentProvider} key
+    # @return [String] the program (basename) the configured command starts, which is what must be on PATH;
+    #   the provider's executable when the command has no program
+    # @raise [ArgumentError] if `kind` is not an {AgentProvider} key
+    def executable_for(workspace, kind)
+      command = workspace ? command_for(workspace, kind) : global_command_for(kind)
+      self.class.program_for(command) || provider(kind).executable
+    end
+
     # @param workspace [String] a workspace or worktree workspace name
     # @param kind [String] an {AgentProvider} key
     # @return [Array<String>] the program names (basenames) that count as that agent: the provider's
@@ -103,6 +113,17 @@ module Workspace
     end
 
     private
+
+    def global_command_for(kind)
+      name = "agent.commands.#{kind}"
+      default = provider(kind).executable
+      begin
+        winner = @config_resolver.view(workspace: "global", upto: "global").resolve(name).winner
+        winner ? ConfigSchema.parse(name, winner.value) : default
+      rescue ArgumentError, ConfigParseError
+        default
+      end
+    end
 
     def view(workspace) = @config_resolver.view(workspace: workspace)
 

@@ -266,7 +266,7 @@ module Workspace
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
         notes_dir = setup_notes(config_name, quiet: quiet)
-        install_agent_hooks(worktree_path, quiet: quiet)
+        install_agent_hooks(worktree_path, config_name, quiet: quiet)
         copied = copy_library_entries(worktree_path, project_name, quiet: quiet)
         write_project_marker(worktree_path, config_name)
         setup_plan(config_name, quiet: quiet)
@@ -439,6 +439,11 @@ module Workspace
       # (a new worktree's own layer is empty then, so the answer is the same), the config name after.
       def effective_kind(workspace)
         @agent_kind || @agent_commands&.kind(workspace)
+      end
+
+      # @return [String] the program of +provider+'s configured command for +config_name+; its own executable without one
+      def agent_executable(provider, config_name)
+        @agent_commands ? @agent_commands.executable_for(config_name, provider.key) : provider.executable
       end
 
       # @return [String, nil] the program of the effective kind's configured command; the provider's executable without one
@@ -750,10 +755,10 @@ module Workspace
       # `workspace handoff check` can read the agent's context usage from the
       # worktree right away. Silent, no prompt: a worktree an agent will
       # immediately be launched into should already be enforcing the edit lock.
-      def install_agent_hooks(worktree_path, quiet:)
+      def install_agent_hooks(worktree_path, config_name, quiet:)
         return unless @hook_installer
 
-        AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }.each do |provider|
+        AgentProvider.all.select { |p| p.supports_hooks? && @which.call(agent_executable(p, config_name)) }.each do |provider|
           if @hooks_config && !@hooks_config.install_user_hooks?(provider)
             message = "#{provider.label} hooks not installed: codex.hooks.install is false (workspace config set codex.hooks.install true to change)"
             quiet ? @warnings << "Note: #{message}" : @output.puts("Note: #{message}")
@@ -762,7 +767,7 @@ module Workspace
           install_provider_hooks(provider, worktree_path, quiet: quiet)
         end
 
-        AgentProvider.all.select { |p| p.supports_statusline? && @which.call(p.executable) }.each do |provider|
+        AgentProvider.all.select { |p| p.supports_statusline? && @which.call(agent_executable(p, config_name)) }.each do |provider|
           notices = @hook_installer.install_statusline(provider, worktree_path,
             command: Commands::Init::STATUSLINE_COMMAND, project_settings: @project_settings, quiet: quiet)
           next unless quiet && notices.any?

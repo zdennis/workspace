@@ -110,6 +110,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("agent_spawn" => 1)
     end
 
+    it "reports agent_commands once the agent's command can be configured" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("agent_commands" => 1)
+    end
+
     it "reports cleanup_dry_run once cleanup can report without acting" do
       command.call(json: true)
 

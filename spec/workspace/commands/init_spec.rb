@@ -178,6 +178,37 @@ RSpec.describe Workspace::Commands::Init do
       end
     end
 
+    context "when an agent has a configured command" do
+      let(:agent_commands) { instance_double(Workspace::AgentCommands) }
+      let(:seen) { [] }
+      let(:which) { ->(exe) { seen << exe && exe == "claude-dev" } }
+
+      subject(:command) do
+        described_class.new(config: config, hook_installer: hook_installer, which: which, agent_commands: agent_commands,
+          output: output, error_output: error_output, input: input)
+      end
+
+      before do
+        allow(agent_commands).to receive(:executable_for) { |workspace, kind| (workspace.nil? && kind == "claude") ? "claude-dev" : kind }
+      end
+
+      it "looks for the configured program, reading the global layer" do
+        command.call(project_root: project_root)
+
+        expect(seen).to include("claude-dev")
+        expect(seen).not_to include("claude")
+        expect(output.string).to match(/found\s+Claude Code/)
+      end
+
+      it "names the configured program when it is absent" do
+        allow(agent_commands).to receive(:executable_for).with(nil, "claude").and_return("claude-nope")
+
+        command.call(project_root: project_root)
+
+        expect(output.string).to include("(claude-nope not on PATH)")
+      end
+    end
+
     context "when no agent is installed" do
       it "reports each one as absent" do
         command.call(project_root: project_root)

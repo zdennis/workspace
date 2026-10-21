@@ -30,7 +30,7 @@ Safe to run multiple times — skips files that are already up to date and won't
 
 ### Agent session hooks
 
-For each detected coding agent that supports hooks (e.g. Claude Code), `init` reports whether it was found and shows a one-line summary of the hook events that would be added (e.g. `SessionStart, SessionEnd, ... hooks running \`workspace session-event\``).
+An agent counts as detected when the program of its configured command is on `PATH`, read from the global config: with `agent.commands.claude` set to `claude-dev`, `init` looks for `claude-dev`, and reports `absent  Claude Code  (claude-dev not on PATH)` without it. For each detected coding agent that supports hooks (e.g. Claude Code), `init` reports whether it was found and shows a one-line summary of the hook events that would be added (e.g. `SessionStart, SessionEnd, ... hooks running \`workspace session-event\``).
 
 You're then asked to **[v]iew** the full settings fragment before deciding, **[i]nstall** it, or do **[n]othing** (the default). Viewing re-prompts afterward so you can still install or decline.
 

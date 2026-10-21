@@ -23,10 +23,11 @@ module Workspace
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       # @param input [IO] input stream for interactive confirmation
-      def initialize(config:, hook_installer:, which: nil,
+      def initialize(config:, hook_installer:, which: nil, agent_commands: nil,
         output: $stdout, error_output: $stderr, input: $stdin)
         @config = config
         @hook_installer = hook_installer
+        @agent_commands = agent_commands
         @which = which || ->(exe) { system("command", "-v", exe, out: File::NULL, err: File::NULL) }
         @output = output
         @error_output = error_output
@@ -67,7 +68,7 @@ module Workspace
       def install_agent_hooks(dry_run, project_root, hooks)
         return if hooks == false
 
-        detected, missing = AgentProvider.all.partition { |p| @which.call(p.executable) }
+        detected, missing = AgentProvider.all.partition { |p| @which.call(executable_for(p)) }
 
         @output.puts ""
         @output.puts "Session monitoring agents (#{project_root}):"
@@ -106,6 +107,11 @@ module Workspace
         @error_output.puts "  warn    #{provider.label} hooks not installed: #{e.message}"
       end
 
+      # The program to look for: the one the global `agent.commands.<kind>` starts, else the agent's own.
+      def executable_for(provider)
+        @agent_commands ? @agent_commands.executable_for(nil, provider.key) : provider.executable
+      end
+
       def report_agents(detected, missing, project_root)
         detected.each do |provider|
           status = if provider.supports_hooks?
@@ -117,7 +123,7 @@ module Workspace
           @output.puts "  found   #{provider.label.ljust(12)} #{status}"
         end
         missing.each do |provider|
-          @output.puts "  absent  #{provider.label.ljust(12)} (#{provider.executable} not on PATH)"
+          @output.puts "  absent  #{provider.label.ljust(12)} (#{executable_for(provider)} not on PATH)"
         end
       end
 

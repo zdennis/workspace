@@ -21,6 +21,30 @@ RSpec.describe Workspace::AgentCommands do
     end
   end
 
+  describe "#executable_for" do
+    let(:global) { {"agent" => {"commands" => {"claude" => "FOO=1 /opt/bin/claude-dev --x", "codex" => "codex-g"}}} }
+
+    it "is the program of the workspace's command" do
+      stub_file("app", {"agent" => {"commands" => {"codex" => "exec codex-p"}}})
+
+      expect(agent_commands.executable_for("app", "claude")).to eq("claude-dev")
+      expect(agent_commands.executable_for("app", "codex")).to eq("codex-p")
+    end
+
+    it "reads the global layer alone without a workspace" do
+      stub_file("app", {"agent" => {"commands" => {"codex" => "codex-p"}}})
+
+      expect(agent_commands.executable_for(nil, "codex")).to eq("codex-g")
+      expect(agent_commands.executable_for(nil, "pi")).to eq("pi")
+    end
+
+    it "is the provider's executable when the command has no program" do
+      stub_file("app", {"agent" => {"commands" => {"claude" => "FOO=1"}}})
+
+      expect(agent_commands.executable_for("app", "claude")).to eq("claude")
+    end
+  end
+
   context "with a global value" do
     let(:global) { {"agent" => {"kind" => "codex", "commands" => {"claude" => "claude-dev"}}} }
 

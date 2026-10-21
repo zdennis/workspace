@@ -78,10 +78,10 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `spine.auto` | global, project, worktree | `true` or `false`: whether `start` runs [`spine init`](README.spine.md#spine-init) with the resolved `spine.template` once the worktree exists, so the new agent is sent the `spine` pack. `start --spine[=NAME]` and `--no-spine` override it for one start | `true`, `false` |
 | `plan.stall_seconds` | global, project, worktree | How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`) | `300`, `10m` |
 | `agent.kind` | global, project, worktree | Which coding agent a new workspace's main agent pane runs: `claude`, `codex`, `opencode`, `pi` (default `claude`) | `claude`, `codex`, `opencode`, `pi` |
-| `agent.commands.claude` | global, project, worktree | Command workspace runs for Claude Code, e.g. `claude-dev` (default `claude`); workspace adds its own flags, so a wrapper must pass its arguments through | `claude-dev` |
-| `agent.commands.codex` | global, project, worktree | Command workspace runs for Codex, e.g. `codex-dev` (default `codex`); workspace adds its own flags, so a wrapper must pass its arguments through | `codex-dev` |
-| `agent.commands.opencode` | global, project, worktree | Command workspace runs for OpenCode, e.g. `opencode-dev` (default `opencode`); workspace adds its own flags, so a wrapper must pass its arguments through | `opencode-dev` |
-| `agent.commands.pi` | global, project, worktree | Command workspace runs for Pi, e.g. `pi-dev` (default `pi`); workspace adds its own flags, so a wrapper must pass its arguments through | `pi-dev` |
+| `agent.commands.claude` | global, project, worktree | Command to run for Claude Code; a wrapper must pass its arguments through (e.g. `claude-dev`, default `claude`). See [Agent commands](README.config.md#agent-commands) | `claude-dev` |
+| `agent.commands.codex` | global, project, worktree | Command to run for Codex; a wrapper must pass its arguments through (e.g. `codex-dev`, default `codex`). See [Agent commands](README.config.md#agent-commands) | `codex-dev` |
+| `agent.commands.opencode` | global, project, worktree | Command to run for OpenCode; a wrapper must pass its arguments through (e.g. `opencode-dev`, default `opencode`). See [Agent commands](README.config.md#agent-commands) | `opencode-dev` |
+| `agent.commands.pi` | global, project, worktree | Command to run for Pi; a wrapper must pass its arguments through (e.g. `pi-dev`, default `pi`). See [Agent commands](README.config.md#agent-commands) | `pi-dev` |
 | `statusline.command` | global | Global. Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer | `~/bin/my-statusline` |
 | `context.source` | global | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) | `statusline`, `scrape` |
 | `context.pattern` | global | Global. Regex with exactly one capture group, used when `context.source` is `scrape` | `(\d+)% used` |
@@ -127,6 +127,45 @@ The `notes.dir` and `notes.default_dir` rows of `config show --json` carry `effe
 Before writing, `set` and `unset` back up the project's config file (via the same backup mechanism used elsewhere in workspace) and then rewrite it through a temp file and rename. Global keys are backed up the same way. **`YAML.dump` drops comments**, so a file you've hand-edited with comments loses them the first time `set` or `unset` touches it; use [`config edit`](#config-edit) to change a commented file by hand and keep them. When the old text had a comment, the command prints `Note: comments in <path> were not kept; backup at <path>` on stderr, and the `config set --json` row carries `comments_preserved: false` (`true` otherwise). The check looks for a `#` at the start of a line or after whitespace, outside a quoted scalar; a `#` line inside a block scalar (`|`, `>`) counts too, so the note can appear when nothing was lost. The backup is the old file, so copy the comments back from it by hand.
 
 If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `unset` stop with `Cannot parse <path>: ...` and leave it as written; fix or remove it and retry. Readers that run in the background (lock, alert, and handoff settings) warn and use their defaults instead of failing.
+
+### Agent commands
+
+`agent.kind` is the coding agent a new workspace runs in its main pane (`claude`, `codex`, `opencode` or `pi`; `claude` when unset). `agent.commands.<kind>` is the command that starts that agent; it defaults to the agent's own name. Both can be set at global, project and workspace scope (a worktree's own file), the nearest value winning:
+
+```sh
+# global: every workspace runs claude-dev instead of claude
+workspace config set --scope global agent.commands.claude claude-dev
+
+# project: the api project runs a different wrapper
+workspace config set --scope project --name api agent.commands.claude claude-notes
+
+# workspace: one worktree runs a third, and uses codex as its agent
+workspace config set --scope workspace --name api.worktree-PROJ-123 agent.commands.claude claude-ticket
+workspace config set --scope workspace --name api.worktree-PROJ-123 agent.kind codex
+```
+
+**What the value may be.** One program, optionally preceded by `VAR=value` words (`FOO=1 claude-dev`). workspace appends its own flags (`--dangerously-skip-permissions --continue`, and `--resume <id>` on `restore`) to the end, so the value cannot be a pipeline, a `;` or `&&` list or `sh -c '...'`. A name without a slash is looked up on `PATH`; `init`, `doctor` and `start` check that program is there.
+
+Any wrapper therefore has to pass its arguments through. A complete one:
+
+```sh
+mkdir -p ~/bin
+cat > ~/bin/claude-dev <<'EOF'
+#!/bin/sh
+exec claude "$@"
+EOF
+chmod +x ~/bin/claude-dev        # and have ~/bin on PATH
+workspace config set --scope global agent.commands.claude claude-dev
+```
+
+To add an environment variable or flags of your own, put them before `"$@"`:
+
+```sh
+#!/bin/sh
+exec env FOO=1 claude --model sonnet "$@"
+```
+
+The command is used by every config written from then on, and at once by what workspace types itself: `restore`, `reactivate` and `--spawn`. A pane whose program is the configured command counts as that agent for `sessions`, `handoff` and the rest. Configs written earlier keep the pane they have; `workspace doctor` lists them and `workspace doctor --fix` rewrites the pane line (see [`doctor`](README.doctor.md#agent-pane-commands)). `launch` never rewrites it. The `agent.commands.*` keys only take effect in an agent daemon the next time it starts, and the value can carry `VAR=value` words, so `config show --json` masks it.
 
 ### Scopes
 

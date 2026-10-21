@@ -1075,7 +1075,7 @@
         "worktree"
       ],
       "layers": [],
-      "doc": "Command workspace runs for Claude Code, e.g. `claude-dev` (default `claude`); workspace adds its own flags, so a wrapper must pass its arguments through",
+      "doc": "Command to run for Claude Code; a wrapper must pass its arguments through (e.g. `claude-dev`, default `claude`). See [Agent commands](README.config.md#agent-commands)",
       "problems": []
     },
     {
@@ -1104,7 +1104,7 @@
         "worktree"
       ],
       "layers": [],
-      "doc": "Command workspace runs for Codex, e.g. `codex-dev` (default `codex`); workspace adds its own flags, so a wrapper must pass its arguments through",
+      "doc": "Command to run for Codex; a wrapper must pass its arguments through (e.g. `codex-dev`, default `codex`). See [Agent commands](README.config.md#agent-commands)",
       "problems": []
     },
     {
@@ -1133,7 +1133,7 @@
         "worktree"
       ],
       "layers": [],
-      "doc": "Command workspace runs for OpenCode, e.g. `opencode-dev` (default `opencode`); workspace adds its own flags, so a wrapper must pass its arguments through",
+      "doc": "Command to run for OpenCode; a wrapper must pass its arguments through (e.g. `opencode-dev`, default `opencode`). See [Agent commands](README.config.md#agent-commands)",
       "problems": []
     },
     {
@@ -1162,7 +1162,7 @@
         "worktree"
       ],
       "layers": [],
-      "doc": "Command workspace runs for Pi, e.g. `pi-dev` (default `pi`); workspace adds its own flags, so a wrapper must pass its arguments through",
+      "doc": "Command to run for Pi; a wrapper must pass its arguments through (e.g. `pi-dev`, default `pi`). See [Agent commands](README.config.md#agent-commands)",
       "problems": []
     },
     {

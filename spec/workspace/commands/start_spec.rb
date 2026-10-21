@@ -271,6 +271,42 @@ RSpec.describe Workspace::Commands::Start do
         end
       end
 
+      context "when the agent runs a configured command" do
+        let(:agent_commands) { instance_double(Workspace::AgentCommands, kind: "claude") }
+        let(:seen) { [] }
+        let(:which) { ->(exe) { seen << exe && exe == "claude-dev" } }
+
+        subject(:command) do
+          described_class.new(
+            git: git, project_config: project_config, project_settings: project_settings,
+            launch_command: launch_command, hook_installer: hook_installer, which: which, agent_commands: agent_commands,
+            output: output, input: input
+          )
+        end
+
+        before do
+          allow(project_config).to receive(:check_agent_kind!)
+          allow(agent_commands).to receive(:executable_for) { |_name, kind| (kind == "claude") ? "claude-dev" : kind }
+          allow(agent_commands).to receive(:command_for) { |_name, kind| (kind == "claude") ? "claude-dev" : kind }
+        end
+
+        it "installs hooks and the status line when that program is on PATH" do
+          command.call("PROJ-123")
+
+          expect(agent_commands).to have_received(:executable_for).with("myproject.worktree-PROJ-123", "claude").at_least(:once)
+          expect(JSON.parse(File.read(settings_path))["hooks"]).to have_key("PreToolUse")
+          expect(JSON.parse(File.read(settings_path))["statusLine"]).to include("command" => "workspace statusline")
+        end
+
+        it "installs nothing when only the bare agent would be on PATH" do
+          allow(agent_commands).to receive(:executable_for) { |_name, kind| "#{kind}-missing" }
+
+          command.call("PROJ-123")
+
+          expect(File).not_to exist(settings_path)
+        end
+      end
+
       context "when Codex is detected" do
         let(:which) { ->(exe) { exe == "codex" } }
         let(:codex_home) { File.join(tmpdir, "codex-home") }
