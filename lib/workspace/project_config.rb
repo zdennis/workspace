@@ -1,11 +1,16 @@
+require "yaml"
+
 module Workspace
   # Manages tmuxinator config file generation for projects and worktrees.
   class ProjectConfig
     # @param config [Workspace::Config] configuration for path lookups
     # @param git [Workspace::Git] git operations for sanitize_for_filesystem
     # @param output [IO] output stream for user-facing messages
-    def initialize(config:, git:, output: $stdout)
+    # @param agent_commands [Workspace::AgentCommands, nil] the configured agent kind and commands; nil
+    #   writes each agent's bare executable
+    def initialize(config:, git:, output: $stdout, agent_commands: nil)
       @config = config
+      @agent_commands = agent_commands
       @output = output
       @git = git
       @root_cache = {}
@@ -47,6 +52,7 @@ module Workspace
         .gsub("{{PROJECT_ROOT}}", root)
         .gsub("{{CONFIG_PATH}}", config_path)
 
+      content = with_agent_kind(content, default_kind(name), name, strict: false)
       File.write(config_path, content)
       @output.puts "Created config: #{config_path}"
       name
@@ -65,6 +71,8 @@ module Workspace
     # @param branch_name [String] git branch name
     # @param task_id [String, nil] the workspace's task id; exported as `WORKSPACE_TASK`
     #   in every pane through the template's `{{PRE_WINDOW}}` line, which is dropped without one
+    # @param agent_kind [String, nil] an {AgentProvider} key; nil uses `agent.kind` (resolved for the new
+    #   worktree workspace, so the project and global layers apply)
     # @return [String] the config name
     # @raise [Workspace::Error] if the worktree template is missing
     def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false, task_id: nil, agent_kind: nil)
@@ -93,7 +101,7 @@ module Workspace
         .gsub("{{CONFIG_PATH}}", config_path)
         .sub(/^\{\{PRE_WINDOW\}\}\n/, task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "")
 
-      content = with_agent_kind(content, agent_kind) if agent_kind
+      content = with_agent_kind(content, agent_kind || default_kind(config_name), config_name)
       File.write(config_path, content)
       @output.puts "Created config: #{config_path}" unless quiet
       config_name
@@ -202,30 +210,126 @@ module Workspace
 
     AGENT_PANE = /^(\s*- )(claude --dangerously-skip-permissions.*)$/
 
-    # The pane command a new worktree config runs for an agent kind (`start --agent-kind`): the
-    # installed worktree template's Claude Code pane for `claude`, else the agent's executable.
+    # The pane command a new config runs for an agent kind: for `claude` the installed worktree
+    # template's Claude Code pane with `claude` swapped for the configured command in each half of its
+    # `||` chain, else the configured command (the agent's executable when none is set).
     #
     # @param kind [String] an {AgentProvider} key
+    # @param workspace [String, nil] the workspace whose config layers pick the command; nil, or no
+    #   {AgentCommands} wired, means the agent's executable
     # @return [String, nil] nil for `claude` when the template has no Claude Code pane, or for an unknown kind
-    def agent_pane_command(kind)
-      unless kind == "claude"
-        return AgentProvider.find(kind)&.executable
-      end
+    def agent_pane_command(kind, workspace = nil)
+      return unless AgentProvider.find(kind)
+      command = configured_command(kind, workspace)
+      return command unless kind == "claude"
       return unless File.exist?(@config.worktree_template_path)
-      File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
+      line = File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
+      line && claude_line(line, command)
+    end
+
+    # Points the agent pane line of a tmuxinator config at the configured command for a kind. The line is
+    # found whether it runs the template's `claude --dangerously-skip-permissions ...` or a command already
+    # written for any kind (a program of {AgentCommands#names_for}). For `claude` the line's flags stay and
+    # only the program changes in each half of a `||` chain; for another kind the line becomes the command.
+    #
+    # @param content [String] a tmuxinator config
+    # @param kind [String] an {AgentProvider} key
+    # @param workspace [String, nil] the workspace whose config layers pick the command
+    # @return [String, nil] the new content; nil when no agent pane line is found (or, for `claude` over a
+    #   line of another agent, the template has no Claude Code pane to take the flags from)
+    def rewrite_agent_pane(content, kind, workspace = nil)
+      return unless AgentProvider.find(kind)
+      command = configured_command(kind, workspace)
+      names = agent_program_names(workspace)
+      lines = content.lines
+      index = lines.index { |line| (item = pane_item(line)) && agent_pane_text?(item[1], names) }
+      return unless index
+      indent, text = pane_item(lines[index])
+      pane = if kind == "claude"
+        base = text.include?("--dangerously-skip-permissions") ? text : claude_template_line
+        return unless base
+        claude_line(base, command)
+      else
+        command
+      end
+      lines[index] = "#{indent}#{yaml_item(pane)}#{lines[index][/\r?\n\z/]}"
+      lines.join
     end
 
     private
 
-    # Swaps the template's Claude Code pane for another agent's executable. Works on the installed
-    # template whatever its age, since it matches the pane line rather than a placeholder.
-    def with_agent_kind(content, kind)
-      return content if kind == "claude"
-      swapped = content.sub(AGENT_PANE) { "#{$1}#{agent_pane_command(kind)}" }
-      if swapped == content
+    # @return [Array(String, String), nil] the indent and the text of a YAML list item line, a quoted
+    #   scalar read back to its value
+    def pane_item(line)
+      match = line.match(/\A(\s*- )(\S.*?)\r?\n?\z/)
+      return unless match
+      text = match[2]
+      value = begin
+        YAML.safe_load("- #{text}")&.first
+      rescue Psych::Exception
+        nil
+      end
+      [match[1], value.is_a?(String) ? value : text]
+    end
+
+    def agent_pane_text?(text, names)
+      return true if text.start_with?("claude --dangerously-skip-permissions")
+      program = AgentCommands.program_for(text.split(" || ").first)
+      !program.nil? && names.include?(program)
+    end
+
+    def agent_program_names(workspace)
+      AgentProvider.all.flat_map do |provider|
+        (workspace && @agent_commands) ? @agent_commands.names_for(workspace, provider.key) : [provider.executable]
+      end.uniq
+    end
+
+    def claude_template_line
+      return unless File.exist?(@config.worktree_template_path)
+      File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
+    end
+
+    def claude_line(line, command)
+      line.split(" || ").map do |half|
+        words = half.split
+        words[words.size - AgentCommands.program_words(half).size] = command
+        words.join(" ")
+      end.join(" || ")
+    end
+
+    # A YAML list item's text: plain when that reads back as the same string, else a double-quoted
+    # scalar, so any command (`#`, `: `, quotes) keeps the config valid.
+    def yaml_item(text)
+      (YAML.safe_load("- #{text}") == [text]) ? text : text.to_json
+    rescue Psych::Exception
+      text.to_json
+    end
+
+    # Points the config's agent pane at the configured command. A config with no agent pane line is
+    # left as is: `strict` raises for a kind other than claude, else a warning says so when something
+    # was configured.
+    def with_agent_kind(content, kind, workspace, strict: true)
+      command = configured_command(kind, workspace)
+      default = command == AgentProvider.find(kind)&.executable
+      return content if kind == "claude" && default
+      rewritten = rewrite_agent_pane(content, kind, workspace)
+      return rewritten if rewritten
+      if strict && kind != "claude"
         raise Workspace::Error, "The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it."
       end
-      swapped
+      unless default && kind == "claude"
+        key = default ? "agent.kind" : "agent.commands.#{kind}"
+        @output.puts "Warning: #{key} is set, but the template has no agent pane line to rewrite; the pane was left as is."
+      end
+      content
+    end
+
+    def default_kind(workspace)
+      @agent_commands ? @agent_commands.kind(workspace) : ConfigSchema.default("agent.kind")
+    end
+
+    def configured_command(kind, workspace)
+      (workspace && @agent_commands) ? @agent_commands.command_for(workspace, kind) : AgentProvider.find(kind)&.executable
     end
 
     def same_directory?(first, second)

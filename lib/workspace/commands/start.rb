@@ -36,13 +36,15 @@ module Workspace
       # @param start_ref [Workspace::StartRef, nil] reads the input and finds the project; nil builds one from +git+ and +lineage+
       # @param main_agent [Workspace::MainAgent, nil] reads which agent the new workspace's main pane runs, for the
       #   `agent_kind` the JSON reports; nil leaves it out
+      # @param agent_commands [Workspace::AgentCommands, nil] reads `agent.kind` (the kind when no `--agent-kind` is given, resolved
+      #   for the parent project) and the configured command checked on PATH; nil keeps the template's Claude Code
       # @param spine_init [Workspace::Commands::SpineInit, nil] makes the workspace's `spine/` for `--spine` and `spine.auto`; nil refuses `--spine`
       # @param spine_config [Workspace::SpineConfig, nil] reads `spine.auto`; nil never runs init unasked
       # @param ticket_source [Workspace::TicketSource, nil] reads the ticket's title for +title_from_ticket+ and +slug+; nil reads none
       # @param plan_command [Workspace::Commands::Plan, nil] writes the new plan for `--plan` (`plan init`); nil refuses `--plan`
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, hooks_config: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, agent_commands: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -59,6 +61,7 @@ module Workspace
         @notes_setup = notes_setup
         @instruction_composer = instruction_composer
         @main_agent = main_agent
+        @agent_commands = agent_commands
         @ticket_source = ticket_source
         @spine_init = spine_init
         @spine_config = spine_config
@@ -91,7 +94,7 @@ module Workspace
       #   +prompt+, +prompt_timeout+, +plays+, +packs+ or +handoff: true+, which all need an agent to send to.
       #   The automatic packs are not sent (+packs+ reports +[]+); `workspace launch` sends them later
       # @param agent_kind [String, nil] an {AgentProvider} key for the main agent pane of a config this run writes
-      #   (`codex`); nil keeps the template's Claude Code. Checked before anything is created
+      #   (`codex`); nil uses `agent.kind`. Checked before anything is created
       # @param title_from_ticket [Boolean] fill +title+ from the ticket (JIRA key, issue or pull request) when none is
       #   given; a ticket that cannot be read is a warning and the title stays empty
       # @param slug [Boolean] add the title's words to the branch of a JIRA or issue ref (`issue-42-fix-login`);
@@ -155,7 +158,6 @@ module Workspace
         raise Workspace::Error, "Not inside a git repository." unless root
         check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays, packs: packs, handoff: handoff)
         @agent_kind = check_agent_kind!(agent_kind)
-        @project_config.check_agent_kind!(@agent_kind) if @agent_kind
         @no_launch = no_launch
         raise Workspace::Error, "--spine is not available: no spine init command was wired." if spine && !@spine_init
         @spine_flag = spine
@@ -177,9 +179,11 @@ module Workspace
         note_parent_repo(project.root, quiet: quiet) if project.from_worktree
         root = project.root
         project_name = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
+        @effective_kind = effective_kind(project_name)
+        @project_config.check_agent_kind!(@effective_kind) if @effective_kind
         @plays = resolve_plays(plays, root)
         @plays = [resolve_plan_play(root)] if @plays.empty? && plan && !no_launch
-        @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @agent_kind)
+        @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @effective_kind)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root, project_name)
         ref = @start_ref.call(input_string)
         ref = apply_ticket_title(ref, root, quiet: quiet, title_from_ticket: title_from_ticket || slug, slug: slug)
@@ -258,6 +262,7 @@ module Workspace
         worktree_options[:task_id] = task["id"] if task
         worktree_options[:agent_kind] = @agent_kind if @agent_kind
         config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name, **worktree_options)
+        @effective_kind = effective_kind(config_name)
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
         notes_dir = setup_notes(config_name, quiet: quiet)
@@ -422,12 +427,24 @@ module Workspace
         message =
           if @agent_kind && actual && actual != @agent_kind
             "Note: --agent-kind #{@agent_kind} was not applied; #{config_name}'s existing config runs #{actual}."
-          elsif @agent_kind && !@which.call(AgentProvider.all.find { |p| p.key == @agent_kind }.executable)
-            "Note: #{@agent_kind} is not on your PATH, so its pane will not start an agent."
+          elsif @effective_kind && (actual.nil? || actual == @effective_kind) && (program = configured_program(config_name)) && !@which.call(program)
+            "Note: #{program} is not on your PATH, so its pane will not start an agent."
           end
         return actual unless message
         quiet ? @warnings << message : @error_output.puts(message)
         actual
+      end
+
+      # The flag, else `agent.kind` read for +workspace+: the project before the worktree's config name is known
+      # (a new worktree's own layer is empty then, so the answer is the same), the config name after.
+      def effective_kind(workspace)
+        @agent_kind || @agent_commands&.kind(workspace)
+      end
+
+      # @return [String, nil] the program of the effective kind's configured command; the provider's executable without one
+      def configured_program(config_name)
+        command = @agent_commands&.command_for(config_name, @effective_kind)
+        (command && AgentCommands.program_for(command)) || AgentProvider.find(@effective_kind)&.executable
       end
 
       # The play is checked before anything is created, so an unknown name or an
@@ -679,7 +696,7 @@ module Workspace
         # (`spine.auto` runs init on a reused or adopted worktree too; an existing spine/ is never overwritten.)
         @spine_result = run_spine_init(config_name, quiet: quiet) unless @spine_flag == false
         return if @no_launch || !@instruction_composer
-        composed = @instruction_composer.compose_start(cwd: worktree_path, agent_kind: @agent_kind, **@pack_args)
+        composed = @instruction_composer.compose_start(cwd: worktree_path, agent_kind: @effective_kind, **@pack_args)
         @skipped_packs = composed["skipped"] || []
         @packs = composed["packs"].empty? ? nil : composed
       rescue Workspace::Error => e

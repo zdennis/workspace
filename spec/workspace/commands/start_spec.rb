@@ -2046,6 +2046,66 @@ RSpec.describe Workspace::Commands::Start do
 
       expect(JSON.parse(output.string)["warnings"].join).to include("codex is not on your PATH")
     end
+
+    context "with agent.kind and agent.commands" do
+      let(:agent_commands) { instance_double(Workspace::AgentCommands, kind: "codex") }
+      let(:which_seen) { [] }
+      subject(:command) do
+        described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+          main_agent: main_agent, agent_commands: agent_commands, which: ->(program) { which_seen << program && false }, output: output, error_output: error_output, input: input)
+      end
+
+      before do
+        allow(agent_commands).to receive(:command_for) { |_workspace, kind| kind }
+        allow(main_agent).to receive(:kind).and_return("codex")
+      end
+
+      it "uses agent.kind, resolved for the parent project, when no flag is given" do
+        command.call("PROJ-123", no_launch: true, json: true)
+
+        expect(agent_commands).to have_received(:kind).with(File.basename(tmpdir).downcase)
+        expect(project_config).to have_received(:check_agent_kind!).with("codex")
+        expect(project_config).to have_received(:create_worktree).with(anything, anything, anything, anything, quiet: true)
+        expect(JSON.parse(output.string)).to include("agent_kind" => "codex")
+      end
+
+      it "lets the flag win over agent.kind" do
+        allow(main_agent).to receive(:kind).and_return("claude")
+
+        command.call("PROJ-123", agent_kind: "claude", no_launch: true, json: true)
+
+        expect(project_config).to have_received(:create_worktree).with(anything, anything, anything, anything, quiet: true, agent_kind: "claude")
+        expect(JSON.parse(output.string)).to include("agent_kind" => "claude")
+      end
+
+      it "checks the configured command's program on PATH" do
+        allow(agent_commands).to receive(:command_for).with(name, "codex").and_return("FOO=1 /opt/bin/codex-dev --yolo")
+
+        command.call("PROJ-123", no_launch: true, json: true)
+
+        expect(which_seen).to eq(["codex-dev"])
+        expect(JSON.parse(output.string)["warnings"].join).to include("codex-dev is not on your PATH")
+      end
+
+      it "does not check PATH when the existing config runs a different kind" do
+        allow(main_agent).to receive(:kind).and_return("claude")
+
+        command.call("PROJ-123", no_launch: true, json: true)
+
+        expect(which_seen).to be_empty
+        expect(JSON.parse(output.string)["warnings"].to_a.join).not_to include("PATH")
+      end
+
+      it "checks a configured claude command on PATH" do
+        allow(agent_commands).to receive(:kind).and_return("claude")
+        allow(main_agent).to receive(:kind).and_return("claude")
+        allow(agent_commands).to receive(:command_for).with(name, "claude").and_return("claude-dev --x")
+
+        command.call("PROJ-123", no_launch: true, json: true)
+
+        expect(which_seen).to eq(["claude-dev"])
+      end
+    end
   end
 
   describe "#call with --spine, --no-spine and spine.auto" do

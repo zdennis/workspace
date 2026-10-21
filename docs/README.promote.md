@@ -28,7 +28,7 @@ Nothing is launched unless you pass `--launch`. The usual flow is to run promote
 | `--launch` | Launch the new workspace once it is made: with a plan, as `plan start` does, else with `--prompt` |
 | `--prompt TEXT` | With `--launch`: text for the agent's first prompt (after the plan's line, when there is a plan) |
 | `--prompt-timeout DURATION` | With `--launch`: how long to wait for the agent (default 60s) |
-| `--agent-kind KIND` | The new workspace's main agent: `claude`, `codex`, `opencode`, `pi` |
+| `--agent-kind KIND` | The new workspace's main agent: `claude`, `codex`, `opencode`, `pi`; with no flag, `agent.kind` (the pane runs `agent.commands.<kind>` when set) |
 | `--[no-]headless` | With `--launch`: start the session in plain tmux (see [`launch`](README.launch.md)) |
 | `--force` | Move even while an agent pane of the main checkout works or waits. The caller's own pane (`$TMUX_PANE`) never counts |
 | `--dry-run` | Say what would move and write nothing, not even `info/exclude` |

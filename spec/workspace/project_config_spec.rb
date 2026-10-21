@@ -203,6 +203,186 @@ RSpec.describe Workspace::ProjectConfig do
       end
     end
 
+    context "with configured agent commands" do
+      let(:template_path) { File.join(tmpdir, "project-worktree-template.yml") }
+      let(:claude_line) { "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions" }
+      let(:settings) { {} }
+      let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: settings) }
+      let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
+      subject(:pc) { described_class.new(config: config, output: output, git: git, agent_commands: agent_commands) }
+
+      def written = File.read(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"))
+
+      def pane = YAML.safe_load(written).fetch("panes").last
+
+      before do
+        allow(project_settings).to receive(:load).and_return({})
+        allow(config).to receive(:worktree_template_path).and_return(template_path)
+        File.write(template_path, "panes:\n  - echo hi\n  - #{claude_line}\n")
+      end
+
+      it "writes exactly the template's line when the command is the default" do
+        pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+        expect(written).to eq("panes:\n  - echo hi\n  - #{claude_line}\n")
+      end
+
+      context "with a configured claude command" do
+        let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+
+        it "replaces claude in both halves of the chain" do
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+          expect(pane).to eq("claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions")
+        end
+
+        it "reads the project layer over the global one" do
+          allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"commands" => {"claude" => "claude-proj"}}})
+
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+          expect(pane).to start_with("claude-proj --dangerously")
+        end
+      end
+
+      context "with a configured codex command" do
+        let(:settings) { {"agent" => {"kind" => "codex", "commands" => {"codex" => "codex --yolo"}}} }
+
+        it "writes it for agent.kind with no explicit kind" do
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+          expect(pane).to eq("codex --yolo")
+        end
+
+        it "lets an explicit kind win over agent.kind" do
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "claude")
+
+          expect(pane).to eq(claude_line)
+        end
+      end
+
+      context "with a command that is not a plain YAML scalar" do
+        ["claude-dev --note 'a # b'", "claude-dev --msg \"x: y\"", "FOO='a: b' claude-dev # trailing", "claude-dev --a '{x}'"].each do |value|
+          it "keeps the config valid for #{value.inspect}" do
+            settings.replace("agent" => {"commands" => {"claude" => value}})
+
+            pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+            expect(pane).to eq(claude_line.gsub("claude ", "#{value} "))
+          end
+        end
+
+        it "keeps the config valid for a codex command" do
+          settings.replace("agent" => {"kind" => "codex", "commands" => {"codex" => "codex -c 'a: b' # x"}})
+
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+          expect(pane).to eq("codex -c 'a: b' # x")
+        end
+      end
+
+      describe "#agent_pane_command" do
+        let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev", "codex" => "codex-x"}}} }
+
+        it "uses the configured command for the workspace, the executable without one" do
+          expect(pc.agent_pane_command("claude", "myapp")).to eq(claude_line.gsub("claude ", "claude-dev "))
+          expect(pc.agent_pane_command("codex", "myapp")).to eq("codex-x")
+          expect(pc.agent_pane_command("codex")).to eq("codex")
+        end
+      end
+
+      describe "#rewrite_agent_pane" do
+        let(:settings) { {"agent" => {"commands" => {"claude" => "claude-old", "codex" => "codex-dev"}}} }
+
+        before { allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"commands" => {"claude" => "claude-new"}}}) }
+
+        it "rewrites a line already running a configured command, keeping the flags" do
+          content = "panes:\n  - echo hi\n  - claude-old --dangerously-skip-permissions --continue || claude-old --dangerously-skip-permissions\n"
+
+          expect(pc.rewrite_agent_pane(content, "claude", "myapp")).to eq(
+            "panes:\n  - echo hi\n  - claude-new --dangerously-skip-permissions --continue || claude-new --dangerously-skip-permissions\n"
+          )
+        end
+
+        it "finds a line another kind's configured command runs and replaces it" do
+          allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"commands" => {"codex" => "codex-dev --x"}}})
+
+          expect(pc.rewrite_agent_pane("panes:\n  - codex-dev --x\n", "codex", "myapp")).to eq("panes:\n  - codex-dev --x\n")
+          expect(pc.rewrite_agent_pane("panes:\n  - codex-dev --x\n", "pi", "myapp")).to eq("panes:\n  - pi\n")
+        end
+
+        it "reads a quoted pane line back before matching it" do
+          content = "panes:\n  - \"claude-new --a: b --dangerously-skip-permissions\"\n"
+
+          expect(pc.rewrite_agent_pane(content, "codex", "myapp")).to eq("panes:\n  - codex-dev\n")
+        end
+
+        it "is nil when no line runs an agent" do
+          expect(pc.rewrite_agent_pane("panes:\n  - echo hi\n", "claude", "myapp")).to be_nil
+        end
+      end
+
+      describe "#create" do
+        let(:project_template) { File.join(tmpdir, "project-template.yml") }
+
+        before do
+          File.write(project_template, "panes:\n  - #{claude_line}\n")
+          allow(config).to receive(:project_template_path).and_return(project_template)
+        end
+
+        it "writes the template's line when nothing is configured" do
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(File.read(File.join(tmpdir, "workspace.myapp.yml"))).to eq("panes:\n  - #{claude_line}\n")
+        end
+
+        it "writes a configured claude command into both halves, quoted when it needs it" do
+          allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"commands" => {"claude" => "claude-dev --note 'a # b'"}}})
+
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(YAML.safe_load_file(File.join(tmpdir, "workspace.myapp.yml"))).to eq(
+            "panes" => ["claude-dev --note 'a # b' --dangerously-skip-permissions --continue || claude-dev --note 'a # b' --dangerously-skip-permissions"]
+          )
+        end
+
+        it "warns and leaves the file as is when agent.kind is not claude and the template has no agent pane" do
+          File.write(project_template, "panes:\n  - echo hi\n")
+          allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"kind" => "codex"}})
+
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(File.read(File.join(tmpdir, "workspace.myapp.yml"))).to eq("panes:\n  - echo hi\n")
+          expect(output.string).to include("Warning: agent.kind is set, but the template has no agent pane line to rewrite; the pane was left as is.")
+        end
+
+        it "warns naming agent.commands.claude when a configured claude command has no pane to rewrite" do
+          File.write(project_template, "panes:\n  - echo hi\n")
+          allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"commands" => {"claude" => "claude-dev"}}})
+
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(output.string).to include("Warning: agent.commands.claude is set")
+        end
+
+        it "says nothing for the default when the template has no agent pane" do
+          File.write(project_template, "panes:\n  - echo hi\n")
+
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(output.string).not_to include("Warning")
+        end
+
+        it "writes the configured command" do
+          allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"kind" => "codex", "commands" => {"codex" => "codex 'a: b'"}}})
+
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(YAML.safe_load_file(File.join(tmpdir, "workspace.myapp.yml"))).to eq("panes" => ["codex 'a: b'"])
+        end
+      end
+    end
+
     it "names a worktree's config the way create_worktree does" do
       expect(pc.worktree_config_name("MyApp", "PROJ-123")).to eq("myapp.worktree-proj-123")
     end
