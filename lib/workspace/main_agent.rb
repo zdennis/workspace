@@ -10,9 +10,6 @@ module Workspace
   # so it counts as `claude`. A config that cannot be read, or that runs no known
   # agent, is `none`.
   class MainAgent
-    # Words that may stand before a program in a shell command without being it.
-    PREFIXES = %w[exec command nohup env caffeinate].freeze
-
     # @param project_config [Workspace::ProjectConfig] gives the path of a project's config
     def initialize(project_config:)
       @project_config = project_config
@@ -70,20 +67,13 @@ module Workspace
     # that part is kept: a `cd src && claude` pane gives `claude`.
     def fresh_part(command, provider)
       parts(command).map(&:strip).find do |part|
-        words = program_words(part)
+        words = AgentCommands.program_words(part)
         File.basename(words.first.to_s) == provider.executable && (words.drop(1) & RESUME_FLAGS).empty?
       end
     end
 
     # The commands a shell line chains with `||`, `&&`, `;`, `|` or newlines.
     def parts(command) = command.split(/\|\||&&|;|\||\n/)
-
-    # The words of one command from its program on, past environment settings and wrapper words.
-    def program_words(part)
-      words = part.split
-      words.shift while words.first&.match?(/\A\w+=/) || PREFIXES.include?(words.first) || words.first(2) == %w[bundle exec]
-      words
-    end
 
     # The commands of every pane, in file order; a window's own keys (root, layout, ...) are not commands.
     def pane_commands(windows)
@@ -105,7 +95,7 @@ module Workspace
 
     def provider_of(command)
       parts(command).each do |part|
-        words = program_words(part)
+        words = AgentCommands.program_words(part)
         provider = AgentProvider.all.find { |candidate| candidate.executable == File.basename(words.first.to_s) }
         return provider if provider
       end

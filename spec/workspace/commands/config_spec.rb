@@ -1406,7 +1406,7 @@ RSpec.describe Workspace::Commands::Config do
       row = lines.find { |line| line.start_with?("dev.stop_timeout") }
       expect(row).to match(/\Adev\.stop_timeout\s+project\s+set\s+duration\s+20s\s+Grace period/)
       expect(lines.find { |line| line.start_with?("dev.up ") }).to match(/\Adev\.up\s+project\s+set\s+command\s+\(unset\)\s+Command that starts/)
-      expect(lines.map { |line| line.index("duration") || line.index("command") }.compact.uniq.size).to be <= 3
+      expect(lines.map { |line| line.index(/\s(duration|command)\s/) }.compact.uniq.size).to be <= 3
     end
 
     it "prints the full entry for a query that equals a key name" do

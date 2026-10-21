@@ -1021,6 +1021,162 @@
       "unit": "seconds"
     },
     {
+      "key": "agent.kind",
+      "scope": "project",
+      "type": "enum",
+      "value": null,
+      "masked": false,
+      "default": "claude",
+      "effective": "claude",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Which coding agent a new workspace's main agent pane runs: `claude`, `codex`, `opencode`, `pi` (default `claude`)",
+      "problems": [],
+      "choices": [
+        "claude",
+        "codex",
+        "opencode",
+        "pi"
+      ]
+    },
+    {
+      "key": "agent.commands.claude",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": false,
+      "default": "claude",
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Command workspace runs for Claude Code, e.g. `claude-dev` (default `claude`); workspace adds its own flags, so a wrapper must pass its arguments through",
+      "problems": []
+    },
+    {
+      "key": "agent.commands.codex",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": false,
+      "default": "codex",
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Command workspace runs for Codex, e.g. `codex-dev` (default `codex`); workspace adds its own flags, so a wrapper must pass its arguments through",
+      "problems": []
+    },
+    {
+      "key": "agent.commands.opencode",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": false,
+      "default": "opencode",
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Command workspace runs for OpenCode, e.g. `opencode-dev` (default `opencode`); workspace adds its own flags, so a wrapper must pass its arguments through",
+      "problems": []
+    },
+    {
+      "key": "agent.commands.pi",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": false,
+      "default": "pi",
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Command workspace runs for Pi, e.g. `pi-dev` (default `pi`); workspace adds its own flags, so a wrapper must pass its arguments through",
+      "problems": []
+    },
+    {
       "key": "statusline.command",
       "scope": "global",
       "type": "command",

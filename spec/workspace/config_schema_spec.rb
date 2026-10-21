@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto commands.test commands.lint notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto commands.test commands.lint notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
     expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position workflows.defaults.include events.rotate_size codex.hooks.install])
   end
 
@@ -20,6 +20,13 @@ RSpec.describe Workspace::ConfigSchema do
 
   it "has a description for every key" do
     expect(described_class.all).to all(satisfy { |key| !key.doc.to_s.strip.empty? })
+  end
+
+  describe "agent.kind" do
+    it "accepts a provider key and refuses anything else" do
+      expect(described_class.parse("agent.kind", "codex")).to eq("codex")
+      expect { described_class.parse("agent.kind", "emacs") }.to raise_error(ArgumentError, /must be one of claude, codex/)
+    end
   end
 
   describe "notes.default_dir" do
@@ -132,7 +139,7 @@ RSpec.describe Workspace::ConfigSchema do
     it "marks every key that holds a command or hook as sensitive and no duration or prompt" do
       sensitive = described_class.all.select(&:sensitive).map { |key| [key.name, key.scope] }
       expect(sensitive).to contain_exactly(
-        ["dev.up", :project], ["dev.ready", :project], ["alerts.notify", :project], ["commands.test", :project], ["commands.lint", :project], ["statusline.command", :global],
+        ["dev.up", :project], ["dev.ready", :project], ["alerts.notify", :project], ["commands.test", :project], ["commands.lint", :project], ["agent.commands.claude", :project], ["agent.commands.codex", :project], ["agent.commands.opencode", :project], ["agent.commands.pi", :project], ["statusline.command", :global],
         ["hooks", :global], ["hooks", :project], ["worktree_hooks", :project], ["pipeline", :project]
       )
     end

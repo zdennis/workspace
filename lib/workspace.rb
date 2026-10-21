@@ -164,6 +164,7 @@ require_relative "workspace/library_store"
 require_relative "workspace/library"
 require_relative "workspace/library_install_dirs"
 require_relative "workspace/library_installer"
+require_relative "workspace/agent_commands"
 require_relative "workspace/commands_config"
 require_relative "workspace/notes_config"
 require_relative "workspace/spine_config"
@@ -412,6 +413,7 @@ module Workspace
     spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, spine_config: spine_config, output: output)
     main_agent = MainAgent.new(project_config: project_config)
     commands_config = CommandsConfig.new(config_resolver: config_resolver)
+    agent_commands = AgentCommands.new(config_resolver: config_resolver) # standard:disable Lint/UselessAssignment (injected by the tasks that read it)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
       commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(config_resolver: config_resolver),
       notes_config: NotesConfig.new(config_resolver: config_resolver),

@@ -1,3 +1,5 @@
+require_relative "agent_provider"
+
 module Workspace
   # The one table of config keys: where each lives (project or global file),
   # whether `workspace config set` may write it, its default, how its value is
@@ -267,6 +269,13 @@ module Workspace
     end
     private_constant :PERCENT
 
+    AGENT_KIND = lambda do |value|
+      choices = AgentProvider.all.map(&:key)
+      raise ArgumentError, "must be one of #{choices.join(", ")}" unless choices.include?(value)
+      value
+    end
+    private_constant :AGENT_KIND
+
     CONTEXT_SOURCE = lambda do |value|
       raise ArgumentError, "must be \"statusline\" or \"scrape\"" unless CONTEXT_SOURCES.include?(value)
       value
@@ -385,6 +394,12 @@ module Workspace
         doc: "`true` or `false`: whether `start` runs [`spine init`](README.spine.md#spine-init) with the resolved `spine.template` once the worktree exists, so the new agent is sent the `spine` pack. `start --spine[=NAME]` and `--no-spine` override it for one start"),
       Key.new(name: "plan.stall_seconds", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["300", "10m"], default: 300, parser: POSITIVE_DURATION,
         doc: "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)"),
+      Key.new(name: "agent.kind", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, settable: true, default: "claude", choices: AgentProvider.all.map(&:key), parser: AGENT_KIND,
+        doc: "Which coding agent a new workspace's main agent pane runs: #{AgentProvider.all.map { |p| "`#{p.key}`" }.join(", ")} (default `claude`)"),
+      *AgentProvider.all.map do |provider|
+        Key.new(name: "agent.commands.#{provider.key}", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :command, sensitive: true, settable: true, default: provider.executable, examples: ["#{provider.executable}-dev"], parser: COMMAND,
+          doc: "Command workspace runs for #{provider.label}, e.g. `#{provider.executable}-dev` (default `#{provider.executable}`); workspace adds its own flags, so a wrapper must pass its arguments through")
+      end,
       # statusline.command, context.*, launch.headless describe the machine and are read where no workspace is known: global only.
       Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true, examples: ["~/bin/my-statusline"],
         doc: "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer"),
