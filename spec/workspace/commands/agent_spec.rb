@@ -2403,4 +2403,96 @@ RSpec.describe Workspace::Commands::Agent do
       thread&.join(2)
     end
   end
+
+  describe "the session monitor's configured agent names" do
+    def build_agent(agent_commands)
+      described_class.new(config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state, agent_commands: agent_commands, output: output, error_output: error_output)
+    end
+
+    it "is built with the workspace's names, read when the monitor is made" do
+      settings = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
+      commands = Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+
+      monitor = build_agent(commands).send(:build_session_monitor, "myapp")
+
+      expect(monitor.instance_variable_get(:@detector)).to eq(Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))
+    end
+
+    it "knows only the providers' executables without AgentCommands" do
+      monitor = build_agent(nil).send(:build_session_monitor, "myapp")
+
+      expect(monitor.instance_variable_get(:@detector)).to eq(Workspace::AgentDetector.new)
+    end
+  end
+
+  describe "Workspace.build_cli wiring of AgentCommands" do
+    it "gives every consumer the same AgentCommands instance" do
+      Dir.mktmpdir("ws-agent-commands-wiring") do |state|
+        allow(ENV).to receive(:fetch).and_call_original
+        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
+
+        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+        held = lambda do |ivar, owner|
+          cli.instance_variable_get(ivar).instance_variable_get(owner)
+        end
+        instances = [
+          held.call(:@start_command, :@agent_commands),
+          held.call(:@launch_command, :@agent_commands),
+          held.call(:@claude_command, :@agent_commands),
+          held.call(:@capture_command, :@agent_commands),
+          held.call(:@run_command, :@agent_commands),
+          held.call(:@wait_until_content_command, :@agent_commands),
+          held.call(:@agent_command, :@agent_commands),
+          held.call(:@restore_command, :@agent_commands),
+          held.call(:@restore_command, :@tmuxinator_report).instance_variable_get(:@agent_commands),
+          held.call(:@plan_dispatch_command, :@panes).instance_variable_get(:@agent_commands),
+          held.call(:@start_command, :@main_agent).instance_variable_get(:@agent_commands)
+        ]
+
+        expect(instances).to all(be_a(Workspace::AgentCommands))
+        expect(instances.map(&:object_id).uniq.size).to eq(1)
+      end
+    end
+  end
+
+  describe "the Claude pane lookup with configured names" do
+    let(:claude_dev) { Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}) }
+    let(:label_details) do
+      [{id: "%10", window: 0, index: 0, pid: 100, command: "zsh", title: "a"},
+        {id: "%11", window: 0, index: 1, pid: 200, command: "claude-dev", title: "b"},
+        {id: "%12", window: 0, index: 2, pid: 300, command: "zsh", title: "c"}]
+    end
+    let(:labels) { Workspace::AgentLabels.new(process_tree: instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([]))) }
+    let(:configured) do
+      settings = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+    end
+
+    def build_agent(agent_commands)
+      described_class.new(config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state, agent_labels: labels, agent_commands: agent_commands, output: output, error_output: error_output)
+        .tap do |built|
+          built.instance_variable_set(:@current_name, "myapp")
+          built.instance_variable_set(:@tmux_session, "myapp")
+        end
+    end
+
+    before do
+      allow(tmux).to receive(:panes).with("myapp", window: "0").and_return([0, 1, 2])
+      allow(tmux).to receive(:find_pane_by_title).and_return(nil)
+      allow(tmux).to receive(:pane_details).with("myapp", window: "0").and_return(label_details.rotate(1).each_with_index.map { |d, i| d.merge(index: i) })
+    end
+
+    it "asks AgentCommands for the detector of the current workspace and finds the claude-dev pane" do
+      allow(configured).to receive(:detector).and_call_original
+
+      expect(build_agent(configured).send(:claude_pane_target)).to eq("0.0")
+      expect(configured).to have_received(:detector).with("myapp")
+    end
+
+    it "falls back to pane 1 without AgentCommands" do
+      expect(build_agent(nil).send(:claude_pane_target)).to eq("0.1")
+    end
+  end
 end

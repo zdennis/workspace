@@ -182,4 +182,40 @@ RSpec.describe Workspace::AgentProvider do
       expect(described_class.find("claude").user_config_path(env: {}, home: "/h")).to be_nil
     end
   end
+
+  describe ".detect" do
+    let(:claude) { described_class.find("claude") }
+
+    def tree(*processes) = Workspace::ProcessTree::Snapshot.new(processes)
+
+    it "does not know claude-dev without aliases" do
+      expect(described_class.detect(command: "claude-dev", pid: 10, tree: tree({pid: 10, ppid: 1, command: "claude-dev", args: "claude-dev"}))).to be_nil
+    end
+
+    it "takes a pane running an aliased command as that agent" do
+      found = described_class.detect(command: "claude-dev", pid: 10, tree: tree, aliases: {"claude" => ["claude-dev"]})
+
+      expect(found).to eq(provider: claude, pid: 10)
+    end
+
+    it "finds an aliased command among a shell's descendants, by exact basename" do
+      processes = [{pid: 10, ppid: 1, command: "zsh", args: "-zsh"},
+        {pid: 11, ppid: 10, command: "node", args: "/opt/bin/claude-dev --continue"},
+        {pid: 12, ppid: 10, command: "vim", args: "vim /src/claude-dev/notes.md"}]
+
+      found = described_class.detect(command: "zsh", pid: 10, tree: tree(*processes), aliases: {"claude" => ["claude-dev"]})
+
+      expect(found).to eq(provider: claude, pid: 11)
+    end
+
+    it "does not match an alias as a path segment" do
+      processes = [{pid: 10, ppid: 1, command: "zsh", args: "-zsh"}, {pid: 11, ppid: 10, command: "ruby", args: "ruby /src/claude-dev/run.rb"}]
+
+      expect(described_class.detect(command: "zsh", pid: 10, tree: tree(*processes), aliases: {"claude" => ["claude-dev"]})).to be_nil
+    end
+
+    it "ignores aliases for another kind" do
+      expect(described_class.detect(command: "claude-dev", pid: 10, tree: tree, aliases: {"codex" => ["claude-dev"]})&.fetch(:provider)&.key).to eq("codex")
+    end
+  end
 end

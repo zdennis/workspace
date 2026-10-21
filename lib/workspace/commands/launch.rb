@@ -35,12 +35,14 @@ module Workspace
       # @param restore_enabled [#call] returns false when the `launch.restore_window_position` key turns restoring off
       # @param binder [Workspace::Commands::Binding, nil] binds the pane a prompt was
       #   delivered to, for the projects +bindings:+ names; nil binds nothing
+      # @param agent_commands [Workspace::AgentCommands, nil] says which program names count as an agent
+      #   in a project's panes; nil knows only the providers' executables
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param clock [#call] monotonic seconds, bounding the wait for sessions
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, sleeper: ->(seconds) { sleep(seconds) },
+        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, sleeper: ->(seconds) { sleep(seconds) },
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
@@ -56,6 +58,7 @@ module Workspace
         @window_positions = window_positions
         @restore_enabled = restore_enabled
         @binder = binder
+        @agent_commands = agent_commands
         @sleeper = sleeper
         @clock = clock
         @output = output
@@ -551,7 +554,7 @@ module Workspace
         prompts.each_with_object({}) do |(project, prompt_text), failures|
           tmux_name = session_names.fetch(project, project)
           packs = @optional[project]
-          if packs && (reason = missing_agent_reason(tmux_name))
+          if packs && (reason = missing_agent_reason(project, tmux_name))
             skip_optional(project, packs, reason)
             next
           end
@@ -573,10 +576,10 @@ module Workspace
       # Gives a coding agent {OPTIONAL_AGENT_WAIT} seconds to show up in the session.
       #
       # @return [String, nil] why there is none, or nil once one is running
-      def missing_agent_reason(tmux_name)
+      def missing_agent_reason(project, tmux_name)
         deadline = @clock.call + OPTIONAL_AGENT_WAIT
         loop do
-          return nil if @agent_readiness.agent_running?(tmux_name)
+          return nil if @agent_readiness.agent_running?(tmux_name, **(@agent_commands&.detector_options(project) || {}))
           return "no coding agent is running in tmux session '#{tmux_name}'" if @clock.call >= deadline
           @sleeper.call(1)
         end
@@ -600,7 +603,7 @@ module Workspace
       def deliver_prompt(project, tmux_name, prompt_text, deadline, prompt_timeout)
         last = nil
         MAX_PROMPT_ATTEMPTS.times do |attempt|
-          ready = @agent_readiness.wait(tmux_name, deadline: deadline)
+          ready = @agent_readiness.wait(tmux_name, deadline: deadline, **(@agent_commands&.detector_options(project) || {}))
           # A retry that runs out of time reports why the paste failed, not
           # that the agent is still busy redrawing after it.
           return last&.message || "#{ready.reason} (waited up to #{prompt_timeout}s)" unless ready.ready?

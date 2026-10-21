@@ -9,7 +9,7 @@ RSpec.describe Workspace::ConfigSchema do
   end
 
   it "names the keys a running daemon only reads at startup" do
-    expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval events.rotate_size])
+    expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi events.rotate_size])
   end
 
   it "tells settable keys from keys that are only documented" do

@@ -31,7 +31,10 @@ module Workspace
     # @param tmux [Workspace::Tmux] tmux operations
     # @param agent_labels [Workspace::AgentLabels, nil] names the agent in each pane, read only
     #   when no raw title matches; nil searches raw titles alone
-    def initialize(spec, tmux:, agent_labels: nil)
+    # @param detector [#call, nil] finds the agent in a pane for the label search (see {AgentCommands#detector}); nil
+    #   knows the providers' own names
+    def initialize(spec, tmux:, agent_labels: nil, detector: nil)
+      @detector = detector || AgentDetector.new
       @spec = spec
       @tmux = tmux
       @agent_labels = agent_labels
@@ -134,7 +137,7 @@ module Workspace
 
       details = @tmux.pane_details(session_name, window: window)
       wanted = text.downcase
-      @agent_labels.by_index(details).sort.each do |index, label|
+      @agent_labels.by_index(details, detector: @detector).sort.each do |index, label|
         return index if label.downcase.include?(wanted)
       end
       nil

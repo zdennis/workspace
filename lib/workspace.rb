@@ -165,6 +165,7 @@ require_relative "workspace/library"
 require_relative "workspace/library_install_dirs"
 require_relative "workspace/library_installer"
 require_relative "workspace/agent_commands"
+require_relative "workspace/agent_detector"
 require_relative "workspace/commands_config"
 require_relative "workspace/notes_config"
 require_relative "workspace/spine_config"
@@ -396,7 +397,7 @@ module Workspace
     pane_locator = PaneLocator.new(tmux: tmux)
     pane_bindings = PaneBindings.new(path: config.pane_bindings_path, logger: logger, error_output: error_output)
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
-    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
+    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
@@ -412,7 +413,7 @@ module Workspace
       spine_facts: -> { spine_facts }, spine_inferred: -> { spine_inferred }, output: output)
     spine_config = SpineConfig.new(config_resolver: config_resolver)
     spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, spine_config: spine_config, output: output)
-    main_agent = MainAgent.new(project_config: project_config)
+    main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     commands_config = CommandsConfig.new(config_resolver: config_resolver)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
       commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(config_resolver: config_resolver),
@@ -434,12 +435,13 @@ module Workspace
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, output: output, input: input)
     remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
-    claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, output: output, error_output: error_output)
+    claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
     update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, output: output, input: input)
     run_command = Commands::Run.new(
       tmux: tmux,
       agent_labels: agent_labels,
+      agent_commands: agent_commands,
       state: state,
       window_manager: window_manager,
       output: output,
@@ -456,8 +458,8 @@ module Workspace
     )
     run_result_store = RunResultStore.new(config: config, cleaner: run_result_cleaner)
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
-    capture_command = Commands::Capture.new(tmux: tmux, agent_labels: agent_labels, output: output, error_output: error_output)
-    wait_until_content_command = Commands::WaitUntilContent.new(tmux: tmux, agent_labels: agent_labels, output: output, error_output: error_output)
+    capture_command = Commands::Capture.new(tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
+    wait_until_content_command = Commands::WaitUntilContent.new(tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
 
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
     dev_config = DevConfig.new(config_resolver: config_resolver)
@@ -564,7 +566,7 @@ module Workspace
     plan_state = PlanState.new
     plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
     pane_dispatch = PaneDispatch.new(snapshot_client: agent_snapshot_client, sender: send_command, binder: binding_command, library: library,
-      runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, project_config: project_config)
+      runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, project_config: project_config, agent_commands: agent_commands)
     plan_dispatch_command = Commands::PlanDispatch.new(access: plan_access, panes: pane_dispatch, library: library, output: output)
     spine_start_command = Commands::SpineStart.new(spine: spine_command, panes: pane_dispatch, library: library, composer: instruction_composer,
       notes: notes_command, main_agent: main_agent, output: output)
@@ -605,9 +607,9 @@ module Workspace
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, output: output, error_output: error_output)
     config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library)
-    tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux)
+    tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
-      process_tree: process_tree, agent_ensurer: ensure_agent_command, output: output, error_output: error_output)
+      process_tree: process_tree, agent_ensurer: ensure_agent_command, agent_commands: agent_commands, output: output, error_output: error_output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
     # The reader takes its own limiter, separate from the monitor's: it serves
@@ -646,6 +648,7 @@ module Workspace
       config: config,
       tmux: tmux,
       agent_labels: agent_labels,
+      agent_commands: agent_commands,
       work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
       # Its own LockHolder: the reaper runs on the monitor thread, and a

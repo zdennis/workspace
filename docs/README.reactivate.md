@@ -16,7 +16,7 @@ workspace reactivate [options] [project]
 
 ## Details
 
-Sends `claude --continue || claude` to the Claude pane (pane 0.1), restarting Claude with session continuity when possible.
+Sends `claude --continue || claude` to the Claude pane (pane 0.1), restarting Claude with session continuity when possible. When `agent.commands.claude` names another program (such as `claude-dev`), that program is typed in place of `claude`.
 
 Auto-detects the project from the current directory if not specified. No-op if Claude is already running (the command text gets typed into Claude's input).
 

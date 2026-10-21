@@ -1859,4 +1859,18 @@ RSpec.describe Workspace::SessionMonitor, "task" do
       expect(status).to eq("blocked")
     end
   end
+
+  describe "with a detector that knows claude-dev" do
+    let(:detector) { Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}) }
+    let(:panes) { [{id: "%3", index: 0, pid: 300, command: "claude-dev", cwd: "/project", title: "x"}] }
+
+    it "reports a pane running claude-dev as claude, and as a shell without it" do
+      with = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj", idle_after: 30, clock: clock, detector: detector)
+      with.scan
+      expect(with.snapshot["panes"].first).to include("kind" => "claude", "label" => "Claude Code")
+
+      monitor.scan
+      expect(pane("%3")).to include("kind" => "shell")
+    end
+  end
 end

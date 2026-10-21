@@ -114,4 +114,77 @@ RSpec.describe Workspace::Commands::Claude do
       expect(output.string).to include("Reactivating Claude in proj2")
     end
   end
+
+  describe "#reactivate with a configured command" do
+    let(:agent_commands) do
+      ps = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps))
+    end
+
+    subject(:command) do
+      described_class.new(state: CLITestHelpers::FakeState.new, tmux: tmux, agent_commands: agent_commands, output: output, error_output: error_output)
+    end
+
+    it "types the configured command in both halves" do
+      allow(tmux).to receive(:sessions).and_return(["myproject"])
+
+      command.reactivate(["myproject"])
+
+      expect(tmux.sent_keys).to eq([{session: "myproject", pane: "0.1", text: "claude-dev --continue || claude-dev", enter: true}])
+    end
+
+    it "types the default command when nothing is configured" do
+      ps = instance_double(Workspace::ProjectSettings, load_global: {}, load: {})
+      plain = described_class.new(state: CLITestHelpers::FakeState.new, tmux: tmux, output: output, error_output: error_output,
+        agent_commands: Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps)))
+      allow(tmux).to receive(:sessions).and_return(["myproject"])
+
+      plain.reactivate(["myproject"])
+
+      expect(tmux.sent_keys.first[:text]).to eq("claude --continue || claude")
+    end
+  end
+
+  describe "the Claude pane of a project with a configured command" do
+    let(:settings) { instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "/opt/bin/claude-dev --model x"}}}, load: {}) }
+    let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)) }
+    let(:real_tmux) { instance_double(Workspace::Tmux) }
+    let(:process_tree) { instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([])) }
+    let(:labels) { Workspace::AgentLabels.new(process_tree: process_tree) }
+
+    def build(agent_commands)
+      described_class.new(state: CLITestHelpers::FakeState.new, tmux: real_tmux, agent_labels: labels, agent_commands: agent_commands,
+        output: output, error_output: error_output)
+    end
+
+    before do
+      allow(real_tmux).to receive(:sessions).and_return(["proj"])
+      allow(real_tmux).to receive(:session_name_for) { |name| name }
+      allow(real_tmux).to receive(:panes).and_return([0, 1])
+      allow(real_tmux).to receive(:find_pane_by_title).and_return(nil)
+      allow(real_tmux).to receive(:pane_details).and_return([{id: "%1", window: 0, index: 0, pid: 10, command: "zsh", title: "t"},
+        {id: "%2", window: 0, index: 1, pid: 20, command: "claude-dev", title: "t"}])
+      allow(real_tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
+    end
+
+    it "finds a pane running the configured command by its label, and types the configured command with its path and flags" do
+      build(agent_commands).reactivate(["proj"])
+
+      expect(real_tmux).to have_received(:deliver)
+        .with("proj", "0.1", "/opt/bin/claude-dev --model x --continue || /opt/bin/claude-dev --model x")
+    end
+
+    it "does not find that pane by its label without the configuration" do
+      build(nil).reactivate(["proj"])
+
+      expect(real_tmux).to have_received(:deliver).with("proj", "0.1", "claude --continue || claude")
+    end
+
+    it "types exactly REACTIVATE_COMMAND when AgentCommands is wired and nothing is configured" do
+      plain = instance_double(Workspace::ProjectSettings, load_global: {}, load: {})
+      build(Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: plain))).reactivate(["proj"])
+
+      expect(real_tmux).to have_received(:deliver).with("proj", anything, described_class::REACTIVATE_COMMAND)
+    end
+  end
 end

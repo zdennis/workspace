@@ -297,4 +297,44 @@ RSpec.describe Workspace::Commands::Run do
       end
     end
   end
+
+  describe "a claude-dev pane found by agent label" do
+    let(:output) { StringIO.new }
+    let(:tmux) { double("tmux") }
+    let(:claude_dev) { Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}) }
+    let(:label_details) do
+      [{id: "%10", window: 0, index: 0, pid: 100, command: "zsh", title: "a"},
+        {id: "%11", window: 0, index: 1, pid: 200, command: "claude-dev", title: "b"},
+        {id: "%12", window: 0, index: 2, pid: 300, command: "zsh", title: "c"}]
+    end
+    let(:labels) { Workspace::AgentLabels.new(process_tree: instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([]))) }
+    let(:configured) do
+      settings = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+    end
+
+    before do
+      allow(tmux).to receive(:session_name_for).with("myproject").and_return("myproject")
+      allow(tmux).to receive(:sessions).and_return(["myproject"])
+      allow(tmux).to receive(:panes).with("myproject", window: "0").and_return([0, 1, 2])
+      allow(tmux).to receive(:find_pane_by_title).and_return(nil)
+      allow(tmux).to receive(:pane_details).with("myproject", window: "0").and_return(label_details)
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
+    end
+
+    def build(agent_commands)
+      described_class.new(tmux: tmux, state: double("state"), window_manager: double("wm"), agent_labels: labels,
+        agent_commands: agent_commands, output: output, error_output: StringIO.new)
+    end
+
+    it "is sent to through the configured detector" do
+      build(configured).call("myproject", "echo hi", pane: "Claude Code")
+
+      expect(tmux).to have_received(:deliver).with("myproject", "0.1", "echo hi", enter: true)
+    end
+
+    it "is not found without the configuration" do
+      expect { build(nil).call("myproject", "echo hi", pane: "Claude Code") }.to raise_error(Workspace::Error, /No pane matching/)
+    end
+  end
 end

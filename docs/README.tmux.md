@@ -42,7 +42,7 @@ Without `--json` it prints the session, then each window and each pane's kind an
 - `parse_error` is null, or `{"message", "line", "column"}` when the file can't be parsed. `session` is then null, `windows` is empty and `running` is null.
 - `session.startup_pane` and the pane `index` values are 0-based, like every other `--pane`. `line` is the 1-based line of the pane's entry in the file.
 - `command` is the pane's command text, null for a bare shell. A pane written as a one-pair hash (`title: command`) has `title` set; a list of commands is joined with newlines.
-- `kind` is `claude` (a `claude` command word), `agentd`, `banner` (`ascii-banner` or `figlet`), `shell` (no command) or `command`. `flags` is present for `claude` panes and lists the `--flags` on its first `claude` invocation.
+- `kind` is `claude` (a `claude` command word, or the program `agent.commands.claude` names), `agentd`, `banner` (`ascii-banner` or `figlet`), `shell` (no command) or `command`. `flags` is present for `claude` panes and lists the `--flags` on its first `claude` invocation.
 - `running` is true when a tmux session with the file's `name` exists, false when not, and null when tmux didn't answer. `live` is null unless the session is running; its `start_command` is what tmux started the pane with, which is null for a pane tmuxinator typed its command into (tmuxinator panes usually start a bare shell). Windows pair with tmux's by order, so a non-zero `base-index` doesn't matter.
 - A workspace with no tmuxinator file is an error document with code `unknown_workspace`.
 

@@ -5,6 +5,7 @@ module Workspace
     # Reactivate sends the claude startup command to restart it.
     class Claude
       CLAUDE_PANE_FALLBACK = "0.1"
+      # What reactivate types when no {AgentCommands} says otherwise.
       REACTIVATE_COMMAND = "claude --continue || claude"
       CTRL_C_COUNT = 3
       CTRL_C_DELAY = 0.5
@@ -12,9 +13,12 @@ module Workspace
       # @param state [Workspace::State] state persistence
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
+      # @param agent_commands [Workspace::AgentCommands, nil] gives the command that starts Claude Code for
+      #   a project; nil types {REACTIVATE_COMMAND}
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, tmux:, agent_labels: nil, output: $stdout, error_output: $stderr)
+      def initialize(state:, tmux:, agent_labels: nil, agent_commands: nil, output: $stdout, error_output: $stderr)
+        @agent_commands = agent_commands
         @state = state
         @tmux = tmux
         @agent_labels = agent_labels
@@ -30,7 +34,7 @@ module Workspace
         outcomes = {}
         each_active_session(projects, outcomes) do |project, session_name|
           @output.puts "  Deactivating Claude in #{project}..."
-          pane = claude_pane(session_name)
+          pane = claude_pane(session_name, project)
           CTRL_C_COUNT.times do |i|
             @tmux.send_key(session_name, pane, "C-c")
             sleep CTRL_C_DELAY if i < CTRL_C_COUNT - 1
@@ -49,7 +53,7 @@ module Workspace
         outcomes = {}
         each_active_session(projects, outcomes) do |project, session_name|
           @output.puts "  Reactivating Claude in #{project}..."
-          delivery = @tmux.deliver(session_name, claude_pane(session_name), REACTIVATE_COMMAND)
+          delivery = @tmux.deliver(session_name, claude_pane(session_name, project), reactivate_command(project))
           @error_output.puts "  Warning: #{project}: #{delivery.message}" unless delivery.ok?
           outcomes[project] = if delivery.ok?
             {"outcome" => "reactivated"}
@@ -63,8 +67,14 @@ module Workspace
 
       private
 
-      def claude_pane(session_name)
-        TmuxPane.new("Claude Code", tmux: @tmux, agent_labels: @agent_labels).target(session_name)
+      def reactivate_command(project)
+        return REACTIVATE_COMMAND unless @agent_commands
+        command = @agent_commands.command_for(project, "claude")
+        "#{command} --continue || #{command}"
+      end
+
+      def claude_pane(session_name, project = nil)
+        TmuxPane.new("Claude Code", tmux: @tmux, agent_labels: @agent_labels, detector: project && @agent_commands&.detector(project)).target(session_name)
       rescue Workspace::Error
         CLAUDE_PANE_FALLBACK
       end

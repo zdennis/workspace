@@ -20,7 +20,7 @@ RSpec.describe Workspace::ConfigSchemaDocs do
     expect(described_class.render("keys")).to include("| `launch.headless` | global | Global. ")
     expect(described_class.render("keys")).to include("| `dev.ready_timeout` | project, worktree | ")
     expect(described_class.render("keys")).to include("| `notes.default_dir` | global, project | ")
-    expect(described_class.render("restart")).to include("`locks.ps_timeout`, `locks.reap_interval`, `alerts.notify`, `alerts.idle_after`, `agentd.poll_interval` and `events.rotate_size`")
+    expect(described_class.render("restart")).to include("`locks.ps_timeout`, `locks.reap_interval`, `alerts.notify`, `alerts.idle_after`, `agentd.poll_interval`, `agent.commands.claude`, `agent.commands.codex`, `agent.commands.opencode`, `agent.commands.pi` and `events.rotate_size`")
   end
 
   it "replaces only the text between markers" do

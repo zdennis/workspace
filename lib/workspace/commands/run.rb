@@ -18,12 +18,14 @@ module Workspace
 
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
+      # @param agent_commands [Workspace::AgentCommands, nil] adds the project's configured agent programs to the label search
       # @param state [Workspace::State] state persistence (used for --focus)
       # @param window_manager [Workspace::WindowManager] iTerm window operations (used for --focus)
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings and errors
-      def initialize(tmux:, state:, window_manager:, agent_labels: nil, output: $stdout, error_output: $stderr)
+      def initialize(tmux:, state:, window_manager:, agent_labels: nil, agent_commands: nil, output: $stdout, error_output: $stderr)
         @tmux = tmux
+        @agent_commands = agent_commands
         @agent_labels = agent_labels
         @state = state
         @window_manager = window_manager
@@ -62,7 +64,7 @@ module Workspace
           new_pane_id = split_and_run(session_name, command, vertical: vertical, enter: enter,
             dry_run: dry_run, close: close, cwd: cwd)
         else
-          pane_spec = TmuxPane.new(pane, tmux: @tmux, agent_labels: @agent_labels).target(session_name)
+          pane_spec = TmuxPane.new(pane, tmux: @tmux, agent_labels: @agent_labels, detector: @agent_commands&.detector(project)).target(session_name)
 
           if dry_run
             print_dry_run_delivery(session_name, pane_spec, command, enter: enter)

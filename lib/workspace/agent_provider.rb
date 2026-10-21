@@ -176,15 +176,20 @@ module Workspace
     # @param pid [Integer] the pane's process id
     # @param tree [Workspace::ProcessTree::Snapshot] process table snapshot
     # @param providers [Array<AgentProvider>] agents to recognize
+    # @param aliases [Hash{String => Array<String>}] extra program names per provider key (a configured
+    #   `claude-dev` for "claude"); matched by exact basename only. The caller supplies them, the registry
+    #   reads no config.
     # @return [Hash, nil] +{provider:, pid:}+ for the agent found, or nil
-    def self.detect(command:, pid:, tree:, providers: all)
+    def self.detect(command:, pid:, tree:, providers: all, aliases: {})
       basename = File.basename(command.to_s).downcase
-      direct = providers.find { |p| p.executable == basename }
+      extras = ->(provider) { Array(aliases[provider.key]).map { |name| File.basename(name.to_s).downcase }.uniq - [provider.executable] }
+      direct = providers.find { |p| p.executable == basename || extras.call(p).include?(basename) }
       return {provider: direct, pid: pid} if direct
 
       providers.each do |provider|
-        exact_only = provider.path_segment_matching? ? [] : [provider.executable]
-        match = tree.find_descendant(pid, [provider.executable],
+        extra = extras.call(provider)
+        exact_only = (provider.path_segment_matching? ? [] : [provider.executable]) + extra
+        match = tree.find_descendant(pid, [provider.executable, *extra],
           exclude: provider.background_markers, include_root: true, exact_only: exact_only)
         return {provider: provider, pid: match[:pid]} if match
       end

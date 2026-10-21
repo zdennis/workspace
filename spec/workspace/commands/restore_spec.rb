@@ -1204,4 +1204,57 @@ RSpec.describe Workspace::Commands::Restore do
       expect(launched).to eq([])
     end
   end
+
+  describe "with a configured claude command" do
+    let(:agent_commands) do
+      ps = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps))
+    end
+    let(:report) { Workspace::TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands) }
+
+    subject(:restore) do
+      described_class.new(ledger: ledger, tmux: tmux, pane_bindings: bindings, tmuxinator_report: report, process_tree: process_tree,
+        agent_ensurer: ensurer, agent_commands: agent_commands, sleeper: ->(_) {}, clock: -> { now[0] }, output: output, error_output: error_output)
+    end
+
+    before do
+      write_config("api", claude: "claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions")
+      running_session
+    end
+
+    it "resumes with the configured command, keeping the config's permission flag found on the claude-dev line" do
+      started("api:0.2", sid(1))
+
+      call
+
+      expect(tmux.delivered).to eq([["api", "%2", "cd -- #{cwd} && claude-dev --dangerously-skip-permissions --resume #{sid(1)}"]])
+    end
+
+    it "does not skip a slot whose ledger kind is the configured program as another agent" do
+      started("api:0.2", sid(1), kind: "claude-dev")
+
+      expect(rows(call)).to match([include("outcome" => "restored")])
+    end
+
+    it "still skips a slot of another agent" do
+      started("api:0.2", sid(1), kind: "codex")
+      ended("api:0.2", sid(1), "other")
+
+      expect(rows(call)).to match([include("reason" => "other_agent")])
+    end
+
+    it "does not type into a pane whose process is the configured command" do
+      tmux.add_session("work", %w[zsh claude-dev])
+      tmux.pane_details("work", window: nil).each do |pane|
+        processes << {pid: pane[:pid], ppid: 1, command: pane[:command], args: (pane[:command] == "claude-dev") ? "claude-dev --continue" : "-zsh"}
+      end
+      write_config("work")
+      started("work:0.1", sid(3))
+
+      result = call(["work"])
+
+      expect(rows(result)).to match([include("outcome" => "skipped", "reason" => "agent_running")])
+      expect(tmux.delivered).to be_empty
+    end
+  end
 end

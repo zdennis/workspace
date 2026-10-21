@@ -397,7 +397,7 @@ module Workspace
       Key.new(name: "agent.kind", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, settable: true, default: "claude", choices: AgentProvider.all.map(&:key), parser: AGENT_KIND,
         doc: "Which coding agent a new workspace's main agent pane runs: #{AgentProvider.all.map { |p| "`#{p.key}`" }.join(", ")} (default `claude`)"),
       *AgentProvider.all.map do |provider|
-        Key.new(name: "agent.commands.#{provider.key}", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :command, sensitive: true, settable: true, default: provider.executable, examples: ["#{provider.executable}-dev"], parser: COMMAND,
+        Key.new(name: "agent.commands.#{provider.key}", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :command, sensitive: true, settable: true, restart: true, default: provider.executable, examples: ["#{provider.executable}-dev"], parser: COMMAND,
           doc: "Command workspace runs for #{provider.label}, e.g. `#{provider.executable}-dev` (default `#{provider.executable}`); workspace adds its own flags, so a wrapper must pass its arguments through")
       end,
       # statusline.command, context.*, launch.headless describe the machine and are read where no workspace is known: global only.

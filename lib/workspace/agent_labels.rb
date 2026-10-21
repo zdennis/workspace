@@ -12,14 +12,15 @@ module Workspace
     end
 
     # @param details [Array<Hash>] panes as {Tmux#pane_details} returns them
+    # @param detector [#call] finds the agent in a pane (see {AgentCommands#detector})
     # @return [Hash{Integer => String}] label by pane index, for panes running an agent;
     #   empty when there are no panes (the process table is not read) or it cannot be read
-    def by_index(details)
+    def by_index(details, detector: AgentDetector.new)
       return {} if details.empty?
 
       tree = @process_tree.snapshot
       details.each_with_object({}) do |detail, labels|
-        agent = AgentProvider.detect(command: detail[:command], pid: detail[:pid], tree: tree, providers: @providers)
+        agent = detector.call(command: detail[:command], pid: detail[:pid], tree: tree, providers: @providers)
         labels[detail[:index]] = agent[:provider].label if agent
       end
     rescue Workspace::Error

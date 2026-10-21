@@ -168,4 +168,34 @@ RSpec.describe Workspace::TmuxinatorReport do
   it "raises unknown_workspace when the workspace has no tmuxinator file" do
     expect { report.show("nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
   end
+
+  context "with a configured claude command" do
+    let(:agent_commands) do
+      ps = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "/opt/bin/claude-dev"}}}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps))
+    end
+    subject(:report) { described_class.new(config: config, tmux: tmux, agent_commands: agent_commands) }
+
+    it "reports a claude-dev pane as claude, with its flags" do
+      write("api", "name: api\nwindows:\n  - w:\n      panes:\n        - claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions\n        - ascii-banner claude-dev-tools\n        - /opt/bin/claude-dev --model opus\n")
+
+      panes = report.show("api")["windows"].first["panes"]
+
+      expect(panes.map { |p| p["kind"] }).to eq(%w[claude banner claude])
+      expect(panes.first["flags"]).to eq(%w[--dangerously-skip-permissions --continue])
+      expect(panes.last["flags"]).to eq(%w[--model])
+    end
+
+    it "still reports plain claude" do
+      write("api", "name: api\nwindows:\n  - w:\n      panes:\n        - claude --continue\n")
+
+      expect(report.show("api")["windows"].first["panes"].first).to include("kind" => "claude", "flags" => ["--continue"])
+    end
+
+    it "does not know claude-dev without the configuration" do
+      write("api", "name: api\nwindows:\n  - w:\n      panes:\n        - claude-dev --continue\n")
+
+      expect(described_class.new(config: config, tmux: tmux).show("api")["windows"].first["panes"].first["kind"]).to eq("command")
+    end
+  end
 end

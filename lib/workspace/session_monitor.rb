@@ -72,6 +72,8 @@ module Workspace
     # @param process_tree [Workspace::ProcessTree] process table snapshots
     # @param session_name [String] tmux session to watch
     # @param providers [Array<Workspace::AgentProvider>] agents to recognize
+    # @param detector [#call] finds the agent in a pane; the caller reads the workspace's configured names once
+    #   when the monitor is made (see {AgentCommands#detector})
     # @param poll_interval [Numeric] seconds between scans
     # @param idle_after [Numeric] seconds of unchanged output before idle
     # @param clock [#now] time source, injected for deterministic tests
@@ -100,7 +102,7 @@ module Workspace
     #   monitors scan at once, machine-wide; a scan that can't take a slot is
     #   skipped rather than waited out. nil scans without a limit.
     def initialize(tmux:, process_tree:, session_name:,
-      providers: AgentProvider.all, poll_interval: DEFAULT_POLL_INTERVAL, idle_after: DEFAULT_IDLE_AFTER,
+      providers: AgentProvider.all, detector: AgentDetector.new, poll_interval: DEFAULT_POLL_INTERVAL, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
       context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil)
@@ -108,6 +110,7 @@ module Workspace
       @process_tree = process_tree
       @session_name = session_name
       @providers = providers
+      @detector = detector
       @poll_interval = poll_interval
       @idle_after = idle_after
       @clock = clock
@@ -659,7 +662,7 @@ module Workspace
     end
 
     def detect_agent(detail, tree)
-      AgentProvider.detect(command: detail[:command], pid: detail[:pid], tree: tree, providers: @providers)
+      @detector.call(command: detail[:command], pid: detail[:pid], tree: tree, providers: @providers)
     end
 
     # Output is hashed rather than compared: a pane's scrollback is large, and

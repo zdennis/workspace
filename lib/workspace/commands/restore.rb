@@ -50,11 +50,13 @@ module Workspace
       # @param process_tree [Workspace::ProcessTree] tells a pane running an agent from one at a prompt
       # @param agent_ensurer [Workspace::Commands::EnsureAgent, nil] starts the agent daemon of a session
       #   that is running without one, so the resumed sessions are monitored; nil starts none
+      # @param agent_commands [Workspace::AgentCommands, nil] the command that starts Claude Code per
+      #   workspace, and the program names that count as an agent; nil means `claude` alone
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param clock [#call] monotonic seconds, bounding the wait for a launched session's panes
       # @param output [IO] output stream for the plan and the results
       # @param error_output [IO] error output stream for warnings
-      def initialize(ledger:, tmux:, pane_bindings:, tmuxinator_report:, process_tree:, agent_ensurer: nil,
+      def initialize(ledger:, tmux:, pane_bindings:, tmuxinator_report:, process_tree:, agent_ensurer: nil, agent_commands: nil,
         sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
         output: $stdout, error_output: $stderr)
         @ledger = ledger
@@ -63,6 +65,7 @@ module Workspace
         @tmuxinator_report = tmuxinator_report
         @process_tree = process_tree
         @agent_ensurer = agent_ensurer
+        @agent_commands = agent_commands
         @sleeper = sleeper
         @clock = clock
         @output = output
@@ -232,7 +235,7 @@ module Workspace
         server = (@tmux.server_pid_for_pane(live.first[:id]) unless plan[:launch] || live.empty?)
         decisions = plan[:slots].map do |slot|
           base = {slot: slot, window: slot[:window], index: slot[:index]}
-          base.merge(precheck(slot) || (plan[:launch] ? decide_launched(plan, slot, windows, tree) : decide_running(slot, windows, tree, server)))
+          base.merge(precheck(plan, slot) || (plan[:launch] ? decide_launched(plan, slot, windows, tree) : decide_running(plan, slot, windows, tree, server)))
         end
         decisions.select { |d| d[:action] == :resume && d[:pane].nil? }.group_by { |d| d[:window] }.each do |window, creates|
           place(creates, windows.fetch(window))
@@ -241,9 +244,9 @@ module Workspace
       end
 
       # What rules a slot out whatever the session looks like.
-      def precheck(slot)
+      def precheck(plan, slot)
         # The ledger names the agent only when it isn't Claude Code, the one agent resumed here.
-        return skip("other_agent", "The pane ran #{slot["kind"]}, which restore does not resume.") if slot["kind"] && slot["kind"] != "claude"
+        return skip("other_agent", "The pane ran #{slot["kind"]}, which restore does not resume.") if slot["kind"] && !claude_names(plan).include?(slot["kind"])
         return skip("ended", "The session ended (#{slot["end_reason"]}).") unless RESUMABLE_END_REASONS.include?(slot["end_reason"])
         return unmatched("no_session_id", "The ledger has no usable session id for this pane.") unless slot["session_id"].to_s.match?(SESSION_ID)
         return unmatched("cwd_missing", "The session's directory is gone: #{slot["cwd"].inspect}.") unless slot["cwd"].is_a?(String) && File.directory?(slot["cwd"])
@@ -255,7 +258,7 @@ module Workspace
       def not_launched(plan)
         plan[:slots].map do |slot|
           {slot: slot, window: slot[:window], index: slot[:index]}
-            .merge(precheck(slot) || unmatched("not_launched", "The workspace's session was not launched."))
+            .merge(precheck(plan, slot) || unmatched("not_launched", "The workspace's session was not launched."))
         end
       end
 
@@ -273,7 +276,7 @@ module Workspace
         return skip("config_pane", "The workspace's config starts this pane.").merge(pane: pane, rebind: true) unless kind == "shell"
         return {action: :resume, placement: "existing", pane: pane, rebind: true} unless pane[:id]
 
-        decision = occupancy(pane, tree)
+        decision = occupancy(plan, pane, tree)
         decision.merge(pane: pane, rebind: decision[:action] == :resume)
       end
 
@@ -292,11 +295,11 @@ module Workspace
       # entry from another server is matched by its index, since pane ids start
       # over. An entry with no server recorded can't be told apart, so an agent
       # found where it points is never taken for the slot's own.
-      def decide_running(slot, windows, tree, server)
+      def decide_running(plan, slot, windows, tree, server)
         own = windows.values.flatten.find { |pane| pane[:id] == slot["pane_id"] }
         recorded = slot["tmux_server"]
         if server && recorded == server && own
-          decision = occupancy(own, tree)
+          decision = occupancy(plan, own, tree)
           return decision.merge(pane: own, window: own[:window], index: own[:index], rebind: decision[:action] == :resume)
         end
 
@@ -305,12 +308,12 @@ module Workspace
         return {action: :resume, pane: nil, rebind: true} if server && recorded == server
 
         unknown_server = recorded.nil? || server.nil?
-        return ambiguous(own) if unknown_server && own && occupancy(own, tree)[:reason] == "agent_running"
+        return ambiguous(own) if unknown_server && own && occupancy(plan, own, tree)[:reason] == "agent_running"
 
         pane = panes.find { |candidate| candidate[:index] == slot[:index] }
         return {action: :resume, pane: nil, rebind: true} unless pane
 
-        decision = occupancy(pane, tree)
+        decision = occupancy(plan, pane, tree)
         return ambiguous(pane) if unknown_server && decision[:reason] == "agent_running"
 
         decision.merge(pane: pane, rebind: %i[resume skip].include?(decision[:action]))
@@ -320,12 +323,19 @@ module Workspace
         unmatched("pane_ambiguous", "A coding agent runs in pane #{pane[:id]}, and the ledger entry is too old to tell whether it is this session.")
       end
 
-      def occupancy(pane, tree)
+      def occupancy(plan, pane, tree)
         return unmatched("pane_unknown", "Could not tell what the pane is running.") unless tree
-        return skip("agent_running", "A coding agent is already running in the pane.") if AgentProvider.detect(command: pane[:command], pid: pane[:pid], tree: tree)
+        return skip("agent_running", "A coding agent is already running in the pane.") if detector_for(plan).call(command: pane[:command], pid: pane[:pid], tree: tree)
         return {action: :resume, placement: "existing"} if SHELLS.include?(File.basename(pane[:command].to_s).delete_prefix("-"))
 
         unmatched("pane_busy", "The pane is running #{pane[:command]}.")
+      end
+
+      def detector_for(plan) = @agent_commands ? @agent_commands.detector(plan[:workspace]) : AgentDetector.new
+
+      # The names a ledger entry's agent kind may have and still be Claude Code.
+      def claude_names(plan)
+        @agent_commands ? @agent_commands.names_for(plan[:workspace], "claude") : ["claude"]
       end
 
       def skip(reason, message) = {action: :skip, outcome: "skipped", reason: reason, message: message}
@@ -458,7 +468,8 @@ module Workspace
       end
 
       def resume_command(plan, slot)
-        words = ["claude", *plan[:config]&.fetch(:flags), "--resume", slot["session_id"]]
+        program = @agent_commands ? @agent_commands.command_for(plan[:workspace], "claude") : "claude"
+        words = [program, *plan[:config]&.fetch(:flags), "--resume", slot["session_id"]]
         "cd -- #{Shellwords.escape(slot["cwd"])} && #{words.join(" ")}"
       end
 

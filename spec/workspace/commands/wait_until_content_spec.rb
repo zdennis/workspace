@@ -425,4 +425,47 @@ RSpec.describe Workspace::Commands::WaitUntilContent do
       expect(output.string).not_to match(/\r/)
     end
   end
+
+  describe "a claude-dev pane found by agent label" do
+    let(:tmux) { double("tmux") }
+    let(:claude_dev) { Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}) }
+    let(:label_details) do
+      [{id: "%10", window: 0, index: 0, pid: 100, command: "zsh", title: "a"},
+        {id: "%11", window: 0, index: 1, pid: 200, command: "claude-dev", title: "b"},
+        {id: "%12", window: 0, index: 2, pid: 300, command: "zsh", title: "c"}]
+    end
+    let(:labels) { Workspace::AgentLabels.new(process_tree: instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([]))) }
+    let(:configured) do
+      settings = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+    end
+
+    before do
+      allow(tmux).to receive(:session_name_for).with("myproject").and_return("myproject")
+      allow(tmux).to receive(:sessions).and_return(["myproject"])
+      allow(tmux).to receive(:panes).with("myproject", window: "0").and_return([0, 1, 2])
+      allow(tmux).to receive(:find_pane_by_title).and_return(nil)
+      allow(tmux).to receive(:pane_details).with("myproject", window: "0").and_return(label_details)
+      allow(tmux).to receive(:capture_pane_by_id).and_return("READY\n")
+    end
+
+    def build(agent_commands)
+      described_class.new(tmux: tmux, agent_labels: labels, agent_commands: agent_commands, output: StringIO.new, error_output: StringIO.new,
+        sleeper: ->(_) {}, exec_handler: ->(*) {}, clock: -> { 0 }, spinner_enabled: false)
+    end
+
+    it "is resolved to its pane id through the configured detector, and both TmuxPanes get it" do
+      allow(Workspace::TmuxPane).to receive(:new).and_call_original
+
+      expect(build(configured).call("myproject", "READY", pane: "Claude Code")).to eq(0)
+
+      expect(tmux).to have_received(:capture_pane_by_id).with("%11", any_args).at_least(:once)
+      expect(Workspace::TmuxPane).to have_received(:new).with("Claude Code", hash_including(detector: claude_dev))
+      expect(Workspace::TmuxPane).to have_received(:new).with("%11", hash_including(detector: claude_dev))
+    end
+
+    it "is not found without the configuration" do
+      expect { build(nil).call("myproject", "READY", pane: "Claude Code") }.to raise_error(Workspace::Error, /No pane matching/)
+    end
+  end
 end

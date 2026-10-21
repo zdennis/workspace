@@ -1066,7 +1066,7 @@
       "affects": [
         "main.worktree-b"
       ],
-      "applies": "next_call",
+      "applies": "daemon_restart",
       "settable": true,
       "sensitive": true,
       "overridable_in": [
@@ -1095,7 +1095,7 @@
       "affects": [
         "main.worktree-b"
       ],
-      "applies": "next_call",
+      "applies": "daemon_restart",
       "settable": true,
       "sensitive": true,
       "overridable_in": [
@@ -1124,7 +1124,7 @@
       "affects": [
         "main.worktree-b"
       ],
-      "applies": "next_call",
+      "applies": "daemon_restart",
       "settable": true,
       "sensitive": true,
       "overridable_in": [
@@ -1153,7 +1153,7 @@
       "affects": [
         "main.worktree-b"
       ],
-      "applies": "next_call",
+      "applies": "daemon_restart",
       "settable": true,
       "sensitive": true,
       "overridable_in": [

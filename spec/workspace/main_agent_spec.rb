@@ -130,4 +130,71 @@ RSpec.describe Workspace::MainAgent do
       expect { main_agent.spawn_command("app", "vim") }.to raise_error(ArgumentError)
     end
   end
+
+  context "with a configured claude command" do
+    let(:agent_commands) do
+      ps = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps))
+    end
+    subject(:main_agent) { described_class.new(project_config: project_config, agent_commands: agent_commands) }
+
+    it "takes a pane running claude-dev as claude" do
+      config_with(["echo hi", "claude-dev --dangerously-skip-permissions --continue || claude-dev"])
+
+      expect(main_agent.kind("app")).to eq("claude")
+    end
+
+    it "still takes plain claude as claude" do
+      config_with(["claude"])
+
+      expect(main_agent.kind("app")).to eq("claude")
+    end
+
+    it "does not take claude-dev for an agent when none is configured" do
+      config_with(["claude-dev"])
+
+      expect(described_class.new(project_config: project_config).kind("app")).to eq("none")
+    end
+
+    describe "#spawn_command" do
+      before { allow(project_config).to receive(:agent_pane_command) { |kind, _workspace = nil| "#{kind}-template" } }
+
+      it "recognizes the configured program in the workspace's own pane and drops the resuming part" do
+        config_with(["claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions"])
+
+        expect(main_agent.spawn_command("app", "claude")).to eq("claude-dev --dangerously-skip-permissions")
+      end
+
+      it "asks the project config for the workspace's template command" do
+        config_with(["codex"])
+        allow(project_config).to receive(:agent_pane_command).with("claude", "app").and_return("claude-dev --x")
+
+        expect(main_agent.spawn_command("app", "claude")).to eq("claude-dev --x")
+      end
+
+      it "falls back to the configured command when every command resumes" do
+        config_with(["claude-dev --continue"])
+        allow(project_config).to receive(:agent_pane_command).and_return(nil)
+
+        expect(main_agent.spawn_command("app", "claude")).to eq("claude-dev")
+        expect(main_agent.spawn_command("app", "codex")).to eq("codex")
+      end
+    end
+  end
+
+  describe "#spawn_command without AgentCommands" do
+    let(:project_config) { instance_double(Workspace::ProjectConfig) }
+    subject(:main_agent) { described_class.new(project_config: project_config, agent_commands: nil) }
+
+    it "falls back to the provider's executable and ignores a claude-dev pane" do
+      path = File.join(Dir.tmpdir, "main-agent-nil-#{Process.pid}.yml")
+      File.write(path, YAML.dump({"windows" => [{"w" => {"panes" => ["claude-dev --continue"]}}]}))
+      allow(project_config).to receive(:config_path_for).with("app").and_return(path)
+      allow(project_config).to receive(:agent_pane_command).and_return(nil)
+
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude")
+    ensure
+      File.delete(path) if path && File.exist?(path)
+    end
+  end
 end

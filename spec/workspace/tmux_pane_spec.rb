@@ -245,4 +245,38 @@ RSpec.describe Workspace::TmuxPane do
         .to raise_error(Workspace::Error, "No pane with id %5 in session '#{session_name}'")
     end
   end
+
+  describe "the agent label search with a detector" do
+    let(:session_name) { "my-session" }
+    let(:tmux) { instance_double(Workspace::Tmux) }
+    let(:claude_dev) { Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}) }
+    let(:label_details) do
+      [{id: "%10", window: 0, index: 0, pid: 100, command: "zsh", title: "a"},
+        {id: "%11", window: 0, index: 1, pid: 200, command: "claude-dev", title: "b"},
+        {id: "%12", window: 0, index: 2, pid: 300, command: "zsh", title: "c"}]
+    end
+    let(:labels) { Workspace::AgentLabels.new(process_tree: instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([]))) }
+    let(:configured) do
+      settings = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+    end
+
+    before do
+      allow(tmux).to receive(:panes).with(session_name, window: "0").and_return([0, 1, 2])
+      allow(tmux).to receive(:find_pane_by_title).and_return(nil)
+      allow(tmux).to receive(:pane_details).with(session_name, window: "0").and_return(label_details)
+    end
+
+    it "finds a claude-dev pane by its agent label through an aliased detector" do
+      pane = described_class.new("Claude Code", tmux: tmux, agent_labels: labels, detector: claude_dev)
+
+      expect(pane.resolve(session_name)).to eq(1)
+    end
+
+    it "knows only the providers' own names with detector: nil" do
+      pane = described_class.new("Claude Code", tmux: tmux, agent_labels: labels, detector: nil)
+
+      expect { pane.resolve(session_name) }.to raise_error(Workspace::Error, /No pane matching/)
+    end
+  end
 end

@@ -11,9 +11,12 @@ module Workspace
 
     # @param config [Workspace::Config] where the tmuxinator file lives
     # @param tmux [Workspace::Tmux] answers which sessions and panes are running
-    def initialize(config:, tmux:)
+    # @param agent_commands [Workspace::AgentCommands, nil] the programs configured for Claude Code, which
+    #   count as `claude` panes; nil knows only `claude`
+    def initialize(config:, tmux:, agent_commands: nil)
       @config = config
       @tmux = tmux
+      @agent_commands = agent_commands
     end
 
     # @param workspace [String] workspace name
@@ -42,7 +45,7 @@ module Workspace
       live = running ? live_panes(session_name) : []
       doc.merge(
         "session" => session(ConfigFile.json_safe(file.data)),
-        "windows" => windows(ConfigFile.json_safe(file.data["windows"]), pane_lines(File.read(path)), live),
+        "windows" => windows(ConfigFile.json_safe(file.data["windows"]), pane_lines(File.read(path)), live, claude_invocation(workspace)),
         "running" => running,
         "applies" => "relaunch"
       )
@@ -73,11 +76,11 @@ module Workspace
       @tmux.pane_start_commands(session_name).group_by { |pane| pane[:window] }.sort.map { |_, panes| panes.sort_by { |pane| pane[:index] } }
     end
 
-    def windows(entries, lines, live)
+    def windows(entries, lines, live, invocation)
       Array(entries).each_with_index.map do |entry, index|
         name, config = entry.is_a?(Hash) ? entry.first : [entry, nil]
         panes = panes_of(config).each_with_index.map do |pane, pane_index|
-          pane_row(pane, pane_index, lines.dig(index, pane_index), live.dig(index, pane_index))
+          pane_row(pane, pane_index, lines.dig(index, pane_index), live.dig(index, pane_index), invocation)
         end
         {"index" => index, "name" => name, "layout" => layout_of(config), "panes" => panes}
       end
@@ -94,11 +97,11 @@ module Workspace
 
     def layout_of(config) = config.is_a?(Hash) ? config["layout"] : nil
 
-    def pane_row(pane, index, line, live)
+    def pane_row(pane, index, line, live, invocation)
       title, command = command_of(pane)
-      kind = kind_of(command)
+      kind = kind_of(command, invocation)
       row = {"index" => index, "title" => title, "command" => command, "kind" => kind, "line" => line}
-      row["flags"] = flags_of(command) if kind == "claude"
+      row["flags"] = flags_of(command, invocation) if kind == "claude"
       row["live"] = live ? {"pane_id" => live[:id], "start_command" => live[:start_command]} : nil
       row
     end
@@ -114,9 +117,9 @@ module Workspace
       [title, command&.to_s&.chomp]
     end
 
-    def kind_of(command)
+    def kind_of(command, invocation)
       return "shell" if command.nil? || command.strip.empty?
-      return "claude" if command.match?(CLAUDE_INVOCATION)
+      return "claude" if command.match?(invocation)
       return "agentd" if command.match?(/\bagentd\b/)
       return "banner" if command.match?(/ascii-banner|figlet/)
       "command"
@@ -127,8 +130,17 @@ module Workspace
     CLAUDE_INVOCATION = /(?:\A|[\s;&|(])claude(?:\s|\z)/
     private_constant :CLAUDE_INVOCATION
 
-    def flags_of(command)
-      segment = command[/#{CLAUDE_INVOCATION.source}([^|;&]*)/, 1].to_s
+    # {CLAUDE_INVOCATION}, widened to the workspace's configured Claude Code programs (each also matched
+    # after a path, so `/opt/bin/claude-dev` counts).
+    def claude_invocation(workspace)
+      extra = (@agent_commands&.names_for(workspace, "claude") || []) - ["claude"]
+      return CLAUDE_INVOCATION if extra.empty?
+      names = ["claude", *extra.map { |name| "(?:\\S*/)?#{Regexp.escape(name)}" }].join("|")
+      /(?:\A|[\s;&|(])(?:#{names})(?:\s|\z)/
+    end
+
+    def flags_of(command, invocation)
+      segment = command[/#{invocation.source}([^|;&]*)/, 1].to_s
       segment.split.select { |word| word.start_with?("--") }
     end
 

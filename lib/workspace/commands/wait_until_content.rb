@@ -52,6 +52,7 @@ module Workspace
 
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
+      # @param agent_commands [Workspace::AgentCommands, nil] adds the project's configured agent programs to the label search
       # @param output [IO] stream for the banner and status lines
       # @param error_output [IO] stream for failure messages
       # @param sleeper [#call] test seam: seconds -> sleeps (default: Kernel.sleep)
@@ -59,13 +60,14 @@ module Workspace
       #   flushes streams then execs; never returns on success
       # @param clock [#call] test seam: -> monotonic seconds
       # @param spinner_enabled [Boolean] start the spinner thread (disable in tests)
-      def initialize(tmux:, agent_labels: nil, output: $stdout, error_output: $stderr,
+      def initialize(tmux:, agent_labels: nil, agent_commands: nil, output: $stdout, error_output: $stderr,
         sleeper: ->(seconds) { Kernel.sleep(seconds) },
         exec_handler: DEFAULT_EXEC_HANDLER,
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
         spinner_enabled: true)
         @tmux = tmux
         @agent_labels = agent_labels
+        @agent_commands = agent_commands
         @output = output
         @error_output = error_output
         @sleeper = sleeper
@@ -111,13 +113,14 @@ module Workspace
             "No active tmux session for '#{project}'.\nRun 'workspace launch #{project}' to start it."
         end
 
-        pane_spec = TmuxPane.new(pane, tmux: @tmux, agent_labels: @agent_labels)
+        detector = @agent_commands&.detector(project)
+        pane_spec = TmuxPane.new(pane, tmux: @tmux, agent_labels: @agent_labels, detector: detector)
         pane_index = pane_spec.resolve(session_name)
         # Anchor to the pane's tmux pane id, resolved once: re-resolving the
         # original spec each poll would let a :bottom/index/title selector
         # silently switch to a renumbered pane once the target closes.
         pane_id = pane_spec.resolve_id(session_name)
-        anchored_pane = TmuxPane.new(pane_id, tmux: @tmux, agent_labels: @agent_labels)
+        anchored_pane = TmuxPane.new(pane_id, tmux: @tmux, agent_labels: @agent_labels, detector: detector)
 
         baseline = nil
         if since_start

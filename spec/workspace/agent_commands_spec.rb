@@ -127,4 +127,36 @@ RSpec.describe Workspace::AgentCommands do
       expect(described_class.program_for("FOO=1")).to be_nil
     end
   end
+
+  describe "#aliases_for" do
+    it "is empty with no configured commands" do
+      expect(agent_commands.aliases_for("app")).to eq({})
+    end
+
+    context "with a configured claude command" do
+      let(:global) { {"agent" => {"commands" => {"claude" => "/opt/bin/claude-dev --x", "codex" => "codex"}}} }
+
+      it "lists the extra names per kind, never the provider's own executable" do
+        expect(agent_commands.aliases_for("app")).to eq("claude" => ["claude-dev"])
+      end
+    end
+  end
+
+  describe "#detector and #detector_options" do
+    let(:global) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+
+    it "binds the workspace's names to a detector" do
+      expect(agent_commands.detector("app")).to eq(Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))
+      expect(agent_commands.detector_options("app")).to eq(detector: Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))
+    end
+
+    context "with nothing configured" do
+      let(:global) { {} }
+
+      it "gives the default detector and no options" do
+        expect(agent_commands.detector("app")).to eq(Workspace::AgentDetector.new)
+        expect(agent_commands.detector_options("app")).to eq({})
+      end
+    end
+  end
 end

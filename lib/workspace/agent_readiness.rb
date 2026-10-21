@@ -77,15 +77,16 @@ module Workspace
     # @param deadline [Numeric] a time from {#deadline_in}
     # @param only_pane [String, nil] a tmux pane id: wait on that pane alone, not the
     #   session's preferred agent pane (a pane `plan start --spawn` just made)
+    # @param detector [#call] finds the agent in a pane (see {AgentCommands#detector}); the providers' own names by default
     # @return [Result]
-    def wait(session_name, deadline:, only_pane: nil)
+    def wait(session_name, deadline:, only_pane: nil, detector: AgentDetector.new)
       screen = nil
       quiet_since = nil
       pane_id = nil
       found = {}
 
       loop do
-        found = find_agent_pane(session_name, only: only_pane)
+        found = find_agent_pane(session_name, only: only_pane, detector: detector)
         if found[:id]
           if found[:id] != pane_id
             pane_id = found[:id]
@@ -121,9 +122,10 @@ module Workspace
     end
 
     # @param session_name [String] the tmux session
+    # @param detector [#call] finds the agent in a pane (see {AgentCommands#detector})
     # @return [Boolean] whether a coding agent is running in any pane of the session right now
-    def agent_running?(session_name)
-      !find_agent_pane(session_name)[:id].nil?
+    def agent_running?(session_name, detector: AgentDetector.new)
+      !find_agent_pane(session_name, detector: detector)[:id].nil?
     end
 
     private
@@ -133,7 +135,7 @@ module Workspace
     #
     # @return [Hash] :id, :target and :label when an agent is running, or
     #   :reason when none is
-    def find_agent_pane(session_name, only: nil)
+    def find_agent_pane(session_name, only: nil, detector: AgentDetector.new)
       details = @tmux.pane_details(session_name, window: nil)
       return {reason: "tmux session '#{session_name}' has no panes (is it running?)"} if details.empty?
       if only
@@ -148,7 +150,7 @@ module Workspace
       end
 
       agents = details.filter_map do |detail|
-        agent = AgentProvider.detect(command: detail[:command], pid: detail[:pid], tree: tree, providers: @providers)
+        agent = detector.call(command: detail[:command], pid: detail[:pid], tree: tree, providers: @providers)
         agent && detail.merge(provider: agent[:provider])
       end
       return {reason: "no coding agent is running in tmux session '#{session_name}' yet"} if agents.empty?

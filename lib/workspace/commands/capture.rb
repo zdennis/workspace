@@ -4,10 +4,12 @@ module Workspace
     class Capture
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
+      # @param agent_commands [Workspace::AgentCommands, nil] adds the project's configured agent programs to the label search
       # @param output [IO] output stream for captured text
       # @param error_output [IO] error output stream for error messages
-      def initialize(tmux:, agent_labels: nil, output: $stdout, error_output: $stderr)
+      def initialize(tmux:, agent_labels: nil, agent_commands: nil, output: $stdout, error_output: $stderr)
         @tmux = tmux
+        @agent_commands = agent_commands
         @agent_labels = agent_labels
         @output = output
         @error_output = error_output
@@ -31,7 +33,7 @@ module Workspace
             "No active tmux session for '#{project}'.\nRun 'workspace launch #{project}' to start it."
         end
 
-        pane_index = TmuxPane.new(pane, tmux: @tmux, agent_labels: @agent_labels).resolve(session_name)
+        pane_index = TmuxPane.new(pane, tmux: @tmux, agent_labels: @agent_labels, detector: @agent_commands&.detector(project)).resolve(session_name)
         result = @tmux.capture_pane(session_name, pane_index, lines: lines, all: all)
 
         unless result

@@ -78,6 +78,30 @@ module Workspace
       ([executable] + configured).uniq
     end
 
+    # @param workspace [String] a workspace or worktree workspace name
+    # @return [Hash{String => Array<String>}] for each agent kind with a program other than the provider's
+    #   executable, those extra names; what {AgentProvider.detect} takes as `aliases:`
+    def aliases_for(workspace)
+      AgentProvider.all.each_with_object({}) do |provider, aliases|
+        extra = names_for(workspace, provider.key) - [provider.executable]
+        aliases[provider.key] = extra unless extra.empty?
+      end
+    end
+
+    # @param workspace [String] a workspace or worktree workspace name
+    # @return [Workspace::AgentDetector] detects agents by the providers plus that workspace's configured names
+    def detector(workspace)
+      AgentDetector.new(aliases: aliases_for(workspace))
+    end
+
+    # @param workspace [String] a workspace or worktree workspace name
+    # @return [Hash] `{detector: ...}` when the workspace configures a program of its own, else `{}`; splatted
+    #   into the readiness calls so an unconfigured workspace passes nothing extra
+    def detector_options(workspace)
+      detector = detector(workspace)
+      detector.aliases? ? {detector: detector} : {}
+    end
+
     private
 
     def view(workspace) = @config_resolver.view(workspace: workspace)

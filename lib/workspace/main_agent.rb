@@ -11,8 +11,11 @@ module Workspace
   # agent, is `none`.
   class MainAgent
     # @param project_config [Workspace::ProjectConfig] gives the path of a project's config
-    def initialize(project_config:)
+    # @param agent_commands [Workspace::AgentCommands, nil] the programs configured for each agent kind,
+    #   which count as that agent; nil knows only the providers' executables
+    def initialize(project_config:, agent_commands: nil)
       @project_config = project_config
+      @agent_commands = agent_commands
     end
 
     # @param project [String] the project's name (a worktree's parent project)
@@ -23,7 +26,7 @@ module Workspace
       config = YAML.safe_load_file(path)
       return "none" unless config.is_a?(Hash)
       pane_commands(config["windows"]).each do |command|
-        provider = provider_of(command)
+        provider = provider_of(command, project)
         return provider.key if provider
       end
       "none"
@@ -45,11 +48,11 @@ module Workspace
     # @return [String]
     def spawn_command(workspace, kind)
       provider = AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
-      [*own_commands(workspace), @project_config.agent_pane_command(kind)].compact.each do |command|
-        fresh = fresh_part(command, provider)
+      [*own_commands(workspace), @project_config.agent_pane_command(kind, workspace)].compact.each do |command|
+        fresh = fresh_part(command, provider, workspace)
         return fresh if fresh
       end
-      provider.executable
+      @agent_commands ? @agent_commands.command_for(workspace, kind) : provider.executable
     end
 
     private
@@ -65,10 +68,11 @@ module Workspace
 
     # The first part of +command+ that runs +provider+'s program without resuming, as written. Only
     # that part is kept: a `cd src && claude` pane gives `claude`.
-    def fresh_part(command, provider)
+    def fresh_part(command, provider, workspace)
+      names = names_for(workspace, provider)
       parts(command).map(&:strip).find do |part|
         words = AgentCommands.program_words(part)
-        File.basename(words.first.to_s) == provider.executable && (words.drop(1) & RESUME_FLAGS).empty?
+        names.include?(File.basename(words.first.to_s)) && (words.drop(1) & RESUME_FLAGS).empty?
       end
     end
 
@@ -93,10 +97,16 @@ module Workspace
       end
     end
 
-    def provider_of(command)
+    # The program names that count as +provider+ for +workspace+: its executable and any configured one.
+    def names_for(workspace, provider)
+      @agent_commands ? @agent_commands.names_for(workspace, provider.key) : [provider.executable]
+    end
+
+    def provider_of(command, project)
       parts(command).each do |part|
         words = AgentCommands.program_words(part)
-        provider = AgentProvider.all.find { |candidate| candidate.executable == File.basename(words.first.to_s) }
+        program = File.basename(words.first.to_s)
+        provider = AgentProvider.all.find { |candidate| names_for(project, candidate).include?(program) }
         return provider if provider
       end
       nil

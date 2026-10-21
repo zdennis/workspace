@@ -115,4 +115,29 @@ RSpec.describe Workspace::PaneDispatch do
       expect(dispatch.bind_play("api", "%2", play)).to start_with("Sent, but could not bind pane %2")
     end
   end
+
+  describe "#spawn with configured agent names" do
+    let(:settings) { instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {}) }
+    let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)) }
+
+    def build(agent_commands)
+      described_class.new(snapshot_client: snapshot_client, sender: sender, binder: binder, library: library, runner: runner, readiness: readiness,
+        main_agent: main_agent, tmux: tmux, project_config: project_config, prompt_timeout: 30, agent_commands: agent_commands)
+    end
+
+    it "waits with a detector that knows the workspace's names" do
+      build(agent_commands).spawn("api", "claude")
+
+      expect(readiness).to have_received(:wait)
+        .with("api", deadline: 9.0, only_pane: "%23", detector: Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))
+    end
+
+    it "waits as before when nothing is configured or no AgentCommands is wired" do
+      plain = instance_double(Workspace::ProjectSettings, load_global: {}, load: {})
+      build(Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: plain))).spawn("api", "claude")
+      build(nil).spawn("api", "claude")
+
+      expect(readiness).to have_received(:wait).with("api", deadline: 9.0, only_pane: "%23").twice
+    end
+  end
 end

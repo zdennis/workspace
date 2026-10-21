@@ -16,7 +16,7 @@ Every `SessionStart` and `SessionEnd` of a Claude Code session in a workspace pa
 
 1. Launches the workspace if its tmux session is not running, the way it was last launched (a headless one stays headless).
 2. Recreates each recorded agent pane that is gone. It does not matter how the pane was made: a pane you split by hand comes back too.
-3. Types `cd <directory> && claude --resume <session id>` into the pane.
+3. Types `cd <directory> && claude --resume <session id>` into the pane (with the program set by `agent.commands.claude`, such as `claude-dev`, in place of `claude`).
 4. Moves the pane's [binding](README.binding.md) to the new pane, so the resumed agent is told what it was working on.
 
 A session that was already running gets its agent daemon started if it has none, as `launch` does, so the resumed sessions show up in `workspace sessions`.

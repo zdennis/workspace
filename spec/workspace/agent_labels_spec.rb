@@ -12,6 +12,14 @@ RSpec.describe Workspace::AgentLabels do
     expect(described_class.new(process_tree: process_tree).by_index(details)).to eq(1 => "Codex")
   end
 
+  it "labels a pane running an aliased command, and only with the alias" do
+    details = [{index: 1, pid: 2, command: "claude-dev"}]
+    labels = described_class.new(process_tree: process_tree)
+
+    expect(labels.by_index(details)).to eq({})
+    expect(labels.by_index(details, detector: Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))).to eq(1 => "Claude Code")
+  end
+
   it "reads no process table for no panes" do
     expect(process_tree).not_to receive(:snapshot)
     expect(described_class.new(process_tree: process_tree).by_index([])).to eq({})

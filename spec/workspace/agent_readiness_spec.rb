@@ -29,6 +29,13 @@ RSpec.describe Workspace::AgentReadiness do
       expect(tmux).not_to have_received(:capture_screen)
     end
 
+    it "counts a pane running an aliased command only when given the alias" do
+      panes.replace([{id: "%1", window: 0, index: 0, pid: 100, command: "claude-dev"}])
+
+      expect(readiness.agent_running?("proj")).to be(false)
+      expect(readiness.agent_running?("proj", detector: Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))).to be(true)
+    end
+
     it "is false when no pane runs an agent, or the session has no panes" do
       panes.replace([{id: "%1", window: 0, index: 0, pid: 100, command: "zsh"}])
       expect(readiness.agent_running?("proj")).to be(false)

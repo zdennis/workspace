@@ -745,4 +745,40 @@ RSpec.describe Workspace::Commands::Launch, "window position restore" do
     expect(window_layout).to have_received(:arrange)
     expect(result[:positions]).to eq("proj1" => "arranged")
   end
+
+  describe "configured agent names in the readiness checks" do
+    let(:agent_readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 60.0, wait: Workspace::AgentReadiness::Result.new(ready: true, pane: "0.1", label: "Claude Code")) }
+    let(:settings) { instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {}) }
+    let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)) }
+    let(:tmux) { CLITestHelpers::FakeTmux.new }
+
+    def build(agent_commands:)
+      described_class.new(state: CLITestHelpers::FakeState.new, iterm: instance_double(Workspace::ITerm), window_manager: instance_double(Workspace::WindowManager),
+        tmux: tmux, project_config: instance_double(Workspace::ProjectConfig), window_layout: instance_double(Workspace::WindowLayout),
+        config: instance_double(Workspace::Config), pipeline_config: instance_double(Workspace::PipelineConfig),
+        agent_ensurer: instance_double(Workspace::Commands::EnsureAgent), agent_readiness: agent_readiness, agent_commands: agent_commands,
+        prompt_timeout: 60, output: StringIO.new, error_output: StringIO.new)
+    end
+
+    before do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
+      allow(tmux).to receive(:shows_text?).and_return(false)
+    end
+
+    it "passes the project's configured names to the readiness wait" do
+      build(agent_commands: agent_commands).tap { |c| c.instance_variable_set(:@optional, {}) && c.instance_variable_set(:@delivered_panes, {}) && c.instance_variable_set(:@bindings, {}) }.send(:send_prompts, {"proj" => "proj"}, {"proj" => "go"}, 60)
+
+      expect(agent_readiness).to have_received(:wait)
+        .with("proj", deadline: 60.0, detector: Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))
+    end
+
+    it "passes nothing extra when no names are configured or no AgentCommands is wired" do
+      plain = instance_double(Workspace::ProjectSettings, load_global: {}, load: {})
+      unconfigured = Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: plain))
+      build(agent_commands: unconfigured).tap { |c| c.instance_variable_set(:@optional, {}) && c.instance_variable_set(:@delivered_panes, {}) && c.instance_variable_set(:@bindings, {}) }.send(:send_prompts, {"proj" => "proj"}, {"proj" => "go"}, 60)
+      build(agent_commands: nil).tap { |c| c.instance_variable_set(:@optional, {}) && c.instance_variable_set(:@delivered_panes, {}) && c.instance_variable_set(:@bindings, {}) }.send(:send_prompts, {"proj" => "proj"}, {"proj" => "go"}, 60)
+
+      expect(agent_readiness).to have_received(:wait).with("proj", deadline: 60.0).twice
+    end
+  end
 end

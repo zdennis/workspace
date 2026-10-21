@@ -30,8 +30,11 @@ module Workspace
     # @param project_config [Workspace::ProjectConfig] says where a workspace's checkout is
     # @param tmux [Workspace::Tmux] names the workspace's session
     # @param prompt_timeout [Numeric] seconds a new agent may take to be ready
+    # @param agent_commands [Workspace::AgentCommands, nil] says which program names count as an agent
+    #   when a spawned one is waited for; nil knows only the providers' executables
     def initialize(snapshot_client:, sender:, binder:, library:, runner:, readiness:, main_agent:, tmux:, project_config:,
-      prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT)
+      prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, agent_commands: nil)
+      @agent_commands = agent_commands
       @snapshot_client = snapshot_client
       @sender = sender
       @binder = binder
@@ -129,7 +132,7 @@ module Workspace
       provider = AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
       id = @runner.call(name, @main_agent.spawn_command(name, kind), split: true,
         cwd: @project_config.project_root_for(name))
-      ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: id)
+      ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: id, **(@agent_commands&.detector_options(name) || {}))
       Spawned.new(pane: id, ready: ready, label: provider.label)
     end
 

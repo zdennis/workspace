@@ -82,12 +82,14 @@ module Workspace
       # @param error_output [IO] error output stream for errors
       # @param label_reader [Workspace::TranscriptLabel, nil] reads each pane's
       #   transcript title for `sessions --json`; nil leaves transcripts unread
+      # @param agent_commands [Workspace::AgentCommands, nil] the program names that count as an agent, read
+      #   once when the session monitor starts; nil knows only the providers' executables
       # @param task_store [Workspace::TaskStore, nil] the workspace's task, for `sessions --json`'s
       #   `task` and first `display_label` source; nil reports no task
       # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
       #   monitors scan at once, machine-wide; nil builds one from config
       #   when the session monitor starts
-      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, agent_labels: nil, pipeline_state: nil,
+      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, agent_labels: nil, agent_commands: nil, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
@@ -119,6 +121,7 @@ module Workspace
         @config = config
         @tmux = tmux
         @agent_labels = agent_labels
+        @agent_commands = agent_commands
         @work_coordinator_client = work_coordinator_client
         @pipeline_config = pipeline_config
         @pipeline_state = pipeline_state
@@ -893,7 +896,7 @@ module Workspace
       # Detects by pane title so that layout changes don't break routing.
       # Falls back to pane 1 if detection fails.
       def claude_pane_target
-        TmuxPane.new("Claude Code", tmux: @tmux, agent_labels: @agent_labels).target(@tmux_session)
+        TmuxPane.new("Claude Code", tmux: @tmux, agent_labels: @agent_labels, detector: @agent_commands&.detector(@current_name)).target(@tmux_session)
       rescue Workspace::Error => e
         @logger.debug { "agent: Claude pane not found (#{e.message}); falling back to pane 1" }
         pane_target(1)
@@ -1251,6 +1254,7 @@ module Workspace
           tmux: @tmux,
           process_tree: ProcessTree.new(logger: @logger, timeout: @ps_timeout),
           session_name: @tmux.session_name_for(name),
+          detector: @agent_commands&.detector(name) || AgentDetector.new,
           poll_interval: @agentd_config&.poll_interval_for(name) || SessionMonitor::DEFAULT_POLL_INTERVAL,
           logger: @logger,
           error_output: @error_output,
