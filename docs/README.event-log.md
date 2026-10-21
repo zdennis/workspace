@@ -72,7 +72,7 @@ These record that something changed, so a reader can refetch (`snapshot --json`)
 | `lock_cleared` | the lock namespace's project | `lock clear`, for each lock it cleared; a lock kept for a process group it could not stop writes nothing | `lock`, `pid` (the clearer's), and `workspace` from a worktree |
 | `worktree_started` | the worktree's workspace name | `start`, once the worktree's config is written and before it launches | `workspace`, `parent` (the main workspace's name), `branch`, `created` (`false` for an existing or adopted worktree), `task` (the task id, when a task store is wired), `promoted` (`true` only for a worktree `promote` just made) |
 | `workspace_promoted` | the new workspace's name | `promote`, once the work is moved and the workspace made (after its `worktree_started` line); a dry run or a failed move writes none | `workspace`, `parent`, `branch`, `from_branch`, `branch_created`, `snapshot` (the stash commit id, or null), `notes` (`plan`, `spine`, `carried`: the count of notes copied). Names only, never paths |
-| `worktree_finished` | the worktree's workspace name | `kill`, `finish` and the project actions built on them, once the worktree, its config and its settings are removed, as the session stops | `workspace`, `outcome` (`merged`, `abandoned` or `discarded`) |
+| `worktree_finished` | the worktree's workspace name | `kill`, `finish` and the project actions built on them, once the worktree, its config and its settings are removed, as the session stops; `prune`, once per workspace it removes | `workspace`, `outcome` (`merged`, `abandoned`, `discarded` or `pruned`) |
 | `workspace_renamed` | the workspace's new (lowercase) name | `agentd`, `agentd --ensure`, `agentd restart` and `launch`, once per mixed-case workspace they rename to lowercase before its daemon starts (a project's worktree workspaces each write their own) | `workspace` (the new name), `from` (the old name), `renamed` (what was renamed: `tmux_session`, `project_settings`, `socket`, `log`, `lock`, `state_dir`, `inbox`, `project_inbox`, `state`, `marker`, `tmuxinator_config`), `failed` (the same names, for steps that failed; the reasons are in the daemon log) |
 | `daemon_started` | the workspace the daemon serves | `agentd`, once it is ready | `workspace`, `daemon` (`agent`), `pid` |
 | `daemon_stopped` | the workspace the daemon served | `agentd`, as it shuts down | `workspace`, `daemon`, `pid` |
@@ -89,7 +89,7 @@ These record that something changed, so a reader can refetch (`snapshot --json`)
 Not every change is covered:
 
 - A lock released by the reaper, by `dev down`, by a SessionEnd hook or by `dev up --force` passes through none of these, so a reader should treat `lock_released` as a hint to refetch, not as a full record. `locks.jsonl` still audits every one.
-- `prune` removes worktrees itself, so it writes no `worktree_finished`.
+- `state_removed` (a state event, above) is written when a workspace leaves the state file: by `stop`, `kill`, `finish` and `prune`. It means the workspace stopped running, not that it is gone; `worktree_finished` is the line that says a worktree was removed.
 - A daemon killed with SIGKILL writes no `daemon_stopped`; its pid is gone from `snapshot --json`.
 - `config_changed` comes from the CLI only. Edits made in an editor, and the richer shape the config editor will add (`file`, `affects`), are not written yet.
 - `dev_ready` and `pipeline_status` are not written yet.

@@ -25,6 +25,7 @@ RSpec.describe Workspace::Commands::Prune do
       project_settings: project_settings,
       git: git,
       stop_command: stop_command,
+      event_log: state.event_log,
       output: output,
       input: input
     )
@@ -294,6 +295,21 @@ RSpec.describe Workspace::Commands::Prune do
         state.load
         expect(state["wt-confirm"]).to be_nil
       end
+
+      it "records worktree_finished with outcome pruned and a single state_removed" do
+        allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
+        allow(git).to receive(:remove_worktree)
+        allow(project_config).to receive(:remove)
+        allow(project_settings).to receive(:remove)
+        expect(stop_command).to receive(:call).with(["wt-confirm"]) { state.delete("wt-confirm") }
+
+        command.call
+
+        events = state.event_log.events.select { |e| e["project"] == "wt-confirm" }
+        finished = events.select { |e| e["type"] == "worktree_finished" }
+        expect(finished.map { |e| e["data"] }).to eq([{"workspace" => "wt-confirm", "outcome" => "pruned"}])
+        expect(events.count { |e| e["type"] == "state_removed" }).to eq(1)
+      end
     end
 
     context "when project has a closed PR but no active session in state" do
@@ -321,6 +337,17 @@ RSpec.describe Workspace::Commands::Prune do
 
         result = command.call
         expect(result).to eq(["wt-nosession"])
+      end
+
+      it "records worktree_finished but no state_removed for a project that was never in state" do
+        allow(git).to receive(:worktree_exists?).with(project_root).and_return(false)
+        allow(project_config).to receive(:remove)
+        allow(project_settings).to receive(:remove)
+
+        command.call
+
+        types = state.event_log.events.select { |e| e["project"] == "wt-nosession" }.map { |e| e["type"] }
+        expect(types).to eq(["worktree_finished"])
       end
     end
 
@@ -523,6 +550,7 @@ RSpec.describe Workspace::Commands::Prune do
         expect(output.string).to include("Skipped wt-unsaved")
         expect(output.string).to include("1 changed file(s) and 3 unpushed commit(s) on feature/unsaved")
         expect(output.string).to include("Pruned 0 project(s).")
+        expect(state.event_log.events.map { |e| e["type"] }).not_to include("worktree_finished")
       end
 
       it "skips a candidate whose removal git refuses, with git's reason, still saves state, and raises" do

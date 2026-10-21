@@ -31,6 +31,7 @@ On confirmation, for each eligible project, in this order:
 - Removes the git worktree (`git worktree remove --force`, so untracked files go with it)
 - Removes the tmuxinator config (`~/.config/tmuxinator/workspace.<name>.yml`)
 - Removes the project settings file (`~/.config/workspace/projects/<name>.yml`)
+- Writes `worktree_finished` with outcome `pruned` to the [event log](README.event-log.md#state-and-lifecycle-events)
 - Removes the state entry and kills any live tmux session, last
 
 Requires the `gh` CLI to be installed and authenticated. If `gh` is unavailable, worktree projects are skipped with a warning. Directory-gone projects are always eligible regardless of `gh` availability.

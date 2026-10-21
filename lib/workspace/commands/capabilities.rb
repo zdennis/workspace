@@ -34,7 +34,7 @@ module Workspace
         "config_scopes" => 2,
         "tmux_show" => 1,
         "tasks" => 1,
-        "event_emitters" => 1,
+        "event_emitters" => 2,
         "ui_open" => 3,
         "pane_bindings" => 3,
         "library" => 5,

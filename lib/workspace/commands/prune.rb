@@ -16,14 +16,16 @@ module Workspace
       # @param project_settings [Workspace::ProjectSettings] per-project settings management
       # @param git [Workspace::Git] git operations
       # @param stop_command [Workspace::Commands::Stop] pre-built stop command for session teardown
+      # @param event_log [Workspace::EventLog, nil] records `worktree_finished` (outcome `pruned`) for each removed project
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(state:, project_config:, project_settings:, git:, stop_command:, output: $stdout, input: $stdin)
+      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, output: $stdout, input: $stdin)
         @state = state
         @project_config = project_config
         @project_settings = project_settings
         @git = git
         @stop_command = stop_command
+        @event_log = event_log
         @output = output
         @input = input
       end
@@ -349,8 +351,11 @@ module Workspace
 
         @project_config.remove(project)
         @project_settings.remove(project)
+        # EventLog#record never raises.
+        @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => "pruned"})
         @stop_command.call([project]) if @state[project]
-        @state.delete(project)
+        # Stop already removed a live entry; deleting again would log a second state_removed.
+        @state.delete(project) if @state[project]
         {outcome: "removed"}
       end
 
