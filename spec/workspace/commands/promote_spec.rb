@@ -458,7 +458,7 @@ RSpec.describe Workspace::Commands::Promote do
       allow(panes).to receive(:session_live?).with("work-notes").and_return(true)
       allow(panes).to receive(:panes).with("work-notes").and_return([{"pane_id" => "%9", "state" => "working"}])
       command = described_class.new(checkout_move: checkout_move, notes_carry: notes_carry, start: start, notes: notes, project_config: project_config,
-        panes: panes, workspace_at: ->(path) { "work-notes" if path == root }, output: output, error_output: error_output)
+        panes: panes, workspace_at: ->(path) { "work-notes" if path == root }, env: env, output: output, error_output: error_output)
 
       error = error_from { command.call(working_dir: root, branch: "fix-login", json: true) }
 
