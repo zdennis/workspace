@@ -63,6 +63,7 @@ RSpec.describe Workspace::CLI do
       hook_runner: hook_runner,
       project_detector: project_detector,
       workspace_name: overrides[:workspace_name],
+      lineage: overrides[:lineage] || CLITestHelpers::FakeLineage.new,
       launch_command: launch_command,
       kill_command: kill_command,
       finish_command: finish_command,
@@ -352,6 +353,29 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli(project_config: pc)
       cli.run(["dir", "--name", "project-a"])
       expect(output.string.strip).to eq("/path/to/project-a")
+    end
+
+    it "uses a stopped workspace the detector does not find when the directory's lineage names it" do
+      pc = CLITestHelpers::FakeProjectConfig.new("project-a" => "/path/to/project-a")
+      cli, output, _ = build_test_cli(project_config: pc, lineage: CLITestHelpers::FakeLineage.new("project-a"))
+      cli.run(["dir"])
+      expect(output.string.strip).to eq("/path/to/project-a")
+    end
+
+    it "does not use a linked worktree's lineage as a workspace" do
+      pc = CLITestHelpers::FakeProjectConfig.new("project-a" => "/path/to/project-a")
+      lineage = CLITestHelpers::FakeLineage.new("project-a", is_worktree: true)
+      cli, _, error_output = build_test_cli(project_config: pc, lineage: lineage)
+      expect { cli.run(["dir"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("No workspace found for")
+    end
+
+    it "does not use a lineage with no git common dir as a workspace" do
+      pc = CLITestHelpers::FakeProjectConfig.new("project-a" => "/path/to/project-a")
+      lineage = CLITestHelpers::FakeLineage.new("project-a", git_common_dir: nil)
+      cli, _, error_output = build_test_cli(project_config: pc, lineage: lineage)
+      expect { cli.run(["dir"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("No workspace found for")
     end
 
     it "refuses with not_in_workspace when no project is given outside any workspace" do
@@ -2641,6 +2665,29 @@ RSpec.describe Workspace::CLI do
       expect(ask_command.calls).to contain_exactly(a_hash_including(action: :call, question: "withdraw"))
     end
 
+    it "gives the usage help, not unknown_workspace, for an unquoted question when no workspace has the first word's name" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      pc = CLITestHelpers::FakeProjectConfig.new
+      allow(pc).to receive(:existing_name).and_return(nil)
+      cli, _, error_output = build_test_cli(ask_command: ask_command, project_config: pc)
+
+      expect { cli.run(["ask", "Use", "sqlite", "--default", "x"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Usage: workspace ask")
+      expect(error_output.string).not_to include("unknown_workspace")
+      expect(ask_command.calls).to be_empty
+    end
+
+    it "takes the first positional as the workspace when a workspace of that name exists" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      pc = CLITestHelpers::FakeProjectConfig.new("api" => "/api")
+      allow(pc).to receive(:existing_name) { |name| (name == "api") ? "api" : nil }
+      cli, = build_test_cli(ask_command: ask_command, project_config: pc)
+
+      cli.run(["ask", "api", "Which db?", "--default", "x"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :call, question: "Which db?"))
+    end
+
     it "does not deliver unless asked" do
       ask_command = CLITestHelpers::FakeAskCommand.new
       cli, = build_test_cli(ask_command: ask_command)
@@ -4302,9 +4349,45 @@ RSpec.describe Workspace::CLI do
 
     describe "dev" do
       let(:dev_command) { CLITestHelpers::FakeDevCommand.new }
+      # The working directory is in a stopped workspace the detector does not find: its lineage names a configured one.
+      let(:in_workspace) { {lineage: CLITestHelpers::FakeLineage.new("project-a")} }
+
+      %w[up down status wait leave].each do |sub|
+        it "refuses dev #{sub} with not_in_workspace outside any workspace, and calls nothing" do
+          loose = Dir.mktmpdir("ws-dev-loose")
+          cli, output, = build_test_cli(dev_command: dev_command, working_dir: loose)
+
+          expect { cli.run(["dev", sub, "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+          expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "not_in_workspace", "details" => {"path" => loose})
+          expect(dev_command.calls).to be_empty
+        ensure
+          FileUtils.rm_rf(loose)
+        end
+      end
+
+      it "acts on the workspace the detector finds in the working directory" do
+        detector = Struct.new(:found) { def detect(_dir) = found }.new("api")
+        cli, = build_test_cli(dev_command: dev_command, project_detector: detector, working_dir: "/somewhere")
+
+        cli.run(["dev", "status"])
+
+        expect(dev_command.working_dirs).to eq(["/somewhere"])
+      end
+
+      it "acts from a directory whose lineage names a configured workspace, though it is not running" do
+        sub = File.join(Dir.tmpdir, "ws-dev-sub-#{Process.pid}")
+        FileUtils.mkdir_p(sub)
+        cli, = build_test_cli(dev_command: dev_command, working_dir: sub, **in_workspace)
+
+        cli.run(["dev", "leave"])
+
+        expect(dev_command.working_dirs).to eq([sub])
+      ensure
+        FileUtils.rm_rf(sub)
+      end
 
       it "dispatches up with --wait, --force, --no-ready and --max-wait" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up", "--wait", "--force", "--no-ready", "--max-wait", "30"])
 
@@ -4312,7 +4395,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "dispatches up with --takeover, the deprecated alias for --force" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up", "--takeover"])
 
@@ -4320,7 +4403,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "defaults up to no wait, no takeover, and a ready check" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up"])
 
@@ -4328,7 +4411,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "passes --max-wait alone through as given, leaving the command to imply --wait" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up", "--max-wait", "5"])
 
@@ -4336,7 +4419,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "accepts durations like '9m' for up --max-wait" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up", "--max-wait", "9m"])
 
@@ -4344,7 +4427,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "raises a usage error naming --max-wait for an unparsable up --max-wait" do
-        cli, _, error_output = build_test_cli(dev_command: dev_command)
+        cli, _, error_output = build_test_cli(dev_command: dev_command, **in_workspace)
 
         expect { cli.run(["dev", "up", "--max-wait", "nonsense"]) }
           .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
@@ -4354,13 +4437,13 @@ RSpec.describe Workspace::CLI do
 
       it "exits with up's exit code" do
         dev_command.result = {exit_code: 6}
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         expect { cli.run(["dev", "up"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(6) }
       end
 
       it "passes queue: true to up only when --queue is given" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up", "--queue"])
 
@@ -4369,7 +4452,7 @@ RSpec.describe Workspace::CLI do
 
       it "gives dev up --queue --json a row with status and position" do
         dev_command.result = {exit_code: 0, status: "queued", position: 2}
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up", "--queue", "--json"])
 
@@ -4379,7 +4462,7 @@ RSpec.describe Workspace::CLI do
 
       it "gives dev up --queue --json a started row with a null position when it is running" do
         dev_command.result = {exit_code: 0, status: "running", position: nil}
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up", "--queue", "--json"])
 
@@ -4387,7 +4470,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "leaves the plain dev up --json row without status or position" do
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "up", "--json"])
 
@@ -4395,7 +4478,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "dispatches wait with --no-ready and --max-wait" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "wait", "--no-ready", "--max-wait", "10m"])
 
@@ -4403,7 +4486,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "defaults wait to a ready check and no limit" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "wait"])
 
@@ -4412,7 +4495,7 @@ RSpec.describe Workspace::CLI do
 
       it "exits with wait's exit code and puts status and position in its --json row" do
         dev_command.result = {exit_code: 75, status: "queued", position: 3}
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         expect { cli.run(["dev", "wait", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(75) }
 
@@ -4422,7 +4505,7 @@ RSpec.describe Workspace::CLI do
 
       it "rejects --queue with --force through the usual usage error path" do
         dev_command.define_singleton_method(:up) { |**| raise Workspace::UsageError, "--queue returns at once" }
-        cli, _, error_output = build_test_cli(dev_command: dev_command)
+        cli, _, error_output = build_test_cli(dev_command: dev_command, **in_workspace)
 
         expect { cli.run(["dev", "up", "--queue", "--force"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
         expect(error_output.string).to include("--queue")
@@ -4430,7 +4513,7 @@ RSpec.describe Workspace::CLI do
 
       it "gives a successful dev wait --json row with status running" do
         dev_command.result = {exit_code: 0, status: "running", position: nil}
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "wait", "--json"])
 
@@ -4439,7 +4522,7 @@ RSpec.describe Workspace::CLI do
 
       it "dispatches leave and reports its outcome in --json" do
         dev_command.result = {exit_code: 0, outcome: "left"}
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "leave", "--json"])
 
@@ -4450,15 +4533,15 @@ RSpec.describe Workspace::CLI do
       end
 
       it "names wait and leave and --queue in the dev help" do
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev"])
 
-        expect(output.string).to include("wait [options]", "leave", "--queue")
+        expect(output.string).to include("wait [WS] [options]", "leave [WS]", "--queue")
       end
 
       it "dispatches down with --force, status, and the hidden __run" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "down", "--force"])
         cli.run(["dev", "status"])
@@ -4470,7 +4553,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "dispatches the hidden __release with the session id" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "__release", "sess-1"])
 
@@ -4479,20 +4562,20 @@ RSpec.describe Workspace::CLI do
 
       it "exits with the release's own status when the environment could not be stopped" do
         dev_command.result = {exit_code: 1}
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         expect { cli.run(["dev", "__release", "sess-1"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
       end
 
       it "refuses __release without exactly one session id" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         expect { cli.run(["dev", "__release"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
         expect { cli.run(["dev", "__release", "a", "b"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
       end
 
       it "dispatches status with --json" do
-        cli, _, _ = build_test_cli(dev_command: dev_command)
+        cli, _, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev", "status", "--json"])
 
@@ -4500,7 +4583,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "emits the JSON error contract for `dev status` when --json appears after a bad flag" do
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         expect { cli.run(["dev", "status", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
@@ -4510,7 +4593,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "prints dev help without a subcommand and rejects unknown ones" do
-        cli, output, _ = build_test_cli(dev_command: dev_command)
+        cli, output, _ = build_test_cli(dev_command: dev_command, **in_workspace)
 
         cli.run(["dev"])
         expect(output.string).to include("Usage: workspace dev <subcommand>")
@@ -5356,6 +5439,19 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with parent" do
+    it "takes --name as another spelling of the NAME argument, and refuses two different names" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, error_output = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent", "--name", "app.worktree-x", "--path"])
+      cli.run(["parent", "app.worktree-x", "--name", "app.worktree-x"])
+      expect { cli.run(["parent", "app.worktree-x", "--name", "other"]) }.to raise_error(FakeSystemExit)
+
+      expect(parent_command.calls).to eq([{name: "app.worktree-x", path: true, json: false, envelope: false},
+        {name: "app.worktree-x", path: false, json: false, envelope: false}])
+      expect(error_output.string).to include("Give the workspace once")
+    end
+
     it "dispatches to parent_command#call with no options" do
       parent_command = CLITestHelpers::FakeParentCommand.new
       cli, _, _ = build_test_cli(parent_command: parent_command)
@@ -6814,6 +6910,32 @@ RSpec.describe Workspace::CLI do
       cli.run(["ticket", "show", "--json", "PROJ-123", "--name", "api"])
 
       expect(ticket_command).to have_received(:show).with("PROJ-123", name: "api", json: true)
+    end
+
+    it "looks in the workspace detected from the working directory when no --name is given" do
+      detector = Struct.new(:found) { def detect(_dir) = found }.new("api.worktree-x")
+      cli, = build_test_cli(ticket_command: ticket_command, project_detector: detector,
+        project_config: CLITestHelpers::FakeProjectConfig.new("api.worktree-x" => "/src/api-x"))
+
+      cli.run(["ticket", "show", "PROJ-1"])
+      cli.run(["ticket", "list"])
+      cli.run(["ticket", "show", "PROJ-2", "--name", "other"])
+
+      expect(ticket_command).to have_received(:show).with("PROJ-1", name: "api.worktree-x", json: false)
+      expect(ticket_command).to have_received(:list).with(name: "api.worktree-x", filter: "assigned", limit: 20, sources: [], json: false)
+      expect(ticket_command).to have_received(:show).with("PROJ-2", name: "other", json: false)
+    end
+
+    it "leaves ticket to the current directory's git repository outside any workspace, or for a detected one with no checkout" do
+      detector = Struct.new(:found) { def detect(_dir) = found }.new(nil)
+      cli, = build_test_cli(ticket_command: ticket_command, project_detector: detector, project_config: CLITestHelpers::FakeProjectConfig.new)
+
+      cli.run(["ticket", "show", "PROJ-1"])
+      detector.found = "marker-only"
+      cli.run(["ticket", "list"])
+
+      expect(ticket_command).to have_received(:show).with("PROJ-1", name: nil, json: false)
+      expect(ticket_command).to have_received(:list).with(name: nil, filter: "assigned", limit: 20, sources: [], json: false)
     end
 
     it "prints a command's failure as the envelope under --json and on stderr without it" do
@@ -9666,6 +9788,106 @@ RSpec.describe Workspace::CLI do
       cli.run(["ask", "list"])
 
       expect(ask.calls.first[:working_dir]).to eq("/elsewhere")
+    end
+
+    it "takes the workspace as a leading argument for every ask subcommand" do
+      ask = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(project_config: project_config, ask_command: ask, working_dir: "/elsewhere")
+
+      cli.run(["ask", "list", "api.worktree-x"])
+      cli.run(["ask", "answer", "api.worktree-x", "a1", "ok"])
+      cli.run(["ask", "resolve", "api.worktree-x", "a2", "--", "-y"])
+      cli.run(["ask", "withdraw", "api.worktree-x", "a3"])
+      cli.run(["ask", "api.worktree-x", "Q?", "--default", "d"])
+      cli.run(["ask", "answer", "a4", "plain"])
+
+      expect(ask.calls.map { |c| c[:working_dir] }).to eq(["/src/api-x"] * 5 + ["/elsewhere"])
+      expect(ask.calls.map { |c| c[:id] || c[:question] }).to eq([nil, "a1", "a2", "a3", "Q?", "a4"])
+      expect(ask.calls[2][:answer]).to eq("-y")
+    end
+
+    it "refuses an ask workspace argument no workspace has, and one given twice" do
+      ask = CLITestHelpers::FakeAskCommand.new
+      cli, _, error_output = build_test_cli(project_config: project_config, ask_command: ask, working_dir: "/elsewhere")
+
+      expect { cli.run(["ask", "list", "ghost"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unknown workspace 'ghost'")
+      expect { cli.run(["ask", "withdraw", "api.worktree-x", "a1", "--name", "api.worktree-x"]) }.to raise_error(FakeSystemExit)
+      expect(ask.calls).to be_empty
+    end
+
+    it "takes the workspace as an argument for every dev subcommand, and keeps cwd without one" do
+      dev = CLITestHelpers::FakeDevCommand.new
+      configured = CLITestHelpers::FakeProjectConfig.new(roots)
+      cli, = build_test_cli(project_config: configured, dev_command: dev, working_dir: "/elsewhere", lineage: CLITestHelpers::FakeLineage.new("project-a"))
+
+      %w[up down status wait leave].each { |sub| cli.run(["dev", sub, "api.worktree-x"]) }
+      cli.run(["dev", "up", "--wait", "api.worktree-x"])
+      cli.run(["dev", "status"])
+
+      expect(dev.working_dirs).to eq(["/src/api-x"] * 6 + ["/elsewhere"])
+      expect(dev.calls.map { |c| c[:action] }).to eq(%i[up down status wait leave up status])
+      expect(dev.calls[5]).to include(wait: true)
+    end
+
+    it "refuses a dev workspace argument no workspace has, and a second argument" do
+      dev = CLITestHelpers::FakeDevCommand.new
+      cli, _, error_output = build_test_cli(project_config: project_config, dev_command: dev, working_dir: "/elsewhere")
+
+      expect { cli.run(["dev", "down", "ghost"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unknown workspace 'ghost'")
+      expect { cli.run(["dev", "status", "api.worktree-x", "extra"]) }.to raise_error(FakeSystemExit)
+      expect(dev.calls).to be_empty
+    end
+
+    it "takes the workspace as a leading argument for config get, set, unset and edit" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, = build_test_cli(project_config: project_config, config_command: config_command, working_dir: "/elsewhere", env: {})
+
+      cli.run(["config", "get", "api.worktree-x", "dev.up"])
+      cli.run(["config", "set", "api.worktree-x", "dev.up", "bin/dev"])
+      cli.run(["config", "set", "api.worktree-x", "dev.up", "--", "-x"])
+      cli.run(["config", "unset", "api.worktree-x", "dev.up"])
+      cli.run(["config", "edit", "api.worktree-x"])
+      cli.run(["config", "set", "dev.up", "bin/dev"])
+
+      expect(config_command.calls.map { |c| c[:project] }).to eq(["api.worktree-x"] * 5 + [nil])
+      expect(config_command.calls.map { |c| c[:key] }).to eq(["dev.up"] * 4 + [nil, "dev.up"])
+      expect(config_command.calls[2][:value]).to eq("-x")
+      expect(config_command.calls).to all(include(cwd: "/elsewhere"))
+    end
+
+    it "refuses a config workspace given both as an argument and with --name" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, = build_test_cli(project_config: project_config, config_command: config_command, working_dir: "/elsewhere", env: {})
+
+      expect { cli.run(["config", "get", "api.worktree-x", "dev.up", "--name", "api.worktree-x"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["config", "edit", "api.worktree-x", "--name", "api.worktree-x"]) }.to raise_error(FakeSystemExit)
+      expect(config_command.calls).to be_empty
+    end
+
+    it "fails config set and get with not_in_workspace outside any workspace, and still writes a global key" do
+      config_dir = Dir.mktmpdir("ws-cli-config")
+      loose = Dir.mktmpdir("ws-cli-loose")
+      settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(config_dir))
+      detector = Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config)
+      raw = StringIO.new
+      gate = Workspace::OutputGate.new(raw)
+      command = Workspace::Commands::Config.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: StringIO.new),
+        project_config: project_config, project_detector: detector, output: gate, error_output: StringIO.new)
+      cli, = build_test_cli(output: gate, project_config: project_config, project_detector: detector, config_command: command, working_dir: loose)
+
+      expect { cli.run(["config", "set", "dev.up", "bin/dev", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "not_in_workspace", "details" => {"path" => loose})
+      expect(Dir.glob(File.join(config_dir, "**", "*.yml"))).to be_empty
+
+      raw.truncate(0)
+      raw.rewind
+      cli.run(["config", "set", "launch.headless", "true", "--json"])
+      expect(JSON.parse(raw.string)).to include("ok" => true)
+      expect(settings.load_global).to eq({"launch" => {"headless" => "true"}})
+    ensure
+      FileUtils.rm_rf([config_dir, loose].compact)
     end
 
     it "points every lock subcommand at the named workspace, apart from the lock name" do

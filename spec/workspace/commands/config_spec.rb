@@ -1056,6 +1056,78 @@ RSpec.describe Workspace::Commands::Config do
       raise_error(Workspace::Error) { |e| expect(e.code).to eq(code) }
     end
 
+    describe "with no name, outside any workspace" do
+      let(:detector) { Struct.new(:found) { def detect(_cwd) = found }.new(nil) }
+      let(:command) do
+        described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+          project_config: project_config, project_detector: detector, output: output, error_output: error_output)
+      end
+      let(:cwd) { Dir.mktmpdir("loose-dir") }
+
+      after { FileUtils.rm_rf(cwd) }
+
+      def not_in_workspace
+        raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("not_in_workspace")
+          expect(e.details).to eq({"path" => cwd})
+        }
+      end
+
+      it "refuses set, get, unset and edit of a project or workspace file, and makes no project file" do
+        expect { command.set("dev.up", "bin/dev", cwd: cwd) }.to not_in_workspace
+        expect { command.get("dev.up", cwd: cwd) }.to not_in_workspace
+        expect { command.unset("dev.up", cwd: cwd) }.to not_in_workspace
+        expect { command.edit(cwd: cwd) }.to not_in_workspace
+        expect { command.set("dev.up", "bin/dev", scope: "project", cwd: cwd) }.to not_in_workspace
+        expect(Dir.glob(File.join(dir, "**", "*.yml"))).to be_empty
+      end
+
+      it "still writes and reads the global file: a global-only key, or --scope global" do
+        command.set("launch.headless", "true", cwd: cwd)
+        command.set("alerts.idle_after", "20m", scope: "global", cwd: cwd)
+
+        expect(settings.load_global).to eq({"launch" => {"headless" => "true"}, "alerts" => {"idle_after" => "20m"}})
+        expect(command.get("launch.headless", cwd: cwd)).to be(true)
+        expect(command.edit(scope: "global", cwd: cwd)).to have_attributes(layer: "global")
+      end
+
+      it "acts on the workspace the detector finds in cwd" do
+        detector.found = "myapp"
+        project_dir = File.join(cwd, "myapp")
+        FileUtils.mkdir_p(project_dir)
+
+        command.set("dev.up", "bin/dev", cwd: project_dir)
+
+        expect(settings.load("myapp")).to eq({"dev" => {"up" => "bin/dev"}})
+      end
+
+      it "acts on a configured workspace whose checkout cwd is in, though it is not running" do
+        project_dir = File.join(cwd, "other")
+        FileUtils.mkdir_p(project_dir)
+        system("git", "init", "-q", project_dir, exception: true)
+
+        command.set("dev.up", "bin/dev", cwd: project_dir)
+
+        expect(settings.load("other")).to eq({"dev" => {"up" => "bin/dev"}})
+      end
+
+      it "refuses a directory outside git whose name matches a configured workspace" do
+        project_dir = File.join(cwd, "other")
+        FileUtils.mkdir_p(project_dir)
+
+        expect { command.set("dev.up", "bin/dev", cwd: project_dir) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("not_in_workspace")
+        }
+        expect(settings.load("other")).to eq({})
+      end
+
+      it "acts on a named workspace from anywhere" do
+        command.set("dev.up", "bin/dev", project: "myapp", cwd: cwd)
+
+        expect(settings.load("myapp")).to eq({"dev" => {"up" => "bin/dev"}})
+      end
+    end
+
     describe "#edit" do
       let(:project_file) { settings.project_config_path("myapp") }
       let(:worktree_file) { settings.project_config_path("myapp.worktree-a") }
@@ -1185,15 +1257,31 @@ RSpec.describe Workspace::Commands::Config do
         expect { command.set("dev.ready_timeout", "90s", project: "MyApp.worktree-a", scope: "workspace") }.not_to raise_error
       end
 
-      it "refuses --scope workspace for a workspace nothing knows about, but not --scope project" do
+      it "refuses --scope workspace for a workspace nothing knows about, and --scope project for a project nothing knows about" do
         expect { command.set("dev.ready_timeout", "90s", project: "ghost.worktree-x", scope: "workspace") }.to raise_error(Workspace::Error) { |e|
           expect(e.code).to eq("unknown_workspace")
           expect(e.details).to eq({"name" => "ghost.worktree-x"})
         }
         expect(File.exist?(settings.project_config_path("ghost.worktree-x"))).to be(false)
 
-        expect { command.set("dev.ready_timeout", "90s", project: "ghost.worktree-x", scope: "project") }.not_to raise_error
-        expect(settings.load("ghost")).to eq({"dev" => {"ready_timeout" => "90s"}})
+        expect { command.set("dev.ready_timeout", "90s", project: "ghost.worktree-x", scope: "project") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("unknown_workspace")
+          expect(e.details).to eq({"name" => "ghost"})
+        }
+        expect(File.exist?(settings.project_config_path("ghost"))).to be(false)
+      end
+
+      it "writes the project file through the name of a worktree that is gone, when its project is known" do
+        expect { command.set("dev.ready_timeout", "90s", project: "myapp.worktree-gone", scope: "project") }.not_to raise_error
+        expect(settings.load("myapp")).to eq({"dev" => {"ready_timeout" => "90s"}})
+      end
+
+      it "refuses an unknown named workspace with no scope, and writes nothing" do
+        expect { command.set("dev.up", "bin/dev", project: "ghost") }.to refused("unknown_workspace")
+        expect { command.get("dev.up", project: "ghost") }.to refused("unknown_workspace")
+        expect { command.unset("dev.up", project: "ghost") }.to refused("unknown_workspace")
+        expect { command.edit(project: "ghost") }.to refused("unknown_workspace")
+        expect(Dir.glob(File.join(dir, "**", "*.yml"))).to be_empty
       end
 
       it "accepts --scope workspace for a workspace that only has a config file" do

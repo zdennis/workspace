@@ -5,10 +5,10 @@ Record a question an unattended agent hit, along with the default it took, so it
 ## Usage
 
 ```sh
-workspace ask "<question>" --default "<default taken>" [options]
-workspace ask list [--all] [--json]
-workspace ask answer <id> "<answer>" [--deliver] [--json]
-workspace ask withdraw <id> [--json]
+workspace ask [WS] "<question>" --default "<default taken>" [options]
+workspace ask list [WS] [--all] [--json]
+workspace ask answer [WS] <id> "<answer>" [--deliver] [--json]
+workspace ask withdraw [WS] <id> [--json]
 ```
 
 ## Options (recording a question)
@@ -28,7 +28,7 @@ workspace ask withdraw <id> [--json]
 
 **Blank input** — a question or default that is empty or only whitespace is rejected (exit 1; with `--json`, an `error` payload).
 
-**Workspace detection** — same as other commands: the marker file, then the active project for the current directory. `ask`, `ask list`, and `ask answer` all act on the workspace detected from the current directory, or the one named with `--name` (every `ask` subcommand takes it).
+**Workspace detection** — same as other commands: the marker file, then the active project for the current directory. `ask`, `ask list`, and `ask answer` all act on the workspace detected from the current directory, or the one named with `--name` (every `ask` subcommand takes it) or as the first argument after the subcommand (`ask list api`, `ask answer api q_7 "yes"`, `ask withdraw api q_7`, `ask api "Q?" --default d`), told apart by the number of arguments. A name that has no config fails with `unknown_workspace`; with no name, outside any workspace, `ask` fails with `not_in_workspace`.
 
 **Storage** — questions are appended to `~/.local/state/workspace/<workspace>/asks.json`, guarded by `flock` so concurrent invocations (multiple panes or agents in the same workspace) never clobber each other's writes. The file survives an agent-daemon restart; it isn't daemon state. If the file can't be parsed, `ask` and `ask answer` fail without recording anything and leave the file unchanged, while `ask list` and `sessions` warn on stderr and show no questions.
 

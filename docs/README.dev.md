@@ -5,11 +5,11 @@ Run one dev environment per repository, guarded by the repo-wide `devenv` lock. 
 ## Usage
 
 ```sh
-workspace dev up     [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]
-workspace dev wait   [--no-ready] [--max-wait DURATION] [--json]
-workspace dev leave  [--json]
-workspace dev down   [--force]
-workspace dev status [--json]
+workspace dev up     [WS] [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]
+workspace dev wait   [WS] [--no-ready] [--max-wait DURATION] [--json]
+workspace dev leave  [WS] [--json]
+workspace dev down   [WS] [--force]
+workspace dev status [WS] [--json]
 ```
 
 ## Configuration
@@ -31,7 +31,7 @@ workspace config set dev.release_on_session_end false   # keep it running after 
 
 | Option | Description |
 |--------|-------------|
-| `--name WS` | Act on workspace `WS` instead of the one detected from cwd |
+| `--name WS` | Act on workspace `WS` instead of the one detected from cwd; the `WS` argument is the same. A name with no config fails with `unknown_workspace`; with neither, outside any workspace (not one running, a worktree with its marker, or a configured workspace's checkout), the command fails with `not_in_workspace` before doing anything (a lock left by a checkout that is no longer a workspace is released with `workspace lock clear`) |
 
 ## Options (up)
 

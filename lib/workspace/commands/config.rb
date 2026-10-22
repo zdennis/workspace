@@ -63,15 +63,19 @@ module Workspace
       #   `--scope workspace` refuse an unknown one and the restart hint name every affected daemon
       # @param agent_command_check [Workspace::AgentCommandCheck, nil] checks an `agent.commands.<kind>` value
       #   against the machine before `set` writes it; nil makes no such check
+      # @param project_detector [Workspace::ProjectDetector, nil] with no name given, a project or workspace
+      #   file is acted on only when cwd is in a workspace it detects (or one `project_config` knows by the
+      #   lineage name), else `not_in_workspace`; nil makes no such check
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] output stream for user-facing errors
-      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, project_config: nil, agent_command_check: nil, output: $stdout, error_output: $stderr)
+      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, project_config: nil, agent_command_check: nil, project_detector: nil, output: $stdout, error_output: $stderr)
         @project_settings = project_settings
         @lineage = lineage
         @file_backup = file_backup
         @event_log = event_log
         @project_config = project_config
         @agent_command_check = agent_command_check
+        @project_detector = project_detector
         @output = output
         @error_output = error_output
       end
@@ -83,8 +87,8 @@ module Workspace
       #   writes the highest layer the key allows at or below the workspace ({ConfigLayering.default_layer})
       # @param cwd [String] directory to infer the workspace from, when project is nil
       # @return [Result]
-      # @raise [Workspace::Error] code `unknown_config_key`, `scope_not_allowed`, `unknown_workspace` or
-      #   `agent_command_not_executable`
+      # @raise [Workspace::Error] code `unknown_config_key`, `scope_not_allowed`, `unknown_workspace`,
+      #   `not_in_workspace` or `agent_command_not_executable`
       # @raise [Workspace::UsageError] for an invalid value or scope
       def set(key, value, project: nil, scope: nil, cwd: Dir.pwd)
         validate_key!(key)
@@ -165,7 +169,7 @@ module Workspace
       # @param scope [String, nil] "global", "project" or "workspace" ("worktree" is the same); nil is "workspace"
       # @param cwd [String] directory to infer the workspace from, when project is nil
       # @return [EditResult]
-      # @raise [Workspace::Error] code `unknown_workspace`
+      # @raise [Workspace::Error] code `unknown_workspace` or `not_in_workspace`
       # @raise [Workspace::UsageError] for an invalid scope or a worktree with no name
       def edit(project: nil, scope: nil, cwd: Dir.pwd)
         target = edit_target(project, scope, cwd)
@@ -221,8 +225,9 @@ module Workspace
         return Target.new("global", nil, @project_settings.global_config_path, nil) if scope == "global"
         workspace, worktree = workspace_for(project, cwd, nil, scope)
         layer = (scope == "workspace" && worktree) ? "worktree" : "project"
-        check_workspace_known!(workspace) if scope == "workspace"
+        require_workspace_here!(cwd, workspace) unless project
         name = (layer == "project") ? (WorkspaceLineage.split_worktree_name(workspace)&.first || workspace) : workspace
+        check_workspace_known!(name) if scope == "workspace" || project
         Target.new(layer, name, @project_settings.project_config_path(name), workspace)
       end
 
@@ -259,9 +264,10 @@ module Workspace
         else scope
         end
         refuse_scope!(schema_key, layer, scope, action) if scope
-        check_workspace_known!(workspace) if scope == "workspace"
         return Target.new(layer, nil, @project_settings.global_config_path, workspace) if layer == "global"
+        require_workspace_here!(cwd, workspace) unless project
         name = (layer == "project") ? (WorkspaceLineage.split_worktree_name(workspace)&.first || workspace) : workspace
+        check_workspace_known!(name) if scope == "workspace" || project
         Target.new(layer, name, @project_settings.project_config_path(name), workspace)
       end
 
@@ -306,6 +312,19 @@ module Workspace
         else
           "a machine or project setting, not one workspace's own"
         end
+      end
+
+      # With no name given, a project or workspace file is written only for a workspace: cwd is in one
+      # the detector finds, or the lineage name is a configured workspace. Outside both,
+      # the lineage name is only a directory name, and writing its file would make up a project.
+      def require_workspace_here!(cwd, workspace)
+        return if @project_detector.nil?
+        return if @project_detector.detect(cwd)
+        lineage = @lineage.resolve(cwd: cwd)
+        main_checkout = lineage.git_common_dir && !lineage.is_worktree
+        return if main_checkout && workspace && @project_config&.available_projects&.any? { |known| WorkspaceName.same?(known, workspace) }
+        raise Workspace::Error.new("No workspace found for #{cwd}. Run from inside a workspace, pass the workspace name, or use --scope global for a machine-wide key.",
+          code: "not_in_workspace", details: {"path" => cwd})
       end
 
       def check_workspace_known!(workspace)

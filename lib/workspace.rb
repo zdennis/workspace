@@ -608,7 +608,7 @@ module Workspace
     project_actions_command = Commands::ProjectActions.new(catalog: project_catalog, stop_command: stop_command, kill_command: kill_command,
       state: state, tmux: tmux, git: git, lock_namespace: lock_namespace, lock_holder: lock_holder,
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
-    config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, agent_command_check: AgentCommandCheck.new, output: output, error_output: error_output)
+    config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, agent_command_check: AgentCommandCheck.new, project_detector: project_detector, output: output, error_output: error_output)
     config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
@@ -699,6 +699,7 @@ module Workspace
       project_settings: project_settings,
       hook_runner: hook_runner,
       project_detector: project_detector,
+      lineage: lineage,
       workspace_name: workspace_name,
       launch_command: launch_command,
       kill_command: kill_command,

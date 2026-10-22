@@ -280,6 +280,20 @@ module CLITestHelpers
     end
   end
 
+  # Names one project for every directory (none by default), as WorkspaceLineage#resolve does.
+  class FakeLineage
+    def initialize(name = nil, is_worktree: false, git_common_dir: :default)
+      @name = name
+      @is_worktree = is_worktree
+      @git_common_dir = git_common_dir
+    end
+
+    def resolve(cwd:)
+      common = (@git_common_dir == :default) ? (@name && "#{cwd}/.git") : @git_common_dir
+      Workspace::WorkspaceLineage::Lineage.new(name: @name, path: cwd, git_common_dir: common, is_worktree: @is_worktree)
+    end
+  end
+
   class FakeProjectConfig
     def initialize(roots = {})
       @roots = roots

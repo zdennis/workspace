@@ -9,7 +9,7 @@ workspace ticket show REF [--name WORKSPACE] [--json]
 workspace ticket list [--assigned | --recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]
 ```
 
-`REF` is anything `start` takes: a JIRA key (`PROJ-123`) or URL, a pull request URL or ref (`#41`, `owner/repo#41`), a GitHub issue URL, or a branch name. Run it in a project's checkout, or name one with `--name`.
+`REF` is anything `start` takes: a JIRA key (`PROJ-123`) or URL, a pull request URL or ref (`#41`, `owner/repo#41`), a GitHub issue URL, or a branch name. Run it in a project's checkout, or name one with `--name`. With no `--name`, the workspace detected from the current directory (its marker, or a running workspace's checkout) picks the project; outside any workspace, the git repository the current directory is in does.
 
 ## Options
 

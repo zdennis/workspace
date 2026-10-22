@@ -128,9 +128,11 @@ RSpec.describe "PR2 adversarial findings" do
       )
       exit_handler = FakeExitHandler
       placeholder = Object.new
+      no_workspaces = Object.new
+      def no_workspaces.existing_name(_name) = nil
 
       Workspace::CLI.new(
-        config: placeholder, state: placeholder, project_config: placeholder, git: placeholder,
+        config: placeholder, state: placeholder, project_config: no_workspaces, git: placeholder,
         window_manager: placeholder, doctor: placeholder, project_settings: project_settings,
         hook_runner: placeholder, project_detector: placeholder, launch_command: placeholder,
         kill_command: placeholder, finish_command: placeholder, start_command: placeholder, stop_command: placeholder,

@@ -24,6 +24,7 @@ module Workspace
     ].freeze
 
     # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
+    # @param lineage [Workspace::WorkspaceLineage] names the project of a directory no detector finds (a stopped main checkout)
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence
     # @param project_config [Workspace::ProjectConfig] project config management
@@ -119,7 +120,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -129,6 +130,7 @@ module Workspace
       @project_settings = project_settings
       @hook_runner = hook_runner
       @project_detector = project_detector
+      @lineage = lineage
       @workspace_name = workspace_name
       @sessions_command = sessions_command
       @session_event_command = session_event_command
@@ -470,6 +472,18 @@ module Workspace
       (@workspace_name && name) ? (@workspace_name.match(name) || name) : name
     end
 
+    # Takes the first positional off +args+ as the workspace when a workspace of that name has a
+    # config (ignoring case); otherwise leaves +args+ alone so the caller's own parsing and usage
+    # error apply.
+    #
+    # @param args [Array<String>] positionals, modified in place
+    # @return [String, nil] the workspace's on-disk name, or the current value (nil) when the first is not one
+    def take_known_workspace!(args)
+      known = @project_config.existing_name(args.first)
+      args.shift if known
+      known
+    end
+
     # The one workspace a command was given, by `--name` or by position.
     #
     # @param name_opt [String, nil] value of `--name`
@@ -508,6 +522,21 @@ module Workspace
       File.expand_path(root)
     end
 
+    # The directory a `dev` subcommand acts from: the named workspace's root, else the working
+    # directory when it is in a workspace (one the detector finds, or the checkout of a configured
+    # workspace, so a stopped main checkout works).
+    #
+    # @param name [String, nil] the WS argument or `--name`
+    # @return [String]
+    # @raise [Workspace::Error] code `unknown_workspace` for a name with no config, `not_in_workspace` outside any workspace
+    def dev_working_dir(name)
+      return working_dir_for(name) if name
+      return @working_dir if workspace_here
+
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass the workspace name. A lock left by a checkout that is no longer a workspace can be released with `workspace lock clear`.",
+        code: "not_in_workspace", details: {"path" => @working_dir})
+    end
+
     # Whether `--json` or `--json-envelope` appears as its own argument before a bare `--`.
     #
     # @param argv [Array<String>]
@@ -536,15 +565,15 @@ module Workspace
           agentd          Run the long-lived workspace agent daemon for a project, or replace it (agentd restart)
           agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send, queue)
           alfred          Manage the Alfred workflow for workspace focus
-          ask             Record a question an unattended agent hit, with its default
+          ask             Record a question an unattended agent hit, with its default (this workspace's, or ask [WS])
           binding         Bind a pane to a workflow run, a PR review or a play, so it survives /clear and compaction
           capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state (--dry-run reports only)
-          config          Show, validate, set, get, unset, edit or describe (keys) project or global configuration
+          config          Show, validate, set, get, unset, edit or describe (keys) project or global configuration (this workspace's, or config get [WS] KEY)
           current         Print the workspace project name for the current directory
           daemon          List, show, restart (one or all) or read the log of agent daemons
-          dev             Start, stop, or inspect this repo's dev environment (devenv lock)
+          dev             Start, stop, or inspect this repo's dev environment (devenv lock; this workspace's, or dev up [WS])
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
           dir             Print the root directory of a workspace project (default: the current one)
           doctor          Check that all required dependencies are installed
@@ -565,7 +594,7 @@ module Workspace
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
           lookup          Find a workspace project by worktree path, branch, or project name
           notes           Print where a workspace's notes are kept (dir)
-          parent          Print the parent workspace of the current (or given) workspace
+          parent          Print the parent workspace of the current (or given: NAME or --name) workspace
           plan            Show and run a workspace's plan (IMPLEMENTATION_PLAN.md): status, path, show, init, start, pause, delete
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
           pr              Open a pull request for a workspace's branch without finishing it (create)
@@ -595,7 +624,7 @@ module Workspace
           set-command     Set the shell command for a pane in a project config (--pane <N>)
           statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop a workspace and its tmux session (default: the current one; --all for every active one)
-          ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show), or list yours (list)
+          ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show), or list yours (list), in this workspace's project
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
           ui              Open a workspace-ui:// link: a task, a review, notes or the inbox
@@ -1075,10 +1104,27 @@ module Workspace
     # @return [String] +name+, else the workspace the working directory is in
     # @raise [Workspace::Error] code `not_in_workspace` when neither gives one
     def current_workspace!(name)
-      name ||= @project_detector.detect(@working_dir)
+      name ||= workspace_here
       return name if name
 
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir})
+    end
+
+    # The workspace the working directory is in: the detector's answer (a marker or a running
+    # workspace), else the directory's lineage name when a workspace of that name is configured,
+    # so a stopped main checkout counts too.
+    #
+    # @return [String, nil]
+    def workspace_here
+      @project_detector.detect(@working_dir) || main_checkout_workspace
+    end
+
+    # The configured workspace named like the main checkout the working directory is in; a linked
+    # worktree or a directory outside git never resolves to one.
+    def main_checkout_workspace
+      lineage = @lineage.resolve(cwd: @working_dir)
+      return nil unless lineage.git_common_dir && !lineage.is_worktree
+      @project_config.existing_name(lineage.name)
     end
 
     def cmd_kill(args)
@@ -2081,10 +2127,10 @@ module Workspace
 
     def ask_help
       <<~HELP
-        Usage: workspace ask "<question>" --default "<default taken>" [options]
-               workspace ask list [--all] [--json]
-               workspace ask answer <id> "<answer>" [--deliver] [--json]
-               workspace ask withdraw <id> [--json]
+        Usage: workspace ask [WS] "<question>" --default "<default taken>" [options]
+               workspace ask list [WS] [--all] [--json]
+               workspace ask answer [WS] <id> "<answer>" [--deliver] [--json]
+               workspace ask withdraw [WS] <id> [--json]
 
         Records a question an unattended agent hit, with the default it took,
         so the agent can keep going instead of blocking on a person. Never
@@ -2104,7 +2150,8 @@ module Workspace
 
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
-                            current directory
+                            current directory (the same as the WS argument); outside any
+                            workspace and with neither, the command fails with not_in_workspace
 
         Options (answer):
           --deliver         Type the answer, then Enter, into the pane that asked, which must
@@ -2126,7 +2173,9 @@ module Workspace
         Examples:
           workspace ask "Use pg or sqlite for the cache?" --default "sqlite" --context "lib/cache.rb:12"
           workspace ask list
+          workspace ask list myapp                  # another workspace's questions
           workspace ask answer a1b2c3 "Use postgres instead"
+          workspace ask answer myapp a1b2c3 "Use postgres instead"
           workspace ask withdraw a1b2c3             # the asker no longer needs an answer
           workspace ask answer --deliver a1b2c3 -- yes    # also types it into the asking pane
       HELP
@@ -2138,7 +2187,7 @@ module Workspace
       context = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ask \"<question>\" --default \"<default taken>\" [options]"
+        opts.banner = "Usage: workspace ask [WS] \"<question>\" --default \"<default taken>\" [options]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--default TEXT", "The default the agent took (required)") { |v| default = v }
         opts.on("--context TEXT", "Free-text pointer to the code in question, e.g. \"file.rb:42\"") { |v| context = v }
@@ -2146,6 +2195,7 @@ module Workspace
       end
       parser.parse!(args)
 
+      workspace = take_known_workspace!(args) if args.size == 2 && workspace.nil?
       question = args.shift
       if question.nil? || args.any? || default.nil?
         raise UsageError, parser.help unless json_requested?(json, args)
@@ -2164,12 +2214,13 @@ module Workspace
       all = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ask list [--all] [--json]"
+        opts.banner = "Usage: workspace ask list [WS] [--all] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--all", "Also list answered and withdrawn questions, with their status") { all = true }
         opts.on("--json", "Emit the documented JSON schema instead of a table") { json = true }
       end
       parser.parse!(args)
+      workspace = take_known_workspace!(args) if args.size == 1 && workspace.nil?
       raise UsageError, parser.help if args.any?
 
       result = @ask_command.list(working_dir: working_dir_for(workspace), json: json, all: all)
@@ -2184,13 +2235,14 @@ module Workspace
       json = false
       deliver = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ask answer <id> \"<answer>\" [--deliver] [--json]"
+        opts.banner = "Usage: workspace ask answer [WS] <id> \"<answer>\" [--deliver] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--deliver", "Also type the answer and Enter into the pane that asked") { deliver = true }
         opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
       end
       parser.parse!(args)
 
+      workspace = take_known_workspace!(args) if args.size == 3 && workspace.nil?
       id = args.shift
       answer = args.shift
       if id.nil? || answer.nil? || args.any?
@@ -2209,12 +2261,13 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ask withdraw <id> [--json]"
+        opts.banner = "Usage: workspace ask withdraw [WS] <id> [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
       end
       parser.parse!(args)
 
+      workspace = take_known_workspace!(args) if args.size == 2 && workspace.nil?
       id = args.shift
       if id.nil? || args.any?
         raise UsageError, parser.help unless json_requested?(json, args)
@@ -2856,15 +2909,16 @@ module Workspace
           workspace config set dev.ready_timeout 2m      (default: 120s)
 
         Subcommands:
-          up [options]      Start this worktree's dev env in a devenv tmux window
-          down [--force]    Stop this repo's dev env, whichever worktree holds it
-          status            Show holder, branch, uptime, pane, readiness, and queue
-          wait [options]    Block until this worktree holds the dev env and it is ready
-          leave             Take this worktree out of the line for the dev env
+          up [WS] [options]      Start this worktree's dev env in a devenv tmux window
+          down [WS] [--force]    Stop this repo's dev env, whichever worktree holds it
+          status [WS]            Show holder, branch, uptime, pane, readiness, and queue
+          wait [WS] [options]    Block until this worktree holds the dev env and it is ready
+          leave [WS]             Take this worktree out of the line for the dev env
 
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
-                            current directory
+                            current directory (the same as the WS argument); outside any
+                            workspace and with neither, it fails with not_in_workspace
 
         Options (up):
           --wait            Queue behind another worktree's dev env
@@ -2927,6 +2981,7 @@ module Workspace
           workspace dev leave
           workspace dev up --force
           workspace dev status
+          workspace dev status myapp.worktree-fix
           workspace dev down
       HELP
     end
@@ -2940,7 +2995,7 @@ module Workspace
       queue = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev up [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]"
+        opts.banner = "Usage: workspace dev up [WS] [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
         opts.on("--queue", "Queue like --wait but return at once; follow with `dev wait`") { queue = true }
@@ -2950,10 +3005,11 @@ module Workspace
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
+      workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
       raise UsageError, parser.help if args.any?
 
       run_action("dev up", json: json) do
-        options = {wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: working_dir_for(workspace)}
+        options = {wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: dev_working_dir(workspace)}
         options[:queue] = true if queue
         result = @dev_command.up(**options)
         rows = []
@@ -2976,17 +3032,18 @@ module Workspace
       max_wait = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev wait [--no-ready] [--max-wait DURATION] [--json]"
+        opts.banner = "Usage: workspace dev wait [WS] [--no-ready] [--max-wait DURATION] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
         opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75 and stays queued") { |v| max_wait = parse_duration_option("--max-wait", v) }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
+      workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
       raise UsageError, parser.help if args.any?
 
       run_action("dev wait", json: json) do
-        result = @dev_command.wait(ready: ready, max_wait: max_wait, working_dir: working_dir_for(workspace))
+        result = @dev_command.wait(ready: ready, max_wait: max_wait, working_dir: dev_working_dir(workspace))
         rows = json ? [exit_code_row(workspace || @project_detector.detect(@working_dir), "started", result[:exit_code],
           status: result[:status], position: result[:position])] : []
         {exit_code: result[:exit_code], results: rows}
@@ -2997,15 +3054,16 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev leave [--json]"
+        opts.banner = "Usage: workspace dev leave [WS] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
+      workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
       raise UsageError, parser.help if args.any?
 
       run_action("dev leave", json: json) do
-        result = @dev_command.leave(working_dir: working_dir_for(workspace))
+        result = @dev_command.leave(working_dir: dev_working_dir(workspace))
         rows = json ? [action_row(workspace || @project_detector.detect(@working_dir), result[:outcome])] : []
         {exit_code: result[:exit_code], results: rows}
       end
@@ -3016,16 +3074,17 @@ module Workspace
       force = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev down [--force] [--json]"
+        opts.banner = "Usage: workspace dev down [WS] [--force] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--force", "Also kill a process group left behind by a dead wrapper") { force = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
+      workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
       raise UsageError, parser.help if args.any?
 
       run_action("dev down", json: json) do
-        result = @dev_command.down(force: force, working_dir: working_dir_for(workspace))
+        result = @dev_command.down(force: force, working_dir: dev_working_dir(workspace))
         rows = json ? [exit_code_row(workspace || @project_detector.detect(@working_dir), "stopped", result[:exit_code])] : []
         {exit_code: result[:exit_code], results: rows}
       end
@@ -3035,14 +3094,15 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev status [--json]"
+        opts.banner = "Usage: workspace dev status [WS] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.dev.md)") { json = true }
       end
       parser.parse!(args)
+      workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.status(working_dir: working_dir_for(workspace), json: json)
+      result = @dev_command.status(working_dir: dev_working_dir(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
@@ -5590,14 +5650,15 @@ module Workspace
       scope = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config set [options] <key> [--] <value>"
+        opts.banner = "Usage: workspace config set [options] [WS] <key> [--] <value>"
         opts.separator ""
         opts.separator "Sets a config key in one layer's file. With no --scope the highest layer the"
         opts.separator "key allows at or below the workspace is written: the workspace's own file for a"
         opts.separator "key a worktree may override (dev.ready_timeout, notes.dir), else the project's"
         opts.separator "file, and the global file for a key that is global-only. The workspace is"
-        opts.separator "inferred from cwd; --name picks it from anywhere. `workspace config show --json`"
-        opts.separator "lists the layers each key allows (overridable_in)."
+        opts.separator "inferred from cwd; WS or --name picks it from anywhere. Outside any workspace a"
+        opts.separator "project or workspace write fails with not_in_workspace (a global key still works)."
+        opts.separator "`workspace config show --json` lists the layers each key allows (overridable_in)."
         opts.separator ""
         opts.separator "Allowed keys: #{ConfigSchema.settable_names.join(", ")}"
         opts.separator ""
@@ -5634,6 +5695,7 @@ module Workspace
         opts.separator "  workspace config set notes.dir /Users/me/notes/myapp"
         opts.separator "  workspace config set notes.dir /Users/me/notes/myapp-fix --name myapp.worktree-fix"
         opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
+        opts.separator "  workspace config set myapp dev.up \"bin/dev\""
         opts.separator "  workspace config set statusline.command \"~/bin/my-statusline\""
         opts.separator "  workspace config set context.source scrape"
         opts.separator "  workspace config set context.pattern '(\\d+)% ctx'"
@@ -5647,6 +5709,7 @@ module Workspace
       rescue OptionParser::InvalidOption => e
         raise UsageError, "#{e.message} (durations must be positive; a negative value like \"-5m\" looks like a flag)"
       end
+      project = take_known_workspace!(args) if args.size == 3 && project.nil?
       key = args.shift
       value = args.shift
       raise UsageError, parser.help if key.nil? || value.nil? || args.any?
@@ -5721,12 +5784,13 @@ module Workspace
       project = nil
       scope = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config get <key> [options]"
+        opts.banner = "Usage: workspace config get [WS] <key> [options]"
         opts.separator ""
         opts.separator "Reads one layer's file, not the layered result (`workspace config <key>`"
         opts.separator "gives that). With no --scope it reads the file `config set` would write: the"
         opts.separator "workspace's own for a key a worktree may override, else the project's, else the"
-        opts.separator "global file."
+        opts.separator "global file. The workspace is WS or --name, else the one cwd is in; outside any"
+        opts.separator "workspace a project or workspace file read fails with not_in_workspace."
         opts.separator ""
         opts.separator "Prints the value on stdout and exits 0. If the key has no value,"
         opts.separator "prints nothing on stdout, a note on stderr, and exits 1."
@@ -5738,8 +5802,10 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace config get dev.up"
         opts.separator "  workspace config get --scope project handoff.auto --name myapp.worktree-fix"
+        opts.separator "  workspace config get myapp dev.up"
       end
       parser.parse!(args)
+      project = take_known_workspace!(args) if args.size == 2 && project.nil?
       key = args.shift
       raise UsageError, parser.help if key.nil? || args.any?
 
@@ -5752,11 +5818,12 @@ module Workspace
       scope = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config unset <key> [options]"
+        opts.banner = "Usage: workspace config unset [WS] <key> [options]"
         opts.separator ""
         opts.separator "Removes a key from one layer's file (the one `config set` would write, unless"
         opts.separator "--scope names another). The layers below it then apply again. Like `set`, it"
-        opts.separator "rewrites the file, keeps a .workspace-backup-* copy and drops comments."
+        opts.separator "rewrites the file, keeps a .workspace-backup-* copy and drops comments. The"
+        opts.separator "workspace is WS or --name, else the one cwd is in (not_in_workspace outside any)."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--project NAME", "--name NAME", "Workspace to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
@@ -5766,8 +5833,10 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace config unset dev.ready"
         opts.separator "  workspace config unset --scope workspace dev.ready_timeout --name myapp.worktree-fix --json"
+        opts.separator "  workspace config unset myapp dev.ready"
       end
       parser.parse!(args)
+      project = take_known_workspace!(args) if args.size == 2 && project.nil?
       key = args.shift
       raise UsageError, parser.help if key.nil? || args.any?
 
@@ -5782,12 +5851,14 @@ module Workspace
       scope = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config edit [options]"
+        opts.banner = "Usage: workspace config edit [WS] [options]"
         opts.separator ""
         opts.separator "Opens one layer's config file in $VISUAL or $EDITOR (run without a shell, so"
         opts.separator "the command is split into words and the path is passed as its last argument)."
         opts.separator "A file that doesn't exist yet is created first with a comment header. With no"
         opts.separator "--scope the workspace's own file is opened (the project's file in a main checkout)."
+        opts.separator "The workspace is WS or --name, else the one cwd is in; outside any workspace only"
+        opts.separator "--scope global works (not_in_workspace otherwise)."
         opts.separator ""
         opts.separator "Unlike 'config set', editing by hand keeps comments, but nothing checks the"
         opts.separator "keys or values; run 'workspace config validate' afterwards."
@@ -5806,8 +5877,10 @@ module Workspace
         opts.separator "  workspace config edit"
         opts.separator "  workspace config edit --scope global"
         opts.separator "  workspace config edit --scope project --name myapp.worktree-fix --json"
+        opts.separator "  workspace config edit myapp.worktree-fix"
       end
       parser.parse!(args)
+      project = take_known_workspace!(args) if args.size == 1 && project.nil?
       raise UsageError, parser.help if args.any?
 
       run_action("config edit", json: json) do
@@ -7227,12 +7300,14 @@ module Workspace
       path = false
       json = false
       envelope = false
+      flag_name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace parent [NAME] [--path] [--json | --json-envelope]"
+        opts.banner = "Usage: workspace parent [NAME] [--name NAME] [--path] [--json | --json-envelope]"
         opts.separator ""
         opts.separator "Print the parent workspace of the current (or given) workspace."
         opts.separator "In a non-worktree workspace, prints its own name."
         opts.separator ""
+        opts.on("--name NAME", "Workspace to answer for instead of the current directory's (the same as NAME)") { |v| flag_name = v }
         opts.on("--path", "Print the parent's root directory instead of its name") { path = true }
         opts.on("--json", "Print name, path, git_common_dir, is_worktree, worktree as JSON") { json = true }
         opts.on("--json-envelope", "Print the same under a \"parent\" key in the standard envelope (implies --json)") { json = envelope = true }
@@ -7240,14 +7315,14 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace parent    # the parent of the current directory's workspace"
         opts.separator "  workspace parent app.worktree-login    # the parent of a named workspace"
+        opts.separator "  workspace parent --name app.worktree-login    # the same"
         opts.separator "  workspace parent --path    # the parent's root directory"
         opts.separator "  workspace parent --json    # name, path, git_common_dir, is_worktree, worktree"
       end
       parser.parse!(args)
       raise UsageError, "--path and --json cannot be used together." if path && json
 
-      name = args.first
-      @parent_command.call(name, path: path, json: json, envelope: envelope)
+      @parent_command.call(pick_workspace_name(flag_name, args.first), path: path, json: json, envelope: envelope)
     end
 
     def notes_parser(options)
@@ -7310,7 +7385,7 @@ module Workspace
         opts.separator "JIRA issues (jira), assigned to you (the default) or changed lately. A tool that is missing, slow"
         opts.separator "or signed out is a warning, and the other still answers. Each row says whether a workspace exists."
         opts.separator ""
-        opts.on("--name NAME", "Look in this workspace's project instead of the one detected from the current directory") { |v| options[:name] = v }
+        opts.on("--name NAME", "Look in this workspace's project instead of the one detected from the current directory (outside any workspace, the git repository of the current directory)") { |v| options[:name] = v }
         opts.on("--assigned", "list: open tickets assigned to you (the default)") do
           raise UsageError, "Use --assigned or --recent, not both." if options[:filter] == "recent"
           options[:filter] = "assigned"
@@ -7346,7 +7421,7 @@ module Workspace
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace ticket --help'." if args.any?
         raise Error, "ticket is not available: no ticket command was wired" unless @ticket_command
 
-        return @ticket_command.list(name: options[:name], filter: options[:filter] || "assigned", limit: options[:limit] || Workspace::Commands::Ticket::DEFAULT_LIMIT,
+        return @ticket_command.list(name: options[:name] || ticket_workspace_here, filter: options[:filter] || "assigned", limit: options[:limit] || Workspace::Commands::Ticket::DEFAULT_LIMIT,
           sources: options[:sources] || [], json: options[:json])
       end
       list_only = {filter: "--assigned/--recent", sources: "--source", limit: "--limit"}.select { |key, _| options.key?(key) }.values
@@ -7356,7 +7431,14 @@ module Workspace
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace ticket --help'." if args.any?
       raise Error, "ticket is not available: no ticket command was wired" unless @ticket_command
 
-      @ticket_command.show(ref, name: options[:name], json: options[:json])
+      @ticket_command.show(ref, name: options[:name] || ticket_workspace_here, json: options[:json])
+    end
+
+    # The workspace detected from the working directory, when it has a checkout to look in;
+    # nil leaves `ticket` to the git repository the current directory is in.
+    def ticket_workspace_here
+      name = @project_detector.detect(@working_dir)
+      name if name && @project_config.project_root_for(name)
     end
 
     def spine_parser(options)

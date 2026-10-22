@@ -9,11 +9,11 @@ workspace config [show] [options] [key]
 workspace config show [--name NAME] [--json]
 workspace config [show] <key> [--name NAME] [--json]
 workspace config validate [--name NAME] [--json]
-workspace config set [--scope SCOPE] [--name NAME] [--json] <key> [--] <value>
-workspace config get [--scope SCOPE] [--name NAME] <key>
-workspace config unset [--scope SCOPE] [--name NAME] [--json] <key>
+workspace config set [--scope SCOPE] [--name NAME] [--json] [WS] <key> [--] <value>
+workspace config get [--scope SCOPE] [--name NAME] [WS] <key>
+workspace config unset [--scope SCOPE] [--name NAME] [--json] [WS] <key>
 workspace config show --scope SCOPE [--name NAME] [--json] [key]
-workspace config edit [--scope SCOPE] [--name NAME] [--json]
+workspace config edit [--scope SCOPE] [--name NAME] [--json] [WS]
 workspace config keys [QUERY] [--settable] [--json]
 ```
 
@@ -26,7 +26,7 @@ workspace config keys [QUERY] [--settable] [--json]
 | `--name NAME` | (`show`, `validate`, `edit`) The workspace to report on instead of the one inferred from cwd |
 | `--settable` | (`keys`) Only the keys `set` accepts |
 | `--json` | (`show`, `validate`, `set`, `unset`, `edit`, `keys`) Print one JSON document (below) instead of text |
-| `--project NAME`, `--name NAME` | (`set`/`get`/`unset`/`edit`) Configure this project instead of the one inferred from cwd; the two are the same option |
+| `--project NAME`, `--name NAME` | (`set`/`get`/`unset`/`edit`) Configure this project instead of the one inferred from cwd; the two are the same option, and a leading `WS` argument is a third spelling |
 
 ## Details
 
@@ -34,7 +34,9 @@ With no subcommand, displays the YAML configuration for the current directory's 
 
 With no subcommand and a key, `workspace config <key>` prints that key's effective value for the current directory's workspace (or `--name`'s): the value the readers actually use, across the worktree/parent-project layers and the schema's default when unset. Unlike `config get`, which reads one file and prints only a stored value, this prints the effective one; `--json` prints the same show document as below with `keys` filtered to that one key's row. Like `config get`, a key with no effective value prints nothing on stdout, a short note on stderr, and exits 1. Sensitive keys (`dev.up`, `dev.ready`, `alerts.notify`, `statusline.command`, `context.pattern`) never print their value, only whether they are set.
 
-`set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. `get` prints the value and exits 0; if the key has no value, it prints nothing on stdout, a short note on stderr, and exits 1. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` (or `--name NAME`) to target a different workspace explicitly.
+`set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. `get` prints the value and exits 0; if the key has no value, it prints nothing on stdout, a short note on stderr, and exits 1. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` (or `--name NAME`, or the workspace as a leading argument: `workspace config get api dev.up`, `config set api dev.up bin/dev`, `config unset api dev.up`, `config edit api`) to target a different workspace explicitly; it is told from the key by the number of arguments. A named workspace (or, for the project file, its project) that has no config fails with `unknown_workspace`.
+
+With no name, the current directory must be in a workspace: one that is running, a worktree with its `.workspace-project` marker, or the checkout of a configured workspace. Outside any, a command whose target is a project or workspace file fails with `not_in_workspace` and writes nothing, rather than making up a project named after the directory. The global file needs no workspace: `--scope global`, and a key whose only layer is global (`launch.headless`, `statusline.command`, ...), work from anywhere. `config show` keeps its own rules and takes no workspace argument. A workspace given with `--name` (or as the leading `WS`) must exist: an unknown name fails with `unknown_workspace`. A leading word is taken as `WS` only when a workspace of that name has a config. A linked worktree without a marker, and a directory outside git, are not matched by directory name. `config get` of a project-layer key outside a workspace now fails with `not_in_workspace` instead of printing nothing.
 
 `notes.dir` is the key where a worktree reads only its own file. Inside a worktree, `set`, `get` and `unset` use the worktree's own file (`~/.config/workspace/projects/<project>.worktree-<name>.yml`), and a worktree never inherits the project's value: with none of its own, its `notes.dir` is unset. The main checkout reads and writes the project's file. `--name` picks the file from anywhere, so `workspace config set notes.dir /notes/api-fix --name api.worktree-fix` sets one worktree's directory and `--name api` sets the main checkout's. A value already in the project's file stays there and still applies to the main checkout only.
 
@@ -180,7 +182,7 @@ The command is used by every config written from then on, and at once by what wo
 
 ### Scopes
 
-`--scope` names the layer a command works on, with the names a person sees: `global` (`~/.config/workspace/config.yml`), `project` (the main checkout's file) and `workspace` (the workspace's own file). The `layer` values in JSON are `global`, `project` and `worktree`; `workspace` is the `worktree` layer, and `worktree` is accepted as another spelling of `--scope workspace`. In a main checkout there is no file besides the project's, so `--scope workspace` means the project file there, and the result reports `scope: "project"`, `layer: "project"`. Naming a workspace that isn't known with `--scope workspace` fails with `unknown_workspace`.
+`--scope` names the layer a command works on, with the names a person sees: `global` (`~/.config/workspace/config.yml`), `project` (the main checkout's file) and `workspace` (the workspace's own file). The `layer` values in JSON are `global`, `project` and `worktree`; `workspace` is the `worktree` layer, and `worktree` is accepted as another spelling of `--scope workspace`. In a main checkout there is no file besides the project's, so `--scope workspace` means the project file there, and the result reports `scope: "project"`, `layer: "project"`. Naming a workspace that isn't known fails with `unknown_workspace` (for a project-file write through a worktree name, the project must be known), and with no name outside any workspace a project or workspace scope fails with `not_in_workspace` (`details.path`).
 
 With no `--scope`, `set`, `get` and `unset` use the highest layer the key allows at or below the workspace (`target_layer` in `config show --json`): the workspace's own file for a key a worktree may override, else the project's file, and the global file for a global-only key and for `workflows.defaults.include`. That holds for `--name <worktree>` as well as for a worktree cwd. A project-only key such as `locks.idle_grace` therefore lands in the parent project's file.
 
