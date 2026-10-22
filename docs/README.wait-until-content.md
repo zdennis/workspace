@@ -14,6 +14,7 @@ workspace wait-until-content [project] "content" [options] [-- command...]
 
 | Option | Description |
 |--------|-------------|
+| `--name WS` | The project, as an option; same as the positional `[project]`. Giving both with different names is a usage error |
 | `--pane N` | Target pane by zero-based index, `window.pane` (e.g. `0.1`), a tmux pane id (e.g. `%19`, from `workspace sessions --json`), `bottom` for the last pane, or a title substring (e.g. `Claude Code`), matched against the raw pane title then the agent label shown in `workspace sessions` TITLE; the first matching pane wins, so use `window.pane` or a `%id` to be exact (default: `bottom`) |
 | `--lines N` | Match against the last N lines of scrollback (default: 100, must be positive) |
 | `--interval SECONDS` | Seconds between polls (default: 0.5, must be positive) |

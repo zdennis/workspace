@@ -7,11 +7,11 @@ Watches a Claude Code or Codex agent's context-window usage and hands off to a f
 ## Usage
 
 ```sh
-workspace handoff check NAME [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
-workspace handoff new   NAME [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]
+workspace handoff check [NAME | --name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
+workspace handoff new   [NAME | --name WS] [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]
 ```
 
-`NAME` defaults to the workspace detected from the current directory. With neither `--handoff-doc` nor `--handoff-prompt`, both commands use [the default doc](#the-default-doc).
+`NAME` (or `--name WS`) defaults to the workspace detected from the current directory; giving both with different names is a usage error. With neither `--handoff-doc` nor `--handoff-prompt`, both commands use [the default doc](#the-default-doc).
 
 ## Options (check)
 

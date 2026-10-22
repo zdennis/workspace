@@ -7803,7 +7803,7 @@ RSpec.describe Workspace::CLI do
     it "prints its help without running anything" do
       cli.run(["review", "--help"])
 
-      expect(output.string).to include("Usage: workspace review [show] [WORKSPACE] [--json]", "review show list")
+      expect(output.string).to include("Usage: workspace review [show] [WORKSPACE | --name WS] [--json]", "review show list")
       expect(review_command.calls).to eq([])
     end
 
@@ -11115,6 +11115,273 @@ RSpec.describe Workspace::CLI do
         expect(parse_one(raw)["results"].first).to include("comments_preserved" => false)
         expect(err.string).to include("Note: comments in #{path} were not kept")
         expect(raw.string).not_to include("Note:")
+      end
+    end
+  end
+
+  describe "workspace given by --name or the working directory" do
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:lonely_detector) { instance_double(Workspace::ProjectDetector, detect: nil) }
+
+    def expect_usage_error(cli, argv)
+      expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    describe "capture" do
+      let(:capture) { CLITestHelpers::FakeCaptureCommand.new }
+
+      it "uses the detected workspace, --name, or the positional" do
+        cli, = build_test_cli(capture_command: capture, project_detector: detector)
+        cli.run(["capture"])
+        cli.run(["capture", "--name", "other"])
+        cli.run(["capture", "pos"])
+        cli.run(["capture", "pos", "--name", "pos"])
+        expect(capture.calls.map { |c| c[:project] }).to eq(%w[detected-ws other pos pos])
+      end
+
+      it "refuses a positional and a different --name" do
+        cli, _, err = build_test_cli(capture_command: capture, project_detector: detector)
+        expect_usage_error(cli, ["capture", "a", "--name", "b"])
+        expect(err.string).to include("Give the workspace once")
+        expect(capture.calls).to be_empty
+      end
+
+      it "fails outside any workspace" do
+        cli, _, err = build_test_cli(capture_command: capture, project_detector: lonely_detector)
+        expect_usage_error(cli, ["capture"])
+        expect(err.string).to include("Usage: workspace capture")
+      end
+    end
+
+    describe "focus" do
+      let(:focus) { double("focus", call: nil) }
+
+      it "uses the detected workspace, --name, or the positional" do
+        cli, = build_test_cli(focus_command: focus, project_detector: detector)
+        cli.run(["focus"])
+        cli.run(["focus", "--name", "other"])
+        cli.run(["focus", "pos", "--pane", "%1"])
+        expect(focus).to have_received(:call).with("detected-ws", shake: false, highlight: nil, pane: nil)
+        expect(focus).to have_received(:call).with("other", shake: false, highlight: nil, pane: nil)
+        expect(focus).to have_received(:call).with("pos", shake: false, highlight: nil, pane: "%1")
+      end
+
+      it "refuses a differing --name and positional, and --cycle with --name" do
+        cli, _, err = build_test_cli(focus_command: focus, project_detector: detector)
+        expect_usage_error(cli, ["focus", "a", "--name", "b"])
+        expect(err.string).to include("Give the workspace once")
+        expect_usage_error(cli, ["focus", "--cycle", "--name", "b"])
+        expect(focus).not_to have_received(:call)
+      end
+
+      it "fails outside any workspace" do
+        cli, _, err = build_test_cli(focus_command: focus, project_detector: lonely_detector)
+        expect_usage_error(cli, ["focus"])
+        expect(err.string).to include("Usage: workspace focus")
+      end
+    end
+
+    describe "handoff" do
+      let(:handoff) { double("handoff", check: {exit_code: 0}, new: {exit_code: 0}) }
+
+      it "check and new use the detected workspace, --name, or the positional" do
+        cli, = build_test_cli(handoff_command: handoff, project_detector: detector)
+        cli.run(["handoff", "check"])
+        cli.run(["handoff", "check", "--name", "other"])
+        cli.run(["handoff", "new", "--name", "other"])
+        cli.run(["handoff", "new", "pos"])
+        cli.run(["handoff", "new"])
+        expect(handoff).to have_received(:check).with(hash_including(name: "detected-ws"))
+        expect(handoff).to have_received(:check).with(hash_including(name: "other"))
+        expect(handoff).to have_received(:new).with(hash_including(name: "other"))
+        expect(handoff).to have_received(:new).with(hash_including(name: "pos"))
+        expect(handoff).to have_received(:new).with(hash_including(name: "detected-ws"))
+      end
+
+      it "refuses a differing --name and positional" do
+        cli, _, err = build_test_cli(handoff_command: handoff, project_detector: detector)
+        expect_usage_error(cli, ["handoff", "check", "a", "--name", "b"])
+        expect(err.string).to include("Give the workspace once")
+      end
+
+      it "fails outside any workspace" do
+        cli, _, err = build_test_cli(handoff_command: handoff, project_detector: lonely_detector)
+        expect_usage_error(cli, ["handoff", "check"])
+        expect(err.string).to include("Missing workspace name")
+        expect_usage_error(cli, ["handoff", "new"])
+      end
+    end
+
+    describe "review show" do
+      let(:review) { CLITestHelpers::FakeReviewCommand.new }
+
+      it "uses the detected workspace, --name, or the positional" do
+        cli, = build_test_cli(review_command: review, project_detector: detector)
+        cli.run(["review", "show"])
+        cli.run(["review", "show", "--name", "other"])
+        cli.run(["review", "--name", "other"])
+        cli.run(["review", "show", "pos"])
+        expect(review.calls.map { |c| c[:show] }).to eq(%w[detected-ws other other pos])
+      end
+
+      it "refuses a differing --name and positional, and --name on list" do
+        cli, _, err = build_test_cli(review_command: review, project_detector: detector)
+        expect_usage_error(cli, ["review", "show", "a", "--name", "b"])
+        expect(err.string).to include("Give the workspace once")
+        expect_usage_error(cli, ["review", "list", "--name", "b"])
+        expect(err.string).to include("workspace review list PROJECT")
+        expect(review.calls).to be_empty
+      end
+
+      it "refuses --name on review list with a next step" do
+        cli, _, err = build_test_cli(review_command: review, project_detector: detector)
+        expect_usage_error(cli, ["review", "list", "--name", "b"])
+        expect(err.string).to include("'review list' takes a PROJECT argument instead")
+      end
+
+      it "fails outside any workspace" do
+        cli, _, err = build_test_cli(review_command: review, project_detector: lonely_detector)
+        expect_usage_error(cli, ["review", "show"])
+        expect(err.string).to include("Missing workspace name")
+      end
+    end
+
+    describe "sessions" do
+      let(:sessions) { double("sessions", call: {exit_code: 0}) }
+
+      it "uses the detected workspace, --name, or the positional" do
+        cli, = build_test_cli(sessions_command: sessions, project_detector: detector)
+        cli.run(["sessions"])
+        cli.run(["sessions", "--name", "other"])
+        cli.run(["sessions", "pos"])
+        expect(sessions).to have_received(:call).with(hash_including(name: "detected-ws"))
+        expect(sessions).to have_received(:call).with(hash_including(name: "other"))
+        expect(sessions).to have_received(:call).with(hash_including(name: "pos"))
+      end
+
+      it "refuses a differing --name and positional" do
+        cli, _, err = build_test_cli(sessions_command: sessions, project_detector: detector)
+        expect_usage_error(cli, ["sessions", "a", "--name", "b"])
+        expect(err.string).to include("Give the workspace once")
+      end
+
+      it "fails outside any workspace" do
+        cli, _, err = build_test_cli(sessions_command: sessions, project_detector: lonely_detector)
+        expect_usage_error(cli, ["sessions"])
+        expect(err.string).to include("Usage: workspace sessions")
+      end
+    end
+
+    describe "wait-until-content" do
+      let(:waiter) { CLITestHelpers::FakeWaitUntilContentCommand.new }
+
+      it "uses the detected workspace, --name, or the positional" do
+        cli, = build_test_cli(wait_until_content_command: waiter, project_detector: detector)
+        cli.run(["wait-until-content", "READY", "--", "irb"])
+        cli.run(["wait-until-content", "--name", "other", "READY", "--", "irb"])
+        cli.run(["wait-until-content", "pos", "READY", "--", "irb"])
+        cli.run(["wait-until-content", "--name", "pos", "pos", "READY", "--", "irb"])
+        expect(waiter.calls.map { |c| [c[:project], c[:content]] }).to eq(
+          [["detected-ws", "READY"], ["other", "READY"], ["pos", "READY"], ["pos", "READY"]]
+        )
+      end
+
+      it "takes --name with the one-argument form and passes a command after -- through" do
+        cli, = build_test_cli(wait_until_content_command: waiter, project_detector: detector)
+        cli.run(["wait-until-content", "--name", "other", "READY", "--", "bin/console", "--flag", "x y"])
+        cli.run(["wait-until-content", "READY", "--name=other2", "-e", "echo hi"])
+        expect(waiter.calls.map { |c| [c[:project], c[:content]] }).to eq([["other", "READY"], ["other2", "READY"]])
+        expect(waiter.calls.first[:exec_command]).to eq(["bin/console", "--flag", "x y"])
+      end
+
+      it "refuses a differing --name and positional" do
+        cli, _, err = build_test_cli(wait_until_content_command: waiter, project_detector: detector)
+        expect_usage_error(cli, ["wait-until-content", "a", "READY", "--name", "b", "--", "irb"])
+        expect(err.string).to include("Give the workspace once")
+      end
+
+      it "fails outside any workspace" do
+        cli, _, err = build_test_cli(wait_until_content_command: waiter, project_detector: lonely_detector)
+        expect_usage_error(cli, ["wait-until-content", "READY", "--", "irb"])
+        expect(err.string).to include("no workspace project detected")
+      end
+    end
+
+    describe "layout" do
+      let(:layout) { double("layout", save: nil, restore: nil, list: nil) }
+
+      it "treats one argument as the layout name, for the detected workspace or --name" do
+        cli, = build_test_cli(layout_command: layout, project_detector: detector)
+        cli.run(["layout", "save", "coding"])
+        cli.run(["layout", "restore", "--name", "other", "coding"])
+        cli.run(["layout", "save", "--name=other"])
+        cli.run(["layout", "restore"])
+        expect(layout).to have_received(:save).with("detected-ws", "coding")
+        expect(layout).to have_received(:restore).with("other", "coding")
+        expect(layout).to have_received(:save).with("other", "default")
+        expect(layout).to have_received(:restore).with("detected-ws", "default")
+      end
+
+      it "treats two arguments as PROJECT NAME, and list keeps its positional" do
+        cli, = build_test_cli(layout_command: layout, project_detector: detector)
+        cli.run(["layout", "save", "pos", "coding"])
+        cli.run(["layout", "list", "pos"])
+        cli.run(["layout", "list", "--name", "other"])
+        cli.run(["layout", "list"])
+        expect(layout).to have_received(:save).with("pos", "coding")
+        expect(layout).to have_received(:list).with("pos")
+        expect(layout).to have_received(:list).with("other")
+        expect(layout).to have_received(:list).with("detected-ws")
+      end
+
+      it "refuses --name with two arguments or a differing list positional" do
+        cli, = build_test_cli(layout_command: layout, project_detector: detector)
+        expect_usage_error(cli, ["layout", "save", "--name", "x", "a", "b"])
+        expect_usage_error(cli, ["layout", "list", "a", "--name", "b"])
+        expect(layout).not_to have_received(:save)
+      end
+
+      it "fails outside any workspace, even with one argument" do
+        cli, _, err = build_test_cli(layout_command: layout, project_detector: lonely_detector)
+        expect_usage_error(cli, ["layout", "save", "coding"])
+        expect(err.string).to include("No workspace detected from the current directory: pass --name WS, or give PROJECT NAME.")
+        expect_usage_error(cli, ["layout", "restore", "coding"])
+        expect(err.string).to include("No workspace detected")
+        expect(layout).not_to have_received(:save)
+        expect(layout).not_to have_received(:restore)
+      end
+
+      it "tells the person what to do when --name and PROJECT NAME are both given" do
+        cli, _, err = build_test_cli(layout_command: layout, project_detector: detector)
+        expect_usage_error(cli, ["layout", "save", "--name", "x", "a", "b"])
+        expect(err.string).to include("either 'PROJECT NAME' or --name WS with just NAME")
+      end
+
+      it "points the undo hint at the --name form" do
+        cli, output, = build_test_cli
+        cli.run(["layout"])
+        expect(output.string).to include("workspace layout restore --name <project> _before_resize")
+      end
+    end
+
+    describe "set-command" do
+      let(:pane_cmd) { double("update_pane", call: nil) }
+
+      it "detects the workspace for one argument, and takes --name or the positional" do
+        cli, = build_test_cli(update_pane_command: pane_cmd, project_detector: detector)
+        cli.run(["set-command", "vim .", "--pane", "2"])
+        cli.run(["set-command", "--name", "other", "vim .", "--pane", "2"])
+        cli.run(["set-command", "pos", "vim .", "--pane", "2"])
+        expect(pane_cmd).to have_received(:call).with(project: "detected-ws", command: "vim .", pane_index: 2)
+        expect(pane_cmd).to have_received(:call).with(project: "other", command: "vim .", pane_index: 2)
+        expect(pane_cmd).to have_received(:call).with(project: "pos", command: "vim .", pane_index: 2)
+      end
+
+      it "fails outside any workspace" do
+        cli, _, err = build_test_cli(update_pane_command: pane_cmd, project_detector: lonely_detector)
+        expect_usage_error(cli, ["set-command", "vim .", "--pane", "2"])
+        expect(err.string).to include("No workspace found")
+        expect(pane_cmd).not_to have_received(:call)
       end
     end
   end

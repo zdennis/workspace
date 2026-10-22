@@ -52,7 +52,7 @@ module Workspace
 
         layout = find_layout(project, name)
         unless layout
-          raise Workspace::Error, "No saved layout '#{name}' for '#{project}'.\nRun 'workspace layout save #{project} #{name}' first."
+          raise Workspace::Error, "No saved layout '#{name}' for '#{project}'.\nRun 'workspace layout save --name #{project} #{name}' first."
         end
 
         unless @tmux.apply_layout(session_name, layout)

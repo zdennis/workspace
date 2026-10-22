@@ -12,6 +12,7 @@ workspace sessions [options] [project]
 
 | Option | Description |
 |--------|-------------|
+| `--name WS` | The project, as an option; same as the positional `[project]`. Giving both with different names is a usage error |
 | `--json` | Emit the raw payload instead of a table |
 | `--watch` | Redraw until interrupted |
 | `--interval SECONDS` | Seconds between redraws when watching (default 2) |

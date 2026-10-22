@@ -58,7 +58,7 @@ module Workspace
       private
 
       def validate!(project, pane_index)
-        raise Workspace::UsageError, "No project name provided. Usage: workspace set-command <project> <command> --pane <N>" unless project
+        raise Workspace::UsageError, "No project name provided. Usage: workspace set-command [PROJECT] <command> --pane N (or --name WS)" unless project
         raise Workspace::UsageError, "Project '#{project}' not found. Run 'workspace list --all' to see available projects." unless @project_config.exists?(project)
         raise Workspace::UsageError, "No pane index provided. Use --pane <N> (e.g. --pane 2)." if pane_index.nil?
         raise Workspace::UsageError, "Pane index must be 1 or greater (got #{pane_index})." if pane_index < 1

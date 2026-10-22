@@ -5,9 +5,11 @@ Collect what you need to review a coding agent's finished work, for one workspac
 ## Usage
 
 ```sh
-workspace review [show] [WORKSPACE] [--json]
+workspace review [show] [WORKSPACE | --name WS] [--json]
 workspace review list [PROJECT] [--json]
 ```
+
+`show` takes the workspace positionally or as `--name WS` (both with different names is a usage error); with neither it uses the workspace for the current directory. `--name` is not accepted by `list`.
 
 A workspace named `list` is reviewed with `workspace review show list`.
 

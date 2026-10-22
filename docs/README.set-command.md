@@ -5,7 +5,8 @@ Updates the shell command for a specific pane in a project's tmuxinator config f
 ## Usage
 
 ```sh
-workspace set-command <project> <command> --pane <N>
+workspace set-command [project] <command> --pane <N>
+workspace set-command --name WS <command> --pane <N>
 ```
 
 ## Options
@@ -13,6 +14,9 @@ workspace set-command <project> <command> --pane <N>
 | Option | Description |
 |--------|-------------|
 | `--pane N` | Pane index to update (1-based, required) |
+| `--name WS` | The project, as an option; then give only `<command>`. Same as the positional `[project]`; both with different names is a usage error |
+
+With only `<command>` and no `--name`, give the command as one quoted argument (two arguments always mean `PROJECT COMMAND`); the project is the one for the current directory; outside a workspace that is a usage error.
 
 ## Details
 

@@ -12,6 +12,7 @@ workspace focus [options] [project]
 
 | Option | Description |
 |--------|-------------|
+| `--name WS` | The project, as an option; same as the positional `[project]`. Giving both with different names is a usage error |
 | `--shake` | Shake the window after focusing to draw attention |
 | `--highlight` | Highlight the window after focusing |
 | `--pane PANE` | After the window is in front, select this pane: a pane id (`%19`) or `window.pane` (`0.1`). It must belong to the project's tmux session |

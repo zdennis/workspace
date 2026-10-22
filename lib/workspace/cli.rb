@@ -470,6 +470,21 @@ module Workspace
       (@workspace_name && name) ? (@workspace_name.match(name) || name) : name
     end
 
+    # The one workspace a command was given, by `--name` or by position.
+    #
+    # @param name_opt [String, nil] value of `--name`
+    # @param positional [String, nil] the positional workspace argument
+    # @return [String, nil] the name, or nil when neither was given
+    # @raise [Workspace::UsageError] when both are given and differ
+    def pick_workspace_name(name_opt, positional)
+      positional = settle_name(positional)
+      if positional && name_opt && positional != name_opt
+        raise UsageError, "Give the workspace once: '#{positional}' and --name #{name_opt} differ."
+      end
+
+      name_opt || positional
+    end
+
     # @raise [Workspace::Error] code `unknown_workspace` when no config exists for +name+ (ignoring case)
     def require_known_workspace!(name)
       return if @project_config.existing_name(name)
@@ -1135,6 +1150,7 @@ module Workspace
       pane = nil
       cycle = false
       reverse = false
+      name_opt = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace focus [options] [project]"
         opts.separator ""
@@ -1142,6 +1158,7 @@ module Workspace
         opts.separator "Auto-detects the project from the current directory if not specified."
         opts.separator ""
         opts.separator "Options:"
+        opts.on("--name WS", "The project to focus, as an option (same as the positional [project])") { |v| name_opt = v }
         opts.on("--shake", "Shake the window after focusing") do
           shake = true
         end
@@ -1172,7 +1189,7 @@ module Workspace
 
       raise UsageError, "--reverse needs --cycle\n\n#{parser.help}" if reverse && !cycle
       if cycle
-        raise UsageError, "--cycle takes no project; it picks one\n\n#{parser.help}" if args.any?
+        raise UsageError, "--cycle takes no project; it picks one\n\n#{parser.help}" if args.any? || name_opt
         raise UsageError, "--cycle can't be combined with --pane\n\n#{parser.help}" if pane
         return run_action("focus", json: json) do
           project = @focus_command.cycle(reverse: reverse, shake: shake, highlight: highlight ? highlight_color : nil)
@@ -1186,7 +1203,7 @@ module Workspace
         end
       end
 
-      project = settle_name(args.first) || @project_detector.detect(@working_dir)
+      project = pick_workspace_name(name_opt, args.first) || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
       run_action("focus", json: json) do
@@ -1493,14 +1510,16 @@ module Workspace
       pane_opt = nil
       lines_opt = 100
       all = false
+      name_opt = nil
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace capture <project> [options]"
+        opts.banner = "Usage: workspace capture [project] [options]"
         opts.separator ""
         opts.separator "Read a tmux pane's scrollback buffer and print it to stdout."
         opts.separator "Defaults to the bottommost pane and last 100 lines."
         opts.separator ""
         opts.separator "Options:"
+        opts.on("--name WS", "The project, as an option (same as the positional [project])") { |v| name_opt = v }
         opts.on("--pane N", String,
           "Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact") do |n|
           pane_opt = n
@@ -1516,6 +1535,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace capture    # last 100 lines of the bottommost pane, project auto-detected"
         opts.separator "  workspace capture scooter --lines 200    # last 200 lines of an explicit project"
+        opts.separator "  workspace capture --name scooter    # the same project, named with --name"
         opts.separator "  workspace capture scooter --all    # full pane history"
         opts.separator "  workspace capture scooter --pane 1    # specific pane by index"
         opts.separator "  workspace capture scooter | grep ERROR    # composable — pipe to other tools"
@@ -1530,12 +1550,8 @@ module Workspace
         raise UsageError, "--all and --lines are mutually exclusive.\n\n#{parser.help}"
       end
 
-      if args.empty?
-        project = @project_detector.detect(@working_dir)
-        raise UsageError, parser.help unless project
-      else
-        project = args.first
-      end
+      project = pick_workspace_name(name_opt, args.first) || @project_detector.detect(@working_dir)
+      raise UsageError, parser.help unless project
 
       pane = pane_opt || :bottom
 
@@ -1557,6 +1573,7 @@ module Workspace
       max_wait_time = nil
       since_start = false
       exec_str = nil
+      name_opt = nil
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace wait-until-content [project] \"content\" [options] [-- command...]"
@@ -1566,6 +1583,7 @@ module Workspace
         opts.separator "direct Ctrl-C, untouched STDIN/STDOUT/STDERR)."
         opts.separator ""
         opts.separator "Options:"
+        opts.on("--name WS", "The project, as an option (same as the positional [project])") { |v| name_opt = v }
         opts.on("--pane N", String,
           "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact (default: bottom)") do |n|
           pane_opt = n
@@ -1612,13 +1630,14 @@ module Workspace
 
       if args.length == 1
         content = args.first
-        project = @project_detector.detect(@working_dir)
+        project = settle_name(name_opt) || @project_detector.detect(@working_dir)
         unless project
           raise UsageError,
             "no workspace project detected from the current directory — pass the project name explicitly.\n\n#{parser.help}"
         end
       elsif args.length == 2
-        project, content = args
+        project = pick_workspace_name(name_opt, args[0])
+        content = args[1]
       else
         raise UsageError, parser.help
       end
@@ -3548,9 +3567,11 @@ module Workspace
       handoff_doc = nil
       handoff_prompt = nil
       json = false
+      name_opt = nil
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace handoff check NAME [options]"
+        opts.banner = "Usage: workspace handoff check [NAME] [options]"
+        opts.on("--name WS", "The workspace, as an option (same as the positional NAME; default: the current directory's)") { |v| name_opt = v }
         opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
           "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
         opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
@@ -3569,7 +3590,7 @@ module Workspace
         end
       end
 
-      name = args.shift
+      name = pick_workspace_name(name_opt, args.shift)
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -3589,9 +3610,11 @@ module Workspace
       handoff_prompt = nil
       wait = false
       json = false
+      name_opt = nil
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace handoff new NAME [options]"
+        opts.banner = "Usage: workspace handoff new [NAME] [options]"
+        opts.on("--name WS", "The workspace, as an option (same as the positional NAME; default: the current directory's)") { |v| name_opt = v }
         opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
           "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
         opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from (default: the plan, else HANDOFF.md, in the notes directory)") { |v| handoff_doc = v }
@@ -3602,7 +3625,7 @@ module Workspace
       parser.parse!(args)
       raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
 
-      name = args.shift
+      name = pick_workspace_name(name_opt, args.shift)
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -4009,20 +4032,21 @@ module Workspace
 
     def cmd_layout(args)
       subcommand = args.shift
+      name_opt = take_name_option!(args)
 
       case subcommand
       when "save"
-        project, name = resolve_layout_args(args)
-        raise UsageError, layout_help_text unless project
+        project, name = resolve_layout_args(args, name_opt)
+        raise UsageError, "No workspace detected from the current directory: pass --name WS, or give PROJECT NAME.\n\n#{layout_help_text}" unless project
         name ||= Commands::Layout::DEFAULT_NAME
         @layout_command.save(project, name)
       when "restore"
-        project, name = resolve_layout_args(args)
-        raise UsageError, layout_help_text unless project
+        project, name = resolve_layout_args(args, name_opt)
+        raise UsageError, "No workspace detected from the current directory: pass --name WS, or give PROJECT NAME.\n\n#{layout_help_text}" unless project
         name ||= Commands::Layout::DEFAULT_NAME
         @layout_command.restore(project, name)
       when "list"
-        project = settle_name(args[0]) || @project_detector.detect(@working_dir)
+        project = pick_workspace_name(name_opt, args[0]) || @project_detector.detect(@working_dir)
         raise UsageError, layout_help_text unless project
         @layout_command.list(project)
       when "help", "--help", "-h", nil
@@ -4032,23 +4056,38 @@ module Workspace
       end
     end
 
-    # Resolves layout save/restore args, handling auto-detection.
-    # With 0 args: detect project, no layout name
-    # With 1 arg: if project detected, treat arg as layout name; otherwise as project
-    # With 2 args: first is project, second is layout name
-    def resolve_layout_args(args)
+    # Pulls a `--name WS` (or `--name=WS`) out of +args+, in place.
+    #
+    # @param args [Array<String>]
+    # @return [String, nil] the value
+    # @raise [Workspace::UsageError] when `--name` has no value
+    def take_name_option!(args)
+      i = args.index { |a| a == "--name" || a.start_with?("--name=") }
+      return unless i
+
+      arg = args.delete_at(i)
+      value = arg.include?("=") ? arg.delete_prefix("--name=") : args.delete_at(i)
+      raise UsageError, "--name needs a workspace name.\n\n#{layout_help_text}" if value.nil? || value.empty?
+
+      settle_name(value)
+    end
+
+    # Resolves layout save/restore args.
+    # With 0 args: the workspace (from --name or the working directory), default layout name
+    # With 1 arg: always the layout NAME; the workspace comes from --name or the working directory
+    # With 2 args: PROJECT then layout NAME (not with --name)
+    def resolve_layout_args(args, name_opt = nil)
       case args.size
       when 0
-        [@project_detector.detect(@working_dir), nil]
+        [name_opt || @project_detector.detect(@working_dir), nil]
       when 1
-        detected = @project_detector.detect(@working_dir)
-        if detected
-          [detected, args[0]]
-        else
-          [args[0], nil]
-        end
+        [name_opt || @project_detector.detect(@working_dir), args[0]]
+      when 2
+        raise UsageError, "Give the workspace once: either 'PROJECT NAME' or --name WS with just NAME. Drop one of the two.\n\n#{layout_help_text}" if name_opt
+
+        [settle_name(args[0]), args[1]]
       else
-        [args[0], args[1]]
+        raise UsageError, "Too many arguments.\n\n#{layout_help_text}"
       end
     end
 
@@ -4058,20 +4097,27 @@ module Workspace
 
     def layout_help_text
       <<~HELP
-        Usage: workspace layout <subcommand> <project> [name]
+        Usage: workspace layout <subcommand> [--name WS] [args]
 
         Subcommands:
-          save <project> [name]      Save the current pane layout (default name: 'default')
-          restore <project> [name]   Restore a saved layout (default name: 'default')
-          list <project>             List saved layouts for a project
+          save [name]                Save the current pane layout (default name: 'default')
+          restore [name]             Restore a saved layout (default name: 'default')
+          list                       List saved layouts for a project
+          save|restore <project> <name>   The same, for a named project
+          list <project>                  The same, for a named project
+
+        Options:
+          --name WS                  The project, instead of the current directory's.
+                                     One argument to save/restore is always the layout name.
 
         Layouts are auto-saved as '_before_resize' whenever you run 'workspace resize',
-        so you can always undo with: workspace layout restore <project> _before_resize
+        so you can always undo with: workspace layout restore --name <project> _before_resize
 
         Examples:
-          workspace layout save myproject           # save as 'default'
-          workspace layout save myproject coding    # save as 'coding'
-          workspace layout restore myproject        # restore 'default'
+          workspace layout save                     # current directory's project, as 'default'
+          workspace layout save coding              # current directory's project, as 'coding'
+          workspace layout restore --name myproject # restore 'default' for a named project
+          workspace layout save myproject coding    # PROJECT NAME: save as 'coding'
           workspace layout list myproject           # show saved layouts
       HELP
     end
@@ -4117,6 +4163,7 @@ module Workspace
       watch = false
       interval = 2
       worktrees = false
+      name_opt = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace sessions [options] [project]"
         opts.separator ""
@@ -4145,6 +4192,7 @@ module Workspace
         opts.separator "\"workspaces\" array."
         opts.separator ""
         opts.separator "Options:"
+        opts.on("--name WS", "The project, as an option (same as the positional [project])") { |v| name_opt = v }
         opts.on("--json", "Emit the raw payload instead of a table") { json = true }
         opts.on("--watch", "Redraw until interrupted") { watch = true }
         opts.on("--interval SECONDS", Float, "Seconds between redraws (default 2)") do |value|
@@ -4162,7 +4210,7 @@ module Workspace
 
       parser.parse!(args)
 
-      project = settle_name(args.first) || @project_detector.detect(@working_dir)
+      project = pick_workspace_name(name_opt, args.first) || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
       result = @sessions_command.call(name: project, json: json, watch: watch, interval: interval, worktrees: worktrees)
@@ -4171,7 +4219,7 @@ module Workspace
 
     def review_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace review [show] [WORKSPACE] [--json]\n       workspace review list [PROJECT] [--json]"
+        opts.banner = "Usage: workspace review [show] [WORKSPACE | --name WS] [--json]\n       workspace review list [PROJECT] [--json]"
         opts.separator ""
         opts.separator "Collect what you need to review a coding agent's finished work. A workspace is ready"
         opts.separator "when its agent is done (the Stop hook fired and no pane is working or waiting) and its"
@@ -4190,6 +4238,7 @@ module Workspace
         opts.separator "Reads only; nothing is written. A source that can't answer (no agent daemon, git or gh"
         opts.separator "failing or too slow) is reported as unavailable, never as clean."
         opts.separator ""
+        opts.on("--name WS", "For show: the workspace, as an option (same as the positional WORKSPACE)") { |v| options[:name] = v }
         opts.on("--json", "Print schema-versioned JSON (see docs/README.review.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -4213,10 +4262,12 @@ module Workspace
       args.shift if subcommand
       raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace review --help'." if args.size > 1
 
+      raise UsageError, "--name is for 'review show'; 'review list' takes a PROJECT argument instead: run 'workspace review list PROJECT' (or 'workspace review list' inside the project)." if options[:name] && subcommand == "list"
+
       result = if subcommand == "list"
         @review_command.list(project: args.first, json: options[:json])
       else
-        name = settle_name(args.first) || @project_detector.detect(@working_dir)
+        name = pick_workspace_name(options[:name], args.first) || @project_detector.detect(@working_dir)
         raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
 
         @review_command.show(name: name, json: options[:json])
@@ -6417,8 +6468,9 @@ module Workspace
 
     def cmd_set_pane_command(args)
       pane_index = nil
+      name_opt = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace set-command <project> <command> --pane <N>"
+        opts.banner = "Usage: workspace set-command [project] <command> --pane <N> [--name WS]"
         opts.separator ""
         opts.separator "Set the shell command for a specific pane in a project's tmuxinator config."
         opts.separator ""
@@ -6426,21 +6478,29 @@ module Workspace
         opts.separator "you will be asked whether to append a new pane."
         opts.separator ""
         opts.separator "Options:"
+        opts.on("--name WS", "The project, as an option; then give only <command>") { |v| name_opt = v }
+        opts.separator "                    With no project, give the command as one quoted argument: two"
+        opts.separator "                    arguments always mean PROJECT COMMAND. The project then defaults to"
+        opts.separator "                    the current directory's."
         opts.on("--pane N", Integer, "Pane index (1-based)") do |n|
           pane_index = n
         end
         opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace set-command 'vim .' --pane 2    # the current directory's project"
+        opts.separator "  workspace set-command --name myproject 'vim .' --pane 2    # a named project"
         opts.separator "  workspace set-command myproject 'vim .' --pane 2    # replace the second pane's command"
         opts.separator "  workspace set-command scooter 'ascii-banner \"scooter\" --rainbow' --pane 1    # replace the banner pane"
         opts.separator "  workspace set-command myproject 'htop' --pane 4    # add a fourth pane (prompts if only 3 exist)"
       end
       parser.parse!(args)
 
-      project = args.shift
+      project = name_opt || ((args.size > 1) ? settle_name(args.shift) : nil)
       command = args.join(" ").strip
 
       raise UsageError, "No command provided.\n\n#{parser.help}" if command.empty?
+      project ||= @project_detector.detect(@working_dir)
+      raise UsageError, "No workspace found for #{@working_dir}: pass --name or run from inside a workspace.\n\n#{parser.help}" unless project
 
       @update_pane_command.call(project: project, command: command, pane_index: pane_index)
     end

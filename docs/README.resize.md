@@ -18,7 +18,7 @@ The pane spec is a comma-separated list of sizes, one per pane:
 | `50%` | Percentage of window height |
 | _(empty)_ | Leave pane as-is |
 
-Auto-saves the current layout as `_before_resize` before applying changes, so you can undo with `workspace layout restore <project> _before_resize`.
+Auto-saves the current layout as `_before_resize` before applying changes, so you can undo with `workspace layout restore --name <project> _before_resize`.
 
 Auto-detects the project from the current directory if only a pane spec is provided.
 
