@@ -31,11 +31,11 @@ module Workspace
       @config_resolver = config_resolver
     end
 
-    # @param workspace [String] a workspace or worktree workspace name
+    # @param workspace [String, nil] a workspace or worktree workspace name; nil reads the global layer alone
     # @return [String] the effective agent kind; "claude" when unset, invalid or the config can't be parsed
     def kind(workspace)
       default = ConfigSchema.default("agent.kind")
-      winner = view(workspace).resolve("agent.kind").winner
+      winner = layered_view(workspace).resolve("agent.kind").winner
       winner ? ConfigSchema.parse("agent.kind", winner.value) : default
     rescue ArgumentError, ConfigParseError
       default
@@ -63,7 +63,7 @@ module Workspace
     #   the provider's executable when the command has no program
     # @raise [ArgumentError] if `kind` is not an {AgentProvider} key
     def executable_for(workspace, kind)
-      command = workspace ? command_for(workspace, kind) : global_command_for(kind)
+      command = effective_command_for(workspace, kind)
       self.class.program_for(command) || provider(kind).executable
     end
 
@@ -112,7 +112,54 @@ module Workspace
       detector.aliases? ? {detector: detector} : {}
     end
 
+    # @param workspace [String, nil] a workspace or worktree workspace name; nil reads the global layer alone
+    # @param kind [String] an {AgentProvider} key
+    # @return [String] the effective full command, as {#command_for}; the global layer alone for nil
+    # @raise [ArgumentError] if `kind` is not an {AgentProvider} key
+    def effective_command_for(workspace, kind)
+      workspace ? command_for(workspace, kind) : global_command_for(kind)
+    end
+
+    # @param workspace [String, nil] a workspace or worktree workspace name; nil reads the global layer alone
+    # @param kind [String] an {AgentProvider} key
+    # @return [String] the layer the effective command comes from: "global", "project", "worktree", or
+    #   "default" when no layer sets it (or the config can't be parsed)
+    # @raise [ArgumentError] if `kind` is not an {AgentProvider} key
+    def layer_for(workspace, kind)
+      name = "agent.commands.#{kind}"
+      provider(kind)
+      begin
+        winner = layered_view(workspace).resolve(name).winner
+        return "default" unless winner
+        ConfigSchema.parse(name, winner.value)
+        winner.layer
+      rescue ArgumentError, ConfigParseError
+        "default"
+      end
+    end
+
+    # @param workspace [String, nil] a workspace or worktree workspace name; nil reads the global layer alone
+    # @param kind [String] an {AgentProvider} key
+    # @return [Array<String>] the command each applicable layer holds, highest layer first; empty when the
+    #   config can't be parsed
+    # @raise [ArgumentError] if `kind` is not an {AgentProvider} key
+    def configured_commands_for(workspace, kind)
+      name = "agent.commands.#{kind}"
+      provider(kind)
+      layered_view(workspace).resolve(name).hits.filter_map do |hit|
+        ConfigSchema.parse(name, hit.value)
+      rescue ArgumentError
+        nil
+      end
+    rescue ConfigParseError
+      []
+    end
+
     private
+
+    def layered_view(workspace)
+      workspace ? view(workspace) : @config_resolver.view(workspace: "global", upto: "global")
+    end
 
     def global_command_for(kind)
       name = "agent.commands.#{kind}"

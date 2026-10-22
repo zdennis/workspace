@@ -45,6 +45,46 @@ RSpec.describe Workspace::AgentCommands do
     end
   end
 
+  describe "#layer_for, #effective_command_for and #configured_commands_for" do
+    let(:global) { {"agent" => {"commands" => {"claude" => "claude-g"}}} }
+
+    it "names the winning layer, default when none sets it" do
+      stub_file("app", {"agent" => {"commands" => {"codex" => "codex-p"}}})
+      stub_file("app.worktree-x", {"agent" => {"commands" => {"claude" => "claude-w"}}})
+
+      expect(agent_commands.layer_for("app.worktree-x", "claude")).to eq("worktree")
+      expect(agent_commands.layer_for("app.worktree-x", "codex")).to eq("project")
+      expect(agent_commands.layer_for("app", "claude")).to eq("global")
+      expect(agent_commands.layer_for(nil, "pi")).to eq("default")
+    end
+
+    it "reads the global layer alone without a workspace" do
+      stub_file("app", {"agent" => {"commands" => {"claude" => "claude-p"}}})
+
+      expect(agent_commands.layer_for(nil, "claude")).to eq("global")
+      expect(agent_commands.effective_command_for(nil, "claude")).to eq("claude-g")
+      expect(agent_commands.configured_commands_for(nil, "claude")).to eq(["claude-g"])
+    end
+
+    it "lists every applicable layer\x27s command, highest first" do
+      stub_file("app", {"agent" => {"commands" => {"claude" => "claude-p"}}})
+
+      expect(agent_commands.configured_commands_for("app", "claude")).to eq(%w[claude-p claude-g])
+    end
+
+    it "calls the layer default when its value does not parse" do
+      stub_file("app", {"agent" => {"commands" => {"claude" => "  "}}})
+
+      expect(agent_commands.layer_for("app", "claude")).to eq("default")
+      expect(agent_commands.configured_commands_for("app", "claude")).to eq(["claude-g"])
+    end
+
+    it "raises for an unknown kind" do
+      expect { agent_commands.layer_for("app", "nope") }.to raise_error(ArgumentError)
+      expect { agent_commands.configured_commands_for("app", "nope") }.to raise_error(ArgumentError)
+    end
+  end
+
   context "with a global value" do
     let(:global) { {"agent" => {"kind" => "codex", "commands" => {"claude" => "claude-dev"}}} }
 
