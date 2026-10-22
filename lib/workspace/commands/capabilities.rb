@@ -51,6 +51,7 @@ module Workspace
         "start_packs" => 2,
         "start_agent" => 1,
         "agent_commands" => 1,
+        "agent_executables" => 1,
         "start_plan" => 1,
         "handoff_auto" => 2,
         "handoff_codex" => 1,

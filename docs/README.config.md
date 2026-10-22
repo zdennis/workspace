@@ -144,6 +144,15 @@ workspace config set --scope workspace --name api.worktree-PROJ-123 agent.comman
 workspace config set --scope workspace --name api.worktree-PROJ-123 agent.kind codex
 ```
 
+**Choosing among installed launchers.** Run [`workspace agent executables`](README.agent.md#agent-executables) to see which launchers are on `PATH` for each agent (`claude`, `claude-opus`, `claude-sonnet`, ...) and which one each runs, then set the one you want at the scope you want:
+
+```sh
+workspace agent executables --kind claude
+workspace config set agent.commands.claude claude-opus --scope global   # or: --scope project --name api, or --scope workspace --name WS
+```
+
+An absolute path works too (`/Users/me/bin/claude-opus`), for a launcher that is not on `PATH`; `agent executables` lists only launchers found on `PATH`, so you set an absolute path yourself.
+
 **What the value may be.** One program, optionally preceded by `VAR=value` words (`FOO=1 claude-dev`). workspace appends its own flags (`--dangerously-skip-permissions --continue`, and `--resume <id>` on `restore`) to the end, so the value cannot be a pipeline, a `;` or `&&` list or `sh -c '...'`. A name without a slash is looked up on `PATH`; `init`, `doctor` and `start` check that program is there.
 
 **What `config set` checks.** An absolute-path program must exist and be an executable regular file (symlinks are followed); otherwise `config set` refuses with `agent_command_not_executable` (`details.path`, `details.reason`: `missing`, `not_executable` or `not_a_file`) and writes nothing. These checks run only when you set the value, never when it is read, so a path that later goes stale is never silently swapped for the default. Two things are only warnings, and the value is still saved: a bare name that is not on `PATH`, and a program whose name is neither the agent's name nor `<name>-...` (`claude-dev` is fine for `claude` but warned about for `codex`). `init`, `doctor` and `start` then check the program again at launch time. Warnings go to stderr, and to `warnings` in the `--json` row when there are any.

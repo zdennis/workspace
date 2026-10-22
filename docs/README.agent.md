@@ -8,9 +8,10 @@ Umbrella for driving a workspace's agent: send it work with `workspace agent run
 workspace agent run PROMPT [options]
 workspace agent status request --pane PANE [--name NAME] [--json]
 workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]
+workspace agent executables [--kind KIND] [--name WS] [--json]
 ```
 
-`agent status` is described under [Status](#status).
+`agent status` is described under [Status](#status). `agent executables` is described under [Agent executables](#agent-executables).
 
 The prompt is the positional arguments joined with a space, so a multi-word prompt does not need quoting:
 
@@ -143,6 +144,53 @@ workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Writing specs 
 # Watch the replies
 workspace events --follow --json --types agent_status
 ```
+
+## Agent executables
+
+`workspace agent executables` lists the programs on `PATH` that belong to each coding agent family (`claude`, `codex`, `opencode`, `pi`) and marks the one each family runs, so you can pick a value for `agent.commands.<kind>`. It only reads directory listings and file modes; it never runs or opens a program.
+
+| Option | Description |
+|--------|-------------|
+| `--kind KIND` | List one family only (`claude`, `codex`, `opencode` or `pi`) |
+| `--name WS` | Read the settings of this workspace (default: the workspace of the current directory, else the global settings alone) |
+| `--json` | Print one document (below) |
+
+A file counts for a family whose executable is `E` when it is a regular, executable file in an absolute `PATH` directory and its name matches `\A<E>(-[A-Za-z0-9._+-]+)?\z`: `E` itself, or `E-` and a suffix. `claude`, `claude-dev` and `claude-opus` match `claude`. A bare prefix is not used because short names collide with unrelated programs: `pi*` would match `pick`, `pip3` and `pinentry`. When a name appears in several `PATH` directories, the first one is the row and the others are listed in `shadowed`.
+
+Text output groups rows by family. The first lines name the workspace and its `agent.kind`; each family shows the program it runs and which layer set that, and `*` marks the row it runs:
+
+```
+Workspace: workspace
+Main agent kind: claude
+
+claude (runs claude, from the default)
+  * claude  /Users/me/.local/bin/claude
+    claude-opus  /Users/me/bin/claude-opus
+
+opencode (runs opencode, from the default)
+  none found
+
+* marks what the family runs. Set it with `workspace config set agent.commands.<kind> VALUE`.
+```
+
+`--json` prints:
+
+```json
+{"schema_version":1,"ok":true,"workspace":"workspace","path_dirs":["/Users/me/bin","/opt/homebrew/bin"],
+ "executables":[{"kind":"claude","name":"claude-opus","path":"/Users/me/bin/claude-opus","source":"path","found":true,"builtin":false,"shadowed":[]}],
+ "effective":{"claude":{"program":"claude","path":"/Users/me/.local/bin/claude","layer":"default","found":true},
+              "opencode":{"program":"opencode","path":null,"layer":"default","found":false}},
+ "kind":"claude"}
+```
+
+- `workspace` is null when none is named or detected; the global settings are read then.
+- `path_dirs`: the absolute, existing `PATH` directories scanned, without duplicates.
+- `executables`: one row (its `kind` is the family; the top-level `kind` is the effective `agent.kind`) per name and family, the family's own program first, then by name. `source` is `path` for a program found on `PATH`, or `configured` for one an `agent.commands.<kind>` value names that is not on `PATH` (`found` false; `path` set only for an absolute path; such a row means the program is missing or not executable, since one that resolves is listed from `PATH` or not at all, and for an absolute path `name` is the full path). `builtin` is true for the family's own program. `shadowed` lists the paths of same-named files later on `PATH`.
+- `effective`: every family (the example shows two), even with `--kind`: the `program` it runs (a base name), its resolved `path` (null when not found), `layer` (`global`, `project`, `worktree` or `default`) and `found`.
+- `kind`: the effective `agent.kind`.
+- `truncated`: true, present only when more than 200 rows matched and the list was cut; narrow it with `--kind`.
+
+Errors: `unknown_agent_kind` for a `--kind` that is not a family (`details.kind`, `details.known`), and `unknown_workspace` for a `--name` with no config. See [JSON output](README.json.md) for the failure envelope. To act on the list, see [Agent commands](README.config.md#agent-commands).
 
 ## Related
 
