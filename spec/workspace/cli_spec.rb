@@ -95,6 +95,7 @@ RSpec.describe Workspace::CLI do
       ask_command: ask_command,
       restart_agent_command: overrides[:restart_agent_command],
       agent_status_command: overrides[:agent_status_command],
+      agent_executables_command: overrides[:agent_executables_command],
       send_command: overrides[:send_command],
       prompt_queue_command: overrides[:prompt_queue_command],
       ensure_agent_command: overrides[:ensure_agent_command],
@@ -1355,6 +1356,55 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["agent-run"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("restart    Clear the coding agent in one pane")
+    end
+  end
+
+  describe "#run agent executables" do
+    let(:executables_command) { double("agent executables", call: nil) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "api") }
+
+    it "passes the kind, name and json, in either flag form, without detecting when named" do
+      cli, = build_test_cli(agent_executables_command: executables_command, project_detector: detector)
+
+      cli.run(["agent", "executables", "--kind=codex", "--name", "web", "--json"])
+
+      expect(executables_command).to have_received(:call).with(name: "web", detected: nil, kind: "codex", json: true)
+      expect(detector).not_to have_received(:detect)
+    end
+
+    it "detects the workspace from the working directory when no name is given" do
+      cli, = build_test_cli(agent_executables_command: executables_command, project_detector: detector)
+
+      cli.run(["agent", "executables"])
+
+      expect(executables_command).to have_received(:call).with(name: nil, detected: "api", kind: nil, json: false)
+    end
+
+    it "finds the subcommand when --kind comes first" do
+      cli, = build_test_cli(agent_executables_command: executables_command, project_detector: detector)
+
+      cli.run(["agent", "--kind", "pi", "executables"])
+
+      expect(executables_command).to have_received(:call).with(hash_including(kind: "pi"))
+    end
+
+    it "prints its help and lists it in the agent help" do
+      cli, output = build_test_cli(agent_executables_command: executables_command)
+
+      cli.run(["agent", "executables", "--help"])
+      expect(output.string).to include("Usage: workspace agent executables [--kind KIND] [--name WORKSPACE] [--json]")
+        .and include("claude, codex, opencode, pi").and include("unknown_agent_kind")
+
+      output.truncate(0)
+      cli.run(["agent", "help"])
+      expect(output.string).to include("executables   List the agent programs on PATH")
+    end
+
+    it "reports an extra argument as a usage error, as JSON with --json" do
+      cli, output = build_test_cli(agent_executables_command: executables_command)
+
+      expect { cli.run(["agent", "executables", "extra", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
     end
   end
 

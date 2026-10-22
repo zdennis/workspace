@@ -71,7 +71,7 @@ module Workspace
       "upstream_gone" => "rebase --onto upstream: the branch's upstream no longer exists on the remote. details.branch, details.upstream.",
       "push_rejected" => "push: origin refused the push, or the upstream has commits the branch never had so the push was not forced. details.branch, details.upstream, details.detail, details.reason (origin_refused, would_delete_commits, upstream_has_other_commits, upstream_mismatch).",
       "template_outdated" => "start --agent-kind: the installed worktree template has no Claude Code pane to swap; run init --force. details.kind. Nothing was created.",
-      "unknown_agent_kind" => "start --agent-kind named a kind that is not a known coding agent, or hooks uninstall --agent one with no hooks. details.kind, details.known. Nothing was created or changed.",
+      "unknown_agent_kind" => "start --agent-kind or agent executables --kind named a kind that is not a known coding agent, or hooks uninstall --agent one with no hooks. details.kind, details.known. Nothing was created or changed.",
       "hook_settings_unreadable" => "A coding agent's hook settings file (Codex's hooks.json, Claude Code's settings.json) is not a JSON object with a hooks object, so workspace left it alone. details.path.",
       "no_spine" => "spine set, spine check, spine verify, spine goal set or spine start: the workspace has no spine/ folder in its notes directory. details.workspace, details.dir.",
       "stage_done" => "spine start: the stage file says completed or skipped (not a completed stage whose check failed, which start reopens for rework). details.workspace, details.path, details.status.",

@@ -58,6 +58,8 @@ module Workspace
     #   `agent-run restart` command; optional so test builders need not wire it
     # @param agent_status_command [Workspace::Commands::AgentStatus, nil] pre-built
     #   `agent status` command; optional so test builders need not wire it
+    # @param agent_executables_command [Workspace::Commands::AgentExecutables, nil] pre-built
+    #   `agent executables` command; optional so test builders need not wire it
     # @param send_command [Workspace::Commands::Send, nil] pre-built
     #   `agent-run send` command; optional so test builders need not wire it
     # @param prompt_queue_command [Workspace::Commands::PromptQueue, nil] pre-built
@@ -117,7 +119,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -176,6 +178,7 @@ module Workspace
       @inbox_command = inbox_command
       @restart_agent_command = restart_agent_command
       @agent_status_command = agent_status_command
+      @agent_executables_command = agent_executables_command
       @send_command = send_command
       @prompt_queue_command = prompt_queue_command
       @ensure_agent_command = ensure_agent_command
@@ -1664,6 +1667,7 @@ module Workspace
       case subcommand
       when "run" then cmd_agent_run_prompt(rest)
       when "status" then cmd_agent_status(rest)
+      when "executables" then cmd_agent_executables(rest)
       when "help" then @output.puts agent_help
       when nil
         if args.include?("--help") || args.include?("-h")
@@ -1688,7 +1692,7 @@ module Workspace
       while i < args.length
         arg = args[i]
         return i unless arg.start_with?("-")
-        i += (arg == "--name" || arg == "--wc-socket") ? 2 : 1
+        i += %w[--name --wc-socket --kind].include?(arg) ? 2 : 1
       end
       nil
     end
@@ -1700,6 +1704,7 @@ module Workspace
         Subcommands:
           run PROMPT    Send a prompt to the workspace's pipeline (a "command" message)
           status        Ask an agent pane for a status line, or post one (see `agent status --help`)
+          executables   List the agent programs on PATH by family and which one each runs (see `agent executables --help`)
 
         The long-lived agent daemon now runs as `workspace agentd`
         (see docs/README.agentd.md). During the deprecation window, daemon-era
@@ -1717,6 +1722,40 @@ module Workspace
           workspace agent run --name myapp --work-item WC-42 "Add OAuth support" --dry-run
           workspace agentd myapp    # start the daemon for myapp
       HELP
+    end
+
+    def cmd_agent_executables(args)
+      name = nil
+      kind = nil
+      json = false
+      help = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent executables [--kind KIND] [--name WORKSPACE] [--json]"
+        opts.separator ""
+        opts.separator "List the coding-agent programs on PATH by family (claude, codex, opencode, pi): a file named"
+        opts.separator "the family program or starting with it and a dash (claude-dev). Marks the one each family runs,"
+        opts.separator "and lists a configured program that is not found. Reads directory listings only; runs nothing."
+        opts.separator "Pick one with `workspace config set agent.commands.<kind> NAME-OR-PATH`."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--kind KIND", "Only this family: #{AgentProvider.all.map(&:key).join(", ")}") { |v| kind = v }
+        opts.on("--name NAME", "Workspace whose settings decide the marked program (default: detected from cwd, else global settings)") { |v| name = v }
+        opts.on("--json", "Print one JSON document: workspace, path_dirs, executables, effective, kind[, truncated]") { json = true }
+        opts.on("-h", "--help", "Show this help") { help = true }
+        opts.separator ""
+        opts.separator "Errors: unknown_agent_kind (details.kind, details.known), unknown_workspace."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agent executables"
+        opts.separator "  workspace agent executables --kind claude --name api --json"
+      end
+      parser.parse!(args)
+      return @output.puts(parser.help) if help
+
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise Error, "workspace agent executables is not available in this build" unless @agent_executables_command
+
+      @agent_executables_command.call(name: name, detected: name ? nil : @project_detector.detect(@working_dir), kind: kind, json: json)
     end
 
     def agent_status_help

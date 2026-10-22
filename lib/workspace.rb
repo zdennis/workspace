@@ -330,6 +330,7 @@ require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
 require_relative "workspace/commands/restart_agent"
 require_relative "workspace/commands/agent_status"
+require_relative "workspace/commands/agent_executables"
 require_relative "workspace/commands/ensure_agent"
 require_relative "workspace/commands/daemon"
 require_relative "workspace/commands/ui"
@@ -680,6 +681,8 @@ module Workspace
     prompt_queue_command = Commands::PromptQueue.new(config: config, locator: pane_locator, event_log: event_log, output: output, error_output: error_output)
     agent_status_command = Commands::AgentStatus.new(client: agent_snapshot_client, locator: pane_locator, tmux: tmux, output: output,
       workspace_for_session: ->(session) { project_config.available_projects.find { |name| tmux.session_name_for(name) == session } || session })
+    agent_executables_command = Commands::AgentExecutables.new(executables: AgentExecutables.new(agent_commands: agent_commands, path: env["PATH"]),
+      project_config: project_config, output: output)
     handoff_config = HandoffConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
     handoff_command = Commands::Handoff.new(config: config, tmux: tmux, locator: pane_locator, handoff_config: handoff_config,
@@ -766,6 +769,7 @@ module Workspace
       window_liveness: WindowLiveness.new(window_manager: window_manager),
       restart_agent_command: restart_agent_command,
       agent_status_command: agent_status_command,
+      agent_executables_command: agent_executables_command,
       send_command: send_command,
       prompt_queue_command: prompt_queue_command,
       ensure_agent_command: ensure_agent_command,
