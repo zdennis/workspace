@@ -5,10 +5,10 @@ Bring back the coding-agent panes a reboot or a tmux restart took: recreate them
 ## Usage
 
 ```sh
-workspace restore [WORKSPACE...] [--dry-run] [--json]
+workspace restore [WORKSPACE... | --name WS | --all] [--dry-run] [--json]
 ```
 
-With no workspace named, restore acts on every active workspace (the ones `workspace list` shows).
+With no workspace named, restore acts on the workspace the working directory is in: a worktree's `.workspace-project` marker, else the active workspace whose root holds the directory. `--all` acts on every active workspace (the ones `workspace list` shows); it can't be combined with a name. Outside any workspace, with no name and no `--all`, it refuses with `not_in_workspace`.
 
 ## Details
 

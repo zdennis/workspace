@@ -205,6 +205,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine_report" => 1)
     end
 
+    it "reports lifecycle_current 1 once stop, kill, finish, remove, restore and dir default to the current workspace" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("lifecycle_current" => 1)
+    end
+
     it "reports split_cwd 1 once splits start in the workspace folder" do
       command.call(json: true)
 

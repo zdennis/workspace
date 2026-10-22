@@ -34,7 +34,8 @@ module Workspace
       # Finishes a worktree project: checks it is clean and pushed, optionally
       # opens a PR, then tears it down via Commands::Kill.
       #
-      # @param project [String, nil] project/config name, or nil to detect from cwd
+      # @param project [String, nil] project/config name, or nil for the workspace +working_dir+ is in (its
+      #   worktree marker, else the active workspace whose root holds it)
       # @param pr [Boolean] open (or look up) a PR with `gh` before cleanup
       # @param json [Boolean] emit the documented JSON schema instead of plain text
       # @param working_dir [String] cwd to detect the project from, when project is nil
@@ -68,11 +69,10 @@ module Workspace
 
       def finish!(project, pr:, working_dir:, quiet: false, &after_remove)
         @pr_url = nil
-        project ||= @project_detector.detect_from_marker(working_dir)
+        project ||= @project_detector.detect(working_dir)
         unless project
-          raise Workspace::Error,
-            "No project specified and no #{MARKER_FILE} found in current directory.\n" \
-            "Run from inside a worktree, or specify the project name."
+          raise Workspace::Error.new("No workspace found for #{working_dir}. Run from inside a worktree workspace or name one (--name WS).",
+            code: "not_in_workspace", details: {"path" => working_dir})
         end
 
         config_path = @project_config.config_path_for(project)

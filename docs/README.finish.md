@@ -12,6 +12,7 @@ workspace finish [options] [project]
 
 | Option | Description |
 |--------|-------------|
+| `--name WS` | The worktree workspace to finish, the same as the positional `project` (giving both with different values is a usage error) |
 | `--pr` | Open a PR with `gh pr create --fill` (or reuse an existing one) before cleanup |
 | `--json` | Emit the JSON schema below instead of plain text |
 
@@ -19,7 +20,7 @@ There is no `--force`/override for the clean-and-pushed check — see "Details".
 
 ## Details
 
-If no project is specified, detects the current worktree project from a `.workspace-project` marker file in the working directory, the same way `kill` does.
+With no project (positionally or with `--name`), `finish` acts on the workspace the working directory is in: a worktree's `.workspace-project` marker, else the active workspace whose root holds the directory, the same way `kill` does. Outside any workspace it refuses with `not_in_workspace` and removes nothing.
 
 Before touching anything, `finish` checks:
 

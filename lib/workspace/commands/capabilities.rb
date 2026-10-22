@@ -84,6 +84,7 @@ module Workspace
         "projects_multi" => 1,
         "json_envelope" => 1,
         "remove" => 1,
+        "lifecycle_current" => 1,
         "promote" => 1,
         "split_cwd" => 1
       }.freeze

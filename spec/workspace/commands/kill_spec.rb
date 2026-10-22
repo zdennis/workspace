@@ -439,15 +439,38 @@ RSpec.describe Workspace::Commands::Kill do
         expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
       end
 
-      it "raises error when no marker file found and no project given" do
+      it "kills the active workspace whose root holds the directory when there is no marker" do
+        state = CLITestHelpers::FakeState.new
+        state["myproject.worktree-PROJ-123"] = {}
+        allow(project_config).to receive(:project_root_for).with("myproject.worktree-PROJ-123").and_return(tmpdir)
+        detector = Workspace::ProjectDetector.new(state: state, project_config: project_config)
+        sub_dir = File.join(tmpdir, "src").tap { |dir| Dir.mkdir(dir) }
+
+        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+        allow(git).to receive(:remove_worktree)
+        allow(stop_command).to receive(:call).and_return([])
+        allow(project_config).to receive(:remove)
+        allow(project_settings).to receive(:remove)
+
+        cmd = described_class.new(
+          git: git, project_config: project_config, project_settings: project_settings,
+          stop_command: stop_command, project_detector: detector, output: output, input: input
+        )
+        cmd.call(nil, force: true, working_dir: sub_dir)
+
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
+      end
+
+      it "raises not_in_workspace when no workspace holds the directory and no project is given" do
         cmd = described_class.new(
           git: git, project_config: project_config, project_settings: project_settings,
           stop_command: stop_command, project_detector: project_detector, output: output, input: input
         )
 
-        expect { cmd.call(nil, working_dir: tmpdir) }.to raise_error(
-          Workspace::Error, /No project specified/
-        )
+        expect { cmd.call(nil, working_dir: tmpdir) }.to raise_error(Workspace::Error, /No workspace found for/) { |e|
+          expect(e.code).to eq("not_in_workspace")
+        }
       end
     end
 

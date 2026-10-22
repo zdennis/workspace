@@ -301,10 +301,31 @@ RSpec.describe Workspace::Commands::Finish do
         expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: marker_dir, outcome: "merged")
       end
 
-      it "raises error when no marker file found and no project given" do
-        expect { command.call(nil, working_dir: tmpdir) }.to raise_error(
-          Workspace::Error, /No project specified/
-        )
+      it "finishes the active workspace whose root holds the directory when there is no marker" do
+        state = CLITestHelpers::FakeState.new
+        state["myproject.worktree-PROJ-123"] = {}
+        allow(project_config).to receive(:project_root_for).with("myproject.worktree-PROJ-123").and_return(tmpdir)
+        detector = Workspace::ProjectDetector.new(state: state, project_config: project_config)
+        finish = described_class.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: detector, output: output, error_output: error_output, input: input)
+        sub_dir = File.join(tmpdir, "src").tap { |dir| Dir.mkdir(dir) }
+
+        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => worktree_path))
+        allow(git).to receive(:worktree_exists?).with(worktree_path).and_return(true)
+        allow(git).to receive(:changed_files_count).with(worktree_path).and_return(0)
+        allow(git).to receive(:worktree_branch).with(worktree_path).and_return("main")
+        allow(git).to receive(:upstream_branch).with(worktree_path).and_return("origin/main")
+        allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
+        allow(kill_command).to receive(:call)
+
+        finish.call(nil, working_dir: sub_dir)
+
+        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: sub_dir, outcome: "merged")
+      end
+
+      it "raises not_in_workspace when no workspace holds the directory and no project is given" do
+        expect { command.call(nil, working_dir: tmpdir) }.to raise_error(Workspace::Error, /No workspace found for/) { |e|
+          expect(e.code).to eq("not_in_workspace")
+        }
       end
     end
 

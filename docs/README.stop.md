@@ -5,12 +5,12 @@ Stop workspace projects and their tmux sessions.
 ## Usage
 
 ```sh
-workspace stop [project1] [project2] ...
+workspace stop [--name WS | --all] [--json] [project1] [project2] ...
 ```
 
 ## Details
 
-Stops the specified projects' tmux sessions and cleans up their iTerm launcher windows. If no projects are specified, stops all active workspace projects.
+Stops the specified projects' tmux sessions and cleans up their iTerm launcher windows. With no project (positionally or with `--name`), it stops the workspace the working directory is in: a worktree's `.workspace-project` marker, else the active workspace whose root holds the directory. `--all` stops every active workspace project. Outside any workspace, with no name and no `--all`, it refuses with `not_in_workspace` and stops nothing.
 
 Launcher windows are only closed when all tracked projects within them have been stopped. If other projects still share the window, it is preserved.
 
@@ -23,8 +23,14 @@ A project whose tmuxinator config selects a custom tmux socket (`-L` or `-S` in 
 ## Examples
 
 ```sh
-# Stop all active projects
+# Stop the workspace you are in
 workspace stop
+
+# Stop every active project
+workspace stop --all
+
+# Stop one project by name, from anywhere (`--name` adds to any projects named positionally)
+workspace stop --name my-notes
 
 # Stop a specific project
 workspace stop my-notes
@@ -35,4 +41,4 @@ workspace stop my-notes billing
 
 ## JSON output
 
-`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row per project: `stopped`, or `not_running` for a named project that wasn't active (no stderr warning). The text goes to stderr. When iTerm2 did not answer, `warnings` holds the sentence above (one per project that had a window) and the rows and exit code are unchanged.
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row per project: `stopped`, or `not_running` for a named project that wasn't active (no stderr warning). The text goes to stderr. When iTerm2 did not answer, `warnings` holds the sentence above (one per project that had a window) and the rows and exit code are unchanged. Outside any workspace with no name and no `--all`, the document is the error envelope with `code` `not_in_workspace` (exit 1).

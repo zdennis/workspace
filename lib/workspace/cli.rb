@@ -546,18 +546,18 @@ module Workspace
           daemon          List, show, restart (one or all) or read the log of agent daemons
           dev             Start, stop, or inspect this repo's dev environment (devenv lock)
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
-          dir             Print the root directory of a workspace project
+          dir             Print the root directory of a workspace project (default: the current one)
           doctor          Check that all required dependencies are installed
           event-log       Show or compact the event log (state changes and agent activity)
           events          Read or follow the event log and every agent's hook events as one stream
-          finish          Verify a worktree is clean and pushed, then remove it (optionally opens a PR)
+          finish          Verify a worktree is clean and pushed, then remove it (default: the current one; optionally opens a PR)
           focus           Bring a project's iTerm window to the front (not for headless projects)
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
           inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, spine, promote)
-          kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
+          kill            Kill a worktree project and remove its worktree (default: the current one)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           library         Store named plays, prompts, agents and skills, beside the built-in packs (alias: lib)
@@ -576,10 +576,10 @@ module Workspace
           reactivate      Reactivate Claude in a project's tmux pane
           rebase          Rebase a workspace's branch onto the default branch (--onto local|update|remote|upstream)
           relaunch        Stop and relaunch all active workspace projects
-          remove          Forget a stopped project: delete its generated config and state (your files stay)
+          remove          Forget a stopped project: delete its generated config and state (default: the current one; your files stay)
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
-          restore         Bring back agent panes after a reboot: recreate them and resume their sessions
+          restore         Bring back agent panes after a reboot: recreate them and resume their sessions (default: the current one; --all)
           run             Send a shell command to a pane in a running project's tmux session
           run-and-report  Run a command as a subprocess, capture stdout/stderr/exit status
           report-run-status  Internal: write run result for --wait (called by shell wrapper)
@@ -594,7 +594,7 @@ module Workspace
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
           statusline      Render Claude Code's status line (install as its statusLine command)
-          stop            Stop active workspace projects and their tmux sessions
+          stop            Stop a workspace and its tmux session (default: the current one; --all for every active one)
           ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show), or list yours (list)
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
@@ -1019,48 +1019,89 @@ module Workspace
 
     def cmd_stop(args)
       json = false
+      all = false
+      name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace stop [--json] [project1] [project2] ..."
+        opts.banner = "Usage: workspace stop [--name WS | --all] [--json] [project1] [project2] ..."
         opts.separator ""
         opts.separator "Stop workspace projects and their tmux sessions."
-        opts.separator "If no projects are specified, stops all active workspace projects."
+        opts.separator "With no project, stops the workspace the current directory is in; --all stops"
+        opts.separator "every active workspace project. Outside any workspace, name one or pass --all."
         opts.separator "Projects can be restarted with 'workspace launch'."
         opts.separator ""
+        opts.on("--name NAME", "A workspace to stop, added to any named positionally (default: the one detected from the current directory)") { |v| name = v }
+        opts.on("--all", "Stop every active workspace project") { all = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
           "to stderr; a named project that isn't active gets a not_running row, not a warning") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace stop    # stop all active projects"
+        opts.separator "  workspace stop    # stop the workspace you are in"
+        opts.separator "  workspace stop --all    # stop every active project"
         opts.separator "  workspace stop my-notes    # stop one project"
         opts.separator "  workspace stop my-notes billing    # stop several projects"
       end
       parser.parse!(args)
 
+      names = (args.map { |arg| settle_name(arg) } + [name].compact).uniq
+      raise UsageError, "--all stops every active workspace; don't also name one.\n\n#{parser.help}" if all && names.any?
+      unless all || names.any?
+        detected = @project_detector.detect(@working_dir)
+        raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace, name one (--name WS), or pass --all.", code: "not_in_workspace", details: {"path" => @working_dir}) unless detected
+        names = [detected]
+      end
+
       run_action("stop", json: json) do
-        stopped = json ? @stop_command.call(args, warn_inactive: false) : @stop_command.call(args)
+        stopped = json ? @stop_command.call(names, warn_inactive: false) : @stop_command.call(names)
         stopped.each { |p| @hook_runner.run(p, "post_stop") }
-        rows = json ? stopped.map { |p| action_row(p, "stopped") } + (args - stopped).map { |p| action_row(p, "not_running", reason: "not_active", message: "'#{p}' is not an active workspace project") } : []
+        rows = json ? stopped.map { |p| action_row(p, "stopped") } + (names - stopped).map { |p| action_row(p, "not_running", reason: "not_active", message: "'#{p}' is not an active workspace project") } : []
         {results: rows, warnings: @stop_command.warnings}
       end
+    end
+
+    # The one workspace a lifecycle command (`kill`, `finish`, `remove`, `dir`) was given: the
+    # positional or `--name` (they must agree), settled to its on-disk spelling, else nil.
+    #
+    # @param args [Array<String>] the positionals left after parsing
+    # @param name [String, nil] value of `--name`
+    # @param command [String] the subcommand, for the usage message
+    # @return [String, nil]
+    # @raise [Workspace::UsageError] for more than one positional, or a positional and `--name` that differ
+    def single_workspace_arg(args, name, command)
+      raise UsageError, "workspace #{command} takes one workspace; got: #{args.join(" ")}. Run 'workspace #{command} --help'." if args.size > 1
+      pick_workspace_name(name, args.first)
+    end
+
+    # @param name [String, nil] the workspace given, if any
+    # @return [String] +name+, else the workspace the working directory is in
+    # @raise [Workspace::Error] code `not_in_workspace` when neither gives one
+    def current_workspace!(name)
+      name ||= @project_detector.detect(@working_dir)
+      return name if name
+
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir})
     end
 
     def cmd_kill(args)
       force = false
       json = false
+      name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace kill [--json] [project]"
+        opts.banner = "Usage: workspace kill [--name WS] [--force] [--json] [project]"
         opts.separator ""
         opts.separator "Kill a worktree project's session and remove its git worktree."
         opts.separator "The inverse of 'workspace start'."
         opts.separator ""
-        opts.separator "If no project is specified, detects the current worktree project"
-        opts.separator "from a .workspace-project marker file in the working directory."
+        opts.separator "If no project is given (positionally or with --name), kills the workspace"
+        opts.separator "the current directory is in: a worktree's .workspace-project marker, else the"
+        opts.separator "active workspace whose root holds it. Outside any workspace it refuses"
+        opts.separator "(not_in_workspace)."
         opts.separator ""
         opts.separator "Refuses to remove a worktree with uncommitted changes to tracked files"
         opts.separator "or commits that haven't been pushed anywhere (untracked files don't"
         opts.separator "count). --force skips this check along with the confirmation prompt."
         opts.separator ""
         opts.separator "Options:"
+        opts.on("--name NAME", "The worktree workspace to kill (default: the one detected from the current directory)") { |v| name = v }
         opts.on("-f", "--force", "Skip confirmation, and skip the uncommitted/unpushed-work check") do
           force = true
         end
@@ -1070,14 +1111,16 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace kill    # kill the current worktree project (auto-detected from cwd)"
         opts.separator "  workspace kill myproject.worktree-PROJ-123    # kill a specific worktree project"
+        opts.separator "  workspace kill --name myproject.worktree-PROJ-123 --json    # the same, scripted"
         opts.separator "  workspace kill -f myproject.worktree-PROJ-123    # skip confirmation and the unsaved-work check"
       end
       parser.parse!(args)
+      target = current_workspace!(single_workspace_arg(args, name, "kill"))
 
       # The hook runs from inside Kill, before the session is killed: kill may
       # be running inside that session, and nothing after the kill would run.
       run_action("kill", json: json) do
-        killed = @kill_command.call(args.first, force: force, working_dir: @working_dir) do |project|
+        killed = @kill_command.call(target, force: force, working_dir: @working_dir) do |project|
           @hook_runner.run(project, "post_kill")
         end
         if !json
@@ -1091,7 +1134,7 @@ module Workspace
             {results: [action_row(killed, "killed", **extra)]}
           end
         else
-          {results: [action_row(args.first, "cancelled", reason: "declined", message: "Not confirmed; nothing was removed.")], status: "cancelled"}
+          {results: [action_row(target, "cancelled", reason: "declined", message: "Not confirmed; nothing was removed.")], status: "cancelled"}
         end
       end
     end
@@ -1099,20 +1142,24 @@ module Workspace
     def cmd_finish(args)
       pr = false
       json = false
+      name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace finish [project]"
+        opts.banner = "Usage: workspace finish [--name WS] [--pr] [--json] [project]"
         opts.separator ""
         opts.separator "Verify a worktree project is clean and fully pushed, then remove it"
         opts.separator "the same way 'workspace kill' does (session, worktree, config, state)."
         opts.separator ""
-        opts.separator "If no project is specified, detects the current worktree project"
-        opts.separator "from a .workspace-project marker file in the working directory."
+        opts.separator "If no project is given (positionally or with --name), finishes the workspace"
+        opts.separator "the current directory is in: a worktree's .workspace-project marker, else the"
+        opts.separator "active workspace whose root holds it. Outside any workspace it refuses"
+        opts.separator "(not_in_workspace)."
         opts.separator ""
         opts.separator "Refuses when the branch has uncommitted changes to tracked files"
         opts.separator "(untracked files don't count), has no upstream, or is ahead of its"
         opts.separator "upstream. There is no override; push or commit first."
         opts.separator ""
         opts.separator "Options:"
+        opts.on("--name NAME", "The worktree workspace to finish (default: the one detected from the current directory)") { |v| name = v }
         opts.on("--pr", "Open a PR with `gh pr create --fill` (or reuse an existing one) first;",
           "skipped with a note if `gh` isn't installed") do
           pr = true
@@ -1127,14 +1174,15 @@ module Workspace
         opts.separator "  workspace finish myproject.worktree-PROJ-123 --json    # scripted; JSON on stdout"
       end
       parser.parse!(args)
+      target = single_workspace_arg(args, name, "finish")
 
       if json
         # No post_kill hook here: its output would land on stdout next to the JSON.
-        result = @finish_command.call(args.first, pr: pr, json: true, working_dir: @working_dir)
+        result = @finish_command.call(target, pr: pr, json: true, working_dir: @working_dir)
         @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
         return
       end
-      @finish_command.call(args.first, pr: pr, json: false, working_dir: @working_dir) do |project|
+      @finish_command.call(target, pr: pr, json: false, working_dir: @working_dir) do |project|
         @hook_runner.run(project, "post_kill")
       end
     rescue OptionParser::ParseError, UsageError => e
@@ -5283,7 +5331,7 @@ module Workspace
       headless, windowed = projects.partition { |p| @state.dig(p, "headless") }
       @output.puts "Will relaunch: #{projects.join(", ")}"
 
-      cmd_stop([])
+      cmd_stop(["--all"])
 
       sleep 2
 
@@ -5302,11 +5350,14 @@ module Workspace
     def cmd_restore(args)
       dry_run = false
       json = false
+      all = false
+      name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace restore [WORKSPACE...] [--dry-run] [--json]"
+        opts.banner = "Usage: workspace restore [WORKSPACE... | --name WS | --all] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "Bring back the coding-agent panes a reboot or a tmux restart took. For each"
-        opts.separator "workspace (default: every active one), restore reads the session ledger, launches"
+        opts.separator "workspace (default: the one the current directory is in; --all for every active"
+        opts.separator "one; not_in_workspace outside any), restore reads the session ledger, launches"
         opts.separator "the workspace if its tmux session is not running, recreates each recorded agent"
         opts.separator "pane that is gone (including panes you split by hand), and types"
         opts.separator "`claude --resume <session id>` into it from the session's directory."
@@ -5315,6 +5366,8 @@ module Workspace
         opts.separator "leaves the panes a workspace's config starts to the config. A session you ended"
         opts.separator "yourself (/exit, /clear) is not restored. Pane bindings move to the new panes."
         opts.separator ""
+        opts.on("--name NAME", "The workspace to restore (default: the one detected from the current directory)") { |v| name = v }
+        opts.on("--all", "Restore every active workspace") { all = true }
         opts.on("--dry-run", "Show what would be restored and which recorded panes can't be matched; change nothing") { dry_run = true }
         opts.on("--json", "Print one action document (see docs/README.restore.md) instead of text;",
           "the text goes to stderr. Exit 0, 3 when some rows failed, 1 when all did") { json = true }
@@ -5323,20 +5376,24 @@ module Workspace
         opts.separator "A recorded pane that could not be matched is reported, not a failure."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace restore --dry-run    # what would come back, and what can't"
-        opts.separator "  workspace restore    # restore every active workspace"
+        opts.separator "  workspace restore --dry-run    # what would come back here, and what can't"
+        opts.separator "  workspace restore    # restore the workspace you are in"
+        opts.separator "  workspace restore --all    # restore every active workspace"
         opts.separator "  workspace restore my-app --json"
       end
       parser.parse!(args)
       raise Error, "restore is not available: no restore command was wired" unless @restore_command
 
-      names = restore_targets(args)
+      given = (args.map { |arg| settle_name(arg) } + [name].compact).uniq
+      raise UsageError, "--all restores every active workspace; don't also name one.\n\n#{parser.help}" if all && given.any?
+      given = [current_workspace!(nil)] unless all || given.any?
+      names = restore_targets(given)
       run_action("restore", json: json) do
         @restore_command.call(names, dry_run: dry_run) { |missing| launch_for_restore(missing) }
       end
     end
 
-    # The workspaces `restore` acts on: the ones named, else the active set.
+    # The workspaces `restore` acts on: the ones named, else (`--all`) the active set.
     def restore_targets(names)
       @state.load
       unless names.empty?
@@ -5346,7 +5403,7 @@ module Workspace
         end
         return names.uniq
       end
-      raise Error, "No active workspace projects to restore. Name one: workspace restore WORKSPACE" if @state.empty?
+      raise Error, "No active workspace projects to restore. Name one: workspace restore WORKSPACE (--all restores every active one)" if @state.empty?
 
       @state.keys.dup
     end
@@ -6425,13 +6482,17 @@ module Workspace
       yes = false
       dry_run = false
       json = false
+      flag_name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace remove [options] NAME"
+        opts.banner = "Usage: workspace remove [options] [NAME]"
         opts.separator ""
         opts.separator "Delete a workspace's generated files: its tmuxinator config, its project"
         opts.separator "settings file and its state entry. Each file is copied aside first"
         opts.separator "(<file>.workspace-backup-<time>). The project's directory, git worktrees and"
         opts.separator "notes are never touched."
+        opts.separator ""
+        opts.separator "With no NAME, removes the workspace the current directory is in (a worktree's"
+        opts.separator "marker, else an active workspace whose root holds it); not_in_workspace outside any."
         opts.separator ""
         opts.separator "Refuses while the workspace's tmux session is up (session_running; run"
         opts.separator "'workspace stop NAME' first) and for a worktree project (not_removable; use"
@@ -6439,21 +6500,23 @@ module Workspace
         opts.separator "under --no-input it refuses without --yes."
         opts.separator ""
         opts.separator "Options:"
+        opts.on("--name NAME", "The workspace to remove (default: the one detected from the current directory)") { |v| flag_name = v }
         opts.on("--yes", "Skip the confirmation prompt") { yes = true }
         opts.on("--dry-run", "List what would be removed; no prompt, nothing changes") { dry_run = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
           "to stderr; a refusal is the error envelope. --json does not imply --yes: pass --yes in scripts") { json = true }
         opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace remove --dry-run    # see which files of the workspace you are in would go"
         opts.separator "  workspace remove myproject --dry-run    # see which files would go"
         opts.separator "  workspace remove myproject    # ask, then remove"
         opts.separator "  workspace remove myproject --yes --json    # no prompt, one action document"
       end
       parser.parse!(args)
-      raise UsageError, "workspace remove takes exactly one NAME.\n\n#{parser.help}" unless args.size == 1
+      raise UsageError, "workspace remove takes at most one NAME.\n\n#{parser.help}" if args.size > 1
       raise Error, "remove is not available: no remove command was wired" unless @remove_command
 
-      name = args.first
+      name = current_workspace!(single_workspace_arg(args, flag_name, "remove"))
       run_action("remove", json: json) do
         row = @remove_command.call(name, yes: yes, dry_run: dry_run)
         if !json
@@ -8045,20 +8108,23 @@ module Workspace
     end
 
     def cmd_dir(args)
+      name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dir <project>"
+        opts.banner = "Usage: workspace dir [--name WS] [project]"
         opts.separator ""
-        opts.separator "Print the root directory of a workspace project."
+        opts.separator "Print the root directory of a workspace project. With no project, the"
+        opts.separator "workspace the current directory is in (not_in_workspace outside any)."
+        opts.separator ""
+        opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| name = v }
         opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace dir    # the root of the workspace you are in"
         opts.separator "  workspace dir work-notes     # /Users/zdennis/Documents/Obsidian-LocalOnly/Zendesk"
-        opts.separator "  workspace dir growth-engine  # /Users/zdennis/Code/zendesk/growth-engine"
+        opts.separator "  workspace dir --name growth-engine  # /Users/zdennis/Code/zendesk/growth-engine"
       end
       parser.parse!(args)
 
-      raise UsageError, parser.help if args.empty?
-
-      project = args.first
+      project = current_workspace!(single_workspace_arg(args, name, "dir"))
       root = @project_config.project_root_for(project)
 
       unless root

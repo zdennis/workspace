@@ -115,7 +115,7 @@ workspace <subcommand> [options]
 | rebase | [README](docs/README.rebase.md) | Rebase a workspace's branch onto the default branch (`--onto local\|update\|remote\|upstream`); a conflict is aborted and reported |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
 | remove | [README](docs/README.remove.md) | Delete a stopped project's tmuxinator config, project settings and state entry (never its directory or notes) |
-| restore | [README](docs/README.restore.md) | Bring back agent panes after a reboot: launch the active workspaces, recreate recorded agent panes (hand-split ones too) and resume their sessions with `claude --resume`; `--dry-run` shows the plan and what can't be matched |
+| restore | [README](docs/README.restore.md) | Bring back agent panes after a reboot: launch the workspace you are in (`--all`: every active one), recreate recorded agent panes (hand-split ones too) and resume their sessions with `claude --resume`; `--dry-run` shows the plan and what can't be matched |
 | report-run-status | [README](docs/README.report-run-status.md) | Internal: write run result for --wait (called by shell wrapper) |
 | run | [README](docs/README.run.md) | Send a shell command to a pane in a project's tmux session |
 | run-and-report | [README](docs/README.run-and-report.md) | Run a command as a subprocess and capture stdout/stderr/exit status |
@@ -132,7 +132,7 @@ workspace <subcommand> [options]
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
 | statusline | [README](docs/README.statusline.md) | Render Claude Code's status line (install as its statusLine command) |
 | step | [README](docs/README.workflow.md) | For the agent on a workflow step: report on it (`done`) or see what it is (`status`) |
-| stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |
+| stop | [README](docs/README.stop.md) | Stop a workspace and its tmux session (default: the one you are in; `--all` for every active one) |
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
 | ticket | [README](docs/README.ticket.md) | Look up a ticket the way `start` reads it (`show`): a JIRA key, pull request, issue or branch, with its title and body from `gh` or `jira` and whether a workspace for it already exists; or list the tickets assigned to you or changed lately (`list`) |
 | tmux | [README](docs/README.tmux.md) | Show a workspace's tmuxinator file as windows and panes |

@@ -342,7 +342,7 @@ module Workspace
 
       duplicates = ids_to_projects.select { |_, projects| projects.size > 1 }
       if duplicates.any?
-        fix = "run 'workspace stop' then 'workspace launch' for affected projects"
+        fix = "run 'workspace stop --all' then 'workspace launch' for affected projects"
         hints = duplicates.map { |wid, projects| "window #{wid} claimed by: #{projects.join(", ")}" } + ["fix: #{fix}"]
         add_row("state-window-ids", "fail", "state: duplicate window IDs detected", fix: fix, hints: hints)
       else

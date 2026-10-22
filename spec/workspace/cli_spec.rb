@@ -334,12 +334,36 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("not found or has no root")
     end
 
-    it "exits 1 when no project argument given" do
+    it "prints the root of the workspace the working directory is in when no project is given" do
+      Dir.mktmpdir do |root|
+        state = CLITestHelpers::FakeState.new
+        state["project-a"] = {}
+        pc = CLITestHelpers::FakeProjectConfig.new("project-a" => root)
+        cli, output, _ = build_test_cli(project_config: pc, state: state, working_dir: File.join(root, "sub").tap { |d| Dir.mkdir(d) })
+
+        cli.run(["dir"])
+
+        expect(output.string.strip).to eq(File.expand_path(root))
+      end
+    end
+
+    it "prints the root of the workspace named by --name" do
+      pc = CLITestHelpers::FakeProjectConfig.new("project-a" => "/path/to/project-a")
+      cli, output, _ = build_test_cli(project_config: pc)
+      cli.run(["dir", "--name", "project-a"])
+      expect(output.string.strip).to eq("/path/to/project-a")
+    end
+
+    it "refuses with not_in_workspace when no project is given outside any workspace" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["dir"]) }.to raise_error(FakeSystemExit) { |e|
-        expect(e.status).to eq(1)
-      }
-      expect(error_output.string).to include("Usage:")
+      expect { cli.run(["dir"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("No workspace found for", "pass --name")
+    end
+
+    it "refuses a positional and a --name that differ" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["dir", "project-a", "--name", "project-b"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Give the workspace once")
     end
   end
 
@@ -942,10 +966,54 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with stop" do
-    it "stops all active projects when none specified" do
+    it "stops every active project with --all" do
       cli, output, _ = build_test_cli
-      cli.run(["stop"])
+      cli.run(["stop", "--all"])
       expect(output.string).to include("No active workspace projects")
+    end
+
+    it "stops only the workspace the working directory is in when none is named" do
+      Dir.mktmpdir do |root|
+        state = CLITestHelpers::FakeState.new
+        state["api"] = {}
+        state["web"] = {}
+        pc = CLITestHelpers::FakeProjectConfig.new("api" => root, "web" => "/elsewhere/web")
+        cli, output, _ = build_test_cli(project_config: pc, state: state, working_dir: root)
+
+        cli.run(["stop"])
+
+        expect(output.string).to include("Stopped 1 project(s): api")
+        expect(state.keys).to eq(["web"])
+      end
+    end
+
+    it "stops the workspace named by --name" do
+      state = CLITestHelpers::FakeState.new
+      state["api"] = {}
+      state["web"] = {}
+      cli, output, _ = build_test_cli(state: state)
+
+      cli.run(["stop", "--name", "web"])
+
+      expect(output.string).to include("Stopped 1 project(s): web")
+      expect(state.keys).to eq(["api"])
+    end
+
+    it "refuses with not_in_workspace outside any workspace with no name and no --all" do
+      state = CLITestHelpers::FakeState.new
+      state["api"] = {}
+      cli, output, _ = build_test_cli(state: state)
+
+      expect { cli.run(["stop", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+      expect(state.keys).to eq(["api"])
+    end
+
+    it "refuses --all beside a name" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["stop", "--all", "api"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--all stops every active workspace")
     end
 
     it "puts the stop command's warnings in the --json document and still exits 0" do
@@ -1164,12 +1232,45 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with kill" do
-    it "exits 1 when no project specified and no marker file found" do
-      cli, _, error_output = build_test_cli
-      expect { cli.run(["kill"]) }.to raise_error(FakeSystemExit) { |e|
+    it "refuses with not_in_workspace when no project is given outside any workspace" do
+      cli, output, _ = build_test_cli
+      expect { cli.run(["kill", "--json"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
-      expect(error_output.string).to include("No project specified")
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+    end
+
+    it "kills the workspace the working directory is in when none is named" do
+      Dir.mktmpdir do |root|
+        state = CLITestHelpers::FakeState.new
+        state["myproject.worktree-x"] = {}
+        pc = CLITestHelpers::FakeProjectConfig.new("myproject.worktree-x" => root)
+        kill_command = instance_double(Workspace::Commands::Kill)
+        allow(kill_command).to receive(:call).and_return("myproject.worktree-x")
+        cli, = build_test_cli(kill_command: kill_command, project_config: pc, state: state, working_dir: root)
+
+        cli.run(["kill"])
+
+        expect(kill_command).to have_received(:call).with("myproject.worktree-x", force: false, working_dir: root)
+      end
+    end
+
+    it "kills the workspace named by --name, keeping the prompt (no --force)" do
+      kill_command = instance_double(Workspace::Commands::Kill)
+      allow(kill_command).to receive(:call).and_return(nil)
+      raw = StringIO.new
+      cli, = build_test_cli(kill_command: kill_command, output: Workspace::OutputGate.new(raw))
+
+      cli.run(["kill", "--name", "myproject.worktree-x", "--json"])
+
+      expect(kill_command).to have_received(:call).with("myproject.worktree-x", force: false, working_dir: anything)
+      expect(JSON.parse(raw.string)["results"]).to eq([{"workspace" => "myproject.worktree-x", "outcome" => "cancelled", "reason" => "declined", "message" => "Not confirmed; nothing was removed."}])
+    end
+
+    it "refuses a positional and a --name that differ" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["kill", "a", "--name", "b"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Give the workspace once")
     end
 
     it "runs the post_kill hook from inside Kill, before the session is stopped" do
@@ -1186,12 +1287,36 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with finish" do
-    it "exits 1 when no project specified and no marker file found" do
-      cli, _, error_output = build_test_cli
-      expect { cli.run(["finish"]) }.to raise_error(FakeSystemExit) { |e|
+    it "refuses with not_in_workspace when no project is given outside any workspace" do
+      cli, output, _ = build_test_cli
+      expect { cli.run(["finish", "--json"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
-      expect(error_output.string).to include("No project specified")
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+    end
+
+    it "finishes the workspace the working directory is in when none is named" do
+      Dir.mktmpdir do |root|
+        state = CLITestHelpers::FakeState.new
+        state["myproject.worktree-x"] = {}
+        pc = CLITestHelpers::FakeProjectConfig.new("myproject.worktree-x" => root)
+        cli, _, error_output = build_test_cli(project_config: pc, state: state, working_dir: root)
+
+        # The fake config has no file on disk, so finish stops at the config check, past detection.
+        expect { cli.run(["finish"]) }.to raise_error(FakeSystemExit)
+
+        expect(error_output.string).to include("No config found for 'myproject.worktree-x'")
+      end
+    end
+
+    it "finishes the workspace named by --name" do
+      finish_command = instance_double(Workspace::Commands::Finish)
+      allow(finish_command).to receive(:call).and_return("myproject.worktree-x")
+      cli, = build_test_cli(finish_command: finish_command)
+
+      cli.run(["finish", "--name", "myproject.worktree-x"])
+
+      expect(finish_command).to have_received(:call).with("myproject.worktree-x", pr: false, json: false, working_dir: anything)
     end
 
     it "emits a JSON usage error and exits 1 for a bad flag with --json" do
@@ -3421,6 +3546,7 @@ RSpec.describe Workspace::CLI do
       cli.run(["relaunch"])
 
       expect(output.string).to include("Will relaunch: proj1, proj2")
+      expect(output.string).to include("Stopped 2 project(s): proj1, proj2")
     end
   end
 
@@ -5662,16 +5788,48 @@ RSpec.describe Workspace::CLI do
       build_test_cli(restore_command: restore_command, state: state, project_config: project_config, **overrides)
     end
 
-    it "restores the active set by default" do
+    it "restores the active set with --all" do
       state["api"] = {"iterm_window_id" => 1}
       state["web"] = {"headless" => true}
       restore = restore_class.new
       cli, = restore_cli(restore)
 
-      cli.run(["restore"])
-      cli.run(["restore", "--dry-run"])
+      cli.run(["restore", "--all"])
+      cli.run(["restore", "--all", "--dry-run"])
 
       expect(restore.calls).to eq([{names: %w[api web], dry_run: false}, {names: %w[api web], dry_run: true}])
+    end
+
+    it "restores only the workspace the working directory is in by default" do
+      state["api"] = {"iterm_window_id" => 1}
+      state["web"] = {"headless" => true}
+      restore = restore_class.new
+      cli, = restore_cli(restore, working_dir: "/code/web/src")
+
+      cli.run(["restore", "--dry-run"])
+
+      expect(restore.calls).to eq([{names: %w[web], dry_run: true}])
+    end
+
+    it "restores the workspace named by --name" do
+      restore = restore_class.new
+      cli, = restore_cli(restore)
+
+      cli.run(["restore", "--name", "api"])
+
+      expect(restore.calls).to eq([{names: %w[api], dry_run: false}])
+    end
+
+    it "refuses with not_in_workspace outside any workspace, and --all beside a name" do
+      state["api"] = {}
+      restore = restore_class.new
+      cli, _, error_output = restore_cli(restore)
+
+      expect { cli.run(["restore"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("No workspace found for")
+      expect { cli.run(["restore", "--all", "api"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--all restores every active workspace")
+      expect(restore.calls).to eq([])
     end
 
     it "restores only the workspaces named, each once" do
@@ -5697,8 +5855,8 @@ RSpec.describe Workspace::CLI do
       restore = restore_class.new
       cli, _, error_output = restore_cli(restore)
 
-      expect { cli.run(["restore"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
-      expect(error_output.string).to include("No active workspace projects to restore. Name one: workspace restore WORKSPACE")
+      expect { cli.run(["restore", "--all"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("No active workspace projects to restore. Name one: workspace restore WORKSPACE (--all restores every active one)")
       expect(restore.calls).to eq([])
     end
 
@@ -5706,13 +5864,13 @@ RSpec.describe Workspace::CLI do
       state["api"] = {}
       cli, = restore_cli(restore_class.new(result: {exit_code: 1, results: [], warnings: [], extra: {}}))
 
-      expect { cli.run(["restore"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect { cli.run(["restore", "--all"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
     end
 
     it "fails when no restore command was wired" do
       cli, _, error_output = build_test_cli(restore_command: nil)
 
-      expect { cli.run(["restore"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["restore", "--all"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("no restore command was wired")
     end
 
@@ -5763,7 +5921,7 @@ RSpec.describe Workspace::CLI do
         restore = restore_class.new(missing: %w[api web])
         cli, = restore_cli(restore, launch_command: launcher, launch_mode: CLITestHelpers.launch_mode(headless: false))
 
-        cli.run(["restore"])
+        cli.run(["restore", "--all"])
 
         expect(launcher.calls).to eq([[%w[api], false], [%w[web], true]])
         expect(restore.launch_failures).to eq({})
@@ -5775,7 +5933,7 @@ RSpec.describe Workspace::CLI do
         restore = restore_class.new(missing: %w[api])
         cli, = restore_cli(restore, launch_command: launch.new(state), launch_mode: CLITestHelpers.launch_mode(headless: false), instruction_composer: composer)
 
-        cli.run(["restore"])
+        cli.run(["restore", "--all"])
 
         expect(composer).not_to have_received(:compose_start)
       end
@@ -5785,7 +5943,7 @@ RSpec.describe Workspace::CLI do
         restore = restore_class.new(missing: %w[api web])
         cli, = restore_cli(restore, launch_command: launcher, launch_mode: CLITestHelpers.launch_mode(headless: false))
 
-        cli.run(["restore"])
+        cli.run(["restore", "--all"])
 
         expect(restore.launch_failures).to eq("web" => "tmuxinator exited 1")
       end
@@ -5795,7 +5953,7 @@ RSpec.describe Workspace::CLI do
         cli, = restore_cli(restore, launch_command: launch.new(state), launch_mode: CLITestHelpers.launch_mode(headless: false))
         allow(cli).to receive(:launch_rows).and_return([{"workspace" => "api", "outcome" => "failed", "reason" => "session_not_started", "message" => nil}])
 
-        cli.run(["restore"])
+        cli.run(["restore", "--all"])
 
         expect(restore.launch_failures).to eq("api" => "session_not_started")
       end
@@ -5805,7 +5963,7 @@ RSpec.describe Workspace::CLI do
         restore = restore_class.new(missing: %w[api web])
         cli, = restore_cli(restore, launch_command: launcher, launch_mode: CLITestHelpers.launch_mode(headless: false))
 
-        cli.run(["restore"])
+        cli.run(["restore", "--all"])
 
         expect(launcher.calls.size).to eq(2)
         expect(restore.launch_failures).to eq("api" => "Missing config for api")
@@ -9995,7 +10153,7 @@ RSpec.describe Workspace::CLI do
       it "prints ok with no results when nothing is running" do
         cli, raw, = action_cli
 
-        cli.run(["stop", "--json"])
+        cli.run(["stop", "--all", "--json"])
 
         expect(parse_one(raw)).to include("ok" => true, "status" => "ok", "results" => [])
       end
@@ -10575,7 +10733,7 @@ RSpec.describe Workspace::CLI do
         rows = [row.merge("outcome" => "would_restore"), row.merge("outcome" => "unmatched", "reason" => "no_window", "slot" => "api:1.0")]
         cli, raw, = restore_cli({exit_code: 0, results: rows, warnings: ["w"], status: "dry_run", extra: {"dry_run" => true, "unmatched" => unmatched}})
 
-        expect(exit_status { cli.run(["restore", "--dry-run", "--json"]) }).to eq(0)
+        expect(exit_status { cli.run(["restore", "--all", "--dry-run", "--json"]) }).to eq(0)
 
         expect(parse_one(raw)).to include("schema_version" => 1, "ok" => true, "action" => "restore", "status" => "dry_run", "dry_run" => true,
           "unmatched" => unmatched, "results" => rows, "warnings" => ["w"], "summary" => {"would_restore" => 1, "unmatched" => 1})
@@ -10585,18 +10743,18 @@ RSpec.describe Workspace::CLI do
         rows = [row, row.merge("outcome" => "unmatched", "reason" => "pane_busy")]
         cli, raw, = restore_cli({exit_code: 0, results: rows, warnings: [], extra: {"dry_run" => false, "unmatched" => []}})
 
-        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(0)
+        expect(exit_status { cli.run(["restore", "--all", "--json"]) }).to eq(0)
         expect(parse_one(raw)).to include("status" => "ok", "dry_run" => false)
       end
 
       it "is partial with exit 3 when some rows failed, and failed with exit 1 when all did" do
         failed = row.merge("outcome" => "failed", "reason" => "split_failed")
         cli, raw, = restore_cli({exit_code: 1, results: [row, failed], warnings: [], extra: {}})
-        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(3)
+        expect(exit_status { cli.run(["restore", "--all", "--json"]) }).to eq(3)
         expect(parse_one(raw)).to include("status" => "partial")
 
         cli, raw, = restore_cli({exit_code: 1, results: [failed], warnings: [], extra: {}})
-        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(1)
+        expect(exit_status { cli.run(["restore", "--all", "--json"]) }).to eq(1)
         expect(parse_one(raw)).to include("status" => "failed")
       end
 
@@ -10606,9 +10764,15 @@ RSpec.describe Workspace::CLI do
         expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"})
 
         cli, raw, err = action_cli(restore_command: restore_class.new({}))
-        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(1)
-        expect(parse_one(raw)).to include("ok" => false, "error" => "No active workspace projects to restore. Name one: workspace restore WORKSPACE")
+        expect(exit_status { cli.run(["restore", "--all", "--json"]) }).to eq(1)
+        expect(parse_one(raw)).to include("ok" => false, "error" => "No active workspace projects to restore. Name one: workspace restore WORKSPACE (--all restores every active one)")
         expect(err.string).to eq("")
+      end
+
+      it "answers not_in_workspace with the error envelope outside any workspace and without --all" do
+        cli, raw, = restore_cli({})
+        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(1)
+        expect(parse_one(raw)).to include("ok" => false, "code" => "not_in_workspace")
       end
     end
 
@@ -10877,10 +11041,42 @@ RSpec.describe Workspace::CLI do
         expect(parse_one(raw)).to include("status" => "cancelled")
       end
 
-      it "needs exactly one name" do
-        cli, = action_cli(remove_command: double("remove"))
+      it "takes at most one name" do
+        cli, _, err = action_cli(remove_command: double("remove"))
 
-        expect(exit_status { cli.run(["remove"]) }).to eq(1)
+        expect(exit_status { cli.run(["remove", "app", "web"]) }).to eq(1)
+        expect(err.string).to include("takes at most one NAME")
+      end
+
+      it "removes the workspace the working directory is in when no name is given" do
+        Dir.mktmpdir do |root|
+          state = CLITestHelpers::FakeState.new
+          state["app"] = {}
+          remove = double("remove", call: removed_row)
+          cli, = action_cli(remove_command: remove, state: state, project_config: CLITestHelpers::FakeProjectConfig.new("app" => root), working_dir: root)
+
+          cli.run(["remove", "--yes"])
+
+          expect(remove).to have_received(:call).with("app", yes: true, dry_run: false)
+        end
+      end
+
+      it "removes the workspace named by --name" do
+        remove = double("remove", call: removed_row)
+        cli, = action_cli(remove_command: remove)
+
+        cli.run(["remove", "--name", "app", "--dry-run"])
+
+        expect(remove).to have_received(:call).with("app", yes: false, dry_run: true)
+      end
+
+      it "refuses with not_in_workspace outside any workspace when no name is given" do
+        remove = double("remove")
+        cli, raw, = action_cli(remove_command: remove)
+
+        expect(exit_status { cli.run(["remove", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "code" => "not_in_workspace")
       end
     end
 

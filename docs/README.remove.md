@@ -5,13 +5,14 @@ Delete a stopped project's generated files: its tmuxinator config, its project s
 ## Usage
 
 ```sh
-workspace remove NAME [--yes] [--dry-run] [--json]
+workspace remove [NAME | --name WS] [--yes] [--dry-run] [--json]
 ```
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
+| `--name WS` | The workspace to remove, the same as `NAME`. With neither, `remove` acts on the workspace the working directory is in: a worktree's `.workspace-project` marker, else the active workspace whose root holds the directory; outside any workspace it refuses with `not_in_workspace` |
 | `--yes` | Don't ask first. Without it `remove` prompts; under `--no-input` (`WORKSPACE_NO_INPUT`) that is a `confirmation_required` error with `retry.flags: ["--yes"]` |
 | `--dry-run` | List what would be removed and change nothing; no prompt |
 | `--json` | Print one action document (see [`--json` output](README.json.md)); text goes to stderr. The prompt still asks unless `--yes` is given |
@@ -47,6 +48,9 @@ One row, with `outcome` `removed`, or `would_remove` (status `dry_run`) for `--d
 ## Examples
 
 ```sh
+# See which files of the workspace you are in would go
+workspace remove --dry-run
+
 # See which files would go
 workspace remove app --dry-run
 

@@ -293,9 +293,9 @@ workspace projects members | while read -r ws; do workspace stop "$ws"; done
 
 Use `while read -r` (or `--json`) rather than word splitting, so a path with
 spaces stays in one piece. Do not pass the output unquoted to a command that acts on
-every workspace when given no argument: with an empty result,
+another workspace when given no argument: with an empty result,
 `workspace stop $(workspace projects members)` becomes a bare `workspace stop`,
-which stops every active workspace.
+which stops the workspace you are in instead (or refuses outside one).
 
 - `--path` prints each member's checkout path instead of its name, in the same order.
 - Without `--all` it reads only the tmuxinator configs and `.git` files and runs

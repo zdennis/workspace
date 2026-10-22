@@ -12,11 +12,12 @@ workspace kill [options] [project]
 
 | Option | Description |
 |--------|-------------|
+| `--name WS` | The worktree workspace to kill, the same as the positional `project` (giving both with different values is a usage error) |
 | `-f`, `--force` | Skip confirmation, and skip the uncommitted/unpushed-work check |
 
 ## Details
 
-If no project is specified, detects the current worktree project from a `.workspace-project` marker file in the working directory.
+With no project (positionally or with `--name`), `kill` acts on the workspace the working directory is in: a worktree's `.workspace-project` marker, else the active workspace whose root holds the directory. Outside any workspace it refuses with `not_in_workspace` and removes nothing.
 
 Removes the git worktree, cleans up the tmuxinator config, project settings and state entry, then kills the tmux session. Prompts for confirmation before proceeding unless `--force` is used.
 
@@ -57,6 +58,7 @@ workspace kill
 
 # Kill a specific worktree project
 workspace kill myproject.worktree-PROJ-123
+workspace kill --name myproject.worktree-PROJ-123
 
 # Force kill without confirmation or the unsaved-work check
 workspace kill -f myproject.worktree-PROJ-123
@@ -68,4 +70,4 @@ workspace kill -f myproject.worktree-PROJ-123
 
 ## JSON output
 
-`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. When the notes directory was inside the worktree and held files, the row also has `"notes_inside_worktree":{"dir":"/abs","files":3}` and `warnings` has the sentence above; the key is absent otherwise. When step 3 stopped a dev environment the row also has `"dev_stopped": true`; the key is absent otherwise. A refusal is the failure envelope with `code` `unsaved_work` and `retry.flags` `["--force"]`. Run it from outside the session being killed, which ends last.
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. When the notes directory was inside the worktree and held files, the row also has `"notes_inside_worktree":{"dir":"/abs","files":3}` and `warnings` has the sentence above; the key is absent otherwise. When step 3 stopped a dev environment the row also has `"dev_stopped": true`; the key is absent otherwise. A refusal is the failure envelope with `code` `unsaved_work` and `retry.flags` `["--force"]`; outside any workspace with no project named, `code` is `not_in_workspace`. Run it from outside the session being killed, which ends last.

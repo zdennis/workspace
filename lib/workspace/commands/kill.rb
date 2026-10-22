@@ -78,7 +78,8 @@ module Workspace
       # 6. stop the session last: this may run inside the very session it
       #    kills, which ends this process before any later statement runs
       #
-      # @param project [String, nil] project/config name, or nil to detect from cwd
+      # @param project [String, nil] project/config name, or nil for the workspace +working_dir+ is in (its
+      #   worktree marker, else the active workspace whose root holds it)
       # @param force [Boolean] skip confirmation, and skip the unsaved-work refusal
       # @param confirm [Boolean] ask before removing; false skips the prompt but
       #   (unlike force) still refuses unsaved work
@@ -98,16 +99,16 @@ module Workspace
       #   before its config, settings and session go
       # @return [String, nil] the project name, or nil if the user cancelled
       # @raise [Workspace::UnsavedWorkError] if it has unsaved work and force is false
-      # @raise [Workspace::Error] if the project config is not a worktree project
+      # @raise [Workspace::Error] `not_in_workspace` when no project is given and none holds +working_dir+,
+      #   or when the project config is not a worktree project
       def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd, missing_ok: false, warn_inactive: true, outcome: nil)
         out = quiet ? StringIO.new : @output
         @notes_inside_worktree = nil
         @dev_stopped = false
-        project ||= @project_detector.detect_from_marker(working_dir)
+        project ||= @project_detector.detect(working_dir)
         unless project
-          raise Workspace::Error,
-            "No project specified and no #{MARKER_FILE} found in current directory.\n" \
-            "Run from inside a worktree, or specify the project name."
+          raise Workspace::Error.new("No workspace found for #{working_dir}. Run from inside a worktree workspace or name one (--name WS).",
+            code: "not_in_workspace", details: {"path" => working_dir})
         end
         config_path = @project_config.config_path_for(project)
         unless File.exist?(config_path)
