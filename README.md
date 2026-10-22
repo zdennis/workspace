@@ -84,17 +84,17 @@ workspace <subcommand> [options]
 | daemon | [README](docs/README.daemon.md) | List, show, restart (one or all) or read the log of agent daemons |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
 | dev | [README](docs/README.dev.md) | Start, stop, or inspect the repo's single dev environment (devenv lock); `up --queue`, `wait` and `leave` get in line, wait for a turn and give it up without holding a shell open |
-| dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |
+| dir | [README](docs/README.dir.md) | Print the root directory of a workspace project (default: the one you are in) |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
 | event-log | [README](docs/README.event-log.md) | Show or compact the append-only event log of state changes and agent activity |
 | events | [README](docs/README.events.md) | Read or follow the event log and every agent's hook events (tool, sub-agent, session, prompt) as one stream, resumable by cursor |
-| finish | [README](docs/README.finish.md) | Verify a worktree is clean and pushed, then remove it (optionally opens a PR) |
+| finish | [README](docs/README.finish.md) | Verify a worktree is clean and pushed, then remove it (default: the one you are in; optionally opens a PR) |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
 | handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
 | inbox | [README](docs/README.inbox.md) | A durable list of things that need a person, per workspace, project or globally: `add` (also `--from-json`, `--dedupe-key`), `list`, `show`, `edit`, `done`, `dismiss`, `reopen`, `snooze`, `ack` (derived rows), `list --include-derived` |
 | instructions | [README](docs/README.instructions.md) | Print the instructions built from library packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`, `research`, `spine`) |
-| kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
+| kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree (default: the one you are in) |
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows, or headless in plain tmux |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | library | [README](docs/README.library.md) | Store named plays, prompts, agents, skills and spine templates, globally or per project, beside the built-in packs (alias: `lib`) |
@@ -114,7 +114,7 @@ workspace <subcommand> [options]
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | rebase | [README](docs/README.rebase.md) | Rebase a workspace's branch onto the default branch (`--onto local\|update\|remote\|upstream`); a conflict is aborted and reported |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
-| remove | [README](docs/README.remove.md) | Delete a stopped project's tmuxinator config, project settings and state entry (never its directory or notes) |
+| remove | [README](docs/README.remove.md) | Delete a stopped project (default: the one you are in)'s tmuxinator config, project settings and state entry (never its directory or notes) |
 | restore | [README](docs/README.restore.md) | Bring back agent panes after a reboot: launch the workspace you are in (`--all`: every active one), recreate recorded agent panes (hand-split ones too) and resume their sessions with `claude --resume`; `--dry-run` shows the plan and what can't be matched |
 | report-run-status | [README](docs/README.report-run-status.md) | Internal: write run result for --wait (called by shell wrapper) |
 | run | [README](docs/README.run.md) | Send a shell command to a pane in a project's tmux session |
