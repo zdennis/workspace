@@ -36,6 +36,7 @@ module Workspace
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",
       "unknown_config_key" => "config set, get, unset or show was given a key that is not a config key, or config keys matched nothing.",
       "scope_not_allowed" => "config set, get or unset named a scope the key doesn't allow. details.key, details.scope, details.allowed (scopes, lowest first).",
+      "agent_command_not_executable" => "config set agent.commands.<kind> was given an absolute path that is missing, not a regular file or not executable. details.path, details.reason (missing, not_executable or not_a_file).",
       "editor_failed" => "config edit: $VISUAL or $EDITOR is not a valid command, or the editor could not be run. details.path.",
       "notes_dir_unresolved" => "The notes directory can't be worked out: the project's rule uses {branch} and the checkout is on no branch.",
       "notes_dir_unwritable" => "notes dir --create couldn't make the notes directory or list it in info/exclude, or a plan verb couldn't write or rename the plan file.",

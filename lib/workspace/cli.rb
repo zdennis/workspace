@@ -5524,6 +5524,7 @@ module Workspace
     def config_write_row(result, outcome, project, value: nil)
       extra = {key: result.key}
       extra[:value] = value if outcome == "set"
+      extra[:warnings] = result.warnings if result.warnings && !result.warnings.empty?
       outcome = "noop" if result.changed == false
       action_row(result.workspace, outcome, **extra, global: result.layer == "global", scope: result.scope, layer: result.layer,
         file: result.path, comments_preserved: result.comments_preserved, effective: config_effective_after(result.key, project))

@@ -3198,6 +3198,26 @@ RSpec.describe Workspace::CLI do
         FileUtils.rm_rf(dir)
       end
 
+      it "set --json gives an agent command row warnings only when there are some" do
+        dir = Dir.mktmpdir("ws-config-cli")
+        settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
+        raw = StringIO.new
+        gate = Workspace::OutputGate.new(raw)
+        err = StringIO.new
+        command = Workspace::Commands::Config.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: err),
+          agent_command_check: Workspace::AgentCommandCheck.new(which: ->(_) { false }), output: gate, error_output: err)
+        cli, = build_test_cli(output: gate, error_output: err, config_command: command)
+
+        cli.run(["config", "set", "--scope", "global", "agent.commands.claude", "claude-dev", "--json"])
+        cli.run(["config", "set", "--scope", "global", "alerts.idle_after", "15m", "--json"])
+
+        rows = raw.string.lines.map { |line| JSON.parse(line)["results"].first }
+        expect(rows[0]["warnings"]).to eq(["claude-dev is not on PATH"])
+        expect(rows[1]).not_to have_key("warnings")
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+
       it "show --scope forwards the scope to the report" do
         calls = []
         report = Object.new

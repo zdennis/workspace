@@ -47,7 +47,9 @@ module Workspace
       #   @return [Array<String>] the workspaces whose daemons read the file
       # @!attribute changed
       #   @return [Boolean] false when nothing was written (an `unset` of a key that wasn't set)
-      Result = Struct.new(:key, :workspace, :layer, :scope, :path, :comments_preserved, :backup, :affects, :changed, keyword_init: true)
+      # @!attribute warnings
+      #   @return [Array<String>, nil] what `set` printed to stderr as warnings (see {AgentCommandCheck})
+      Result = Struct.new(:key, :workspace, :layer, :scope, :path, :comments_preserved, :backup, :affects, :changed, :warnings, keyword_init: true)
 
       Target = Struct.new(:layer, :name, :path, :workspace)
       private_constant :Target
@@ -59,14 +61,17 @@ module Workspace
       #   write (key names only, never values); nil records nothing
       # @param project_config [Workspace::ProjectConfig, nil] lists the known workspaces: it lets
       #   `--scope workspace` refuse an unknown one and the restart hint name every affected daemon
+      # @param agent_command_check [Workspace::AgentCommandCheck, nil] checks an `agent.commands.<kind>` value
+      #   against the machine before `set` writes it; nil makes no such check
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] output stream for user-facing errors
-      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, project_config: nil, output: $stdout, error_output: $stderr)
+      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, project_config: nil, agent_command_check: nil, output: $stdout, error_output: $stderr)
         @project_settings = project_settings
         @lineage = lineage
         @file_backup = file_backup
         @event_log = event_log
         @project_config = project_config
+        @agent_command_check = agent_command_check
         @output = output
         @error_output = error_output
       end
@@ -78,18 +83,21 @@ module Workspace
       #   writes the highest layer the key allows at or below the workspace ({ConfigLayering.default_layer})
       # @param cwd [String] directory to infer the workspace from, when project is nil
       # @return [Result]
-      # @raise [Workspace::Error] code `unknown_config_key`, `scope_not_allowed` or `unknown_workspace`
+      # @raise [Workspace::Error] code `unknown_config_key`, `scope_not_allowed`, `unknown_workspace` or
+      #   `agent_command_not_executable`
       # @raise [Workspace::UsageError] for an invalid value or scope
       def set(key, value, project: nil, scope: nil, cwd: Dir.pwd)
         validate_key!(key)
         validate_value!(key, value)
+        warnings = @agent_command_check ? @agent_command_check.call(key, value) : []
         target = target_for(key, project, scope, cwd, "set")
         write = apply(target) { |data| store(data, key, value) }
         record_change(target.layer, "set", key, target.name)
         @output.puts target.name ? "Set #{key} = #{value} for '#{target.name}'." : "Set #{key} = #{value}."
         affects = affected_workspaces(target)
+        warnings.each { |warning| @error_output.puts "Warning: #{warning}" }
         print_restart_hint(key, affects)
-        result_for(key, target, write, affects)
+        result_for(key, target, write, affects).tap { |result| result.warnings = warnings }
       end
 
       # @param key [String] a dotted key from {Workspace::ConfigSchema}
