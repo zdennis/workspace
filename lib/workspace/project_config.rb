@@ -1,3 +1,4 @@
+require "shellwords"
 require "yaml"
 
 module Workspace
@@ -291,10 +292,18 @@ module Workspace
 
     def claude_line(line, command)
       line.split(" || ").map do |half|
-        words = half.split
+        words = raw_words(half)
         words[words.size - AgentCommands.program_words(half).size] = command
         words.join(" ")
       end.join(" || ")
+    end
+
+    # The words of +text+ as written (quotes and escapes kept), counted the way {AgentCommands.program_words} does.
+    def raw_words(text)
+      raw = text.scan(/(?:[^\s\\'"]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+/)
+      (raw.size == Shellwords.split(text).size) ? raw : text.split
+    rescue ArgumentError
+      text.split
     end
 
     # A YAML list item's text: plain when that reads back as the same string, else a double-quoted

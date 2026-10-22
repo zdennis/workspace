@@ -39,6 +39,19 @@ RSpec.describe Workspace::AgentCommandCheck do
     expect(check.call("agent.commands.claude", link)).to eq([])
   end
 
+  it "checks a quoted path that has a space" do
+    spaced = File.join(dir, "x y")
+    FileUtils.mkdir_p(spaced)
+    path = File.join(spaced, "claude-dev")
+    File.write(path, "#!/bin/sh\n")
+    File.chmod(0o755, path)
+    missing = File.join(spaced, "claude-gone")
+
+    expect(check.call("agent.commands.claude", %("#{path}" --model x))).to eq([])
+    expect(check.call("agent.commands.claude", Shellwords.escape(path))).to eq([])
+    expect(reason_for(%("#{missing}"))).to eq("path" => missing, "reason" => "missing")
+  end
+
   it "refuses a missing absolute path" do
     path = File.join(dir, "claude-gone")
 

@@ -333,6 +333,20 @@ RSpec.describe Workspace::ProjectConfig do
           expect(pc.rewrite_agent_pane(content, "codex", "myapp")).to eq("panes:\n  - codex-dev\n")
         end
 
+        it "replaces a quoted program with a space whole, keeping the flags" do
+          content = "panes:\n  - '\"/my bin/claude-old\" --continue || claude-old --dangerously-skip-permissions'\n"
+
+          expect(pc.rewrite_agent_pane(content, "claude", "myapp")).to eq(
+            "panes:\n  - claude-new --continue || claude-new --dangerously-skip-permissions\n"
+          )
+        end
+
+        it "replaces a program past VAR=value words and a trailing backslash" do
+          content = "panes:\n  - 'FOO=1 claude-old --dangerously-skip-permissions \\'\n"
+
+          expect(pc.rewrite_agent_pane(content, "claude", "myapp")).to eq("panes:\n  - FOO=1 claude-new --dangerously-skip-permissions \\\n")
+        end
+
         it "is nil when no line runs an agent" do
           expect(pc.rewrite_agent_pane("panes:\n  - echo hi\n", "claude", "myapp")).to be_nil
         end

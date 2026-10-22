@@ -1,3 +1,5 @@
+require "shellwords"
+
 module Workspace
   # Reads which coding agent a workspace runs (`agent.kind`) and the command
   # that starts each agent (`agent.commands.<kind>`), layered global, project
@@ -12,9 +14,14 @@ module Workspace
 
     # @param part [String] one shell command (no `||`, `&&`, `;` or `|`)
     # @return [Array<String>] its words from the program on, past `VAR=value` settings and wrapper words
-    #   (`env`, `exec`, `bundle exec`, ...)
+    #   (`env`, `exec`, `bundle exec`, ...); split as a shell does, so a quoted or backslash-escaped path
+    #   with a space is one word (a part with an unbalanced quote is split on whitespace)
     def self.program_words(part)
-      words = part.to_s.split
+      words = begin
+        Shellwords.split(part.to_s)
+      rescue ArgumentError
+        part.to_s.split
+      end
       words.shift while words.first&.match?(/\A\w+=/) || PREFIXES.include?(words.first) || words.first(2) == %w[bundle exec]
       words
     end

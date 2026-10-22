@@ -200,6 +200,16 @@ RSpec.describe Workspace::AgentCommands do
       expect(described_class.program_for("exec bundle exec claude-dev")).to eq("claude-dev")
     end
 
+    it "keeps a quoted or backslash-escaped path with a space whole" do
+      expect(described_class.program_for('"/Users/me/my bin/claude-dev" --model x')).to eq("claude-dev")
+      expect(described_class.program_for('/Users/me/my\ bin/claude-dev --model x')).to eq("claude-dev")
+      expect(described_class.program_words("'/a b/claude-dev' --x").first).to eq("/a b/claude-dev")
+    end
+
+    it "splits on whitespace when a quote is unbalanced" do
+      expect(described_class.program_words("claude-dev --msg 'oops")).to eq(["claude-dev", "--msg", "'oops"])
+    end
+
     it "is nil for a command with no program" do
       expect(described_class.program_for("  ")).to be_nil
       expect(described_class.program_for("FOO=1")).to be_nil

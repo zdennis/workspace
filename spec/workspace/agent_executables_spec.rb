@@ -191,6 +191,15 @@ RSpec.describe Workspace::AgentExecutables do
       expect(row).to include("name" => missing, "path" => missing, "source" => "configured", "found" => false)
     end
 
+    it "reads a quoted path with a space as one program" do
+      missing = File.join(tmp, "my bin", "claude-dev")
+      allow(project_settings).to receive(:load_global).and_return({"agent" => {"commands" => {"claude" => %("#{missing}" --model x)}}})
+
+      row = executables.call(kind: "claude")["executables"].first
+
+      expect(row).to include("name" => missing, "path" => missing, "source" => "configured", "found" => false)
+    end
+
     it "adds a row for a non-executable absolute path" do
       file = make(other, "claude-nox", mode: 0o644)
       allow(project_settings).to receive(:load_global).and_return({"agent" => {"commands" => {"claude" => file}}})
