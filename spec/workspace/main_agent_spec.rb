@@ -144,6 +144,21 @@ RSpec.describe Workspace::MainAgent do
       expect(main_agent.kind("app")).to eq("claude")
     end
 
+    context "when the configured value is an absolute path" do
+      let(:agent_commands) do
+        ps = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "/abs/claude-dev"}}}, load: {})
+        Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps))
+      end
+
+      it "takes a pane starting with that path as claude, and spawns it by that path" do
+        config_with(["echo hi", "/abs/claude-dev --dangerously-skip-permissions --continue || /abs/claude-dev --dangerously-skip-permissions"])
+        allow(project_config).to receive(:agent_pane_command).and_return(nil)
+
+        expect(main_agent.kind("app")).to eq("claude")
+        expect(main_agent.spawn_command("app", "claude")).to eq("/abs/claude-dev --dangerously-skip-permissions")
+      end
+    end
+
     it "still takes plain claude as claude" do
       config_with(["claude"])
 

@@ -124,6 +124,20 @@ RSpec.describe Workspace::AgentCommands do
       expect(agent_commands.names_for("app", "claude")).to eq(%w[claude claude-notes claude-dev])
     end
 
+    it "names the basename of an absolute-path command, which is what a pane label shows" do
+      global["agent"] = {"commands" => {"claude" => "/abs/claude-dev"}}
+
+      expect(agent_commands.names_for("app", "claude")).to eq(%w[claude claude-dev])
+    end
+
+    it "gives that basename as an alias that detects a pane as claude" do
+      global["agent"] = {"commands" => {"claude" => "/abs/claude-dev"}}
+
+      expect(agent_commands.aliases_for("app")).to eq("claude" => ["claude-dev"])
+      expect(agent_commands.detector("app").call(command: "claude-dev", pid: 1, tree: Workspace::ProcessTree::Snapshot.new([])))
+        .to eq(provider: Workspace::AgentProvider.find("claude"), pid: 1)
+    end
+
     it "skips a layer whose value does not parse" do
       stub_file("app", {"agent" => {"commands" => {"claude" => "  "}}})
 

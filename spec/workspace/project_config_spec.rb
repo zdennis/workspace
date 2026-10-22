@@ -236,6 +236,22 @@ RSpec.describe Workspace::ProjectConfig do
           expect(pane).to eq("claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions")
         end
 
+        it "types an absolute-path command verbatim in both halves of the chain" do
+          settings.replace("agent" => {"commands" => {"claude" => "/abs/claude-dev"}})
+
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+          expect(pane).to eq("/abs/claude-dev --dangerously-skip-permissions --continue || /abs/claude-dev --dangerously-skip-permissions")
+        end
+
+        it "types a path with a space as written, without shell quoting" do
+          settings.replace("agent" => {"commands" => {"claude" => "/Users/me/my bin/claude-dev"}})
+
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+          expect(pane).to eq("/Users/me/my bin/claude-dev --dangerously-skip-permissions --continue || /Users/me/my bin/claude-dev --dangerously-skip-permissions")
+        end
+
         it "reads the project layer over the global one" do
           allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"commands" => {"claude" => "claude-proj"}}})
 

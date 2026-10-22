@@ -1230,6 +1230,29 @@ RSpec.describe Workspace::Commands::Restore do
       expect(tmux.delivered).to eq([["api", "%2", "cd -- #{cwd} && claude-dev --dangerously-skip-permissions --resume #{sid(1)}"]])
     end
 
+    context "with an absolute-path command" do
+      let(:agent_commands) do
+        ps = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "/abs/claude-dev"}}}, load: {})
+        Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps))
+      end
+
+      before { write_config("api", claude: "/abs/claude-dev --dangerously-skip-permissions --continue || /abs/claude-dev --dangerously-skip-permissions") }
+
+      it "resumes with the path typed as written" do
+        started("api:0.2", sid(1))
+
+        call
+
+        expect(tmux.delivered).to eq([["api", "%2", "cd -- #{cwd} && /abs/claude-dev --dangerously-skip-permissions --resume #{sid(1)}"]])
+      end
+
+      it "does not skip a slot whose ledger kind is the program's basename" do
+        started("api:0.2", sid(1), kind: "claude-dev")
+
+        expect(rows(call)).to match([include("outcome" => "restored")])
+      end
+    end
+
     it "does not skip a slot whose ledger kind is the configured program as another agent" do
       started("api:0.2", sid(1), kind: "claude-dev")
 
