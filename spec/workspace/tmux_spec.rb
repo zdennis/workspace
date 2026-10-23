@@ -997,6 +997,24 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#close_pane" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "kills the pane and says whether tmux did" do
+      allow(Open3).to receive(:capture3).with("tmux", "kill-pane", "-t", "%12").and_return(["", "", double(success?: true)])
+      expect(tmux.close_pane("%12")).to be(true)
+
+      allow(Open3).to receive(:capture3).with("tmux", "kill-pane", "-t", "%12").and_return(["", "", double(success?: false)])
+      expect(tmux.close_pane("%12")).to be(false)
+    end
+
+    it "is false when tmux cannot be run" do
+      allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT)
+
+      expect(tmux.close_pane("%12")).to be(false)
+    end
+  end
+
   describe "#windows_in_session" do
     let(:tmux) { described_class.new(config: config) }
     let(:ok) { instance_double(Process::Status, success?: true) }

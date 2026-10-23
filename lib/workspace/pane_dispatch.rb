@@ -15,7 +15,8 @@ module Workspace
     DAEMON_TIMEOUT = 1.0
 
     # What {#spawn} did: the new pane's id and the {AgentReadiness::Result} of the wait.
-    Spawned = Struct.new(:pane, :ready, :label, keyword_init: true) do
+    # +closed+ is true when the agent was never ready and the new pane was closed again.
+    Spawned = Struct.new(:pane, :ready, :label, :closed, keyword_init: true) do
       # @return [Boolean] whether the agent was ready for text in time
       def ready? = ready.ready?
     end
@@ -132,8 +133,25 @@ module Workspace
       provider = AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
       id = @runner.call(name, @main_agent.spawn_command(name, kind), split: true,
         cwd: @project_config.project_root_for(name))
-      ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: id, **(@agent_commands&.detector_options(name) || {}))
-      Spawned.new(pane: id, ready: ready, label: provider.label)
+      begin
+        ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: id, **(@agent_commands&.detector_options(name) || {}))
+      rescue Workspace::Error => e
+        closed = close_unused(name, id)
+        raise Workspace::Error.new(e.message, code: e.code, details: e.details.merge("pane_id" => id, "pane_closed" => closed), retry_with: e.retry)
+      end
+      closed = ready.ready? ? false : close_unused(name, id)
+      Spawned.new(pane: id, ready: ready, label: provider.label, closed: closed)
+    end
+
+    # Closes a pane {#spawn} made, when its agent never became ready and nothing was typed into it.
+    # A workspace on a custom tmux socket keeps its pane: pane ids repeat across servers and the close
+    # would go to the default one.
+    # @param name [String] the workspace
+    # @param id [String] the new pane
+    # @return [Boolean] whether it was closed
+    def close_unused(name, id)
+      return false if @tmux.custom_socket_option(name)
+      @tmux.close_pane(id)
     end
 
     # @param name [String] the workspace

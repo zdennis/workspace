@@ -26,6 +26,7 @@ module Workspace
         "actions_manifest" => 0,
         "agent_send" => 1,
         "agent_spawn" => 1,
+        "spawn_cleanup" => 1,
         "focus_pane" => 1,
         "focus_cycle" => 1,
         "state_done" => 1,

@@ -516,6 +516,18 @@ module Workspace
       status.success?
     end
 
+    # Closes one pane by id. Only for a pane the caller made itself.
+    #
+    # @param pane_id [String] tmux pane id (e.g. "%12")
+    # @return [Boolean] whether tmux closed it
+    def close_pane(pane_id)
+      @logger.debug { "tmux: closing pane #{pane_id}" }
+      _, _, status = Open3.capture3("tmux", "kill-pane", "-t", pane_id)
+      status.success?
+    rescue SystemCallError
+      false
+    end
+
     # Lists the windows named +name+ in a session, with the pane each one
     # runs. tmux allows duplicate window names, so a session can hold more
     # than one window of a name (a `devenv` window opened while dead ones

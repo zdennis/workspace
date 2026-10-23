@@ -169,10 +169,17 @@ module Workspace
         spawned = @panes.spawn(name, kind)
         unless spawned.ready?
           message = "Started #{spawned.label} in new pane #{spawned.pane}, but it was not ready for the task in #{@panes.prompt_timeout}s " \
-            "(#{spawned.ready.reason}); nothing was typed."
+            "(#{spawned.ready.reason}); nothing was typed#{", and the pane was closed" if spawned.closed}."
           return task_row("failed", file, task, reason: "prompt_not_sent", message: message, pane: spawned.pane)
+              .merge("details" => {"pane_id" => spawned.pane, "pane_closed" => spawned.closed})
         end
-        deliver_task(name, file, task, spawned.pane, "spawned")
+        begin
+          deliver_task(name, file, task, spawned.pane, "spawned")
+        rescue Workspace::Error => e
+          # The split came first: name the new pane, which is still open.
+          raise Workspace::Error.new("#{e.message} The new pane #{spawned.pane} was left open.", code: e.code,
+            details: e.details.merge("pane_id" => spawned.pane, "pane_closed" => false), retry_with: e.retry)
+        end
       end
 
       def deliver_task(name, file, task, id, outcome)

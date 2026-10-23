@@ -35,7 +35,7 @@ RSpec.describe Workspace::Commands::SpineStart do
   let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.2", pane_id: "%23", label: "Codex") }
   let(:readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 9.0, wait: ready) }
   let(:sessions) { ["api"] }
-  let(:tmux) { instance_double(Workspace::Tmux, custom_socket_option: nil, session_name_for: "api") }
+  let(:tmux) { instance_double(Workspace::Tmux, custom_socket_option: nil, session_name_for: "api", close_pane: true) }
   let(:library) do
     Workspace::Library.allocate.tap do |lib|
       allow(lib).to receive(:play) { |ref, cwd:| {"ref" => "play/#{ref.sub(%r{\Aplay/}, "")}", "path" => "/lib/#{ref}.md"} }
@@ -288,8 +288,20 @@ RSpec.describe Workspace::Commands::SpineStart do
       error = refusal { start(spawn: "codex") }
       expect(error.code).to eq("stage_done")
       expect(error.details["pane"]).to eq("%23")
+      expect(error.details).to include("pane_id" => "%23", "pane_closed" => false)
+      expect(tmux).not_to have_received(:close_pane)
       expect(error.message).to include("new pane %23 was left open")
       expect(sender).not_to have_received(:deliver)
+    end
+
+    it "keeps the pane and names it when typing the brief fails after the agent was ready" do
+      allow(sender).to receive(:deliver).and_raise(Workspace::Error.new("typing failed", code: "send_failed"))
+
+      doc = start(spawn: "codex")
+
+      expect(doc).to include("outcome" => "failed", "reason" => "send_failed", "pane" => "%23")
+      expect(doc["details"]).to eq("pane_id" => "%23", "pane_closed" => false)
+      expect(tmux).not_to have_received(:close_pane)
     end
 
     it "writes and types nothing when the new agent is not ready" do
@@ -299,6 +311,8 @@ RSpec.describe Workspace::Commands::SpineStart do
       doc = start(spawn: "codex")
 
       expect(doc).to include("ok" => false, "outcome" => "failed", "reason" => "prompt_not_sent", "pane" => "%23", "status" => "not_started")
+      expect(doc["details"]).to eq("pane_id" => "%23", "pane_closed" => true)
+      expect(tmux).to have_received(:close_pane).with("%23")
       expect(stage_text("40-verify.md")).to eq(before)
       expect(sender).not_to have_received(:deliver)
     end

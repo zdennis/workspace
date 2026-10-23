@@ -113,7 +113,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports ahead_of_base once the snapshot counts commits ahead of the base branch" do
       command.call(json: true)
 
-      expect(document["features"]).to include("ahead_of_base" => 1)
+      expect(document["features"]).to include("ahead_of_base" => 1, "spawn_cleanup" => 1)
     end
 
     it "reports agent_commands once the agent's command can be configured" do

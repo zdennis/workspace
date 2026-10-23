@@ -22,7 +22,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
    "sessions":2,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":6,"events_follow":1,"events_tool_input":1,
-   "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"focus_cycle":1,"state_done":1,
+   "actions_manifest":0,"agent_send":1,"agent_spawn":1,"spawn_cleanup":1,"focus_pane":1,"focus_cycle":1,"state_done":1,
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":2,
    "ui_open":3,"pane_bindings":3,"library":5,"library_play":3,"library_recipes":1,"library_copy":4,"library_installed":1,"instructions":1,"restore":1,
    "workflow":2,"window_state":1,"window_position":1,"cleanup_dry_run":1,"notes":2,"start_packs":2,"start_agent":1,"agent_commands":1,"ahead_of_base":1,"agent_executables":1,"start_plan":1,
@@ -66,6 +66,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `actions_manifest` | Not available yet |
 | `agent_send` | `agent-run send --pane` types text or tmux keys into one named pane; `ask answer --deliver` types an answer into the asking pane |
 | `agent_spawn` | `launch --json` rows carry `prompt_sent` and `pane`, and `run --split --json` names the new pane, so a caller need not compare two `sessions` reads to find the pane it started or sent to (see [`launch`](README.launch.md#json-output), [`run`](README.run.md#json-output)) |
+| `spawn_cleanup` | A failed `plan start --spawn` or `spine start --spawn` closes the pane it split when the agent never became ready (nothing was typed), and names the pane in `details.pane_id` with `details.pane_closed` in every failure after the split (see [`plan start`](README.plan.md), [`spine start`](README.spine.md#spine-start)) |
 | `focus_pane` | `focus --pane` selects a pane after focusing the window |
 | `focus_cycle` | `focus --cycle [--reverse]` focuses the next tracked workspace with a live window; none is `no_windows_to_cycle` |
 | `state_done` | `sessions --json` panes can report `state: "done"` with a `stop_reason` (see [`sessions`](README.sessions.md)) |
