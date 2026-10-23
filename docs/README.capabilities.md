@@ -131,6 +131,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `agent_executables` | `agent executables` lists the agent programs on PATH by family (name, path, shadowed, effective per kind), and `config set agent.commands.<kind>` validates an absolute path (see [`agent`](README.agent.md#agent-executables) and [`config`](README.config.md#agent-commands)) |
 | `start_plan` | `start --plan[=TITLE]` runs `plan init` in the new worktree and sends the `implementation-plan` play with the first prompt, so the agent drafts the tasks (`--prompt` becomes the goal); `start --json` reports `plan` beside `play`. Cannot be combined with `--play`. Pairs with `plan` 5, where `plan start` on a plan with no tasks gives outcome `drafting` (see [`start`](README.start.md#plan)) |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)). Level 2: `prune` writes `worktree_finished` with outcome `pruned` for each workspace it removes, and writes at most one `state_removed` per removed workspace, not two |
+| `bookkeeping_excluded` | Workspace's own bookkeeping files stay out of `git status` and review diffs: backups (`*.workspace-backup-*`) and a settings file workspace created are listed in the repository's `info/exclude` (see [`init`](README.init.md#agent-session-hooks)). A tracked file is never listed |
 
 ## Examples
 

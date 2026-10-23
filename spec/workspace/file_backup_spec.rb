@@ -48,3 +48,30 @@ RSpec.describe Workspace::FileBackup do
     end
   end
 end
+
+RSpec.describe Workspace::FileBackup, "bookkeeping excludes" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:excluder) { instance_double(Workspace::BookkeepingExclude, backup: true) }
+  let(:path) { File.join(tmpdir, "settings.json") }
+  let(:clock) { double(now: Time.new(2026, 9, 26, 10, 22, 21)) }
+
+  subject(:backup) { described_class.new(output: StringIO.new, clock: clock, excluder: excluder) }
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  it "lists the backup it wrote" do
+    File.write(path, "x")
+
+    destination = backup.backup(path)
+
+    expect(excluder).to have_received(:backup).with(destination)
+  end
+
+  it "lists nothing in a dry run" do
+    File.write(path, "x")
+
+    backup.backup(path, dry_run: true)
+
+    expect(excluder).not_to have_received(:backup)
+  end
+end

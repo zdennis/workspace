@@ -474,3 +474,32 @@ RSpec.describe Workspace::HookInstaller do
     end
   end
 end
+
+RSpec.describe Workspace::HookInstaller, "bookkeeping excludes" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:output) { StringIO.new }
+  let(:excluder) { instance_double(Workspace::BookkeepingExclude, created: true) }
+  let(:provider) { Workspace::AgentProvider.find("claude") }
+  let(:settings_path) { File.join(tmpdir, ".claude", "settings.json") }
+  let(:installer) do
+    described_class.new(backup: Workspace::FileBackup.new(output: output), output: output, input: StringIO.new,
+      user_settings_path: File.join(tmpdir, "none.json"), excluder: excluder)
+  end
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  it "lists a settings file it created" do
+    installer.install(provider, tmpdir, "workspace session-event", quiet: true)
+
+    expect(excluder).to have_received(:created).with(settings_path)
+  end
+
+  it "leaves a settings file that already existed alone" do
+    FileUtils.mkdir_p(File.dirname(settings_path))
+    File.write(settings_path, "{}")
+
+    installer.install(provider, tmpdir, "workspace session-event", quiet: true)
+
+    expect(excluder).not_to have_received(:created)
+  end
+end

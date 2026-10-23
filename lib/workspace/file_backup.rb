@@ -10,9 +10,11 @@ module Workspace
   class FileBackup
     # @param output [IO] stream for user-facing messages
     # @param clock [#now] time source, injected for deterministic tests
-    def initialize(output: $stdout, clock: Time)
+    # @param excluder [Workspace::BookkeepingExclude, nil] lists the backup pattern in the checkout's `info/exclude`
+    def initialize(output: $stdout, clock: Time, excluder: nil)
       @output = output
       @clock = clock
+      @excluder = excluder
     end
 
     # Copies path aside and reports where the copy landed.
@@ -25,7 +27,10 @@ module Workspace
       return nil unless File.exist?(path)
 
       destination = backup_path(path)
-      FileUtils.cp(path, destination) unless dry_run
+      unless dry_run
+        FileUtils.cp(path, destination)
+        @excluder&.backup(destination)
+      end
       @output.puts "  backup  #{destination}" unless quiet
       destination
     end

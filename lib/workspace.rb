@@ -276,6 +276,7 @@ require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
 require_relative "workspace/workflow_nudger"
+require_relative "workspace/bookkeeping_exclude"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/workspace_name"
@@ -386,8 +387,9 @@ module Workspace
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
     workspace_name = WorkspaceName.new(project_config: project_config)
     project_detector = ProjectDetector.new(state: state, project_config: project_config, workspace_name: workspace_name)
-    file_backup = FileBackup.new(output: output)
-    hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
+    bookkeeping_exclude = BookkeepingExclude.new(git: git, git_exclude: GitExclude.new(git: git))
+    file_backup = FileBackup.new(output: output, excluder: bookkeeping_exclude)
+    hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input, excluder: bookkeeping_exclude)
     pipeline_config = PipelineConfig.new(config: config)
     launch_mode = LaunchMode.new(project_settings: project_settings)
 

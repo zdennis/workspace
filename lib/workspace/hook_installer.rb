@@ -11,6 +11,7 @@ module Workspace
   # nothing), and always backs the file up first.
   class HookInstaller
     # @param backup [Workspace::FileBackup] writes the pre-edit copy
+    # @param excluder [Workspace::BookkeepingExclude, nil] lists a settings file workspace creates in the checkout's `info/exclude`
     # @param output [IO] stream for user-facing messages
     # @param input [IO] stream for interactive confirmation
     # @param user_settings_path [String] the coding agent's user-level
@@ -21,8 +22,9 @@ module Workspace
     #   directory an environment variable moves (`CODEX_HOME`)
     # @param home [String] home directory holding a user-scoped agent's config
     def initialize(backup:, output: $stdout, input: $stdin, user_settings_path: File.expand_path("~/.claude/settings.json"),
-      env: ENV, home: Dir.home)
+      env: ENV, home: Dir.home, excluder: nil)
       @backup = backup
+      @excluder = excluder
       @output = output
       @input = input
       @user_settings_path = user_settings_path
@@ -119,7 +121,10 @@ module Workspace
       end
 
       @backup.backup(path, dry_run: dry_run, quiet: quiet)
-      write_settings(path, merged) unless dry_run
+      unless dry_run
+        write_settings(path, merged)
+        @excluder&.created(path) unless existed
+      end
       unless quiet
         @output.puts "  #{existed ? "update" : "create"}  #{path}"
         @output.puts "  note    #{provider.hook_trust_hint}" if provider.hook_trust_hint
@@ -238,6 +243,7 @@ module Workspace
       unless dry_run
         FileUtils.mkdir_p(File.dirname(path))
         File.write(path, JSON.pretty_generate(merged) + "\n")
+        @excluder&.created(path) unless existed
       end
       @output.puts "  #{existed ? "update" : "create"}  #{path}" unless quiet
 
