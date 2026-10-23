@@ -55,6 +55,7 @@ module Workspace
         "start_plan" => 1,
         "handoff_auto" => 2,
         "handoff_codex" => 1,
+        "handoff_wait" => 1,
         "dev_queue" => 2,
         "plan" => 5,
         "ticket" => 2,

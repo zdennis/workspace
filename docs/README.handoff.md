@@ -66,6 +66,20 @@ Exit 2 is a deliberate departure from this project's usual `--json` error contra
 
 Same as `workspace agent-run restart`: 0 once the restart has started (or, with `--wait`, finished), 1 if it was refused or failed.
 
+## Waiting for the restart
+
+Capability `handoff_wait` (level 1). Without `--wait`, `new` returns once the agent daemon has accepted the restart; a later failure goes only to the daemon's stderr. With `--wait`, the daemon holds the connection until the restart ends and `new` prints the outcome. With `--wait --json`, stdout is one document:
+
+- Success (exit 0): `{"schema_version":1,"ok":true,"pane":...,"pane_id":"%19","context_before":N,"context_after":N|null,"status":"restarted","delivery":"landed"|...}`, plus `warning` when the delivery has one. `status: "restarted"` means `/clear` was confirmed and the resume prompt was typed.
+- Refusal or failure (exit 1): `{"schema_version":1,"ok":false,"error":"<message>","code":"<code>"}`, plus `pane` and `pane_id` once the daemon accepted the restart, and `context_before` once the context was read (so never with `pane_busy`). The list of `code` values is not exhaustive; branch on the ones you know and treat the rest as a failure. Before the restart starts: `no_daemon`, `connection_failed`, `unreadable_reply`, `bad_pane`, `no_such_pane`, `unsupported_agent`, `context_unknown`, and errors resolving the default pane or doc (a plain error document, no `pane`). While waiting: `pane_busy`, `clear_not_confirmed`, `pane_gone`, `pane_in_pipeline`, `not_delivered`, `context_unknown`, `agent_stopped` (the daemon shut down mid-restart), `internal_error`.
+
+Waiting has two bounds, and each timeout has its own `code`, so it is not mistaken for another failure:
+
+- `pane_busy`: the pane did not go quiet (screen unchanged for 2s and the agent neither working nor waiting on a person) within 120s. Nothing was typed.
+- `clear_not_confirmed`: `/clear` was typed but no reading from a new conversation arrived within 30s. The resume prompt was not typed, and the pane may be cleared.
+
+Neither bound is configurable from `handoff new`: the 120s is fixed, and `handoff new` sends no timeout, so the 30s default applies (`agent-run restart --timeout` can change only that second bound, up to 600s). The client has no deadline of its own, so the worst case is about 150s plus the delivery. Do not run `--wait` from the agent being restarted.
+
 ## How context usage is read
 
 `check` (and `new`, when `--pane` is omitted) reads the workspace's agent daemon `sessions` snapshot, which already carries each pane's `context_pct`/`context_error` (see [README.sessions.md](README.sessions.md) and [README.statusline.md](README.statusline.md)). Nothing here scrapes the pane itself or guesses a percentage.
