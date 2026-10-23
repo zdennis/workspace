@@ -29,6 +29,10 @@ module Workspace
       MAX_FILES = 200
       MAX_COMMITS = 50
 
+      # Bytes of patch `show --patch` returns unless told otherwise, and the most it accepts.
+      DEFAULT_PATCH_BYTES = 200_000
+      MAX_PATCH_BYTES = 5_242_880
+
       # Longest question, default or context copied into a packet.
       MAX_ASK_TEXT = 500
 
@@ -71,11 +75,16 @@ module Workspace
       #
       # @param name [String] a workspace (tmuxinator config) name
       # @param json [Boolean] print the schema-versioned JSON payload instead of text
+      # @param patch [Integer, nil] when set, add the unified patch of the diffstat's range, cut to this many bytes
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       # @raise [Workspace::Error] if the workspace or its checkout can't be found, unless +json+ is set
-      def show(name:, json: false)
+      # @raise [Workspace::UsageError] if +patch+ is not a whole number from 1 to {MAX_PATCH_BYTES}, unless +json+ is set
+      def show(name:, json: false, patch: nil)
+        if patch && !(patch.is_a?(Integer) && patch.between?(1, MAX_PATCH_BYTES))
+          raise Workspace::UsageError, "--max-bytes must be a whole number from 1 to #{MAX_PATCH_BYTES}."
+        end
         member = find_member(name)
-        payload = packet(member)
+        payload = packet(member, patch_bytes: patch)
         if json
           @output.puts JSON.generate(payload)
         else
@@ -202,11 +211,12 @@ module Workspace
         }.merge(task_unavailable ? {"task_unavailable" => true} : {}).merge(asks["unavailable"] ? {"asks_unavailable" => true} : {})
       end
 
-      def packet(member)
+      def packet(member, patch_bytes: nil)
         workspace = member.workspace
         agent = agent_facts(workspace, recorded_lookup([workspace]))
         task, task_unavailable = task_state(workspace)
         git = git_facts(member.path, detail: true)
+        git = git.merge("patch" => patch_facts(member.path, git["base"], patch_bytes)) if patch_bytes && git["available"]
         ledger = ledger_facts(workspace, task, agent)
         {
           "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
@@ -309,6 +319,15 @@ module Workspace
         facts.merge(extra)
       end
 
+      # The patch of the diffstat's range. A failure is `available: false`; the rest of the packet stands.
+      def patch_facts(path, base, max_bytes)
+        found = @git.diff_patch(path, base, max_bytes: max_bytes)
+        return {"available" => false, "reason" => "error"} unless found
+        {"available" => true, "text" => found["text"], "bytes" => found["bytes"], "max_bytes" => max_bytes, "truncated" => found["truncated"]}
+      rescue Workspace::Error, SystemCallError
+        {"available" => false, "reason" => "error"}
+      end
+
       def diff_and_commits(path, base)
         stat = @git.diff_stat(path, base)
         commits = @git.commits_since(path, base, limit: MAX_COMMITS)
@@ -399,6 +418,7 @@ module Workspace
         say "Ready   #{payload["ready"] ? "yes" : "no"}"
         say "Branch  #{git_line(git)}"
         print_diffstat(git["diffstat"])
+        print_patch(git["patch"])
         say "PR      #{pr_line(payload["pull_request"])}"
         asks = payload["asks"]
         say "Asks    #{asks["open"].size} open, #{asks["answered"]} answered#{" (unreadable)" if asks["unavailable"]}"
@@ -431,6 +451,13 @@ module Workspace
         say "Diff    #{stat["files"]} files, +#{stat["added"]} -#{stat["removed"]}"
         stat["entries"].first(10).each { |e| say "  #{"+#{e["added"] || "bin"}".ljust(7)}#{"-#{e["removed"] || "bin"}".ljust(7)}#{e["path"]}" }
         say "  ... #{stat["files"] - 10} more" if stat["files"] > 10
+      end
+
+      def print_patch(patch)
+        return unless patch
+        return say("Patch   unavailable (#{patch["reason"]})") unless patch["available"]
+        say "Patch   #{patch["bytes"]} bytes#{", cut to #{patch["max_bytes"]} (raise it with --max-bytes)" if patch["truncated"]}"
+        patch["text"].each_line { |line| say line.chomp }
       end
 
       def pr_line(pr)

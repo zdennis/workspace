@@ -4343,7 +4343,7 @@ module Workspace
 
     def review_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace review [show] [WORKSPACE | --name WS] [--json]\n       workspace review list [PROJECT] [--json]"
+        opts.banner = "Usage: workspace review [show] [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]\n       workspace review list [PROJECT] [--json]"
         opts.separator ""
         opts.separator "Collect what you need to review a coding agent's finished work. A workspace is ready"
         opts.separator "when its agent is done (the Stop hook fired and no pane is working or waiting) and its"
@@ -4355,6 +4355,7 @@ module Workspace
         opts.separator "                    questions, session count and the agent's last message. WORKSPACE"
         opts.separator "                    defaults to the one for the current directory. A workspace named"
         opts.separator "                    \"list\" is reviewed with `review show list`."
+        opts.separator "                    --patch adds the unified patch of the same range as the diffstat."
         opts.separator "  list [PROJECT]    The project's workspaces that are ready. PROJECT is a project name, a"
         opts.separator "                    member workspace name or a path; it defaults to the current directory's."
         opts.separator "                    Runs git only for workspaces whose agent is done, and never calls gh."
@@ -4363,11 +4364,14 @@ module Workspace
         opts.separator "failing or too slow) is reported as unavailable, never as clean."
         opts.separator ""
         opts.on("--name WS", "For show: the workspace, as an option (same as the positional WORKSPACE)") { |v| options[:name] = v }
+        opts.on("--patch", "For show: include the unified patch of the diffstat's range (git.patch in --json)") { options[:patch] = true }
+        opts.on("--max-bytes N", Integer, "For show --patch: most patch bytes to return, 1 to 5242880 (default 200000)") { |v| options[:max_bytes] = v }
         opts.on("--json", "Print schema-versioned JSON (see docs/README.review.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace review list    # what is ready in this project"
+        opts.separator "  workspace review --patch --max-bytes 50000 --json    # the packet with the patch cut at 50000 bytes"
         opts.separator "  workspace review my-app.worktree-fix-login --json"
         opts.separator "  workspace review    # the packet for the workspace in the current directory"
       end
@@ -4388,13 +4392,17 @@ module Workspace
 
       raise UsageError, "--name is for 'review show'; 'review list' takes a PROJECT argument instead: run 'workspace review list PROJECT' (or 'workspace review list' inside the project)." if options[:name] && subcommand == "list"
 
+      raise UsageError, "--patch and --max-bytes are for 'review show'." if subcommand == "list" && (options[:patch] || options[:max_bytes])
+      raise UsageError, "--max-bytes needs --patch." if options[:max_bytes] && !options[:patch]
+
       result = if subcommand == "list"
         @review_command.list(project: args.first, json: options[:json])
       else
         name = pick_workspace_name(options[:name], args.first) || @project_detector.detect(@working_dir)
         raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
 
-        @review_command.show(name: name, json: options[:json])
+        patch = options[:patch] ? {patch: options[:max_bytes] || Commands::Review::DEFAULT_PATCH_BYTES} : {}
+        @review_command.show(name: name, json: options[:json], **patch)
       end
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e

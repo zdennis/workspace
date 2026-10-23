@@ -848,8 +848,8 @@ module CLITestHelpers
       @result = {exit_code: 0}
     end
 
-    def show(name:, json: false)
-      @calls << {show: name, json: json}
+    def show(name:, json: false, **extra)
+      @calls << {show: name, json: json}.merge(extra)
       @result
     end
 

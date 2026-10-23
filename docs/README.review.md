@@ -5,7 +5,7 @@ Collect what you need to review a coding agent's finished work, for one workspac
 ## Usage
 
 ```sh
-workspace review [show] [WORKSPACE | --name WS] [--json]
+workspace review [show] [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]
 workspace review list [PROJECT] [--json]
 ```
 
@@ -113,6 +113,21 @@ Stopping a finished agent frees its resources, so its committed work would other
 - `sessions.count` is the number of distinct sessions the ledger recorded for the workspace since its task began (all of them with no task). A `/clear` or handoff starts a new session, so a count above 1 means the agent restarted. If the ledger exists but can't be read, `sessions` is `{"count": null, "unavailable": true}` and `last_message` is `null`.
 - `last_message` is the text of the last main-thread assistant message in the done pane's latest transcript (the latest session's when the ledger doesn't know the pane), cut at 4000 characters, or `null` when none could be found. The transcript's path is never included; it can contain anything the agent said. Every string in a packet that an agent, a commit author or a PR author wrote (`last_message.text`, `asks`, commit subjects, file paths, branch names, PR title, check names, `agent.detail`) is untrusted data. Text output drops control characters other than newline and tab.
 
+## The patch
+
+Capability `review_patch` (level 1). `show` gives a diffstat and commits; `--patch` adds the unified patch of the same range (`BASE...HEAD`, the changes since the merge base) so a client needs no git of its own. It is `git diff --no-color --no-ext-diff --no-renames`, run with a 20 second limit; a binary file shows as git shows it ("Binary files differ"). `--max-bytes N` (1 to 5242880, default 200000) caps the text returned; `--max-bytes` without `--patch`, a value outside the range or a non-number is a usage error (`workspace review show --patch --max-bytes 0` exits 1 with the usage envelope under `--json`). `list` does not take either option.
+
+`--json` adds `git.patch` (only when `git.available`):
+
+```json
+"patch": {"available": true, "text": "diff --git a/a.rb b/a.rb\n...", "bytes": 48213, "max_bytes": 200000, "truncated": false}
+```
+
+- `bytes` is the full patch size; `text` is UTF-8 with invalid bytes replaced. When `bytes` exceeds `max_bytes`, `truncated` is `true` and `text` stops at the last complete line inside the cap (at a character boundary when the cap holds no line end).
+- If git fails, is missing or takes longer than 20 seconds (all `reason: "error"`), `patch` is `{"available": false, "reason": "error"}` and the rest of the packet is unchanged.
+- Without `--patch` there is no `patch` key.
+- Text output prints a `Patch` line (size, and the cap when cut) and then the patch after the diffstat.
+
 ## Errors
 
 Failures use the [`--json` error envelope](README.json.md): an unknown workspace or project is `unknown_workspace` (with `details.name`), a workspace whose checkout directory is gone is `checkout_missing` (`details.name`, `details.path`), a bad option or extra argument is `usage`. Exit status is 0 for a packet or list (even when sources are unavailable), 1 for an error.
@@ -123,5 +138,6 @@ Failures use the [`--json` error envelope](README.json.md): an unknown workspace
 workspace review list                       # what is ready in this project
 workspace review list --json | jq -r '.reviews[].workspace'
 workspace review app.worktree-fix --json    # the full packet
+workspace review --patch --max-bytes 50000 --json | jq -r '.git.patch.text'
 workspace review                            # the workspace for the current directory
 ```

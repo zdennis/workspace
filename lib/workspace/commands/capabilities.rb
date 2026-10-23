@@ -75,6 +75,7 @@ module Workspace
         "inbox" => 3,
         "ask_withdraw" => 1,
         "review" => 1,
+        "review_patch" => 1,
         "add_json" => 1,
         "plan_progress" => 1,
         "spine_events" => 2,
