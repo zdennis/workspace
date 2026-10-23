@@ -450,6 +450,135 @@ RSpec.describe Workspace::Commands::Ask do
       expect(error_from(args: ["nope", "x"], deliver: true).message).to eq("No question 'nope' for myapp.")
     end
 
+    describe "#deliver" do
+      it "types the recorded answer again and changes nothing in the store" do
+        id = ask
+        command.answer(id, "postgres", working_dir: "/app")
+
+        result = command.deliver(id, working_dir: "/app")
+
+        expect(result).to eq(exit_code: 0)
+        expect(tmux.deliveries).to eq([{session: "myapp", pane: "%19", text: "postgres", enter: true}])
+        expect(output.string).to include("Typed the answer to #{id} into pane %19 and pressed Enter.")
+      end
+
+      it "is the retry after a failed answer --deliver" do
+        id = ask
+        tmux.delivery_status = :not_landed
+        failure = error_from(args: [id, "postgres"], deliver: true)
+        expect(failure.message).to include("Retry with `workspace ask deliver #{id} --name myapp`")
+        expect(failure.details).to include("retry" => "workspace ask deliver #{id} --name myapp")
+        tmux.delivery_status = :submitted
+
+        command.deliver(id, working_dir: "/app")
+
+        expect(tmux.deliveries.last).to include(text: "postgres", pane: "%19")
+      end
+
+      it "adds the delivery to the JSON document" do
+        id = ask
+        command.answer(id, "x", working_dir: "/app")
+        output.truncate(0)
+        output.rewind
+
+        command.deliver(id, working_dir: "/app", json: true)
+
+        payload = JSON.parse(output.string)
+        expect(payload).to include("ok" => true, "delivered" => {"pane" => "%19", "submitted" => true})
+        expect(payload["question"]).to include("id" => id, "status" => "answered", "answer" => "x")
+      end
+
+      it "refuses an open question with ask_not_answered" do
+        id = ask
+
+        error = begin
+          command.deliver(id, working_dir: "/app")
+        rescue Workspace::Error => e
+          e
+        end
+
+        expect(error.code).to eq("ask_not_answered")
+        expect(error.details).to eq("id" => id, "status" => "open")
+        expect(tmux.deliveries).to be_empty
+      end
+
+      it "refuses a withdrawn question and reports it as JSON" do
+        id = ask
+        command.withdraw(id, working_dir: "/app")
+        output.truncate(0)
+        output.rewind
+
+        result = command.deliver(id, working_dir: "/app", json: true)
+
+        expect(result).to eq(exit_code: 1)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "ask_not_answered")
+      end
+
+      it "names the exact retry command when typing fails again" do
+        id = ask
+        command.answer(id, "x", working_dir: "/app")
+        tmux.delivery_status = :not_landed
+
+        error = begin
+          command.deliver(id, pane: "%19", working_dir: "/app")
+        rescue Workspace::Error => e
+          e
+        end
+
+        expect(error.message).to include("Typing the answer to question '#{id}' into pane %19 failed")
+        expect(error.details["retry"]).to eq("workspace ask deliver #{id} --name myapp --pane %19")
+      end
+
+      it "keeps the not-found error for an unknown id" do
+        expect { command.deliver("nope", working_dir: "/app") }.to raise_error(Workspace::Error, "No question 'nope' for myapp.")
+      end
+
+      it "applies the stale pane rule" do
+        id = ask
+        command.answer(id, "x", working_dir: "/app")
+        tmux.server_pid = "9999"
+
+        expect { command.deliver(id, working_dir: "/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("stale_pane") }
+        expect(tmux.deliveries).to be_empty
+      end
+
+      it "fails with no_pane for a question asked outside tmux" do
+        id = ask({})
+        command.answer(id, "x", working_dir: "/app")
+
+        expect { command.deliver(id, working_dir: "/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_pane") }
+      end
+
+      it "types into --pane instead, still within the workspace's session" do
+        id = ask({})
+        command.answer(id, "x", working_dir: "/app")
+
+        command.deliver(id, pane: "%19", working_dir: "/app")
+
+        expect(tmux.deliveries).to eq([{session: "myapp", pane: "%19", text: "x", enter: true}])
+        expect { command.deliver(id, pane: "%7", working_dir: "/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("wrong_session") }
+      end
+
+      it "exits 2 in JSON when the answer may already be in the pane" do
+        id = ask
+        command.answer(id, "x", working_dir: "/app")
+        tmux.delivery_status = :unverified
+        output.truncate(0)
+        output.rewind
+
+        result = command.deliver(id, working_dir: "/app", json: true)
+
+        expect(result).to eq(exit_code: 2)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_submitted")
+      end
+
+      it "is refused when no sender is wired" do
+        plain = described_class.new(config: config, project_detector: project_detector, env: {}, output: output, error_output: error_output)
+
+        expect { plain.deliver("x", working_dir: "/app") }.to raise_error(Workspace::Error, /not available in this build/)
+      end
+    end
+
     it "refuses deliver when no sender is wired" do
       plain = described_class.new(config: config, project_detector: project_detector, env: {}, output: output, error_output: error_output)
 

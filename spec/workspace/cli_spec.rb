@@ -2701,6 +2701,30 @@ RSpec.describe Workspace::CLI do
       expect(ask_command.calls).to contain_exactly(a_hash_including(action: :withdraw, id: "q_7", json: true))
     end
 
+    it "dispatches ask deliver with the id and --pane" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "deliver", "q_7", "--pane", "%19", "--json"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :deliver, id: "q_7", pane: "%19", json: true))
+    end
+
+    it "reports a missing id for ask deliver as JSON under --json" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(ask_command: ask_command)
+
+      expect { cli.run(["ask", "deliver", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(ask_command.calls).to be_empty
+    end
+
+    it "requires an id for ask deliver" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(ask_command: ask_command)
+
+      expect { cli.run(["ask", "deliver"]) }.to raise_error(FakeSystemExit)
+    end
+
     it "treats withdraw as the question text when --default is given" do
       ask_command = CLITestHelpers::FakeAskCommand.new
       cli, = build_test_cli(ask_command: ask_command)

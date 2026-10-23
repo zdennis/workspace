@@ -194,6 +194,7 @@ module Workspace
       "invalid_inbox_item" => "An inbox item's field doesn't pass the checks (control characters, length, https URL). `details.field`, `details.reason`.",
       "unknown_derived_item" => "No derived source produces that id right now (inbox ack or snooze); see `inbox list --include-derived`. `details.id`.",
       "ask_not_open" => "`ask answer` or `ask withdraw` named a question that is no longer open (answered or withdrawn). `details.id`, `details.status`.",
+      "ask_not_answered" => "`ask deliver` named a question that has no recorded answer (still open or withdrawn). `details.id`, `details.status`.",
       "use_ask_answer" => "An `ask:` id can't be acked or snoozed: a question leaves the inbox when it is answered or withdrawn. `details.id`.",
       "invalid_cursor" => "events --since was given something that isn't a cursor an events line printed.",
       "invalid_workflow" => "A workflow definition file doesn't pass the checks.",

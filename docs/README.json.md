@@ -289,6 +289,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `invalid_inbox_item` | A field of an item being added doesn't pass the checks: a control character, a length over its cap, a non-https URL, an unknown type or source kind, an expiry in the past. `details.field` (such as `title` or `source.url`), `details.reason`. |
 | `unknown_derived_item` | `inbox ack` or `inbox snooze` named a derived id that no source produces right now (a pane that is no longer waiting, a stored item id given to `ack`). `details.id`. |
 | `ask_not_open` | `ask answer` or `ask withdraw` named a question that is already answered or withdrawn. `details.id`, `details.status`. |
+| `ask_not_answered` | `ask deliver` named a question with no recorded answer (still open or withdrawn). `details.id`, `details.status`. |
 | `use_ask_answer` | `inbox ack` or `inbox snooze` named an `ask:` id; answer the question with `ask answer` (or close it with `ask withdraw`) instead. `details.id`. |
 | `invalid_cursor` | `events --since` was given something that isn't a cursor an `events` line printed. |
 | `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |

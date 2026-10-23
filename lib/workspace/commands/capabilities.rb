@@ -77,6 +77,7 @@ module Workspace
         "rebase" => 2,
         "inbox" => 3,
         "ask_withdraw" => 1,
+        "ask_deliver" => 1,
         "review" => 1,
         "review_patch" => 1,
         "add_json" => 1,

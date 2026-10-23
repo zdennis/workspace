@@ -924,6 +924,11 @@ module CLITestHelpers
       @result
     end
 
+    def deliver(id, pane: nil, working_dir: Dir.pwd, json: false)
+      @calls << {action: :deliver, id: id, pane: pane, working_dir: working_dir, json: json}
+      @result
+    end
+
     def withdraw(id, working_dir: Dir.pwd, json: false)
       @calls << {action: :withdraw, id: id, working_dir: working_dir, json: json}
       @result

@@ -2129,6 +2129,7 @@ module Workspace
       when "list" then cmd_ask_list(rest)
       when "answer", "resolve" then cmd_ask_answer(rest)
       when "withdraw" then cmd_ask_withdraw(rest)
+      when "deliver" then cmd_ask_deliver(rest)
       when "help", "--help", "-h", nil then @output.puts ask_help
       else cmd_ask_record(args)
       end
@@ -2139,6 +2140,7 @@ module Workspace
         Usage: workspace ask [WS] "<question>" --default "<default taken>" [options]
                workspace ask list [WS] [--all] [--json]
                workspace ask answer [WS] <id> "<answer>" [--deliver] [--json]
+               workspace ask deliver [WS] <id> [--pane P] [--json]
                workspace ask withdraw [WS] <id> [--json]
 
         Records a question an unattended agent hit, with the default it took,
@@ -2151,16 +2153,24 @@ module Workspace
                                   and withdrawn ones, with their status)
           answer <id> <answer>    Resolve an open question (alias: resolve); with --deliver,
                                   also type the answer and Enter into the pane that asked
+          deliver <id>            Type an answered question's answer and Enter into its pane again
+                                  (the retry when `answer --deliver` saved the answer but could not type it;
+                                  check the pane first, this types the answer again);
+                                  --pane P types into another pane of the workspace instead
           withdraw <id>           Close an open question nobody needs answered any more; it
                                   leaves `ask list` and the inbox, and can't be answered
 
-        A first word of list, answer, resolve, withdraw or help is a subcommand only
+        A first word of list, answer, resolve, deliver, withdraw or help is a subcommand only
         without --default; `workspace ask list --default x` records "list".
 
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
                             current directory (the same as the WS argument); outside any
                             workspace and with neither, the command fails with not_in_workspace
+
+        Options (deliver):
+          --pane P          Type into pane P (a pane id or window.pane of the workspace's
+                            own tmux session) instead of the pane that asked
 
         Options (answer):
           --deliver         Type the answer, then Enter, into the pane that asked, which must
@@ -2260,6 +2270,32 @@ module Workspace
       end
 
       result = @ask_command.answer(id, answer, working_dir: working_dir_for(workspace), json: json, deliver: deliver)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError => e
+      raise unless json_requested?(json, args)
+      emit_json_error(Commands::Ask::JSON_SCHEMA_VERSION, e)
+    end
+
+    def cmd_ask_deliver(args)
+      workspace = nil
+      json = false
+      pane = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace ask deliver [WS] <id> [--pane P] [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
+        opts.on("--pane PANE", "Type into this pane (id or window.pane of the workspace's session) instead of the asking pane") { |v| pane = v }
+        opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
+      end
+      parser.parse!(args)
+
+      workspace = take_known_workspace!(args) if args.size == 2 && workspace.nil?
+      id = args.shift
+      if id.nil? || args.any?
+        raise UsageError, parser.help unless json_requested?(json, args)
+        return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask deliver: an id is required.")
+      end
+
+      result = @ask_command.deliver(id, pane: pane, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
