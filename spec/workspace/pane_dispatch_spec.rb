@@ -75,7 +75,7 @@ RSpec.describe Workspace::PaneDispatch do
   end
 
   describe "#spawn that fails" do
-    before { allow(tmux).to receive_messages(close_pane: true, custom_socket_option: nil) }
+    before { allow(tmux).to receive_messages(close_pane: true, custom_socket_option: nil, capture_screen: "") }
 
     it "closes the new pane when the agent is not ready" do
       allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout"))
@@ -85,6 +85,36 @@ RSpec.describe Workspace::PaneDispatch do
       expect(spawned).not_to be_ready
       expect(spawned.closed).to be(true)
       expect(tmux).to have_received(:close_pane).with("%23")
+    end
+
+    it "keeps a Codex pane open at a sign-in screen and says so" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "still starting up", label: "Codex"))
+      allow(tmux).to receive(:capture_screen).with("%23").and_return("Welcome to Codex\n\n> 1. Sign in with ChatGPT\n  2. Provide your own API key\n")
+
+      spawned = dispatch.spawn("api", "codex")
+
+      expect(spawned).to have_attributes(closed: false, waiting: "sign_in")
+      expect(tmux).not_to have_received(:close_pane)
+      expect(dispatch.not_ready_details(spawned)).to eq("pane_id" => "%23", "pane_closed" => false, "waiting" => "sign_in")
+      expect(dispatch.not_ready_message(spawned, "task")).to match(/left open: finish the sign-in screen in it, then start the task again/)
+    end
+
+    it "keeps a Codex pane open at a folder-trust screen" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "x"))
+      allow(tmux).to receive(:capture_screen).with("%23").and_return("Trust this folder?\n\n> 1. Trust and continue\n  2. Quit\n")
+
+      expect(dispatch.spawn("api", "codex")).to have_attributes(closed: false, waiting: "trust")
+    end
+
+    it "still closes a pane whose screen is unrecognised" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "x"))
+      allow(tmux).to receive(:capture_screen).with("%23").and_return("starting...\n")
+
+      spawned = dispatch.spawn("api", "codex")
+
+      expect(spawned).to have_attributes(closed: true, waiting: nil)
+      expect(dispatch.not_ready_details(spawned)).to eq("pane_id" => "%23", "pane_closed" => true)
+      expect(dispatch.not_ready_message(spawned, "task")).to end_with("and the pane was closed.")
     end
 
     it "leaves the pane when the workspace uses a custom tmux socket" do

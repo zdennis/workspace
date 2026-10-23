@@ -662,12 +662,6 @@ module Workspace
       refresh_screen_wait(pane, agent && agent[:provider], screen, now)
     end
 
-    # Lines from the bottom of the screen a provider's waiting screens are
-    # looked for in; a prompt sits at the bottom, and older scrollback may
-    # still show one that was answered.
-    SCREEN_WAIT_LINES = 40
-    private_constant :SCREEN_WAIT_LINES
-
     # The key of the wait a matched screen opens in the pane's waits. Hooks
     # key theirs by agent id, so this never meets one.
     SCREEN_WAIT_KEY = "screen"
@@ -678,7 +672,7 @@ module Workspace
     # in `waiting` while one is shown, and take it out when it goes.
     def refresh_screen_wait(pane, provider, screen, now)
       return if screen.empty? # a failed capture says nothing about the prompt
-      message, = provider&.waiting_screens&.find { |_, pattern| pattern.match?(screen_tail(screen)) }
+      message = provider&.waiting_screen(screen)&.fetch(:message)
       hook_waiting = pane[:waits].keys.any? { |key| key != SCREEN_WAIT_KEY }
       if message && !hook_waiting
         wait = (pane[:waits][SCREEN_WAIT_KEY] ||= resumed_wait(pane, SCREEN_WAIT_KEY))
@@ -688,10 +682,6 @@ module Workspace
         pane[:waits].delete(SCREEN_WAIT_KEY)
         pane[:alerted_waits]&.delete(SCREEN_WAIT_KEY)
       end
-    end
-
-    def screen_tail(screen)
-      screen.to_s.lines.last(SCREEN_WAIT_LINES).join
     end
 
     def detect_agent(detail, tree)

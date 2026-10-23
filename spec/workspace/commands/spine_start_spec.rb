@@ -35,7 +35,7 @@ RSpec.describe Workspace::Commands::SpineStart do
   let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.2", pane_id: "%23", label: "Codex") }
   let(:readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 9.0, wait: ready) }
   let(:sessions) { ["api"] }
-  let(:tmux) { instance_double(Workspace::Tmux, custom_socket_option: nil, session_name_for: "api", close_pane: true) }
+  let(:tmux) { instance_double(Workspace::Tmux, custom_socket_option: nil, session_name_for: "api", close_pane: true, capture_screen: "") }
   let(:library) do
     Workspace::Library.allocate.tap do |lib|
       allow(lib).to receive(:play) { |ref, cwd:| {"ref" => "play/#{ref.sub(%r{\Aplay/}, "")}", "path" => "/lib/#{ref}.md"} }
@@ -301,6 +301,18 @@ RSpec.describe Workspace::Commands::SpineStart do
 
       expect(doc).to include("outcome" => "failed", "reason" => "send_failed", "pane" => "%23")
       expect(doc["details"]).to eq("pane_id" => "%23", "pane_closed" => false)
+      expect(tmux).not_to have_received(:close_pane)
+    end
+
+    it "keeps the pane open and names the screen when Codex waits for a sign-in" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout", pane: nil, pane_id: "%23", label: "Codex"))
+      allow(tmux).to receive(:capture_screen).with("%23").and_return("> 1. Sign in with ChatGPT\n  2. Provide your own API key\n")
+
+      doc = start(spawn: "codex")
+
+      expect(doc).to include("outcome" => "failed", "reason" => "prompt_not_sent", "pane" => "%23")
+      expect(doc["details"]).to eq("pane_id" => "%23", "pane_closed" => false, "waiting" => "sign_in")
+      expect(doc["message"]).to include("finish the sign-in screen")
       expect(tmux).not_to have_received(:close_pane)
     end
 
