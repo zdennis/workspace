@@ -93,7 +93,8 @@ module Workspace
         "remove" => 1,
         "lifecycle_current" => 1,
         "promote" => 1,
-        "split_cwd" => 1
+        "split_cwd" => 1,
+        "launch_prompt_status" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

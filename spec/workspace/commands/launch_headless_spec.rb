@@ -158,6 +158,19 @@ RSpec.describe Workspace::Commands::Launch, "headless" do
     expect(state["proj1"]).to be_nil
   end
 
+  it "does not say Done! when a headless prompt was not sent" do
+    allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
+    allow(agent_readiness).to receive(:wait)
+      .and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "no agent"))
+
+    result = command.call(["proj1"], headless: true, prompts: {"proj1" => "do it"})
+
+    expect(result[:exit_code]).to eq(1)
+    expect(output.string).not_to include("Done!")
+    expect(output.string).to include("headless, but the prompt was not sent.")
+    expect(error_output.string).to include("Error: the prompt was not sent to: proj1")
+  end
+
   it "sends --prompt through the same readiness wait and delivery as an iTerm launch" do
     allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
     allow(agent_readiness).to receive(:wait)
