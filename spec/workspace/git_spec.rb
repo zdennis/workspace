@@ -650,6 +650,46 @@ RSpec.describe Workspace::Git do
           expect { JSON.generate(git.commits_since(@repo_dir, "origin/main", limit: 1)) }.not_to raise_error
         end
 
+        it "returns the unified patch of the diffstat's range, binary files as git shows them" do
+          patch = git.diff_patch(@repo_dir, "origin/main", max_bytes: 100_000)
+
+          expect(patch).to include("truncated" => false, "bytes" => patch["text"].bytesize)
+          expect(patch["text"]).to include("diff --git a/a.txt b/a.txt", "+two", "Binary files /dev/null and b/img.bin differ")
+          expect(patch["text"]).not_to include("\e[")
+        end
+
+        it "cuts at a line end inside the cap and flags it" do
+          full = git.diff_patch(@repo_dir, "origin/main", max_bytes: 100_000)
+          cut = git.diff_patch(@repo_dir, "origin/main", max_bytes: 120)
+
+          expect(cut).to include("truncated" => true, "bytes" => full["bytes"])
+          expect(cut["text"]).to end_with("\n")
+          expect(full["text"]).to start_with(cut["text"])
+          expect(cut["text"].bytesize).to be <= 120
+        end
+
+        it "cuts on a character boundary when the cap holds no line end" do
+          wide = described_class.new(runner: ->(*, **) { ["é" * 10, "", true] }).diff_patch(@repo_dir, "x", max_bytes: 5)
+
+          expect(wide).to include("text" => "éé", "truncated" => true)
+        end
+
+        it "drops a 4-byte character cut at the cap and reports a patch that fits exactly as whole" do
+          runner = ->(*, **) { ["😀😀", "", true] }
+          cut = described_class.new(runner: runner).diff_patch(@repo_dir, "x", max_bytes: 7)
+          exact = described_class.new(runner: runner).diff_patch(@repo_dir, "x", max_bytes: 8)
+
+          expect(cut).to include("text" => "😀", "truncated" => true, "bytes" => 8)
+          expect(exact).to include("text" => "😀😀", "truncated" => false)
+        end
+
+        it "scrubs invalid bytes and is nil for an unknown base or a git that fails or times out" do
+          bad = described_class.new(runner: ->(*, **) { ["a\xFFb\n", "", true] }).diff_patch(@repo_dir, "x", max_bytes: 100)
+          expect(bad["text"]).to eq("a�b\n")
+          expect(git.diff_patch(@repo_dir, "origin/nope", max_bytes: 100)).to be_nil
+          expect(described_class.new(runner: ->(*, **) { raise Timeout::Error }).diff_patch(@repo_dir, "x", max_bytes: 100)).to be_nil
+        end
+
         it "keeps a file name with spaces intact" do
           commit_file("with space.txt", "x\n")
 

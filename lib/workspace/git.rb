@@ -644,6 +644,39 @@ module Workspace
       end
     end
 
+    # Seconds {#diff_patch} may take.
+    PATCH_TIMEOUT = 20
+
+    # The unified patch of the range {#diff_stat} summarizes, cut to at most +max_bytes+: at the
+    # last line end inside the cap when there is one, else on a UTF-8 character boundary. Colors,
+    # external diff drivers and rename detection are off; a binary file shows as git shows it.
+    #
+    # @param path [String] checkout
+    # @param base [String] a ref, see {#base_ref}
+    # @param max_bytes [Integer] most bytes of patch text to return
+    # @return [Hash, nil] `"text"` (UTF-8, invalid bytes scrubbed), `"bytes"` (the full patch size)
+    #   and `"truncated"`; nil if git could not answer or ran past {PATCH_TIMEOUT}
+    def diff_patch(path, base, max_bytes:)
+      stdout, _, success = @runner.call(
+        ["git", "diff", "--no-color", "--no-ext-diff", "--no-renames", "#{base}...HEAD"], chdir: path, timeout: PATCH_TIMEOUT
+      )
+      return nil unless success
+      raw = stdout.b
+      if raw.bytesize <= max_bytes
+        return {"text" => raw.dup.force_encoding(Encoding::UTF_8).scrub, "bytes" => raw.bytesize, "truncated" => false}
+      end
+
+      head = raw.byteslice(0, max_bytes)
+      newline = head.rindex("\n".b)
+      head = head.byteslice(0, newline + 1) if newline
+      head.force_encoding(Encoding::UTF_8)
+      # No line end inside the cap: drop a character cut in half at the end (at most 3 bytes).
+      3.times { head = head.byteslice(0, head.bytesize - 1).force_encoding(Encoding::UTF_8) unless head.valid_encoding? || head.empty? }
+      {"text" => head.scrub, "bytes" => raw.bytesize, "truncated" => true}
+    rescue Errno::ENOENT, Timeout::Error
+      nil
+    end
+
     # Removes a worktree, untracked files included. Unless force is set, it
     # first re-checks for unsaved work (see #unsaved_work) and refuses, so the
     # check sits right next to the removal rather than minutes before it.

@@ -33,8 +33,10 @@ RSpec.describe Workspace::Commands::Review do
       "/src/app.worktree-new" => {base: "origin/main", ahead: 3, branch: "new", changed: 0, unpushed: 3, stat: [], commits: []}
     }
   end
+  let(:patch_calls) { [] }
   let(:git) do
     facts = git_facts
+    calls = patch_calls
     Class.new do
       define_method(:base_ref) { |path| facts.dig(path, :base) }
       define_method(:commits_ahead_of) { |path, _base| facts.dig(path, :ahead) }
@@ -42,6 +44,11 @@ RSpec.describe Workspace::Commands::Review do
       define_method(:changed_files_count) { |path| facts.dig(path, :changed) }
       define_method(:unpushed_commit_count) { |path| facts.dig(path, :unpushed) }
       define_method(:diff_stat) { |path, _base| facts.dig(path, :stat) }
+      define_method(:diff_patch) do |path, base, max_bytes:|
+        calls << [path, base, max_bytes]
+        full = facts.dig(path, :patch)
+        full && {"text" => full.byteslice(0, max_bytes), "bytes" => full.bytesize, "truncated" => full.bytesize > max_bytes}
+      end
       define_method(:commits_since) { |path, _base, limit:| facts.dig(path, :commits)&.first(limit) }
     end.new
   end
@@ -528,6 +535,78 @@ RSpec.describe Workspace::Commands::Review do
       review.show(name: "app.worktree-fix")
 
       expect(output.string).to include("Agent   unavailable (timeout)", "Branch  unavailable (no_base)", "PR      unavailable (gh_missing)", "Last message  none found")
+    end
+  end
+
+  describe "#show with a patch" do
+    let(:patch_text) { "diff --git a/a.rb b/a.rb\n+one\n+two\n" }
+
+    before { git_facts["/src/app.worktree-fix"][:patch] = patch_text }
+
+    it "adds git.patch for the diffstat's base, with its size and no truncation" do
+      review.show(name: "app.worktree-fix", json: true, patch: 200_000)
+
+      expect(parsed["git"]["patch"]).to eq("available" => true, "text" => patch_text, "bytes" => patch_text.bytesize, "max_bytes" => 200_000, "truncated" => false)
+      expect(patch_calls).to eq([["/src/app.worktree-fix", "origin/main", 200_000]])
+    end
+
+    it "flags a patch cut at the cap and reports the full size" do
+      review.show(name: "app.worktree-fix", json: true, patch: 10)
+
+      expect(parsed["git"]["patch"]).to include("text" => patch_text.byteslice(0, 10), "bytes" => patch_text.bytesize, "max_bytes" => 10, "truncated" => true)
+    end
+
+    it "leaves the packet as it was without a patch" do
+      review.show(name: "app.worktree-fix", json: true)
+
+      expect(parsed["git"]).not_to have_key("patch")
+      expect(patch_calls).to be_empty
+    end
+
+    it "marks the patch unavailable when git can't produce it, keeping the rest" do
+      git_facts["/src/app.worktree-fix"][:patch] = nil
+
+      review.show(name: "app.worktree-fix", json: true, patch: 100)
+
+      expect(parsed["git"]["patch"]).to eq("available" => false, "reason" => "error")
+      expect(parsed["git"]["diffstat"]["files"]).to eq(2)
+    end
+
+    it "says so in text when the patch is unavailable, also when git raises" do
+      git_facts["/src/app.worktree-fix"][:patch] = nil
+      review.show(name: "app.worktree-fix", patch: 100)
+      expect(output.string).to include("Patch   unavailable (error)")
+
+      allow(git).to receive(:diff_patch).and_raise(Workspace::Error, "boom")
+      output.truncate(0)
+      output.rewind
+      review.show(name: "app.worktree-fix", json: true, patch: 100)
+      expect(parsed["git"]["patch"]).to eq("available" => false, "reason" => "error")
+    end
+
+    it "reads no patch when git is unavailable" do
+      allow(git).to receive(:diff_stat).and_return(nil)
+
+      review.show(name: "app.worktree-fix", json: true, patch: 100)
+
+      expect(parsed["git"]).to eq("available" => false, "reason" => "error")
+    end
+
+    it "prints the patch after the diffstat in text, with a cut note" do
+      review.show(name: "app.worktree-fix", patch: 20)
+
+      expect(output.string).to include("Patch   #{patch_text.bytesize} bytes, cut to 20 (raise it with --max-bytes)\ndiff --git a/a.rb")
+      expect(output.string.index("Patch ")).to be > output.string.index("Diff ")
+    end
+
+    [0, -1, 5_242_881, "9"].each do |bad|
+      it "refuses --max-bytes #{bad.inspect} as a usage error" do
+        expect { review.show(name: "app.worktree-fix", patch: bad) }.to raise_error(Workspace::UsageError, /--max-bytes must be a whole number from 1 to 5242880/)
+
+        review.show(name: "app.worktree-fix", json: true, patch: bad)
+        expect(parsed).to include("ok" => false)
+        expect(patch_calls).to be_empty
+      end
     end
   end
 

@@ -8027,6 +8027,18 @@ RSpec.describe Workspace::CLI do
       expect(review_command.calls).to eq([{show: "app.worktree-fix", json: false}, {show: "app", json: true}, {show: "app", json: true}])
     end
 
+    it "passes the patch cap to show, defaulting it, and refuses misuse as usage errors" do
+      cli.run(["review", "app", "--patch"])
+      cli.run(["review", "app", "--patch", "--max-bytes", "500", "--json"])
+
+      expect(review_command.calls).to eq([{show: "app", json: false, patch: 200_000}, {show: "app", json: true, patch: 500}])
+      [%w[app --max-bytes 5], %w[app --patch --max-bytes x], %w[list --patch]].each do |extra|
+        expect { cli.run(["review", *extra]) }.to raise_error(FakeSystemExit)
+      end
+      expect(review_command.calls.size).to eq(2)
+      expect(error_output.string).to include("--max-bytes needs --patch", "--patch and --max-bytes are for 'review show'")
+    end
+
     it "lists, for the current project or a named one, with flags before or after" do
       cli.run(["review", "list"])
       cli.run(["review", "list", "app", "--json"])
@@ -8083,7 +8095,7 @@ RSpec.describe Workspace::CLI do
     it "prints its help without running anything" do
       cli.run(["review", "--help"])
 
-      expect(output.string).to include("Usage: workspace review [show] [WORKSPACE | --name WS] [--json]", "review show list")
+      expect(output.string).to include("Usage: workspace review [show] [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]", "review show list", "--max-bytes N")
       expect(review_command.calls).to eq([])
     end
 
