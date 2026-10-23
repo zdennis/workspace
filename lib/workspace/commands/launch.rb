@@ -152,7 +152,11 @@ module Workspace
 
         failures = prompts.any? ? send_prompts(session_names, prompts, prompt_timeout) : {}
 
-        log("Done! Launched #{projects.size} project(s).")
+        if failures.empty?
+          log("Done! Launched #{projects.size} project(s).")
+        else
+          log("Launched #{projects.size} project(s), but the prompt was not sent.")
+        end
         unless failures.empty?
           @error_output.puts "Error: the prompt was not sent to: #{failures.keys.join(", ")}"
         end
@@ -206,7 +210,11 @@ module Workspace
         prompts = prompts.reject { |project, _| start_failures.key?(project) }
         prompt_failures = prompts.any? ? send_prompts(session_names, prompts, prompt_timeout) : {}
 
-        log("Done! Launched #{session_names.size} project(s) headless.")
+        if prompt_failures.empty?
+          log("Done! Launched #{session_names.size} project(s) headless.")
+        else
+          log("Launched #{session_names.size} project(s) headless, but the prompt was not sent.")
+        end
         session_names.each_value { |session| log("  Attach with: tmux attach -t #{session}") }
         unless prompt_failures.empty?
           @error_output.puts "Error: the prompt was not sent to: #{prompt_failures.keys.join(", ")}"

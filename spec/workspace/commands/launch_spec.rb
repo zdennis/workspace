@@ -331,6 +331,15 @@ RSpec.describe Workspace::Commands::Launch do
         expect(error_output.string).to include("Error: the prompt was not sent to: proj1")
       end
 
+      it "does not say Done! when the prompt was not sent" do
+        allow(agent_readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "no agent"))
+
+        command.call(["proj1"], prompts: {"proj1" => "fix it"})
+
+        expect(output.string).not_to include("Done!")
+        expect(output.string).to include("Launched 1 project(s), but the prompt was not sent.")
+      end
+
       it "tries again when the prompt never shows up in the pane, up to three times" do
         allow(tmux).to receive(:deliver).and_return(delivery(:not_landed), delivery(:submitted))
 

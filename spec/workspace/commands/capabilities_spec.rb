@@ -211,6 +211,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("lifecycle_current" => 1)
     end
 
+    it "reports launch_prompt_status 1 once the closing line tells a lost prompt" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("launch_prompt_status" => 1)
+    end
+
     it "reports split_cwd 1 once splits start in the workspace folder" do
       command.call(json: true)
 
