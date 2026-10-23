@@ -5,7 +5,7 @@ Read or follow the event log and every agent daemon's hook events as one stream,
 ## Usage
 
 ```sh
-workspace events [--follow] [--json] [--types A,B] [--since CURSOR]
+workspace events [--follow] [--json] [--types A,B] [--since CURSOR] [--name WS]
 ```
 
 ## Options
@@ -16,6 +16,7 @@ workspace events [--follow] [--json] [--types A,B] [--since CURSOR]
 | `--json` | With `--follow`, JSONL. Without it, one document: `{"schema_version": 1, "ok": true, "events": [...], "cursor": "..."}` |
 | `--types A,B` | Only lines of these types; repeat it or comma-separate several. `gap` and `follow_started` lines are always printed |
 | `--since CURSOR` | Resume after the line that carried `CURSOR` |
+| `--name WS` | Only that workspace's lines, by exact name: a worktree workspace of WS (`WS-feature`) is a different name and is not included. Event log lines match on `data.workspace`, else `project`. `gap` and `follow_started` lines are always printed. An unknown workspace is refused (`unknown_workspace`). The cursor still covers every line read, so it works across different `--name` values |
 
 Without `--since`, `--follow` starts at the end of every file and prints only what is written from then on. A plain read prints what is kept: the current event log, and each daemon's file and its rotated copy. That can be several megabytes per workspace in one document, so a script that wants recent lines should pass `--since` or `--types`.
 
@@ -49,7 +50,7 @@ Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name
 
 | `type` | Fields |
 |---|---|
-| `tool_started` | `tool` (the tool's name), `tool_use_id`, `agent_id` (the sub-agent the tool ran in, `null` for the main agent), `path` (file tools only, below) |
+| `tool_started` | `tool` (the tool's name), `tool_use_id`, `agent_id` (the sub-agent the tool ran in, `null` for the main agent), `path` (file tools only, below), `input` (a summary of the call, below; left out when the tool has none) |
 | `tool_finished` | the same, plus `ok` (`false` when the tool's response says it failed or was interrupted) and `duration_ms` (the payload's own, else the time since this daemon saw the matching `tool_started`; `null` when it saw none) |
 | `subagent_started` | `tool_use_id` (of the `Task` call), `description` (cut to 120 characters), `subagent_type` (cut to 64), `agent_id` (`null`: Claude Code names a sub-agent only once it runs). A `tool_started` for `Task` comes just before it |
 | `subagent_stopped` | `agent_id` (the stopping sub-agent's, when Claude Code gives one) |
@@ -58,9 +59,21 @@ Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name
 | `prompt_submitted` | none |
 | `agent_status` | `summary` (cut to 500 characters), `task` (or `null`), `progress` (`{"done": N, "total": M}` or `null`), `reply_to` (the status request it answers, or `null`). Posted by an agent with [`agent status post`](README.agent.md#status), not by a hook |
 
+`input` says what the call did, in one line of at most 300 bytes (the `events_tool_input` capability). It is a summary, never the whole input:
+
+| Tool | `input` |
+|---|---|
+| `Bash` | the first non-empty line of `command` |
+| `Edit`, `Write`, `Read`, `MultiEdit`, `NotebookEdit`, `NotebookRead` | `file_path` or `notebook_path` as the tool was given it (not made relative; file contents, edit text and Write bodies are never read) |
+| `Grep`, `Glob` | `pattern`, then ` (in PATH)` when `path` is given and 80 characters or fewer |
+| `WebFetch` | `url` |
+| any other tool | no `input` |
+
+Control characters (newlines, ESC, tabs) are replaced with spaces. Past 300 bytes the text is cut on a UTF-8 character boundary and ends with `…`, which counts toward the 300; there is no separate truncated flag, so an `input` ending in `…` was cut. Values that look like secrets are replaced with `[redacted]` (`NAME=value` where the name contains token, secret, key, pass, auth or credential; `Bearer` and `Basic` tokens; the password in `user:pass@`). That is best effort: a command's first line can still hold a secret, so treat `input` as sensitive; a file tool's path is as the tool was given it, so it can be absolute; render it as text, never as HTML.
+
 `path` is the file an `Edit`, `Write`, `Read`, `MultiEdit`, `NotebookEdit` or `NotebookRead` works on, relative to the checkout (the nearest directory at or above the agent's working directory that holds `.git`). A file outside the checkout has no `path`.
 
-Nothing that can hold a secret is written: no command text, tool input or output, prompt text, or notification message. Text fields have control characters replaced and are capped.
+Beyond `input`, nothing that can hold a secret is written: no other command lines, tool input or output, prompt text, or notification message. Text fields have control characters replaced and are capped.
 
 **`boot_id` and `seq`.** `boot_id` is new each time the daemon starts, and `seq` starts at 1 for each boot and goes up by 1 for each line that daemon writes. The same `boot_id` with a skipped `seq` means a line is missing (one the daemon couldn't write, or one rotated away). A new `boot_id` means the daemon restarted. A reader can de-duplicate on `boot_id` and `seq`.
 
@@ -104,6 +117,9 @@ workspace events --follow --json --types tool_started,tool_finished,subagent_sta
 
 # Resume a follower after a restart
 workspace events --follow --json --since "$(cat ~/.cache/my-app/events.cursor)"
+
+# One workspace's tool calls, with what each ran
+workspace events --follow --json --name myapp --types tool_started,tool_finished
 
 # What sessions started and ended recently, as text
 workspace events --types session_started,session_ended

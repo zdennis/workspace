@@ -5535,8 +5535,27 @@ RSpec.describe Workspace::CLI do
       cli.run(["events", "--follow", "--json", "--types", "tool_started, tool_finished", "--types", "gap", "--since", "1.abc"])
       cli.run(["events"])
 
-      expect(events_command).to have_received(:call).with(follow: true, json: true, types: %w[tool_started tool_finished gap], since: "1.abc")
-      expect(events_command).to have_received(:call).with(follow: false, json: false, types: [], since: nil)
+      expect(events_command).to have_received(:call).with(follow: true, json: true, types: %w[tool_started tool_finished gap], since: "1.abc", name: nil)
+      expect(events_command).to have_received(:call).with(follow: false, json: false, types: [], since: nil, name: nil)
+    end
+
+    it "passes --name to the command for a known workspace" do
+      project_config = instance_double(Workspace::ProjectConfig, existing_name: "proj")
+      cli, = build_test_cli(events_command: events_command, project_config: project_config)
+
+      cli.run(["events", "--name", "proj", "--json"])
+
+      expect(events_command).to have_received(:call).with(follow: false, json: true, types: [], since: nil, name: "proj")
+    end
+
+    it "refuses an unknown --name as unknown_workspace" do
+      project_config = instance_double(Workspace::ProjectConfig, existing_name: nil)
+      cli, output = build_test_cli(events_command: events_command, project_config: project_config)
+
+      expect { cli.run(["events", "--name", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workspace")
+      expect(events_command).not_to have_received(:call)
     end
 
     it "emits the JSON usage envelope for an extra argument" do

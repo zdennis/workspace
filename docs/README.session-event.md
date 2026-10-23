@@ -54,12 +54,12 @@ For the [events stream](README.events.md), tool and session events also carry:
 
 | Event | Fields |
 |---|---|
-| `PreToolUse`, `PostToolUse` | `tool` (the tool's name) and `tool_use_id`, each cut to 64 characters; `path` for a file tool (`Edit`, `Write`, `Read`, `MultiEdit`, `NotebookEdit`, `NotebookRead`): its `file_path` or `notebook_path`, relative to the checkout (the nearest directory at or above the hook's `cwd` that holds `.git`). A file outside the checkout, a path with control characters or one over 1024 characters is left out |
+| `PreToolUse`, `PostToolUse` | `tool` (the tool's name) and `tool_use_id`, each cut to 64 characters; `path` for a file tool (`Edit`, `Write`, `Read`, `MultiEdit`, `NotebookEdit`, `NotebookRead`): its `file_path` or `notebook_path`, relative to the checkout (the nearest directory at or above the hook's `cwd` that holds `.git`). A file outside the checkout, a path with control characters or one over 1024 characters is left out; `input`: a one-line summary of the call, at most 300 bytes (first line of a `Bash` command, a file tool's path as given, a `Grep` or `Glob` pattern, a `WebFetch` URL; none for other tools), with control characters blanked and a trailing `…` when cut (see [`events`](README.events.md)) |
 | `PostToolUse` | `ok`: `false` when the tool's response says `is_error: true`, `success: false` or `interrupted: true`, else `true`; `duration_ms` when the payload carries a number for it |
 | `PreToolUse` for `Task` | `description` (cut to 120 characters) and `subagent_type` (cut to 64) from the tool's input |
 | `SessionStart`, `SessionEnd` | `kind` (`claude`), and `source` or `reason` |
 
-Nothing else is read from a tool's input or response: no command text, file contents, edit text, sub-agent prompt or tool output is forwarded. Text fields have control characters and runs of whitespace replaced by one space.
+Nothing else is read from a tool's input or response: no command text past the first line, file contents, edit text, sub-agent prompt or tool output is forwarded. Text fields have control characters and runs of whitespace replaced by one space.
 
 ### Delivery
 

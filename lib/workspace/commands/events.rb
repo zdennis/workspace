@@ -38,20 +38,47 @@ module Workspace
       # @param json [Boolean] JSON instead of readable lines
       # @param types [Array<String>] only these types (empty for all)
       # @param since [String, nil] a cursor a line printed; resume after it
+      # @param name [String, nil] only lines of this workspace (exact name; stream lines are always printed)
       # @param max_polls [Integer, nil] stop following after this many reads (for tests)
       # @return [void]
       # @raise [Workspace::EventStream::InvalidCursor] when +since+ can't be read
-      def call(follow: false, json: false, types: [], since: nil, max_polls: nil)
+      def call(follow: false, json: false, types: [], since: nil, name: nil, max_polls: nil)
         stream = @stream_factory.call
         gaps = stream.open(cursor: since, at: follow ? :end : :start)
-        follow ? follow_stream(stream, gaps, json, types, max_polls) : print_once(stream, gaps, json, types)
+        filter = Filter.new(types: types, name: name)
+        follow ? follow_stream(stream, gaps, json, filter, max_polls) : print_once(stream, gaps, json, filter)
       end
+
+      # Which lines a read prints: the types asked for and the one workspace asked for.
+      # Stream lines are about the stream itself, so both let them through.
+      class Filter
+        def initialize(types:, name:)
+          @types = types
+          @name = name
+        end
+
+        def apply(lines)
+          return lines if @types.empty? && @name.nil?
+          lines.select { |line| STREAM_TYPES.include?(line["type"]) || (type?(line) && workspace?(line)) }
+        end
+
+        private
+
+        def type?(line)
+          @types.empty? || @types.include?(line["type"])
+        end
+
+        def workspace?(line)
+          @name.nil? || line["workspace"] == @name
+        end
+      end
+      private_constant :Filter
 
       private
 
-      def print_once(stream, gaps, json, types)
-        lines = gaps + select(stream.read(discover: false), types)
-        lines.concat(select(stream.read(discover: false), types)) while stream.more?
+      def print_once(stream, gaps, json, filter)
+        lines = gaps + filter.apply(stream.read(discover: false))
+        lines.concat(filter.apply(stream.read(discover: false))) while stream.more?
         if json
           @output.puts JSON.generate("schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "events" => lines, "cursor" => stream.cursor_string)
         else
@@ -59,13 +86,13 @@ module Workspace
         end
       end
 
-      def follow_stream(stream, gaps, json, types, max_polls)
+      def follow_stream(stream, gaps, json, filter, max_polls)
         started = {"type" => "follow_started", "at" => @clock.now.utc.iso8601(3), "source" => "stream", "cursor" => stream.cursor_string}
         emit([started, *gaps], json)
         polls = 0
         loop do
           polls += 1
-          emit(select(stream.read(discover: (polls % DISCOVER_EVERY).zero?), types), json)
+          emit(filter.apply(stream.read(discover: (polls % DISCOVER_EVERY).zero?)), json)
           break if max_polls && polls >= max_polls
           @sleeper.call(POLL_INTERVAL) unless stream.more?
         end
@@ -79,11 +106,6 @@ module Workspace
         return if lines.empty?
         lines.each { |line| @output.puts(json ? JSON.generate(line) : format(line)) }
         @output.flush
-      end
-
-      def select(lines, types)
-        return lines if types.empty?
-        lines.select { |line| types.include?(line["type"]) || STREAM_TYPES.include?(line["type"]) }
       end
 
       # `at  workspace  type  key=value ...`, with control characters blanked.

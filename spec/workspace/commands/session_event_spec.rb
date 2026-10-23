@@ -404,12 +404,23 @@ RSpec.describe Workspace::Commands::SessionEvent do
         expect(event).not_to have_key("path")
       end
 
-      it "never forwards the tool's input, its response, or the command" do
+      it "never forwards the tool's input, its response, or more of a command than its first line" do
         event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "cwd" => checkout,
-          "tool_input" => {"command" => "echo hunter2"}, "tool_response" => {"stdout" => "hunter2"})
+          "tool_input" => {"command" => "echo ok\nexport TOKEN=hunter2"}, "tool_response" => {"stdout" => "hunter2"})
 
         expect(JSON.generate(event)).not_to include("hunter2")
+        expect(event["input"]).to eq("echo ok")
         expect(event.keys).not_to include("tool_input", "tool_response")
+      end
+
+      it "forwards an input summary on a start and a finish, and none for a tool without a rule" do
+        start = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Grep", "tool_input" => {"pattern" => "todo", "path" => "lib"})
+        done = deliver("hook_event_name" => "PostToolUse", "tool_name" => "WebFetch", "tool_input" => {"url" => "https://example.com/a"})
+        other = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Skill", "tool_input" => {"skill" => "x"})
+
+        expect(start["input"]).to eq("todo (in lib)")
+        expect(done["input"]).to eq("https://example.com/a")
+        expect(other).not_to have_key("input")
       end
 
       it "names a sub-agent only on a Task start, never from another tool's description" do
@@ -837,16 +848,16 @@ RSpec.describe Workspace::Commands::SessionEvent do
     it "never forwards the prompt, tool input, tool response or last assistant message" do
       events = [
         codex("hook_event_name" => "UserPromptSubmit", "prompt" => "my secret prompt"),
-        codex("hook_event_name" => "PreToolUse", "tool_name" => "Bash", "tool_use_id" => "c1", "tool_input" => {"command" => "cat secret"}),
+        codex("hook_event_name" => "PreToolUse", "tool_name" => "Bash", "tool_use_id" => "c1", "tool_input" => {"command" => "ls\ncat secret"}),
         codex("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "tool_use_id" => "c1",
-          "tool_input" => {"command" => "cat secret"}, "tool_response" => "secret output"),
+          "tool_input" => {"command" => "ls\ncat secret"}, "tool_response" => "secret output"),
         codex("hook_event_name" => "Stop", "last_assistant_message" => "secret reply"),
         codex("hook_event_name" => "SubagentStop", "agent_id" => "a1", "last_assistant_message" => "secret reply")
       ]
 
       events.each { |event| expect(JSON.generate(event)).not_to include("secret") }
       expect(events[1]).to include("tool" => "Bash", "tool_use_id" => "c1")
-      expect(events[2]).to include("tool" => "Bash", "ok" => true)
+      expect(events[2]).to include("tool" => "Bash", "ok" => true, "input" => "ls")
     end
 
     it "sends a SubagentStart as the main agent's, naming the sub-agent it starts" do
