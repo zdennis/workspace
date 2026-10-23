@@ -403,6 +403,36 @@ RSpec.describe Workspace::Library do
     end
   end
 
+  describe "#recipe" do
+    before { resolve_cwd_to("app") }
+
+    it "reads a recipe, the project one hiding the global one" do
+      library.global_store.write("recipe", "pass", "packs: [review]\n")
+      library.project_store("app").write("recipe", "pass", "plays: [kickoff]\n")
+
+      found = library.recipe("pass", cwd: "/work/app")
+
+      expect(found).to include("ref" => "recipe/pass", "scope" => "project", "fields" => {"plays" => ["kickoff"]})
+    end
+
+    it "accepts the recipe/ prefix and refuses another kind" do
+      library.global_store.write("recipe", "pass", "packs: [review]\n")
+
+      expect(library.recipe("recipe/pass", cwd: "/work/app")["fields"]).to eq("packs" => ["review"])
+      expect { library.recipe("play/pass", cwd: "/work/app") }.to raise_error(Workspace::UsageError, /takes a recipe/)
+    end
+
+    it "fails an unknown recipe, an unreadable one and an invalid one with their codes" do
+      expect { library.recipe("nope", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+
+      library.global_store.link("recipe", "gone", File.join(@dir, "missing.md"))
+      expect { library.recipe("gone", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+
+      library.global_store.write("recipe", "bad", "bogus: 1\n")
+      expect { library.recipe("bad", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_recipe") }
+    end
+  end
+
   describe "#spine_template" do
     let(:global) { library.global_store }
     let(:project) { library.project_store("app") }

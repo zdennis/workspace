@@ -1,6 +1,6 @@
 # workspace library
 
-Store named plays, prompts, agents, skills and spine templates, globally or for one project, and read them back by name. A play is a document an agent reads and follows; a prompt is short text sent as typed; an agent is a Claude Code subagent file; a skill is a directory holding `SKILL.md`; a spine template is a folder of plan-spine stage files that [`spine init`](README.spine.md#spine-init) copies into a workspace. `start --agent` and `--skill` copy agents and skills into a new worktree. `lib` is an alias for `library`, and `workspace library` alone lists.
+Store named plays, prompts, recipes, agents, skills and spine templates, globally or for one project, and read them back by name. A play is a document an agent reads and follows; a prompt is short text sent as typed; a recipe is a saved set of `start` options that `start --recipe` applies; an agent is a Claude Code subagent file; a skill is a directory holding `SKILL.md`; a spine template is a folder of plan-spine stage files that [`spine init`](README.spine.md#spine-init) copies into a workspace. `start --agent` and `--skill` copy agents and skills into a new worktree. `lib` is an alias for `library`, and `workspace library` alone lists.
 
 ## Usage
 
@@ -29,7 +29,7 @@ workspace library installed [--name WS | --user] [--kind skill|agent] [--json]
 
 | Option | Description |
 |--------|-------------|
-| `--kind KIND` | `agent`, `play`, `prompt` or `skill`; required for `add`, a filter for `list` |
+| `--kind KIND` | `agent`, `play`, `prompt`, `recipe`, `skill` or `spine`; required for `add`, a filter for `list` |
 | `--as NAME` | `add`: the entry name |
 | `--link` | `add`, `update`: store a symlink to `PATH` instead of a copy, so the store always reads the current source |
 | `--force` | `add`: replace an entry that has different content |
@@ -210,10 +210,27 @@ Each command acts on one entry, so a failure is the error envelope, never a `ref
 |---|---|---|
 | `unknown_library_entry` | No entry has that name in the scopes searched | `ref`, `scopes` |
 | `ambiguous_library_entry` | A bare name matches more than one kind | `ref`, `candidates` |
+| `invalid_recipe` | `add` or `update` of a recipe, or `start --recipe`, found a field that isn't allowed | `ref`, `problems` |
 | `library_entry_exists` | `add` would replace different content | `ref`, `scope`; `retry` with `--force`, marked `destructive` |
 | `library_source_missing` | `PATH` does not exist, or a link's target can't be read; also `install` (with or without `--dry-run`) and `uninstall` of an entry whose link is unreadable | `ref`, `path` |
 
 A bad name, an unknown kind, or a missing `--kind` is `usage`. `capabilities` reports `"library_copy": 4` for `install`/`uninstall` (revision 3 adds `install --user`, the `user` field and the `library.install.*` directories; revision 4 adds `uninstall --user`, `install --from` and the `entry` object in the install document), `"library": 2` (revision 2 adds the `agent` and `skill` kinds; a skill's `path` is a directory) and `paths.library`.
+
+## Recipes
+
+A recipe is a YAML file of the options `start` takes, saved under a name. Give it as the whole file, or as frontmatter between two `---` lines (text after the second is notes and is ignored):
+
+```yaml
+description: Review pass on Codex
+plays: [kickoff]
+packs: [review]
+agents: [reviewer]
+skills: [write-tests]
+agent_kind: codex
+prompt: Start at step 2.
+```
+
+Every field is optional, but a recipe must set at least one besides `description`. `plays`, `packs`, `agents` and `skills` are lists (or one value) of names, each `name` or `kind/name`, at most 20; `agent_kind` is one of the coding-agent keys `start --agent-kind` takes; `prompt` is text up to 20,000 characters. An unknown field, a wrong type or a bad name is refused with `invalid_recipe` (`details.problems` lists all of them), when you `add` or `update` it and again when `start --recipe` reads it. The names are not looked up until `start` runs. Apply one with [`start --recipe`](README.start.md#recipes); a flag passed to `start` wins over the recipe. `capabilities` reports `"library_recipes": 1`.
 
 ## Examples
 

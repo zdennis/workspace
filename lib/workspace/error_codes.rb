@@ -176,6 +176,7 @@ module Workspace
       "status_not_logged" => "agent status post: the agent daemon couldn't write the agent_status line.",
       "unknown_library_entry" => "No library entry has that name in the scopes searched.",
       "ambiguous_library_entry" => "A bare library name matches more than one kind.",
+      "invalid_recipe" => "A library recipe has a field that isn't allowed (library add/update, start --recipe). details.ref, details.problems.",
       "library_entry_exists" => "library add would replace an entry with different content; pass --force.",
       "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read (also library install, including --dry-run, and uninstall without --force).",
       "library_install_exists" => "library install would replace a worktree copy that has different content; pass --force.",

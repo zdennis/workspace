@@ -107,6 +107,11 @@ module Workspace
       #   empty plan also gets the draft request ({PlanDispatch::DRAFT_PROMPT}) ahead of +prompt+, which becomes the goal. Refused
       #   with +play+; with +no_launch+ the plan is made and nothing is sent. A plan that exists is kept; a failed init is a warning
       #   and sends no play. The JSON payload reports it as `plan`
+      # @param recipe [String, nil] a library recipe (`name` or `recipe/name`) whose plays, packs, agents, skills,
+      #   agent kind and prompt fill in whichever of +plays+, +packs+, +agents+, +skills+, +agent_kind+ and
+      #   +prompt+ were not given (a given list replaces the recipe's, it is not added to it). With +no_launch+ its
+      #   plays, packs and prompt are left out with a warning. An unknown or invalid recipe fails before anything
+      #   is created; the JSON payload reports it as `recipe`
       # @param promoted [Boolean] the worktree at `.worktrees/<branch>` was just made by `promote`: the `worktree_started` event
       #   says `created: true, promoted: true` and the "already exists" line is not printed
       # @param root [String, nil] the main checkout to start in, in place of the working directory's repository
@@ -120,10 +125,10 @@ module Workspace
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
       def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, plays: [],
-        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil)
+        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil, recipe: nil)
         options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, plays: plays,
                    agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff, no_launch: no_launch, agent_kind: agent_kind,
-                   title_from_ticket: title_from_ticket, slug: slug, spine: spine, plan: plan, promoted: promoted, root: root}
+                   title_from_ticket: title_from_ticket, slug: slug, spine: spine, plan: plan, promoted: promoted, root: root, recipe: recipe}
         return call_json(input_string, **options) if json
 
         start!(input_string, quiet: false, **options)
@@ -153,9 +158,29 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, plays: [], agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, plays: [], agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil, recipe: nil)
         root ||= @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
+        @recipe = nil
+        recipe_warnings = []
+        if recipe
+          @recipe = resolve_recipe(recipe, root)
+          fields = @recipe["fields"]
+          reasons = {}
+          %w[plays packs prompt].each { |key| reasons[key] = "--no-launch sends nothing" } if no_launch
+          reasons["plays"] = [reasons["plays"], "--plan sends its own play"].compact.join("; ") if plan
+          reasons["packs"] = [reasons["packs"], "--no-packs was given"].compact.join("; ") if no_packs
+          skipped = reasons.keys.select { |key| fields.key?(key) }
+          if skipped.any?
+            recipe_warnings << "Recipe #{@recipe["ref"]}: left out #{skipped.join(", ")} (#{reasons.values_at(*skipped).flat_map { |r| r.split("; ") }.uniq.join("; ")})."
+          end
+          plays = fields["plays"] if plays.empty? && fields.key?("plays") && !reasons.key?("plays")
+          packs = fields["packs"] if packs.empty? && fields.key?("packs") && !reasons.key?("packs")
+          prompt = fields["prompt"] if prompt.nil? && fields.key?("prompt") && !reasons.key?("prompt")
+          agents = fields["agents"] if agents.empty? && fields.key?("agents")
+          skills = fields["skills"] if skills.empty? && fields.key?("skills")
+          agent_kind = fields["agent_kind"] if agent_kind.nil? && fields.key?("agent_kind")
+        end
         check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays, packs: packs, handoff: handoff)
         @agent_kind = check_agent_kind!(agent_kind)
         @no_launch = no_launch
@@ -169,6 +194,7 @@ module Workspace
 
         interactive = !quiet && !yes && stdin_tty?
         @warnings = []
+        recipe_warnings.each { |message| quiet ? @warnings << message : @error_output.puts("Warning: #{message}") }
         @task_title = title&.strip&.then { |t| t unless t.empty? }
         @task_ref = input_string
 
@@ -336,6 +362,7 @@ module Workspace
         json["spine"] = @spine_result if @spine_result
         json["plan"] = @plan_result if @plan_result
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
+        json["recipe"] = @recipe.slice("ref", "scope") if @recipe
         %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
         if @no_launch
           json["packs"] = []
@@ -450,6 +477,13 @@ module Workspace
       def configured_program(config_name)
         command = @agent_commands&.command_for(config_name, @effective_kind)
         (command && AgentCommands.program_for(command)) || AgentProvider.find(@effective_kind)&.executable
+      end
+
+      # The recipe is looked up from the parent project, like plays, and checked
+      # before anything is created.
+      def resolve_recipe(ref, root)
+        raise Workspace::Error, "--recipe is not available: no library was wired." unless @library
+        @library.recipe(ref, cwd: @start_ref.project(root).root)
       end
 
       # The play is checked before anything is created, so an unknown name or an

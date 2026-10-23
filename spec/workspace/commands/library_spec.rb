@@ -30,6 +30,31 @@ RSpec.describe Workspace::Commands::Library do
     File.join(@dir, name).tap { |path| File.write(path, body) }
   end
 
+  describe "recipes" do
+    it "stores a valid recipe and lists it with its description" do
+      result = command.add(kind: "recipe", body: "---\ndescription: Review pass\nplays: [kickoff]\n---\n", name: "review-pass", cwd: cwd)
+
+      expect(result.outcome).to eq("added")
+      expect(result.entry).to include("ref" => "recipe/review-pass", "description" => "Review pass")
+    end
+
+    it "refuses an invalid recipe on add and on update, writing nothing" do
+      expect { command.add(kind: "recipe", body: "bogus: 1\n", name: "bad", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect([e.code, e.details["problems"]]).to match(["invalid_recipe", [/unknown field 'bogus'/]]) }
+      expect(File.exist?(File.join(@dir, "library/global/recipe/bad.md"))).to be(false)
+
+      command.add(kind: "recipe", body: "plays: [a]\n", name: "good", cwd: cwd)
+      expect { command.update("recipe/good", body: "plays: 5\n", cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_recipe") }
+      expect(File.read(File.join(@dir, "library/global/recipe/good.md"))).to eq("plays: [a]\n")
+    end
+
+    it "checks the file a --link points at" do
+      path = source("r.yml", "agent_kind: gemini\n")
+
+      expect { command.add(kind: "recipe", path: path, link: true, name: "r", cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_recipe") }
+    end
+  end
+
   describe "#add" do
     it "copies a file into the global store, named after the file in kebab case" do
       path = source("Agent Orchestration Playbook.md", "# Playbook\n")

@@ -589,7 +589,7 @@ module Workspace
           kill            Kill a worktree project and remove its worktree (default: the current one)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
-          library         Store named plays, prompts, agents and skills, beside the built-in packs (alias: lib)
+          library         Store named plays, prompts, recipes, agents and skills, beside the built-in packs (alias: lib)
           list            List currently active (launched) projects (--all for all available)
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
           lookup          Find a workspace project by worktree path, branch, or project name
@@ -880,6 +880,7 @@ module Workspace
       no_spine = false
       plan = nil
       agent_kind = nil
+      recipe = nil
       title_from_ticket = false
       slug = false
       parser = OptionParser.new do |opts|
@@ -937,6 +938,12 @@ module Workspace
           "Named -kind because --agent copies a library agent. Applies to a config this run",
           "writes (default claude); an unknown kind fails before anything is created") do |v|
           agent_kind = v
+        end
+        opts.on("--recipe NAME", "Apply a library recipe: its plays, packs, agents, skills, agent kind and prompt fill in",
+          "whatever --play, --pack, --agent, --skill, --agent-kind and --prompt don't give (a flag you pass",
+          "replaces that recipe field). Make one with 'workspace library add - --kind recipe --as NAME'.",
+          "An unknown or invalid recipe fails before the worktree is created") do |v|
+          recipe = v
         end
         opts.on("--no-launch", "Create the worktree, config and task and start nothing; run",
           "`workspace launch` later. Cannot be combined with --prompt, --prompt-timeout, --play,",
@@ -1003,6 +1010,7 @@ module Workspace
         opts.separator "  workspace start PROJ-123 --play kickoff,review    # two plays; --play kickoff --play review does the same"
         opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
         opts.separator "  workspace start PROJ-123 --agent-kind codex    # the main agent pane runs Codex"
+        opts.separator "  workspace start PROJ-123 --recipe review-pass --agent-kind codex    # a saved start; the flag wins over the recipe"
         opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
         opts.separator "  workspace start PROJ-123 --spine=team    # also make the stages from the 'team' template"
         opts.separator "  workspace start PROJ-123 --plan --prompt \"Add SSO login\"    # the agent drafts a plan for that goal first"
@@ -1034,6 +1042,7 @@ module Workspace
       start_options[:spine] = spine if spine
       start_options[:plan] = plan if plan
       start_options[:agent_kind] = agent_kind if agent_kind
+      start_options[:recipe] = recipe if recipe
       start_options[:title_from_ticket] = true if title_from_ticket
       start_options[:slug] = true if slug
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
@@ -4720,7 +4729,7 @@ module Workspace
           "       workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]\n" \
           "       workspace library installed [--name WS | --user] [--kind skill|agent] [--json]"
         opts.separator ""
-        opts.separator "A store of named plays, prompts, agents and skills under #{@config.library_dir}."
+        opts.separator "A store of named plays, prompts, recipes, agents and skills under #{@config.library_dir}."
         opts.separator "A play is a document an agent reads and follows; a prompt is short text sent as typed;"
         opts.separator "an agent is a Claude Code subagent file; a skill is a directory holding SKILL.md, and"
         opts.separator "`workspace start --agent/--skill` copies them into a new worktree. Entries are"
@@ -4754,7 +4763,8 @@ module Workspace
         opts.separator "            directory's) or at user level (--user); read-only. A copy counts when its name is a library"
         opts.separator "            entry's or the repo's info/exclude lists it; modified = differs from that entry"
         opts.separator ""
-        opts.on("--kind KIND", "agent, play, prompt, skill or spine (add: required; list: a filter);",
+        opts.on("--kind KIND", "agent, play, prompt, recipe, skill or spine (add: required; list: a filter);",
+          "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt (for 'start --recipe');",
           "add --kind skill takes a directory holding SKILL.md;",
           "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
