@@ -15,7 +15,7 @@ RSpec.describe Workspace::Commands::PlanDispatch do
   let(:now) { Time.utc(2026, 10, 12, 14, 0, 0) }
   let(:notes_dirs) { {"api" => File.join(@dir, "api-notes")} }
   let(:notes) { instance_double(Workspace::Commands::Notes) }
-  let(:tmux) { instance_double(Workspace::Tmux, sessions: ["api", "api-worktree-x"], custom_socket_option: nil) }
+  let(:tmux) { instance_double(Workspace::Tmux, sessions: ["api", "api-worktree-x"], custom_socket_option: nil, close_pane: true) }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send, deliver: {"pane" => "%19", "mode" => "text", "submitted" => true}) }
   let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }
@@ -502,9 +502,37 @@ RSpec.describe Workspace::Commands::PlanDispatch do
         result = start_task(spawn: "claude")
 
         expect(result).to include("outcome" => "failed", "reason" => "prompt_not_sent", "pane" => "%23", "task" => "T2")
-        expect(result["message"]).to include("still starting up")
+        expect(result["message"]).to include("still starting up", "the pane was closed")
+        expect(result["details"]).to eq("pane_id" => "%23", "pane_closed" => true)
+        expect(tmux).to have_received(:close_pane).with("%23")
         expect(sender).not_to have_received(:deliver)
         expect(task("T2").owner).to be_nil
+      end
+
+      it "says the pane stays when it could not be closed" do
+        allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout"))
+        allow(tmux).to receive(:close_pane).and_return(false)
+
+        result = start_task(spawn: "claude")
+
+        expect(result["message"]).not_to include("closed")
+        expect(result["details"]).to eq("pane_id" => "%23", "pane_closed" => false)
+      end
+
+      it "names the new pane, left open, when typing the task fails after the agent was ready" do
+        allow(sender).to receive(:deliver).and_raise(Workspace::Error.new("typing failed", code: "send_failed"))
+
+        expect { start_task(spawn: "claude") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("send_failed")
+          expect(e.details).to include("pane_id" => "%23", "pane_closed" => false)
+        }
+        expect(tmux).not_to have_received(:close_pane)
+      end
+
+      it "never closes a pane the caller named" do
+        start_task(pane: "%21")
+
+        expect(tmux).not_to have_received(:close_pane)
       end
 
       it "launches a workspace with no session with the task's line, and records the launched pane as owner" do

@@ -110,6 +110,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("agent_spawn" => 1)
     end
 
+    it "reports spawn_cleanup once a failed --spawn closes its unused pane" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("spawn_cleanup" => 1)
+    end
+
     it "reports agent_commands once the agent's command can be configured" do
       command.call(json: true)
 

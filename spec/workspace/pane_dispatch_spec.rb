@@ -74,6 +74,42 @@ RSpec.describe Workspace::PaneDispatch do
     end
   end
 
+  describe "#spawn that fails" do
+    before { allow(tmux).to receive_messages(close_pane: true, custom_socket_option: nil) }
+
+    it "closes the new pane when the agent is not ready" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout"))
+
+      spawned = dispatch.spawn("api", "claude")
+
+      expect(spawned).not_to be_ready
+      expect(spawned.closed).to be(true)
+      expect(tmux).to have_received(:close_pane).with("%23")
+    end
+
+    it "leaves the pane when the workspace uses a custom tmux socket" do
+      allow(tmux).to receive(:custom_socket_option).with("api").and_return("-L x")
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout"))
+
+      expect(dispatch.spawn("api", "claude").closed).to be(false)
+      expect(tmux).not_to have_received(:close_pane)
+    end
+
+    it "keeps a ready pane" do
+      expect(dispatch.spawn("api", "claude").closed).to be(false)
+      expect(tmux).not_to have_received(:close_pane)
+    end
+
+    it "closes the pane and names it in details when the wait raises" do
+      allow(readiness).to receive(:wait).and_raise(Workspace::Error.new("tmux gone", code: "tmux_error"))
+
+      expect { dispatch.spawn("api", "claude") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("tmux_error")
+        expect(e.details).to include("pane_id" => "%23", "pane_closed" => true)
+      }
+    end
+  end
+
   describe "#spawn without a known root" do
     it "splits with no cwd" do
       allow(project_config).to receive(:project_root_for).and_return(nil)
