@@ -76,7 +76,7 @@ module Workspace
         "spine_report" => 1,
         "pr_create" => 1,
         "rebase" => 2,
-        "inbox" => 3,
+        "inbox" => 4,
         "ask_withdraw" => 1,
         "review" => 1,
         "review_patch" => 1,

@@ -157,24 +157,35 @@ module Workspace
       # @param working_dir [String]
       # @param states [Array<String>] states to show; `open` when empty
       # @param type [String, nil] only this type
-      # @param all [Boolean] read every scope that has a file
+      # @param all [Boolean] read every scope that has a file; with `target[:name]`, that workspace, its project and
+      #   the global list; refused with `:project` or `:global`
       # @param include_derived [Boolean] add the open `alert` rows {Workspace::InboxDerived} works out for
       #   the workspaces and projects listed (with +all+, every one in the catalog)
       # @param json [Boolean] print `{schema_version, ok, items, warnings}`
       # @return [Hash] `{exit_code:}`
       def list(target: {}, working_dir: Dir.pwd, states: [], type: nil, all: false, include_derived: false, json: false)
-        raise UsageError, "Pass --all or a scope flag, not both." if all && target.values.any?
+        if all && (target[:project] || target[:global])
+          flag = target[:project] ? "--project" : "--global"
+          raise UsageError, "--all cannot be combined with #{flag}. Run `workspace inbox list #{flag}` for that scope, `workspace inbox list --all --name WS` for one workspace, or `workspace inbox list --all` for every scope."
+        end
+        all_scopes = all && !target[:name]
         checked_filter_states(states)
         checked_filter_type(type)
         states = %w[open] if states.empty?
-        scopes = all ? every_scope : default_scopes(target, working_dir)
+        scopes = if all_scopes
+          every_scope
+        elsif all
+          named_scopes(target[:name])
+        else
+          default_scopes(target, working_dir)
+        end
         sink = StringIO.new
         items = scopes.flat_map { |scope| store_for(scope, sink).list }
         items = items.select { |item| states.include?(item["state"]) }
         items = items.select { |item| item["type"] == type } if type
         warnings = warnings_from(sink)
         if include_derived && states.include?("open") && [nil, "alert"].include?(type)
-          derived = derived_rows(target, working_dir, all)
+          derived = derived_rows(target, working_dir, all_scopes, with_project: all)
           shown = @acks ? @acks.filter(derived[:rows]) : {rows: derived[:rows], warnings: []}
           items += shown[:rows]
           warnings += derived[:warnings] + shown[:warnings]
@@ -726,6 +737,14 @@ module Workspace
         end
       end
 
+      # The workspace named, its project (when the catalog knows one with that member) and the global list.
+      def named_scopes(name)
+        scopes = [workspace_scope(name)]
+        project = Array(@project_catalog&.all).find { |pr| pr.members.any? { |m| m.workspace == name } }
+        scopes << project_scope(project) if project
+        scopes << global_scope
+      end
+
       def default_scopes(target, working_dir)
         return [explicit_scope(target, working_dir)] if target.values.any?
         scopes = []
@@ -739,7 +758,7 @@ module Workspace
 
       # Derived rows for the workspaces and projects the listed scopes stand for: a workspace scope's
       # workspace, a project scope's project, or with +all+ every one in the catalog. Global has none.
-      def derived_rows(target, working_dir, all)
+      def derived_rows(target, working_dir, all, with_project: false)
         raise Workspace::Error, "Derived inbox rows are not available in this build." unless @derived
         workspaces = []
         projects = []
@@ -752,6 +771,10 @@ module Workspace
           projects << @project_catalog.find(target[:project])
         elsif target[:name]
           workspaces << target[:name]
+          if with_project
+            project = Array(@project_catalog&.all).find { |pr| pr.members.any? { |m| m.workspace == target[:name] } }
+            projects << project if project
+          end
         elsif !target[:global]
           detected_workspace(working_dir) do |name|
             workspaces << name

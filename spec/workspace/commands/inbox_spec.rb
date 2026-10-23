@@ -588,8 +588,29 @@ RSpec.describe Workspace::Commands::Inbox do
       expect(listed["items"].map { |i| i["title"] }).to contain_exactly("ws item", "global item")
     end
 
-    it "refuses --all with a scope flag" do
-      expect { command.list(all: true, target: {global: true}, working_dir: "/app") }.to raise_error(Workspace::UsageError)
+    it "refuses --all with --global or --project, naming the flag and what to run" do
+      expect { command.list(all: true, target: {global: true}, working_dir: "/app") }
+        .to raise_error(Workspace::UsageError, /--all cannot be combined with --global.*inbox list --global/m)
+      expect { command.list(all: true, target: {project: "api"}, working_dir: "/app") }
+        .to raise_error(Workspace::UsageError, /--all cannot be combined with --project/)
+    end
+
+    it "reads the named workspace, its project and the global list with --all --name" do
+      member = Workspace::ProjectCatalog::Member.new(workspace: "api.fix", path: "/src/fix", kind: "worktree", configured: true, exists: true)
+      project = Workspace::ProjectCatalog::Project.new(name: "api", id: "/src/api/.git", path: "/src/api", vcs: "git", members: [member])
+      allow(project_catalog).to receive(:all).and_return([project])
+
+      titles = listed(all: true, target: {name: "api.fix"})["items"].map { |i| i["title"] }
+
+      expect(titles).to contain_exactly("ws item", "project item", "global item")
+    end
+
+    it "reads only that workspace and the global list with --all --name when no project has it" do
+      allow(project_catalog).to receive(:all).and_return([api_project])
+
+      titles = listed(all: true, target: {name: "other"})["items"].map { |i| i["title"] }
+
+      expect(titles).to contain_exactly("other ws item", "global item")
     end
 
     it "filters by type and state" do
@@ -745,6 +766,16 @@ RSpec.describe Workspace::Commands::Inbox do
       listed(include_derived: true, all: true)
 
       expect(derived_calls).to eq([[["api"], [project]]])
+    end
+
+    it "reads the named workspace and its project with --all --name" do
+      member = Workspace::ProjectCatalog::Member.new(workspace: "api.fix", path: "/src/fix", kind: "worktree", configured: true, exists: true)
+      project = Workspace::ProjectCatalog::Project.new(name: "api", id: "/src/api/.git", path: "/src/api", vcs: "git", members: [member])
+      allow(project_catalog).to receive(:all).and_return([project])
+
+      listed(include_derived: true, all: true, target: {name: "api.fix"})
+
+      expect(derived_calls).to eq([[["api.fix"], [project]]])
     end
 
     it "reads nothing derived when the states or type leave open alerts out" do

@@ -30,6 +30,7 @@ Scope: at most one of `--name WORKSPACE`, `--project NAME|PATH`, `--global`. Eve
 workspace inbox add "Check the deploy" --type todo
 workspace inbox add "CI failed" --type alert --source-kind github_check --global --json
 workspace inbox list --all --state open,snoozed
+workspace inbox list --all --name api
 workspace inbox list --all --include-derived --json
 workspace inbox show a1b2c3d4e5
 workspace inbox done a1b2c3d4e5 f6a7b8c9d0
@@ -85,7 +86,7 @@ A scope holds at most 500 items in `open` or `snoozed`. A write that would make 
 | Command | Without a scope flag |
 |---|---|
 | `add` | The workspace detected from the current directory; outside any, `not_in_workspace` |
-| `list` | Open items of the current workspace, its project and the global list; outside a workspace, the global list. `--all` reads every scope that has a file |
+| `list` | Open items of the current workspace, its project and the global list; outside a workspace, the global list. `--all` reads every scope that has a file; `--all --name WS` reads that workspace, its project and the global list; `--all` with `--project` or `--global` is refused (usage error) |
 | `show` | Searches every scope for the id; `ambiguous_inbox_item` if it is in more than one |
 | `edit` | As `show`: searches every scope; `ambiguous_inbox_item` if the id is in more than one |
 | `done`, `dismiss`, `reopen` | As `show`, once per id; an id in more than one scope is that row's `ambiguous_inbox_item` failure, so pass a scope flag |
