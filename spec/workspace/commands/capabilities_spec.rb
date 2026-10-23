@@ -140,6 +140,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("dev_queue" => 2)
     end
 
+    it "reports dev_down_holder 1 once dev down refuses another workspace's holder with dev_held_by" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("dev_down_holder" => 1)
+    end
+
     it "reports plan 5 once plan start can ask for a draft" do
       command.call(json: true)
 

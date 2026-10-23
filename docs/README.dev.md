@@ -55,7 +55,7 @@ workspace config set dev.release_on_session_end false   # keep it running after 
 ## Options (down)
 | Option | Description |
 |--------|-------------|
-| `--force` | Also kill a process group left behind by a wrapper that was SIGKILLed |
+| `--force` | Stop a dev env another workspace holds (without it `down` refuses with `dev_held_by`), and also kill a process group left behind by a wrapper that was SIGKILLed |
 
 ## Exit codes (up)
 
@@ -84,7 +84,7 @@ workspace config set dev.release_on_session_end false   # keep it running after 
 | Code | Meaning |
 |------|---------|
 | 0 | Stopped (or nothing was running) |
-| 1 | Could not stop the process group, or it's already being stopped by another `lock clear`, `dev down`, or `dev up --force` |
+| 1 | Could not stop the process group, it's already being stopped by another `lock clear`, `dev down`, or `dev up --force`, or another workspace holds it and `--force` was not given (`dev_held_by`) |
 
 ## `--json`
 
@@ -194,6 +194,8 @@ The pack reads the exit codes of `wait` as this page gives them: 0 ready, 75 sti
 **Another worktree holds it** — `up` exits 1 with that worktree's name and branch. `--wait` queues (the wrapper waits in its window, and `up` prints one `Trying to obtain workspace devenv lock...` line). `--force` stops the holder first and hands the lock straight to this worktree, ahead of anyone already queued.
 
 **Stopping** — `down`, `--force` and `workspace lock clear devenv` send SIGTERM to the wrapper only. The wrapper forwards it once to its whole process group (the dev command and its children), waits for the command to exit, releases the lock, and exits. If anything in the group is still running after `dev.stop_timeout`, the group gets SIGKILL. `down` works from any worktree of the repo. If the group can't be stopped — processes this user isn't permitted to signal (a server under `sudo`), something still running `dev.kill_grace` (default `2s`, capped at `60s`) after SIGKILL, or a wrapper already gone while its group runs on — `down` and `--force` keep the `devenv` lock exactly as `workspace lock clear devenv` does: `Could not stop process group N (pid P): ...` and `Kept devenv lock: ...` (with a `kill -TERM -N` hint for the group's owner) on stderr, exit 1, and the lock is not reaped while that group still runs. `--force`'s own wrapper stays queued first and starts once the lock frees.
+
+**Stopping another workspace's dev environment** — `down` stops the environment of the workspace it runs in (and, for a workflow run's, the pane bound to that run). When another workspace holds the lock, `down` stops nothing and exits 1 with `dev_held_by`, naming the holder's workspace, pane, pid and run if any (`details` in `--json`). Run `workspace dev down` from the holder's workspace, or pass `--force` to stop it from here. A holder whose wrapper is gone is still cleaned up without `--force` (a process group it left running still needs it). `kill`, `finish` and a session ending stop only their own environment, and are not affected.
 
 **One stop at a time** — while `down`, `--force` or `lock clear devenv` is stopping the group, the holder carries `"clearing": {"pid", "started"}` naming that process. Any of the three run meanwhile signals nothing, prints `devenv lock is already being cleared by pid N ...` on stderr, and exits 1 (a `--force` that finds one keeps its own wrapper queued first, so it still starts once that group is stopped). The marker is dropped when that stop finishes, and ignored once the process that set it is no longer running.
 

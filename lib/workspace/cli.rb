@@ -2919,7 +2919,7 @@ module Workspace
 
         Subcommands:
           up [WS] [options]      Start this worktree's dev env in a devenv tmux window
-          down [WS] [--force]    Stop this repo's dev env, whichever worktree holds it
+          down [WS] [--force]    Stop this worktree's dev env (--force: another worktree's)
           status [WS]            Show holder, branch, uptime, pane, readiness, and queue
           wait [WS] [options]    Block until this worktree holds the dev env and it is ready
           leave [WS]             Take this worktree out of the line for the dev env
@@ -3085,7 +3085,7 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace dev down [WS] [--force] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--force", "Also kill a process group left behind by a dead wrapper") { force = true }
+        opts.on("--force", "Stop a dev env another worktree holds, and kill a process group left behind by a dead wrapper") { force = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
