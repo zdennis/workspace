@@ -118,6 +118,7 @@ RSpec.describe Workspace::Commands::Snapshot do
     Class.new do
       define_method(:base_ref) { |path| (path == "/src/other") ? raise(Workspace::Error, "no base") : "origin/main" }
       define_method(:upstream_config) { |path, branch| (calls << [path, branch]) && configs[path] }
+      define_method(:commits_ahead_of) { |path, base| (path == "/src/app") ? nil : 4 }
     end.new
   end
   let(:pr_calls) { [] }
@@ -418,8 +419,13 @@ RSpec.describe Workspace::Commands::Snapshot do
 
     it "reports branch, base, change counts, ahead and upstream" do
       expect(member_row(parsed, "app.worktree-fix")["git"]).to eq(
-        "available" => true, "branch" => "fix", "changed_files" => 3, "ahead" => 2, "upstream" => nil, "unpushed_commits" => 2, "unsaved" => "yes", "base" => "origin/main"
+        "available" => true, "branch" => "fix", "changed_files" => 3, "ahead" => 2, "upstream" => nil, "unpushed_commits" => 2, "unsaved" => "yes", "base" => "origin/main", "ahead_of_base" => 4
       )
+    end
+
+    it "gives ahead_of_base as null when the count is unavailable or the branch has no base" do
+      expect(member_row(parsed, "app")["git"]).to include("base" => "origin/main", "ahead_of_base" => nil)
+      expect(member_row(parsed, "other")["git"]).to include("base" => nil, "ahead_of_base" => nil)
     end
 
     it "marks a read git could not answer as unavailable and unsaved unknown, never clean" do
@@ -497,7 +503,14 @@ RSpec.describe Workspace::Commands::Snapshot do
       allow(git).to receive(:base_ref).and_raise(Workspace::Error, "no base")
       snapshot.call
 
-      expect(member_row(parsed, "app")["git"]).to include("available" => true, "base" => nil)
+      expect(member_row(parsed, "app")["git"]).to include("available" => true, "base" => nil, "ahead_of_base" => nil)
+    end
+
+    it "gives a null ahead_of_base when the count raises" do
+      allow(git).to receive(:commits_ahead_of).and_raise(Workspace::Error, "boom")
+      snapshot.call
+
+      expect(member_row(parsed, "app.worktree-fix")["git"]).to include("base" => "origin/main", "ahead_of_base" => nil)
     end
 
     it "refuses a --name that is only a worktree without a workspace config, like any unknown name" do

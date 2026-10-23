@@ -374,8 +374,16 @@ module Workspace
         return nil unless fact
         block = fact.slice("available", "reason", "branch", "changed_files", "ahead", "upstream", "unpushed_commits", "unsaved")
         block["base"] = fact["available"] ? base_ref(path) : nil
+        block["ahead_of_base"] = block["base"] ? ahead_of_base(path, block["base"]) : nil
         block["pr"] = pr if pr
         block
+      end
+
+      # Commits the branch has that its base lacks; nil when git cannot answer, so a failure never reads as 0.
+      def ahead_of_base(path, base)
+        @git.commits_ahead_of(path, base)
+      rescue Workspace::Error, SystemCallError
+        nil
       end
 
       def base_ref(path)
