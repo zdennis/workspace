@@ -27,7 +27,7 @@ class FakeDevWindowTmux
   # No real panes exist, so no dead devenv windows to sweep.
   def close_dead_windows(_session, name:) = []
 
-  def new_window(session, name:, cwd:, command:, env: {}, remain_on_exit: false, source_pane: nil)
+  def new_window(session, name:, cwd:, command:, env: {}, remain_on_exit: false)
     @windows << {session: session, name: name, cwd: cwd, command: command}
     @spawner.call(cwd, command.include?("--wait"), env)
   end

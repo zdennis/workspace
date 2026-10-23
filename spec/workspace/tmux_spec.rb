@@ -941,13 +941,16 @@ RSpec.describe Workspace::Tmux do
       expect(Open3).to have_received(:capture3).with("tmux", "set-option", "-w", "-t", "%12", "remain-on-exit", "on")
     end
 
-    it "switches the client owning the source pane to the new window" do
-      allow(Open3).to receive(:capture3).and_return(["4321 %12 @4\n", "", double(success?: true)])
-      allow(tmux).to receive(:switch_client_to_pane)
+    # iTerm2 treats a control-mode client's switch-client as a re-attach and
+    # closes and reopens the session's windows.
+    it "leaves every attached client where it is" do
+      allow(Open3).to receive(:capture3).and_return(["4321 %12\n", "", double(success?: true)])
+      allow(Kernel).to receive(:system)
 
-      tmux.new_window("app", name: "devenv", cwd: "/w", command: ["true"], source_pane: "%7")
+      tmux.new_window("app", name: "devenv", cwd: "/w", command: ["true"], remain_on_exit: true)
 
-      expect(tmux).to have_received(:switch_client_to_pane).with("%7", "%12")
+      expect(Kernel).not_to have_received(:system)
+      expect(Open3).not_to have_received(:capture3).with("tmux", "display-message", any_args)
     end
 
     it "returns nil when tmux fails" do

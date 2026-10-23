@@ -709,7 +709,7 @@ module Workspace
         reused = reusable_window(ctx, session) unless takeover
         return reused if reused
         wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env,
-          remain_on_exit: true, source_pane: @env["TMUX_PANE"])
+          remain_on_exit: true)
         raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
         wrapper
       end

@@ -484,10 +484,8 @@ module Workspace
     # @param env [Hash{String=>String}] extra environment for the command
     # @param remain_on_exit [Boolean] keep this window (only) open once the
     #   command exits, so its last output stays readable
-    # @param source_pane [String, nil] caller pane whose attached client should
-    #   display the new window, when the caller is in tmux control mode
     # @return [Integer, nil] the pane's process id, or nil if tmux failed
-    def new_window(session_name, name:, cwd:, command:, env: {}, remain_on_exit: false, source_pane: nil)
+    def new_window(session_name, name:, cwd:, command:, env: {}, remain_on_exit: false)
       @logger.debug { "tmux: new-window #{name} in #{session_name}: #{command.join(" ")}" }
       args = ["tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid} \#{pane_id}", "-t", session_target(session_name), "-n", name, "-c", cwd]
       env.each { |key, value| args.push("-e", "#{key}=#{value}") }
@@ -496,21 +494,7 @@ module Workspace
       pid, pane_id = stdout.split
       return nil unless pid
       Open3.capture3("tmux", "set-option", "-w", "-t", pane_id, "remain-on-exit", "on") if remain_on_exit && pane_id
-      switch_client_to_pane(source_pane, pane_id) if source_pane && pane_id
       pid.to_i
-    end
-
-    # A session can have more than one attached iTerm2 control-mode client.
-    # Creating a window by session alone leaves iTerm2 to choose which client
-    # receives it. Switch the client that owns the caller's pane to the new
-    # pane so the window appears as a tab in that iTerm2 window.
-    def switch_client_to_pane(source_pane, new_pane)
-      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", source_pane, "\#{client_tty}")
-      client_tty = stdout.strip
-      return unless status.success? && !client_tty.empty?
-
-      @logger.debug { "tmux: selecting #{new_pane} in client #{client_tty}" }
-      Kernel.system("tmux", "switch-client", "-c", client_tty, "-t", new_pane)
     end
 
     # Closes a pane kept open by remain-on-exit, once its process has exited.
