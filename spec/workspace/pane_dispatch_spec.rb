@@ -117,6 +117,14 @@ RSpec.describe Workspace::PaneDispatch do
       expect(dispatch.not_ready_message(spawned, "task")).to end_with("and the pane was closed.")
     end
 
+    it "closes the pane when its screen can't be read" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "x"))
+      allow(tmux).to receive(:capture_screen).with("%23").and_return(nil)
+
+      expect(dispatch.spawn("api", "codex")).to have_attributes(closed: true, waiting: nil)
+      expect(tmux).to have_received(:close_pane).with("%23")
+    end
+
     it "leaves the pane when the workspace uses a custom tmux socket" do
       allow(tmux).to receive(:custom_socket_option).with("api").and_return("-L x")
       allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout"))
