@@ -409,6 +409,7 @@ module Workspace
           reply_to(client, "ok" => true)
         when "status_request" then handle_status_request(message, client)
         when "prompt_send" then handle_prompt_send(message, client)
+        when "prompt_interrupt_send" then handle_prompt_send(message, client, :interrupt_send)
         when "status_post" then reply_to(client, @agent_status_desk.post(message))
         when "sessions"
           reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
@@ -486,10 +487,10 @@ module Workspace
       # +client+: a ready pane gets its text typed before the reply.
       #
       # @return [Symbol] :handed_off
-      def handle_prompt_send(message, client)
+      def handle_prompt_send(message, client, handler = :send_prompt)
         Thread.new do
           reply = begin
-            @prompt_queue_desk.send_prompt(message)
+            @prompt_queue_desk.public_send(handler, message)
           rescue => e
             code = e.is_a?(Workspace::Error) ? e.code : "internal_error"
             {"ok" => false, "error" => code, "message" => e.message}

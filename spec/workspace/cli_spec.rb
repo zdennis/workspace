@@ -1901,6 +1901,51 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "--interrupt" do
+      let(:client) do
+        double("client").tap do |c|
+          allow(c).to receive(:exchange_message) do |_name, message, timeout:|
+            {"ok" => true, "interrupted" => true, "keys" => ["Escape"], "delivered" => true, "submitted" => true, "pane_id" => message["pane_id"]}
+          end
+        end
+      end
+
+      def interrupt_cli
+        out = StringIO.new
+        send_command = Workspace::Commands::Send.new(locator: Workspace::PaneLocator.new(tmux: tmux), tmux: tmux, client: client, output: out)
+        build_test_cli(output: out, send_command: send_command)
+      end
+
+      it "asks the daemon for one interrupt-and-type and prints its single result" do
+        cli, output = interrupt_cli
+
+        cli.run(["agent-run", "send", "--name", "api", "--pane", "1.2", "--body", "new plan", "--interrupt", "--json"])
+
+        expect(client).to have_received(:exchange_message)
+          .with("api", {"type" => "prompt_interrupt_send", "pane_id" => "%19", "text" => "new plan"}, timeout: Workspace::Commands::Send::WHEN_IDLE_TIMEOUT)
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "workspace" => "api", "interrupted" => true,
+          "keys" => ["Escape"], "delivered" => true, "submitted" => true, "pane" => "%19", "pane_id" => "%19")
+        expect(tmux.deliveries + tmux.keys_sent).to be_empty
+      end
+
+      [
+        [["--interrupt"], "Missing --body or --keys."],
+        [["--keys", "y", "--interrupt"], "--interrupt takes --body, not --keys."],
+        [["--body", "x", "--interrupt", "--no-enter"], "--interrupt always presses Enter; drop --no-enter."],
+        [["--body", "x", "--interrupt", "--when-idle"], "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first."],
+        [["--body", "x", "--interrupt", "--clear-first"], "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first."]
+      ].each do |extra, message|
+        it "refuses #{extra.join(" ")} as usage" do
+          cli, output = interrupt_cli
+
+          expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", *extra, "--json"]) }).to eq(1)
+
+          expect(JSON.parse(output.string)).to include("code" => "usage", "error" => message)
+          expect(client).not_to have_received(:exchange_message)
+        end
+      end
+    end
+
     it "reports an unwired build plainly" do
       cli, _, error_output = build_test_cli
 

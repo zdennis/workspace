@@ -16,7 +16,7 @@ workspace agent-run --body '<full message JSON>' [--dry-run]
 | `command` | Send a `command` message — delivers work to the first pipeline stage |
 | `inject` | Send an `inject` message — steers a running work item |
 | `restart` | Send a `restart_agent` message — clears the coding agent in one pane and types a fresh prompt |
-| `send` | Type text or tmux keys into one named pane, straight through tmux (no daemon); with `--when-idle`, hand the text to the agent daemon to type once the agent's turn ends; with `--clear-first`, have the daemon clear the conversation first |
+| `send` | Type text or tmux keys into one named pane, straight through tmux (no daemon); with `--interrupt`, have the daemon interrupt the agent, wait for its prompt and type the text in one step; with `--when-idle`, hand the text to the agent daemon to type once the agent's turn ends; with `--clear-first`, have the daemon clear the conversation first |
 | `queue` | `queue list` shows the prompts `send --when-idle` has queued; `queue cancel --id ID` takes one back. Both work with no agent daemon |
 | `examples` | Print all stock example messages without sending anything |
 
@@ -77,6 +77,7 @@ When `--work-item` is omitted a random UUID is generated for the message's `work
 | `--no-enter` | With `--body`, paste the text without pressing Enter |
 | `--when-idle` | With `--body`: typed now if the agent's turn has ended, else queued by the agent daemon and typed when it ends (Claude Code panes only) |
 | `--clear-first` | With `--body`: the agent daemon types the agent's clear (`/clear`) first, waits for the new conversation, then types the text. With or without `--when-idle` (Claude Code panes with hooks only) |
+| `--interrupt` | With `--body`: the agent daemon presses the agent's interrupt key (`Escape`), waits up to 15s for its prompt to come back, then types the text; one call, one result (Claude Code panes only) |
 | `--json` | Print the result as JSON |
 
 ### `queue` subcommand
@@ -141,6 +142,28 @@ When the call types the text itself it can also end in `not_submitted` (exit 2, 
 **One race is accepted.** After the last check and before Enter, the daemon reads the screen and waits for it to settle; a turn that starts in that window gets the text mid-turn, which Claude Code takes at its next step, as with `send` without `--when-idle`.
 
 With `--json`, success prints `{"schema_version":1,"ok":true,"workspace":"api","pane":"%19","pane_id":"%19","queued":true,"id":"5f0c...","position":1}` or the same with `"delivered":true,"submitted":true` instead of `queued` and `position`. Exit codes: 0 typed or queued, 1 refused or not delivered, 2 `not_submitted`, 75 `clear_unconfirmed` (below).
+
+#### `send --interrupt`
+
+`--interrupt --body TEXT` replaces the two-step "press `Escape`, wait, type" with one call that no other writer can cut into. The pane is checked as for `send`, then the text goes to the workspace's agent daemon (message type `prompt_interrupt_send`), which, holding the pane and its delivery lock throughout:
+
+1. refuses before pressing anything when the pane is not a Claude Code agent, waits on a person, is held by a restart, or its agent has no interrupt key;
+2. presses the agent's interrupt keys (`Escape`, as `plan pause --interrupt` does);
+3. waits up to 15s for the screen to stay unchanged for 2s with the agent's input prompt on screen and empty;
+4. types the text with the same check-paste-check-Enter as `--when-idle`.
+
+Nothing is queued: the text is typed now or not at all. A pane whose turn already ended is still interrupted (Escape at an idle prompt is harmless) and typed into. The daemon-wide delivery lock is held for the whole call, at most about 15s of waiting plus the typing, so other panes' deliveries wait meanwhile; that is what keeps any other writer from typing between the steps. Prompts already queued for the pane with `--when-idle` stay queued and go out at a later turn end. A draft in the input line is not cleared by the interrupt (and Claude Code may restore interrupted text into it), which ends as `not_ready` with `details.reason: input_not_empty` after the wait. A `connection_failed` with `details.maybe_delivered: true` may mean the agent was already interrupted. Because the prompt wait can time out after the interrupt, `not_ready` means the agent was interrupted but nothing was typed.
+
+| Code | Meaning |
+|---|---|
+| `usage` | `--interrupt` without `--body`, or with `--keys`, `--no-enter`, `--when-idle` or `--clear-first`; or `--body` over 32 KB. Nothing is sent. |
+| `no_daemon` | No agent daemon runs for the workspace. A daemon that predates `--interrupt` answers `error` ("restart it"). Check the `agent_send_interrupt` capability first. |
+| `no_interrupt_key` | workspace knows no interrupt key for the pane's agent. `details.kind`. Nothing pressed or typed. |
+| `not_an_agent`, `unsupported_agent`, `pane_waiting`, `pane_busy`, `pane_not_ready` | As for `--when-idle`; `pane_busy` here means a restart holds the pane. Nothing pressed or typed. |
+| `not_ready` | Exit 1. The keys were pressed, but the prompt did not come back within 15s. `details.interrupted: true`, `details.keys`, `details.reason` (the last check). Nothing typed; the pane is already interrupted, so the same call is safe to retry. |
+| `not_delivered` | Exit 1. A key press or the paste failed. `details.interrupted` says whether any key had been pressed. |
+
+`not_submitted` (exit 2) is as for `--when-idle`. With `--json`, success prints `{"schema_version":1,"ok":true,"workspace":"api","pane":"%19","pane_id":"%19","interrupted":true,"keys":["Escape"],"delivered":true,"submitted":true}`.
 
 #### `send --clear-first`
 
@@ -211,6 +234,9 @@ workspace agent-run send --name myapp --pane 0.1 --body "Run the specs and repor
 
 # Hand pane %19 its next prompt once its current turn ends
 workspace agent-run send --name myapp --pane %19 --body "Now update the docs" --when-idle --json
+
+# Interrupt pane %19, wait for its prompt, and type a new instruction, as one step
+workspace agent-run send --name myapp --pane %19 --body "Stop; use the auth approach instead" --interrupt --json
 
 # Give pane %19 a fresh conversation and its next prompt once its current turn ends
 workspace agent-run send --name myapp --pane %19 --body "Start on the docs" --when-idle --clear-first --json

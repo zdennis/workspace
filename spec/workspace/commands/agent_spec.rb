@@ -2298,6 +2298,8 @@ RSpec.describe Workspace::Commands::Agent do
 
           def scan = nil
 
+          def interrupt_send(message) = {"ok" => true, "interrupted" => true, "pane_id" => message["pane_id"]}
+
           def send_prompt(message)
             @release.pop
             {"ok" => true, "queued" => true, "id" => "q1", "position" => 1, "pane_id" => message["pane_id"]}
@@ -2361,6 +2363,13 @@ RSpec.describe Workspace::Commands::Agent do
           expect(desk.events.pop).to eq("stop")
           release << :go
           expect(reply.value).to include("queued" => true, "id" => "q1", "pane_id" => "%5")
+        end
+      end
+
+      it "answers prompt_interrupt_send from the desk's interrupt_send" do
+        run_agent do
+          expect(send_message("type" => "prompt_interrupt_send", "pane_id" => "%5", "text" => "hi"))
+            .to eq("ok" => true, "interrupted" => true, "pane_id" => "%5")
         end
       end
 

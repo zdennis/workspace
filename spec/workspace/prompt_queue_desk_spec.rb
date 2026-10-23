@@ -29,7 +29,19 @@ RSpec.describe Workspace::PromptQueueDesk do
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
 
+      def log = (@log ||= [])
+
+      def key_ok = @key_ok != false
+
+      attr_writer :key_ok
+
+      def send_key(_session, _pane, key)
+        log << [:key, key]
+        key_ok
+      end
+
       def deliver(session, target, text, enter: true)
+        log << [:deliver, text, enter]
         @delivered << [session, target, text, enter]
         @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n")
         status = @statuses.shift || (enter ? :submitted : :pasted)
@@ -891,6 +903,121 @@ RSpec.describe Workspace::PromptQueueDesk do
         expect(store.entries).to eq([])
         expect(typed).to eq([])
       end
+    end
+  end
+
+  describe "#interrupt_send" do
+    def interrupt_send(text = "do this instead", pane_id: "%5") = desk.interrupt_send("pane_id" => pane_id, "text" => text)
+
+    it "presses the interrupt keys, waits for the prompt to settle, then types the text and Enter, in that order" do
+      captures = 0
+      busy = "✻ Working… (esc to interrupt)\n❯ \n"
+      tmux.scripted = lambda do
+        captures += 1
+        tmux.log << [:capture]
+        (captures <= 2) ? busy + "x" * captures : tmux.screen
+      end
+
+      reply = interrupt_send
+
+      expect(reply).to include("ok" => true, "interrupted" => true, "keys" => ["Escape"], "delivered" => true,
+        "submitted" => true, "pane" => "0.1", "pane_id" => "%5")
+      expect(tmux.log.first).to eq([:key, "Escape"])
+      captures_before_paste = tmux.log.take_while { |entry| entry[0] != :deliver }.count { |entry| entry[0] == :capture }
+      expect(captures_before_paste).to be > 3
+      expect(tmux.log.select { |entry| entry[0] == :deliver }).to eq([[:deliver, "do this instead", false], [:deliver, "", true]])
+    end
+
+    it "holds the delivery lock from the keys to Enter" do
+      lock = Mutex.new
+      held = []
+      locked_desk = described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
+        delivery_lock: lock, clock: clock, sleeper: ->(seconds) { now[0] += seconds }, spawn: ->(&block) { block.call })
+      allow(tmux).to receive(:send_key).and_wrap_original { |m, *a| held << lock.owned? && m.call(*a) }
+      allow(tmux).to receive(:deliver).and_wrap_original { |m, *a, **kw| held << lock.owned? && m.call(*a, **kw) }
+
+      locked_desk.interrupt_send("pane_id" => "%5", "text" => "go")
+
+      expect(held).to eq([true, true, true])
+    end
+
+    it "does not type, and says not_ready, when the prompt never comes back" do
+      tick = 0
+      tmux.scripted = -> { "✻ Working… #{tick += 1}\n❯ \n" }
+
+      reply = interrupt_send
+
+      expect(reply).to include("ok" => false, "error" => "not_ready", "interrupted" => true, "keys" => ["Escape"], "reason" => "busy")
+      expect(tmux.delivered).to eq([])
+      expect(now[0] - t0).to be >= described_class::INTERRUPT_TIMEOUT
+    end
+
+    it "does not type, and says not_ready, when the input line holds a draft" do
+      tmux.screen = "────────\n❯ half a thought\n"
+
+      reply = interrupt_send
+
+      expect(reply).to include("error" => "not_ready", "reason" => "input_not_empty")
+      expect(tmux.delivered).to eq([])
+    end
+
+    it "refuses a pane whose agent has no interrupt keys before pressing anything" do
+      provider = Workspace::AgentProvider.find("claude")
+      bare = instance_double(Workspace::AgentProvider, key: "claude", label: "Claude Code", interrupt_keys: [], ready_pattern: provider.ready_pattern)
+      bare_desk = described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
+        delivery_lock: Mutex.new, providers: [bare], clock: clock, sleeper: ->(s) { now[0] += s })
+
+      reply = bare_desk.interrupt_send("pane_id" => "%5", "text" => "go")
+
+      expect(reply).to include("error" => "no_interrupt_key", "kind" => "claude")
+      expect(tmux.log).to eq([])
+    end
+
+    it "refuses a shell, an agent with no checkable screen, a waiting pane and a held pane without pressing anything" do
+      facts[:kind] = "shell"
+      expect(interrupt_send).to include("error" => "not_an_agent")
+      facts[:kind] = "codex"
+      expect(interrupt_send).to include("error" => "unsupported_agent", "kind" => "codex")
+      facts[:kind] = "claude"
+      typing[:state] = "waiting"
+      expect(interrupt_send).to include("error" => "pane_waiting", "reason" => "waiting")
+      typing[:state] = "idle"
+      restarting << "%5"
+      expect(interrupt_send).to include("error" => "pane_busy", "reason" => "restarting")
+      expect(tmux.log).to eq([])
+    end
+
+    it "stops, typing nothing, when a key press fails" do
+      tmux.key_ok = false
+
+      expect(interrupt_send).to include("error" => "not_delivered", "keys_sent" => 0, "interrupted" => false)
+      expect(tmux.delivered).to eq([])
+    end
+
+    it "answers not_submitted when the paste landed but Enter did not take" do
+      tmux.statuses.push(:pasted, :unsubmitted)
+
+      expect(interrupt_send).to include("error" => "not_submitted", "interrupted" => true, "delivered" => true, "submitted" => false)
+    end
+
+    it "answers pane_not_ready when the pane is not scanned yet, and when the question tool is open" do
+      allow(monitor).to receive(:delivery_facts).and_return(nil)
+      expect(interrupt_send).to include("error" => "pane_not_ready", "reason" => "unknown")
+      allow(monitor).to receive(:delivery_facts).and_return(facts)
+      typing[:open_tools] = ["AskUserQuestion"]
+      expect(interrupt_send).to include("error" => "pane_waiting", "reason" => "question_open")
+      expect(tmux.log).to eq([])
+    end
+
+    it "answers not_delivered when the paste never lands" do
+      tmux.statuses.push(:not_landed)
+
+      expect(interrupt_send).to include("error" => "not_delivered", "interrupted" => true)
+    end
+
+    it "refuses an empty text and an unknown pane" do
+      expect(interrupt_send("")).to include("error" => "usage")
+      expect(interrupt_send("go", pane_id: "%99")).to include("error" => "no_such_pane")
     end
   end
 end
