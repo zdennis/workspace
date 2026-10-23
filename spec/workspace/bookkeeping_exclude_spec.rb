@@ -80,6 +80,16 @@ RSpec.describe Workspace::BookkeepingExclude do
       expect(listed).not_to include("/.claude/settings.json")
     end
 
+    it "does not list a file that resolves outside the checkout" do
+      outside = File.join(@dir, "elsewhere")
+      FileUtils.mkdir_p(outside)
+      File.write(File.join(outside, "settings.json"), "{}")
+      File.symlink(outside, File.join(repo, "linked"))
+
+      expect(excluder.created(File.join(repo, "linked", "settings.json"))).to be(false)
+      expect(listed).to be_empty
+    end
+
     it "tolerates git being unable to answer" do
       File.write(path, "{}")
       allow(workspace_git).to receive(:tracked?).and_raise(Workspace::Error, "boom")

@@ -494,6 +494,28 @@ RSpec.describe Workspace::HookInstaller, "bookkeeping excludes" do
     expect(excluder).to have_received(:created).with(settings_path)
   end
 
+  context "when install_statusline writes the file" do
+    let(:global_dir) { Dir.mktmpdir }
+    let(:project_settings) { Workspace::ProjectSettings.new(config: instance_double(Workspace::Config, workspace_config_dir: global_dir)) }
+
+    after { FileUtils.remove_entry(global_dir) }
+
+    it "lists a settings file it created" do
+      installer.install_statusline(provider, tmpdir, command: "workspace statusline", project_settings: project_settings, quiet: true)
+
+      expect(excluder).to have_received(:created).with(settings_path)
+    end
+
+    it "leaves a settings file that already existed alone" do
+      FileUtils.mkdir_p(File.dirname(settings_path))
+      File.write(settings_path, "{}")
+
+      installer.install_statusline(provider, tmpdir, command: "workspace statusline", project_settings: project_settings, quiet: true)
+
+      expect(excluder).not_to have_received(:created)
+    end
+  end
+
   it "leaves a settings file that already existed alone" do
     FileUtils.mkdir_p(File.dirname(settings_path))
     File.write(settings_path, "{}")
