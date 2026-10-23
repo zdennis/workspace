@@ -745,6 +745,97 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "Codex screens that wait on a person" do
+    let(:panes) { [{id: "%3", index: 0, pid: 300, command: "node", cwd: "/project", title: "Codex"}] }
+    let(:fixtures) { File.expand_path("../fixtures/codex_screens", __dir__) }
+
+    def screen(name) = File.read(File.join(fixtures, "#{name}.txt"))
+
+    def codex_pane = monitor.snapshot["panes"].first
+
+    before do
+      allow(snapshot).to receive(:find_descendant)
+        .with(300, ["codex"], hash_including(include_root: true))
+        .and_return({pid: 350, command: "codex", args: "codex"})
+    end
+
+    %w[approval_command approval_patch trust_folder trust_restricted sign_in sign_in_browser sign_in_api_key].each do |name|
+      it "reports #{name} as waiting, with a message, though no hook fired" do
+        allow(tmux).to receive(:capture_pane).and_return(screen(name))
+
+        monitor.scan
+
+        expect(codex_pane).to include("kind" => "codex", "state" => "waiting", "waiting_since" => now.iso8601)
+        expect(codex_pane["waiting_message"]).to start_with("Codex is asking you to")
+      end
+    end
+
+    it "does not report ordinary output that quotes the screens' text" do
+      allow(tmux).to receive(:capture_pane).and_return(screen("ordinary_output"))
+
+      monitor.scan
+
+      expect(codex_pane["state"]).not_to eq("waiting")
+    end
+
+    it "ignores a prompt that scrolled out of the last lines" do
+      allow(tmux).to receive(:capture_pane).and_return(screen("approval_command") + ("output\n" * 60))
+
+      monitor.scan
+
+      expect(codex_pane["state"]).not_to eq("waiting")
+    end
+
+    it "stops waiting once the screen changes" do
+      allow(tmux).to receive(:capture_pane).and_return(screen("trust_folder"))
+      monitor.scan
+      allow(tmux).to receive(:capture_pane).and_return("working on it\n")
+
+      monitor.scan
+
+      expect(codex_pane).to include("state" => "working", "waiting_since" => nil)
+    end
+
+    it "keeps the first start time while the same screen stays" do
+      allow(tmux).to receive(:capture_pane).and_return(screen("sign_in"))
+      monitor.scan
+      allow(clock).to receive(:now).and_return(now + 60)
+      monitor.scan
+
+      expect(codex_pane).to include("state" => "waiting", "waiting_since" => now.iso8601)
+    end
+
+    it "keeps one wait, the hook's, when both the hook and the screen report the prompt" do
+      allow(tmux).to receive(:capture_pane).and_return(screen("approval_command"))
+      monitor.scan
+      monitor.record("event" => "notification", "pane_id" => "%3", "message" => "Approval requested")
+      allow(tmux).to receive(:capture_pane).and_return(screen("approval_command") + "\n")
+      monitor.scan
+      allow(tmux).to receive(:capture_pane).and_return("approved\n")
+      monitor.scan
+
+      expect(codex_pane).to include("state" => "waiting", "waiting_message" => "Approval requested")
+    end
+
+    it "does not match a quoted browser or API key heading alone" do
+      allow(tmux).to receive(:capture_pane).and_return("  Finish signing in via your browser\n  Paste or type your API key\n")
+
+      monitor.scan
+
+      expect(codex_pane["state"]).not_to eq("waiting")
+    end
+
+    it "does not look for these screens in a Claude Code pane" do
+      claude = {id: "%2", index: 1, pid: 200, command: "node", cwd: "/project", title: "Claude"}
+      allow(tmux).to receive(:pane_details).and_return([claude])
+      allow(tmux).to receive(:capture_pane).and_return(screen("approval_command"))
+
+      monitor.scan
+
+      expect(monitor.snapshot["panes"].first["state"]).not_to eq("waiting")
+    end
+  end
+
   describe "#agent_pid" do
     it "returns the pid of the coding agent in a pane, and nil for a shell or unscanned pane" do
       monitor.scan

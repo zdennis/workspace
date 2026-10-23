@@ -658,7 +658,40 @@ module Workspace
         pane.delete(:done)
       end
 
-      refresh_activity(pane, now)
+      screen = refresh_activity(pane, now)
+      refresh_screen_wait(pane, agent && agent[:provider], screen, now)
+    end
+
+    # Lines from the bottom of the screen a provider's waiting screens are
+    # looked for in; a prompt sits at the bottom, and older scrollback may
+    # still show one that was answered.
+    SCREEN_WAIT_LINES = 40
+    private_constant :SCREEN_WAIT_LINES
+
+    # The key of the wait a matched screen opens in the pane's waits. Hooks
+    # key theirs by agent id, so this never meets one.
+    SCREEN_WAIT_KEY = "screen"
+    private_constant :SCREEN_WAIT_KEY
+
+    # Some agents stop on a screen before any hook can say so (Codex's
+    # sign-in and folder trust). A provider's waiting screens put the pane
+    # in `waiting` while one is shown, and take it out when it goes.
+    def refresh_screen_wait(pane, provider, screen, now)
+      return if screen.empty? # a failed capture says nothing about the prompt
+      message, = provider&.waiting_screens&.find { |_, pattern| pattern.match?(screen_tail(screen)) }
+      hook_waiting = pane[:waits].keys.any? { |key| key != SCREEN_WAIT_KEY }
+      if message && !hook_waiting
+        wait = (pane[:waits][SCREEN_WAIT_KEY] ||= resumed_wait(pane, SCREEN_WAIT_KEY))
+        wait[:message] = message
+        wait[:since] ||= now
+      else
+        pane[:waits].delete(SCREEN_WAIT_KEY)
+        pane[:alerted_waits]&.delete(SCREEN_WAIT_KEY)
+      end
+    end
+
+    def screen_tail(screen)
+      screen.to_s.lines.last(SCREEN_WAIT_LINES).join
     end
 
     def detect_agent(detail, tree)
@@ -668,7 +701,8 @@ module Workspace
     # Output is hashed rather than compared: a pane's scrollback is large, and
     # only the fact that it changed matters.
     def refresh_activity(pane, now)
-      digest = Digest::SHA256.hexdigest(@tmux.capture_pane(@session_name, pane[:index]).to_s)
+      screen = @tmux.capture_pane(@session_name, pane[:index]).to_s
+      digest = Digest::SHA256.hexdigest(screen)
 
       if pane[:digest] != digest
         # The first capture after a restart is new to this monitor, not to the
@@ -683,6 +717,7 @@ module Workspace
         pane[:own_quiet_at] = now
       end
       pane[:last_activity_at] ||= now
+      screen
     end
 
     # Events that start, end, or restart a turn clear a wait whoever raised it.

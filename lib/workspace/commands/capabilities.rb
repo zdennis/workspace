@@ -85,6 +85,7 @@ module Workspace
         "agent_send_interrupt" => 1,
         "plan_tasks" => 3,
         "agent_hooks" => 1,
+        "codex_waiting" => 1,
         "projects_multi" => 1,
         "json_envelope" => 1,
         "remove" => 1,

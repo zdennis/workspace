@@ -218,4 +218,31 @@ RSpec.describe Workspace::AgentProvider do
       expect(described_class.detect(command: "claude-dev", pid: 10, tree: tree, aliases: {"codex" => ["claude-dev"]})&.fetch(:provider)&.key).to eq("codex")
     end
   end
+
+  describe "Codex waiting screens" do
+    let(:screens) { described_class.find("codex").waiting_screens }
+
+    def fixture(name) = File.read(File.expand_path("../fixtures/codex_screens/#{name}.txt", __dir__))
+
+    it "names no waiting screens for the other agents" do
+      expect(described_class.all.reject { |p| p.key == "codex" }.map(&:waiting_screens)).to all(be_empty)
+    end
+
+    it "matches each screen's fixture under one message" do
+      expected = {
+        "approval_command" => /approve a command/, "approval_patch" => /approve a command/,
+        "trust_folder" => /trust this folder/, "trust_restricted" => /trust this folder/,
+        "sign_in" => /sign in/, "sign_in_browser" => /sign in/, "sign_in_api_key" => /sign in/
+      }
+      expected.each do |name, message|
+        matched = screens.select { |_, pattern| pattern.match?(fixture(name)) }.keys
+        expect(matched.size).to eq(1), name
+        expect(matched.first).to match(message)
+      end
+    end
+
+    it "does not match ordinary output" do
+      expect(screens.values.none? { |pattern| pattern.match?(fixture("ordinary_output")) }).to be(true)
+    end
+  end
 end

@@ -1,0 +1,7 @@
+• I will ask: Would you like to run the following command? Then Trust this folder? is a question the docs mention.
+
+  Sign in with ChatGPT is documented in the README.
+
+› Explain the Folder access screen
+
+  gpt-5 default · ~/project

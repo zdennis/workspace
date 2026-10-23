@@ -1,0 +1,8 @@
+  Finish signing in via your browser
+
+  If the link doesn't open automatically,
+press c to copy it:
+
+  https://auth.openai.com/oauth/authorize?re
+
+  Press esc to cancel

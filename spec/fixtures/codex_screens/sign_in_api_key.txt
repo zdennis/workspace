@@ -1,0 +1,4 @@
+  Paste or type your API key
+
+  Press enter to save
+  Press esc to go back

@@ -95,6 +95,27 @@ module Workspace
     # printed "72% context left" instead; that format is gone.
     CODEX_CONTEXT_PATTERN = 'Context\s+(\d{1,3})% used'
 
+    # Screens Codex stops on where no hook can say so: sign-in, folder trust,
+    # and command, patch and network approval. The text is from openai/codex
+    # `codex-rs/tui` (`onboarding/auth.rs`, `onboarding/trust_directory.rs`,
+    # `bottom_pane/approval_overlay.rs`), checked against codex-cli 0.163.0.
+    # Each pattern pairs a screen's heading with an option line only that
+    # screen draws, so ordinary output quoting a heading does not match.
+    CODEX_WAITING_SCREENS = {
+      "Codex is asking you to sign in" => Regexp.union(
+        /^[ ›>]*1\. Sign in with ChatGPT[ \t]*$/,
+        /^[ \t]*Finish signing in via your browser[ \t]*$[\s\S]*?^[ \t]*Press esc to cancel/,
+        /^[ \t]*Follow these steps to sign in with ChatGPT using device code authorization:[ \t]*$/,
+        /^[ \t]*Paste or type your API key[ \t]*$[\s\S]*?^[ \t]*Press enter to save/
+      ),
+      "Codex is asking you to trust this folder" => Regexp.union(
+        /^[ \t]*Trust this folder\?[\s\S]*?^[ ›>]*1\. Trust and continue[ \t]*$/,
+        /^[ \t]*Folder access[ \t]*$[\s\S]*?^[ ›>]*1\. Open restricted[ \t]*$/
+      ),
+      "Codex is asking you to approve a command, patch or network access" =>
+        /^[ \t]*(?:Would you like to (?:run the following command|make the following edits)\?|Do you want to approve network access to .+\?)[ \t]*$[\s\S]*?^[ ›>]*1\. Yes, proceed/
+    }.freeze
+
     # The key Claude Code and Codex both stop a running turn on ("esc to interrupt" in their
     # footers). OpenCode and Pi have none listed until their keys are checked against a live pane.
     INTERRUPT_KEYS = ["Escape"].freeze
@@ -120,6 +141,7 @@ module Workspace
           executable: "codex",
           restartable: true,
           context_pattern: CODEX_CONTEXT_PATTERN,
+          waiting_screens: CODEX_WAITING_SCREENS,
           interrupt_keys: INTERRUPT_KEYS,
           # Codex trusts each hook by file path and hash, and loads a project's
           # `.codex/` only once the project is trusted, so a file per worktree
@@ -197,7 +219,7 @@ module Workspace
     end
 
     attr_reader :key, :label, :executable, :settings_path, :events, :background_markers, :ready_pattern,
-      :clear_command, :context_pattern, :interrupt_keys, :hook_events, :hook_trust_hint
+      :clear_command, :context_pattern, :waiting_screens, :interrupt_keys, :hook_events, :hook_trust_hint
 
     # @return [Boolean] whether handoff may clear this agent and type a resume prompt into it
     def restartable?
@@ -236,6 +258,8 @@ module Workspace
     # @param context_pattern [String, nil] regex source with one capture group, applied to the
     #   pane's screen to read context use when the agent has no status line workspace can route
     # @param context_remaining [Boolean] whether that capture is the percent left, not used
+    # @param waiting_screens [Hash{String => Regexp}] message => pattern matched against the end of the
+    #   pane's screen; a match means the agent waits on a person and no hook said so
     # @param interrupt_keys [Array<String>] tmux key names that stop the agent mid-turn (`plan pause --interrupt`); empty when unknown
     # @param user_config_dir [String, nil] the agent's own config directory under the home
     #   directory; set, +settings_path+ is relative to it rather than to the project
@@ -246,7 +270,7 @@ module Workspace
     #   newly installed hooks run, printed after an install
     def initialize(key:, label:, executable:, settings_path: nil, events: nil,
       background_markers: [], path_segment_matching: true, ready_pattern: nil,
-      restartable: false, clear_command: "/clear", context_pattern: nil, context_remaining: false, interrupt_keys: [],
+      restartable: false, clear_command: "/clear", context_pattern: nil, context_remaining: false, waiting_screens: {}, interrupt_keys: [],
       user_config_dir: nil, user_config_env: nil, hook_timeouts: nil, hook_events: [], hook_trust_hint: nil)
       @hook_trust_hint = hook_trust_hint
       @user_config_dir = user_config_dir
@@ -266,6 +290,7 @@ module Workspace
       @context_pattern = context_pattern
       @context_remaining = context_remaining
       @interrupt_keys = interrupt_keys.freeze
+      @waiting_screens = waiting_screens
     end
 
     # @return [Boolean] whether workspace can route this agent's statusLine
