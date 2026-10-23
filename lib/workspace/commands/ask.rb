@@ -138,6 +138,44 @@ module Workspace
         {exit_code: e.is_a?(Run::NotSubmittedError) ? Run::NotSubmittedError::EXIT_CODE : 1}
       end
 
+      # Types an already-answered question's recorded answer, then Enter, into
+      # its pane again: the retry for `answer --deliver` when typing failed
+      # after the answer was recorded. Nothing in the store changes.
+      #
+      # The pane is the question's own (checked against the workspace's
+      # session and the tmux server it was asked under, as `answer --deliver`
+      # does) unless +pane+ names another pane of the workspace's session.
+      #
+      # @param id [String]
+      # @param pane [String, nil] pane id or window.pane to type into instead
+      # @param working_dir [String] directory to detect the workspace from
+      # @param json [Boolean] emit the documented JSON schema instead of a message
+      # @return [Hash] {exit_code:}
+      def deliver(id, pane: nil, working_dir: Dir.pwd, json: false)
+        raise Workspace::Error, "workspace ask deliver is not available in this build" unless @pane_sender
+        name = workspace_for(working_dir)
+        record = store_for(name).list.find { |r| r["id"] == id }
+        raise Workspace::Error, "No question '#{id}' for #{name}." unless record
+        unless record["status"] == "answered"
+          raise Workspace::Error.new("Question '#{id}' is #{record["status"]} for #{name}, so it has no answer to deliver. Answer it first with `workspace ask answer #{id} \"<answer>\" --deliver`.",
+            code: "ask_not_answered", details: {"id" => id, "status" => record["status"]})
+        end
+        target = pane ? @pane_sender.locate(name, pane)[:id] : pane_of(record, name, retrying: true)
+        delivered = deliver_answer(name, target, record["answer"], id, retry_of: true, explicit_pane: pane)
+
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "question" => record,
+                                      "delivered" => {"pane" => delivered["pane"], "submitted" => delivered["submitted"]}})
+        else
+          @output.puts "Typed the answer to #{id} into pane #{delivered["pane"]} and pressed Enter."
+        end
+        {exit_code: 0}
+      rescue Workspace::Error => e
+        raise unless json
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
+        {exit_code: e.is_a?(Run::NotSubmittedError) ? Run::NotSubmittedError::EXIT_CODE : 1}
+      end
+
       # Closes an open question its asker no longer needs answered. Only an
       # open question can be withdrawn; the event carries ids, never text.
       #
@@ -184,27 +222,31 @@ module Workspace
       def pane_to_deliver_to(store, name, id)
         raise Workspace::Error, "workspace ask answer --deliver is not available in this build" unless @pane_sender
         record = store.list(open_only: true).find { |r| r["id"] == id }
-        return unless record
+        pane_of(record, name) if record
+      end
 
+      # A recorded question's own pane, checked against the workspace's
+      # session and the tmux server it was asked under.
+      def pane_of(record, name, retrying: false)
         pane = record["pane"]
         unless pane
-          raise Workspace::Error.new("Question '#{id}' wasn't asked from a tmux pane, so there is nowhere to type the answer. Answer it without --deliver.",
-            code: "no_pane", details: {"question" => id})
+          raise Workspace::Error.new("Question '#{record["id"]}' wasn't asked from a tmux pane, so there is nowhere to type the answer. #{retrying ? "Name the pane with --pane." : "Answer it without --deliver."}",
+            code: "no_pane", details: {"question" => record["id"]})
         end
         @pane_sender.locate(name, pane)
-        confirm_same_tmux_server(record, pane)
+        confirm_same_tmux_server(record, pane, retrying)
         pane
       end
 
       # Pane ids restart from %0 when tmux does, so a pane id recorded before
       # a restart can name a different pane now. Delivery needs the server
       # the question was asked under to still be the one running.
-      def confirm_same_tmux_server(record, pane)
+      def confirm_same_tmux_server(record, pane, retrying)
         recorded = record["tmux_server"]
         return if recorded && recorded == @pane_sender.server_pid(pane)
 
         reason = recorded ? "tmux has restarted since it was asked" : "it doesn't record which tmux server it was asked under"
-        raise Workspace::Error.new("Question '#{record["id"]}' can't be delivered: #{reason}, so pane #{pane} may not be the pane that asked. Answer it without --deliver.",
+        raise Workspace::Error.new("Question '#{record["id"]}' can't be delivered: #{reason}, so pane #{pane} may not be the pane that asked. #{retrying ? "Name the pane with --pane." : "Answer it without --deliver."}",
           code: "stale_pane", details: {"question" => record["id"], "pane" => pane})
       end
 
@@ -213,11 +255,18 @@ module Workspace
         @env["TMUX"].to_s[/\A[^,]*,(\d+),/, 1]
       end
 
-      def deliver_answer(name, pane, answer, id)
+      def deliver_answer(name, pane, answer, id, retry_of: false, explicit_pane: nil)
         @pane_sender.deliver(name: name, pane: pane, body: answer)
       rescue Workspace::Error => e
-        raise e.class.new("Question '#{id}' is marked answered, but typing the answer into pane #{pane} failed: #{e.message}",
-          code: e.code, details: e.details.merge("question" => id, "answered" => true))
+        command_line = "workspace ask deliver #{id} --name #{name}#{" --pane #{explicit_pane}" if explicit_pane}"
+        retry_hint = "Retry with `#{command_line}`."
+        message = if retry_of
+          "Typing the answer to question '#{id}' into pane #{pane} failed: #{e.message} #{retry_hint}"
+        else
+          "Question '#{id}' is marked answered, but typing the answer into pane #{pane} failed: #{e.message} #{retry_hint}"
+        end
+        raise e.class.new(message, code: e.code,
+          details: e.details.merge("question" => id, "answered" => true, "retry" => command_line))
       end
 
       def workspace_for(working_dir)
