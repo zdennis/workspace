@@ -201,9 +201,46 @@ module Workspace
         result
       end
 
+      # Hands the text to the workspace's agent daemon with `--interrupt`: the
+      # daemon presses the agent's interrupt keys, waits for its prompt to come
+      # back and types the text, all under its delivery lock, so no other writer
+      # types between the steps (see {Workspace::PromptQueueDesk#interrupt_send}).
+      # Prints the answer.
+      #
+      # @param name [String] workspace name
+      # @param pane [String] a pane id ("%19") or "window.pane" ("0.1")
+      # @param body [String] the prompt, at most {PromptQueueStore::MAX_BYTES} bytes
+      # @param json [Boolean] print the result as JSON instead of a sentence
+      # @return [Hash] the daemon's answer: `"interrupted"`, `"keys"`, `"delivered"`, `"submitted"`
+      # @raise [Workspace::UsageError] for a body over the limit
+      # @raise [Workspace::Error] `no_daemon`, `connection_failed`, `unreadable_reply`,
+      #   the {Workspace::PaneLocator} codes, and the daemon's refusals (`no_interrupt_key`,
+      #   `not_ready` when the prompt did not come back, `pane_waiting`, `not_an_agent`,
+      #   `unsupported_agent`, `pane_busy`, `pane_not_ready`, `not_delivered`);
+      #   `not_submitted` (exit 2) when the text was pasted but not confirmed submitted
+      def interrupt_through_daemon(name:, pane:, body:, json: false)
+        if body.bytesize > PromptQueueStore::MAX_BYTES
+          raise Workspace::UsageError.new("--body is #{body.bytesize} bytes; --interrupt takes at most #{PromptQueueStore::MAX_BYTES}.",
+            details: {"limit" => PromptQueueStore::MAX_BYTES})
+        end
+        raise Workspace::Error, "agent-run send --interrupt is not available in this build" unless @client
+
+        detail = locate(name, pane)
+        reply = exchange(name, {"type" => "prompt_interrupt_send", "pane_id" => detail[:id], "text" => body}, flag: "--interrupt")
+        fail_with(reply, name, detail[:id], flag: "--interrupt") unless reply["ok"]
+
+        result = reply.except("ok", "pane").merge("pane" => detail[:id])
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name}.merge(result))
+        else
+          @output.puts "Interrupted pane #{detail[:id]} (#{result["keys"].join(" ")}), waited for its prompt, typed the text and pressed Enter."
+        end
+        result
+      end
+
       private
 
-      def exchange(name, message)
+      def exchange(name, message, flag: nil)
         reply = @client.exchange_message(name, message, timeout: WHEN_IDLE_TIMEOUT)
         unless reply.is_a?(Hash)
           raise Workspace::Error.new("Unreadable reply from the agent daemon for '#{name}'. #{MAYBE_SENT}",
@@ -214,8 +251,8 @@ module Workspace
         if e.reason == :timeout
           raise Workspace::Error.new("#{e.message}. #{MAYBE_SENT}", code: "connection_failed", details: {"maybe_delivered" => true})
         end
-        raise Workspace::Error.new("#{e.message}; --when-idle and --clear-first need the workspace's agent daemon (workspace agentd --name #{name}). " \
-          "Nothing was queued.", code: "no_daemon")
+        raise Workspace::Error.new("#{e.message}; #{flag || "--when-idle and --clear-first"} needs the workspace's agent daemon (workspace agentd --name #{name}). " \
+          "Nothing was queued or typed.", code: "no_daemon")
       end
 
       # What a caller is told when the daemon had the prompt but its answer was lost.
@@ -223,12 +260,12 @@ module Workspace
 
       # The daemon's reply fields other than ok, error and message become
       # details, with `pane` the pane id as on success.
-      def fail_with(reply, name, pane_id)
+      def fail_with(reply, name, pane_id, flag: nil)
         code = reply["error"].to_s
         message = reply["message"] || code
         if code == "unknown_type"
           code = "error"
-          message = "The agent daemon for '#{name}' predates --when-idle and --clear-first; restart it with: workspace agentd restart #{name}"
+          message = "The agent daemon for '#{name}' predates #{flag || "--when-idle and --clear-first"}; restart it with: workspace agentd restart #{name}"
         end
         code = "error" unless ErrorCodes.known?(code)
         details = reply.except("ok", "error", "message")

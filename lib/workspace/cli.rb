@@ -3448,6 +3448,7 @@ module Workspace
       no_enter = false
       when_idle = false
       clear_first = false
+      interrupt = false
       json = false
 
       parser = OptionParser.new do |opts|
@@ -3473,6 +3474,11 @@ module Workspace
         opts.separator "               end; without, a pane mid-turn, with a draft or with prompts queued is refused"
         opts.separator "               (pane_busy). Not confirmed: nothing more"
         opts.separator "               is typed (clear_unconfirmed, exit 75, details.clear_typed)."
+        opts.separator "  --interrupt  with --body, in one call: presses the agent's interrupt key (Escape), waits up to 15s"
+        opts.separator "               for its prompt to come back, then types the text. The agent daemon does all three"
+        opts.separator "               under its delivery lock, so no other writer types in between. Claude Code panes"
+        opts.separator "               only (unsupported_agent, no_interrupt_key); prompt not back in time: not_ready,"
+        opts.separator "               nothing typed. Not with --keys, --no-enter, --when-idle or --clear-first."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
@@ -3482,6 +3488,7 @@ module Workspace
         opts.on("--no-enter", "With --body, paste the text without pressing Enter") { no_enter = true }
         opts.on("--when-idle", "With --body, type it once the agent's turn ends (queued by the agent daemon)") { when_idle = true }
         opts.on("--clear-first", "With --body, clear the conversation and confirm it before typing (agent daemon)") { clear_first = true }
+        opts.on("--interrupt", "With --body, interrupt the agent, wait for its prompt, then type (agent daemon)") { interrupt = true }
         opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
         opts.separator ""
         opts.separator "Exit codes: 0 delivered (or, with --when-idle, queued); 1 not delivered (safe to resend), refused or"
@@ -3495,6 +3502,7 @@ module Workspace
         opts.separator "  workspace agent-run send --pane 0.1 --keys \"Up Enter\""
         opts.separator "  workspace agent-run send --name api --pane %19 --body \"Now run the specs\" --when-idle --json"
         opts.separator "  workspace agent-run send --name api --pane %19 --body \"Start on the docs\" --when-idle --clear-first --json"
+        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Stop; do this instead\" --interrupt --json"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -3510,7 +3518,15 @@ module Workspace
         raise UsageError, "#{flag} takes --body, not --keys.\n\n#{parser.help}" if given && keys
         raise UsageError, "#{flag} always presses Enter; drop --no-enter.\n\n#{parser.help}" if given && no_enter
       end
+      if interrupt
+        raise UsageError, "--interrupt takes --body, not --keys.\n\n#{parser.help}" if keys
+        raise UsageError, "--interrupt always presses Enter; drop --no-enter.\n\n#{parser.help}" if no_enter
+        if when_idle || clear_first
+          raise UsageError, "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first.\n\n#{parser.help}"
+        end
+      end
       raise Error, "workspace agent-run send is not available in this build" unless @send_command
+      return @send_command.interrupt_through_daemon(name: name, pane: pane, body: body, json: json) if interrupt
       if when_idle || clear_first
         return @send_command.through_daemon(name: name, pane: pane, body: body, when_idle: when_idle,
           clear_first: clear_first, json: json)

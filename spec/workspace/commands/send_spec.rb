@@ -208,6 +208,52 @@ RSpec.describe Workspace::Commands::Send do
       expect(error.message).to include("--clear-first takes at most")
     end
 
+    describe "#interrupt_through_daemon" do
+      it "sends one prompt_interrupt_send message for the pane id and prints one sentence" do
+        reply_with("ok" => true, "interrupted" => true, "keys" => ["Escape"], "delivered" => true, "submitted" => true, "pane" => "0.0")
+
+        result = command.interrupt_through_daemon(name: "api", pane: "%3", body: "go")
+
+        expect(client).to have_received(:exchange_message)
+          .with("api", {"type" => "prompt_interrupt_send", "pane_id" => "%3", "text" => "go"}, timeout: described_class::WHEN_IDLE_TIMEOUT)
+        expect(result).to include("pane" => "%3", "interrupted" => true)
+        expect(output.string).to eq("Interrupted pane %3 (Escape), waited for its prompt, typed the text and pressed Enter.\n")
+      end
+
+      it "prints the JSON envelope with --json" do
+        reply_with("ok" => true, "interrupted" => true, "keys" => ["Escape"], "delivered" => true, "submitted" => true)
+
+        command.interrupt_through_daemon(name: "api", pane: "%3", body: "go", json: true)
+
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "workspace" => "api", "interrupted" => true,
+          "keys" => ["Escape"], "delivered" => true, "submitted" => true, "pane" => "%3")
+      end
+
+      it "raises not_ready with the daemon's details" do
+        reply_with("ok" => false, "error" => "not_ready", "message" => "prompt did not come back", "interrupted" => true, "reason" => "busy")
+
+        error = error_from { command.interrupt_through_daemon(name: "api", pane: "%3", body: "go") }
+
+        expect(error.code).to eq("not_ready")
+        expect(error.details).to eq("interrupted" => true, "reason" => "busy")
+      end
+
+      it "tells the caller an older daemon needs a restart, naming --interrupt" do
+        reply_with("ok" => false, "error" => "unknown_type")
+
+        error = error_from { command.interrupt_through_daemon(name: "api", pane: "%3", body: "go") }
+
+        expect(error.message).to include("predates --interrupt")
+      end
+
+      it "refuses a body over the limit as usage" do
+        error = error_from { command.interrupt_through_daemon(name: "api", pane: "%3", body: "x" * (Workspace::PromptQueueStore::MAX_BYTES + 1)) }
+
+        expect(error).to be_a(Workspace::UsageError)
+        expect(error.message).to include("--interrupt takes at most")
+      end
+    end
+
     it "refuses a body over the limit as usage, before asking the daemon" do
       error = error_from { command.through_daemon(name: "api", pane: "%3", body: "x" * (Workspace::PromptQueueStore::MAX_BYTES + 1)) }
 

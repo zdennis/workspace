@@ -46,6 +46,9 @@ module Workspace
     # Seconds between screen reads while waiting for quiet, and between
     # looks for the SessionStart that confirms a clear.
     POLL_INTERVAL = 0.25
+    # Longest wait, after `send --interrupt` pressed the interrupt keys, for
+    # the agent's prompt to come back.
+    INTERRUPT_TIMEOUT = 15
     # Longest wait for the SessionStart that confirms a clear.
     CLEAR_TIMEOUT = 15
     # The agents whose clear can be confirmed: their hooks report a
@@ -141,6 +144,36 @@ module Workspace
         busy = when_idle ? nil : withdrawn(entry, result)
         (busy || send_reply(entry, result)).merge(context)
       end
+    end
+
+    # Handles a "prompt_interrupt_send" message (`agent-run send --interrupt`):
+    # presses the pane's agent interrupt keys, waits up to {INTERRUPT_TIMEOUT}
+    # for the screen to stay unchanged {QUIET_FOR} with the agent's input prompt
+    # open and empty, then types the text through {PromptTyper}. Interrupt, wait
+    # and typing all happen under the pane's lock and the daemon's delivery lock,
+    # so no queued delivery or status request types between the steps. The queue
+    # is not used: the text is typed now or not at all.
+    #
+    # @param message [Hash] carries "pane_id" and "text"
+    # @return [Hash] `{"ok": true, "interrupted": true, "keys": [...],
+    #   "delivered": true, "submitted": true}`, or an error reply. After the keys
+    #   were pressed, errors carry `"interrupted": true`; `not_ready` means the
+    #   prompt did not come back in time (nothing was typed).
+    def interrupt_send(message)
+      pane_id = message["pane_id"]
+      text = message["text"]
+      unless text.is_a?(String) && !text.empty? && text.bytesize <= PromptQueueStore::MAX_BYTES
+        return error("usage", "the text must be non-empty and at most #{PromptQueueStore::MAX_BYTES} bytes")
+      end
+      detail = pane_lookup(pane_id)
+      return error("pane_not_ready", "tmux didn't list the session's panes; try again", "reason" => "unknown") if detail == :unknown
+      return error("no_such_pane", "no pane #{pane_id.inspect} in tmux session #{@session_name}") unless detail
+      context = {"pane" => "#{detail[:window]}.#{detail[:index]}", "pane_id" => pane_id}
+      with_pane(pane_id) do
+        keys = nil
+        refused = interrupt_refusal(pane_id) { |found| keys = found }
+        refused || @delivery_lock.synchronize { interrupt_and_type(pane_id, detail, keys, text) }
+      end.merge(context)
     end
 
     # Takes in a hook event the daemon received: binds a first-seen session
@@ -262,6 +295,90 @@ module Workspace
         end
       when :cancelled
         error("not_delivered", "the prompt was cancelled before it was typed", id.merge("reason" => "cancelled"))
+      end
+    end
+
+    # The refusals made before anything is pressed; yields the interrupt keys.
+    def interrupt_refusal(pane_id)
+      facts = @session_monitor.delivery_facts(pane_id)
+      return error("pane_not_ready", "the agent daemon hasn't scanned this pane yet; try again in a few seconds", "reason" => "unknown") unless facts
+      return error("not_an_agent", "the pane is running a shell, not a coding agent") if facts[:kind] == "shell"
+      provider = @providers.find { |p| p.key == facts[:kind] }
+      return error("pane_not_ready", "the agent daemon hasn't identified the agent in this pane yet", "reason" => "unknown") unless provider
+      if provider.interrupt_keys.to_a.empty?
+        return error("no_interrupt_key", "workspace knows no interrupt key for #{provider.label}; nothing was pressed or typed", "kind" => provider.key)
+      end
+      unless provider.ready_pattern
+        return error("unsupported_agent", "#{provider.label}'s screen can't be checked for an open dialog or a draft, " \
+          "so --interrupt works only with Claude Code; nothing was pressed or typed", "kind" => provider.key)
+      end
+      typing = @session_monitor.typing_facts(pane_id)
+      question = typing && (typing[:open_tools] & TypingSafety::QUESTION_TOOLS).first
+      if typing&.dig(:state) == "waiting" || question
+        why = question ? "is showing #{question}" : "is waiting on a permission prompt or a question"
+        return error("pane_waiting", "#{provider.label} #{why}; a person must answer it first, so nothing was pressed or typed",
+          "reason" => question ? "question_open" : "waiting")
+      end
+      return error("pane_busy", "a restart holds the pane; nothing was pressed or typed", "reason" => "restarting") if @restarting.call(pane_id)
+      yield provider.interrupt_keys
+      nil
+    end
+
+    # Under both locks: the keys, the wait for the prompt, the typing.
+    def interrupt_and_type(pane_id, detail, keys, text)
+      target = "#{detail[:window]}.#{detail[:index]}"
+      return error("pane_busy", "a restart took the pane; nothing was pressed or typed", "reason" => "restarting") if @restarting.call(pane_id)
+      keys.each_with_index do |key, sent|
+        next if @tmux.send_key(@session_name, pane_id, key)
+        return error("not_delivered", "failed to press #{key} (#{sent} of #{keys.size} keys sent); nothing was typed",
+          "keys_sent" => sent, "interrupted" => sent.positive?)
+      end
+
+      gate = wait_for_prompt(pane_id)
+      if gate
+        return error("not_ready", "the agent's prompt did not come back within #{INTERRUPT_TIMEOUT}s of the interrupt " \
+          "(#{gate[:message]}); nothing was typed", "interrupted" => true, "keys" => keys, "reason" => gate[:reason])
+      end
+
+      typed = @typer.type(session_name: @session_name, target: target, pane_id: pane_id, text: text)
+      @logger.debug { "prompt queue: interrupt send to #{pane_id}: #{typed.outcome}" }
+      sent = {"interrupted" => true, "keys" => keys}
+      case typed.outcome
+      when :submitted then {"ok" => true, "delivered" => true, "submitted" => true}.merge(sent)
+      when :not_submitted
+        error("not_submitted", "the prompt was pasted but not confirmed submitted: #{typed.message}; check the pane before sending it again",
+          sent.merge("delivered" => true, "submitted" => false))
+      when :refused
+        error((typed.code == "not_an_agent") ? "not_an_agent" : "pane_not_ready", "#{typed.message}; nothing was typed",
+          sent.merge("reason" => typed.reason))
+      else
+        error("not_delivered", "the prompt never reached the pane (#{typed.message || typed.outcome}); nothing was submitted", sent)
+      end
+    end
+
+    # Waits for the pane's screen to stay unchanged {QUIET_FOR} with the
+    # typed-text check passing.
+    #
+    # @return [Hash, nil] nil when the prompt is back; else the last refusal
+    #   (`:reason`, `:message`) once {INTERRUPT_TIMEOUT} passed
+    def wait_for_prompt(pane_id)
+      deadline = @clock.now + INTERRUPT_TIMEOUT
+      screen = nil
+      quiet_since = nil
+      gate = {reason: "busy", message: "the screen never stayed unchanged"}
+      loop do
+        @sleeper.call(POLL_INTERVAL)
+        current = @tmux.capture_screen(pane_id)
+        now = @clock.now
+        if current.nil? || current != screen
+          screen = current
+          quiet_since = now
+        elsif now - quiet_since >= QUIET_FOR
+          refused = @typer.check(pane_id)
+          return nil unless refused
+          gate = refused
+        end
+        return gate if now >= deadline
       end
     end
 
