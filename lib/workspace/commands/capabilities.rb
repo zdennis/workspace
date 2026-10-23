@@ -22,6 +22,7 @@ module Workspace
         "prune_safe" => 2,
         "snapshot" => 6,
         "events_follow" => 1,
+        "events_tool_input" => 1,
         "actions_manifest" => 0,
         "agent_send" => 1,
         "agent_spawn" => 1,

@@ -17,8 +17,9 @@ module Workspace
   # written still uses its `seq`, so the reader sees that it is missing.
   #
   # Only names, ids, a checkout-relative path, a pass or fail flag, a
-  # duration and a sub-agent's short description (cut to 120 characters) are
-  # written: never a prompt, command, tool input or output.
+  # duration, a sub-agent's short description (cut to 120 characters) and a
+  # tool call's `input` summary ({ToolInputSummary}: one line, 300 bytes) are
+  # written: never a prompt, a whole command, tool output, or file contents.
   #
   # An append that leaves the file over the rotation threshold renames it to
   # `<file>.1`, replacing the one before; nothing is truncated, so a reader
@@ -150,6 +151,8 @@ module Workspace
                 "agent_id" => text(event["agent_id"], MAX_ID)}
       path = text(event["path"], MAX_PATH)
       fields["path"] = path if path
+      input = ToolInputSummary.cap(event["input"])
+      fields["input"] = input if input
       fields
     end
 

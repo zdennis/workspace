@@ -127,6 +127,59 @@ RSpec.describe Workspace::Commands::Events do
     expect { failing.call(follow: true, json: true, max_polls: 1) }.to raise_error(Workspace::Error, /could not read the event files/)
   end
 
+  describe "--name" do
+    def hook_for(workspace, type, seq)
+      File.open(File.join(hook_dir, "#{workspace}.jsonl"), "a") do |f|
+        f.puts JSON.generate("type" => type, "at" => "2026-10-17T12:00:0#{seq}.000Z", "workspace" => workspace, "pane_id" => "%1",
+          "boot_id" => "B", "seq" => seq, "tool" => "Bash")
+      end
+    end
+
+    before do
+      hook_for("proj", "tool_started", 1)
+      hook_for("proj-feature", "tool_started", 2)
+      hook_for("other", "tool_finished", 3)
+      life("plan_changed")
+    end
+
+    it "keeps only that workspace's hook and lifecycle lines, by exact name" do
+      command.call(json: true, name: "proj")
+
+      events = JSON.parse(output.string)["events"]
+      expect(events.map { |e| [e["type"], e["workspace"]] }).to eq([%w[tool_started proj], %w[plan_changed proj]])
+    end
+
+    it "combines with --types" do
+      command.call(json: true, name: "proj", types: ["plan_changed"])
+
+      expect(JSON.parse(output.string)["events"].map { |e| e["type"] }).to eq(%w[plan_changed])
+    end
+
+    it "combines with --since, and the cursor still covers the lines left out" do
+      command.call(json: true, name: "other")
+      cursor = JSON.parse(output.string)["cursor"]
+      hook_for("proj", "tool_finished", 4)
+      hook_for("other", "tool_started", 5)
+      output.reopen(+"")
+
+      command.call(json: true, name: "other", since: cursor)
+
+      expect(JSON.parse(output.string)["events"].map { |e| [e["type"], e["workspace"]] }).to eq([%w[tool_started other]])
+    end
+
+    it "filters a follower, and still prints follow_started" do
+      writes << -> do
+        hook_for("proj", "tool_finished", 4)
+        hook_for("other", "tool_finished", 5)
+      end
+
+      command.call(follow: true, json: true, name: "proj", max_polls: 2)
+
+      lines = output.string.lines.map { |l| JSON.parse(l) }
+      expect(lines.map { |l| [l["type"], l["workspace"]] }).to eq([["follow_started", nil], %w[tool_finished proj]])
+    end
+  end
+
   it "stops quietly when the reader goes away" do
     allow(output).to receive(:puts).and_raise(Errno::EPIPE)
 

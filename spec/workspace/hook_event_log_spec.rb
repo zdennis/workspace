@@ -106,6 +106,17 @@ RSpec.describe Workspace::HookEventLog do
     expect(File.read(log.path)).not_to include("secret")
   end
 
+  it "writes a tool call's input on a start and a finish, cleaned and capped again, and leaves it out when absent" do
+    log.record(event("tool_start", tool: "Bash", tool_use_id: "t1", input: "ls\e[0m " + "z" * 400))
+    log.record(event("tool_use", tool: "Bash", tool_use_id: "t1", input: "ls"))
+    log.record(event("tool_use", tool: "Bash", tool_use_id: "t2", input: 5))
+
+    expect(lines[0]["input"].bytesize).to eq(300)
+    expect(lines[0]["input"]).to start_with("ls [0m z").and end_with("…")
+    expect(lines[1]["input"]).to eq("ls")
+    expect(lines[2]).not_to have_key("input")
+  end
+
   it "starts seq again for a new boot, in the same file" do
     log.record(event("user_prompt"))
     other = described_class.new(dir: dir, workspace: "Proj", boot_id: "BOOT2", clock: clock)

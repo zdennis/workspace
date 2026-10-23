@@ -328,8 +328,9 @@ module Workspace
       end
 
       # What the events stream needs to know about a tool use: its name and id,
-      # a file tool's path, and on PostToolUse whether it worked. The input and
-      # the response are read here and never forwarded.
+      # a file tool's path, a short summary of its input ({ToolInputSummary}), and
+      # on PostToolUse whether it worked. The rest of the input and the response
+      # are read here and never forwarded.
       def tool_fields(payload)
         hook = payload["hook_event_name"]
         return {} unless hook == "PreToolUse" || hook == "PostToolUse"
@@ -337,7 +338,8 @@ module Workspace
         fields = {
           "tool" => name_field(payload, "tool_name"),
           "tool_use_id" => name_field(payload, "tool_use_id"),
-          "path" => relative_path(payload)
+          "path" => relative_path(payload),
+          "input" => ToolInputSummary.call(payload["tool_name"], payload["tool_input"])
         }
         if hook == "PostToolUse"
           fields["ok"] = tool_ok?(payload["tool_response"])

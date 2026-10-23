@@ -21,7 +21,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 ```json
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
-   "sessions":2,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":6,"events_follow":1,
+   "sessions":2,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":6,"events_follow":1,"events_tool_input":1,
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"focus_cycle":1,"state_done":1,
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":2,
    "ui_open":3,"pane_bindings":3,"library":5,"library_play":3,"library_copy":4,"library_installed":1,"instructions":1,"restore":1,
@@ -61,6 +61,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `promote` | `promote [BRANCH] [--name PROJECT] [--dry-run] [--json] ...` moves a main checkout's changes and branch commits into a new worktree workspace and carries its plan, spine and named notes; `--dry-run` without `BRANCH` on the default branch answers `branch_required: true`; refuses `agent_working` unless `--force`; writes `workspace_promoted` to the event log. The documents are in `spec/fixtures/promote/` and the codes under [promote codes](README.json.md#promote-codes) |
 | `snapshot` | `snapshot --json` (see [`snapshot`](README.snapshot.md)); `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)). Revision 1 was `display_label` alone; revision 3 adds each member's `plan`; revision 4 reports `task` for stopped and ended workspaces; revision 5 adds each member's `spine` summary; revision 6 adds `checking` and `check_failed` to its `state` and `counts` |
 | `events_follow` | `events [--follow] [--json] [--types] [--since CURSOR]` reads the event log and every agent daemon's hook events (`tool_started`, `tool_finished`, `subagent_started`, `subagent_stopped`, `session_started`, `session_ended`, `prompt_submitted`, each with `boot_id` and `seq`) as one stream, with an opaque cursor on every line (see [`events`](README.events.md)) |
+| `events_tool_input` | `events --name WS` keeps only that workspace's events (exact name), and `tool_started` and `tool_finished` lines carry `input`, a summary of the tool call of at most 300 bytes (see [`events`](README.events.md)) |
 | `actions_manifest` | Not available yet |
 | `agent_send` | `agent-run send --pane` types text or tmux keys into one named pane; `ask answer --deliver` types an answer into the asking pane |
 | `agent_spawn` | `launch --json` rows carry `prompt_sent` and `pane`, and `run --split --json` names the new pane, so a caller need not compare two `sessions` reads to find the pane it started or sent to (see [`launch`](README.launch.md#json-output), [`run`](README.run.md#json-output)) |

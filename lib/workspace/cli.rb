@@ -6727,10 +6727,10 @@ module Workspace
     EVENT_LOG_JSON_SCHEMA_VERSION = 1
 
     def cmd_events(args)
-      options = {follow: false, json: false, types: [], since: nil}
+      options = {follow: false, json: false, types: [], since: nil, name: nil}
       help = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace events [--follow] [--json] [--types A,B] [--since CURSOR]"
+        opts.banner = "Usage: workspace events [--follow] [--json] [--types A,B] [--since CURSOR] [--name WS]"
         opts.separator ""
         opts.separator "Read the event log (#{@config.event_log_file}) and every agent daemon's"
         opts.separator "hook events (#{@config.hook_events_dir}/<workspace>.jsonl) as one stream,"
@@ -6738,6 +6738,9 @@ module Workspace
         opts.separator "after that line. Only files are read, so a slow reader never holds up a daemon."
         opts.separator ""
         opts.separator "Hook event types: #{HookEventLog::TYPES.join(", ")}."
+        opts.separator "tool_started and tool_finished carry input: the first line of a Bash command, a file"
+        opts.separator "tool's path, a Grep or Glob pattern, a WebFetch URL; at most #{ToolInputSummary::MAX_BYTES} bytes, with"
+        opts.separator "control characters blanked and a trailing #{ToolInputSummary::ELLIPSIS} when cut. Other tools have none."
         opts.separator "Stream lines: follow_started (first, with a cursor) and gap (the cursor is older"
         opts.separator "than what is kept; the lines after its time follow)."
         opts.separator ""
@@ -6748,6 +6751,7 @@ module Workspace
           options[:types].concat(value.split(",").map(&:strip).reject(&:empty?))
         end
         opts.on("--since CURSOR", "Resume after the line that printed CURSOR") { |value| options[:since] = value }
+        opts.on("--name WS", "Only this workspace's events (exact name; its worktree workspaces are not included)") { |value| options[:name] = settle_name(value) }
         opts.on("-h", "--help", "Show this help") { help = true }
         opts.separator ""
         opts.separator "Without --since, --follow starts at the end of every file, and a plain read prints"
@@ -6757,11 +6761,13 @@ module Workspace
         opts.separator "  workspace events --follow --json"
         opts.separator "  workspace events --follow --json --types tool_started,tool_finished --since \"$CURSOR\""
         opts.separator "  workspace events --types session_started,session_ended"
+        opts.separator "  workspace events --follow --json --name myapp --types tool_finished"
       end
       parser.parse!(args)
       return @output.puts(parser.help) if help
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" unless args.empty?
 
+      require_known_workspace!(options[:name]) if options[:name]
       @events_command.call(**options)
     end
 
