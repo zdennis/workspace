@@ -213,7 +213,7 @@ RSpec.describe "lock clear's clearing marker, under concurrency" do
     @on_kill = ->(signal, target) {
       next unless [signal, target] == ["TERM", 4242] && !@nested
       @nested = true
-      dev_command.down(working_dir: tmpdir)
+      dev_command.down(force: true, working_dir: tmpdir)
     }
 
     lock_command.clear("devenv")
@@ -242,7 +242,7 @@ RSpec.describe "lock clear's clearing marker, under concurrency" do
       lock_command.clear("devenv")
     }
 
-    dev_command.down(working_dir: tmpdir)
+    dev_command.down(force: true, working_dir: tmpdir)
 
     expect(wrapper_terms).to eq(1)
   end

@@ -443,9 +443,36 @@ RSpec.describe Workspace::Commands::Dev do
       dev.up(working_dir: login)
       wrapper = spawned.last
 
-      result = dev.down(working_dir: main)
+      result = dev.down(working_dir: login)
 
       expect(result).to eq(exit_code: 0)
+      expect(output.string).to include("Stopped dev environment for app-login (feat/login).")
+      expect(alive?(wrapper)).to be(false)
+      expect(holder).to be_nil
+    end
+
+    it "refuses from a worktree that does not hold the lock, naming the holder, and stops nothing" do
+      dev.up(working_dir: login)
+      wrapper = spawned.last
+
+      expect { dev.down(working_dir: main) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("dev_held_by")
+        expect(e.message).to include("held by workspace", "app-login", "pane %9", "pid #{wrapper}", "--force")
+        expect(e.details).to include("worktree" => login, "branch" => "feat/login", "pane" => "%9", "pid" => wrapper)
+        expect(e.details["workspace"]).to be_a(String)
+        expect(e.details).not_to have_key("run_id")
+        expect(e.retry).to eq("flags" => ["--force"], "destructive" => true)
+      }
+      expect(alive?(wrapper)).to be(true)
+      expect(holder).to include("pid" => wrapper)
+    end
+
+    it "stops another worktree's env from here with force" do
+      dev.up(working_dir: login)
+      wrapper = spawned.last
+
+      expect(dev.down(force: true, working_dir: main)).to eq(exit_code: 0)
+
       expect(output.string).to include("Stopped dev environment for app-login (feat/login).")
       expect(alive?(wrapper)).to be(false)
       expect(holder).to be_nil
@@ -457,7 +484,7 @@ RSpec.describe Workspace::Commands::Dev do
       broken = Struct.new(:x) { def load(_name) = raise(Workspace::ConfigParseError.new("/cfg/app.yml", "bad yaml")) }.new
       broken_dev = dev(dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: broken)))
 
-      result = broken_dev.down(working_dir: main)
+      result = broken_dev.down(working_dir: login)
 
       expect(result).to eq(exit_code: 0)
       expect(error_output.string).to include("Cannot parse /cfg/app.yml", "default timeouts")
@@ -613,7 +640,7 @@ RSpec.describe Workspace::Commands::Dev do
       expect(holder["delegate"]).to include("pid" => spawned.last, "pgid" => spawned.last, "worktree" => login, "branch" => "feat/login")
       expect(output.string).to include("Dev environment running for app-login (feat/login) in app:devenv.")
 
-      expect(dev.down(working_dir: main)).to eq(exit_code: 0)
+      expect(dev.down(working_dir: login)).to eq(exit_code: 0)
 
       expect(alive?(spawned.last)).to be(false)
       expect(holder).to include("kind" => "run", "run_id" => "wr_1")
@@ -627,9 +654,38 @@ RSpec.describe Workspace::Commands::Dev do
       store.release_run("wr_1")
 
       expect(holder).to include("kind" => "process", "pid" => spawned.last, "worktree" => login)
-      expect(dev.down(working_dir: main)).to eq(exit_code: 0)
+      expect(dev.down(working_dir: login)).to eq(exit_code: 0)
       expect(alive?(spawned.last)).to be(false)
       expect(holder).to be_nil
+    end
+
+    it "refuses `down` from another worktree whose pane is not bound to the run, naming the run, unless forced" do
+      dev(bound_run: bound_run).up(working_dir: login)
+      wrapper = spawned.last
+      stranger = instance_double(Workspace::BoundRun, run_id: nil)
+
+      expect { dev(bound_run: stranger).down(working_dir: main) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("dev_held_by")
+        expect(e.details).to include("run_id" => "wr_1", "pid" => wrapper)
+        expect(e.message).to include("run wr_1")
+      }
+      expect(alive?(wrapper)).to be(true)
+
+      expect(dev(bound_run: stranger).down(force: true, working_dir: main)).to eq(exit_code: 0)
+      expect(alive?(wrapper)).to be(false)
+      expect(holder).to include("kind" => "run", "run_id" => "wr_1")
+    end
+
+    it "lets the pane bound to the run stop the environment from another worktree" do
+      dev(bound_run: bound_run).up(working_dir: login)
+
+      expect(dev(bound_run: bound_run).down(working_dir: main)).to eq(exit_code: 0)
+      expect(alive?(spawned.last)).to be(false)
+    end
+
+    it "has nothing to refuse while the run holds the lock with no environment running" do
+      expect(dev.down(working_dir: main)).to eq(exit_code: 0)
+      expect(output.string).to include("No dev environment is running")
     end
   end
 end
@@ -799,7 +855,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
 
     it "is closed by `down` once tmux marks the stopped wrapper's pane dead" do
-      hold(700)
+      hold(700, worktree: worktree)
       allow(terminator).to receive(:stop_holder) do
         liveness.kill(700)
         :terminated
@@ -826,7 +882,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
 
     it "gives up waiting for a pane that never dies" do
-      hold(700)
+      hold(700, worktree: worktree)
       allow(terminator).to receive(:stop_holder) do
         liveness.kill(700)
         :terminated
@@ -885,7 +941,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
 
     it "`down` still stops the environment when no session can be found to sweep" do
-      hold(700)
+      hold(700, worktree: worktree)
       allow(terminator).to receive(:stop_holder) do
         liveness.kill(700)
         :terminated
@@ -1456,7 +1512,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
 
     it "`down` of a live holder keeps its lock, exits 1 and says how to stop the group" do
-      hold(700)
+      hold(700, worktree: worktree)
       allow(terminator).to receive(:stop_holder).and_raise(foreign)
 
       expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
@@ -1468,7 +1524,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
 
     it "`down` keeps the lock when a member outlives SIGKILL and its wrapper, so it is not reaped" do
-      hold(700)
+      hold(700, worktree: worktree)
       allow(terminator).to receive(:stop_holder) do
         liveness.kill(700)
         :killed
@@ -1485,7 +1541,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
 
   describe "#down when the wrapper exits just before its SIGTERM" do
     before do
-      hold(700)
+      hold(700, worktree: worktree)
       allow(terminator).to receive(:stop_holder) do
         liveness.kill(700)
         :not_running
@@ -1538,13 +1594,13 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   describe "a holder another process is already stopping" do
     let(:clearer) { {"pid" => 901, "started" => "start-901"} }
 
-    def mark_held_by_clearer(pid)
-      hold(pid)
+    def mark_held_by_clearer(pid, **opts)
+      hold(pid, **opts)
       store.mark_clearing("devenv", holder, clearer)
     end
 
     it "`down` signals nothing, says who is stopping it and exits 1" do
-      mark_held_by_clearer(700)
+      mark_held_by_clearer(700, worktree: worktree)
       allow(terminator).to receive(:stop_holder)
 
       expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
@@ -1565,7 +1621,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
 
     it "`down` stops a holder whose marker names a process no longer running, then drops its own marker" do
-      mark_held_by_clearer(700)
+      mark_held_by_clearer(700, worktree: worktree)
       liveness.kill(901)
       allow(terminator).to receive(:stop_holder).and_return(:terminated)
 
@@ -1579,7 +1635,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     let(:settings) { {"up" => "run-dev", "stop_timeout" => 2, "startup_timeout" => 5, "ready_timeout" => 5, "kill_grace" => 7} }
 
     it "waits that long after SIGKILL before keeping the lock" do
-      hold(700)
+      hold(700, worktree: worktree)
       allow(terminator).to receive(:stop_holder) do
         liveness.kill(700)
         :killed
@@ -2656,7 +2712,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
         :terminated
       end
 
-      dev(dev_events: dev_events).down(working_dir: worktree)
+      dev(dev_events: dev_events).down(force: true, working_dir: worktree)
 
       expect(stops).to be_empty
     end

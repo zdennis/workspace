@@ -19,4 +19,4 @@ Never test against another worktree's server, and do not pass `--force`: it stop
 
 `workspace dev status --json` shows `"running": true` and `"ready": null` when the project has no ready check. Then `wait` returns as soon as you hold the environment, so wait for the server's port to answer before you test.
 
-When your work is done, or you stop to wait for the person, run `workspace dev down` so the next worktree can start. Run it only when `dev status` shows this worktree holds the environment: `down` stops whichever one is running. If you hand off to a fresh conversation, leave the environment running; the next conversation keeps using it.
+When your work is done, or you stop to wait for the person, run `workspace dev down` so the next worktree can start. Run it only when `dev status` shows this worktree holds the environment: `down` from a worktree that does not hold it refuses with `dev_held_by`. If you hand off to a fresh conversation, leave the environment running; the next conversation keeps using it.

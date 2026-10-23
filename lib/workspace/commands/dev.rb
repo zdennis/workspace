@@ -216,20 +216,27 @@ module Workspace
         {exit_code: 0, outcome: "left"}
       end
 
-      # Stops this repository's dev environment, whichever worktree holds it.
-      # One a workflow run started is stopped too, and the lock stays with the run.
+      # Stops this worktree's dev environment. One a workflow run started is stopped too, and
+      # the lock stays with the run. When another worktree (or a run this pane is not bound to)
+      # holds the lock, `down` refuses with `dev_held_by` unless +force+ is set.
       #
-      # @param force [Boolean] also kill the process group left behind by a dead wrapper
+      # @param force [Boolean] stop an environment another worktree holds, and also kill the
+      #   process group left behind by a dead wrapper
       # @param working_dir [String] any directory inside the repository
+      # @param check_holder [Boolean] false skips the `dev_held_by` refusal, for a stop that
+      #   acts for the holder itself (a session ending)
       # @return [Hash] {exit_code:}
-      def down(force: false, working_dir: Dir.pwd)
+      # @raise [Workspace::Error] `dev_held_by` when another worktree's environment holds the lock
+      def down(force: false, working_dir: Dir.pwd, check_holder: true)
         ctx = context(working_dir, tolerate_bad_config: true)
         sweep_session(ctx)
-        holder = settled_entry(ctx[:store])["holder"]
+        entry = settled_entry(ctx[:store])
+        holder = entry["holder"]
         unless holder
           @output.puts "No dev environment is running."
           return {exit_code: 0}
         end
+        refuse_foreign_holder(ctx, entry, holder) if check_holder && !force
         return down_under_run(ctx, holder, force: force) if run?(holder)
 
         if holder["stale"]
@@ -292,7 +299,7 @@ module Workspace
         started_by = record && !record["stale"] && record["started_by"]
         return {exit_code: 0, outcome: "not_started_by_session"} unless started_by.is_a?(Hash) && started_by["session_id"] == session_id
 
-        result = down(working_dir: working_dir)
+        result = down(working_dir: working_dir, check_holder: false)
         {exit_code: result[:exit_code], outcome: result[:exit_code].zero? ? "released" : "kept"}
       rescue Workspace::Error
         {exit_code: 0, outcome: "unreadable"}
@@ -546,6 +553,35 @@ module Workspace
         end
         index = (entry["queue"] || []).index { |w| !run?(w) && !w["stale"] && w["worktree"] == ctx[:worktree] }
         index && {state: :queued, record: entry["queue"][index], position: index + 1}
+      end
+
+      # `down` from a worktree that does not hold the lock: nothing is stopped without `--force`.
+      # A holder whose wrapper is gone, a run holding with no environment running, this
+      # worktree's own hold, and the pane bound to the holding run all go on as they did.
+      def refuse_foreign_holder(ctx, entry, holder)
+        target = run?(holder) ? (running_delegate(holder) || kept_delegate(holder)) : holder
+        return if target.nil? || (target["stale"] && !run?(holder))
+        return if own_hold(entry, ctx)&.fetch(:state) == :running
+        return if target["worktree"] == ctx[:worktree] || holder["worktree"] == ctx[:worktree]
+        return if run?(holder) && @bound_run && @bound_run.run_id == holder["run_id"]
+
+        name = holder_workspace_name(target)
+        run_id = holder["run_id"]
+        details = {"workspace" => name, "worktree" => target["worktree"], "branch" => target["branch"],
+                   "pane" => target["pane"], "pid" => target["pid"], "run_id" => run_id}.compact
+        who = "#{describe(target)}, pane #{target["pane"] || "?"}, pid #{target["pid"] || "?"}#{", run #{run_id}" if run_id}"
+        raise Workspace::Error.new(
+          "The #{LOCK_NAME} lock is held by workspace #{name} (#{who}). `dev down` here would stop its dev environment. " \
+          "Run `workspace dev down --name #{name}` from there, or pass --force to stop it from here.",
+          code: "dev_held_by", details: details, retry_with: {"flags" => ["--force"], "destructive" => true}
+        )
+      end
+
+      def holder_workspace_name(record)
+        lineage = @lineage.resolve(cwd: record["worktree"])
+        lineage.worktree || lineage.name || label(record["worktree"])
+      rescue Workspace::Error, SystemCallError, TypeError
+        label(record["worktree"])
       end
 
       def refuse_force_against_run(holder)

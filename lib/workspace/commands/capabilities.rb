@@ -61,6 +61,7 @@ module Workspace
         "handoff_codex" => 1,
         "handoff_wait" => 1,
         "dev_queue" => 2,
+        "dev_down_holder" => 1,
         "plan" => 5,
         "ticket" => 2,
         "spine" => 3,
