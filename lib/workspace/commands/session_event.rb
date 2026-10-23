@@ -295,6 +295,7 @@ module Workspace
           "agent_id" => agent_id_for(payload),
           "agent" => agent_for(payload),
           "message" => message_for(payload),
+          "notification_type" => notification_type_for(payload),
           "prompt" => prompt_for(payload),
           "stop_reason" => stop_reason_for(payload)
         }.merge(tool_fields(payload), session_fields(payload), codex_subagent_fields(payload)).compact
@@ -418,6 +419,13 @@ module Workspace
         return nil unless claude? && payload["hook_event_name"] == "Notification" && message.is_a?(String)
 
         message[0, MAX_MESSAGE_LENGTH]
+      end
+
+      # Claude Code's kind of notification (`idle_prompt`, `permission_prompt`, ...).
+      def notification_type_for(payload)
+        return nil unless claude? && payload["hook_event_name"] == "Notification"
+
+        name_field(payload, "notification_type")
       end
 
       def stop_reason_for(payload)

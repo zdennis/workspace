@@ -714,6 +714,9 @@ module Workspace
     TURN_EVENTS = ["user_prompt", "stop", "session_start", "session_end"].freeze
     private_constant :TURN_EVENTS
 
+    IDLE_INPUT_MESSAGE = "Claude is waiting for your input"
+    private_constant :IDLE_INPUT_MESSAGE
+
     # Waits are kept per agent, since the main agent and parallel sub-agents
     # can each be waiting on a person at once. Any other event from an agent
     # ends that agent's wait: a tool ran after a permission prompt, say. It
@@ -725,6 +728,9 @@ module Workspace
       # A tool starting says nothing about a wait: with tools run side by side, one
       # can start while another waits on a permission prompt.
       return if event["event"] == "tool_start"
+
+      # Claude Code says it is idle a minute after a Stop; nobody is asked.
+      return if idle_input_notification?(pane, event)
 
       if event["event"] == "notification"
         # A repeat notification during one wait keeps the original start, so
@@ -832,6 +838,19 @@ module Workspace
     def done_mark(event)
       reason = self.class.clean_message(event["stop_reason"])
       {since: @clock.now, stop_reason: reason || "end_turn"}
+    end
+
+    # Claude Code's idle_prompt notification ("Claude is waiting for your
+    # input") comes a minute after a Stop. It asks nothing of a person, so it
+    # opens no wait once the turn has ended (or, after a daemon restart, once
+    # the pane was read back as done or idle). Older hooks carry no
+    # notification_type; the message tells them apart.
+    def idle_input_notification?(pane, event)
+      return false unless event["event"] == "notification"
+      return false unless pane[:turn_ended] || pane[:done] || pane[:restored_ready]
+      type = event["notification_type"]
+      return type == "idle_prompt" if type
+      event["message"].to_s.strip == IDLE_INPUT_MESSAGE
     end
 
     def clear_waiting(pane)

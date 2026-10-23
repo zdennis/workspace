@@ -334,11 +334,37 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["state"]).not_to eq("done")
     end
 
-    it "stays done when the agent's idle notification arrives after the turn ended" do
+    it "stays done, and opens no wait, when the agent's idle notification arrives after the turn ended" do
+      stop
+      monitor.record("event" => "notification", "pane_id" => "%2", "notification_type" => "idle_prompt",
+        "message" => "Claude is waiting for your input")
+
+      expect(pane("%2")).to include("state" => "done", "waiting_message" => nil)
+      expect(monitor.restart_state("%2")).to eq("idle")
+      expect(monitor.typing_facts("%2")).to include(state: "idle")
+    end
+
+    it "recognises the idle notification by its message when the hook sent no type" do
       stop
       monitor.record("event" => "notification", "pane_id" => "%2", "message" => "Claude is waiting for your input")
 
-      expect(pane("%2")).to include("state" => "done", "waiting_message" => "Claude is waiting for your input")
+      expect(monitor.restart_state("%2")).to eq("idle")
+    end
+
+    it "still waits on a permission notification after a Stop" do
+      stop
+      monitor.record("event" => "notification", "pane_id" => "%2", "notification_type" => "permission_prompt",
+        "message" => "Claude needs your permission to use Bash")
+
+      expect(monitor.restart_state("%2")).to eq("waiting")
+      expect(monitor.typing_facts("%2")).to include(state: "waiting")
+    end
+
+    it "keeps an idle-looking message as a wait while the turn is still going" do
+      monitor.record("event" => "user_prompt", "pane_id" => "%2")
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "Claude is waiting for your input")
+
+      expect(monitor.restart_state("%2")).to eq("waiting")
     end
 
     it "is not set by a sub-agent stopping, or by a Stop from a sub-agent" do
@@ -1313,6 +1339,14 @@ RSpec.describe Workspace::SessionMonitor do
         first.scan
         allow(clock).to receive(:now).and_return(now + 100)
         logging_monitor.tap(&:scan)
+      end
+
+      it "opens no wait for an idle notification that reaches a restarted daemon for a pane read back as done" do
+        restarted = restored_done
+        restarted.record("event" => "notification", "pane_id" => "%2", "notification_type" => "idle_prompt",
+          "message" => "Claude is waiting for your input")
+
+        expect(restarted.restart_state("%2")).not_to eq("waiting")
       end
 
       it "doesn't trust a restored done until a Stop this daemon heard" do

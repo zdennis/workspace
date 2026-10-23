@@ -289,6 +289,13 @@ RSpec.describe Workspace::Commands::SessionEvent do
         "message" => "Claude needs your permission to use Bash")
     end
 
+    it "forwards a notification's type, and none for other events" do
+      expect(deliver("hook_event_name" => "Notification", "notification_type" => "idle_prompt", "message" => "x"))
+        .to include("notification_type" => "idle_prompt")
+      expect(deliver("hook_event_name" => "Notification", "message" => "x")).not_to have_key("notification_type")
+      expect(deliver("hook_event_name" => "Stop", "notification_type" => "idle_prompt")).not_to have_key("notification_type")
+    end
+
     it "forwards the agent_id a sub-agent's hook carries, and none for the main agent" do
       expect(deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "agent_id" => "sub-1"))
         .to include("agent_id" => "sub-1")
