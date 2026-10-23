@@ -2,7 +2,7 @@ require "json"
 
 module Workspace
   module Commands
-    # The six `workspace library` verbs over named plays, prompts, agents and skills, in
+    # The `workspace library` verbs over named plays, prompts, recipes, agents and skills, in
     # the global store or one project's. Reads print their own document;
     # writes return a {Result} for `CLI#run_action`.
     class Library
@@ -115,6 +115,7 @@ module Workspace
         store = @library.write_store(scope: scope, project: project, cwd: cwd)
         source = path && File.expand_path(path, cwd)
         content = source_for(kind, source, body, link, "#{kind}/#{name}")
+        check_recipe(kind, content, "#{kind}/#{name}")
 
         outcome = if (existing = store.find(kind, name))
           if same?(existing, content)
@@ -152,6 +153,7 @@ module Workspace
         kind, name = entry.values_at("kind", "name")
         source = path && File.expand_path(path, cwd)
         content = source_for(kind, source, body, link, entry["ref"])
+        check_recipe(kind, content, entry["ref"])
 
         outcome = same?(entry, content) ? "unchanged" : "updated"
         put(store, kind, name, content) unless dry_run || outcome == "unchanged"
@@ -397,6 +399,13 @@ module Workspace
         stores = @library.stores(scope: scope, project: project, cwd: cwd)
         entry = @library.resolve(ref, stores)
         [entry, stores.find { |s| s.scope == entry["scope"] && s.project == entry["project"] }]
+      end
+
+      # A recipe is checked before it is stored, so `start --recipe` never meets a bad one.
+      def check_recipe(kind, content, ref)
+        return unless kind == "recipe"
+        text = content[:target] ? File.read(content[:target]) : content[:body]
+        Workspace::RecipeFile.parse(text, ref: ref)
       end
 
       # What to store: `{target:}` to link, `{tree:}` to copy a skill's

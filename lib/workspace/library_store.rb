@@ -10,9 +10,10 @@ module Workspace
   class LibraryStore
     # The kinds an entry can have. An agent is a Claude Code subagent file; a
     # play is a document an agent reads and follows; a prompt is short text
-    # sent as typed; a skill is a directory holding `SKILL.md`; a spine is a
+    # sent as typed; a recipe is the YAML fields `start --recipe` applies (see
+    # {RecipeFile}); a skill is a directory holding `SKILL.md`; a spine is a
     # template directory of plan-spine stage files.
-    KINDS = %w[agent play prompt skill spine].freeze
+    KINDS = %w[agent play prompt recipe skill spine].freeze
 
     # Kinds stored as a directory, and the file inside it that holds the body.
     DIRECTORY_KINDS = {"skill" => "SKILL.md", "spine" => "README.md"}.freeze

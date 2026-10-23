@@ -177,6 +177,27 @@ module Workspace
       entry.slice("ref", "kind", "name", "scope", "path")
     end
 
+    # The recipe `start --recipe` applies, looked up from `cwd` (its project,
+    # then global), read once and checked field by field.
+    #
+    # @param ref [String] `name` or `recipe/name`
+    # @param cwd [String, nil] the project's directory; nil searches global only
+    # @return [Hash] "ref", "scope", "path" and "fields" (see {Workspace::RecipeFile.parse})
+    # @raise [Workspace::UsageError] for a bad name or an entry of another kind
+    # @raise [Workspace::Error] code `unknown_library_entry`, `library_source_missing` or `invalid_recipe`
+    def recipe(ref, cwd:)
+      kind, name = parse_ref(ref)
+      raise UsageError, "--recipe takes a recipe, and '#{ref}' is a #{kind}." if kind && kind != "recipe"
+      entry = resolve("recipe/#{name}", user_stores(cwd))
+      raise source_missing(entry) unless entry["readable"]
+      body = begin
+        File.read(entry["path"])
+      rescue SystemCallError
+        raise source_missing(entry)
+      end
+      entry.slice("ref", "scope", "path").merge("fields" => RecipeFile.parse(body, ref: entry["ref"]))
+    end
+
     # The spine template `spine init` copies, looked up from `cwd` (its
     # project, then global, then the built-in `default`) and checked readable.
     #

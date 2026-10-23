@@ -271,6 +271,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `status_not_logged` | `agent status post`: the agent daemon couldn't write the `agent_status` line. |
 | `unknown_library_entry` | No library entry has that name in the scopes searched. `details.ref`, `details.scopes` in the order searched, e.g. `["project:api", "global", "builtin"]` (see [`library`](README.library.md)). |
 | `ambiguous_library_entry` | A bare library name matches more than one kind. `details.ref`, `details.candidates`. |
+| `invalid_recipe` | A library recipe has a field that isn't allowed (`library add`/`update`, `start --recipe`). `details.ref`, `details.problems` (every problem, as text). |
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
 | `library_install_exists` | `library install` would replace a worktree copy with different content. `details.ref`, `details.path`; `retry` names `--force` (destructive). |
 | `library_kind_not_copyable` | `library install`/`uninstall` was given an entry that is not an agent or skill. `details.ref`, `details.kind`. |
