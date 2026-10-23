@@ -11,12 +11,17 @@ module Workspace
     # The agent kinds a main agent pane may run.
     MAIN_KINDS = %w[claude codex].freeze
 
+    # The words for each waiting reason in a message.
+    SCREEN_NAMES = {"sign_in" => "sign-in", "trust" => "folder trust", "approval" => "approval"}.freeze
+
     # Seconds the agent daemon may take to answer.
     DAEMON_TIMEOUT = 1.0
 
     # What {#spawn} did: the new pane's id and the {AgentReadiness::Result} of the wait.
-    # +closed+ is true when the agent was never ready and the new pane was closed again.
-    Spawned = Struct.new(:pane, :ready, :label, :closed, keyword_init: true) do
+    # +closed+ is true when the agent was never ready and the new pane was closed again. +waiting+ is
+    # `sign_in`, `trust` or `approval` when the agent sits at that screen; the pane is then kept open
+    # for the person to finish it.
+    Spawned = Struct.new(:pane, :ready, :label, :closed, :waiting, keyword_init: true) do
       # @return [Boolean] whether the agent was ready for text in time
       def ready? = ready.ready?
     end
@@ -139,8 +144,32 @@ module Workspace
         closed = close_unused(name, id)
         raise Workspace::Error.new(e.message, code: e.code, details: e.details.merge("pane_id" => id, "pane_closed" => closed), retry_with: e.retry)
       end
-      closed = ready.ready? ? false : close_unused(name, id)
-      Spawned.new(pane: id, ready: ready, label: provider.label, closed: closed)
+      return Spawned.new(pane: id, ready: ready, label: provider.label, closed: false) if ready.ready?
+      waiting = provider.waiting_screen(@tmux.capture_screen(id))&.fetch(:reason)
+      closed = waiting ? false : close_unused(name, id)
+      Spawned.new(pane: id, ready: ready, label: provider.label, closed: closed, waiting: waiting)
+    end
+
+    # The human message for a spawn whose agent was not ready.
+    #
+    # @param spawned [Spawned]
+    # @param noun [String] what was to be typed ("task", "stage")
+    # @param written [String] what was not done, after "nothing was"
+    # @return [String]
+    def not_ready_message(spawned, noun, written: "typed")
+      lead = "Started #{spawned.label} in new pane #{spawned.pane}, but it was not ready for the #{noun} in #{prompt_timeout}s (#{spawned.ready.reason}); nothing was #{written}"
+      if spawned.waiting
+        "#{lead}. The pane was left open: finish the #{SCREEN_NAMES.fetch(spawned.waiting, spawned.waiting)} screen in it, then start the #{noun} again."
+      else
+        "#{lead}#{", and the pane was closed" if spawned.closed}."
+      end
+    end
+
+    # @param spawned [Spawned]
+    # @return [Hash] the failure's `details`: `pane_id`, `pane_closed` and, for a kept pane, `waiting`
+    def not_ready_details(spawned)
+      details = {"pane_id" => spawned.pane, "pane_closed" => spawned.closed}
+      spawned.waiting ? details.merge("waiting" => spawned.waiting) : details
     end
 
     # Closes a pane {#spawn} made, when its agent never became ready and nothing was typed into it.

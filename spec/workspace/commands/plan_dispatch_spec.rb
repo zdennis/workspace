@@ -15,7 +15,7 @@ RSpec.describe Workspace::Commands::PlanDispatch do
   let(:now) { Time.utc(2026, 10, 12, 14, 0, 0) }
   let(:notes_dirs) { {"api" => File.join(@dir, "api-notes")} }
   let(:notes) { instance_double(Workspace::Commands::Notes) }
-  let(:tmux) { instance_double(Workspace::Tmux, sessions: ["api", "api-worktree-x"], custom_socket_option: nil, close_pane: true) }
+  let(:tmux) { instance_double(Workspace::Tmux, sessions: ["api", "api-worktree-x"], custom_socket_option: nil, close_pane: true, capture_screen: "") }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send, deliver: {"pane" => "%19", "mode" => "text", "submitted" => true}) }
   let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }

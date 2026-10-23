@@ -262,10 +262,9 @@ module Workspace
         end
         spawned = @panes.spawn(name, kind)
         unless spawned.ready?
-          message = "Started #{spawned.label} in new pane #{spawned.pane}, but it was not ready for the stage in #{@panes.prompt_timeout}s " \
-            "(#{spawned.ready.reason}); nothing was typed or written#{", and the pane was closed" if spawned.closed}."
+          message = @panes.not_ready_message(spawned, "stage", written: "typed or written")
           return doc(name, stage, "failed", reason: "prompt_not_sent", message: message, pane: spawned.pane, play: job[:play])
-              .merge("details" => {"pane_id" => spawned.pane, "pane_closed" => spawned.closed})
+              .merge("details" => @panes.not_ready_details(spawned))
         end
         begin
           result = dispatch(job, spawned.pane, kind, "spawned")

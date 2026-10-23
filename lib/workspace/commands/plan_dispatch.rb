@@ -168,10 +168,9 @@ module Workspace
         end
         spawned = @panes.spawn(name, kind)
         unless spawned.ready?
-          message = "Started #{spawned.label} in new pane #{spawned.pane}, but it was not ready for the task in #{@panes.prompt_timeout}s " \
-            "(#{spawned.ready.reason}); nothing was typed#{", and the pane was closed" if spawned.closed}."
+          message = @panes.not_ready_message(spawned, "task")
           return task_row("failed", file, task, reason: "prompt_not_sent", message: message, pane: spawned.pane)
-              .merge("details" => {"pane_id" => spawned.pane, "pane_closed" => spawned.closed})
+              .merge("details" => @panes.not_ready_details(spawned))
         end
         begin
           deliver_task(name, file, task, spawned.pane, "spawned")

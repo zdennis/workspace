@@ -1,4 +1,27 @@
 RSpec.describe Workspace::AgentProvider do
+  describe "#waiting_screen" do
+    let(:codex) { described_class.find("codex") }
+
+    it "names the reason for a sign-in, trust or approval screen" do
+      expect(codex.waiting_screen("> 1. Sign in with ChatGPT\n  2. API key\n")).to include(reason: "sign_in")
+      expect(codex.waiting_screen("Trust this folder?\n\n> 1. Trust and continue\n  2. Quit\n")).to include(reason: "trust")
+      expect(codex.waiting_screen("Would you like to run the following command?\n\n> 1. Yes, proceed\n")).to include(reason: "approval")
+    end
+
+    it "is nil for ordinary output, a nil screen and a provider with no waiting screens" do
+      expect(codex.waiting_screen("starting...\n")).to be_nil
+      expect(codex.waiting_screen(nil)).to be_nil
+      expect(described_class.find("claude").waiting_screen("> 1. Sign in with ChatGPT\n")).to be_nil
+    end
+
+    it "looks only at the last lines of the screen" do
+      limit = described_class::SCREEN_WAIT_LINES
+      prompt = "> 1. Sign in with ChatGPT\n"
+      expect(codex.waiting_screen(prompt + ("filler\n" * limit))).to be_nil
+      expect(codex.waiting_screen(prompt + ("filler\n" * (limit - 1)))).to include(reason: "sign_in")
+    end
+  end
+
   describe ".all" do
     it "includes Claude Code with hook support" do
       claude = described_class.find("claude")

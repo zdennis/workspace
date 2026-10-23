@@ -116,6 +116,17 @@ module Workspace
         /^[ \t]*(?:Would you like to (?:run the following command|make the following edits)\?|Do you want to approve network access to .+\?)[ \t]*$[\s\S]*?^[ ›>]*1\. Yes, proceed/
     }.freeze
 
+    # The short reason (`details.waiting` of a refused spawn) for each {CODEX_WAITING_SCREENS} message.
+    CODEX_WAITING_REASONS = {
+      "Codex is asking you to sign in" => "sign_in",
+      "Codex is asking you to trust this folder" => "trust",
+      "Codex is asking you to approve a command, patch or network access" => "approval"
+    }.freeze
+
+    # Lines from the end of a screen that {#waiting_screen} looks in; a prompt sits at the bottom, and
+    # older scrollback may still show one that was answered.
+    SCREEN_WAIT_LINES = 40
+
     # The key Claude Code and Codex both stop a running turn on ("esc to interrupt" in their
     # footers). OpenCode and Pi have none listed until their keys are checked against a live pane.
     INTERRUPT_KEYS = ["Escape"].freeze
@@ -220,6 +231,15 @@ module Workspace
 
     attr_reader :key, :label, :executable, :settings_path, :events, :background_markers, :ready_pattern,
       :clear_command, :context_pattern, :waiting_screens, :interrupt_keys, :hook_events, :hook_trust_hint
+
+    # @param screen [String, nil] what a pane of this agent shows
+    # @return [Hash, nil] `{message:, reason:}` for the waiting screen the end of +screen+ shows
+    #   (`reason` is `sign_in`, `trust` or `approval`; nil when the provider has none for it)
+    def waiting_screen(screen)
+      tail = screen.to_s.lines.last(SCREEN_WAIT_LINES).join
+      message, = @waiting_screens&.find { |_, pattern| pattern.match?(tail) }
+      message && {message: message, reason: CODEX_WAITING_REASONS[message]}
+    end
 
     # @return [Boolean] whether handoff may clear this agent and type a resume prompt into it
     def restartable?
