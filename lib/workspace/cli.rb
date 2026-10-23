@@ -2475,7 +2475,7 @@ module Workspace
         inbox_scope_options(opts, target)
         opts.on("--state STATES", Array, "open (default), snoozed, done or dismissed; comma-separated") { |v| states = v }
         opts.on("--type TYPE", "Only items of this type") { |v| type = v }
-        opts.on("--all", "Every scope that has items") { all = true }
+        opts.on("--all", "Every scope that has items; with --name, that workspace, its project and global") { all = true }
         opts.on("--include-derived", "Add what needs you now: open questions, waiting agents, blocked plans, workflow gates, stuck locks") { include_derived = true }
         opts.on("--json", "Emit the documented JSON schema instead of a table") { json = true }
       end
