@@ -48,7 +48,7 @@ The hooks are user-level, so they run in every Codex session on the machine, inc
 
 ### What is forwarded
 
-Every forwarded event carries the agent's `transcript_path` when the payload has one, and a `UserPromptSubmit` carries the user's `prompt` (cut to 1000 characters). The prompt is forwarded as typed, so anything pasted into it travels to the daemon too. A `Stop` also carries its `stop_reason` when it has a text one (cut to 64 characters); the daemon reports it on a `done` pane. The transcript path and the last prompt are kept in memory only, for the pane labels in `workspace sessions`, and are written nowhere else.
+Every forwarded event carries the agent's `transcript_path` when the payload has one, and a `UserPromptSubmit` carries the user's `prompt` (cut to 1000 characters). The prompt is forwarded as typed, so anything pasted into it travels to the daemon too. A `Stop` also carries its `stop_reason` when it has a text one (cut to 64 characters); the daemon reports it on a `done` pane. A Claude Code `Notification` carries its `notification_type` (`idle_prompt`, `permission_prompt`, ...); an `idle_prompt` ("Claude is waiting for your input") after a turn has ended opens no wait, so the pane stays `done` or `idle`. The transcript path and the last prompt are kept in memory only, for the pane labels in `workspace sessions`, and are written nowhere else.
 
 For the [events stream](README.events.md), tool and session events also carry:
 
