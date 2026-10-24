@@ -185,6 +185,14 @@ bundle install
 bundle exec rake          # runs StandardRB + RSpec
 ```
 
+To have each release tell the homebrew-bin workspace to update its formulas, install the release hook:
+
+```sh
+ln -sf ../../script/git-hooks/reference-transaction .git/hooks/reference-transaction
+```
+
+When you create a `v*` tag, the hook starts [`script/notify-homebrew-release`](script/notify-homebrew-release) in the background. The script waits up to 30 minutes for the tag to reach `origin`. It then asks the Claude pane in the `homebrew-bin` workspace to update the `workspace` formula and to bump `zdennis-bin-all` (minor or patch, depending on what changed). The message is queued until that agent's turn ends. A tag that is already on `origin` when it is created, such as one you fetched, is skipped. Each run logs to `.git/notify-homebrew-release.log`.
+
 Generate YARD docs:
 
 ```sh

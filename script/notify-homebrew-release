@@ -1,0 +1,93 @@
+#!/usr/bin/env ruby
+#
+# Ask the homebrew-bin workspace's agent to update the workspace formula for a
+# new release tag and bump zdennis-bin-all. Run by the reference-transaction
+# hook in script/git-hooks when a v* tag is created. A tag already on origin was
+# fetched, not released, and is skipped; this check runs before the hook returns,
+# so it happens before any push of the tag. Then it moves to the background and
+# waits for the tag to reach origin, since the formula points at GitHub's tarball.
+#
+# Usage:
+#   script/notify-homebrew-release v0.65.0
+#
+# Install the hook:
+#   ln -sf ../../script/git-hooks/reference-transaction .git/hooks/reference-transaction
+
+require "json"
+require "open3"
+require "time"
+require_relative "../lib/workspace/timed_process"
+
+PROJECT_ROOT = File.expand_path("..", __dir__)
+WORKSPACE = File.join(PROJECT_ROOT, "bin", "workspace")
+TARGET = "homebrew-bin"
+REPO_URL = "https://github.com/zdennis/workspace"
+WAIT_SECONDS = 30 * 60
+POLL_SECONDS = 15
+GIT_TIMEOUT = 20
+
+def log(message)
+  @log_path ||= begin
+    git_dir, = Open3.capture2("git", "-C", PROJECT_ROOT, "rev-parse", "--absolute-git-dir")
+    File.join(git_dir.strip, "notify-homebrew-release.log")
+  end
+  File.open(@log_path, "a") { |f| f.puts "#{Time.now.utc.iso8601} #{message}" }
+end
+
+def on_origin?(tag)
+  out, _, ok = Workspace::TimedProcess.run(["git", "ls-remote", "--tags", "origin", "refs/tags/#{tag}"],
+    chdir: PROJECT_ROOT, timeout: GIT_TIMEOUT)
+  ok && !out.strip.empty?
+rescue Timeout::Error
+  false
+end
+
+def previous_tag(tag)
+  out, status = Open3.capture2("git", "-C", PROJECT_ROOT, "describe", "--tags", "--abbrev=0", "--match", "v*", "#{tag}^")
+  status.success? ? out.strip : nil
+end
+
+def agent_pane
+  out, status = Open3.capture2(WORKSPACE, "sessions", "--name", TARGET, "--json")
+  return nil unless status.success?
+  pane = JSON.parse(out).fetch("panes", []).find { |p| p["kind"] == "claude" }
+  pane && pane["pane_id"]
+end
+
+def message(tag, previous)
+  version = tag.delete_prefix("v")
+  changes = previous ? "#{REPO_URL}/compare/#{previous}...#{tag}" : "#{REPO_URL}/releases/tag/#{tag}"
+  <<~MSG.strip
+    workspace #{tag} was just released. Update the workspace formula to #{version} with /homebrew-formula update workspace, then bump zdennis-bin-all and push it. Pick the zdennis-bin-all bump from what changed in workspace (#{changes}): minor when the release adds features or user-visible behavior, patch for fixes and internal changes. Say which you picked and why.
+  MSG
+end
+
+tag = ARGV.fetch(0) { abort "usage: #{$0} TAG" }
+
+if on_origin?(tag)
+  log "#{tag}: already on origin when created (fetched, not released); skipping"
+  exit 0
+end
+
+Process.daemon
+log "#{tag}: waiting for the tag on origin"
+
+deadline = Time.now + WAIT_SECONDS
+until on_origin?(tag)
+  if Time.now > deadline
+    log "#{tag}: not pushed to origin within #{WAIT_SECONDS / 60}m; not sending"
+    exit 1
+  end
+  sleep POLL_SECONDS
+end
+
+pane = agent_pane
+unless pane
+  log "#{tag}: no Claude pane found in the #{TARGET} workspace; not sending"
+  exit 1
+end
+
+out, status = Open3.capture2e(WORKSPACE, "agent-run", "send", "--name", TARGET, "--pane", pane,
+  "--when-idle", "--body", message(tag, previous_tag(tag)))
+log "#{tag}: send to #{TARGET} #{pane} #{status.success? ? "queued" : "failed"}: #{out.strip}"
+exit(status.success? ? 0 : 1)

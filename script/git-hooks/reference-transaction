@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runs script/notify-homebrew-release for each v<digit>* tag created. The script
+# checks origin, then moves itself to the background.
+[ "$1" = committed ] || exit 0
+zero=0000000000000000000000000000000000000000
+root=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+while read -r old new ref; do
+  case "$ref" in
+    refs/tags/v[0-9]*)
+      [ "$old" = "$zero" ] && [ "$new" != "$zero" ] || continue
+      "$root/script/notify-homebrew-release" "${ref#refs/tags/}" >/dev/null 2>&1
+      ;;
+  esac
+done
+exit 0
