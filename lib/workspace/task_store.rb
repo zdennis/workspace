@@ -18,7 +18,7 @@ module Workspace
   # carries no status: status is derived when read.
   class TaskStore
     # Outcomes a task can be archived with.
-    OUTCOMES = %w[merged discarded abandoned].freeze
+    OUTCOMES = %w[merged pushed discarded abandoned].freeze
 
     # Archived tasks kept; the oldest are removed past this.
     ARCHIVE_LIMIT = 200

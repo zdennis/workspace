@@ -165,7 +165,7 @@ By default a JIRA ref gives the branch `PROJ-123`, an issue `issue-42`, and the 
 
 The task id is exported as `WORKSPACE_TASK` in every pane of the workspace, through a `pre_window:` line the worktree template writes into the workspace's tmuxinator config. Run `workspace init --force` once to refresh an installed template that predates it; a workspace whose config already exists keeps the config it has, so its panes get no `WORKSPACE_TASK`. Starting a workspace that already has an active task keeps that task, and a `--title` replaces its title.
 
-[`finish`](README.finish.md) and [`kill`](README.kill.md) archive the task, moving it to `.tasks/archive/` with an `outcome` (`merged` for `finish`, `abandoned` for `kill`, `discarded` for `kill --force`) and `archived_at`. The newest 200 archived tasks are kept. [`sessions --json`](README.sessions.md) reports the active task and a status derived from the panes' states.
+[`finish`](README.finish.md) and [`kill`](README.kill.md) archive the task, moving it to `.tasks/archive/` with an `outcome` (`merged` or `pushed` for `finish`, `abandoned` for `kill`, `discarded` for `kill --force`) and `archived_at`. The newest 200 archived tasks are kept. [`sessions --json`](README.sessions.md) reports the active task and a status derived from the panes' states.
 
 ### `--json` output
 

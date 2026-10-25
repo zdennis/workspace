@@ -32,7 +32,13 @@ If git can't answer one of these checks, `finish` refuses rather than guess. The
 
 `finish` checks against the upstream branch as it was last fetched; it doesn't fetch first. If a teammate pushed to the same branch since your last fetch, run `git fetch` before `finish` to get an accurate check.
 
-`finish` removes the worktree through `kill` and archives the workspace's [task](README.start.md#tasks) with outcome `merged`: it has verified the work is clean and pushed, not that it merged.
+`finish` removes the worktree through `kill` and archives the workspace's [task](README.start.md#tasks) with outcome `merged` only when the branch's commits are already on the default branch, else `pushed`. This is the same check `goal show` uses, read from local refs only (`finish` does no fetch for it). With an `origin` remote, the default branch is `origin/HEAD`, else `origin/main`, else `origin/master`; with no `origin` remote, it is local `main` or `master`. `merged` means the commits are on that branch, so a squash or rebase merge, which leaves them off it, reads `pushed`. A few edge cases follow from this:
+
+- A branch with no commits of its own reads `merged`.
+- A repo whose default branch is neither `main` nor `master` and has no `origin/HEAD`, or whose origin's default branch was never fetched, reads `pushed`.
+- A repo with no `origin` remote reads `merged` when the branch is on local `main` or `master` (earlier versions always read `pushed` there). `finish` requires an upstream, so the only ways to reach this case are an upstream on another remote or a local branch.
+
+The same outcome goes in the `worktree_finished` event and the `--json` document. A PR found or created by `--pr` does not change it; the URL is `pr_url`.
 
 With `--pr`, `finish` looks for an existing PR for the branch (`gh pr view`) and prints its URL if found, or opens one (`gh pr create --fill`) otherwise. This is the same step [`pr create`](README.pr.md) runs, without its push or its check for commits: `finish` has already required the branch to be pushed. If `gh` isn't installed, this step is skipped with a one-line note and `finish` keeps going. If `gh` fails (not authenticated, no fill-able commits, etc.), `finish` reports the error and stops — the worktree is *not* removed.
 
@@ -58,7 +64,7 @@ Under `--json`, the `post_kill` hook doesn't run, so stdout carries only the JSO
 Success:
 
 ```json
-{"schema_version": 1, "ok": true, "project": "myproject.worktree-PROJ-123", "pr_url": null}
+{"schema_version": 1, "ok": true, "project": "myproject.worktree-PROJ-123", "outcome": "pushed", "pr_url": null}
 ```
 
 Error (nothing was removed):
@@ -67,6 +73,7 @@ Error (nothing was removed):
 {"schema_version": 1, "ok": false, "error": "'myproject.worktree-PROJ-123' has 2 changed file(s) at /path/to/worktree.\nCommit or stash them before finishing.", "code": "unsaved_work"}
 ```
 
+- `outcome` is `merged` (the branch's commits are on the default branch) or `pushed` (clean and pushed, not known to be merged).
 - `schema_version` is bumped only on a breaking change to this shape.
 - `notes_inside_worktree` and `warnings` are present only when the workspace's notes directory was inside the worktree and held files, which finishing deleted: `{"schema_version": 1, "ok": true, "project": "…", "notes_inside_worktree": {"dir": "/abs/tmp/workspace-notes", "files": 3}, "warnings": ["The notes directory /abs/tmp/workspace-notes holds 3 files and is inside the worktree; removing the worktree deletes them."]}`. `warnings` is a list of sentences. In plain-text mode `finish` prints the same sentence, prefixed `Warning:`, before it removes anything.
 - `pr_url` is always present: the URL of the pull request `--pr` found or opened, or `null` without `--pr`, when `gh` is not installed, or when no URL came back.
