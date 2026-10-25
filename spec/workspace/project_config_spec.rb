@@ -117,6 +117,16 @@ RSpec.describe Workspace::ProjectConfig do
       expect(content).to include("display: myapp/PROJ-123")
     end
 
+    it "records the workspace name on the session in the shipped worktree template" do
+      template = File.expand_path("../../lib/templates/workspace.project-worktree-template.yml", __dir__)
+      allow(config).to receive(:worktree_template_path).and_return(template)
+
+      pc.create_worktree("myapp", "feat", "/tmp/wt/feat", "feat", quiet: true)
+
+      content = File.read(File.join(tmpdir, "workspace.myapp.worktree-feat.yml"))
+      expect(content).to include("tmux set-option -t myapp-wt-feat @workspace myapp.worktree-feat")
+    end
+
     context "with a {{PRE_WINDOW}} line in the template" do
       before do
         template_path = File.join(tmpdir, "project-worktree-template.yml")
@@ -578,42 +588,6 @@ RSpec.describe Workspace::ProjectConfig do
       File.write(File.join(tmpdir, "workspace.Notes.yml"), "name: Notes\n")
       expect(pc.existing_name("notes")).to eq("Notes")
       expect(pc.existing_name("other")).to be_nil
-    end
-  end
-
-  describe "#workspace_for_session" do
-    subject(:pc) { described_class.new(config: config, output: output, git: git) }
-
-    let(:tmux) { Workspace::Tmux.new(config: config) }
-
-    before do
-      allow(config).to receive(:agent_socket_path) { |name| File.join(tmpdir, "workspace-#{name}.sock") }
-      File.write(File.join(tmpdir, "workspace.proj.worktree-feat.yml"), "name: proj-wt-feat\nroot: /x\n")
-      File.write(File.join(tmpdir, "workspace.proj.yml"), "name: proj\nroot: /y\n")
-    end
-
-    it "maps a worktree's session name to the workspace agentd binds its socket for" do
-      workspace = pc.workspace_for_session("proj-wt-feat", tmux: tmux)
-
-      expect(workspace).to eq("proj.worktree-feat")
-      expect(config.agent_socket_path(workspace)).not_to eq(config.agent_socket_path("proj-wt-feat"))
-    end
-
-    it "keeps a plain workspace's name" do
-      expect(pc.workspace_for_session("proj", tmux: tmux)).to eq("proj")
-    end
-
-    it "returns a session no config names unchanged" do
-      expect(pc.workspace_for_session("stray", tmux: tmux)).to eq("stray")
-    end
-
-    it "skips the config scan when a daemon already listens under the session's own name" do
-      server = UNIXServer.new(config.agent_socket_path("proj-wt-feat"))
-      expect(pc).not_to receive(:available_projects)
-
-      expect(pc.workspace_for_session("proj-wt-feat", tmux: tmux)).to eq("proj-wt-feat")
-    ensure
-      server&.close
     end
   end
 end

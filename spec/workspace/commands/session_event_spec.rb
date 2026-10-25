@@ -913,14 +913,15 @@ RSpec.describe Workspace::Commands::SessionEvent do
 
   describe "a worktree workspace's session" do
     let(:worktree_socket) { File.join(tmpdir, "worktree.sock") }
-    let(:resolver) { ->(session) { (session == "proj-wt-feat") ? "proj.worktree-feat" : session } }
-    let(:delivery_log) { File.join(tmpdir, "state", "session-event.log") }
+    let(:resolver) { ->(session) { (session == "lab-wc-wt-lab-1") ? "lab-wc.worktree-lab-1" : nil } }
+    let(:log_path) { File.join(tmpdir, "state", "session-event.log") }
+    let(:delivery_log) { Workspace::DeliveryLog.new(path: log_path) }
     let(:ledger) { instance_double(Workspace::SessionLedger, record: true) }
 
     before do
-      allow(config).to receive(:agent_socket_path).with("proj.worktree-feat").and_return(worktree_socket)
-      allow(config).to receive(:agent_socket_path).with("proj-wt-feat").and_return(File.join(tmpdir, "wrong.sock"))
-      allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("proj-wt-feat")
+      allow(config).to receive(:agent_socket_path).with("lab-wc.worktree-lab-1").and_return(worktree_socket)
+      allow(config).to receive(:agent_socket_path).with("lab-wc-wt-lab-1").and_return(File.join(tmpdir, "wrong.sock"))
+      allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("lab-wc-wt-lab-1")
     end
 
     def fire(payload, workspace: nil)
@@ -941,32 +942,34 @@ RSpec.describe Workspace::Commands::SessionEvent do
       fire({"hook_event_name" => "Stop", "session_id" => "s1"})
       listener.join(2)
 
-      expect(received).to include("event" => "stop", "workspace" => "proj.worktree-feat", "pane_id" => "%2")
-      expect(File.exist?(delivery_log)).to be(false)
+      expect(received).to include("event" => "stop", "workspace" => "lab-wc.worktree-lab-1", "pane_id" => "%2")
+      expect(File.exist?(log_path)).to be(false)
     ensure
       server&.close
     end
 
     it "records a session start in the ledger under the workspace name" do
-      allow(tmux).to receive(:pane_slot).with("%2").and_return("proj-wt-feat:0.1")
+      allow(tmux).to receive(:pane_slot).with("%2").and_return("lab-wc-wt-lab-1:0.1")
       fire({"hook_event_name" => "SessionStart", "session_id" => "s1"})
 
-      expect(ledger).to have_received(:record).with(hash_including("workspace" => "proj.worktree-feat", "event" => "session_start"))
+      expect(ledger).to have_received(:record).with(hash_including("workspace" => "lab-wc.worktree-lab-1", "event" => "session_start"))
     end
 
-    it "records an event no daemon took, naming the workspace and the socket tried" do
-      fire({"hook_event_name" => "Stop"})
-
-      expect(File.read(delivery_log)).to match(/undeliverable event=stop workspace=proj\.worktree-feat pane=%2 socket=#{Regexp.escape(worktree_socket)} \(Errno::ENOENT/)
-    end
-
-    it "records an event for a session no config names under the session's own name" do
+    it "does nothing for a session that is no workspace's: no ledger entry, no socket tried" do
       allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("stray")
-      allow(config).to receive(:agent_socket_path).with("stray").and_return(File.join(tmpdir, "stray.sock"))
+      expect(config).not_to receive(:agent_socket_path)
 
-      fire({"hook_event_name" => "Stop"})
+      expect(fire({"hook_event_name" => "SessionStart"})).to eq(exit_code: 0)
+      expect(ledger).not_to have_received(:record)
+      expect(File.exist?(log_path)).to be(false)
+    end
 
-      expect(File.read(delivery_log)).to include("workspace=stray", "stray.sock")
+    it "records an event the daemon of a resolved workspace never got, once for repeats" do
+      2.times { fire({"hook_event_name" => "Stop"}) }
+
+      lines = File.readlines(log_path)
+      expect(lines.size).to eq(1)
+      expect(lines.first).to match(/undeliverable event=stop workspace=lab-wc\.worktree-lab-1 pane=%2 socket=#{Regexp.escape(worktree_socket)} \(Errno::ENOENT/)
     end
 
     it "lets --workspace win over the session lookup" do
@@ -974,23 +977,13 @@ RSpec.describe Workspace::Commands::SessionEvent do
 
       fire({"hook_event_name" => "Stop"}, workspace: "other")
 
-      expect(File.read(delivery_log)).to include("workspace=other")
+      expect(File.read(log_path)).to include("workspace=other")
     end
 
     it "does not fail the hook when the delivery log cannot be written" do
-      FileUtils.mkdir_p(File.dirname(delivery_log))
-      Dir.mkdir(delivery_log)
+      FileUtils.mkdir_p(log_path)
 
       expect(fire({"hook_event_name" => "Stop"})).to eq(exit_code: 0)
-    end
-
-    it "starts the delivery log over once it is past its limit" do
-      FileUtils.mkdir_p(File.dirname(delivery_log))
-      File.write(delivery_log, "x" * (described_class::DELIVERY_LOG_LIMIT + 1))
-
-      fire({"hook_event_name" => "Stop"})
-
-      expect(File.size(delivery_log)).to be < 1000
     end
   end
 end

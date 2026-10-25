@@ -445,6 +445,29 @@ module Workspace
       name.empty? ? nil : name
     end
 
+    # Records a user option on a session (`set-option -t SESSION @name value`).
+    #
+    # @param session [String] a tmux session name
+    # @param name [String] the option, starting with `@`
+    # @return [Boolean] whether tmux accepted it
+    def set_session_option(session, name, value)
+      _, _, status = Open3.capture3("tmux", "set-option", "-t", session, name, value)
+      status.success?
+    rescue SystemCallError
+      false
+    end
+
+    # @param session [String] a tmux session name
+    # @param name [String] the option, starting with `@`
+    # @return [String, nil] its value; nil when the option is unset or the session is gone
+    def session_option(session, name)
+      stdout, _, status = Open3.capture3("tmux", "show-option", "-qv", "-t", session, name)
+      value = stdout.strip
+      (status.success? && !value.empty?) ? value : nil
+    rescue SystemCallError
+      nil
+    end
+
     # Names where a pane sits in its session, as `session:window.index`.
     #
     # Unlike a pane id, the slot survives a tmux server restart, which is what
@@ -792,7 +815,10 @@ module Workspace
         path = File.join(dir, File.basename(source))
         File.write(path, content)
         @logger.debug { "tmux: tmuxinator start -p #{path} --no-attach" }
-        run_tmuxinator("tmuxinator", "start", "-p", path, "--no-attach")
+        failure = run_tmuxinator("tmuxinator", "start", "-p", path, "--no-attach")
+        # An older config has no @workspace line in its first pane; the session is up now.
+        set_session_option(session_name_for(config_name), "@workspace", WorkspaceName.normalize(config_name)) unless failure
+        failure
       end
     rescue SystemCallError => e
       "could not run tmuxinator (#{e.message})"

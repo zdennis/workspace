@@ -50,6 +50,7 @@ module Workspace
       template = File.read(@config.project_template_path)
       content = template
         .gsub("{{PROJECT_NAME}}", name)
+        .gsub("{{WORKSPACE_NAME}}", name)
         .gsub("{{PROJECT_ROOT}}", root)
         .gsub("{{CONFIG_PATH}}", config_path)
 
@@ -95,6 +96,7 @@ module Workspace
       template = File.read(@config.worktree_template_path)
       content = template
         .gsub("{{TMUX_SESSION_NAME}}", tmux_session_name)
+        .gsub("{{WORKSPACE_NAME}}", config_name)
         .gsub("{{WORKTREE_PATH}}", worktree_path)
         .gsub("{{PROJECT_NAME}}", project_name)
         .gsub("{{WORKTREE_BRANCH}}", branch_name)
@@ -148,21 +150,6 @@ module Workspace
         .map { |f| File.basename(f, ".yml").delete_prefix("workspace.") }
         .reject { |n| n.match?(/^project-.*template$/) }
         .sort
-    end
-
-    # The workspace a tmux session belongs to. A worktree workspace's session is
-    # named `<project>-wt-<branch>` while the workspace, and so its agentd socket,
-    # is `<project>.worktree-<branch>`; this is the one map from one to the other,
-    # read from each config's session name. A session no config names, or one that
-    # already has a daemon socket under its own name, is its own workspace.
-    #
-    # @param session [String] a tmux session name
-    # @param tmux [Workspace::Tmux] reads each config's session name
-    # @return [String] the workspace name
-    def workspace_for_session(session, tmux:)
-      return session if File.socket?(@config.agent_socket_path(session))
-
-      available_projects.find { |name| tmux.session_name_for(name) == session } || session
     end
 
     # The name a new config is written under: lowercase. A config already on disk
