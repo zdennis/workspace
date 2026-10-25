@@ -27,7 +27,7 @@ A finished run id shows its workspace's goal with a `run_archived` warning. A ma
 | Turn | `turn`: `pane`, `kind`, `state`, `state_since`, `waiting_message`, `context_pct`, `subagents` | the run's pane, else the stage's owner, else the plan's owner, else the main agent pane |
 | Tool | `tool` (`show` only): `current`, `since`, `last_event_at` | the daemon; null without hook events |
 
-A level with nothing to show is `null`. A source that could not be read is `null` plus an entry in `warnings`, never an error. Stages and workflow steps are siblings today: no run records which stage it serves, so `stage` and `step` are reported side by side. The title does not yet read `spine/goal.md` or the plan's title, and the last finished tool call is not kept.
+A level with nothing to show is `null` (see the nullability table below). A source that could not be read is `null` plus an entry in `warnings`, never an error. Stages and workflow steps are siblings today: no run records which stage it serves, so `stage` and `step` are reported side by side. The title does not yet read `spine/goal.md` or the plan's title, and the last finished tool call is not kept.
 
 ### State
 
@@ -45,6 +45,47 @@ The first rule that holds wins.
 | `none` | no run, no plan, no `spine/` | `nothing` |
 
 `next` is `{event, action}`: the event that moves the goal on (`gate_approved`, `ask_answered`, `lock_released`, `turn_ended`, `workflow_resumed`, `launched`, ...) and the command that would cause it as `{action, args, needs}`, or null.
+
+`state` and `stage.status` are independent signals. `state` comes from the plan's or spine's own counts and the run; `stage.status` is the current stage's own status. They can disagree, for example `state: "done"` (the plan is done) beside a current stage that is `blocked`. Both are reported as they are, and a `stage_disagrees` warning (`details.stage`, `details.status`) says so whenever `state` is `done` and the current stage is not `completed` or `skipped`.
+
+### Closed value sets
+
+These sets are stable: a value is never renamed or removed within `schema_version` 1, and a new value is a schema change.
+
+| Field | Values |
+| --- | --- |
+| `state` | `done`, `waiting`, `waiting_lock`, `working`, `stuck`, `stopped`, `idle`, `none` |
+| `waiting_on` | `nothing`, `person`, `agent`, `lock` |
+| `next.event` | `gate_approved`, `answered`, `check_passed`, `turn_ended`, `ask_answered`, `prompt_answered`, `lock_released`, `workflow_resumed`, `agent_restarted`, `launched`, `stage_started`, `task_started` |
+| `turn.state` | `working`, `idle`, `waiting`, `done` (the agent's turn has ended and the pane is finished) |
+| `step.source` | `workflow`, `plan` |
+| `stage.source` | `spine`, `inferred` |
+
+### Nullability
+
+| Field | Null when |
+| --- | --- |
+| `ref`, `task_id` | the workspace has no recorded task |
+| `next` | `state` is `done` or `none` (nothing is expected), or `working`, where it is `{event: "turn_ended", action: null}` and not null |
+| `next.action` | no command would cause the event (`working`, `stage_started`, `task_started`) |
+| `stage` | no `spine/` and no stage is current, the plan could not be read, or the spine has no current stage |
+| `step` | no active run and no plan task to do |
+| `turn` | no agent pane was found, or the agent daemon could not be reached: then a `turn_unavailable` warning names the workspace (none for a stopped workspace, which has no daemon to ask) |
+| `tool` | `show` only: no turn, the daemon did not answer within 1 second, or its pane gave no row; `tool.current` is null when no tool is running |
+| `turn.state_since`, `turn.waiting_message`, `turn.context_pct` | the daemon had no value |
+
+### Warnings
+
+| Code | When |
+| --- | --- |
+| `turn_unavailable` | the workspace runs but its agent daemon gave no panes (`workspace`) |
+| `no_daemon` | the same, and a run is going that will not move without it (`workspace`) |
+| `stage_disagrees` | `state` is `done` and the current stage is not `completed` or `skipped` (`workspace`, `details.stage`, `details.status`) |
+| `run_archived` | `REF` was a finished run's id |
+| `plan_unavailable` | the plan file could not be located or read (`workspace`) |
+| `workflow_runs_unavailable` | a run file could not be read |
+
+The snapshot's own warnings (`spine_unavailable`, `daemons_unavailable`, `task_store_unavailable`, ...) are passed on unchanged.
 
 ## show --json
 
@@ -76,6 +117,7 @@ The first rule that holds wins.
 | --- | --- |
 | `unknown_goal` | `REF` matches no workspace, run, task, ticket or branch. `details.ref`, `details.tried` |
 | `ambiguous_goal` | `REF` matches more than one workspace. `details.ref`, `details.matches` |
-| `not_in_workspace` | no `REF` and the current directory is not in a workspace |
+| `not_in_workspace` | no `REF` and the current directory is not in a workspace (the code `ask` and `config` use too) |
+| `usage` | a bad flag or argument: `--all` with `show`, a second `REF`, an unknown subcommand (see [README.json.md](README.json.md)) |
 
 All exit 1; with `--json` they are the usual error envelope (see [README.json.md](README.json.md)).

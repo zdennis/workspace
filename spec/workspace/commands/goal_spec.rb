@@ -34,26 +34,22 @@ RSpec.describe Workspace::Commands::Goal do
   let(:start_ref) { instance_double(Workspace::StartRef) }
   let(:plan_path) { File.join(@dir, "IMPLEMENTATION_PLAN.md") }
   let(:plan) { instance_double(Workspace::Commands::Plan, path_for: plan_path) }
-  let(:spine_facts) { Workspace::SpineFacts.new(git: nil, pull_request_status: nil, snapshot_client: nil, review: nil, ask_store_for: nil) }
-  let(:spine_inferred) do
-    workflow_store = instance_double(Workspace::WorkflowRunStore, active: [])
-    git = instance_double(Workspace::Git, checkout_layout: {linked: true, broken: false})
-    Workspace::SpineInferred.new(workflow_store: workflow_store, workflow_panes: instance_double(Workspace::WorkflowPanes, pane_of: nil), git: git)
-  end
   let(:daemon_panes) { [] }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient, fetch: {"panes" => daemon_panes}) }
   let(:member) { member_row }
   let(:snapshot_calls) { [] }
-  let(:snapshot_reader) do
-    lambda do |names|
-      snapshot_calls << names
-      document([member])
+  let(:snapshot) do
+    instance_double(Workspace::Commands::Snapshot).tap do |double|
+      allow(double).to receive(:document) do |names:, **options|
+        snapshot_calls << [names, options]
+        document([member])
+      end
     end
   end
 
   subject(:command) do
-    described_class.new(snapshot_reader: snapshot_reader, catalog: catalog, task_store: task_store, workflow_status: workflow_status,
-      start_ref: start_ref, plan: plan, spine_facts: spine_facts, spine_inferred: spine_inferred, snapshot_client: snapshot_client, output: output)
+    described_class.new(snapshot: snapshot, catalog: catalog, task_store: task_store, workflow_status: workflow_status,
+      start_ref: start_ref, plan: plan, snapshot_client: snapshot_client, output: output)
   end
 
   def pane(id, state, kind: "claude", index: 0, **extra)
@@ -61,7 +57,7 @@ RSpec.describe Workspace::Commands::Goal do
      "waiting_message" => nil, "context_pct" => 41, "agents" => []}.merge(extra)
   end
 
-  def member_row(workspace: "lab-wc-lab-1", panes: [pane("%5", "idle")], plan: {"state" => "empty"}, spine: {"exists" => false}, running: true, daemon_up: true, task: nil, questions: [], branch: "lab-1")
+  def member_row(workspace: "lab-wc-lab-1", panes: [pane("%5", "idle")], plan: {"state" => "empty"}, spine: {"exists" => false, "inferred" => {"path" => "plan", "title" => "Plan", "status" => "in_progress", "owner" => nil, "source" => "inferred"}}, running: true, daemon_up: true, task: nil, questions: [], branch: "lab-1")
     {"workspace" => workspace, "path" => File.join(@dir, workspace), "running" => running, "daemon" => {"up" => daemon_up},
      "git" => {"branch" => branch}, "panes" => daemon_up ? panes : nil, "questions" => questions, "plan" => plan, "spine" => spine, "task" => task}
   end
@@ -157,7 +153,7 @@ RSpec.describe Workspace::Commands::Goal do
         expect(goal["step"]).to include("source" => "plan")
         expect(goal["step"]["task"]).to include("id" => "T2", "state" => "in_progress", "owner" => "%4")
         expect(goal["turn"]["pane"]).to eq("%4")
-        expect(goal["stage"]).to include("title" => "Implement", "source" => "inferred")
+        expect(goal["stage"]).to include("source" => "inferred")
       end
     end
 
@@ -198,8 +194,32 @@ RSpec.describe Workspace::Commands::Goal do
         command.show("lab-wc-lab-1", json: true)
 
         expect(goal).to include("state" => "stuck", "turn" => nil)
-        expect(JSON.parse(output.string)["warnings"].map { |w| w["code"] }).to include("no_daemon")
+        expect(JSON.parse(output.string)["warnings"].map { |w| w["code"] }).to include("no_daemon", "turn_unavailable")
         expect(File.binread(plan_path)).to eq(before_bytes)
+      end
+    end
+
+    context "when the agent daemon is down and no run is going" do
+      let(:member) { member_row(daemon_up: false) }
+
+      it "has a null turn and a turn_unavailable warning, but no no_daemon one" do
+        command.show("lab-wc-lab-1", json: true)
+
+        codes = JSON.parse(output.string)["warnings"].map { |w| w["code"] }
+        expect(goal["turn"]).to be_nil
+        expect(codes).to include("turn_unavailable")
+        expect(codes).not_to include("no_daemon")
+      end
+    end
+
+    context "when the workspace is stopped" do
+      let(:member) { member_row(running: false, daemon_up: false) }
+
+      it "has a null turn and no warning, since there is no daemon to ask" do
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal["turn"]).to be_nil
+        expect(JSON.parse(output.string)["warnings"].map { |w| w["code"] }).not_to include("turn_unavailable")
       end
     end
 
@@ -232,10 +252,93 @@ RSpec.describe Workspace::Commands::Goal do
       expect(goal["next"]).to include("event" => "lock_released", "resource" => "devenv")
     end
 
-    it "makes no gh call and builds the snapshot without pull requests" do
+    it "makes no gh call and reads the snapshot once, for the one workspace, without pull requests" do
       command.show("lab-wc-lab-1", json: true)
 
-      expect(snapshot_calls).to eq([["lab-wc-lab-1"]])
+      expect(snapshot_calls).to eq([[["lab-wc-lab-1"], {inferred: true}]])
+    end
+
+    it "reads the snapshot once when it resolves a branch" do
+      command.show("lab-1", json: true)
+
+      expect(snapshot_calls.size).to eq(1)
+    end
+
+    it "prints exactly the documented keys" do
+      write_plan("## Tasks")
+      command.show("lab-wc-lab-1", json: true)
+
+      expect(JSON.parse(output.string).keys).to eq(%w[schema_version ok goal warnings])
+      expect(goal.keys).to eq(%w[workspace project title ref branch task_id state waiting_on next stage step runs turn tool])
+    end
+
+    it "warns plan_unavailable and keeps the goal when the plan can't be located" do
+      allow(plan).to receive(:path_for).and_raise(Workspace::Error.new("no notes dir", code: "x"))
+
+      command.show("lab-wc-lab-1", json: true)
+
+      expect(goal["step"]).to be_nil
+      expect(JSON.parse(output.string)["warnings"]).to include(a_hash_including("code" => "plan_unavailable", "workspace" => "lab-wc-lab-1"))
+    end
+
+    it "carries the snapshot's own warnings" do
+      allow(snapshot).to receive(:document).and_return(document([member]).merge("warnings" => [{"code" => "cursor_unavailable", "message" => "x"}]))
+
+      command.show("lab-wc-lab-1", json: true)
+
+      expect(JSON.parse(output.string)["warnings"]).to include(a_hash_including("code" => "cursor_unavailable"))
+    end
+
+    context "with a paused plan whose owner pane is working" do
+      let(:member) { member_row(panes: [pane("%5", "working")], plan: {"state" => "paused"}) }
+
+      it "takes the state from the turn and still has a plan step" do
+        write_plan("---", "status: paused", "---", "## Tasks", "- [~] T1 One")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "working", "waiting_on" => "agent")
+        expect(goal["step"]["task"]).to include("id" => "T1")
+      end
+    end
+
+    context "with a blocked plan and an idle pane" do
+      let(:member) { member_row(plan: {"state" => "blocked"}) }
+
+      it "is idle, waiting on a person" do
+        write_plan("## Tasks", "- [!] T1 One")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "idle", "waiting_on" => "person")
+      end
+    end
+
+    context "when the current stage disagrees with a done goal" do
+      let(:blocked_stage) { {"path" => "verify", "title" => "Verify", "status" => "blocked", "owner" => nil, "source" => "inferred"} }
+      let(:member) { member_row(plan: {"state" => "done"}, spine: {"exists" => false, "inferred" => blocked_stage}) }
+
+      it "reports both as they are and warns stage_disagrees with the stage" do
+        write_plan("## Tasks", "- [x] T1 One")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "done")
+        expect(goal["stage"]).to include("status" => "blocked")
+        expect(JSON.parse(output.string)["warnings"]).to include(
+          a_hash_including("code" => "stage_disagrees", "details" => {"stage" => "verify", "status" => "blocked"})
+        )
+      end
+
+      it "does not warn when the stage is completed" do
+        done_stage = blocked_stage.merge("status" => "completed")
+        allow(snapshot).to receive(:document).and_return(document([member_row(plan: {"state" => "done"}, spine: {"exists" => false, "inferred" => done_stage})]))
+        write_plan("## Tasks", "- [x] T1 One")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(JSON.parse(output.string)["warnings"].map { |w| w["code"] }).not_to include("stage_disagrees")
+      end
     end
 
     describe "errors" do
@@ -252,7 +355,7 @@ RSpec.describe Workspace::Commands::Goal do
           {"name" => "a", "members" => [member_row(workspace: "a-main", branch: "main")]},
           {"name" => "b", "members" => [member_row(workspace: "b-main", branch: "main")]}
         ])
-        allow(snapshot_reader).to receive(:call).and_return(two)
+        allow(snapshot).to receive(:document).and_return(two)
 
         expect { command.show("main", json: true) }.to raise_error(Workspace::Error) { |error|
           expect(error.code).to eq("ambiguous_goal")
@@ -272,9 +375,11 @@ RSpec.describe Workspace::Commands::Goal do
 
   describe "#list" do
     let(:projects) { [project_struct.new("lab-wc", [member_struct.new("lab-wc-lab-1"), member_struct.new("lab-wc-lab-2")])] }
-    let(:snapshot_reader) do
-      lambda do |_names|
-        document([member_row(plan: {"state" => "idle"}), member_row(workspace: "lab-wc-lab-2", panes: [pane("%7", "idle")])])
+    let(:snapshot) do
+      instance_double(Workspace::Commands::Snapshot).tap do |double|
+        allow(double).to receive(:document) do |**|
+          document([member_row(plan: {"state" => "idle"}), member_row(workspace: "lab-wc-lab-2", panes: [pane("%7", "idle")])])
+        end
       end
     end
 

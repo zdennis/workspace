@@ -49,9 +49,11 @@ module Workspace
       # @param clock [#now] time source, injected for tests
       # @param agent_timeout [Numeric] seconds to wait for each agent daemon
       # @param groups [Workspace::ProjectGroups, nil] says which group each project's repository is in; nil means none has one
+      # @param spine_inferred [Workspace::SpineInferred, nil] works out the stage of a member with no `spine/`, for `document(inferred: true)`
       def initialize(catalog:, facts:, tmux:, state:, config:, snapshot_client:, sessions:, git:, pull_request_status:, ask_store_for:, plan:, plan_state:, plan_config:, task_store:, spine:, spine_facts:,
-        output: $stdout, error_output: $stderr, clock: Time, agent_timeout: DEFAULT_AGENT_TIMEOUT, groups: nil)
+        output: $stdout, error_output: $stderr, clock: Time, agent_timeout: DEFAULT_AGENT_TIMEOUT, groups: nil, spine_inferred: nil)
         @groups = groups
+        @spine_inferred = spine_inferred
         @catalog = catalog
         @facts = facts
         @tmux = tmux
@@ -81,9 +83,26 @@ module Workspace
       # @param pr [Boolean] read each checkout's pull request with `gh` (one read per member, in parallel)
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       def call(names: [], pr: false)
+        @output.puts JSON.generate(document(names: names, pr: pr))
+        {exit_code: 0}
+      rescue => e
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e, message: e.message.lines.first.to_s.strip))
+        {exit_code: 1}
+      end
+
+      # The snapshot document, as {#call} prints it.
+      #
+      # @param names [Array<String>] see {#call}
+      # @param pr [Boolean] see {#call}
+      # @param inferred [Boolean] give a member with no `spine/` its current inferred stage as `spine.inferred`
+      #   (a `goal` stage hash, or nil); needs +spine_inferred+. Off, the document is as it always was.
+      # @return [Hash]
+      # @raise [Workspace::Error] `unknown_workspace` for a name nobody has
+      def document(names: [], pr: false, inferred: false)
         @stored_tasks = nil
         @raw_prs = {}
         @plan_files = {}
+        @with_inferred = inferred && !@spine_inferred.nil?
         @group_map = @groups ? @groups.groups_by_project_id : {}
         cursor, cursor_warning = event_cursor
         warnings = []
@@ -97,14 +116,10 @@ module Workspace
         prs = pr ? read_pull_requests(pairs) : {}
         unavailable = []
         rows = gathered.map { |project, g| project_row(project, g, daemons, prs, sessions, unavailable, warnings) }
-        @output.puts JSON.generate({
+        {
           "schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "generated_at" => @clock.now.utc.iso8601(3), "cursor" => cursor,
           "projects" => rows, "daemons_unavailable" => unavailable, "warnings" => warnings
-        })
-        {exit_code: 0}
-      rescue => e
-        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e, message: e.message.lines.first.to_s.strip))
-        {exit_code: 1}
+        }
       end
 
       private
@@ -299,20 +314,28 @@ module Workspace
       # when it can't be looked for.
       def spine_block(workspace, path, git_fact, daemon, snapshot, member_questions, warnings)
         tree = @spine.read(workspace)
-        return {"exists" => false} unless tree.exists
-        gates = SpineFacts.gates_in(tree.stages)
-        review = gates.include?("review")
-        readings = SpineFacts::Readings.new(
-          plan: spine_plan(workspace), git: spine_git(path, git_fact), pull_request: @raw_prs[workspace],
-          panes: snapshot && Array(snapshot["panes"]), daemon_reason: spine_daemon_reason(daemon), asks: member_questions,
-          review_ahead: review ? @spine_facts.commits_ahead_of_base(path) : nil, review: review
-        )
+        unless tree.exists
+          return {"exists" => false} unless @with_inferred
+          readings = spine_readings(workspace, path, git_fact, daemon, snapshot, member_questions, false)
+          result = @spine_facts.facts_from(workspace, readings)
+          return {"exists" => false, "inferred" => @spine_inferred.current_stage(workspace: workspace, checkout: path, result: result)}
+        end
+        review = SpineFacts.gates_in(tree.stages).include?("review")
+        readings = spine_readings(workspace, path, git_fact, daemon, snapshot, member_questions, review)
         result = @spine_facts.facts_from(workspace, readings)
         docs = SpineEvaluator.evaluate_stages(tree.stages, result.facts)
         spine_row(tree, docs, partial: spine_partial?(docs, result.facts, review))
       rescue Workspace::Error, SystemCallError => e
         warnings << {"code" => "spine_unavailable", "workspace" => workspace, "message" => e.message.lines.first.to_s.strip}
         nil
+      end
+
+      def spine_readings(workspace, path, git_fact, daemon, snapshot, member_questions, review)
+        SpineFacts::Readings.new(
+          plan: spine_plan(workspace), git: spine_git(path, git_fact), pull_request: @raw_prs[workspace],
+          panes: snapshot && Array(snapshot["panes"]), daemon_reason: spine_daemon_reason(daemon), asks: member_questions,
+          review_ahead: review ? @spine_facts.commits_ahead_of_base(path) : nil, review: review
+        )
       end
 
       def spine_row(tree, docs, partial:)

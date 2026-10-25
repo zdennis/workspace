@@ -206,6 +206,8 @@ module Workspace
       "unknown_run" => "No workflow run has that id.",
       "unknown_goal" => "goal show: REF matches no workspace, run, task, ticket or branch. details.ref, details.tried.",
       "ambiguous_goal" => "goal show: REF matches more than one workspace (a branch checked out in two projects). details.ref, details.matches (workspace, project, branch).",
+      "stage_disagrees" => "goal warning: the goal's state is done but its current stage is not completed or skipped. workspace, details.stage, details.status.",
+      "turn_unavailable" => "goal warning: the workspace runs but its agent daemon gave no panes, so the turn and tool call are null. workspace.",
       "run_not_active" => "The workflow run has finished, so nothing more can happen to it.",
       "gate_not_waiting" => "workflow approve or reject named a run that isn't waiting at a gate.",
       "gate_waiting" => "workflow resume named a run that waits at a gate; approve or reject it.",

@@ -237,5 +237,20 @@ RSpec.describe Workspace::SpineInferred do
 
       expect(stages.find { |s| s["id"] == "plan" }["source"]).to eq("plan")
     end
+
+    describe "#current_stage" do
+      it "gives the current stage as a goal stage, marked inferred" do
+        allow(store).to receive(:active).and_return([])
+
+        stage = inferred.current_stage(workspace: "api", checkout: "/src/api", result: result(plan: :missing))
+
+        expect(stage).to include("path" => "research", "title" => "Research", "source" => "inferred")
+        expect(stage.keys).to eq(%w[path title status owner source])
+      end
+
+      it "is nil when the plan could not be read" do
+        expect(inferred.current_stage(workspace: "api", checkout: "/src/api", result: result(plan: nil))).to be_nil
+      end
+    end
   end
 end

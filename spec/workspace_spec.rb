@@ -145,7 +145,7 @@ RSpec.describe Workspace do
       goal = cli.instance_variable_get(:@goal_command)
 
       expect(goal).to be_a(Workspace::Commands::Goal)
-      expect(goal.instance_variable_get(:@snapshot_reader)).to respond_to(:call)
+      expect(goal.instance_variable_get(:@snapshot)).to equal(cli.instance_variable_get(:@snapshot_command))
       expect(goal.instance_variable_get(:@workflow_status)).to be_a(Workspace::WorkflowStatus)
     end
 
