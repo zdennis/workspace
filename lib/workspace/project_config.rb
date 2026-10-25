@@ -50,6 +50,7 @@ module Workspace
       template = File.read(@config.project_template_path)
       content = template
         .gsub("{{PROJECT_NAME}}", name)
+        .gsub("{{WORKSPACE_NAME}}", name)
         .gsub("{{PROJECT_ROOT}}", root)
         .gsub("{{CONFIG_PATH}}", config_path)
 
@@ -95,6 +96,7 @@ module Workspace
       template = File.read(@config.worktree_template_path)
       content = template
         .gsub("{{TMUX_SESSION_NAME}}", tmux_session_name)
+        .gsub("{{WORKSPACE_NAME}}", config_name)
         .gsub("{{WORKTREE_PATH}}", worktree_path)
         .gsub("{{PROJECT_NAME}}", project_name)
         .gsub("{{WORKTREE_BRANCH}}", branch_name)

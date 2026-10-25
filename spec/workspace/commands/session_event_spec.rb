@@ -910,4 +910,106 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(deliver({"hook_event_name" => "Stop"}, "Codex")).to include("agent_kind" => "codex")
     end
   end
+
+  describe "a worktree workspace's session" do
+    let(:worktree_socket) { File.join(tmpdir, "worktree.sock") }
+    let(:resolver) { ->(session) { (session == "lab-wc-wt-lab-1") ? "lab-wc.worktree-lab-1" : nil } }
+    let(:log_path) { File.join(tmpdir, "state", "session-event.log") }
+    let(:delivery_log) { Workspace::DeliveryLog.new(path: log_path) }
+    let(:ledger) { instance_double(Workspace::SessionLedger, record: true) }
+
+    before do
+      allow(config).to receive(:agent_socket_path).with("lab-wc.worktree-lab-1").and_return(worktree_socket)
+      allow(config).to receive(:agent_socket_path).with("lab-wc-wt-lab-1").and_return(File.join(tmpdir, "wrong.sock"))
+      allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("lab-wc-wt-lab-1")
+    end
+
+    def fire(payload, workspace: nil)
+      described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)), env: env,
+        workspace_for_session: resolver, delivery_log: delivery_log, session_ledger: ledger).call(workspace: workspace)
+    end
+
+    it "delivers a Stop to the socket of the workspace, not the session name, and records the workspace" do
+      server = UNIXServer.new(worktree_socket)
+      received = nil
+      listener = Thread.new do
+        client = server.accept
+        received = JSON.parse(client.gets)
+        client.puts(JSON.generate("ok" => true))
+        client.close
+      end
+
+      fire({"hook_event_name" => "Stop", "session_id" => "s1"})
+      listener.join(2)
+
+      expect(received).to include("event" => "stop", "workspace" => "lab-wc.worktree-lab-1", "pane_id" => "%2")
+      expect(File.exist?(log_path)).to be(false)
+    ensure
+      server&.close
+    end
+
+    it "records a session start in the ledger under the workspace name" do
+      allow(tmux).to receive(:pane_slot).with("%2").and_return("lab-wc-wt-lab-1:0.1")
+      fire({"hook_event_name" => "SessionStart", "session_id" => "s1"})
+
+      expect(ledger).to have_received(:record).with(hash_including("workspace" => "lab-wc.worktree-lab-1", "event" => "session_start"))
+    end
+
+    it "does nothing for a session that is no workspace's: no ledger entry, no socket tried" do
+      allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("stray")
+      expect(config).not_to receive(:agent_socket_path)
+
+      expect(fire({"hook_event_name" => "SessionStart"})).to eq(exit_code: 0)
+      expect(ledger).not_to have_received(:record)
+      expect(File.exist?(log_path)).to be(false)
+    end
+
+    it "records an event the daemon of a resolved workspace never got, once for repeats" do
+      2.times { fire({"hook_event_name" => "Stop"}) }
+
+      lines = File.readlines(log_path)
+      expect(lines.size).to eq(1)
+      expect(lines.first).to match(/undeliverable event=stop workspace=lab-wc\.worktree-lab-1 pane=%2 socket=#{Regexp.escape(worktree_socket)} \(Errno::ENOENT/)
+    end
+
+    it "lets --workspace win over the session lookup" do
+      allow(config).to receive(:agent_socket_path).with("other").and_return(File.join(tmpdir, "other.sock"))
+
+      fire({"hook_event_name" => "Stop"}, workspace: "other")
+
+      expect(File.read(log_path)).to include("workspace=other")
+    end
+
+    it "does not fail the hook when the delivery log cannot be written" do
+      FileUtils.mkdir_p(log_path)
+
+      expect(fire({"hook_event_name" => "Stop"})).to eq(exit_code: 0)
+    end
+  end
+  describe "regression: the socket is named after the workspace, not the tmux session" do
+    it "writes a worktree session's Stop to workspace-lab-wc.worktree-lab-1.sock" do
+      dir = Dir.mktmpdir("s", "/tmp")
+      allow(config).to receive(:agent_socket_path) { |name| File.join(dir, "workspace-#{name}.sock") }
+      allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("lab-wc-wt-lab-1")
+      allow(tmux).to receive(:session_option).with("lab-wc-wt-lab-1", "@workspace").and_return("lab-wc.worktree-lab-1")
+      resolver = Workspace::SessionWorkspace.new(tmux: tmux, project_config: instance_double(Workspace::ProjectConfig), config: config)
+      server = UNIXServer.new(File.join(dir, "workspace-lab-wc.worktree-lab-1.sock"))
+      received = nil
+      listener = Thread.new do
+        client = server.accept
+        received = JSON.parse(client.gets)
+        client.puts(JSON.generate("ok" => true))
+        client.close
+      end
+
+      described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate("hook_event_name" => "Stop")), env: env,
+        workspace_for_session: resolver).call
+      listener.join(2)
+
+      expect(received).to include("event" => "stop", "workspace" => "lab-wc.worktree-lab-1")
+    ensure
+      server&.close
+      FileUtils.remove_entry(dir) if dir
+    end
+  end
 end

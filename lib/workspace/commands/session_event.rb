@@ -117,11 +117,19 @@ module Workspace
       #   binding lists, added after its subject; nil leaves them out
       # @param dev_session_release [Workspace::DevSessionRelease, nil] stops the dev environment a session
       #   started when that session ends (never on `clear`); nil leaves it running
+      # @param workspace_for_session [#call] given the pane's tmux session name, returns the workspace
+      #   whose agentd owns it (a worktree workspace's session is not named like the workspace), or nil
+      #   for a session that is no workspace's, whose events are then dropped
+      # @param delivery_log [Workspace::DeliveryLog, nil] records an event the daemon of a resolved workspace
+      #   never got; nil records nothing beyond the debug log
       # @param connect_timeout [Numeric] seconds to wait for the daemon's socket to take the connection
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
         lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
+        workspace_for_session: ->(session) { session }, delivery_log: nil,
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
+        @workspace_for_session = workspace_for_session
+        @delivery_log = delivery_log
         @connect_timeout = connect_timeout
         @reply_timeout = reply_timeout
         @dev_session_release = dev_session_release
@@ -174,8 +182,13 @@ module Workspace
         pane_id = @env["TMUX_PANE"]
         return ok { "session-event: not inside tmux, dropped" } unless pane_id
 
-        name = workspace || @tmux.session_name_for_pane(pane_id)
-        return ok { "session-event: no session for #{pane_id}, dropped" } unless name
+        name = workspace
+        unless name
+          session = @tmux.session_name_for_pane(pane_id)
+          return ok { "session-event: no session for #{pane_id}, dropped" } unless session
+          name = @workspace_for_session.call(session)
+          return ok { "session-event: session #{session} is no workspace's, dropped" } unless name
+        end
 
         record_in_ledger(payload, pane_id, name)
         announce_binding(payload, pane_id)
@@ -483,8 +496,18 @@ module Workspace
         end
       rescue SystemCallError, IOError, DeliveryTimeout => e
         @logger.debug { "session-event: could not deliver to #{path} (#{e.class}: #{e.message})" }
+        record_undeliverable(workspace, event, path, e)
       ensure
         socket&.close
+      end
+
+      # A daemon that is not running is normal, so only a workspace resolved by
+      # name is recorded, and only once per workspace and event in a while.
+      def record_undeliverable(workspace, event, path, error)
+        @delivery_log&.record(
+          "undeliverable event=#{event["event"]} workspace=#{workspace} pane=#{event["pane_id"]} socket=#{path} (#{error.class}: #{error.message})",
+          key: "#{workspace}/#{event["event"]}"
+        )
       end
 
       def now

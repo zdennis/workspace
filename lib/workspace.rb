@@ -186,6 +186,8 @@ require_relative "workspace/config_resolver"
 require_relative "workspace/config_file"
 require_relative "workspace/config_report"
 require_relative "workspace/tmuxinator_report"
+require_relative "workspace/session_workspace"
+require_relative "workspace/delivery_log"
 require_relative "workspace/process_tree"
 require_relative "workspace/liveness"
 require_relative "workspace/window_liveness"
@@ -492,7 +494,11 @@ module Workspace
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
+    delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
+    workspace_for_session = SessionWorkspace.new(tmux: tmux, project_config: project_config, config: config,
+      on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
+      workspace_for_session: workspace_for_session, delivery_log: delivery_log,
       lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
@@ -688,7 +694,7 @@ module Workspace
     restart_agent_command = Commands::RestartAgent.new(config: config, locator: pane_locator, output: output)
     prompt_queue_command = Commands::PromptQueue.new(config: config, locator: pane_locator, event_log: event_log, output: output, error_output: error_output)
     agent_status_command = Commands::AgentStatus.new(client: agent_snapshot_client, locator: pane_locator, tmux: tmux, output: output,
-      workspace_for_session: ->(session) { project_config.available_projects.find { |name| tmux.session_name_for(name) == session } || session })
+      workspace_for_session: workspace_for_session)
     agent_executables_command = Commands::AgentExecutables.new(executables: AgentExecutables.new(agent_commands: agent_commands, path: env["PATH"]),
       project_config: project_config, output: output)
     handoff_config = HandoffConfig.new(config_resolver: config_resolver, project_config: project_config,

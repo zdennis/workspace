@@ -117,6 +117,26 @@ RSpec.describe Workspace::ProjectConfig do
       expect(content).to include("display: myapp/PROJ-123")
     end
 
+    it "records the workspace name on the session in the shipped worktree template" do
+      template = File.expand_path("../../lib/templates/workspace.project-worktree-template.yml", __dir__)
+      allow(config).to receive(:worktree_template_path).and_return(template)
+
+      pc.create_worktree("myapp", "feat", "/tmp/wt/feat", "feat", quiet: true)
+
+      content = File.read(File.join(tmpdir, "workspace.myapp.worktree-feat.yml"))
+      expect(content).to include("tmux set-option -t '=myapp-wt-feat' @workspace myapp.worktree-feat || true")
+    end
+
+    it "records it in the shipped project template too, ahead of the && chain and unable to break it" do
+      template = File.expand_path("../../lib/templates/workspace.project-template.yml", __dir__)
+      allow(config).to receive(:project_template_path).and_return(template)
+
+      pc.create("myapp", "/tmp/myapp")
+
+      lines = File.read(File.join(tmpdir, "workspace.myapp.yml")).lines.map(&:strip)
+      expect(lines).to include("tmux set-option -t '=myapp' @workspace myapp || true")
+    end
+
     context "with a {{PRE_WINDOW}} line in the template" do
       before do
         template_path = File.join(tmpdir, "project-worktree-template.yml")
