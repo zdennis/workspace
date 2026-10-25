@@ -48,6 +48,16 @@ RSpec.describe "tmux session targets (contract against real tmux)" do
     expect(tmux.session_option("plain", "@workspace")).to eq("plain")
   end
 
+  it "finds a dotted session with the has-session target reattach_or_start builds" do
+    command = tmux.reattach_or_start(session, "false")
+    has_session = command[/tmux has-session -t \S+/]
+    expect(has_session).not_to be_nil
+    expect(system(has_session, out: File::NULL, err: File::NULL)).to be true
+
+    gone = tmux.reattach_or_start("no.such-session", "false")[/tmux has-session -t \S+/]
+    expect(system(gone, out: File::NULL, err: File::NULL)).to be false
+  end
+
   it "finds, renames and kills a dotted session" do
     expect(tmux.session_exists?(session)).to be true
     expect(tmux.rename_session(session, "other.name")).to be true
