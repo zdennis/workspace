@@ -211,7 +211,8 @@ RSpec.describe Workspace::Commands::Start do
       let(:backup) { Workspace::FileBackup.new(output: output) }
       let(:hook_installer) { Workspace::HookInstaller.new(backup: backup, output: output, input: input) }
       let(:worktree_path) { File.join(tmpdir, ".worktrees", "PROJ-123") }
-      let(:settings_path) { File.join(worktree_path, ".claude", "settings.json") }
+      let(:settings_path) { File.join(worktree_path, ".claude", "settings.local.json") }
+      let(:tracked_settings_path) { File.join(worktree_path, ".claude", "settings.json") }
 
       subject(:command) do
         described_class.new(
@@ -251,10 +252,61 @@ RSpec.describe Workspace::Commands::Start do
           expect(status_line).to eq("type" => "command", "command" => "workspace statusline")
         end
 
+        it "never writes the tracked settings.json" do
+          command.call("PROJ-123")
+
+          expect(File).not_to exist(tracked_settings_path)
+        end
+
+        it "lists the .workspace-project marker through the excluder" do
+          excluder = instance_double(Workspace::BookkeepingExclude, created: true)
+          described_class.new(
+            git: git, project_config: project_config, project_settings: project_settings,
+            launch_command: launch_command, hook_installer: hook_installer, which: which,
+            excluder: excluder, output: output, input: input
+          ).call("PROJ-123")
+
+          expect(excluder).to have_received(:created).with(File.join(worktree_path, ".workspace-project"))
+        end
+
+        it "warns instead of failing when settings.local.json is malformed" do
+          FileUtils.mkdir_p(File.dirname(settings_path))
+          File.write(settings_path, "{nope")
+
+          expect { command.call("PROJ-123", json: true) }.not_to raise_error
+          warnings = JSON.parse(output.string)["warnings"]
+          expect(warnings).to include(a_string_matching(/\ANote: Claude Code hooks not installed: .*not valid JSON/))
+          expect(warnings).to include(a_string_matching(/\ANote: Claude Code statusLine not routed: .*not valid JSON/))
+          expect(File.read(settings_path)).to eq("{nope")
+        end
+
+        it "prints Note lines instead of raising for a malformed settings.local.json outside --json" do
+          FileUtils.mkdir_p(File.dirname(settings_path))
+          File.write(settings_path, "{nope")
+
+          expect { command.call("PROJ-123") }.not_to raise_error
+          expect(output.string).to match(/^Note: Claude Code hooks not installed: /)
+          expect(output.string).to match(/^Note: Claude Code statusLine not routed: /)
+        end
+
+        it "neither reads nor warns about a malformed settings.local.json when the tracked file already holds the entries" do
+          claude = Workspace::AgentProvider.find("claude")
+          hook_installer.install(claude, worktree_path, Workspace::Commands::Init::HOOK_COMMAND, quiet: true)
+          hook_installer.install_statusline(claude, worktree_path,
+            command: Workspace::Commands::Init::STATUSLINE_COMMAND, project_settings: project_settings, quiet: true)
+          FileUtils.mkdir_p(File.dirname(settings_path))
+          File.write(settings_path, "{nope")
+
+          command.call("PROJ-123", json: true)
+
+          expect(Array(JSON.parse(output.string)["warnings"]).grep(/not installed|not routed/)).to be_empty
+          expect(File.read(settings_path)).to eq("{nope")
+        end
+
         context "in quiet mode, when the worktree already routes statusLine elsewhere" do
           before do
-            FileUtils.mkdir_p(File.dirname(settings_path))
-            File.write(settings_path, JSON.pretty_generate(
+            FileUtils.mkdir_p(File.dirname(tracked_settings_path))
+            File.write(tracked_settings_path, JSON.pretty_generate(
               "statusLine" => {"type" => "command", "command" => "my-statusline.sh"}
             ) + "\n")
           end
