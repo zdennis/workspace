@@ -97,6 +97,9 @@ module Workspace
       CONNECT_TIMEOUT = 0.2
       REPLY_TIMEOUT = 0.3
 
+      # Size past which the delivery log starts over.
+      DELIVERY_LOG_LIMIT = 256 * 1024
+
       # @param config [Workspace::Config] socket path lookups
       # @param tmux [Workspace::Tmux] resolves the pane's session name
       # @param input [IO] stream the hook payload arrives on
@@ -117,11 +120,18 @@ module Workspace
       #   binding lists, added after its subject; nil leaves them out
       # @param dev_session_release [Workspace::DevSessionRelease, nil] stops the dev environment a session
       #   started when that session ends (never on `clear`); nil leaves it running
+      # @param workspace_for_session [#call] given the pane's tmux session name, returns the workspace
+      #   whose agentd owns it (a worktree workspace's session is not named like the workspace)
+      # @param delivery_log [String, nil] file an undeliverable event is recorded in, one line each,
+      #   started over past {DELIVERY_LOG_LIMIT} bytes; nil records nothing beyond the debug log
       # @param connect_timeout [Numeric] seconds to wait for the daemon's socket to take the connection
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
         lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
+        workspace_for_session: ->(session) { session }, delivery_log: nil,
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
+        @workspace_for_session = workspace_for_session
+        @delivery_log = delivery_log
         @connect_timeout = connect_timeout
         @reply_timeout = reply_timeout
         @dev_session_release = dev_session_release
@@ -174,8 +184,12 @@ module Workspace
         pane_id = @env["TMUX_PANE"]
         return ok { "session-event: not inside tmux, dropped" } unless pane_id
 
-        name = workspace || @tmux.session_name_for_pane(pane_id)
-        return ok { "session-event: no session for #{pane_id}, dropped" } unless name
+        name = workspace
+        unless name
+          session = @tmux.session_name_for_pane(pane_id)
+          return ok { "session-event: no session for #{pane_id}, dropped" } unless session
+          name = @workspace_for_session.call(session)
+        end
 
         record_in_ledger(payload, pane_id, name)
         announce_binding(payload, pane_id)
@@ -483,8 +497,22 @@ module Workspace
         end
       rescue SystemCallError, IOError, DeliveryTimeout => e
         @logger.debug { "session-event: could not deliver to #{path} (#{e.class}: #{e.message})" }
+        record_undeliverable(workspace, event, path, e)
       ensure
         socket&.close
+      end
+
+      # One line per event the daemon never got, so a hook that reaches no daemon
+      # is findable without --debug. Never raises: a hook must not fail over its own log.
+      def record_undeliverable(workspace, event, path, error)
+        return unless @delivery_log
+        FileUtils.mkdir_p(File.dirname(@delivery_log))
+        File.truncate(@delivery_log, 0) if File.size?(@delivery_log).to_i > DELIVERY_LOG_LIMIT
+        File.open(@delivery_log, "a") do |f|
+          f.puts "#{Time.now.utc.iso8601} undeliverable event=#{event["event"]} workspace=#{workspace} pane=#{event["pane_id"]} socket=#{path} (#{error.class}: #{error.message})"
+        end
+      rescue SystemCallError, IOError
+        nil
       end
 
       def now

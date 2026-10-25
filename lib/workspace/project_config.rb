@@ -150,6 +150,21 @@ module Workspace
         .sort
     end
 
+    # The workspace a tmux session belongs to. A worktree workspace's session is
+    # named `<project>-wt-<branch>` while the workspace, and so its agentd socket,
+    # is `<project>.worktree-<branch>`; this is the one map from one to the other,
+    # read from each config's session name. A session no config names, or one that
+    # already has a daemon socket under its own name, is its own workspace.
+    #
+    # @param session [String] a tmux session name
+    # @param tmux [Workspace::Tmux] reads each config's session name
+    # @return [String] the workspace name
+    def workspace_for_session(session, tmux:)
+      return session if File.socket?(@config.agent_socket_path(session))
+
+      available_projects.find { |name| tmux.session_name_for(name) == session } || session
+    end
+
     # The name a new config is written under: lowercase. A config already on disk
     # whose name differs only in case (found by comparing the real file names, as
     # the file system itself ignores case) decides it:
