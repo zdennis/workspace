@@ -603,10 +603,7 @@ module Workspace
     # @param path [String] worktree directory path
     # @return [String, nil] a ref name such as "origin/main", or nil when none exists
     def base_ref(path)
-      stdout, _, status = capture_git("-C", path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
-      head = stdout.scrub.strip
-      return head if status.success? && !head.empty? && ref_exists?(path, head)
-      %w[origin/main main origin/master master].find { |ref| ref_exists?(path, ref) }
+      origin_head_ref(path) || %w[origin/main main origin/master master].find { |ref| ref_exists?(path, ref) }
     end
 
     # @param path [String] worktree directory path
@@ -614,6 +611,47 @@ module Workspace
     # @return [Integer, nil] commits on HEAD that are not on +base+, or nil if git could not answer
     def commits_ahead_of(path, base)
       stdout, _, status = capture_git("-C", path, "rev-list", "--count", "#{base}..HEAD")
+      status.success? ? stdout.strip.to_i : nil
+    end
+
+    # Where a branch's commits stand against the default branch, from local refs only: the one
+    # merged rule. With an `origin` remote, merged means on `origin/<default>` (`origin/HEAD`, else
+    # `origin/main`, `origin/master`); an origin whose default branch was never fetched reads as
+    # not merged. Only with no remote does the local `main` or `master` count.
+    #
+    # @param path [String] a checkout of the repository
+    # @param branch [String] a local branch name
+    # @return [Hash, nil] `base` (nil when an origin has no fetched default branch), `ahead` (the
+    #   branch's commits the base lacks; nil then), `merged`; nil when the branch or a local base
+    #   does not exist or git could not answer
+    def branch_vs_base(path, branch)
+      return nil unless ref_exists?(path, "refs/heads/#{branch}")
+      remote = !remote_url(path).nil?
+      base = remote ? remote_default_ref(path) : %w[main master].find { |name| ref_exists?(path, "refs/heads/#{name}") }
+      return {"base" => nil, "ahead" => nil, "merged" => false} if base.nil? && remote
+      return nil unless base
+      stdout, _, status = capture_git("-C", path, "rev-list", "--count", "#{base}..refs/heads/#{branch}")
+      return nil unless status.success?
+      ahead = stdout.strip.to_i
+      {"base" => base, "ahead" => ahead, "merged" => ahead.zero?}
+    end
+
+    # @param path [String] a checkout of the repository
+    # @param branch [String] a local branch name
+    # @return [Boolean, nil] whether the branch's commits are on the default branch (see {#branch_vs_base}); nil when unknown
+    def merged_into_base?(path, branch)
+      branch_vs_base(path, branch)&.fetch("merged")
+    end
+
+    # Like {#commits_ahead_of_upstream} but for a named branch: it is qualified by +branch+, not
+    # tied to HEAD, because the goal's checkout may have another branch checked out.
+    # The upstream side keeps the bare name, since git does not accept `refs/heads/<branch>@{upstream}`.
+    #
+    # @param path [String] a checkout of the repository
+    # @param branch [String] a local branch name
+    # @return [Integer, nil] commits the branch has that its upstream lacks; nil with no upstream, a missing upstream ref or a missing branch
+    def commits_unpushed(path, branch)
+      stdout, _, status = capture_git("-C", path, "rev-list", "--count", "#{branch}@{upstream}..refs/heads/#{branch}")
       status.success? ? stdout.strip.to_i : nil
     end
 
@@ -1017,6 +1055,16 @@ module Workspace
       raise Workspace::Error, "git is not installed."
     rescue Timeout::Error
       raise Workspace::Error, "git #{args.first} did not finish within #{timeout} seconds."
+    end
+
+    def origin_head_ref(path)
+      stdout, _, status = capture_git("-C", path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+      head = stdout.scrub.strip
+      head if status.success? && !head.empty? && ref_exists?(path, head)
+    end
+
+    def remote_default_ref(path)
+      origin_head_ref(path) || %w[origin/main origin/master].find { |ref| ref_exists?(path, ref) }
     end
 
     def ref_exists?(path, ref)

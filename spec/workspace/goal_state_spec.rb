@@ -21,6 +21,82 @@ RSpec.describe Workspace::GoalState do
     expect(goal(member: member_row(plan: "done"), run: run).state).not_to eq("done")
   end
 
+  describe "delivery" do
+    let(:merged) { {"base" => "origin/main", "pushed" => true, "merged" => true, "ahead_of_base" => 0} }
+    let(:unmerged) { {"base" => "origin/main", "pushed" => false, "merged" => false, "ahead_of_base" => 4} }
+    let(:finished) { run.merge("state" => "completed") }
+
+    def judged(facts, **options)
+      described_class.new(name: "ws", member: member_row(plan: "done"), run: options[:run], turn: nil, pane: nil, plan_present: true, delivery: -> { facts })
+    end
+
+    it "does not call a completed run with unmerged commits done" do
+      result = judged(unmerged, run: finished)
+
+      expect(result).to have_attributes(state: "waiting", waiting_on: "person", not_yet: [{"code" => "not_pushed", "text" => "not pushed"}, {"code" => "not_merged", "text" => "not on main (4 commits ahead)", "ahead_of_base" => 4}])
+      expect(result.next_step).to eq("event" => "delivered", "action" => nil)
+    end
+
+    it "is done once merged, with nothing left" do
+      expect(judged(merged, run: finished)).to have_attributes(state: "done", waiting_on: "nothing", not_yet: [], done_means: [{"code" => "merged_into_base", "text" => "branch merged into main"}])
+    end
+
+    it "is not done when git cannot answer" do
+      expect(judged(nil)).to have_attributes(state: "waiting", waiting_on: "nothing", next_step: nil, not_yet: [{"code" => "delivery_unknown", "text" => "delivery unknown: git could not be read"}])
+    end
+
+    it "is not done with a completed run when git cannot answer" do
+      expect(judged(nil, run: finished)).to have_attributes(state: "waiting", delivered: nil, delivery_unknown?: true)
+    end
+
+    it "lists nothing missing for a merged branch, even unpushed or with its upstream gone" do
+      expect(judged(merged.merge("pushed" => false, "upstream_gone" => true)).not_yet).to eq([])
+    end
+
+    it "does not make delivery_unknown? true for a goal that is not finished" do
+      result = described_class.new(name: "ws", member: member_row(plan: "working"), run: nil, turn: nil, pane: nil, plan_present: true, delivery: -> {})
+
+      expect(result).to have_attributes(delivery_unknown?: false)
+    end
+
+    it "names an upstream that was deleted instead of an unpushed branch" do
+      gone = unmerged.merge("upstream_gone" => true)
+
+      expect(judged(gone).not_yet.map { |item| item["code"] }).to eq(%w[upstream_gone not_merged])
+    end
+
+    describe "precedence over a finished plan with unmerged delivery" do
+      def with(member: member_row(plan: "done"), run: nil, turn_state: nil, pane: nil)
+        described_class.new(name: "ws", member: member, run: run, turn: turn_state && {"state" => turn_state}, pane: pane, plan_present: true, delivery: -> { unmerged })
+      end
+
+      it "gives a waiting run reason's own event" do
+        reason = {"code" => "failed_check"}
+
+        expect(with(run: run(reason: reason).merge("state" => "completed"))).to have_attributes(state: "waiting")
+        expect(with(run: run(reason: reason).merge("state" => "completed")).next_step["event"]).to eq("check_passed")
+      end
+
+      it "gives a waiting plan's own event" do
+        result = with(member: member_row(plan: "waiting"))
+
+        expect(result.next_step["event"]).to eq("prompt_answered")
+      end
+
+      it "gives a waiting pane's own event" do
+        expect(with(turn_state: "waiting", pane: {"pane_id" => "%5"}).next_step["event"]).to eq("prompt_answered")
+      end
+
+      it "reads a working turn as working, not undelivered" do
+        expect(with(turn_state: "working")).to have_attributes(state: "working")
+      end
+    end
+
+    it "does not judge delivery when no source is given" do
+      expect(goal(member: member_row(plan: "done"))).to have_attributes(state: "done", not_yet: [])
+    end
+  end
+
   it "waits on a person at a gate, with the run's first action" do
     reason = {"code" => "waiting_you", "details" => {"kind" => "gate"}, "actions" => [{"action" => "workflow approve", "args" => ["r_1"], "needs" => []}]}
 

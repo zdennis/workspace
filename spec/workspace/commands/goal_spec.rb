@@ -35,6 +35,10 @@ RSpec.describe Workspace::Commands::Goal do
   let(:plan_path) { File.join(@dir, "IMPLEMENTATION_PLAN.md") }
   let(:plan) { instance_double(Workspace::Commands::Plan, path_for: plan_path) }
   let(:daemon_panes) { [] }
+  let(:delivery_facts) do
+    instance_double(Workspace::DeliveryFacts, read: {"base" => "origin/main", "branch" => "lab-1", "remote" => true, "upstream" => "origin/lab-1",
+                                                     "pushed" => true, "ahead_of_upstream" => 0, "merged" => true, "ahead_of_base" => 0})
+  end
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient, fetch: {"panes" => daemon_panes}) }
   let(:member) { member_row }
   let(:snapshot_calls) { [] }
@@ -49,7 +53,7 @@ RSpec.describe Workspace::Commands::Goal do
 
   subject(:command) do
     described_class.new(snapshot: snapshot, catalog: catalog, task_store: task_store, workflow_status: workflow_status,
-      start_ref: start_ref, plan: plan, snapshot_client: snapshot_client, output: output)
+      start_ref: start_ref, plan: plan, snapshot_client: snapshot_client, delivery: delivery_facts, output: output)
   end
 
   def pane(id, state, kind: "claude", index: 0, **extra)
@@ -269,7 +273,7 @@ RSpec.describe Workspace::Commands::Goal do
       command.show("lab-wc-lab-1", json: true)
 
       expect(JSON.parse(output.string).keys).to eq(%w[schema_version ok goal warnings])
-      expect(goal.keys).to eq(%w[workspace project title ref branch task_id state waiting_on next stage step runs turn tool])
+      expect(goal.keys).to eq(%w[workspace project title ref branch task_id state waiting_on next stage step runs turn done_means not_yet delivery tool])
     end
 
     it "warns plan_unavailable and keeps the goal when the plan can't be located" do
@@ -341,6 +345,225 @@ RSpec.describe Workspace::Commands::Goal do
       end
     end
 
+    context "with real git repositories" do
+      let(:member) { member_row(plan: {"state" => "done"}, daemon_up: false, running: false, branch: "feat").merge("path" => File.join(@dir, "clone")) }
+      let(:delivery_facts) { Workspace::DeliveryFacts.new(git: Workspace::Git.new(output: StringIO.new)) }
+
+      def sh(dir, *args)
+        out, status = Open3.capture2e("git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", *args)
+        raise out unless status.success?
+        out
+      end
+
+      def commit(dir, name)
+        File.write(File.join(dir, name), name)
+        sh(dir, "add", name)
+        sh(dir, "commit", "-qm", name)
+      end
+
+      def clone_with_origin
+        origin = File.join(@dir, "origin.git")
+        Open3.capture2e("git", "init", "-q", "--bare", "-b", "main", origin)
+        Open3.capture2e("git", "clone", "-q", origin, File.join(@dir, "clone"))
+        clone = File.join(@dir, "clone")
+        sh(clone, "checkout", "-q", "-b", "main")
+        commit(clone, "base")
+        sh(clone, "push", "-q", "-u", "origin", "main")
+        sh(clone, "checkout", "-q", "-b", "feat")
+        commit(clone, "work")
+        clone
+      end
+
+      before { write_plan("## Tasks", "- [x] T1 One") }
+
+      def codes = goal["not_yet"].map { |item| item["code"] }
+
+      it "reads a stale origin as not merged until it is fetched" do
+        clone = clone_with_origin
+        sh(clone, "push", "-q", "-u", "origin", "feat")
+        sh(File.join(@dir, "origin.git"), "fetch", "-q", clone, "feat:main")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "waiting")
+        expect(goal["delivery"]).to include("merged" => false, "base" => "origin/main")
+
+        sh(clone, "fetch", "-q", "origin")
+        output.truncate(0)
+        output.rewind
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "done")
+      end
+
+      it "reads a remote whose default branch was never fetched as not merged, not falling back to local main" do
+        clone = clone_with_origin
+        sh(clone, "update-ref", "-d", "refs/remotes/origin/main")
+        sh(clone, "update-ref", "-d", "refs/remotes/origin/HEAD") if system("git", "-C", clone, "rev-parse", "-q", "--verify", "refs/remotes/origin/HEAD", out: File::NULL)
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal["delivery"]).to include("merged" => false, "base" => nil, "ahead_of_base" => nil)
+        expect(codes).to include("not_merged")
+      end
+
+      it "reads a merged branch whose remote copy was deleted as done, with nothing missing" do
+        clone = clone_with_origin
+        sh(clone, "push", "-q", "-u", "origin", "feat")
+        sh(clone, "push", "-q", "origin", "feat:main")
+        sh(clone, "push", "-q", "origin", "--delete", "feat")
+        sh(clone, "fetch", "-q", "origin")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "done", "not_yet" => [])
+        expect(goal["delivery"]).to include("upstream_gone" => true, "merged" => true)
+      end
+
+      it "warns delivery_unavailable only for a goal that is otherwise finished" do
+        FileUtils.mkdir_p(File.join(@dir, "clone"))
+        command.show("lab-wc-lab-1", json: true)
+        expect(JSON.parse(output.string)["warnings"].map { |w| w["code"] }).to include("delivery_unavailable")
+
+        output.truncate(0)
+        output.rewind
+        allow(snapshot).to receive(:document).and_return(document([member_row(plan: {"state" => "working"}, branch: "feat").merge("path" => File.join(@dir, "clone"))]))
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(JSON.parse(output.string)["warnings"].map { |w| w["code"] }).not_to include("delivery_unavailable")
+        expect(goal["not_yet"].map { |item| item["code"] }).to eq(%w[delivery_unknown])
+      end
+
+      it "reads a master-only repository with no remote against its local master" do
+        clone = File.join(@dir, "clone")
+        Open3.capture2e("git", "init", "-q", "-b", "master", clone)
+        commit(clone, "base")
+        sh(clone, "checkout", "-q", "-b", "feat")
+        commit(clone, "work")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal["delivery"]).to include("base" => "master", "merged" => false, "remote" => false)
+      end
+
+      it "says the upstream was deleted instead of not pushed" do
+        clone = clone_with_origin
+        sh(clone, "push", "-q", "-u", "origin", "feat")
+        sh(clone, "push", "-q", "origin", "--delete", "feat")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(codes).to eq(%w[upstream_gone not_merged])
+        expect(goal["delivery"]).to include("upstream_gone" => true, "pushed" => false)
+      end
+
+      it "reads a done plan with no commits ahead as done" do
+        clone = clone_with_origin
+        sh(clone, "checkout", "-q", "main")
+        sh(clone, "checkout", "-q", "-B", "feat")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "done")
+      end
+
+      it "is not done when the work is completed but never pushed" do
+        clone_with_origin
+        runs << run_row(state: "completed", step_state: "passed")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "waiting", "waiting_on" => "person", "done_means" => [{"code" => "merged_into_base", "text" => "branch merged into main"}])
+        expect(goal["next"]).to eq("event" => "delivered", "action" => nil)
+        expect(goal["not_yet"]).to eq([{"code" => "not_pushed", "text" => "not pushed"}, {"code" => "not_merged", "text" => "not on main (1 commit ahead)", "ahead_of_base" => 1}])
+        expect(goal["delivery"]).to include("pushed" => false, "merged" => false, "ahead_of_base" => 1, "base" => "origin/main", "remote" => true)
+      end
+
+      it "is not done when the branch is pushed but not merged" do
+        clone = clone_with_origin
+        sh(clone, "push", "-q", "-u", "origin", "feat")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "waiting")
+        expect(codes).to eq(%w[not_merged])
+        expect(goal["delivery"]).to include("pushed" => true, "upstream" => "origin/feat", "merged" => false)
+      end
+
+      it "is not done when a push is only partly through" do
+        clone = clone_with_origin
+        sh(clone, "push", "-q", "-u", "origin", "feat")
+        commit(clone, "more")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(codes).to eq(%w[not_pushed not_merged])
+        expect(goal["not_yet"].last).to include("ahead_of_base" => 2)
+        expect(goal["delivery"]).to include("ahead_of_upstream" => 1)
+      end
+
+      it "is done once the commits are on origin's default branch" do
+        clone = clone_with_origin
+        sh(clone, "push", "-q", "-u", "origin", "feat")
+        sh(clone, "push", "-q", "origin", "feat:main")
+        sh(clone, "fetch", "-q", "origin")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "done", "waiting_on" => "nothing", "not_yet" => [])
+        expect(goal["delivery"]).to include("merged" => true, "pushed" => true)
+      end
+
+      it "is done with no remote when the commits are on the local default branch" do
+        clone = File.join(@dir, "clone")
+        Open3.capture2e("git", "init", "-q", "-b", "main", clone)
+        commit(clone, "base")
+        sh(clone, "checkout", "-q", "-b", "feat")
+        commit(clone, "work")
+
+        command.show("lab-wc-lab-1", json: true)
+        expect(goal).to include("state" => "waiting")
+        expect(codes).to eq(%w[not_merged])
+        expect(goal["delivery"]).to include("remote" => false, "pushed" => nil)
+
+        sh(clone, "checkout", "-q", "main")
+        sh(clone, "merge", "-q", "--ff-only", "feat")
+        sh(clone, "checkout", "-q", "feat")
+        output.truncate(0)
+        output.rewind
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "done", "not_yet" => [])
+      end
+
+      it "judges a goal with no run the same way" do
+        clone_with_origin
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal["runs"]).to eq([])
+        expect(goal).to include("state" => "waiting")
+      end
+
+      it "is not done, and says why, when git cannot be read" do
+        FileUtils.mkdir_p(File.join(@dir, "clone"))
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal).to include("state" => "waiting", "delivery" => nil, "next" => nil, "waiting_on" => "nothing")
+        expect(codes).to eq(%w[delivery_unknown])
+        expect(JSON.parse(output.string)["warnings"]).to include(a_hash_including("code" => "delivery_unavailable", "workspace" => "lab-wc-lab-1"))
+      end
+
+      it "prints done means and not yet in text" do
+        clone_with_origin
+
+        command.show("lab-wc-lab-1")
+
+        expect(output.string).to include("Done means: branch merged into main", "Not yet:    not pushed; not on main (1 commit ahead)")
+      end
+    end
+
     describe "errors" do
       it "raises unknown_goal with what was tried" do
         expect { command.show("nope", json: true) }.to raise_error(Workspace::Error) { |error|
@@ -374,6 +597,16 @@ RSpec.describe Workspace::Commands::Goal do
   end
 
   describe "#list" do
+    it "gives each row delivered and its not_yet codes" do
+      write_plan("## Tasks", "- [x] T1 One")
+      allow(delivery_facts).to receive(:read).and_return(nil)
+
+      command.list(all: true, json: true)
+
+      row = JSON.parse(output.string)["goals"].first
+      expect(row).to include("delivered" => nil, "not_yet_codes" => ["delivery_unknown"])
+    end
+
     let(:projects) { [project_struct.new("lab-wc", [member_struct.new("lab-wc-lab-1"), member_struct.new("lab-wc-lab-2")])] }
     let(:snapshot) do
       instance_double(Workspace::Commands::Snapshot).tap do |double|

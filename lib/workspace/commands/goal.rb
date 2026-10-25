@@ -10,9 +10,10 @@ module Workspace
     # It only combines reads that exist: {Workspace::Commands::Snapshot#document}'s member
     # row (plan, spine or its inferred stage, panes, task, git, questions),
     # {Workspace::WorkflowStatus#runs}, and the daemon's panes for the tool call;
-    # {Workspace::GoalState} holds the state rules. It writes nothing and makes no `gh`
-    # call. A level with nothing to show is null; a source that can't answer is null
-    # and a warning, never an error.
+    # {Workspace::GoalState} holds the state rules; {Workspace::DeliveryFacts} reads the branch's
+    # push and merge state from local git. It writes nothing and makes no `gh` or network
+    # call. A level with nothing to show is null; a source that can't answer is null and a
+    # warning, never an error.
     class Goal
       # Bumped whenever the `--json` payload's shape changes in a backward-incompatible way.
       JSON_SCHEMA_VERSION = 1
@@ -30,8 +31,9 @@ module Workspace
       # @param start_ref [Workspace::StartRef] reads a ticket key, URL or branch
       # @param plan [Workspace::Commands::Plan] says where a workspace's plan file is
       # @param snapshot_client [Workspace::AgentSnapshotClient] reads the daemon's panes for the tool call
+      # @param delivery [Workspace::DeliveryFacts] reads whether the branch is pushed and merged
       # @param output [IO]
-      def initialize(snapshot:, catalog:, task_store:, workflow_status:, start_ref:, plan:, snapshot_client:, output: $stdout)
+      def initialize(snapshot:, catalog:, task_store:, workflow_status:, start_ref:, plan:, snapshot_client:, delivery:, output: $stdout)
         @snapshot = snapshot
         @catalog = catalog
         @task_store = task_store
@@ -39,6 +41,7 @@ module Workspace
         @start_ref = start_ref
         @plan = plan
         @snapshot_client = snapshot_client
+        @delivery = delivery
         @output = output
       end
 
@@ -177,7 +180,8 @@ module Workspace
         pane = pane_for(run, stage, plan, member["panes"])
         turn = turn_of(pane)
         warn_turn_gone(name, member, run, turn, warnings)
-        status = GoalState.new(name: name, member: member, run: run, turn: turn, pane: pane, plan_present: !(plan.nil? || plan == :missing))
+        status = GoalState.new(name: name, member: member, run: run, turn: turn, pane: pane, plan_present: !(plan.nil? || plan == :missing),
+          delivery: -> { @delivery.read(member["path"], task_branch(member)) })
         warn_stage_disagrees(name, status, stage, warnings)
         task = member["task"] || {}
         goal = {
@@ -187,8 +191,24 @@ module Workspace
           "runs" => runs.map { |each| {"id" => each["id"], "workflow" => each["workflow"], "step" => each.dig("current", "step"), "state" => each["state"]} },
           "turn" => turn
         }
+        if status.delivery_unknown?
+          warnings << {"code" => "delivery_unavailable", "workspace" => name,
+                       "message" => "'#{name}' has no readable branch or default branch in git, so whether its work landed is unknown."}
+        end
+        if detail
+          goal["done_means"] = status.done_means
+          goal["not_yet"] = status.not_yet
+          goal["delivery"] = status.delivery
+        else
+          goal["delivered"] = status.delivered
+          goal["not_yet_codes"] = status.not_yet.map { |item| item["code"] }
+        end
         goal["tool"] = tool_of(name, pane) if detail
         goal
+      end
+
+      def task_branch(member)
+        (member["task"] || {})["branch"] || member.dig("git", "branch")
       end
 
       def read_plan(name, warnings)
@@ -283,6 +303,8 @@ module Workspace
         @output.puts "Turn:   #{turn_line(goal["turn"])}"
         @output.puts "Tool:   #{tool_line(goal["tool"])}"
         @output.puts "Next:   #{next_line(goal["next"])}" if goal["next"]
+        @output.puts "Done means: #{goal["done_means"].map { |item| item["text"] }.join("; ")}"
+        @output.puts "Not yet:    #{goal["not_yet"].map { |item| item["text"] }.join("; ")}" unless goal["not_yet"].empty?
         out["warnings"].each { |warning| @output.puts "Warning: #{warning["message"]}" }
       end
 

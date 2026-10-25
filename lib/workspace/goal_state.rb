@@ -12,7 +12,7 @@ module Workspace
 
     # The values `next.event` can take.
     EVENTS = %w[gate_approved answered check_passed turn_ended ask_answered prompt_answered lock_released
-      workflow_resumed agent_restarted launched stage_started task_started].freeze
+      workflow_resumed agent_restarted launched stage_started task_started delivered].freeze
 
     # @return [String] `done`, `waiting`, `waiting_lock`, `working`, `stuck`, `stopped`, `idle` or `none`
     attr_reader :state
@@ -29,17 +29,59 @@ module Workspace
     # @param turn [Hash, nil] the goal's `turn`
     # @param pane [Hash, nil] the pane the turn is read from
     # @param plan_present [Boolean] whether the workspace has a readable plan file
-    def initialize(name:, member:, run:, turn:, pane:, plan_present:)
+    # @param delivery [#call, nil] gives {Workspace::DeliveryFacts#read}'s Hash (nil when git cannot
+    #   answer); with none given, delivery is not judged and a finished plan or spine is done
+    def initialize(name:, member:, run:, turn:, pane:, plan_present:, delivery: nil)
       @name = name
       @member = member
       @run = run
       @turn = turn
       @pane = pane
       @plan_present = plan_present
+      @delivery_source = delivery
       @reason = run&.dig("current", "reason")
       @plan_state = member.dig("plan", "state")
       @state = derive
       @waiting_on, @next_step = expect
+    end
+
+    # @return [Hash, nil] the branch's delivery facts, read once; nil when not judged or unreadable
+    def delivery
+      return @delivery if defined?(@delivery)
+      @delivery = @delivery_source&.call
+    end
+
+    # @return [Array<Hash>] what done means for this goal until a `done:` block exists, each `{code, text}`
+    def done_means
+      [{"code" => "merged_into_base", "text" => "branch merged into #{base_name}"}]
+    end
+
+    # @return [Array<Hash>] what is still missing, each `{code, text}` (`not_merged` adds `ahead_of_base`);
+    #   empty when merged (whatever the push state) or not judged. Codes: `not_pushed`, `not_merged`, `upstream_gone`, `delivery_unknown`
+    def not_yet
+      return [] unless @delivery_source
+      facts = delivery
+      return [{"code" => "delivery_unknown", "text" => "delivery unknown: git could not be read"}] unless facts
+      return [] if facts["merged"]
+      missing = []
+      if facts["upstream_gone"]
+        missing << {"code" => "upstream_gone", "text" => "upstream branch deleted (squash or rebase merged?)"}
+      elsif facts["pushed"] == false
+        missing << {"code" => "not_pushed", "text" => "not pushed"}
+      end
+      missing << not_merged(facts)
+      missing
+    end
+
+    # @return [Boolean, nil] whether the branch is on the default branch; nil when delivery is not judged or unknown
+    def delivered
+      delivery&.dig("merged")
+    end
+
+    # @return [Boolean] whether delivery was judged, git could not answer and the plan or spine says the
+    #   goal is otherwise finished (the only case where the missing answer decides the state)
+    def delivery_unknown?
+      !@delivery_source.nil? && delivery.nil? && complete?(@member["spine"])
     end
 
     private
@@ -52,6 +94,10 @@ module Workspace
       return "waiting_lock" if @reason && @reason["code"] == "waiting_lock"
       return "working" if @turn&.dig("state") == "working" || @plan_state == "working"
       return "stuck" if flags.intersect?(%w[idle timed_out]) || @reason&.dig("code") == "pane_gone" || @plan_state == "stalled" || run_without_daemon?
+      if undelivered?(spine)
+        @delivery_wait = true
+        return "waiting"
+      end
       return "stopped" if @member["running"] == false
       return "idle" if structure?(spine)
       "none"
@@ -63,12 +109,35 @@ module Workspace
       @reason["code"] == "turn_ended_incomplete" && @turn&.dig("state") == "working"
     end
 
+    def not_merged(facts)
+      ahead = facts["ahead_of_base"]
+      text = ahead ? "not on #{base_name} (#{ahead} commit#{"s" unless ahead == 1} ahead)" : "not on #{base_name} (no origin default branch fetched)"
+      {"code" => "not_merged", "text" => text, "ahead_of_base" => ahead}
+    end
+
+    def base_name
+      delivery&.dig("base")&.delete_prefix("origin/") || (delivery&.dig("remote") ? "origin's default branch" : "the default branch")
+    end
+
+    # The plan or spine says every piece is done but the work has not landed.
+    def undelivered?(spine)
+      complete?(spine) && !delivered?
+    end
+
+    def delivered?
+      @delivery_source.nil? || !!delivery&.dig("merged")
+    end
+
     def done?(spine)
+      complete?(spine) && delivered?
+    end
+
+    def complete?(spine)
       if spine && spine["exists"] && spine["stages"].to_i.positive?
         counts = spine["counts"] || {}
         return true if counts["completed"].to_i + counts["skipped"].to_i == spine["stages"]
       end
-      @plan_state == "done" && @run.nil?
+      @plan_state == "done" && (@run.nil? || @run["state"] == "completed")
     end
 
     def run_without_daemon?
@@ -82,7 +151,7 @@ module Workspace
     def expect
       case @state
       when "done", "none" then ["nothing", nil]
-      when "waiting" then waiting_next
+      when "waiting" then @delivery_wait ? delivery_next : waiting_next
       when "waiting_lock"
         ["lock", {"event" => "lock_released", "resource" => @reason.dig("details", "resource"), "holder" => @reason.dig("details", "holder"),
                   "action" => Array(@reason["actions"]).first}]
@@ -92,6 +161,11 @@ module Workspace
       when "stopped" then ["person", {"event" => "launched", "action" => action("launch", @name)}]
       else ["person", {"event" => (@run || !@plan_present) ? "stage_started" : "task_started", "action" => nil}]
       end
+    end
+
+    # With the delivery facts unknown there is nothing a person can do about delivering.
+    def delivery_next
+      delivery ? ["person", {"event" => "delivered", "action" => nil}] : ["nothing", nil]
     end
 
     def waiting_next

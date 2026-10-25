@@ -595,6 +595,83 @@ RSpec.describe Workspace::Git do
         end
       end
 
+      describe "#branch_vs_base and #merged_into_base?" do
+        before do
+          run!("git", "checkout", "-b", "feature", chdir: @repo_dir)
+          commit_file("a.txt", "one\n")
+        end
+
+        it "counts against origin/main when an origin exists" do
+          expect(git.branch_vs_base(@repo_dir, "feature")).to eq("base" => "origin/main", "ahead" => 1, "merged" => false)
+          expect(git.merged_into_base?(@repo_dir, "feature")).to be(false)
+          expect(git.merged_into_base?(@repo_dir, "main")).to be(true)
+        end
+
+        it "is merged-false with no base when an origin exists but its default branch was never fetched" do
+          run!("git", "update-ref", "-d", "refs/remotes/origin/main", chdir: @repo_dir)
+
+          expect(git.branch_vs_base(@repo_dir, "feature")).to eq("base" => nil, "ahead" => nil, "merged" => false)
+        end
+
+        it "lets origin/HEAD win over origin/main" do
+          run!("git", "branch", "trunk", "feature", chdir: @repo_dir)
+          run!("git", "push", "origin", "trunk", chdir: @repo_dir)
+          run!("git", "remote", "set-head", "origin", "trunk", chdir: @repo_dir)
+
+          expect(git.branch_vs_base(@repo_dir, "feature")).to eq("base" => "origin/trunk", "ahead" => 0, "merged" => true)
+        end
+
+        it "falls back to origin/master" do
+          run!("git", "update-ref", "refs/remotes/origin/master", "refs/remotes/origin/main", chdir: @repo_dir)
+          run!("git", "update-ref", "-d", "refs/remotes/origin/main", chdir: @repo_dir)
+
+          expect(git.branch_vs_base(@repo_dir, "feature")).to include("base" => "origin/master", "ahead" => 1)
+        end
+
+        it "uses the local master with no remote" do
+          run!("git", "remote", "remove", "origin", chdir: @repo_dir)
+          run!("git", "branch", "-m", "main", "master", chdir: @repo_dir)
+
+          expect(git.branch_vs_base(@repo_dir, "feature")).to eq("base" => "master", "ahead" => 1, "merged" => false)
+        end
+
+        it "is nil with no remote and no default branch, and for a missing branch" do
+          run!("git", "remote", "remove", "origin", chdir: @repo_dir)
+          run!("git", "branch", "-m", "main", "trunk", chdir: @repo_dir)
+
+          expect(git.branch_vs_base(@repo_dir, "feature")).to be_nil
+          expect(git.branch_vs_base(@repo_dir, "nope")).to be_nil
+          expect(git.merged_into_base?(@repo_dir, "nope")).to be_nil
+        end
+
+        it "is nil when rev-list fails" do
+          allow(git).to receive(:capture_git).and_call_original
+          allow(git).to receive(:capture_git).with("-C", @repo_dir, "rev-list", "--count", anything).and_return(["", "boom", instance_double(Process::Status, success?: false)])
+
+          expect(git.branch_vs_base(@repo_dir, "feature")).to be_nil
+        end
+      end
+
+      describe "#commits_unpushed" do
+        it "is nil for a branch with no upstream" do
+          run!("git", "checkout", "-b", "local-only", chdir: @repo_dir)
+
+          expect(git.commits_unpushed(@repo_dir, "local-only")).to be_nil
+        end
+
+        it "is nil for a branch that does not exist" do
+          expect(git.commits_unpushed(@repo_dir, "nope")).to be_nil
+        end
+
+        it "counts the named branch's commits its upstream lacks, whatever HEAD is" do
+          run!("git", "commit", "--allow-empty", "-m", "ahead", chdir: @repo_dir)
+          run!("git", "checkout", "-b", "other", chdir: @repo_dir)
+
+          expect(git.commits_unpushed(@repo_dir, "main")).to eq(1)
+          expect(git.commits_unpushed(@repo_dir, "other")).to be_nil
+        end
+      end
+
       describe "#commits_ahead_of, #commits_since and #diff_stat" do
         before do
           run!("git", "checkout", "-b", "feature", chdir: @repo_dir)
