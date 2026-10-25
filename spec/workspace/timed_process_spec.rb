@@ -35,4 +35,11 @@ RSpec.describe Workspace::TimedProcess do
   it "raises Errno::ENOENT for a command that is not installed" do
     expect { described_class.run(["workspace-no-such-tool"], chdir: Dir.pwd, timeout: 1) }.to raise_error(Errno::ENOENT)
   end
+
+  it "passes env to the child over the no-prompt variables" do
+    out, _, success = described_class.run(["sh", "-c", "echo $LC_ALL $GIT_TERMINAL_PROMPT"], chdir: Dir.pwd, timeout: 5, env: {"LC_ALL" => "C"})
+
+    expect(success).to be true
+    expect(out.strip).to eq("C 0")
+  end
 end

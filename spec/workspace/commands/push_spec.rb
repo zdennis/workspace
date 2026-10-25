@@ -120,24 +120,50 @@ RSpec.describe Workspace::Commands::Push do
     expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details["reason"]]).to eq(["push_rejected", "upstream_has_other_commits"]) }
   end
 
-  it "reports push_rejected when origin refuses the push" do
+  it "reports push_failed (not protected_branch) when a pre-receive hook only declines the push" do
     hook = File.join(remote, "hooks", "pre-receive")
     File.write(hook, "#!/bin/sh\necho 'no pushes today' >&2\nexit 1\n")
     File.chmod(0o755, hook)
 
     expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e|
-      expect(e.code).to eq("push_rejected")
-      expect(e.details["reason"]).to eq("origin_refused")
-      expect(e.details["detail"]).to be_a(String)
+      expect(e.code).to eq("push_failed")
+      expect(e.details).to include("permanent" => true)
+      expect(e.details["stderr"]).to include("no pushes today")
+      expect(e.retry).to be_nil
     }
   end
 
-  it "raises an uncoded error when the push fails for another reason" do
+  it "reports push_rejected when the remote has the branch at another commit and there is no upstream" do
+    base = rev("HEAD", dir: wt)
+    commit_file("theirs.txt", "theirs\n", "theirs", dir: wt)
+    sh("push", "-q", "origin", "HEAD:refs/heads/feature/x", dir: wt)
+    sh("reset", "-q", "--hard", base, dir: wt)
+    commit_file("mine.txt", "mine\n", "mine", dir: wt)
+    theirs = remote_tip
+
+    expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+      expect(e.code).to eq("push_rejected")
+      expect(e.details).to include("reason" => "origin_refused", "permanent" => true)
+    }
+    expect(remote_tip).to eq(theirs)
+  end
+
+  it "reports no_remote when the remote is not a repository" do
     sh("remote", "set-url", "origin", File.join(@dir, "nowhere.git"))
 
     expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e|
-      expect(e.code).to eq("error")
+      expect(e.code).to eq("no_remote")
       expect(e.message).to start_with("Could not push 'feature/x'")
+    }
+  end
+
+  it "reports push_network with a retry hint when the push cannot reach the host" do
+    allow(git).to receive(:push).and_return([false, "fatal: unable to access 'https://x.test/a.git/': Could not resolve host: x.test\n"])
+
+    expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+      expect(e.code).to eq("push_network")
+      expect(e.details).to include("permanent" => false)
+      expect(e.retry).to eq("flags" => [], "destructive" => false)
     }
   end
 
@@ -159,7 +185,7 @@ RSpec.describe Workspace::Commands::Push do
   end
 
   it "says git is not installed instead of raising ENOENT" do
-    git_missing = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: ->(argv, chdir:, timeout:) { raise Errno::ENOENT })
+    git_missing = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: ->(argv, chdir:, timeout:, env: {}) { raise Errno::ENOENT })
     cmd = described_class.new(git: git_missing, checkout: checkout, output: output)
 
     expect { cmd.call(working_dir: wt) }.to raise_error(Workspace::Error, "git is not installed.")

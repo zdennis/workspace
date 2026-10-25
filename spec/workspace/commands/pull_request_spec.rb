@@ -21,9 +21,9 @@ RSpec.describe Workspace::Commands::PullRequest do
   let(:calls) { [] }
   let(:gh_reply) { ["https://github.com/o/r/pull/41\n", "", true] }
   let(:runner) do
-    lambda do |argv, chdir:, timeout:|
+    lambda do |argv, chdir:, timeout:, env: {}|
       calls << {argv: argv, chdir: chdir, timeout: timeout}
-      (argv.first == "git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout) : gh_reply
+      argv.include?("git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout, env: env) : gh_reply
     end
   end
   subject(:command) do
@@ -178,7 +178,7 @@ RSpec.describe Workspace::Commands::PullRequest do
     it "names the push error when the push fails" do
       sh("remote", "set-url", "origin", File.join(@dir, "missing.git"))
 
-      expect { command.create(working_dir: repo) }.to raise_error(Workspace::Error, /Could not push 'feature\/x'/)
+      expect { command.create(working_dir: repo) }.to raise_error(Workspace::Error, /Could not push 'feature\/x'/) { |e| expect(e.code).to eq("no_remote") }
       expect(gh_calls).to be_empty
     end
 
@@ -194,9 +194,9 @@ RSpec.describe Workspace::Commands::PullRequest do
 
     it "refuses with gh_unavailable (missing) when gh disappears before the create" do
       cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status,
-        runner: ->(argv, chdir:, timeout:) {
+        runner: ->(argv, chdir:, timeout:, env: {}) {
           raise Errno::ENOENT if argv.first == "gh"
-          Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout)
+          Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout, env: env)
         }, output: output)
 
       expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error) { |e|
@@ -208,7 +208,7 @@ RSpec.describe Workspace::Commands::PullRequest do
     it "refuses with gh_unavailable (not_logged_in) when gh says it has no login" do
       auth = "To get started with GitHub CLI, please run:  gh auth login\n"
       cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status,
-        runner: ->(argv, chdir:, timeout:) { (argv.first == "git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout) : ["", auth, false] }, output: output)
+        runner: ->(argv, chdir:, timeout:, env: {}) { argv.include?("git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout, env: env) : ["", auth, false] }, output: output)
 
       expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("gh_unavailable")
@@ -219,31 +219,31 @@ RSpec.describe Workspace::Commands::PullRequest do
 
     it "raises gh's own message when the create fails for another reason" do
       cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status,
-        runner: ->(argv, chdir:, timeout:) { (argv.first == "git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout) : ["", "base branch not found\n", false] }, output: output)
+        runner: ->(argv, chdir:, timeout:, env: {}) { argv.include?("git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout, env: env) : ["", "base branch not found\n", false] }, output: output)
 
       expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error, /Could not open a PR for 'api': base branch not found/)
     end
 
     it "raises when gh does not answer in time" do
       cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status,
-        runner: ->(argv, chdir:, timeout:) {
+        runner: ->(argv, chdir:, timeout:, env: {}) {
           raise Timeout::Error if argv.first == "gh"
-          Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout)
+          Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout, env: env)
         }, output: output)
 
       expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error, /did not answer within #{described_class::CREATE_TIMEOUT} seconds/o)
     end
 
     it "raises when the push does not finish in time" do
-      timing_out = ->(argv, chdir:, timeout:) { raise Timeout::Error }
+      timing_out = ->(argv, chdir:, timeout:, env: {}) { raise Timeout::Error }
       cmd = described_class.new(git: Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: timing_out),
         project_config: project_config, project_detector: project_detector, status: status, runner: timing_out, output: output)
 
-      expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error, /git push did not finish within 120 seconds/)
+      expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error, /git push of .feature\/x. did not finish within 120 seconds/)
     end
 
     it "says git is not installed when the push cannot start it" do
-      missing = ->(argv, chdir:, timeout:) { raise Errno::ENOENT }
+      missing = ->(argv, chdir:, timeout:, env: {}) { raise Errno::ENOENT }
       cmd = described_class.new(git: Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: missing),
         project_config: project_config, project_detector: project_detector, status: status, runner: missing, output: output)
 
@@ -252,7 +252,7 @@ RSpec.describe Workspace::Commands::PullRequest do
 
     it "says the branch was pushed when the create fails afterwards, keeping the error's code" do
       auth = "To get started with GitHub CLI, please run:  gh auth login\n"
-      failing = ->(argv, chdir:, timeout:) { (argv.first == "git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout) : ["", auth, false] }
+      failing = ->(argv, chdir:, timeout:, env: {}) { argv.include?("git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout, env: env) : ["", auth, false] }
       cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status, runner: failing, output: output)
 
       expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error) { |e|
@@ -263,7 +263,7 @@ RSpec.describe Workspace::Commands::PullRequest do
 
     it "does not claim a push when the failure comes before one" do
       cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status,
-        runner: ->(argv, chdir:, timeout:) { raise Workspace::Error, "boom" }, output: output)
+        runner: ->(argv, chdir:, timeout:, env: {}) { raise Workspace::Error, "boom" }, output: output)
       sh("push", "-q", "-u", "origin", "feature/x")
 
       expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error) { |e|

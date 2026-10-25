@@ -72,7 +72,17 @@ These commands take `--json` and print one action document: `add`, `launch`, `st
 - `error` is the message a person would read.
 - `code` is one of the codes below. A code never changes meaning; renaming or repurposing one is a `schema_version` bump.
 - `details` is machine data, present only when the command has some.
-- `retry` is present only when a flag turns the refusal into a forced run: `{"flags":["--force"],"destructive":true}`.
+- `retry` is present only when a flag turns the refusal into a forced run: `{"flags":["--force"],"destructive":true}`. A temporary failure (`push_network`) gives `{"flags":[],"destructive":false}`: run the same command again. No `retry` means a plain retry is not safe or will not help. Every `push` and `pr create` push error also has `details.permanent` (`true`, or `false` for `push_network` and `push_timeout`); `push_failed` is `permanent: true` because retrying without knowing why is the riskier choice. `push_timeout` has `details.state_unknown: true` and no `retry`: origin may have taken the push, so check with `git ls-remote origin BRANCH` first. "Every push error" means every coded one: the uncoded errors (`git is not installed`, a detached HEAD) have no `permanent`.
+
+To decide after a push failure, read these in order:
+
+| You see | Do |
+|---|---|
+| `retry` present | Run the same command again. |
+| `details.permanent: true` | Stop; retrying will not help. |
+| `details.state_unknown: true` | Check the remote (`git ls-remote origin BRANCH`) first, then decide. |
+
+Do not treat `permanent: false` alone as retryable: `push_timeout` is `permanent: false` and has no `retry`.
 
 The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitted`, 75 for `clear_unconfirmed`).
 
@@ -165,7 +175,13 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `no_upstream` | `rebase --onto upstream`: the branch has no upstream configured. `details.branch`. |
 | `upstream_gone` | `rebase --onto upstream`: the branch's upstream no longer exists on the remote. `details.branch`, `details.upstream`. |
 | `fetch_failed` | `rebase --onto update\|remote\|upstream` or `push`: `git fetch origin` failed. `details.remote`, `details.detail`. |
-| `push_rejected` | `push`: origin refused the push, or the upstream has commits the branch never had so the push was not forced. `details.branch`, `details.upstream`, `details.detail`, `details.reason`: `origin_refused` (origin said no), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
+| `push_rejected` | `push`: the remote has commits the branch lacks (non-fast-forward, fetch first, stale info), or the upstream has commits the branch never had so the push was not forced. Permanent. A hook or branch protection is `protected_branch` (or `push_failed`), not this. `details.branch`, `details.upstream`, `details.detail`, `details.permanent`, `details.reason`: `origin_refused` (the remote said non-fast-forward), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
+| `no_remote` | `push` or `pr create`: git has no remote or push destination, or the remote repository was not found (`Repository not found`, a 404; a 404 may also mean you have no access, and either way it is permanent). `details.branch`, `details.detail`, `details.permanent` (`true`). |
+| `push_auth_failed` | `push` or `pr create`: the remote refused the credentials, the host key, a proxy login or the permission (401, 403, 407, `Permission denied (publickey)`, `Host key verification failed`). Permanent. `details.branch`, `details.detail`, `details.permanent` (`true`). |
+| `protected_branch` | `push` or `pr create`: branch protection or a repository rule (`GH006`, `GH013`, "protected branch") refused the push. A hook that only declined is `push_failed`. Permanent. `details.branch`, `details.detail`, `details.permanent` (`true`). |
+| `push_network` | `push` or `pr create`: git could not resolve the host, connect, or keep the connection, or the server answered 408, 429 or 5xx, or the connection dropped ("remote end hung up"). Temporary: `retry` is `{"flags":[],"destructive":false}`, so run the same command again. `details.branch`, `details.detail`, `details.permanent` (`false`). |
+| `push_failed` | `push` or `pr create`: reason not recognized; treated as permanent (a declined hook, a large file, another 4xx). `details.branch`, `details.detail`, `details.stderr`, `details.permanent` (`true`). |
+| `push_timeout` | `push` or `pr create`: `git push` ran past its 120 second limit. `details.branch`, `details.seconds`, `details.permanent` (`false`), `details.state_unknown` (`true`). No `retry`: origin may already have the push, so check `git ls-remote origin BRANCH` before pushing again. |
 | `ticket_not_found` | `ticket show` asked `gh` or `jira` for a ticket the tool says does not exist. `details.source`, `details.ref`. |
 | `ticket_source_unavailable` | `ticket show` could not read the ticket (`ticket list` and `start --title-from-ticket` report it as a warning instead): `gh` or `jira` is not installed (`details.reason` `missing`), did not answer in time (`timeout`) or failed (`error`, with `details.detail`). `details.source`. |
 

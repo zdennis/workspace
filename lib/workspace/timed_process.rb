@@ -11,11 +11,12 @@ module Workspace
     # @param argv [Array<String>] the command and its arguments
     # @param chdir [String] directory to run in
     # @param timeout [Numeric] seconds
+    # @param env [Hash{String=>String}] more environment for the child, over {NO_PROMPT}
     # @return [Array(String, String, Boolean)] stdout, stderr, success
     # @raise [Errno::ENOENT] if the command is not installed
     # @raise [Timeout::Error] if it ran past +timeout+
-    def self.run(argv, chdir:, timeout:)
-      Open3.popen3(NO_PROMPT, *argv, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, waiter|
+    def self.run(argv, chdir:, timeout:, env: {})
+      Open3.popen3(NO_PROMPT.merge(env), *argv, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, waiter|
         stdin.close
         out = Thread.new { stdout.read }
         err = Thread.new { stderr.read }

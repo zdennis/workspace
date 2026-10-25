@@ -40,7 +40,7 @@ module Workspace
       # @param working_dir [String] where to look for the workspace when +name+ is nil
       # @return [void]
       # @raise [Workspace::Error] `not_in_workspace`, `unknown_workspace`, `nothing_to_push`, `gh_unavailable`,
-      #   or an uncoded error for a detached HEAD, a failed push or a failed create
+      #   a {PushFailure} code for a failed push, or an uncoded error for a detached HEAD or a failed create
       def create(name: nil, draft: false, json: false, working_dir: Dir.pwd)
         name ||= @project_detector.detect(working_dir)
         unless name
@@ -57,7 +57,7 @@ module Workspace
         rescue Workspace::Error => e
           raise e unless pushed
 
-          raise Workspace::Error.new("#{e.message} ('#{branch}' was already pushed to #{REMOTE}.)", code: e.code, details: e.details)
+          raise Workspace::Error.new("#{e.message} ('#{branch}' was already pushed to #{REMOTE}.)", code: e.code, details: e.details, retry_with: e.retry)
         end
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name}.merge(result))
@@ -113,7 +113,7 @@ module Workspace
         success, stderr = @git.push(path, branch, set_upstream: true)
         return if success
 
-        raise Workspace::Error, "Could not push '#{branch}': #{first_line(stderr)}"
+        raise PushFailure.error(branch, stderr)
       end
 
       def submit(path, draft, label)
