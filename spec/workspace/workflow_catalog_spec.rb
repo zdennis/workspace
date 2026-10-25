@@ -63,7 +63,7 @@ RSpec.describe Workspace::WorkflowCatalog do
     list = catalog.list
 
     expect(list.map { |entry| entry.values_at("id", "source", "title") }).to eq([%w[bad global bad], %w[rpiv global Mine], %w[ship builtin ship]])
-    expect(list[0]).to include("problems" => ["steps must be a mapping of step id to step, with at least one step"], "sha256" => nil)
+    expect(list[0]).to include("problems" => ["steps must be a mapping of step id to step, with at least one step"], "sha256" => Digest::SHA256.hexdigest("steps: {}\n"))
     expect(list[1]).to include("description" => "My copy.", "path" => File.join(global_dir, "rpiv.yml"), "problems" => [])
     expect(list[1]["sha256"]).to match(/\A\h{64}\z/)
   end
@@ -127,6 +127,94 @@ RSpec.describe Workspace::WorkflowCatalog do
     FileUtils.rm_rf(builtin_dir)
 
     expect(catalog.list).to eq([])
+  end
+
+  describe "#locate" do
+    it "answers the global file, the builtin one, the global one over a builtin, and nil for a missing or malformed id" do
+      write(builtin_dir, "only-builtin", "steps:\n  a:\n    prompt: P\n")
+      write(global_dir, "only-global", "steps:\n  a:\n    prompt: P\n")
+      write(global_dir, "rpiv", "steps:\n  a:\n    prompt: P\n")
+
+      expect(catalog.locate("only-global")).to eq(["global", File.join(global_dir, "only-global.yml")])
+      expect(catalog.locate("only-builtin")).to eq(["builtin", File.join(builtin_dir, "only-builtin.yml")])
+      expect(catalog.locate("rpiv")).to eq(["global", File.join(global_dir, "rpiv.yml")])
+      expect(catalog.locate("missing")).to be_nil
+      expect(catalog.locate("../x")).to be_nil
+    end
+  end
+
+  describe "#global_path" do
+    it "names the user's file for an id" do
+      expect(catalog.global_path("ship")).to eq(File.join(global_dir, "ship.yml"))
+    end
+
+    it "refuses an id that could not be a file name" do
+      expect { catalog.global_path("../evil") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+  end
+
+  describe "#source" do
+    it "answers a valid file's text, raw-byte digest and no problems" do
+      yaml = "steps:\n  a:\n    prompt: P\n"
+      write(global_dir, "ship", yaml)
+
+      expect(catalog.source("ship")).to eq("source" => "global", "path" => File.join(global_dir, "ship.yml"), "text" => yaml,
+        "sha256" => Digest::SHA256.hexdigest(yaml), "problems" => [])
+    end
+
+    it "answers an invalid global file without raising, with every problem" do
+      yaml = "schema_version: 9\nsteps: nope\n"
+      write(global_dir, "bad", yaml)
+
+      result = catalog.source("bad")
+
+      expect(result).to include("text" => yaml, "sha256" => Digest::SHA256.hexdigest(yaml), "source" => "global")
+      expect(result["problems"].size).to be >= 2
+    end
+
+    it "gives text nil, the digest of the bytes and a problem for bytes that are not UTF-8" do
+      bytes = "steps:\n  a:\n    prompt: \xFF\xFE\n".b
+      FileUtils.mkdir_p(global_dir)
+      File.binwrite(File.join(global_dir, "bin.yml"), bytes)
+
+      result = catalog.source("bin")
+
+      expect(result["text"]).to be_nil
+      expect(result["sha256"]).to eq(Digest::SHA256.hexdigest(bytes))
+      expect(result["problems"]).to include(/not valid UTF-8/)
+    end
+
+    it "raises unknown_workflow naming the known ids" do
+      expect { catalog.source("nope") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_workflow")
+        expect(e.details["known"]).to eq(["rpiv"])
+      }
+    end
+  end
+
+  describe "#list of an invalid file" do
+    it "reports the raw-byte sha256 with its problems" do
+      yaml = "steps: nope\n"
+      write(global_dir, "bad", yaml)
+
+      row = catalog.list.find { |each| each["id"] == "bad" }
+
+      expect(row["sha256"]).to eq(Digest::SHA256.hexdigest(yaml))
+      expect(row["problems"]).not_to be_empty
+    end
+  end
+
+  it "lists a file that can't be read with sha256 nil and a problem" do
+    skip "root reads any file" if Process.uid.zero?
+    write(global_dir, "locked", "steps:\n  a:\n    prompt: P\n")
+    File.chmod(0o000, File.join(global_dir, "locked.yml"))
+
+    row = catalog.list.find { |each| each["id"] == "locked" }
+
+    expect(row["sha256"]).to be_nil
+    expect(row["problems"]).to match([/can't be read/])
+  ensure
+    File.chmod(0o644, File.join(global_dir, "locked.yml")) if File.exist?(File.join(global_dir, "locked.yml"))
   end
 
   describe "the rpiv preset that ships" do

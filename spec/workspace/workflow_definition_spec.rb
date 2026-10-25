@@ -16,6 +16,30 @@ RSpec.describe Workspace::WorkflowDefinition do
 
   let(:minimal) { "steps:\n  build:\n    prompt: Build it.\n" }
 
+  describe "text with no file" do
+    it "loads a relative prompt_file from base_dir when path is nil" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, "p.md"), "From file.")
+        yaml = "steps:\n  a:\n    prompt_file: p.md\n"
+
+        definition = described_class.parse(yaml, id: "demo", source: "global", path: nil, base_dir: dir)
+
+        expect(definition.steps.first["prompt"]).to eq("From file.")
+      end
+    end
+
+    it "reports a relative prompt_file as one problem, not an exception, with neither path nor base_dir" do
+      expect(problems("steps:\n  a:\n    prompt_file: p.md\n", path: nil)).to match([/prompt_file p\.md is relative/])
+    end
+
+    it "keeps the text it was given and the digest of it" do
+      definition = parse(minimal)
+
+      expect(definition.text).to eq(minimal)
+      expect(definition.sha256).to eq(Digest::SHA256.hexdigest(minimal))
+    end
+  end
+
   it "fills in the defaults of a step that names only a prompt" do
     definition = parse(minimal)
 

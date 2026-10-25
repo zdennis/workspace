@@ -15,6 +15,9 @@ module Workspace
     # Workflow and step ids: they become file names and binding fields.
     ID_PATTERN = /\A[a-z0-9][a-z0-9_-]{0,39}\z/
 
+    # The rule {ID_PATTERN} checks, in words, for messages.
+    ID_RULE = "lowercase letters, digits, '-' and '_'"
+
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
@@ -51,14 +54,18 @@ module Workspace
     # @return [String] hex SHA-256 of the file's text
     attr_reader :sha256
 
+    # @return [String] the text the definition was parsed from, as given
+    attr_reader :text
+
     # @param text [String] the file's YAML
     # @param id [String] the id the file is stored under
     # @param source [String] "builtin" or "global"
-    # @param path [String] the file, for messages and for resolving `prompt_file:`
+    # @param path [String, nil] the file, for messages and for resolving `prompt_file:`; nil for text with no file
+    # @param base_dir [String, nil] the directory `prompt_file:` resolves against, else the directory of `path`
     # @return [Workspace::WorkflowDefinition]
     # @raise [Workspace::Error] code `invalid_workflow`, with every problem in `details["problems"]`
-    def self.parse(text, id:, source:, path:)
-      new(text, id: id, source: source, path: path)
+    def self.parse(text, id:, source:, path:, base_dir: nil)
+      new(text, id: id, source: source, path: path, base_dir: base_dir)
     end
 
     # Fills a text's placeholders. A placeholder with no value is left as written;
@@ -76,8 +83,11 @@ module Workspace
     # @param text [String]
     # @param id [String]
     # @param source [String]
-    # @param path [String]
-    def initialize(text, id:, source:, path:)
+    # @param path [String, nil]
+    # @param base_dir [String, nil]
+    def initialize(text, id:, source:, path:, base_dir: nil)
+      @text = text
+      @base_dir = base_dir || (path && File.dirname(path))
       @id = id
       @source = source
       @path = path
@@ -132,7 +142,7 @@ module Workspace
       version = raw.fetch("schema_version", SCHEMA_VERSION)
       problem "schema_version must be #{SCHEMA_VERSION}, got #{version.inspect}" unless version == SCHEMA_VERSION
       problem "id must be #{id.inspect}, the name of its file, got #{raw["id"].inspect}" if raw.key?("id") && raw["id"] != id
-      problem "the workflow id #{id.inspect} must be lowercase letters, digits, '-' and '_'" unless ID_PATTERN.match?(id)
+      problem "the workflow id #{id.inspect} must be #{ID_RULE}" unless ID_PATTERN.match?(id)
       inputs = inputs_from(raw["inputs"])
       max_attempts = raw.fetch("max_attempts", DEFAULT_MAX_ATTEMPTS)
       unless max_attempts.is_a?(Integer) && max_attempts >= 1
@@ -199,7 +209,7 @@ module Workspace
 
     def step_from(step_id, raw, earlier, inputs)
       where = "step #{step_id}"
-      problem "step id #{step_id.inspect} must be lowercase letters, digits, '-' and '_'" unless ID_PATTERN.match?(step_id)
+      problem "step id #{step_id.inspect} must be #{ID_RULE}" unless ID_PATTERN.match?(step_id)
       unless raw.is_a?(Hash)
         problem "#{where} must be a mapping"
         raw = {}
@@ -229,7 +239,8 @@ module Workspace
       return text_or_nil(raw["prompt"], "#{where}: prompt") if raw.key?("prompt")
       file = raw["prompt_file"]
       return problem("#{where}: prompt_file must be a path") unless file.is_a?(String) && !file.strip.empty?
-      full = File.expand_path(file, File.dirname(path))
+      return problem("#{where}: prompt_file #{file} is relative and the definition has no directory to resolve it against") unless @base_dir
+      full = File.expand_path(file, @base_dir)
       text = File.read(full, encoding: Encoding::UTF_8)
       return problem("#{where}: prompt_file #{full} is not valid UTF-8 text") unless text.valid_encoding?
       text.strip.empty? ? problem("#{where}: prompt_file #{full} is empty") : text
