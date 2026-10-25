@@ -9,7 +9,7 @@ module Workspace
     # @param output [IO] output stream for user-facing messages
     # @param input [IO] input stream for interactive prompts
     # @param logger [Workspace::Logger] debug logger
-    # @param runner [#call] `(argv, chdir:, timeout:)` returning `[stdout, stderr, success]`; runs the
+    # @param runner [#call] `(argv, chdir:, timeout:)` (and `env:` for {#push}) returning `[stdout, stderr, success]`; runs the
     #   time-limited, prompt-free git calls of {#push}, {#fetch}, {#rebase} and the other write operations
     def initialize(output: $stdout, input: $stdin, logger: Workspace::Logger.new, runner: TimedProcess.method(:run))
       @output = output
@@ -20,6 +20,9 @@ module Workspace
 
     # Seconds `git push` may take.
     PUSH_TIMEOUT = 120
+
+    # Makes git's messages English, which {PushFailure} reads.
+    ENGLISH = {"LC_ALL" => "C", "LANGUAGE" => "C"}.freeze
 
     # Seconds `git fetch` may take.
     FETCH_TIMEOUT = 60
@@ -44,14 +47,18 @@ module Workspace
     # @param set_upstream [Boolean] pass `-u`
     # @param force_with_lease [Boolean] pass `--force-with-lease`
     # @return [Array(Boolean, String)] success and git's stderr
-    # @raise [Workspace::Error] git is not installed, or the push ran past {PUSH_TIMEOUT} (uncoded)
+    # @raise [Workspace::Error] git is not installed (uncoded), or the push ran past {PUSH_TIMEOUT} seconds (`push_timeout`)
     def push(path, branch, set_upstream: false, force_with_lease: false)
       argv = ["push"]
       argv << "-u" if set_upstream
       argv << "--force-with-lease" if force_with_lease
       argv.push("origin", branch)
-      _, stderr, success = run_git(path, *argv, timeout: PUSH_TIMEOUT)
+      _, stderr, success = @runner.call(["git", *argv], chdir: path, timeout: PUSH_TIMEOUT, env: ENGLISH)
       [success, stderr]
+    rescue Errno::ENOENT
+      raise Workspace::Error, "git is not installed."
+    rescue Timeout::Error
+      raise PushFailure.timeout_error(branch, PUSH_TIMEOUT)
     end
 
     # Fetches from origin.

@@ -244,13 +244,13 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports pr_create 1 once pr create exists" do
       command.call(json: true)
 
-      expect(document["features"]).to include("pr_create" => 1)
+      expect(document["features"]).to include("pr_create" => 2)
     end
 
     it "reports rebase 2 once rebase and push exist" do
       command.call(json: true)
 
-      expect(document["features"]).to include("rebase" => 2)
+      expect(document["features"]).to include("rebase" => 3)
     end
 
     it "ignores a PATH entry that is not executable or is a directory" do

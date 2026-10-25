@@ -10,9 +10,6 @@ module Workspace
       # Bumped whenever the `--json` payload's shape changes in a backward-incompatible way.
       JSON_SCHEMA_VERSION = 1
 
-      REJECTED = /rejected|non-fast-forward|stale info|fetch first|failed to update ref/i
-      private_constant :REJECTED
-
       # @param git [Workspace::Git]
       # @param checkout [Workspace::WorkspaceCheckout]
       # @param output [IO]
@@ -27,7 +24,8 @@ module Workspace
       # @param working_dir [String]
       # @return [void]
       # @raise [Workspace::Error] `not_in_workspace`, `unknown_workspace`, `fetch_failed`, `push_rejected`,
-      #   or an uncoded error for a detached HEAD, a failed push or git not answering
+      #   a {PushFailure} code (`no_remote`, `push_auth_failed`, `protected_branch`, `push_network`, `push_timeout`, `push_failed`),
+      #   or an uncoded error for a detached HEAD or git not answering
       def call(name: nil, json: false, working_dir: Dir.pwd)
         target = @checkout.resolve(name, working_dir: working_dir)
         outcome, forced = push_branch(target["path"], target["branch"])
@@ -78,14 +76,12 @@ module Workspace
       def push!(path, branch, set_upstream: false, force_with_lease: false)
         success, stderr = @git.push(path, branch, set_upstream: set_upstream, force_with_lease: force_with_lease)
         return true if success
-        raise rejected(branch, nil, first_line(stderr), "origin_refused") if stderr.to_s.match?(REJECTED)
-
-        raise Workspace::Error, "Could not push '#{branch}': #{first_line(stderr)}"
+        raise PushFailure.error(branch, stderr)
       end
 
       def rejected(branch, upstream, detail, reason)
         Workspace::Error.new("Push of '#{branch}' was rejected: #{detail}",
-          code: "push_rejected", details: {"branch" => branch, "upstream" => upstream, "detail" => detail, "reason" => reason})
+          code: "push_rejected", details: {"branch" => branch, "upstream" => upstream, "detail" => detail, "reason" => reason, "permanent" => true})
       end
 
       def message(outcome, forced, branch)

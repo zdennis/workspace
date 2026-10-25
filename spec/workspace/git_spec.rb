@@ -1176,18 +1176,18 @@ RSpec.describe Workspace::Git, "write operations on a checkout" do
   end
 
   it "turns a missing git and a timeout into errors for each timed call" do
-    missing = described_class.new(runner: ->(argv, chdir:, timeout:) { raise Errno::ENOENT })
-    slow = described_class.new(runner: ->(argv, chdir:, timeout:) { raise Timeout::Error })
+    missing = described_class.new(runner: ->(argv, chdir:, timeout:, env: {}) { raise Errno::ENOENT })
+    slow = described_class.new(runner: ->(argv, chdir:, timeout:, env: {}) { raise Timeout::Error })
 
     expect { missing.fetch(repo) }.to raise_error(Workspace::Error, "git is not installed.")
     expect { slow.fetch(repo) }.to raise_error(Workspace::Error, "git fetch did not finish within #{described_class::FETCH_TIMEOUT} seconds.")
     expect { slow.rebase(repo, "main") }.to raise_error(Workspace::Error, /git rebase did not finish within/)
-    expect { slow.push(repo, "main") }.to raise_error(Workspace::Error, /git push did not finish within #{described_class::PUSH_TIMEOUT} seconds/o)
+    expect { slow.push(repo, "main") }.to raise_error(Workspace::Error, /git push of .main. did not finish within #{described_class::PUSH_TIMEOUT} seconds/o) { |e| expect(e.code).to eq("push_timeout") }
   end
 
   it "runs git through the injected runner with the checkout as its directory" do
     calls = []
-    git = described_class.new(runner: ->(argv, chdir:, timeout:) { calls << [argv, chdir, timeout] && ["", "", true] })
+    git = described_class.new(runner: ->(argv, chdir:, timeout:, env: {}) { calls << [argv, chdir, timeout] && ["", "", true] })
 
     expect(git.push(wt, "feature/x", set_upstream: true, force_with_lease: true)).to eq([true, ""])
     expect(calls).to eq([[%w[git push -u --force-with-lease origin feature/x], wt, described_class::PUSH_TIMEOUT]])

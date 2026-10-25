@@ -61,7 +61,7 @@ In order:
 2. Otherwise origin is fetched, and the branch is compared with its upstream. Same commit: `up_to_date`, nothing pushed. Only the branch has new commits: a plain push.
 3. If the upstream has commits the branch lacks, `push` looks at the branch's reflog. When every one of those commits was once on the branch (a rebase replaced them), the push is `--force-with-lease`, and `forced` is `true`. When one of them was never on the branch (someone else pushed it), nothing is pushed and the error is `push_rejected`.
 
-A branch whose upstream is not `origin/<branch>` is refused (`push_rejected`). A branch that is only behind its upstream (no commits of its own) is never forced, since that would delete the upstream's commits. Pushes go to `origin`, with the branch's own name; each git call has a time limit and never prompts. If origin refuses a push, the error is `push_rejected`; any other push failure is an uncoded `error`. A branch whose reflog has expired is treated as having commits it never had, so it is refused rather than forced.
+A branch whose upstream is not `origin/<branch>` is refused (`push_rejected`). A branch that is only behind its upstream (no commits of its own) is never forced, since that would delete the upstream's commits. Pushes go to `origin`, with the branch's own name; each git call has a time limit and never prompts. If the remote says non-fast-forward, the error is `push_rejected`; other failures are `no_remote`, `push_auth_failed`, `protected_branch`, `push_network` (temporary, with a `retry`), `push_timeout` (the push ran past 120 seconds and may have landed; no `retry`) or `push_failed` (see [README.json.md](README.json.md)). Every push error has `details.permanent`. `git push` runs with `LC_ALL=C` so its messages can be classified. A branch whose reflog has expired is treated as having commits it never had, so it is refused rather than forced.
 
 ```json
 {"schema_version":1,"ok":true,"workspace":"api.worktree-x","branch":"feature/x","outcome":"pushed","forced":false}
@@ -83,13 +83,13 @@ A branch whose upstream is not `origin/<branch>` is refused (`push_rejected`). A
 | `no_upstream` | `rebase --onto upstream`: the branch has no upstream configured. `details.branch` |
 | `upstream_gone` | `rebase --onto upstream`: the upstream no longer exists on the remote. `details.branch`, `details.upstream` |
 | `fetch_failed` | `rebase --onto update\|remote\|upstream` or `push`: `git fetch origin` failed. `details.remote`, `details.detail` |
-| `push_rejected` | `push`: refused. `details.branch`, `details.upstream`, `details.detail`, `details.reason`: `origin_refused` (origin said no), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
+| `push_rejected` | `push`: refused. A non-fast-forward from the remote, or the branch is not safe to force. Permanent. Branch protection is `protected_branch`, not this. `details.branch`, `details.upstream`, `details.detail`, `details.permanent`, `details.reason`: `origin_refused` (the remote said non-fast-forward), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
 | `not_in_workspace` | No `--name` and the current directory is in no workspace |
 | `unknown_workspace` | `--name` names no workspace |
 | `usage` | `--onto` is missing or not `local`, `update`, `remote` or `upstream` |
 | `error` | A detached HEAD, no default branch, a rebase that failed without stopping, `git` missing, or a git call past its time limit (during a rebase, `details.aborted` is `true`) |
 
-Capability: `rebase` 2 (1 had `local`, `update` and `remote`; 2 adds `upstream`) in [`capabilities`](README.capabilities.md) (covers both commands).
+Capability: `rebase` 3 (1 had `local`, `update` and `remote`; 2 adds `upstream`; 3 adds the push error codes `no_remote`, `push_auth_failed`, `protected_branch`, `push_network`, `push_timeout`, `push_failed`, `details.permanent` and `retry` on `push_network`) in [`capabilities`](README.capabilities.md) (covers both commands).
 
 ## Examples
 
