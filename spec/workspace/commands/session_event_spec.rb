@@ -986,4 +986,30 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(fire({"hook_event_name" => "Stop"})).to eq(exit_code: 0)
     end
   end
+  describe "regression: the socket is named after the workspace, not the tmux session" do
+    it "writes a worktree session's Stop to workspace-lab-wc.worktree-lab-1.sock" do
+      dir = Dir.mktmpdir("s", "/tmp")
+      allow(config).to receive(:agent_socket_path) { |name| File.join(dir, "workspace-#{name}.sock") }
+      allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("lab-wc-wt-lab-1")
+      allow(tmux).to receive(:session_option).with("lab-wc-wt-lab-1", "@workspace").and_return("lab-wc.worktree-lab-1")
+      resolver = Workspace::SessionWorkspace.new(tmux: tmux, project_config: instance_double(Workspace::ProjectConfig), config: config)
+      server = UNIXServer.new(File.join(dir, "workspace-lab-wc.worktree-lab-1.sock"))
+      received = nil
+      listener = Thread.new do
+        client = server.accept
+        received = JSON.parse(client.gets)
+        client.puts(JSON.generate("ok" => true))
+        client.close
+      end
+
+      described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate("hook_event_name" => "Stop")), env: env,
+        workspace_for_session: resolver).call
+      listener.join(2)
+
+      expect(received).to include("event" => "stop", "workspace" => "lab-wc.worktree-lab-1")
+    ensure
+      server&.close
+      FileUtils.remove_entry(dir) if dir
+    end
+  end
 end
