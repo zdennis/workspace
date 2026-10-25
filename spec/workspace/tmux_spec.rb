@@ -78,17 +78,17 @@ RSpec.describe Workspace::Tmux do
     describe "#session_exists? and #rename_session" do
       let(:args_file) { File.join(tmpdir, "args") }
 
-      before { fake_tmux(%(echo "$@" >> '#{args_file}'\n[ "$1" = has-session ] && [ "$3" = "=Notes" ] && exit 0\n[ "$1" = rename-session ] && exit 0\nexit 1)) }
+      before { fake_tmux(%(echo "$@" >> '#{args_file}'\n[ "$1" = has-session ] && [ "$3" = "=Notes:" ] && exit 0\n[ "$1" = rename-session ] && exit 0\nexit 1)) }
 
       it "matches the session name exactly" do
         expect(tmux.session_exists?("Notes")).to be(true)
         expect(tmux.session_exists?("notes")).to be(false)
-        expect(File.read(args_file)).to eq("has-session -t =Notes\nhas-session -t =notes\n")
+        expect(File.read(args_file)).to eq("has-session -t =Notes:\nhas-session -t =notes:\n")
       end
 
       it "renames the exactly named session" do
         expect(tmux.rename_session("Notes", "notes")).to be(true)
-        expect(File.read(args_file)).to eq("rename-session -t =Notes notes\n")
+        expect(File.read(args_file)).to eq("rename-session -t =Notes: notes\n")
       end
 
       it "talks to the project's custom socket" do
@@ -98,7 +98,7 @@ RSpec.describe Workspace::Tmux do
         tmux.session_exists?("Notes", project: "Notes")
         tmux.rename_session("Notes", "notes", project: "Notes")
 
-        expect(File.read(args_file)).to eq("-L mysocket has-session -t =Notes\n-L mysocket rename-session -t =Notes notes\n")
+        expect(File.read(args_file)).to eq("-L mysocket has-session -t =Notes:\n-L mysocket rename-session -t =Notes: notes\n")
       end
     end
   end
@@ -123,7 +123,7 @@ RSpec.describe Workspace::Tmux do
       tmux = described_class.new(config: config)
       allow(tmux).to receive(:sessions).and_return(["myproject"])
       expect(tmux.command_for("myproject", reattach: true)).to eq(
-        "tmux -CC attach -t \\=myproject || tmux has-session -t \\=myproject 2>/dev/null || tmuxinator start workspace.myproject --attach"
+        "tmux -CC attach -t \\=myproject: || tmux has-session -t \\=myproject: 2>/dev/null || tmuxinator start workspace.myproject --attach"
       )
     end
 
@@ -138,7 +138,7 @@ RSpec.describe Workspace::Tmux do
       command = tmux.command_for(dangerous, reattach: true)
 
       expect(command).to eq(
-        "tmux -CC attach -t #{Shellwords.escape("=#{dangerous}")} || tmux has-session -t #{Shellwords.escape("=#{dangerous}")} 2>/dev/null || " \
+        "tmux -CC attach -t #{Shellwords.escape("=#{dangerous}:")} || tmux has-session -t #{Shellwords.escape("=#{dangerous}:")} 2>/dev/null || " \
         "tmuxinator start #{Shellwords.escape("workspace.#{dangerous}")} --attach"
       )
     end
@@ -148,7 +148,7 @@ RSpec.describe Workspace::Tmux do
     it "builds a plain || chain with no braces" do
       tmux = described_class.new(config: config)
       expect(tmux.reattach_or_start("myproject", "tmuxinator start workspace.myproject --attach")).to eq(
-        "tmux -CC attach -t \\=myproject || tmux has-session -t \\=myproject 2>/dev/null || tmuxinator start workspace.myproject --attach"
+        "tmux -CC attach -t \\=myproject: || tmux has-session -t \\=myproject: 2>/dev/null || tmuxinator start workspace.myproject --attach"
       )
     end
   end
@@ -1259,7 +1259,7 @@ RSpec.describe Workspace::Tmux do
 
       tmux.kill_session("proj")
 
-      expect(tmux).to have_received(:system).with("tmux", "kill-session", "-t", "=proj")
+      expect(tmux).to have_received(:system).with("tmux", "kill-session", "-t", "=proj:")
     end
 
     it "kills on the project's custom socket" do
@@ -1268,7 +1268,7 @@ RSpec.describe Workspace::Tmux do
 
       tmux.kill_session("proj", project: "proj")
 
-      expect(tmux).to have_received(:system).with("tmux", "-L", "mysocket", "kill-session", "-t", "=proj")
+      expect(tmux).to have_received(:system).with("tmux", "-L", "mysocket", "kill-session", "-t", "=proj:")
     end
 
     it "kills on the default socket for a project without a custom socket" do
@@ -1277,7 +1277,7 @@ RSpec.describe Workspace::Tmux do
 
       tmux.kill_session("proj", project: "proj")
 
-      expect(tmux).to have_received(:system).with("tmux", "kill-session", "-t", "=proj")
+      expect(tmux).to have_received(:system).with("tmux", "kill-session", "-t", "=proj:")
     end
   end
   describe "#pane_slot" do

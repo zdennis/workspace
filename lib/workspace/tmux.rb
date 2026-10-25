@@ -68,7 +68,7 @@ module Workspace
     # @return [void]
     def kill_session(name, project: nil)
       @logger.debug { "tmux: killing session #{name}" }
-      system("tmux", *(project && socket_arguments(project)), "kill-session", "-t", "=#{name}")
+      system("tmux", *(project && socket_arguments(project)), "kill-session", "-t", "=#{name}:")
     end
 
     # @param name [String] tmux session name, matched exactly (tmux compares case)
@@ -76,7 +76,7 @@ module Workspace
     # @return [Boolean] whether the session exists; false when tmux has no server
     # @raise [Workspace::Error] if tmux doesn't answer within +command_timeout+
     def session_exists?(name, project: nil)
-      run_bounded(*(project && socket_arguments(project)), "has-session", "-t", "=#{name}", capture: false).last
+      run_bounded(*(project && socket_arguments(project)), "has-session", "-t", "=#{name}:", capture: false).last
     rescue SystemCallError
       false
     end
@@ -90,7 +90,7 @@ module Workspace
     # @raise [Workspace::Error] if tmux doesn't answer within +command_timeout+
     def rename_session(name, new_name, project: nil)
       @logger.debug { "tmux: renaming session #{name} to #{new_name}" }
-      run_bounded(*(project && socket_arguments(project)), "rename-session", "-t", "=#{name}", new_name, capture: false).last
+      run_bounded(*(project && socket_arguments(project)), "rename-session", "-t", "=#{name}:", new_name, capture: false).last
     rescue SystemCallError
       false
     end
@@ -451,7 +451,7 @@ module Workspace
     # @param name [String] the option, starting with `@`
     # @return [Boolean] whether tmux accepted it
     def set_session_option(session, name, value)
-      _, _, status = Open3.capture3("tmux", "set-option", "-t", "=#{session}", name, value)
+      _, _, status = Open3.capture3("tmux", "set-option", "-t", "=#{session}:", name, value)
       status.success?
     rescue SystemCallError
       false
@@ -461,7 +461,7 @@ module Workspace
     # @param name [String] the option, starting with `@`
     # @return [String, nil] its value; nil when the option is unset or the session is gone
     def session_option(session, name)
-      stdout, _, status = Open3.capture3("tmux", "show-option", "-qv", "-t", "=#{session}", name)
+      stdout, _, status = Open3.capture3("tmux", "show-option", "-qv", "-t", "=#{session}:", name)
       value = stdout.strip
       (status.success? && !value.empty?) ? value : nil
     rescue SystemCallError
@@ -792,7 +792,7 @@ module Workspace
     # @param start [String] the tmuxinator start command to fall back to
     # @return [String] the shell command
     def reattach_or_start(session, start)
-      quoted = Shellwords.escape("=#{session}")
+      quoted = Shellwords.escape("=#{session}:")
       "tmux -CC attach -t #{quoted} || tmux has-session -t #{quoted} 2>/dev/null || #{start}"
     end
 
