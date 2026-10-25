@@ -18,10 +18,10 @@ module Workspace
   # placeholder is ever in `args`.
   class WorkflowStatus
     # Seconds to wait for the workspace's agent daemon before going on without it.
+    SNAPSHOT_TIMEOUT = 1.0
+
     # Seconds after an attempt starts during which an idle pane is not flagged `idle`.
     IDLE_GRACE = 30
-
-    SNAPSHOT_TIMEOUT = 1.0
 
     # @param store [Workspace::WorkflowRunStore]
     # @param panes [Workspace::WorkflowPanes] says whether a run's pane is still there

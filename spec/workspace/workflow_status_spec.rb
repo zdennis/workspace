@@ -244,6 +244,16 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(current["flags"]).to eq(["idle"])
   end
 
+  it "pins the idle grace boundary: 29s is inside it, exactly 30s is out" do
+    create
+    snapshot["panes"].first["state"] = "idle"
+    now[0] = Time.utc(2026, 10, 4, 12, 40, 29)
+    expect(current["flags"]).to eq([])
+
+    now[0] = Time.utc(2026, 10, 4, 12, 40, 30)
+    expect(current["flags"]).to eq(["idle"])
+  end
+
   it "flags idle a pane that is done, once it has been quiet long enough for the turn's end to have been handled" do
     create
     snapshot["panes"].first.merge!("state" => "done", "state_since" => "2026-10-04T12:59:51Z")
