@@ -21,12 +21,14 @@ module Workspace
       # @param status [Workspace::WorkflowStatus]
       # @param store [Workspace::WorkflowRunStore]
       # @param panes [Workspace::WorkflowPanes]
+      # @param files [Workspace::WorkflowFiles] writes a user's definitions (`add`)
       # @param clock [#call] returns the current Time
       # @param output [IO]
-      # @param input [IO] read for `validate -`
+      # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
+      def initialize(catalog:, engine:, status:, store:, panes:, files: nil, clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @catalog = catalog
+        @files = files
         @engine = engine
         @status = status
         @store = store
@@ -85,6 +87,28 @@ module Workspace
         else
           @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)"
         end
+      end
+
+      # Saves a definition as a user's file, `ID.yml` in the workflows directory, after
+      # the checks `validate` runs. A relative `prompt_file:` is read from that directory,
+      # where the file will be loaded. A preset of the same id is allowed: the copy shadows it.
+      #
+      # @param id [String] the workflow's id; a string `id:` in the text must match it
+      # @param path [String] a file, or "-" for stdin
+      # @param dry_run [Boolean] run every check (the file's existence under its lock) and write no definition; the directory and lock file may be created
+      # @return [Hash{String=>Object}] the action row: outcome "added" or "dry_run", with "workflow", "path" and "sha256"
+      # @raise [Workspace::UsageError] when PATH can't be read
+      # @raise [Workspace::Error] code `invalid_workflow` (a bad id, or text that doesn't pass), `workflow_exists`
+      def add(id:, path:, dry_run: false)
+        @files.path(id)
+        stdin = path == "-"
+        text = read_text(path, stdin)
+        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir)
+        builtin = @catalog.locate(id)&.first == "builtin"
+        written = @files.add(id, text, dry_run: dry_run)
+        message = "#{dry_run ? "Would add" : "Added"} workflow #{id} at #{written["path"]}#{"; it shadows the preset of the same id" if builtin}."
+        @output.puts message
+        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "added", "reason" => nil, "message" => message, "workflow" => id}.merge(written)
       end
 
       # Starts a run of a workflow in a workspace.

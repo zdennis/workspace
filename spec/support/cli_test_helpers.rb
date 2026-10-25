@@ -830,7 +830,7 @@ module CLITestHelpers
       end
     end
 
-    %i[run resume cancel approve reject step_done].each do |name|
+    %i[add run resume cancel approve reject step_done].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error

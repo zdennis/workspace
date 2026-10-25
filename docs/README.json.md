@@ -32,7 +32,7 @@ To ask which of these a given CLI supports, run `workspace capabilities --json` 
 
 ## Actions
 
-These commands take `--json` and print one action document: `add`, `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `dev wait`, `dev leave`, `lock release`, `config set`, `config unset`, `config edit`, `daemon restart` (also with `--all`), `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `prune`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow run`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
+These commands take `--json` and print one action document: `add`, `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `dev wait`, `dev leave`, `lock release`, `config set`, `config unset`, `config edit`, `daemon restart` (also with `--all`), `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `prune`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow add`, `workflow run`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
 
 ```json
 {"schema_version":1,"ok":true,"action":"stop","status":"ok",
@@ -314,6 +314,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `use_ask_answer` | `inbox ack` or `inbox snooze` named an `ask:` id; answer the question with `ask answer` (or close it with `ask withdraw`) instead. `details.id`. |
 | `invalid_cursor` | `events --since` was given something that isn't a cursor an `events` line printed. |
 | `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |
+| `workflow_exists` | `workflow add` found a user's file of that id already in `~/.config/workspace/workflows/` (a link counts, even to a file that is gone); nothing was written. A preset of the same id does not count. `details.workflow`, `details.path`. |
 | `input_required` | workflow run is missing a required input. `details.workflow`, `details.inputs` (each `name` and `description`). |
 | `workflow_command_unset` | A step's check names the project's test or lint command and the project has none. `details.workflow`, `details.project`, `details.commands`. |
 | `no_agent_pane` | No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or `plan start` or `spine start` found no agent pane to type into (with `--pane`, the named pane runs no coding agent the agent daemon knows, and `details.pane` names it). `details.workspace`. |

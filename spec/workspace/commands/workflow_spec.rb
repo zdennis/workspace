@@ -740,4 +740,115 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { command.validate(path: File.join(dir, "nope.yml")) }.to raise_error(Workspace::UsageError, /Can't read .*nope\.yml: No such file or directory\z/)
     end
   end
+
+  describe "#add" do
+    let(:input) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
+    let(:builtin_dir) { File.join(dir, "lib", "workflows") }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
+    let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
+    let(:target) { File.join(global_dir, "flow.yml") }
+    subject(:command) do
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: input)
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    def write(name, text)
+      File.join(dir, name).tap { |path| File.write(path, text) }
+    end
+
+    def code_of
+      yield
+      nil
+    rescue Workspace::Error => e
+      e.code
+    end
+
+    it "checks a file and writes it as the user's ID.yml, answering added with its path and sha256" do
+      row = command.add(id: "flow", path: write("draft.yml", valid))
+
+      expect(row).to eq("workspace" => nil, "outcome" => "added", "reason" => nil, "message" => "Added workflow flow at #{target}.",
+        "workflow" => "flow", "path" => target, "sha256" => Digest::SHA256.hexdigest(valid))
+      expect(File.read(target)).to eq(valid)
+      expect(real_catalog.find("flow").source).to eq("global")
+    end
+
+    it "reads stdin for -" do
+      input.string = valid
+
+      expect(command.add(id: "flow", path: "-")["outcome"]).to eq("added")
+      expect(File.read(target)).to eq(valid)
+    end
+
+    it "writes nothing under dry_run" do
+      row = command.add(id: "flow", path: write("draft.yml", valid), dry_run: true)
+
+      expect(row).to include("outcome" => "dry_run", "path" => target, "sha256" => Digest::SHA256.hexdigest(valid))
+      expect(File.exist?(target)).to be(false)
+    end
+
+    it "refuses workflow_exists over a user's file, also under dry_run, leaving its bytes" do
+      FileUtils.mkdir_p(global_dir)
+      File.write(target, "mine\n")
+      path = write("draft.yml", valid)
+
+      expect(code_of { command.add(id: "flow", path: path) }).to eq("workflow_exists")
+      expect(code_of { command.add(id: "flow", path: path, dry_run: true) }).to eq("workflow_exists")
+      expect(File.read(target)).to eq("mine\n")
+    end
+
+    it "writes nothing for text that doesn't pass, listing every problem" do
+      path = write("draft.yml", "title: Flow\nbogus: 1\nsteps:\n  plan:\n    nope: 1\n")
+
+      expect { command.add(id: "flow", path: path) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_workflow")
+        expect(e.details["problems"].size).to be >= 2
+      }
+      expect(File.exist?(global_dir)).to be(false)
+    end
+
+    it "refuses an id: in the text that differs from ID as invalid_workflow" do
+      path = write("draft.yml", "id: other\n#{valid}")
+
+      expect(code_of { command.add(id: "flow", path: path) }).to eq("invalid_workflow")
+      expect(File.exist?(global_dir)).to be(false)
+    end
+
+    it "refuses a bad ID before it reads the text or builds a path" do
+      input.string = valid
+      expect(File).not_to receive(:open)
+
+      expect(code_of { command.add(id: "../flow", path: "-") }).to eq("invalid_workflow")
+      expect(input.read).to eq(valid)
+      expect(File.exist?(global_dir)).to be(false)
+    end
+
+    it "shadows a preset of the same id and leaves the preset's file alone" do
+      FileUtils.mkdir_p(builtin_dir)
+      preset = File.join(builtin_dir, "rpiv.yml")
+      File.write(preset, "title: Preset\nsteps:\n  plan:\n    prompt: Preset.\n")
+      before = File.binread(preset)
+
+      row = command.add(id: "rpiv", path: write("draft.yml", valid))
+
+      expect(row["message"]).to include("shadows the preset")
+      expect(File.binread(preset)).to eq(before)
+      expect(Dir.children(builtin_dir)).to eq(["rpiv.yml"])
+      expect(real_catalog.find("rpiv").to_h["title"]).to eq("Flow")
+    end
+
+    it "reads a relative prompt_file: from the workflows directory, where the file will load" do
+      FileUtils.mkdir_p(global_dir)
+      File.write(File.join(global_dir, "plan.md"), "Plan it.")
+      File.write(File.join(dir, "elsewhere.md"), "x")
+      text = "title: Flow\nsteps:\n  plan:\n    prompt_file: plan.md\n"
+
+      expect(command.add(id: "flow", path: write("draft.yml", text))["outcome"]).to eq("added")
+      expect(code_of { command.add(id: "other", path: write("other.yml", text.sub("plan.md", "elsewhere.md"))) }).to eq("invalid_workflow")
+    end
+  end
 end

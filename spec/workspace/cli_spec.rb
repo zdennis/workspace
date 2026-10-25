@@ -6367,6 +6367,42 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    it "parses add ID PATH, with --dry-run, as an action document" do
+      workflow_command.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would add workflow ship at /g/ship.yml.",
+                              "workflow" => "ship", "path" => "/g/ship.yml", "sha256" => "abc"}
+
+      expect { cli.run(["workflow", "add", "ship", "draft.yml", "--dry-run", "--json"]) }.not_to raise_error
+      cli.run(["workflow", "add", "--dry-run", "ship", "-"])
+
+      expect(workflow_command.calls).to eq([[:add, {id: "ship", path: "draft.yml", dry_run: true}], [:add, {id: "ship", path: "-", dry_run: true}]])
+      doc = JSON.parse(output.string.lines.first)
+      expect(doc).to include("ok" => true, "action" => "workflow add", "status" => "dry_run")
+      expect(doc["results"]).to eq([workflow_command.row])
+    end
+
+    it "adds a definition from stdin end to end, then refuses a second add with workflow_exists" do
+      Dir.mktmpdir do |dir|
+        config = instance_double(Workspace::Config, workflows_dir: File.join(dir, "home", "workflows"), builtin_workflows_dir: File.join(dir, "builtin"))
+        catalog = Workspace::WorkflowCatalog.new(config: config)
+        text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
+        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+          engine: nil, status: nil, store: nil, panes: nil, output: StringIO.new, input: StringIO.new(text))
+        real_cli, out = build_test_cli(workflow_command: command)
+
+        real_cli.run(["workflow", "add", "ship", "-", "--json"])
+        row = JSON.parse(out.string)["results"].first
+        expect(row).to include("outcome" => "added", "workflow" => "ship", "path" => File.join(dir, "home", "workflows", "ship.yml"),
+          "sha256" => Digest::SHA256.hexdigest(text))
+        expect(File.read(row["path"])).to eq(text)
+
+        out.truncate(0)
+        out.rewind
+        File.write(File.join(dir, "again.yml"), text)
+        expect { real_cli.run(["workflow", "add", "ship", File.join(dir, "again.yml"), "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(out.string.lines.last)).to include("ok" => false, "code" => "workflow_exists")
+      end
+    end
+
     it "validates a PATH or stdin, with --id" do
       cli.run(["workflow", "validate", "a.yml", "--json"])
       cli.run(["workflow", "validate", "-", "--id", "ship"])
@@ -6548,7 +6584,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, run, status, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, run, status, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "show", "--source"] => /workflow show --source needs an ID/,
@@ -6560,6 +6596,12 @@ RSpec.describe Workspace::CLI do
         ["workflow", "reject", "wr_1"] => /workflow reject needs --note TEXT/,
         ["workflow", "reject", "wr_1", "--note", " "] => /workflow reject needs --note TEXT/,
         ["workflow", "status", "wr_1", "extra"] => /Unexpected argument: extra/,
+        ["workflow", "add"] => /workflow add needs an ID and a PATH \(or - for stdin\)/,
+        ["workflow", "add", "ship"] => /workflow add needs an ID and a PATH/,
+        ["workflow", "add", "ship", "a.yml", "extra"] => /Unexpected argument: extra/,
+        ["workflow", "show", "rpiv", "extra"] => /Unexpected argument: extra/,
+        ["workflow", "validate", "a.yml", "b.yml"] => /Unexpected argument: b\.yml/,
+        ["workflow", "cancel", "wr_1", "wr_2"] => /Unexpected argument: wr_2/,
         ["workflow", "run", "rpiv", "--nope"] => /invalid option/
       }.each do |argv, message|
         cli, _, error_output = build_test_cli(workflow_command: workflow_command, project_detector: detector)
@@ -6575,7 +6617,7 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add: check and write no definition").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)

@@ -273,6 +273,7 @@ require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
 require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_catalog"
+require_relative "workspace/workflow_files"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_panes"
@@ -554,8 +555,10 @@ module Workspace
       task_store: task_store
     )
     workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for)
+    workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_command = Commands::Workflow.new(
-      catalog: WorkflowCatalog.new(config: config),
+      catalog: workflow_catalog,
+      files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
       engine: workflow_engine,
       status: workflow_status,
       store: workflow_store,

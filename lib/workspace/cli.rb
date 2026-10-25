@@ -5021,12 +5021,13 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate run status resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add run status resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
         opts.banner = "Usage: workspace workflow show [ID] [--source] [--json]\n" \
           "       workspace workflow validate PATH|- [--id ID] [--json]\n" \
+          "       workspace workflow add ID PATH|- [--dry-run] [--json]\n" \
           "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
           "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
           "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
@@ -5052,6 +5053,10 @@ module Workspace
         opts.separator "            disk gets, listing every problem at once; writes nothing. The id is --id, else"
         opts.separator "            its id: key, else the file's name (stdin: \"stdin\"); a relative prompt_file: is"
         opts.separator "            read from the file's directory (stdin: the current directory)"
+        opts.separator "  add       save a definition (a file, or - for stdin) as ID.yml in the directory above, after"
+        opts.separator "            the checks validate runs; refused with workflow_exists when that file is there."
+        opts.separator "            A preset of the same id is left alone and the copy shadows it. A relative"
+        opts.separator "            prompt_file: is read from that directory; --dry-run checks and writes no definition"
         opts.separator "  run       start a run in a workspace (the current one, or --name); --dry-run checks"
         opts.separator "            the inputs, the project's commands and the pane, and starts nothing"
         opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
@@ -5077,7 +5082,7 @@ module Workspace
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--all", "status: finished runs too") { options[:all] = true }
-        opts.on("--dry-run", "run: report what would start and start nothing") { options[:dry_run] = true }
+        opts.on("--dry-run", "run: report what would start and start nothing; add: check and write no definition (the lock file may be created)") { options[:dry_run] = true }
         opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
         opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
         opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
@@ -5088,6 +5093,7 @@ module Workspace
         opts.separator "  workspace workflow show rpiv --source --json"
         opts.separator "  workspace workflow validate lib/workflows/rpiv.yml --json"
         opts.separator "  cat draft.yml | workspace workflow validate - --id ship --json"
+        opts.separator "  workspace workflow add ship draft.yml --dry-run --json"
         opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
         opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\""
         opts.separator "  workspace workflow status --json"
@@ -5108,14 +5114,15 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, run, status, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, run, status, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
+      source_path = args.shift if subcommand == "add"
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "run" => "an ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "run" => "an ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
-      raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && subject.nil?
+      raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (subcommand == "add" && source_path.nil?))
 
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
@@ -5123,6 +5130,7 @@ module Workspace
       case subcommand
       when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source])
       when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json])
+      when "add" then workflow_action("workflow add", options) { @workflow_command.add(id: subject, path: source_path, dry_run: options[:dry_run]) }
       when "status"
         @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])
       when "advance"

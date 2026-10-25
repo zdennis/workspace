@@ -7,6 +7,7 @@ Run a workflow in a workspace: an ordered list of steps, each done by the agent 
 ```sh
 workspace workflow show [ID] [--source] [--json]
 workspace workflow validate PATH|- [--id ID] [--json]
+workspace workflow add ID PATH|- [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
@@ -22,6 +23,7 @@ workspace step status [--json]
 |------------|-------------|
 | `workflow show` | List the definitions, or print one: its inputs and what each step does. A `.yml` entry that can't be a definition (a name that is not an id, a directory) is listed as `INVALID` with why |
 | `workflow validate` | Check a definition's text, from a file or `-` for stdin, with the checks a definition on disk gets. Lists every problem at once and writes nothing; see [Validating a definition](#validating-a-definition) |
+| `workflow add` | Save a definition, from a file or `-` for stdin, as `~/.config/workspace/workflows/ID.yml` after the checks `validate` runs. Refused with `workflow_exists` when that file is there; a preset of the same id is left alone and the copy shadows it. See [Adding a definition](#adding-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing |
 | `workflow status` | The runs still going, one workspace's (`--name`), finished ones too (`--all`), or one run. Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to |
@@ -42,7 +44,7 @@ workspace step status [--json]
 | `--source` | `show ID`: print the file's text, with its sha256 and problems, valid or not; see [Reading a definition's file](#reading-a-definitions-file) |
 | `--id ID` | `validate`: check the text as this workflow id |
 | `--all` | `status`: finished runs too |
-| `--dry-run` | `run`: report what would start and start nothing |
+| `--dry-run` | `run`: report what would start and start nothing. `add`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
 | `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
 | `--json` | Print one JSON document |
@@ -135,6 +137,12 @@ Text in `instructions` and `prompt` may use `{{workspace}}`, `{{branch}}`, `{{ar
 
 The id the text is checked as is `--id`, else a string `id:` in the text, else the file's name without its extension, else `stdin` (for `-`, or a file name that is not an id). An `id:` that differs from `--id` is a problem. A relative `prompt_file:` is read from the file's directory for a PATH and from the current directory for `-`. The problems name the paths they looked at, never their contents.
 
+### Adding a definition
+
+`workflow add ID PATH` (or `-` for stdin) checks the text as `validate --id ID` does, then writes it to `~/.config/workspace/workflows/ID.yml`. It writes nothing else: a preset is never touched, and a copy of a preset's id shadows it, which is how a preset is changed. An `id:` in the text must be ID or absent. A relative `prompt_file:` is read from `~/.config/workspace/workflows/`, where the file will be loaded from, so what passes is what `run` will load.
+
+It is refused with `workflow_exists` when a file of that id is already there (a link counts, even one to a file that is gone); change it with `workflow update` instead. The check and the write happen under an exclusive lock on `.ID.yml.lock` in the same directory, so two adds of one id can't both pass; the text is written to a temp file there and renamed over `ID.yml`. The lock file is left in place. `--dry-run` takes the same lock and runs every check, and writes no definition; it may still create the workflows directory and the `.ID.yml.lock` file. An ID that could not be a file name is `invalid_workflow` before any path is touched. `add` writes no event-log line.
+
 ### Reading a definition's file
 
 `workflow show ID --source` answers the file itself, for an editor: the text exactly as stored, the `sha256` of its raw bytes and every problem the checks find. It works on a preset and on a global file that does not pass the checks (exit 0, where `show ID` fails with `invalid_workflow`), so a broken file can be loaded, fixed and saved. Without `--json` it prints the text alone and writes the problems to stderr. `--source` needs an ID.
@@ -219,9 +227,11 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `workflow validate --json` on a valid text prints `{"schema_version":1,"ok":true,"workflow":{...}}`: the definition with defaults filled in (as `show ID` gives it), plus `source` (`file`, or `stdin`), `path` (absolute, or `null` for stdin) and `sha256` of the text's bytes. On an invalid one it prints the error envelope with `code: "invalid_workflow"` and `details: {"workflow": ID, "path": PATH or null, "problems": [...]}`, and exits 1.
 
+`workflow add --json` prints an [action document](README.json.md#actions) with one row: `outcome` `added` (or `dry_run`, with the document's `status` `dry_run`), `workspace` `null`, `workflow` (the id), `path` (the file written, or that would be) and `sha256` (of the text's bytes, as `show ID --source` will report it). Refusals print the error envelope: `invalid_workflow` (with `details.problems`), `workflow_exists` (`details.workflow`, `details.path`) or `usage`.
+
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, and `current`: written during this attempt), `check` (whether the step has one) and `reported` (`status` and `summary`, or `null`).
 
-Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `input_required`, `workflow_command_unset`, `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
+Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `workflow_exists`, `input_required`, `workflow_command_unset`, `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
 
 ## Events
 
@@ -232,6 +242,8 @@ Every change to a run writes one `workflow_changed` to the [event log](README.ev
 ```sh
 workspace workflow validate lib/workflows/rpiv.yml --json
 cat draft.yml | workspace workflow validate - --id ship
+workspace workflow add ship draft.yml --dry-run --json
+cat draft.yml | workspace workflow add ship -
 workspace workflow show
 workspace workflow show rpiv
 workspace workflow show rpiv --source --json

@@ -205,6 +205,7 @@ module Workspace
       "use_ask_answer" => "An `ask:` id can't be acked or snoozed: a question leaves the inbox when it is answered or withdrawn. `details.id`.",
       "invalid_cursor" => "events --since was given something that isn't a cursor an events line printed.",
       "invalid_workflow" => "A workflow definition file doesn't pass the checks.",
+      "workflow_exists" => "workflow add found a user's file of that id already there (a link counts); nothing was written. details.workflow, details.path.",
       "input_required" => "workflow run is missing a required input.",
       "workflow_command_unset" => "A step's check names the project's test or lint command and the project has none.",
       "no_agent_pane" => "No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or plan start or spine start found no agent pane to type into (with --pane, the named pane runs no coding agent).",
