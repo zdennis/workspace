@@ -782,6 +782,36 @@ RSpec.describe Workspace::Commands::Snapshot do
       expect(parsed["warnings"].map { |w| w["code"] }).not_to include("spine_unavailable")
     end
 
+    describe "#document" do
+      it "returns the hash #call prints, and raises instead of printing for an unknown workspace" do
+        document = snapshot.document
+
+        expect(document).to include("schema_version" => 1, "ok" => true)
+        expect(document["projects"].map { |p| p["name"] }).to eq(%w[app other])
+        expect { snapshot.document(names: ["nope"]) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
+        expect(output.string).to eq("")
+      end
+
+      context "with inferred: true" do
+        let(:spine_inferred) { instance_double(Workspace::SpineInferred) }
+        let(:snapshot) do
+          described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
+            sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
+            plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, spine: spine, spine_facts: spine_facts,
+            output: output, error_output: error_output, clock: clock, groups: groups, spine_inferred: spine_inferred)
+        end
+
+        it "gives a member with no spine folder its inferred stage, and leaves the default document alone" do
+          stage = {"path" => "plan", "title" => "Plan", "status" => "in_progress", "owner" => nil, "source" => "inferred"}
+          allow(spine_inferred).to receive(:current_stage).and_return(stage)
+
+          blocks = snapshot.document(inferred: true)["projects"].flat_map { |p| p["members"] }.map { |m| m["spine"] }
+          expect(blocks).to all(eq({"exists" => false, "inferred" => stage}))
+          expect(snapshot.document["projects"].flat_map { |p| p["members"] }.map { |m| m["spine"] }).to all(eq({"exists" => false}))
+        end
+      end
+    end
+
     it "summarises the stages: the current one, its owner, the top-level counts and a signature" do
       write_spine("app.worktree-fix", "goal.md", "---\ntitle: Ship it\n---\n")
       write_spine("app.worktree-fix", "10-research.md", "---\nstatus: done\n---\n")

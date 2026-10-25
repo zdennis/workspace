@@ -108,6 +108,7 @@ RSpec.describe Workspace::CLI do
       plan_dispatch_command: overrides[:plan_dispatch_command],
       plan_task_command: overrides[:plan_task_command],
       ticket_command: overrides[:ticket_command],
+      goal_command: overrides[:goal_command],
       spine_command: overrides[:spine_command],
       spine_init_command: overrides[:spine_init_command],
       spine_start_command: overrides[:spine_start_command],
@@ -6981,6 +6982,45 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with goal" do
+    let(:goal_command) { instance_double(Workspace::Commands::Goal, show: nil, list: nil) }
+    let(:detector) { Struct.new(:found) { def detect(_dir) = found }.new(nil) }
+    let(:built) { build_test_cli(goal_command: goal_command, project_detector: detector, project_config: CLITestHelpers::FakeProjectConfig.new) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+
+    it "shows a ref" do
+      cli.run(["goal", "show", "LAB-1", "--json"])
+
+      expect(goal_command).to have_received(:show).with("LAB-1", json: true)
+    end
+
+    it "shows the workspace of the working directory when no ref is given" do
+      detector.found = "lab-wc-lab-1"
+
+      cli.run(["goal", "show"])
+
+      expect(goal_command).to have_received(:show).with("lab-wc-lab-1", json: false)
+    end
+
+    it "fails with not_in_workspace outside a workspace" do
+      expect { cli.run(["goal", "show", "--json"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+    end
+
+    it "lists, with --all and --json" do
+      cli.run(["goal", "list", "--all", "--json"])
+
+      expect(goal_command).to have_received(:list).with(all: true, json: true)
+    end
+
+    it "refuses --all on show and an unknown subcommand" do
+      expect { cli.run(["goal", "show", "x", "--all"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["goal", "nope"]) }.to raise_error(FakeSystemExit)
+    end
+  end
+
   describe "#run with ticket" do
     let(:ticket_command) { instance_double(Workspace::Commands::Ticket, show: nil, list: nil) }
     let(:built) { build_test_cli(ticket_command: ticket_command) }
@@ -7087,6 +7127,12 @@ RSpec.describe Workspace::CLI do
     let(:cli) { built[0] }
     let(:output) { built[1] }
     let(:error_output) { built[2] }
+
+    it "answers to journey, another name for spine" do
+      cli.run(["journey", "show"])
+
+      expect(spine_command).to have_received(:show).with(name: "detected-ws", json: false, stage: nil, body: false, evaluate: false)
+    end
 
     it "shows the spine of the workspace detected from the working directory" do
       cli.run(["spine", "show"])

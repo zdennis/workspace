@@ -319,6 +319,8 @@ require_relative "workspace/commands/plan_dispatch"
 require_relative "workspace/commands/plan_task"
 require_relative "workspace/commands/plan"
 require_relative "workspace/commands/ticket"
+require_relative "workspace/goal_state"
+require_relative "workspace/commands/goal"
 require_relative "workspace/commands/spine"
 require_relative "workspace/commands/spine_init"
 require_relative "workspace/commands/spine_start"
@@ -606,7 +608,9 @@ module Workspace
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
       ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config, task_store: task_store,
-      spine: spine_command, spine_facts: spine_facts, output: output, error_output: error_output, groups: project_groups)
+      spine: spine_command, spine_facts: spine_facts, output: output, error_output: error_output, groups: project_groups, spine_inferred: spine_inferred)
+    goal_command = Commands::Goal.new(snapshot: snapshot_command, catalog: project_catalog, task_store: task_store, workflow_status: workflow_status,
+      start_ref: start_ref, plan: plan_command, snapshot_client: agent_snapshot_client, output: output)
     # Hook output goes to stderr so it never lands in the JSON on stdout.
     json_hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: error_output, error_output: error_output, logger: logger)
     project_actions_command = Commands::ProjectActions.new(catalog: project_catalog, stop_command: stop_command, kill_command: kill_command,
@@ -756,6 +760,7 @@ module Workspace
       review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,
+      goal_command: goal_command,
       events_command: events_command,
       project_actions_command: project_actions_command,
       groups_command: groups_command,

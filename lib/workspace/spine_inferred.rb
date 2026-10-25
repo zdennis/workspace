@@ -169,6 +169,15 @@ module Workspace
       self.class.stages(input, result.facts)
     end
 
+    # @return [Hash, nil] the current inferred stage as a `goal` stage (`path`, `title`, `status`, `owner`, `source: "inferred"`);
+    #   nil when the plan could not be read, or no stage is current
+    def current_stage(workspace:, checkout:, result:)
+      return nil if result.readings.plan.nil?
+      docs = infer(workspace: workspace, checkout: checkout, result: result)
+      doc = docs.find { |each| each["path"] == SpineEvaluator.current(docs) }
+      doc && {"path" => doc["path"], "title" => doc["title"], "status" => doc["status"], "owner" => doc["owner"], "source" => "inferred"}
+    end
+
     private
 
     # The session counts as live when the daemon answered; otherwise it is unknown, never `stopped`.

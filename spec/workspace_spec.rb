@@ -139,6 +139,16 @@ RSpec.describe Workspace do
       expect(plan.instance_variable_get(:@ask_store_for).call("api")).to be_a(Workspace::AskStore)
     end
 
+    it "wires the goal command to the snapshot, the run status and the spine reads" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      goal = cli.instance_variable_get(:@goal_command)
+
+      expect(goal).to be_a(Workspace::Commands::Goal)
+      expect(goal.instance_variable_get(:@snapshot)).to equal(cli.instance_variable_get(:@snapshot_command))
+      expect(goal.instance_variable_get(:@workflow_status)).to be_a(Workspace::WorkflowStatus)
+    end
+
     it "wires the ticket command to the start-input resolver start uses" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 
