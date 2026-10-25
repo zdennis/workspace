@@ -54,7 +54,7 @@ module Workspace
 
       def call_json(project, pr:, working_dir:, &after_remove)
         finished = finish!(project, pr: pr, working_dir: working_dir, quiet: true, &after_remove)
-        document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "project" => finished, "pr_url" => @pr_url}
+        document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "project" => finished, "outcome" => @outcome, "pr_url" => @pr_url}
         document["dev_stopped"] = true if @kill_command.dev_stopped
         if (held = @kill_command.notes_inside_worktree)
           document["notes_inside_worktree"] = held
@@ -69,6 +69,7 @@ module Workspace
 
       def finish!(project, pr:, working_dir:, quiet: false, &after_remove)
         @pr_url = nil
+        @outcome = nil
         project ||= @project_detector.detect(working_dir)
         unless project
           raise Workspace::Error.new("No workspace found for #{working_dir}. Run from inside a worktree workspace or name one (--name WS).",
@@ -88,19 +89,30 @@ module Workspace
         check_clean_and_pushed!(project, worktree_path)
 
         open_pr!(project, worktree_path, quiet: quiet) if pr
+        @outcome = merged_into_default?(worktree_path) ? "merged" : "pushed"
 
         @output.puts "Finishing #{project}..." unless quiet
         # confirm: false skips Kill's prompt but keeps its unsaved-work check,
         # which Git#remove_worktree repeats right before removing: anything
         # committed or edited since the check above is refused, not deleted.
         begin
-          @kill_command.call(project, confirm: false, quiet: quiet, working_dir: working_dir, outcome: "merged", &after_remove)
+          @kill_command.call(project, confirm: false, quiet: quiet, working_dir: working_dir, outcome: @outcome, &after_remove)
         rescue Workspace::UnsavedWorkError => e
           raise Workspace::Error,
             "'#{project}' has unsaved work: #{e.summary}.\n" \
             "Not removing the worktree at #{worktree_path}. Commit and push, then rerun finish."
         end
         project
+      end
+
+      # Whether HEAD is already on the remote default branch, from the refs
+      # last fetched (no fetch here). A squash or rebase merge leaves the
+      # commits off that branch, so it reads as not merged.
+      def merged_into_default?(worktree_path)
+        base = @git.base_ref(worktree_path)
+        return false unless base&.start_with?("origin/")
+
+        @git.ancestor?(worktree_path, "HEAD", base)
       end
 
       def check_clean_and_pushed!(project, worktree_path)

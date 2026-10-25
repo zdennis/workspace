@@ -30,6 +30,7 @@ RSpec.describe Workspace::Commands::Finish do
   let(:worktree_path) { "/path/to/worktree" }
 
   before do
+    allow(git).to receive(:base_ref).and_return(nil)
     allow(kill_command).to receive(:notes_inside_worktree).and_return(nil)
     allow(kill_command).to receive(:dev_stopped).and_return(false)
     allow(project_config).to receive(:config_path_for)
@@ -139,17 +140,53 @@ RSpec.describe Workspace::Commands::Finish do
 
             it "passes quiet: true to Kill under --json" do
               allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
-              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: true, working_dir: tmpdir, outcome: "merged")
+              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: true, working_dir: tmpdir, outcome: "pushed")
 
               command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
             end
 
             it "reuses Kill for cleanup when clean and pushed" do
               allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
-              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: tmpdir, outcome: "merged")
+              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: tmpdir, outcome: "pushed")
 
               result = command.call("myproject.worktree-PROJ-123", working_dir: tmpdir)
               expect(result).to eq("myproject.worktree-PROJ-123")
+            end
+
+            context "when deciding between pushed and merged" do
+              before do
+                allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
+                allow(kill_command).to receive(:call)
+              end
+
+              it "reports merged when HEAD is an ancestor of origin/<default>" do
+                allow(git).to receive(:base_ref).with(worktree_path).and_return("origin/main")
+                allow(git).to receive(:ancestor?).with(worktree_path, "HEAD", "origin/main").and_return(true)
+
+                command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+
+                expect(kill_command).to have_received(:call).with(anything, hash_including(outcome: "merged"))
+                expect(JSON.parse(output.string)["outcome"]).to eq("merged")
+              end
+
+              it "reports pushed when HEAD is not on origin/<default>" do
+                allow(git).to receive(:base_ref).with(worktree_path).and_return("origin/main")
+                allow(git).to receive(:ancestor?).with(worktree_path, "HEAD", "origin/main").and_return(false)
+
+                command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+
+                expect(kill_command).to have_received(:call).with(anything, hash_including(outcome: "pushed"))
+                expect(JSON.parse(output.string)["outcome"]).to eq("pushed")
+              end
+
+              it "reports pushed, without asking git, when only a local default branch exists" do
+                allow(git).to receive(:base_ref).with(worktree_path).and_return("main")
+                expect(git).not_to receive(:ancestor?)
+
+                command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+
+                expect(kill_command).to have_received(:call).with(anything, hash_including(outcome: "pushed"))
+              end
             end
 
             it "has no override to skip the clean/pushed check" do
@@ -201,6 +238,14 @@ RSpec.describe Workspace::Commands::Finish do
                 expect(output.string).to include("PR already exists: https://github.com/org/repo/pull/1")
                 expect(runner_calls).to be_empty
                 expect(kill_command).to have_received(:call)
+              end
+
+              it "keeps the outcome pushed and reports the PR url under --json" do
+                command.call("myproject.worktree-PROJ-123", pr: true, json: true, working_dir: tmpdir)
+
+                doc = JSON.parse(output.string)
+                expect(doc).to include("outcome" => "pushed", "pr_url" => "https://github.com/org/repo/pull/2")
+                expect(kill_command).to have_received(:call).with(anything, hash_including(outcome: "pushed"))
               end
 
               it "creates a PR when none exists, without pushing" do
@@ -298,7 +343,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         command.call(nil, working_dir: marker_dir)
 
-        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: marker_dir, outcome: "merged")
+        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: marker_dir, outcome: "pushed")
       end
 
       it "finishes the active workspace whose root holds the directory when there is no marker" do
@@ -319,7 +364,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         finish.call(nil, working_dir: sub_dir)
 
-        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: sub_dir, outcome: "merged")
+        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: sub_dir, outcome: "pushed")
       end
 
       it "raises not_in_workspace when no workspace holds the directory and no project is given" do
@@ -366,7 +411,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         expect(result).to eq({exit_code: 0})
         parsed = JSON.parse(output.string)
-        expect(parsed).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123", "pr_url" => nil})
+        expect(parsed).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123", "outcome" => "pushed", "pr_url" => nil})
       end
 
       context "when kill stopped the worktree's dev environment" do
@@ -390,7 +435,7 @@ RSpec.describe Workspace::Commands::Finish do
         it "adds dev_stopped: true at the top level" do
           command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
 
-          expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123", "pr_url" => nil, "dev_stopped" => true})
+          expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123", "outcome" => "pushed", "pr_url" => nil, "dev_stopped" => true})
         end
       end
 
