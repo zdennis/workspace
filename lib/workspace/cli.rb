@@ -5025,7 +5025,7 @@ module Workspace
 
     def workflow_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace workflow show [ID] [--json]\n" \
+        opts.banner = "Usage: workspace workflow show [ID] [--source] [--json]\n" \
           "       workspace workflow validate PATH|- [--id ID] [--json]\n" \
           "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
           "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
@@ -5046,7 +5046,8 @@ module Workspace
         opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml, then the presets that"
         opts.separator "ship with workspace (rpiv: research, plan, implement, verify). See docs/README.workflow.md."
         opts.separator ""
-        opts.separator "  show      list the definitions, or print one (inputs, steps)"
+        opts.separator "  show      list the definitions, or print one (inputs, steps); --source gives the file's text, its sha256 and"
+        opts.separator "            its problems even when it is invalid (exit 0), for an editor"
         opts.separator "  validate  check a definition's text (a file, or - for stdin) with the checks a definition on"
         opts.separator "            disk gets, listing every problem at once; writes nothing. The id is --id, else"
         opts.separator "            its id: key, else the file's name (stdin: \"stdin\"); a relative prompt_file: is"
@@ -5073,6 +5074,7 @@ module Workspace
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
         opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
+        opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--all", "status: finished runs too") { options[:all] = true }
         opts.on("--dry-run", "run: report what would start and start nothing") { options[:dry_run] = true }
@@ -5083,6 +5085,7 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace workflow show rpiv"
+        opts.separator "  workspace workflow show rpiv --source --json"
         opts.separator "  workspace workflow validate lib/workflows/rpiv.yml --json"
         opts.separator "  cat draft.yml | workspace workflow validate - --id ship --json"
         opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
@@ -5095,7 +5098,7 @@ module Workspace
     end
 
     def cmd_workflow(args)
-      options = {json: false, inputs: [], all: false, dry_run: false, turn_ended: false}
+      options = {json: false, inputs: [], all: false, dry_run: false, turn_ended: false, source: false}
       given = args.dup
       parser = workflow_parser(options)
       refuse_bad_bytes!(args)
@@ -5114,8 +5117,11 @@ module Workspace
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
       raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && subject.nil?
 
+      raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
+      raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
+
       case subcommand
-      when "show" then @workflow_command.show(id: subject, json: options[:json])
+      when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source])
       when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json])
       when "status"
         @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])

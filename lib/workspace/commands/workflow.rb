@@ -24,7 +24,8 @@ module Workspace
       # @param clock [#call] returns the current Time
       # @param output [IO]
       # @param input [IO] read for `validate -`
-      def initialize(catalog:, engine:, status:, store:, panes:, clock: -> { Time.now }, output: $stdout, input: $stdin)
+      # @param error_output [IO] gets the problems `show --source` finds in a file's text
+      def initialize(catalog:, engine:, status:, store:, panes:, clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @catalog = catalog
         @engine = engine
         @status = status
@@ -33,16 +34,23 @@ module Workspace
         @clock = clock
         @output = output
         @input = input
+        @error_output = error_output
       end
 
       # Prints one definition, or every definition when +id+ is nil.
+      # With +source:+ it answers the definition's file as it is, valid or not: the
+      # text (nil when the bytes are not UTF-8), the sha256 of the raw bytes and
+      # every problem. The definition's own fields are added only when there are
+      # no problems. A file with problems is still an answer (exit 0).
       #
       # @param id [String, nil]
       # @param json [Boolean]
+      # @param source [Boolean] answer the file's text instead of the parsed definition
       # @return [void]
-      # @raise [Workspace::Error] code `unknown_workflow` or `invalid_workflow`
-      def show(id: nil, json: false)
+      # @raise [Workspace::Error] code `unknown_workflow`; without +source:+ also `invalid_workflow`
+      def show(id: nil, json: false, source: false)
         return list(json) unless id
+        return show_source(id, json) if source
         definition = @catalog.find(id)
         data = definition.to_h
         if json
@@ -270,6 +278,15 @@ module Workspace
 
       def document(body)
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true}.merge(body))
+      end
+
+      def show_source(id, json)
+        found = @catalog.source(id)
+        data = {"id" => id}.merge(found)
+        data = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"]).to_h.merge(data) if found["problems"].empty?
+        return document("workflow" => data) if json
+        @output.print found["text"] if found["text"]
+        found["problems"].each { |problem| @error_output.puts "#{id}: #{problem}" }
       end
 
       def list(json)

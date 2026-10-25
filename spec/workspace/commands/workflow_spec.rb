@@ -563,6 +563,78 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#show with source" do
+    let(:error_output) { StringIO.new }
+    let(:global_dir) { File.join(dir, "global") }
+    let(:builtin_dir) { File.join(dir, "builtin") }
+    let(:dir) { Dir.mktmpdir }
+    let(:real_catalog) do
+      Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir))
+    end
+    let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
+    subject(:command) do
+      described_class.new(catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, output: output, error_output: error_output)
+    end
+
+    before { FileUtils.mkdir_p([global_dir, builtin_dir]) }
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "answers a global file's bytes with their sha256, and the definition's fields" do
+      File.write(File.join(global_dir, "flow.yml"), valid)
+
+      command.show(id: "flow", json: true, source: true)
+
+      expect(json["workflow"]).to include("id" => "flow", "source" => "global", "path" => File.join(global_dir, "flow.yml"), "text" => valid,
+        "sha256" => Digest::SHA256.hexdigest(valid), "problems" => [], "title" => "Flow")
+      expect(json["workflow"]["steps"].map { |step| step["id"] }).to eq(["plan"])
+    end
+
+    it "works the same for a preset" do
+      File.write(File.join(builtin_dir, "rpiv.yml"), valid)
+
+      command.show(id: "rpiv", json: true, source: true)
+
+      expect(json["workflow"]).to include("id" => "rpiv", "source" => "builtin", "text" => valid, "sha256" => Digest::SHA256.hexdigest(valid), "problems" => [])
+    end
+
+    it "answers an invalid global file: its text, the raw-byte sha and every problem, with no definition fields" do
+      bad = "title: Flow\nbogus: 1\nmax_attempts: 0\nsteps:\n  plan:\n    nope: 1\n"
+      File.write(File.join(global_dir, "bad.yml"), bad)
+
+      command.show(id: "bad", json: true, source: true)
+
+      expect(json["ok"]).to eq(true)
+      expect(json["workflow"]).to include("text" => bad, "sha256" => Digest::SHA256.hexdigest(bad))
+      expect(json["workflow"]["problems"].size).to be >= 3
+      expect(json["workflow"]).not_to have_key("steps")
+      expect { command.show(id: "bad") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "gives text null for bytes that are not UTF-8, with the sha of the raw bytes" do
+      bytes = (+"title: \xFF\xFE").b
+      File.binwrite(File.join(global_dir, "bin.yml"), bytes)
+
+      command.show(id: "bin", json: true, source: true)
+
+      expect(json["workflow"]).to include("text" => nil, "sha256" => Digest::SHA256.hexdigest(bytes))
+      expect(json["workflow"]["problems"]).not_to be_empty
+    end
+
+    it "prints the text alone for a person, and the problems to stderr" do
+      File.write(File.join(global_dir, "bad.yml"), "steps: 1\n")
+
+      command.show(id: "bad", source: true)
+
+      expect(output.string).to eq("steps: 1\n")
+      expect(error_output.string).to start_with("bad: ")
+    end
+
+    it "raises unknown_workflow for an id with no file" do
+      expect { command.show(id: "nope", source: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+    end
+  end
+
   describe "#validate" do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }

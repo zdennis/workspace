@@ -5,7 +5,7 @@ Run a workflow in a workspace: an ordered list of steps, each done by the agent 
 ## Usage
 
 ```sh
-workspace workflow show [ID] [--json]
+workspace workflow show [ID] [--source] [--json]
 workspace workflow validate PATH|- [--id ID] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]
@@ -39,6 +39,7 @@ workspace step status [--json]
 | `--pane PANE` | `run`, `resume`: the pane to run in (`%19` or `0.1`), instead of the workspace's Claude pane |
 | `--from STEP` | `resume`: start again at this step |
 | `--to STEP` | `reject`: the step to run again (the gated step, or one before it) |
+| `--source` | `show ID`: print the file's text, with its sha256 and problems, valid or not; see [Reading a definition's file](#reading-a-definitions-file) |
 | `--id ID` | `validate`: check the text as this workflow id |
 | `--all` | `status`: finished runs too |
 | `--dry-run` | `run`: report what would start and start nothing |
@@ -134,6 +135,10 @@ Text in `instructions` and `prompt` may use `{{workspace}}`, `{{branch}}`, `{{ar
 
 The id the text is checked as is `--id`, else a string `id:` in the text, else the file's name without its extension, else `stdin` (for `-`, or a file name that is not an id). An `id:` that differs from `--id` is a problem. A relative `prompt_file:` is read from the file's directory for a PATH and from the current directory for `-`. The problems name the paths they looked at, never their contents.
 
+### Reading a definition's file
+
+`workflow show ID --source` answers the file itself, for an editor: the text exactly as stored, the `sha256` of its raw bytes and every problem the checks find. It works on a preset and on a global file that does not pass the checks (exit 0, where `show ID` fails with `invalid_workflow`), so a broken file can be loaded, fixed and saved. Without `--json` it prints the text alone and writes the problems to stderr. `--source` needs an ID.
+
 ### The `rpiv` preset
 
 `rpiv` is the one workflow that ships: research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
@@ -210,6 +215,8 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `workflow show --json` prints `{"schema_version":1,"ok":true,"workflows":[...]}` (each `id`, `title`, `description`, `source` (`global` or `builtin`), `path`, `sha256`, and `problems`, empty for a valid file), or with an ID `{"workflow":{...}}`: the definition with defaults filled in, `steps` as a list in run order, plus `source`, `path` and `sha256`.
 
+`workflow show ID --source --json` prints `{"schema_version":1,"ok":true,"workflow":{...}}` with `id`, `source` (`global` or `builtin`), `path`, `text` (the file's text, or `null` when its bytes are not UTF-8), `sha256` (of the file's raw bytes, whatever they are) and `problems` (empty when the file is valid). When `problems` is empty the definition's own fields (as `show ID` gives them) are added to the same object.
+
 `workflow validate --json` on a valid text prints `{"schema_version":1,"ok":true,"workflow":{...}}`: the definition with defaults filled in (as `show ID` gives it), plus `source` (`file`, or `stdin`), `path` (absolute, or `null` for stdin) and `sha256` of the text's bytes. On an invalid one it prints the error envelope with `code: "invalid_workflow"` and `details: {"workflow": ID, "path": PATH or null, "problems": [...]}`, and exits 1.
 
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, and `current`: written during this attempt), `check` (whether the step has one) and `reported` (`status` and `summary`, or `null`).
@@ -227,6 +234,7 @@ workspace workflow validate lib/workflows/rpiv.yml --json
 cat draft.yml | workspace workflow validate - --id ship
 workspace workflow show
 workspace workflow show rpiv
+workspace workflow show rpiv --source --json
 workspace workflow run rpiv --name my-app.worktree-pdf --input task="PROJ-101 invoice PDF export" --dry-run
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export" --note "Keep the public API as it is."
 workspace workflow status

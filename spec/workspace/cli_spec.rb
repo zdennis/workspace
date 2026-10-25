@@ -6341,7 +6341,30 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "show"])
       cli.run(["workflow", "show", "rpiv", "--json"])
 
-      expect(workflow_command.calls).to eq([[:show, {id: nil, json: false}], [:show, {id: "rpiv", json: true}]])
+      expect(workflow_command.calls).to eq([[:show, {id: nil, json: false, source: false}], [:show, {id: "rpiv", json: true, source: false}]])
+    end
+
+    it "passes --source to show" do
+      cli.run(["workflow", "show", "rpiv", "--source", "--json"])
+      expect(workflow_command.calls).to eq([[:show, {id: "rpiv", json: true, source: true}]])
+    end
+
+    it "answers an invalid global file with --source --json and exit 0, end to end" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "global"))
+        bad = "title: Flow\nbogus: 1\nsteps:\n  plan:\n    nope: 1\n"
+        File.write(File.join(dir, "global", "bad.yml"), bad)
+        catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: File.join(dir, "global"), builtin_workflows_dir: File.join(dir, "none")))
+        out = StringIO.new
+        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, output: out))[0]
+
+        real_cli.run(["workflow", "show", "bad", "--source", "--json"])
+        doc = JSON.parse(out.string)
+        expect(doc["workflow"]).to include("text" => bad, "sha256" => Digest::SHA256.hexdigest(bad))
+        expect(doc["workflow"]["problems"]).not_to be_empty
+
+        expect { real_cli.run(["workflow", "show", "bad"]) }.to raise_error(FakeSystemExit)
+      end
     end
 
     it "validates a PATH or stdin, with --id" do
@@ -6528,6 +6551,8 @@ RSpec.describe Workspace::CLI do
         ["workflow"] => /Missing subcommand: show, validate, run, status, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
+        ["workflow", "show", "--source"] => /workflow show --source needs an ID/,
+        ["workflow", "status", "--source"] => /--source is for `workflow show ID`/,
         ["workflow", "run"] => /workflow run needs an ID/,
         ["workflow", "cancel"] => /workflow cancel needs a RUN id/,
         ["workflow", "approve"] => /workflow approve needs a RUN id/,
@@ -6550,7 +6575,7 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow show [ID] [--json]").and include("workflow validate PATH|- [--id ID]").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)
