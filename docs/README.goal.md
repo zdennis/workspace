@@ -36,10 +36,10 @@ The first rule that holds wins.
 | `state` | When | `waiting_on` |
 | --- | --- | --- |
 | `done` | every spine stage `completed` or `skipped`, or the plan is `done` with no active run | `nothing` |
-| `waiting` | run reason `waiting_you`, `failed_check` or `turn_ended_incomplete`; plan `waiting`; the turn's pane `waiting` | `person` |
+| `waiting` | run reason `waiting_you`, `failed_check` or `turn_ended_incomplete` (that one only while the turn is not `working`); plan `waiting`; the turn's pane `waiting` | `person` |
 | `waiting_lock` | run reason `waiting_lock` | `lock` |
 | `working` | the turn is `working`, or the plan is `working` | `agent` |
-| `stuck` | run flag `idle` or `timed_out`, run reason `pane_gone`, plan `stalled`, or a running run whose workspace has no agent daemon | `person` |
+| `stuck` | run flag `idle` (the pane idle and the attempt at least 30s old) or `timed_out`, run reason `pane_gone`, plan `stalled`, or a running run whose workspace has no agent daemon | `person` |
 | `stopped` | no tmux session | `person` |
 | `idle` | a run, a `spine/` or a plan exists and nothing is working or waiting | `person` |
 | `none` | no run, no plan, no `spine/` | `nothing` |

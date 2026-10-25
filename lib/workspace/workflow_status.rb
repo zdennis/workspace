@@ -18,6 +18,9 @@ module Workspace
   # placeholder is ever in `args`.
   class WorkflowStatus
     # Seconds to wait for the workspace's agent daemon before going on without it.
+    # Seconds after an attempt starts during which an idle pane is not flagged `idle`.
+    IDLE_GRACE = 30
+
     SNAPSHOT_TIMEOUT = 1.0
 
     # @param store [Workspace::WorkflowRunStore]
@@ -157,8 +160,15 @@ module Workspace
         flags << "timed_out"
       end
       # The agent is idle on a step that still reads as being worked on: its turn ended unseen.
-      flags << "idle" if state["state"] == "running" && reason.nil? && WorkflowPanes.turn_over?(shown, @clock.call)
+      flags << "idle" if state["state"] == "running" && reason.nil? && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
       flags
+    end
+
+    # A pane reads idle for a moment right after a dispatch, before the agent takes the prompt.
+    def within_idle_grace?(started)
+      !started.nil? && @clock.call - Time.iso8601(started) < IDLE_GRACE
+    rescue ArgumentError
+      false
     end
 
     def actions(run, reason, pane)

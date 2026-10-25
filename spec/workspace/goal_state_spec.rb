@@ -39,6 +39,19 @@ RSpec.describe Workspace::GoalState do
     expect(goal(run: run(reason: {"code" => "waiting_you", "details" => {}})).next_step["event"]).to eq("answered")
   end
 
+  it "is working on the agent when a turn ended incomplete but the turn is working again" do
+    reason = {"code" => "turn_ended_incomplete"}
+
+    expect(goal(run: run(reason: reason), turn_state: "working")).to have_attributes(state: "working", waiting_on: "agent")
+    expect(goal(run: run(reason: reason), turn_state: "idle")).to have_attributes(state: "waiting", waiting_on: "person")
+    expect(goal(run: run(reason: {"code" => "failed_check"}), turn_state: "working").state).to eq("waiting")
+  end
+
+  it "reads an idle pane as working inside the grace and stuck once the run flags it idle" do
+    expect(goal(run: run(flags: []), turn_state: "idle").state).not_to eq("stuck")
+    expect(goal(run: run(flags: ["idle"]), turn_state: "idle")).to have_attributes(state: "stuck", waiting_on: "person")
+  end
+
   it "waits on an open ask, then on the pane's prompt" do
     asked = goal(member: member_row(questions: [{"id" => 7}]), turn_state: "waiting")
     prompted = goal(turn_state: "waiting", pane: {"pane_id" => "%5"})
