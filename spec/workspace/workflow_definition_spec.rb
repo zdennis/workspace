@@ -32,6 +32,11 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(problems("steps:\n  a:\n    prompt_file: p.md\n", path: nil)).to match([/prompt_file p\.md is relative/])
     end
 
+    it "says the text came from stdin, not an empty path, when it has no path" do
+      expect { described_class.parse("bogus: 1\n", id: "demo", source: "stdin", path: nil) }
+        .to raise_error(Workspace::Error) { |e| expect(e.message).to start_with("Workflow 'demo' (from stdin) is not valid:") }
+    end
+
     it "keeps the text it was given and the digest of it" do
       definition = parse(minimal)
 

@@ -5021,11 +5021,12 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show run status resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate run status resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
         opts.banner = "Usage: workspace workflow show [ID] [--json]\n" \
+          "       workspace workflow validate PATH|- [--id ID] [--json]\n" \
           "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
           "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
           "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
@@ -5046,6 +5047,10 @@ module Workspace
         opts.separator "ship with workspace (rpiv: research, plan, implement, verify). See docs/README.workflow.md."
         opts.separator ""
         opts.separator "  show      list the definitions, or print one (inputs, steps)"
+        opts.separator "  validate  check a definition's text (a file, or - for stdin) with the checks a definition on"
+        opts.separator "            disk gets, listing every problem at once; writes nothing. The id is --id, else"
+        opts.separator "            its id: key, else the file's name (stdin: \"stdin\"); a relative prompt_file: is"
+        opts.separator "            read from the file's directory (stdin: the current directory)"
         opts.separator "  run       start a run in a workspace (the current one, or --name); --dry-run checks"
         opts.separator "            the inputs, the project's commands and the pane, and starts nothing"
         opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
@@ -5068,6 +5073,7 @@ module Workspace
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
         opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
+        opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--all", "status: finished runs too") { options[:all] = true }
         opts.on("--dry-run", "run: report what would start and start nothing") { options[:dry_run] = true }
         opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
@@ -5077,6 +5083,8 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace workflow show rpiv"
+        opts.separator "  workspace workflow validate lib/workflows/rpiv.yml --json"
+        opts.separator "  cat draft.yml | workspace workflow validate - --id ship --json"
         opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
         opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\""
         opts.separator "  workspace workflow status --json"
@@ -5097,17 +5105,18 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, run, status, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, run, status, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"run" => "an ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "run" => "an ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
       raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && subject.nil?
 
       case subcommand
       when "show" then @workflow_command.show(id: subject, json: options[:json])
+      when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json])
       when "status"
         @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])
       when "advance"

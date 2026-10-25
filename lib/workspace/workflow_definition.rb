@@ -95,7 +95,7 @@ module Workspace
       @problems = []
       @data = build(load_yaml(text))
       return if @problems.empty?
-      raise Workspace::Error.new("Workflow '#{id}' (#{path}) is not valid:\n" + @problems.map { |problem| "  - #{problem}" }.join("\n"),
+      raise Workspace::Error.new("Workflow '#{id}' #{path ? "(#{path})" : "(from stdin)"} is not valid:\n" + @problems.map { |problem| "  - #{problem}" }.join("\n"),
         code: "invalid_workflow", details: {"workflow" => id, "path" => path, "problems" => @problems})
     end
 

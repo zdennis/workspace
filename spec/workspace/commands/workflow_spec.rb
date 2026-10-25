@@ -562,4 +562,110 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to eq("Step verify (attempt 1, running) of workflow run wr_1 (flow) in app.\nWhen your turn ends, the runner runs the step's check.\n")
     end
   end
+
+  describe "#validate" do
+    let(:input) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    subject(:command) do
+      described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, output: output, input: input)
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    def write(name, text)
+      File.join(dir, name).tap { |path| File.write(path, text) }
+    end
+
+    let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
+
+    it "answers the checked definition for a valid file, named for its file, and writes nothing" do
+      path = write("flow.yml", valid)
+
+      command.validate(path: path, json: true)
+
+      expect(json).to include("ok" => true, "schema_version" => 1)
+      expect(json["workflow"]).to include("id" => "flow", "source" => "file", "path" => path, "sha256" => Digest::SHA256.hexdigest(valid))
+      expect(json["workflow"]["steps"].map { |step| step["id"] }).to eq(["plan"])
+      expect(Dir.children(dir)).to eq(["flow.yml"])
+    end
+
+    it "reads stdin for -, checked as the placeholder id stdin" do
+      input.string = valid
+
+      command.validate(path: "-", json: true)
+
+      expect(json["workflow"]).to include("id" => "stdin", "source" => "stdin", "path" => nil)
+    end
+
+    it "takes the id from a string id: key, and --id over both" do
+      input.string = "id: ship\n#{valid}"
+      command.validate(path: "-", json: true)
+      expect(json["workflow"]["id"]).to eq("ship")
+
+      output.truncate(0)
+      output.rewind
+      input.string = valid
+      command.validate(path: "-", id: "other", json: true)
+      expect(json["workflow"]["id"]).to eq("other")
+    end
+
+    it "prints a line for a person" do
+      command.validate(path: write("flow.yml", valid))
+
+      expect(output.string).to eq("flow: valid (1 steps)\n")
+    end
+
+    it "uses the placeholder when the file's name is not an id" do
+      command.validate(path: write("Bad Name.yml", valid), json: true)
+
+      expect(json["workflow"]["id"]).to eq("stdin")
+    end
+
+    it "fails an --id that differs from the file's id: key" do
+      input.string = "id: ship\n#{valid}"
+
+      expect { command.validate(path: "-", id: "other") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_workflow")
+        expect(e.details["problems"]).to include(a_string_matching(/id must be "other"/))
+      }
+    end
+
+    it "lists every problem at once" do
+      input.string = "title: Flow\nbogus: 1\nmax_attempts: 0\nsteps:\n  plan:\n    nope: 1\n"
+
+      expect { command.validate(path: "-") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_workflow")
+        expect(e.details["problems"].size).to be >= 3
+        expect(e.details["path"]).to be_nil
+      }
+    end
+
+    it "fails text that is not YAML or not UTF-8 with the same code" do
+      input.string = "a: [unclosed"
+      expect { command.validate(path: "-") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+
+      input.string = (+"title: \xFF\xFE").b
+      expect { command.validate(path: "-") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_workflow")
+        expect(e.details["problems"]).to include("the file is not valid UTF-8 text")
+      }
+    end
+
+    it "reads a relative prompt_file beside the file, and from the current directory for stdin" do
+      File.write(File.join(dir, "p.md"), "Do it.")
+      text = "title: Flow\nsteps:\n  plan:\n    prompt_file: p.md\n"
+
+      command.validate(path: write("flow.yml", text), json: true)
+      expect(json["workflow"]["steps"].first["prompt"]).to eq("Do it.")
+
+      input.string = text
+      Dir.chdir(Dir.mktmpdir) { expect { command.validate(path: "-") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") } }
+      input.string = text
+      Dir.chdir(dir) { expect { command.validate(path: "-") }.not_to raise_error }
+    end
+
+    it "refuses a PATH that can't be read as a usage error" do
+      expect { command.validate(path: File.join(dir, "nope.yml")) }.to raise_error(Workspace::UsageError, /Can't read .*nope\.yml: No such file or directory\z/)
+    end
+  end
 end

@@ -560,7 +560,8 @@ module Workspace
       status: workflow_status,
       store: workflow_store,
       panes: workflow_panes,
-      output: output
+      output: output,
+      input: input
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
       log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)

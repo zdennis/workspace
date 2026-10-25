@@ -23,7 +23,8 @@ module Workspace
       # @param panes [Workspace::WorkflowPanes]
       # @param clock [#call] returns the current Time
       # @param output [IO]
-      def initialize(catalog:, engine:, status:, store:, panes:, clock: -> { Time.now }, output: $stdout)
+      # @param input [IO] read for `validate -`
+      def initialize(catalog:, engine:, status:, store:, panes:, clock: -> { Time.now }, output: $stdout, input: $stdin)
         @catalog = catalog
         @engine = engine
         @status = status
@@ -31,6 +32,7 @@ module Workspace
         @panes = panes
         @clock = clock
         @output = output
+        @input = input
       end
 
       # Prints one definition, or every definition when +id+ is nil.
@@ -52,6 +54,29 @@ module Workspace
         data["inputs"].each { |name, spec| @output.puts "  #{name}#{" (required)" if spec["required"]}#{": #{spec["description"]}" if spec["description"]}" }
         @output.puts "Steps:"
         data["steps"].each { |step| @output.puts "  #{step["id"].ljust(12)} #{step_traits(step)}".rstrip }
+      end
+
+      # Checks a definition's text with the checks a definition on disk gets, and
+      # writes nothing. +prompt_file:+ resolves against the file's directory for a
+      # PATH and against the current directory for stdin.
+      #
+      # @param path [String] a file, or "-" for stdin
+      # @param id [String, nil] the id to check it as; else a string `id:` in the text, else the file's name, else "stdin"
+      # @param json [Boolean]
+      # @return [void]
+      # @raise [Workspace::UsageError] when PATH can't be read
+      # @raise [Workspace::Error] code `invalid_workflow`, with `details.problems` listing every problem
+      def validate(path:, id: nil, json: false)
+        stdin = path == "-"
+        text = read_text(path, stdin)
+        id ||= claimed_id(text) || (stdin ? STDIN_ID : file_id(path))
+        definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
+          path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil)
+        if json
+          document("workflow" => definition.to_h.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256))
+        else
+          @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)"
+        end
       end
 
       # Starts a run of a workflow in a workspace.
@@ -220,6 +245,28 @@ module Workspace
       end
 
       private
+
+      # The id a text with no --id is checked as when it names none.
+      STDIN_ID = "stdin"
+
+      def read_text(path, stdin)
+        (stdin ? @input.read : File.binread(path)).to_s.dup.force_encoding(Encoding::UTF_8)
+      rescue SystemCallError => e
+        raise UsageError, "Can't read #{path}: #{e.message.sub(/ (@ .*)?- .*\z/, "")}"
+      end
+
+      # A string `id:` in the text, if it parses far enough to have one.
+      def claimed_id(text)
+        value = YAML.safe_load(text)&.then { |doc| doc["id"] if doc.is_a?(Hash) }
+        value if value.is_a?(String)
+      rescue Psych::Exception, ArgumentError
+        nil
+      end
+
+      def file_id(path)
+        name = File.basename(path, ".*")
+        WorkflowDefinition::ID_PATTERN.match?(name) ? name : STDIN_ID
+      end
 
       def document(body)
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true}.merge(body))

@@ -6,6 +6,7 @@ Run a workflow in a workspace: an ordered list of steps, each done by the agent 
 
 ```sh
 workspace workflow show [ID] [--json]
+workspace workflow validate PATH|- [--id ID] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
@@ -20,6 +21,7 @@ workspace step status [--json]
 | Subcommand | Description |
 |------------|-------------|
 | `workflow show` | List the definitions, or print one: its inputs and what each step does. A `.yml` entry that can't be a definition (a name that is not an id, a directory) is listed as `INVALID` with why |
+| `workflow validate` | Check a definition's text, from a file or `-` for stdin, with the checks a definition on disk gets. Lists every problem at once and writes nothing; see [Validating a definition](#validating-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing |
 | `workflow status` | The runs still going, one workspace's (`--name`), finished ones too (`--all`), or one run. Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to |
@@ -37,6 +39,7 @@ workspace step status [--json]
 | `--pane PANE` | `run`, `resume`: the pane to run in (`%19` or `0.1`), instead of the workspace's Claude pane |
 | `--from STEP` | `resume`: start again at this step |
 | `--to STEP` | `reject`: the step to run again (the gated step, or one before it) |
+| `--id ID` | `validate`: check the text as this workflow id |
 | `--all` | `status`: finished runs too |
 | `--dry-run` | `run`: report what would start and start nothing |
 | `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
@@ -125,6 +128,12 @@ Step keys:
 
 Text in `instructions` and `prompt` may use `{{workspace}}`, `{{branch}}`, `{{artifacts}}` (the run's directory, `<checkout>/.workflow/<run>`), `{{run}}` and `{{inputs.NAME}}`. Any other placeholder is a problem in the definition. A definition with problems is reported with all of them at once (code `invalid_workflow`).
 
+### Validating a definition
+
+`workflow validate PATH` reads the file; `workflow validate -` reads stdin. It runs the same checks `show` and `run` do, reports every problem at once, and writes nothing (it does not touch `~/.config/workspace/workflows/`). It exits 0 when the text is valid and 1 with `invalid_workflow` when it is not. A file that is not UTF-8 text or not a YAML mapping fails the same way; a PATH that can't be read is a usage error.
+
+The id the text is checked as is `--id`, else a string `id:` in the text, else the file's name without its extension, else `stdin` (for `-`, or a file name that is not an id). An `id:` that differs from `--id` is a problem. A relative `prompt_file:` is read from the file's directory for a PATH and from the current directory for `-`. The problems name the paths they looked at, never their contents.
+
 ### The `rpiv` preset
 
 `rpiv` is the one workflow that ships: research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
@@ -201,6 +210,8 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `workflow show --json` prints `{"schema_version":1,"ok":true,"workflows":[...]}` (each `id`, `title`, `description`, `source` (`global` or `builtin`), `path`, `sha256`, and `problems`, empty for a valid file), or with an ID `{"workflow":{...}}`: the definition with defaults filled in, `steps` as a list in run order, plus `source`, `path` and `sha256`.
 
+`workflow validate --json` on a valid text prints `{"schema_version":1,"ok":true,"workflow":{...}}`: the definition with defaults filled in (as `show ID` gives it), plus `source` (`file`, or `stdin`), `path` (absolute, or `null` for stdin) and `sha256` of the text's bytes. On an invalid one it prints the error envelope with `code: "invalid_workflow"` and `details: {"workflow": ID, "path": PATH or null, "problems": [...]}`, and exits 1.
+
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, and `current`: written during this attempt), `check` (whether the step has one) and `reported` (`status` and `summary`, or `null`).
 
 Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `input_required`, `workflow_command_unset`, `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
@@ -212,6 +223,8 @@ Every change to a run writes one `workflow_changed` to the [event log](README.ev
 ## Examples
 
 ```sh
+workspace workflow validate lib/workflows/rpiv.yml --json
+cat draft.yml | workspace workflow validate - --id ship
 workspace workflow show
 workspace workflow show rpiv
 workspace workflow run rpiv --name my-app.worktree-pdf --input task="PROJ-101 invoice PDF export" --dry-run

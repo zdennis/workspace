@@ -6344,6 +6344,13 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls).to eq([[:show, {id: nil, json: false}], [:show, {id: "rpiv", json: true}]])
     end
 
+    it "validates a PATH or stdin, with --id" do
+      cli.run(["workflow", "validate", "a.yml", "--json"])
+      cli.run(["workflow", "validate", "-", "--id", "ship"])
+
+      expect(workflow_command.calls).to eq([[:validate, {path: "a.yml", id: nil, json: true}], [:validate, {path: "-", id: "ship", json: false}]])
+    end
+
     it "starts a run in the detected workspace, from its working directory" do
       cli.run(["workflow", "run", "rpiv", "--input", "task=PROJ-1 export=pdf", "--input", "spec=", "--note", "Keep it small."])
 
@@ -6518,8 +6525,9 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, run, status, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, run, status, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
+        ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "run"] => /workflow run needs an ID/,
         ["workflow", "cancel"] => /workflow cancel needs a RUN id/,
         ["workflow", "approve"] => /workflow approve needs a RUN id/,
@@ -6542,7 +6550,7 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow show [ID] [--json]").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow show [ID] [--json]").and include("workflow validate PATH|- [--id ID]").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)
