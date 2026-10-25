@@ -207,6 +207,7 @@ module Workspace
       "unknown_goal" => "goal show: REF matches no workspace, run, task, ticket or branch. details.ref, details.tried.",
       "ambiguous_goal" => "goal show: REF matches more than one workspace (a branch checked out in two projects). details.ref, details.matches (workspace, project, branch).",
       "stage_disagrees" => "goal warning: the goal's state is done but its current stage is not completed or skipped. workspace, details.stage, details.status.",
+      "delivery_unavailable" => "goal warning: the goal is otherwise finished but git could not say whether its branch landed (no such branch, or no default branch to compare with), so delivery, delivered and not_yet read unknown and the goal is not done. workspace.",
       "turn_unavailable" => "goal warning: the workspace runs but its agent daemon gave no panes, so the turn and tool call are null. workspace.",
       "run_not_active" => "The workflow run has finished, so nothing more can happen to it.",
       "gate_not_waiting" => "workflow approve or reject named a run that isn't waiting at a gate.",

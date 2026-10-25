@@ -61,7 +61,7 @@ These commands take `--json` and print one action document: `add`, `launch`, `st
 
 ## Goal
 
-`goal show [REF] --json` prints `{"schema_version":1,"ok":true,"goal":{...},"warnings":[]}` and `goal list [--all] --json` prints `{"schema_version":1,"ok":true,"goals":[...],"warnings":[]}`. Both are read-only; a source that can't answer is a null level plus a warning. Every field, the closed value sets, nullability and warning codes are in [README.goal.md](README.goal.md).
+`goal show [REF] --json` prints `{"schema_version":1,"ok":true,"goal":{...},"warnings":[]}` and `goal list [--all] --json` prints `{"schema_version":1,"ok":true,"goals":[...],"warnings":[]}`. Both are read-only; a source that can't answer is a null level plus a warning. `show` also carries `done_means` and `not_yet` (lists of `{code, text}`) and `delivery`, and `list` rows `delivered` and `not_yet_codes`: a finished plan or spine is `done` only once the branch's commits are on the default branch (local git only). Every field, the closed value sets, nullability and warning codes are in [README.goal.md](README.goal.md).
 
 ## Failure
 
@@ -306,6 +306,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `unknown_goal` | `goal show` was given a REF that matches no workspace name, run id, task id, ticket key or URL, or branch. `details.ref`, `details.tried` (`workspace`, `run`, `task`, `ref`, `branch`). |
 | `ambiguous_goal` | `goal show` was given a REF that matches more than one workspace, such as a branch checked out in two projects. `details.ref`, `details.matches` (each `workspace`, `project`, `branch`); name the workspace. |
 | `stage_disagrees` | `goal show` or `goal list` warning: `state` is `done` but the current stage is not `completed` or `skipped`. `workspace`, `details.stage`, `details.status`. |
+| `delivery_unavailable` | `goal show` or `goal list` warning: the goal is otherwise finished but git could not say whether its branch landed, so `delivery` is null, `delivered` is null and the goal is not `done`. `workspace`. |
 | `turn_unavailable` | `goal show` or `goal list` warning: the workspace runs but its agent daemon gave no panes, so `turn` and `tool` are null. `workspace`. |
 | `run_not_active` | The workflow run has finished, so nothing more can happen to it. `details.run_id`, `details.state`. |
 | `gate_not_waiting` | workflow approve or reject named a run that isn't waiting at a gate. `details.run_id`, `details.step`, `details.state`. |

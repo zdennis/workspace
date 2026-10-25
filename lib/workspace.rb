@@ -321,6 +321,7 @@ require_relative "workspace/commands/plan_dispatch"
 require_relative "workspace/commands/plan_task"
 require_relative "workspace/commands/plan"
 require_relative "workspace/commands/ticket"
+require_relative "workspace/delivery_facts"
 require_relative "workspace/goal_state"
 require_relative "workspace/commands/goal"
 require_relative "workspace/commands/spine"
@@ -616,7 +617,7 @@ module Workspace
       ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config, task_store: task_store,
       spine: spine_command, spine_facts: spine_facts, output: output, error_output: error_output, groups: project_groups, spine_inferred: spine_inferred)
     goal_command = Commands::Goal.new(snapshot: snapshot_command, catalog: project_catalog, task_store: task_store, workflow_status: workflow_status,
-      start_ref: start_ref, plan: plan_command, snapshot_client: agent_snapshot_client, output: output)
+      start_ref: start_ref, plan: plan_command, snapshot_client: agent_snapshot_client, delivery: DeliveryFacts.new(git: git), output: output)
     # Hook output goes to stderr so it never lands in the JSON on stdout.
     json_hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: error_output, error_output: error_output, logger: logger)
     project_actions_command = Commands::ProjectActions.new(catalog: project_catalog, stop_command: stop_command, kill_command: kill_command,

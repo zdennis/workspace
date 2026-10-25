@@ -64,7 +64,7 @@ module Workspace
         "dev_down_holder" => 1,
         "plan" => 5,
         "ticket" => 2,
-        "goal" => 1,
+        "goal" => 2,
         "spine" => 3,
         "spine_eval" => 3,
         "spine_set" => 3,
