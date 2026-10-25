@@ -6444,6 +6444,64 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    it "parses remove ID with --yes or --dry-run as an action document, and prints the help" do
+      workflow_command.row = {"workspace" => nil, "outcome" => "removed", "reason" => nil, "message" => "Removed workflow ship at /g/ship.yml.", "workflow" => "ship", "path" => "/g/ship.yml"}
+
+      cli.run(["workflow", "remove", "ship", "--yes", "--json"])
+      cli.run(["workflow", "remove", "ship", "--dry-run"])
+
+      expect(workflow_command.calls.select { |call| call.first == :remove }).to eq([[:remove, {id: "ship", yes: true, dry_run: false}], [:remove, {id: "ship", yes: nil, dry_run: true}]])
+      expect(JSON.parse(output.string.lines.first)).to include("ok" => true, "action" => "workflow remove")
+      output.truncate(0)
+      cli.run(["workflow", "--help"])
+      expect(output.string).to include("workspace workflow remove ID [--yes] [--dry-run] [--json]", "remove: check and delete nothing", "--yes")
+    end
+
+    it "answers a declined prompt as status cancelled and exit 0" do
+      workflow_command.row = nil
+      expect { cli.run(["workflow", "remove", "ship"]) }.not_to raise_error
+      expect(workflow_command.calls.last).to eq([:remove, {id: "ship", yes: nil, dry_run: false}])
+    end
+
+    it "treats --json without --yes or --dry-run as a usage error that never prompts" do
+      expect { cli.run(["workflow", "remove", "ship", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(workflow_command.calls.map(&:first)).not_to include(:remove)
+    end
+
+    it "removes a definition end to end, refuses with confirmation_required under --no-input, and answers cancelled on a declined prompt" do
+      Dir.mktmpdir do |dir|
+        home = File.join(dir, "home", "workflows")
+        FileUtils.mkdir_p(home)
+        File.write(File.join(home, "ship.yml"), "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n")
+        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
+        catalog = Workspace::WorkflowCatalog.new(config: config)
+        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+          engine: nil, status: nil, store: nil, panes: nil, output: StringIO.new, input: StringIO.new("n\n"))
+        real_cli, out = build_test_cli(workflow_command: command)
+
+        expect { real_cli.run(["workflow", "remove", "ship"]) }.not_to raise_error
+        expect(File.exist?(File.join(home, "ship.yml"))).to be(true)
+
+        guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
+        unknown_cli, unknown_out = build_test_cli(workflow_command: command, input: guarded)
+        expect { unknown_cli.run(["workflow", "remove", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(unknown_out.string.lines.last)).to include("ok" => false, "code" => "unknown_workflow")
+
+        no_input_cli, no_input_out = build_test_cli(workflow_command: command, input: Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true))
+        expect { no_input_cli.run(["workflow", "remove", "ship", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(no_input_out.string.lines.last)).to include("ok" => false, "code" => "confirmation_required")
+        expect(File.exist?(File.join(home, "ship.yml"))).to be(true)
+
+        real_cli.run(["workflow", "remove", "ship", "--dry-run", "--json"])
+        expect(JSON.parse(out.string.lines.last)["results"].first).to include("outcome" => "dry_run", "workflow" => "ship")
+        expect(File.exist?(File.join(home, "ship.yml"))).to be(true)
+
+        real_cli.run(["workflow", "remove", "ship", "--yes", "--json"])
+        expect(JSON.parse(out.string.lines.last)["results"].first).to include("outcome" => "removed", "workflow" => "ship", "path" => File.join(home, "ship.yml"))
+        expect(File.exist?(File.join(home, "ship.yml"))).to be(false)
+      end
+    end
+
     it "validates a PATH or stdin, with --id" do
       cli.run(["workflow", "validate", "a.yml", "--json"])
       cli.run(["workflow", "validate", "-", "--id", "ship"])
@@ -6625,7 +6683,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, update, run, status, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, status, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "show", "--source"] => /workflow show --source needs an ID/,
@@ -6645,6 +6703,8 @@ RSpec.describe Workspace::CLI do
         ["workflow", "update", "ship", "a.yml"] => /workflow update needs --if-sha256 SHA/,
         ["workflow", "update", "ship", "a.yml", "--if-sha256", ""] => /workflow update needs --if-sha256 SHA/,
         ["workflow", "update", "ship", "a.yml", "--if-sha256", "abc", "extra"] => /Unexpected argument: extra/,
+        ["workflow", "remove"] => /workflow remove needs an ID/,
+        ["workflow", "remove", "ship", "extra"] => /Unexpected argument: extra/,
         ["workflow", "show", "rpiv", "extra"] => /Unexpected argument: extra/,
         ["workflow", "validate", "a.yml", "b.yml"] => /Unexpected argument: b\.yml/,
         ["workflow", "cancel", "wr_1", "wr_2"] => /Unexpected argument: wr_2/,

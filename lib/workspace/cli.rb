@@ -5021,7 +5021,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update run status resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run status resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5029,6 +5029,7 @@ module Workspace
           "       workspace workflow validate PATH|- [--id ID] [--json]\n" \
           "       workspace workflow add ID PATH|- [--dry-run] [--json]\n" \
           "       workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]\n" \
+          "       workspace workflow remove ID [--yes] [--dry-run] [--json]\n" \
           "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
           "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
           "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
@@ -5062,6 +5063,10 @@ module Workspace
         opts.separator "            file's raw bytes still hash to --if-sha256 (from `show ID --source` or `list`; a broken"
         opts.separator "            file can be replaced); refused with stale_workflow when it changed, builtin_workflow"
         opts.separator "            for a preset with no file of yours; --dry-run checks and writes no definition"
+        opts.separator "  remove    delete your ID.yml (a link itself, never its target); asks first unless --yes or"
+        opts.separator "            --dry-run, and refuses with confirmation_required under --no-input; a preset of the"
+        opts.separator "            same id is then in effect again; unknown_workflow when you have no file,"
+        opts.separator "            builtin_workflow for a preset alone; --dry-run checks and deletes nothing"
         opts.separator "  run       start a run in a workspace (the current one, or --name); --dry-run checks"
         opts.separator "            the inputs, the project's commands and the pane, and starts nothing"
         opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
@@ -5087,7 +5092,8 @@ module Workspace
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--all", "status: finished runs too") { options[:all] = true }
-        opts.on("--dry-run", "run: report what would start and start nothing; add, update: check and write no definition (the lock file may be created)") { options[:dry_run] = true }
+        opts.on("--dry-run", "run: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
+        opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
         opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
         opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
@@ -5101,6 +5107,7 @@ module Workspace
         opts.separator "  cat draft.yml | workspace workflow validate - --id ship --json"
         opts.separator "  workspace workflow add ship draft.yml --dry-run --json"
         opts.separator "  workspace workflow update ship draft.yml --if-sha256 SHA --json"
+        opts.separator "  workspace workflow remove ship --yes --json"
         opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
         opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\""
         opts.separator "  workspace workflow status --json"
@@ -5121,13 +5128,13 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, run, status, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, status, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
       source_path = args.shift if %w[add update].include?(subcommand)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "run" => "an ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
       raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?))
 
@@ -5141,6 +5148,13 @@ module Workspace
       when "update"
         raise UsageError, "workflow update needs --if-sha256 SHA (the sha256 from `workflow show ID --source`)." if options[:if_sha256].to_s.empty?
         workflow_action("workflow update", options) { @workflow_command.update(id: subject, path: source_path, if_sha256: options[:if_sha256], dry_run: options[:dry_run]) }
+      when "remove"
+        @workflow_command.check_removable(id: subject)
+        unless options[:yes] || options[:dry_run]
+          Prompt.refuse_if_no_input!(@input, "Remove workflow #{subject}?", retry_flags: ["--yes"], destructive: true)
+          raise UsageError, "workflow remove --json never prompts: pass --yes to remove, or --dry-run to preview." if options[:json]
+        end
+        workflow_action("workflow remove", options) { @workflow_command.remove(id: subject, yes: options[:yes], dry_run: options[:dry_run]) }
       when "status"
         @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])
       when "advance"
@@ -5200,6 +5214,7 @@ module Workspace
     def workflow_action(action, options)
       run_action(action, json: options[:json]) do
         row = yield
+        next {exit_code: 0, results: [], status: "cancelled"} unless row
         {exit_code: (row["outcome"] == "failed") ? 1 : 0, results: [row], status: (row["outcome"] == "dry_run") ? "dry_run" : nil}
       end
     end

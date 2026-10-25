@@ -1001,4 +1001,90 @@ RSpec.describe Workspace::Commands::Workflow do
       end
     end
   end
+
+  describe "#remove" do
+    let(:input) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
+    let(:builtin_dir) { File.join(dir, "lib", "workflows") }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
+    let(:target) { File.join(global_dir, "flow.yml") }
+    let(:body) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
+    subject(:command) do
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: input)
+    end
+
+    before do
+      FileUtils.mkdir_p([global_dir, builtin_dir])
+      File.write(target, body)
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "removes the file with yes, answering removed with its path, and asks nothing" do
+      row = command.remove(id: "flow", yes: true)
+
+      expect(row).to eq("workspace" => nil, "outcome" => "removed", "reason" => nil, "message" => "Removed workflow flow at #{target}.", "workflow" => "flow", "path" => target)
+      expect(File.exist?(target)).to be(false)
+      expect(output.string).not_to include("[y/N]")
+    end
+
+    it "answers dry_run with no yes and deletes nothing" do
+      row = command.remove(id: "flow", dry_run: true)
+
+      expect(row).to include("outcome" => "dry_run", "message" => "Would remove workflow flow at #{target}.")
+      expect(File.read(target)).to eq(body)
+    end
+
+    it "says the preset is in effect again" do
+      File.write(File.join(builtin_dir, "flow.yml"), body)
+      row = command.remove(id: "flow", yes: true)
+      expect(row["message"]).to eq("Removed workflow flow at #{target}; the preset of the same id is in effect again.")
+    end
+
+    it "prompts, and removes on y" do
+      input.string = "y\n"
+      expect(command.remove(id: "flow")).to include("outcome" => "removed")
+      expect(output.string).to include("Remove workflow flow (#{target})? [y/N] ")
+    end
+
+    it "answers nothing on a declined prompt and keeps the file" do
+      input.string = "n\n"
+      expect(command.remove(id: "flow")).to be_nil
+      expect(output.string).to include("Cancelled.")
+      expect(File.exist?(target)).to be(true)
+    end
+
+    it "refuses with confirmation_required under no-input, before touching anything" do
+      guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
+      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: guarded)
+      expect { cmd.remove(id: "flow") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("confirmation_required") }
+      expect(File.exist?(target)).to be(true)
+      expect(File.exist?(File.join(global_dir, ".flow.yml.lock"))).to be(false)
+    end
+
+    it "refuses a bad id before prompting, and a missing file or a lone preset after yes" do
+      expect { command.remove(id: "../x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+      expect(output.string).to eq("")
+      expect { command.remove(id: "nope", yes: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+      File.write(File.join(builtin_dir, "rpiv.yml"), body)
+      expect { command.remove(id: "rpiv", yes: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("builtin_workflow") }
+    end
+
+    it "names an unknown id or a lone preset before any prompt, even under no-input" do
+      File.write(File.join(builtin_dir, "rpiv.yml"), body)
+      guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
+      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: guarded)
+      expect { cmd.remove(id: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+      expect { cmd.remove(id: "rpiv") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("builtin_workflow") }
+      expect(output.string).to eq("")
+    end
+
+    it "removes a broken file" do
+      File.write(target, "not: [valid")
+      expect(command.remove(id: "flow", yes: true)).to include("outcome" => "removed")
+    end
+  end
 end

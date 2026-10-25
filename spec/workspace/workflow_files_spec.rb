@@ -269,4 +269,118 @@ RSpec.describe Workspace::WorkflowFiles do
       expect(strays).to eq([])
     end
   end
+
+  describe "#remove" do
+    let(:builtin_dir) { File.join(dir, "builtin") }
+
+    before do
+      FileUtils.mkdir_p([global_dir, builtin_dir])
+      File.write(target, text)
+    end
+
+    it "deletes the file and leaves the lock file" do
+      expect(files.remove("flow")).to eq("path" => target, "preset" => false)
+      expect(File.exist?(target)).to be(false)
+      expect(File.exist?(lock_path)).to be(true)
+      expect(strays).to eq([])
+    end
+
+    it "reports a preset of the same id as in effect again" do
+      File.write(File.join(builtin_dir, "flow.yml"), text)
+      expect(files.remove("flow")["preset"]).to be(true)
+      expect(catalog.locate("flow").first).to eq("builtin")
+    end
+
+    it "deletes nothing for a dry run" do
+      expect(files.remove("flow", dry_run: true)).to eq("path" => target, "preset" => false)
+      expect(File.read(target)).to eq(text)
+    end
+
+    it "removes a file that is invalid or not UTF-8" do
+      File.binwrite(target, "\xFF\xFE: [".b)
+      files.remove("flow")
+      expect(File.exist?(target)).to be(false)
+    end
+
+    it "unlinks a link and never its target" do
+      real = File.join(dir, "real.yml")
+      File.write(real, text)
+      File.delete(target)
+      File.symlink(real, target)
+      files.remove("flow")
+      expect(File.symlink?(target)).to be(false)
+      expect(File.read(real)).to eq(text)
+    end
+
+    it "removes a link to a file that is gone" do
+      File.delete(target)
+      File.symlink(File.join(dir, "gone.yml"), target)
+      files.remove("flow")
+      expect(File.symlink?(target)).to be(false)
+    end
+
+    it "refuses a directory at the path and removes nothing" do
+      File.delete(target)
+      FileUtils.mkdir_p(File.join(target, "inner"))
+      expect { files.remove("flow") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+      expect(File.directory?(File.join(target, "inner"))).to be(true)
+    end
+
+    it "refuses a preset alone with builtin_workflow" do
+      File.delete(target)
+      File.write(File.join(builtin_dir, "flow.yml"), text)
+      expect { files.remove("flow") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("builtin_workflow") }
+    end
+
+    it "refuses an unknown id with unknown_workflow, and a bad id with invalid_workflow" do
+      expect { files.remove("nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+      expect { files.remove("../evil") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "checks under the lock: a remove that waited on a delete fails unknown_workflow, without ENOENT" do
+      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        thread = Thread.new { files.remove("flow") }
+        thread.report_on_exception = false
+        wait_until_blocked(thread)
+        expect(File.exist?(target)).to be(true)
+
+        File.delete(target)
+        lock.flock(File::LOCK_UN)
+
+        expect { joined(thread).value }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+      end
+    end
+
+    it "fails builtin_workflow when the file it waited on was deleted and a preset has the id" do
+      File.write(File.join(builtin_dir, "flow.yml"), text)
+      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        thread = Thread.new { files.remove("flow") }
+        thread.report_on_exception = false
+        wait_until_blocked(thread)
+        File.delete(target)
+        lock.flock(File::LOCK_UN)
+
+        expect { joined(thread).value }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("builtin_workflow") }
+      end
+    end
+
+    it "lets exactly one of two removes at once delete" do
+      gate = Queue.new
+      threads = 2.times.map do
+        Thread.new do
+          gate.pop
+          files.remove("flow")
+          :removed
+        rescue Workspace::Error => e
+          e.code
+        end
+      end
+      2.times { gate << :go }
+
+      expect(threads.map { |thread| joined(thread).value }).to contain_exactly(:removed, "unknown_workflow")
+      expect(File.exist?(target)).to be(false)
+    end
+  end
 end

@@ -133,6 +133,40 @@ module Workspace
         {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "updated", "reason" => nil, "message" => message, "workflow" => id}.merge(written)
       end
 
+      # Refuses, before anyone is asked anything, an id that has no file of the user's.
+      #
+      # @param id [String]
+      # @return [void]
+      # @raise [Workspace::Error] code `invalid_workflow`, `builtin_workflow`, `unknown_workflow`
+      def check_removable(id:)
+        @files.ensure_present(id)
+      end
+
+      # Deletes a user's definition file. Without +yes+ (and not a dry run) it asks first,
+      # before the file's lock is taken; "y" confirms, anything else answers nothing. A preset of
+      # the same id is untouched and is in effect again.
+      #
+      # @param id [String] the workflow's id
+      # @param yes [Boolean] skip the prompt
+      # @param dry_run [Boolean] run every check and delete nothing; needs no +yes+
+      # @return [Hash{String=>Object}, nil] the action row: outcome "removed" or "dry_run", with "workflow" and "path"; nil when the prompt was declined
+      # @raise [Workspace::Error] code `invalid_workflow`, `unknown_workflow`, `builtin_workflow`, `confirmation_required` (input is off)
+      def remove(id:, yes: false, dry_run: false)
+        check_removable(id: id)
+        target = @files.path(id)
+        unless yes || dry_run
+          answer = Prompt.ask(@input, @output, "Remove workflow #{id} (#{target})? [y/N] ", retry_flags: ["--yes"], destructive: true)
+          unless answer.to_s.strip.casecmp?("y")
+            @output.puts "Cancelled."
+            return nil
+          end
+        end
+        removed = @files.remove(id, dry_run: dry_run)
+        message = "#{dry_run ? "Would remove" : "Removed"} workflow #{id} at #{removed["path"]}#{"; the preset of the same id is in effect again" if removed["preset"]}."
+        @output.puts message
+        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "removed", "reason" => nil, "message" => message, "workflow" => id, "path" => removed["path"]}
+      end
+
       # Starts a run of a workflow in a workspace.
       #
       # @param id [String] the workflow

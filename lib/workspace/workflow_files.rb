@@ -79,11 +79,45 @@ module Workspace
       end
     end
 
+    # Deletes the user's file of this id: the file or link itself, never what a link points to
+    # (a link to a file that is gone counts). The file is not read, so a broken one can be removed.
+    # The lock file stays.
+    #
+    # @param id [String]
+    # @param dry_run [Boolean] check, under the lock, and delete nothing
+    # @return [Hash{String=>Object}] "path" and "preset" (true when a preset of the id is in effect once the file is gone)
+    # @raise [Workspace::Error] code `invalid_workflow` for a bad id or a directory at the path, `builtin_workflow`
+    #   (only a preset has the id), `unknown_workflow`
+    def remove(id, dry_run: false)
+      target = path(id)
+      with_lock(id) do
+        raise_missing(id, "remove") unless File.exist?(target) || File.symlink?(target)
+        if File.directory?(target) && !File.symlink?(target)
+          raise Workspace::Error.new("#{target} is a directory, not a workflow file; nothing was removed. Remove it by hand.",
+            code: "invalid_workflow", details: {"workflow" => id, "path" => target})
+        end
+        File.unlink(target) unless dry_run
+        {"path" => target, "preset" => File.file?(File.join(@config.builtin_workflows_dir, "#{id}.yml"))}
+      end
+    end
+
+    # Without the lock, refuses an id that has no file of the user's, so a caller can say so
+    # before asking a person anything. `remove` still decides under the lock.
+    #
+    # @param id [String]
+    # @return [void]
+    # @raise [Workspace::Error] code `invalid_workflow`, `builtin_workflow`, `unknown_workflow`
+    def ensure_present(id)
+      target = path(id)
+      raise_missing(id, "remove") unless File.exist?(target) || File.symlink?(target)
+    end
+
     private
 
-    def raise_missing(id)
+    def raise_missing(id, verb = "update")
       if @catalog.locate(id)&.first == "builtin"
-        raise Workspace::Error.new("#{id} is a preset and has no file of yours to update; save a copy with `workflow add #{id} PATH` instead.",
+        advice = (verb == "update") ? "save a copy with `workflow add #{id} PATH` instead" : "a preset can't be removed"
+        raise Workspace::Error.new("#{id} is a preset and has no file of yours to #{verb}; #{advice}.",
           code: "builtin_workflow", details: {"workflow" => id})
       end
       @catalog.find(id) # raises unknown_workflow, naming the known ids

@@ -830,7 +830,12 @@ module CLITestHelpers
       end
     end
 
-    %i[add update run resume cancel approve reject step_done].each do |name|
+    def check_removable(**kw)
+      @calls << [:check_removable, kw]
+      raise @error if @error
+    end
+
+    %i[add update remove run resume cancel approve reject step_done].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error

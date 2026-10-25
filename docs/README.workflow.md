@@ -9,6 +9,7 @@ workspace workflow show [ID] [--source] [--json]
 workspace workflow validate PATH|- [--id ID] [--json]
 workspace workflow add ID PATH|- [--dry-run] [--json]
 workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
+workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
@@ -26,6 +27,7 @@ workspace step status [--json]
 | `workflow validate` | Check a definition's text, from a file or `-` for stdin, with the checks a definition on disk gets. Lists every problem at once and writes nothing; see [Validating a definition](#validating-a-definition) |
 | `workflow add` | Save a definition, from a file or `-` for stdin, as `~/.config/workspace/workflows/ID.yml` after the checks `validate` runs. Refused with `workflow_exists` when that file is there; a preset of the same id is left alone and the copy shadows it. See [Adding a definition](#adding-a-definition) |
 | `workflow update` | Replace your `ID.yml` with new text, from a file or `-` for stdin, only if the file still has the `--if-sha256` you read. A file that does not pass the checks can be replaced. Refused with `stale_workflow` when it changed, `builtin_workflow` for a preset with no file of yours. See [Updating a definition](#updating-a-definition) |
+| `workflow remove` | Delete your `ID.yml` (a link itself, never its target). Asks first unless `--yes` or `--dry-run`; refused with `confirmation_required` under `--no-input`. A preset of the same id is in effect again. See [Removing a definition](#removing-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing |
 | `workflow status` | The runs still going, one workspace's (`--name`), finished ones too (`--all`), or one run. Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to |
@@ -159,6 +161,18 @@ The current file is read as bytes and never parsed, so a file that is invalid YA
 
 `update` writes no event-log line.
 
+### Removing a definition
+
+`workflow remove ID` deletes `~/.config/workspace/workflows/ID.yml`. Without `--yes` (and without `--dry-run`) it asks `Remove workflow ID (PATH)? [y/N]` first, before taking any lock; anything but `y` prints `Cancelled.`, answers nothing and exits 0. Under `--no-input` (or `WORKSPACE_NO_INPUT`, which is how workspace-ui calls it) it refuses with `confirmation_required` and the retry flag `--yes`; `--json` without `--yes` or `--dry-run` is a usage error, since it never prompts.
+
+Under the exclusive lock `add` and `update` take, `remove` checks that the file exists (a link counts), then unlinks it. A link is removed itself and never its target; a file that is invalid, not UTF-8 or a link to nothing can be removed, which is the way out `stale_workflow` points to for an unreadable file. A directory at that path is refused with `invalid_workflow` and nothing is removed. The `.ID.yml.lock` file stays. Outcomes:
+
+- `removed`; when a preset has the same id the message says so ("the preset of the same id is in effect again"). `--dry-run` runs the same checks under the lock and answers `dry_run`, deleting nothing.
+- `builtin_workflow` when only a preset has the id: a preset can't be removed.
+- `unknown_workflow` when nothing has the id.
+
+`remove` writes no event-log line.
+
 ### Reading a definition's file
 
 `workflow show ID --source` answers the file itself, for an editor: the text exactly as stored, the `sha256` of its raw bytes and every problem the checks find. It works on a preset and on a global file that does not pass the checks (exit 0, where `show ID` fails with `invalid_workflow`), so a broken file can be loaded, fixed and saved. Without `--json` it prints the text alone and writes the problems to stderr. `--source` needs an ID.
@@ -245,6 +259,8 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `workflow update --json` prints the same row with `outcome` `updated` (or `dry_run`) and the new `sha256`. Refusals print the error envelope: `invalid_workflow`, `unknown_workflow`, `builtin_workflow` (`details.workflow`), `stale_workflow` (`details.workflow`, `details.path`, `details.sha256` of the current file, or `null` when unreadable) or `usage`. For example `{"schema_version":1,"ok":false,"code":"stale_workflow","message":"The workflow file /home/me/.config/workspace/workflows/ship.yml changed: its sha256 is 9f2c..., not ab12.... Nothing was changed.","details":{"workflow":"ship","path":"/home/me/.config/workspace/workflows/ship.yml","sha256":"9f2c..."}}`.
 
+`workflow remove --json` prints the same row with `outcome` `removed` (or `dry_run`), `workflow` and `path` (the file removed, or that would be). Refusals print the error envelope: `invalid_workflow`, `unknown_workflow`, `builtin_workflow`, `confirmation_required` or `usage`.
+
 `workflow add --json` prints an [action document](README.json.md#actions) with one row: `outcome` `added` (or `dry_run`, with the document's `status` `dry_run`), `workspace` `null`, `workflow` (the id), `path` (the file written, or that would be) and `sha256` (of the text's bytes, as `show ID --source` will report it). Refusals print the error envelope: `invalid_workflow` (with `details.problems`), `workflow_exists` (`details.workflow`, `details.path`) or `usage`.
 
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, and `current`: written during this attempt), `check` (whether the step has one) and `reported` (`status` and `summary`, or `null`).
@@ -262,6 +278,7 @@ workspace workflow validate lib/workflows/rpiv.yml --json
 cat draft.yml | workspace workflow validate - --id ship
 workspace workflow add ship draft.yml --dry-run --json
 cat draft.yml | workspace workflow add ship -
+workspace workflow remove ship --yes
 workspace workflow update ship draft.yml --if-sha256 "$(workspace workflow show ship --source --json | jq -r .sha256)"
 workspace workflow show
 workspace workflow show rpiv
