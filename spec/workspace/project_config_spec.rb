@@ -124,7 +124,7 @@ RSpec.describe Workspace::ProjectConfig do
       pc.create_worktree("myapp", "feat", "/tmp/wt/feat", "feat", quiet: true)
 
       content = File.read(File.join(tmpdir, "workspace.myapp.worktree-feat.yml"))
-      expect(content).to include("tmux set-option -t '=myapp-wt-feat' @workspace myapp.worktree-feat || true")
+      expect(content).to include("tmux set-option -t '=myapp-wt-feat:' @workspace myapp.worktree-feat || true")
     end
 
     it "records it in the shipped project template too, ahead of the && chain and unable to break it" do
@@ -134,7 +134,7 @@ RSpec.describe Workspace::ProjectConfig do
       pc.create("myapp", "/tmp/myapp")
 
       lines = File.read(File.join(tmpdir, "workspace.myapp.yml")).lines.map(&:strip)
-      expect(lines).to include("tmux set-option -t '=myapp' @workspace myapp || true")
+      expect(lines).to include("tmux set-option -t '=myapp:' @workspace myapp || true")
     end
 
     context "with a {{PRE_WINDOW}} line in the template" do
