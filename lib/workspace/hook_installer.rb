@@ -113,6 +113,23 @@ module Workspace
       with_user_lock(provider, project_root, dry_run) { install_unlocked(provider, project_root, command, dry_run: dry_run, quiet: quiet, local: local && !provider.user_scoped?) }
     end
 
+    STALE_NOTICE = "run `workspace init --install-hooks` to refresh the tracked entry".freeze
+
+    # Whether the tracked settings file holds an older workspace hook command
+    # (one of +provider+'s `hook_commands`) that is not the current entry.
+    # Claude Code runs hooks from every settings scope, so a second entry in
+    # settings.local.json would fire beside it; `install(local: true)` writes
+    # nothing then, and a caller can tell the person to refresh the tracked file.
+    #
+    # @return [Boolean]
+    def stale_tracked_hooks?(provider, project_root, command)
+      tracked = read_settings(settings_path_for(provider, project_root))
+      return false if merge(tracked, provider.hook_settings(command), ours: provider.hook_commands(command)) == tracked
+
+      ours = provider.hook_commands(command)
+      tracked["hooks"].to_h.values.flatten.any? { |group| group.is_a?(Hash) && commands_in(group).any? { |c| ours.include?(c) } }
+    end
+
     def install_unlocked(provider, project_root, command, dry_run:, quiet:, local: false)
       path = local ? local_settings_path_for(provider, project_root) : settings_path_for(provider, project_root)
       fragment = provider.hook_settings(command)
@@ -121,6 +138,10 @@ module Workspace
         tracked = read_settings(settings_path_for(provider, project_root))
         if merge(tracked, fragment, ours: ours) == tracked
           @output.puts "  skip    #{settings_path_for(provider, project_root)} (hooks already installed)" unless quiet
+          return false
+        end
+        if stale_tracked_hooks?(provider, project_root, command)
+          @output.puts "  skip    #{settings_path_for(provider, project_root)} (an older workspace hook is there; #{STALE_NOTICE})" unless quiet
           return false
         end
       end

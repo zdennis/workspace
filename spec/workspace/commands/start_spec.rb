@@ -275,7 +275,31 @@ RSpec.describe Workspace::Commands::Start do
 
           expect { command.call("PROJ-123", json: true) }.not_to raise_error
           warnings = JSON.parse(output.string)["warnings"]
-          expect(warnings.join).to include("hooks not installed", "statusLine not routed")
+          expect(warnings).to include(a_string_matching(/\ANote: Claude Code hooks not installed: .*not valid JSON/))
+          expect(warnings).to include(a_string_matching(/\ANote: Claude Code statusLine not routed: .*not valid JSON/))
+          expect(File.read(settings_path)).to eq("{nope")
+        end
+
+        it "prints Note lines instead of raising for a malformed settings.local.json outside --json" do
+          FileUtils.mkdir_p(File.dirname(settings_path))
+          File.write(settings_path, "{nope")
+
+          expect { command.call("PROJ-123") }.not_to raise_error
+          expect(output.string).to match(/^Note: Claude Code hooks not installed: /)
+          expect(output.string).to match(/^Note: Claude Code statusLine not routed: /)
+        end
+
+        it "neither reads nor warns about a malformed settings.local.json when the tracked file already holds the entries" do
+          claude = Workspace::AgentProvider.find("claude")
+          hook_installer.install(claude, worktree_path, Workspace::Commands::Init::HOOK_COMMAND, quiet: true)
+          hook_installer.install_statusline(claude, worktree_path,
+            command: Workspace::Commands::Init::STATUSLINE_COMMAND, project_settings: project_settings, quiet: true)
+          FileUtils.mkdir_p(File.dirname(settings_path))
+          File.write(settings_path, "{nope")
+
+          command.call("PROJ-123", json: true)
+
+          expect(Array(JSON.parse(output.string)["warnings"]).grep(/not installed|not routed/)).to be_empty
           expect(File.read(settings_path)).to eq("{nope")
         end
 

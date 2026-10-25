@@ -821,6 +821,10 @@ module Workspace
       def install_provider_hooks(provider, worktree_path, quiet:)
         changed = @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND, quiet: quiet, local: true)
         @warnings << "Note: #{provider.hook_trust_hint}." if changed && quiet && provider.hook_trust_hint
+        if !changed && !provider.user_scoped? && @hook_installer.stale_tracked_hooks?(provider, worktree_path, Commands::Init::HOOK_COMMAND)
+          message = "#{provider.label} hooks in #{@hook_installer.settings_path_for(provider, worktree_path)} are older; #{HookInstaller::STALE_NOTICE}"
+          quiet ? @warnings << "Note: #{message}." : @output.puts("Note: #{message}.")
+        end
       rescue Workspace::Error => e
         quiet ? @warnings << "Note: #{provider.label} hooks not installed: #{e.message}" : @output.puts("Note: #{provider.label} hooks not installed: #{e.message}")
       end

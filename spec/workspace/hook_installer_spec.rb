@@ -95,12 +95,49 @@ RSpec.describe Workspace::HookInstaller do
       expect(File.read(settings_path)).to eq(before)
     end
 
+    it "writes nothing to local when the tracked file holds an older workspace hook, and says how to refresh it" do
+      stale = {"hooks" => {"PreToolUse" => [{"matcher" => "Task", "hooks" => [{"type" => "command", "command" => provider.hook_command(command)}]}]}}
+      write_settings(stale)
+      before = File.read(settings_path)
+
+      expect(installer.install(provider, tmpdir, command, local: true)).to be false
+
+      expect(File).not_to exist(local_path)
+      expect(File.read(settings_path)).to eq(before)
+      expect(output.string).to include("workspace init --install-hooks")
+      expect(installer.stale_tracked_hooks?(provider, tmpdir, command)).to be true
+    end
+
+    it "chains a differing tracked statusLine command into statusline.command and routes through workspace in local" do
+      write_settings("statusLine" => {"type" => "command", "command" => "mine.sh"})
+
+      installer.install_statusline(provider, tmpdir, command: statusline, project_settings: project_settings, quiet: true, local: true)
+
+      expect(project_settings.load_global.dig("statusline", "command")).to eq("mine.sh")
+      expect(local_settings["statusLine"]).to eq("type" => "command", "command" => statusline)
+    end
+
     it "raises for a malformed settings.local.json and leaves it as it was" do
       FileUtils.mkdir_p(File.dirname(local_path))
       File.write(local_path, "{nope")
 
       expect { installer.install(provider, tmpdir, command, quiet: true, local: true) }.to raise_error(Workspace::Error, /not valid JSON/)
       expect(File.read(local_path)).to eq("{nope")
+    end
+
+    it "leaves a clean git tree and lists settings.local.json in info/exclude when nothing is tracked" do
+      system("git", "init", "-q", tmpdir, exception: true)
+      git = Workspace::Git.new(output: StringIO.new, input: StringIO.new)
+      excluder = Workspace::BookkeepingExclude.new(git: git, git_exclude: Workspace::GitExclude.new(git: git))
+      excluding_backup = Workspace::FileBackup.new(output: output, excluder: excluder)
+      excluding = described_class.new(backup: excluding_backup, output: output, input: input, user_settings_path: user_settings_path, excluder: excluder)
+
+      excluding.install(provider, tmpdir, command, quiet: true, local: true)
+      excluding.install_statusline(provider, tmpdir, command: statusline, project_settings: project_settings, quiet: true, local: true)
+
+      expect(File).to exist(local_path)
+      expect(`git -C #{tmpdir} status --porcelain -uall`).to eq("")
+      expect(File.read(File.join(tmpdir, ".git", "info", "exclude"))).to include("/.claude/settings.local.json")
     end
 
     it "leaves a clean git tree when the tracked file already holds the hooks and statusLine" do
