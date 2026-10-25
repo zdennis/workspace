@@ -48,13 +48,19 @@ module Workspace
       flags = @run&.dig("current", "flags") || []
       spine = @member["spine"]
       return "done" if done?(spine)
-      return "waiting" if (@reason && WAITING_REASONS.include?(@reason["code"])) || @plan_state == "waiting" || @turn&.dig("state") == "waiting"
+      return "waiting" if (@reason && WAITING_REASONS.include?(@reason["code"]) && !incomplete_while_working?) || @plan_state == "waiting" || @turn&.dig("state") == "waiting"
       return "waiting_lock" if @reason && @reason["code"] == "waiting_lock"
       return "working" if @turn&.dig("state") == "working" || @plan_state == "working"
       return "stuck" if flags.intersect?(%w[idle timed_out]) || @reason&.dig("code") == "pane_gone" || @plan_state == "stalled" || run_without_daemon?
       return "stopped" if @member["running"] == false
       return "idle" if structure?(spine)
       "none"
+    end
+
+    # A Stop that lands before the step file exists reads `turn_ended_incomplete`; while the
+    # turn is working again the agent is still on it, so nobody has to act.
+    def incomplete_while_working?
+      @reason["code"] == "turn_ended_incomplete" && @turn&.dig("state") == "working"
     end
 
     def done?(spine)
