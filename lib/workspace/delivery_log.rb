@@ -31,6 +31,7 @@ module Workspace
       FileUtils.mkdir_p(File.dirname(@path))
       File.open("#{@path}.lock", File::WRONLY | File::CREAT, 0o644) do |lock|
         lock.flock(File::LOCK_EX)
+        prune_markers
         return false if key && throttled?(key)
 
         File.rename(@path, "#{@path}.1") if File.size?(@path).to_i > LIMIT
@@ -53,6 +54,16 @@ module Workspace
 
       FileUtils.touch(marker, mtime: now)
       false
+    end
+
+    # Markers older than the throttle window no longer hold anything back.
+    def prune_markers
+      now = @clock.call
+      Dir.glob("#{@path}.*.throttle").each do |marker|
+        File.delete(marker) if now - File.mtime(marker) >= THROTTLE
+      rescue SystemCallError
+        nil
+      end
     end
 
     def clean(text)

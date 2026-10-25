@@ -28,7 +28,11 @@ module Workspace
       recorded = @tmux.session_option(session, OPTION)
       return WorkspaceName.normalize(recorded) if recorded
 
-      from_configs(session) || (session if File.socket?(@config.agent_socket_path(session)))
+      found = from_configs(session)
+      # The first hook can beat the pane that records the option; record it so later hooks skip the scan.
+      return found.tap { |name| @tmux.set_session_option(session, OPTION, name) } if found
+
+      session if File.socket?(@config.agent_socket_path(session))
     end
 
     private

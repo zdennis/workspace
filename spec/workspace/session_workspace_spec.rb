@@ -14,6 +14,7 @@ RSpec.describe Workspace::SessionWorkspace do
       on_ambiguous: ->(session, names) { ambiguous << [session, names] })
   end
 
+  before { allow(tmux).to receive(:set_session_option) }
   before { allow(config).to receive(:agent_socket_path) { |name| File.join(tmpdir, "#{name}.sock") } }
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -35,6 +36,18 @@ RSpec.describe Workspace::SessionWorkspace do
     end
 
     it "finds the config naming the session, unquoted and ignoring case" do
+      expect(resolver.call("lab-wc-wt-lab-1")).to eq("lab-wc.worktree-lab-1")
+    end
+
+    it "records the workspace on the session, so the next hook reads the option and skips the scan" do
+      options = {}
+      allow(tmux).to receive(:set_session_option) { |session, name, value| options[[session, name]] = value }
+      allow(tmux).to receive(:session_option) { |session, name| options[[session, name]] }
+
+      expect(resolver.call("lab-wc-wt-lab-1")).to eq("lab-wc.worktree-lab-1")
+      expect(tmux).to have_received(:set_session_option).with("lab-wc-wt-lab-1", "@workspace", "lab-wc.worktree-lab-1")
+      expect(project_config).to receive(:available_projects).never
+
       expect(resolver.call("lab-wc-wt-lab-1")).to eq("lab-wc.worktree-lab-1")
     end
 

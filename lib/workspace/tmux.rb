@@ -451,7 +451,7 @@ module Workspace
     # @param name [String] the option, starting with `@`
     # @return [Boolean] whether tmux accepted it
     def set_session_option(session, name, value)
-      _, _, status = Open3.capture3("tmux", "set-option", "-t", session, name, value)
+      _, _, status = Open3.capture3("tmux", "set-option", "-t", "=#{session}", name, value)
       status.success?
     rescue SystemCallError
       false
@@ -461,7 +461,7 @@ module Workspace
     # @param name [String] the option, starting with `@`
     # @return [String, nil] its value; nil when the option is unset or the session is gone
     def session_option(session, name)
-      stdout, _, status = Open3.capture3("tmux", "show-option", "-qv", "-t", session, name)
+      stdout, _, status = Open3.capture3("tmux", "show-option", "-qv", "-t", "=#{session}", name)
       value = stdout.strip
       (status.success? && !value.empty?) ? value : nil
     rescue SystemCallError

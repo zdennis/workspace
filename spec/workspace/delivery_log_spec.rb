@@ -28,6 +28,15 @@ RSpec.describe Workspace::DeliveryLog do
     expect(File.readlines(path).size).to eq(3)
   end
 
+  it "removes throttle markers older than the throttle window" do
+    log.record("old", key: "old")
+    allow(clock).to receive(:call).and_return(now + described_class::THROTTLE + 1)
+
+    log.record("new", key: "new")
+
+    expect(Dir.glob("#{path}.*.throttle").size).to eq(1)
+  end
+
   it "moves a log past its limit to .1 instead of truncating it" do
     FileUtils.mkdir_p(File.dirname(path))
     File.write(path, "x" * (described_class::LIMIT + 1))
