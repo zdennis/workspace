@@ -211,7 +211,8 @@ RSpec.describe Workspace::Commands::Start do
       let(:backup) { Workspace::FileBackup.new(output: output) }
       let(:hook_installer) { Workspace::HookInstaller.new(backup: backup, output: output, input: input) }
       let(:worktree_path) { File.join(tmpdir, ".worktrees", "PROJ-123") }
-      let(:settings_path) { File.join(worktree_path, ".claude", "settings.json") }
+      let(:settings_path) { File.join(worktree_path, ".claude", "settings.local.json") }
+      let(:tracked_settings_path) { File.join(worktree_path, ".claude", "settings.json") }
 
       subject(:command) do
         described_class.new(
@@ -251,10 +252,37 @@ RSpec.describe Workspace::Commands::Start do
           expect(status_line).to eq("type" => "command", "command" => "workspace statusline")
         end
 
+        it "never writes the tracked settings.json" do
+          command.call("PROJ-123")
+
+          expect(File).not_to exist(tracked_settings_path)
+        end
+
+        it "lists the .workspace-project marker through the excluder" do
+          excluder = instance_double(Workspace::BookkeepingExclude, created: true)
+          described_class.new(
+            git: git, project_config: project_config, project_settings: project_settings,
+            launch_command: launch_command, hook_installer: hook_installer, which: which,
+            excluder: excluder, output: output, input: input
+          ).call("PROJ-123")
+
+          expect(excluder).to have_received(:created).with(File.join(worktree_path, ".workspace-project"))
+        end
+
+        it "warns instead of failing when settings.local.json is malformed" do
+          FileUtils.mkdir_p(File.dirname(settings_path))
+          File.write(settings_path, "{nope")
+
+          expect { command.call("PROJ-123", json: true) }.not_to raise_error
+          warnings = JSON.parse(output.string)["warnings"]
+          expect(warnings.join).to include("hooks not installed", "statusLine not routed")
+          expect(File.read(settings_path)).to eq("{nope")
+        end
+
         context "in quiet mode, when the worktree already routes statusLine elsewhere" do
           before do
-            FileUtils.mkdir_p(File.dirname(settings_path))
-            File.write(settings_path, JSON.pretty_generate(
+            FileUtils.mkdir_p(File.dirname(tracked_settings_path))
+            File.write(tracked_settings_path, JSON.pretty_generate(
               "statusLine" => {"type" => "command", "command" => "my-statusline.sh"}
             ) + "\n")
           end

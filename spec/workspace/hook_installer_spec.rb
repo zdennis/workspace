@@ -31,6 +31,91 @@ RSpec.describe Workspace::HookInstaller do
     JSON.parse(File.read(settings_path))
   end
 
+  describe "local: true (a worktree)" do
+    let(:local_path) { File.join(tmpdir, ".claude", "settings.local.json") }
+    let(:statusline) { "workspace statusline" }
+
+    def local_settings = JSON.parse(File.read(local_path))
+
+    def install_all
+      installer.install(provider, tmpdir, command, quiet: true, local: true)
+      installer.install_statusline(provider, tmpdir, command: statusline, project_settings: project_settings, quiet: true, local: true)
+    end
+
+    it "writes hooks and statusLine to settings.local.json and leaves settings.json untouched" do
+      write_settings("permissions" => {"allow" => []})
+      before = File.read(settings_path)
+
+      install_all
+
+      expect(local_settings["hooks"]).to have_key("PreToolUse")
+      expect(local_settings["statusLine"]).to include("command" => statusline)
+      expect(File.read(settings_path)).to eq(before)
+    end
+
+    it "writes nothing when the tracked settings.json already holds equal entries" do
+      installer.install(provider, tmpdir, command, quiet: true)
+      installer.install_statusline(provider, tmpdir, command: statusline, project_settings: project_settings, quiet: true)
+      before = File.read(settings_path)
+
+      expect(installer.install(provider, tmpdir, command, quiet: true, local: true)).to be false
+      expect(installer.install_statusline(provider, tmpdir, command: statusline, project_settings: project_settings, quiet: true, local: true)).to eq([])
+
+      expect(File).not_to exist(local_path)
+      expect(File.read(settings_path)).to eq(before)
+    end
+
+    it "writes nothing a second time when settings.local.json already holds them" do
+      install_all
+      before = File.read(local_path)
+
+      install_all
+
+      expect(File.read(local_path)).to eq(before)
+    end
+
+    it "merges into an existing settings.local.json instead of replacing it" do
+      FileUtils.mkdir_p(File.dirname(local_path))
+      File.write(local_path, JSON.generate("permissions" => {"allow" => ["Bash(ls)"]}, "hooks" => {"PreToolUse" => [{"matcher" => "Bash", "hooks" => [{"type" => "command", "command" => "mine.sh"}]}]}))
+
+      install_all
+
+      expect(local_settings["permissions"]).to eq("allow" => ["Bash(ls)"])
+      expect(local_settings["hooks"]["PreToolUse"].flat_map { |g| g["hooks"].map { |h| h["command"] } }).to include("mine.sh", provider.hook_command(command))
+    end
+
+    it "preserves a differing tracked statusLine with the notice and does not modify settings.json" do
+      write_settings("statusLine" => {"type" => "command", "command" => "mine.sh"})
+      before = File.read(settings_path)
+
+      notices = installer.install_statusline(provider, tmpdir, command: statusline, project_settings: project_settings, quiet: true, local: true)
+
+      expect(notices.join).to include("mine.sh")
+      expect(local_settings["statusLine"]["command"]).to eq(statusline)
+      expect(File.read(settings_path)).to eq(before)
+    end
+
+    it "raises for a malformed settings.local.json and leaves it as it was" do
+      FileUtils.mkdir_p(File.dirname(local_path))
+      File.write(local_path, "{nope")
+
+      expect { installer.install(provider, tmpdir, command, quiet: true, local: true) }.to raise_error(Workspace::Error, /not valid JSON/)
+      expect(File.read(local_path)).to eq("{nope")
+    end
+
+    it "leaves a clean git tree when the tracked file already holds the hooks and statusLine" do
+      system("git", "init", "-q", tmpdir, exception: true)
+      installer.install(provider, tmpdir, command, quiet: true)
+      installer.install_statusline(provider, tmpdir, command: statusline, project_settings: project_settings, quiet: true)
+      system("git", "-C", tmpdir, "add", ".", exception: true)
+      system("git", "-C", tmpdir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x", exception: true)
+
+      install_all
+
+      expect(`git -C #{tmpdir} status --porcelain`).to eq("")
+    end
+  end
+
   describe "#install" do
     it "creates the settings file when the project has none" do
       installer.install(provider, tmpdir, command)

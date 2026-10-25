@@ -42,9 +42,10 @@ module Workspace
       # @param spine_config [Workspace::SpineConfig, nil] reads `spine.auto`; nil never runs init unasked
       # @param ticket_source [Workspace::TicketSource, nil] reads the ticket's title for +title_from_ticket+ and +slug+; nil reads none
       # @param plan_command [Workspace::Commands::Plan, nil] writes the new plan for `--plan` (`plan init`); nil refuses `--plan`
+      # @param excluder [Workspace::BookkeepingExclude, nil] lists the `.workspace-project` marker in `info/exclude`; nil lists nothing
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, hooks_config: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, agent_commands: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, agent_commands: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, excluder: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -66,6 +67,7 @@ module Workspace
         @spine_init = spine_init
         @spine_config = spine_config
         @plan_command = plan_command
+        @excluder = excluder
         @output = output
         @input = input
         @error_output = error_output
@@ -802,8 +804,13 @@ module Workspace
         end
 
         AgentProvider.all.select { |p| p.supports_statusline? && @which.call(agent_executable(p, config_name)) }.each do |provider|
-          notices = @hook_installer.install_statusline(provider, worktree_path,
-            command: Commands::Init::STATUSLINE_COMMAND, project_settings: @project_settings, quiet: quiet)
+          notices = begin
+            @hook_installer.install_statusline(provider, worktree_path,
+              command: Commands::Init::STATUSLINE_COMMAND, project_settings: @project_settings, quiet: quiet, local: true)
+          rescue Workspace::Error => e
+            quiet ? @warnings << "Note: #{provider.label} statusLine not routed: #{e.message}" : @output.puts("Note: #{provider.label} statusLine not routed: #{e.message}")
+            next
+          end
           next unless quiet && notices.any?
           notices.each { |notice| @warnings << "Note: #{notice}." }
         end
@@ -812,16 +819,15 @@ module Workspace
       # A user-level hook file (Codex's) is not the worktree's: one that can't
       # be read is a warning, not a failed start.
       def install_provider_hooks(provider, worktree_path, quiet:)
-        changed = @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND, quiet: quiet)
+        changed = @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND, quiet: quiet, local: true)
         @warnings << "Note: #{provider.hook_trust_hint}." if changed && quiet && provider.hook_trust_hint
       rescue Workspace::Error => e
-        raise unless provider.user_scoped?
-
-        @warnings << "Note: #{provider.label} hooks not installed: #{e.message}"
+        quiet ? @warnings << "Note: #{provider.label} hooks not installed: #{e.message}" : @output.puts("Note: #{provider.label} hooks not installed: #{e.message}")
       end
 
       def write_project_marker(worktree_path, config_name)
         @lineage.write_marker(worktree_path, config_name)
+        @excluder&.created(File.join(worktree_path, WorkspaceLineage::MARKER_FILE))
       end
 
       def create_worktree_directory(root)

@@ -104,16 +104,29 @@ module Workspace
     # @param command [String]
     # @param dry_run [Boolean] report without writing
     # @param quiet [Boolean] suppress the "skip"/"update"/"create"/"backup"/"note" progress lines
+    # @param local [Boolean] write the agent's untracked local settings file
+    #   (`.claude/settings.local.json`) instead of the tracked one, and write
+    #   nothing when either file already holds the hooks; a user-scoped agent
+    #   (Codex) has no local file and is handled as without it
     # @return [Boolean] whether the file was (or, in a dry run, would be) changed
-    def install(provider, project_root, command, dry_run: false, quiet: false)
-      with_user_lock(provider, project_root, dry_run) { install_unlocked(provider, project_root, command, dry_run: dry_run, quiet: quiet) }
+    def install(provider, project_root, command, dry_run: false, quiet: false, local: false)
+      with_user_lock(provider, project_root, dry_run) { install_unlocked(provider, project_root, command, dry_run: dry_run, quiet: quiet, local: local && !provider.user_scoped?) }
     end
 
-    def install_unlocked(provider, project_root, command, dry_run:, quiet:)
-      path = settings_path_for(provider, project_root)
+    def install_unlocked(provider, project_root, command, dry_run:, quiet:, local: false)
+      path = local ? local_settings_path_for(provider, project_root) : settings_path_for(provider, project_root)
+      fragment = provider.hook_settings(command)
+      ours = provider.hook_commands(command)
+      if local
+        tracked = read_settings(settings_path_for(provider, project_root))
+        if merge(tracked, fragment, ours: ours) == tracked
+          @output.puts "  skip    #{settings_path_for(provider, project_root)} (hooks already installed)" unless quiet
+          return false
+        end
+      end
       existed = File.exist?(path)
       existing = read_settings(path)
-      merged = merge(existing, provider.hook_settings(command), ours: provider.hook_commands(command))
+      merged = merge(existing, fragment, ours: ours)
 
       if merged == existing
         @output.puts "  skip    #{path} (hooks already installed)" unless quiet
@@ -207,14 +220,27 @@ module Workspace
     #   global config that receives a displaced statusLine command
     # @param dry_run [Boolean] report without writing
     # @param quiet [Boolean] suppress progress lines
+    # @param local [Boolean] write the untracked local settings file instead
+    #   of the tracked one, and write nothing when either file already
+    #   routes through +command+; a differing command in either file is
+    #   preserved as above
     # @return [Array<String>] the "save"/"warn" notices produced, with
     #   indentation stripped, so a quiet caller (e.g. `start --json`) can
     #   still surface them in its own warnings channel
-    def install_statusline(provider, project_root, command:, project_settings:, dry_run: false, quiet: false)
-      path = settings_path_for(provider, project_root)
+    def install_statusline(provider, project_root, command:, project_settings:, dry_run: false, quiet: false, local: false)
+      tracked_path = settings_path_for(provider, project_root)
+      path = local ? local_settings_path_for(provider, project_root) : tracked_path
+      if local
+        tracked_command = statusline_command_in(read_settings(tracked_path)["statusLine"])
+        if tracked_command == command
+          @output.puts "  skip    #{tracked_path} (statusLine already routed through #{command})" unless quiet
+          return []
+        end
+      end
       existed = File.exist?(path)
       existing = read_settings(path)
       current = existing["statusLine"]
+      current = read_settings(tracked_path)["statusLine"] if local && statusline_command_in(current).to_s.empty?
       current_command = statusline_command_in(current)
       notices = []
 
@@ -247,7 +273,7 @@ module Workspace
       end
       @output.puts "  #{existed ? "update" : "create"}  #{path}" unless quiet
 
-      shadow_command = local_statusline_command(provider, project_root)
+      shadow_command = local ? nil : local_statusline_command(provider, project_root)
       if shadow_command && !shadow_command.to_s.empty? && shadow_command != command
         local_path = local_settings_path_for(provider, project_root)
         notice("warn", "#{local_path} still routes statusLine through \"#{shadow_command}\"; settings.json's statusLine is shadowed there until you remove that entry from #{local_path}", notices, quiet)
