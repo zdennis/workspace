@@ -206,6 +206,8 @@ module Workspace
       "invalid_cursor" => "events --since was given something that isn't a cursor an events line printed.",
       "invalid_workflow" => "A workflow definition file doesn't pass the checks.",
       "workflow_exists" => "workflow add found a user's file of that id already there (a link counts); nothing was written. details.workflow, details.path.",
+      "stale_workflow" => "workflow update --if-sha256: the user's file changed since that sha256 (or can't be read). details.sha256 is the current one, details.workflow, details.path.",
+      "builtin_workflow" => "workflow update found only a preset of that id, no file of the user's; save a copy with workflow add. details.workflow.",
       "input_required" => "workflow run is missing a required input.",
       "workflow_command_unset" => "A step's check names the project's test or lint command and the project has none.",
       "no_agent_pane" => "No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or plan start or spine start found no agent pane to type into (with --pane, the named pane runs no coding agent).",

@@ -53,7 +53,49 @@ module Workspace
       end
     end
 
+    # Replaces the user's file of this id when its raw bytes still hash to +if_sha256+. The
+    # current file is read as bytes and never parsed, so a broken file can be replaced. The
+    # text is written as given; check it first.
+    #
+    # @param id [String]
+    # @param text [String] the new definition's text
+    # @param if_sha256 [String] the sha256 of the raw bytes the caller last read
+    # @param dry_run [Boolean] check, under the lock, and write no definition
+    # @return [Hash{String=>Object}] "path" and "sha256" (of the new text's bytes)
+    # @raise [Workspace::Error] code `invalid_workflow` for a bad id, `builtin_workflow` (only a preset has the id),
+    #   `unknown_workflow`, `stale_workflow` (details "sha256" is the current file's)
+    def update(id, text, if_sha256:, dry_run: false)
+      target = path(id)
+      with_lock(id) do
+        raise_missing(id) unless File.exist?(target) || File.symlink?(target)
+        current = current_sha256(target)
+        unless current && current == if_sha256.to_s.strip.downcase
+          hint = current ? "" : " The file can't be read; `workflow remove #{id}` or fixing the file by hand is the way out."
+          raise Workspace::Error.new("The workflow file #{target} changed: its sha256 is #{current || "unreadable"}, not #{if_sha256}. Nothing was changed.#{hint}",
+            code: "stale_workflow", details: {"workflow" => id, "path" => target, "sha256" => current})
+        end
+        write(id, target, text) unless dry_run
+        {"path" => target, "sha256" => Digest::SHA256.hexdigest(text.b)}
+      end
+    end
+
     private
+
+    def raise_missing(id)
+      if @catalog.locate(id)&.first == "builtin"
+        raise Workspace::Error.new("#{id} is a preset and has no file of yours to update; save a copy with `workflow add #{id} PATH` instead.",
+          code: "builtin_workflow", details: {"workflow" => id})
+      end
+      @catalog.find(id) # raises unknown_workflow, naming the known ids
+      raise Workspace::Error.new("No workflow file for #{id}.", code: "unknown_workflow", details: {"workflow" => id})
+    end
+
+    # The digest of the file's raw bytes, nil when it can't be read (a dangling link, a directory).
+    def current_sha256(target)
+      Digest::SHA256.hexdigest(File.binread(target))
+    rescue SystemCallError
+      nil
+    end
 
     # Holds the id's lock for the whole check-and-write. The lock file stays.
     def with_lock(id)

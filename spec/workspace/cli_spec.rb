@@ -6403,6 +6403,47 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    it "parses update ID PATH --if-sha256 SHA, with --dry-run, as an action document" do
+      workflow_command.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would update workflow ship at /g/ship.yml.",
+                              "workflow" => "ship", "path" => "/g/ship.yml", "sha256" => "abc"}
+
+      cli.run(["workflow", "update", "ship", "draft.yml", "--if-sha256", "abc123", "--dry-run", "--json"])
+      cli.run(["workflow", "update", "--if-sha256", "abc123", "ship", "-"])
+
+      expect(workflow_command.calls).to eq([[:update, {id: "ship", path: "draft.yml", if_sha256: "abc123", dry_run: true}],
+        [:update, {id: "ship", path: "-", if_sha256: "abc123", dry_run: false}]])
+      doc = JSON.parse(output.string.lines.first)
+      expect(doc).to include("ok" => true, "action" => "workflow update", "status" => "dry_run")
+    end
+
+    it "updates a definition end to end, then answers stale_workflow with the current sha256 for a second update from the old one" do
+      Dir.mktmpdir do |dir|
+        home = File.join(dir, "home", "workflows")
+        FileUtils.mkdir_p(home)
+        old_text = "title: Old\nsteps:\n  plan:\n    prompt: Old.\n"
+        text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
+        File.write(File.join(home, "ship.yml"), old_text)
+        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
+        catalog = Workspace::WorkflowCatalog.new(config: config)
+        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+          engine: nil, status: nil, store: nil, panes: nil, output: StringIO.new, input: StringIO.new(text))
+        real_cli, out = build_test_cli(workflow_command: command)
+        old_sha = Digest::SHA256.hexdigest(old_text)
+
+        real_cli.run(["workflow", "update", "ship", "-", "--if-sha256", old_sha, "--json"])
+        row = JSON.parse(out.string)["results"].first
+        expect(row).to include("outcome" => "updated", "workflow" => "ship", "sha256" => Digest::SHA256.hexdigest(text))
+        expect(File.read(File.join(home, "ship.yml"))).to eq(text)
+
+        out.truncate(0)
+        out.rewind
+        File.write(File.join(dir, "again.yml"), text)
+        expect { real_cli.run(["workflow", "update", "ship", File.join(dir, "again.yml"), "--if-sha256", old_sha, "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(out.string.lines.last)).to include("ok" => false, "code" => "stale_workflow", "details" => include("sha256" => Digest::SHA256.hexdigest(text)))
+        expect(File.read(File.join(home, "ship.yml"))).to eq(text)
+      end
+    end
+
     it "validates a PATH or stdin, with --id" do
       cli.run(["workflow", "validate", "a.yml", "--json"])
       cli.run(["workflow", "validate", "-", "--id", "ship"])
@@ -6584,7 +6625,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, run, status, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, run, status, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "show", "--source"] => /workflow show --source needs an ID/,
@@ -6599,6 +6640,11 @@ RSpec.describe Workspace::CLI do
         ["workflow", "add"] => /workflow add needs an ID and a PATH \(or - for stdin\)/,
         ["workflow", "add", "ship"] => /workflow add needs an ID and a PATH/,
         ["workflow", "add", "ship", "a.yml", "extra"] => /Unexpected argument: extra/,
+        ["workflow", "update"] => /workflow update needs an ID and a PATH \(or - for stdin\)/,
+        ["workflow", "update", "ship"] => /workflow update needs an ID and a PATH/,
+        ["workflow", "update", "ship", "a.yml"] => /workflow update needs --if-sha256 SHA/,
+        ["workflow", "update", "ship", "a.yml", "--if-sha256", ""] => /workflow update needs --if-sha256 SHA/,
+        ["workflow", "update", "ship", "a.yml", "--if-sha256", "abc", "extra"] => /Unexpected argument: extra/,
         ["workflow", "show", "rpiv", "extra"] => /Unexpected argument: extra/,
         ["workflow", "validate", "a.yml", "b.yml"] => /Unexpected argument: b\.yml/,
         ["workflow", "cancel", "wr_1", "wr_2"] => /Unexpected argument: wr_2/,
@@ -6617,7 +6663,7 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add: check and write no definition").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)

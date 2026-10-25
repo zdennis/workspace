@@ -32,6 +32,152 @@ RSpec.describe Workspace::WorkflowFiles do
     Dir.children(global_dir) - ["flow.yml", ".flow.yml.lock"]
   end
 
+  describe "#update" do
+    let(:old_text) { "title: Old\nsteps:\n  plan:\n    prompt: Old.\n" }
+    let(:old_sha) { Digest::SHA256.hexdigest(old_text) }
+
+    before do
+      FileUtils.mkdir_p(global_dir)
+      File.write(target, old_text)
+    end
+
+    it "replaces the file when the sha256 matches, answering the new sha256" do
+      expect(files.update("flow", text, if_sha256: old_sha)).to eq("path" => target, "sha256" => Digest::SHA256.hexdigest(text))
+      expect(File.binread(target)).to eq(text)
+      expect(strays).to eq([])
+    end
+
+    it "keeps the mode a written file gets" do
+      previous = File.umask(0o022)
+      begin
+        files.update("flow", text, if_sha256: old_sha)
+      ensure
+        File.umask(previous)
+      end
+
+      expect(File.stat(target).mode & 0o777).to eq(0o644)
+    end
+
+    it "writes nothing under dry_run" do
+      expect(files.update("flow", text, if_sha256: old_sha, dry_run: true)).to eq("path" => target, "sha256" => Digest::SHA256.hexdigest(text))
+      expect(File.binread(target)).to eq(old_text)
+      expect { files.update("flow", text, if_sha256: "0" * 64, dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("stale_workflow") }
+    end
+
+    it "refuses stale_workflow for another sha, naming the current one and leaving the bytes" do
+      before = File.binread(target)
+
+      expect { files.update("flow", text, if_sha256: "0" * 64) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("stale_workflow")
+        expect(e.message).to include("changed").and include("Nothing was changed")
+        expect(e.details).to eq("workflow" => "flow", "path" => target, "sha256" => old_sha)
+      }
+      expect(File.binread(target)).to eq(before)
+      expect(strays).to eq([])
+    end
+
+    it "takes an uppercase sha256" do
+      expect(files.update("flow", text, if_sha256: old_sha.upcase)["sha256"]).to eq(Digest::SHA256.hexdigest(text))
+    end
+
+    it "ignores whitespace around the sha256" do
+      expect(files.update("flow", text, if_sha256: " #{old_sha}\n")["sha256"]).to eq(Digest::SHA256.hexdigest(text))
+    end
+
+    it "replaces a file that is not valid YAML or UTF-8, hashing its raw bytes" do
+      bytes = (+"title: \xFF\xFE: [").b
+      File.binwrite(target, bytes)
+
+      files.update("flow", text, if_sha256: Digest::SHA256.hexdigest(bytes))
+
+      expect(File.binread(target)).to eq(text)
+    end
+
+    it "refuses builtin_workflow when only a preset has the id, leaving it alone" do
+      FileUtils.mkdir_p(File.join(dir, "builtin"))
+      preset = File.join(dir, "builtin", "rpiv.yml")
+      File.write(preset, old_text)
+
+      expect { files.update("rpiv", text, if_sha256: old_sha) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("builtin_workflow")
+        expect(e.details).to eq("workflow" => "rpiv")
+      }
+      expect(File.binread(preset)).to eq(old_text)
+      expect(File.exist?(File.join(global_dir, "rpiv.yml"))).to be(false)
+    end
+
+    it "refuses unknown_workflow when nothing has the id" do
+      expect { files.update("nope", text, if_sha256: old_sha) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+      expect(File.exist?(File.join(global_dir, "nope.yml"))).to be(false)
+    end
+
+    it "counts a link to a file that is gone as there but stale, and never writes through it" do
+      File.delete(target)
+      gone = File.join(dir, "gone.yml")
+      File.symlink(gone, target)
+
+      expect { files.update("flow", text, if_sha256: old_sha) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("stale_workflow")
+        expect(e.details["sha256"]).to be_nil
+        expect(e.message).to include("workflow remove flow").and include("by hand")
+      }
+      expect(File.exist?(gone)).to be(false)
+    end
+
+    it "refuses a bad id before any path is built" do
+      expect { files.update("../evil", text, if_sha256: old_sha) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "leaves the file and no temp file when the write fails" do
+      allow(File).to receive(:rename).and_raise(Errno::ENOSPC)
+
+      expect { files.update("flow", text, if_sha256: old_sha) }.to raise_error(Errno::ENOSPC)
+      expect(File.binread(target)).to eq(old_text)
+      expect(strays).to eq([])
+    end
+
+    it "checks under the lock: an update that waited on a rewrite fails stale_workflow and the rewrite stays" do
+      other = "title: Other\nsteps:\n  plan:\n    prompt: Other.\n"
+      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        thread = Thread.new { files.update("flow", text, if_sha256: old_sha) }
+        thread.report_on_exception = false
+        wait_until_blocked(thread)
+        expect(File.binread(target)).to eq(old_text)
+
+        File.write(target, other)
+        lock.flock(File::LOCK_UN)
+
+        expect { joined(thread).value }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("stale_workflow")
+          expect(e.details["sha256"]).to eq(Digest::SHA256.hexdigest(other))
+        }
+      end
+      expect(File.read(target)).to eq(other)
+    end
+
+    it "lets exactly one of two updates from one sha256 at once write" do
+      texts = %w[One Two].map { |title| "title: #{title}\nsteps:\n  plan:\n    prompt: #{title}.\n" }
+      gate = Queue.new
+      threads = texts.map do |each|
+        Thread.new do
+          gate.pop
+          files.update("flow", each, if_sha256: old_sha)
+          [:updated, each]
+        rescue Workspace::Error => e
+          [e.code, each]
+        end
+      end
+      2.times { gate << :go }
+
+      results = threads.map { |thread| joined(thread).value }
+
+      expect(results.map(&:first)).to contain_exactly(:updated, "stale_workflow")
+      expect(File.read(target)).to eq(results.find { |outcome, _| outcome == :updated }.last)
+      expect(strays).to eq([])
+    end
+  end
+
   describe "#add" do
     it "writes the text to ID.yml, making the directory, and answers its path and sha256" do
       expect(files.add("flow", text)).to eq("path" => target, "sha256" => Digest::SHA256.hexdigest(text))

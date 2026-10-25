@@ -851,4 +851,154 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(code_of { command.add(id: "other", path: write("other.yml", text.sub("plan.md", "elsewhere.md"))) }).to eq("invalid_workflow")
     end
   end
+
+  describe "#update" do
+    let(:input) { StringIO.new }
+    let(:error_output) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
+    let(:builtin_dir) { File.join(dir, "lib", "workflows") }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
+    let(:old_text) { "title: Old\nsteps:\n  plan:\n    prompt: Old.\n" }
+    let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
+    let(:target) { File.join(global_dir, "flow.yml") }
+    subject(:command) do
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: input, error_output: error_output)
+    end
+
+    before do
+      FileUtils.mkdir_p([global_dir, builtin_dir])
+      File.write(target, old_text)
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    def write(name, text)
+      File.join(dir, name).tap { |path| File.write(path, text) }
+    end
+
+    def sha(text)
+      Digest::SHA256.hexdigest(text.b)
+    end
+
+    def code_of
+      yield
+      nil
+    rescue Workspace::Error => e
+      e.code
+    end
+
+    it "replaces the file, answering updated with its path and the new sha256" do
+      row = command.update(id: "flow", path: write("draft.yml", valid), if_sha256: sha(old_text))
+
+      expect(row).to eq("workspace" => nil, "outcome" => "updated", "reason" => nil, "message" => "Updated workflow flow at #{target}.",
+        "workflow" => "flow", "path" => target, "sha256" => sha(valid))
+      expect(File.read(target)).to eq(valid)
+    end
+
+    it "reads stdin for -" do
+      input.string = valid
+
+      expect(command.update(id: "flow", path: "-", if_sha256: sha(old_text))["outcome"]).to eq("updated")
+      expect(File.read(target)).to eq(valid)
+    end
+
+    it "writes nothing under dry_run" do
+      row = command.update(id: "flow", path: write("draft.yml", valid), if_sha256: sha(old_text), dry_run: true)
+
+      expect(row).to include("outcome" => "dry_run", "sha256" => sha(valid))
+      expect(File.read(target)).to eq(old_text)
+    end
+
+    it "refuses stale_workflow for another sha, with the current sha256 in the details, and leaves the bytes" do
+      before = File.binread(target)
+
+      expect { command.update(id: "flow", path: write("draft.yml", valid), if_sha256: "f" * 64) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("stale_workflow")
+        expect(e.details["sha256"]).to eq(sha(old_text))
+      }
+      expect(File.binread(target)).to eq(before)
+    end
+
+    it "writes nothing for text that doesn't pass, before it looks at the sha" do
+      path = write("draft.yml", "title: Flow\nbogus: 1\nsteps:\n  plan:\n    nope: 1\n")
+
+      expect(code_of { command.update(id: "flow", path: path, if_sha256: "f" * 64) }).to eq("invalid_workflow")
+      expect(File.read(target)).to eq(old_text)
+    end
+
+    it "refuses an id: in the text that differs from ID" do
+      expect(code_of { command.update(id: "flow", path: write("draft.yml", "id: other\n#{valid}"), if_sha256: sha(old_text)) }).to eq("invalid_workflow")
+    end
+
+    it "refuses builtin_workflow for a preset with no file of the user's, leaving the preset" do
+      preset = File.join(builtin_dir, "rpiv.yml")
+      File.write(preset, old_text)
+
+      expect(code_of { command.update(id: "rpiv", path: write("draft.yml", valid), if_sha256: sha(old_text)) }).to eq("builtin_workflow")
+      expect(File.binread(preset)).to eq(old_text)
+      expect(Dir.children(global_dir)).not_to include("rpiv.yml")
+    end
+
+    it "refuses unknown_workflow when nothing has the id" do
+      expect(code_of { command.update(id: "nope", path: write("draft.yml", valid), if_sha256: sha(old_text)) }).to eq("unknown_workflow")
+    end
+
+    it "refuses a bad ID before it reads the text" do
+      input.string = valid
+
+      expect(code_of { command.update(id: "../flow", path: "-", if_sha256: "f" * 64) }).to eq("invalid_workflow")
+      expect(input.read).to eq(valid)
+    end
+
+    it "reads a relative prompt_file: from the workflows directory" do
+      File.write(File.join(global_dir, "plan.md"), "Plan it.")
+      text = "title: Flow\nsteps:\n  plan:\n    prompt_file: plan.md\n"
+
+      expect(command.update(id: "flow", path: write("draft.yml", text), if_sha256: sha(old_text))["outcome"]).to eq("updated")
+    end
+
+    describe "replacing a file that does not pass the checks" do
+      def broken_sha_from_show(id)
+        output.truncate(0)
+        output.rewind
+        command.show(id: id, json: true, source: true)
+        JSON.parse(output.string)["workflow"]["sha256"]
+      end
+
+      def broken_sha_from_list(id)
+        output.truncate(0)
+        output.rewind
+        command.show(json: true)
+        JSON.parse(output.string)["workflows"].find { |row| row["id"] == id }["sha256"]
+      end
+
+      {"invalid YAML structure" => "title: Flow\nbogus: 1\nmax_attempts: 0\nsteps:\n  plan:\n    nope: 1\n",
+       "bytes that are not UTF-8" => (+"title: \xFF\xFE\nsteps: [").b}.each do |label, bytes|
+        context "with #{label}" do
+          before { File.binwrite(File.join(global_dir, "broken.yml"), bytes) }
+
+          it "updates with the sha256 from show --source --json" do
+            sha = broken_sha_from_show("broken")
+            expect(sha).to eq(Digest::SHA256.hexdigest(bytes))
+
+            row = command.update(id: "broken", path: write("fixed.yml", valid), if_sha256: sha)
+
+            expect(row["outcome"]).to eq("updated")
+            expect(File.binread(File.join(global_dir, "broken.yml"))).to eq(valid)
+            expect(real_catalog.find("broken").to_h["title"]).to eq("Flow")
+          end
+
+          it "updates with the sha256 from the list" do
+            row = command.update(id: "broken", path: write("fixed.yml", valid), if_sha256: broken_sha_from_list("broken"))
+
+            expect(row["outcome"]).to eq("updated")
+            expect(File.binread(File.join(global_dir, "broken.yml"))).to eq(valid)
+          end
+        end
+      end
+    end
+  end
 end

@@ -111,6 +111,28 @@ module Workspace
         {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "added", "reason" => nil, "message" => message, "workflow" => id}.merge(written)
       end
 
+      # Replaces a user's definition file when it is still the one the caller read. The new
+      # text gets the checks `add` runs (a relative `prompt_file:` from the workflows directory);
+      # the current file is only hashed, so a broken one can be replaced.
+      #
+      # @param id [String] the workflow's id
+      # @param path [String] a file, or "-" for stdin
+      # @param if_sha256 [String] the sha256 of the file's raw bytes, from `show ID --source` or `list`
+      # @param dry_run [Boolean] run every check and write no definition
+      # @return [Hash{String=>Object}] the action row: outcome "updated" or "dry_run", with "workflow", "path" and "sha256"
+      # @raise [Workspace::UsageError] when PATH can't be read
+      # @raise [Workspace::Error] code `invalid_workflow`, `unknown_workflow`, `builtin_workflow`, `stale_workflow`
+      def update(id:, path:, if_sha256:, dry_run: false)
+        @files.path(id)
+        stdin = path == "-"
+        text = read_text(path, stdin)
+        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir)
+        written = @files.update(id, text, if_sha256: if_sha256, dry_run: dry_run)
+        message = "#{dry_run ? "Would update" : "Updated"} workflow #{id} at #{written["path"]}."
+        @output.puts message
+        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "updated", "reason" => nil, "message" => message, "workflow" => id}.merge(written)
+      end
+
       # Starts a run of a workflow in a workspace.
       #
       # @param id [String] the workflow
