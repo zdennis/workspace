@@ -12,6 +12,7 @@ workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
 workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]
+workspace workflow events RUN [--since N] [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
 workspace workflow cancel RUN [--json]
 workspace workflow approve RUN [--note TEXT] [--json]
@@ -30,6 +31,7 @@ workspace step status [--json]
 | `workflow remove` | Delete your `ID.yml` (a link itself, never its target). Asks first unless `--yes` or `--dry-run`; refused with `confirmation_required` under `--no-input`. A preset of the same id is in effect again. See [Removing a definition](#removing-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing |
 | `workflow status` | The runs still going, one workspace's (`--name`), finished ones too (`--all`), or one run. Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck) |
+| `workflow events` | A run's history (going or finished), one line per event, oldest first. `--since N` gives only the events after line N; at most 1000 at a time. See [Reading a run's events](#reading-a-runs-events) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to |
 | `workflow cancel` | End a run and release what it holds |
 | `workflow approve` | Pass a gate. Refused from a pane a run is bound to, so an agent doesn't approve its own plan by mistake. The refusal is a guard, not a boundary: an agent can clear `$TMUX_PANE` |
@@ -46,6 +48,7 @@ workspace step status [--json]
 | `--from STEP` | `resume`: start again at this step |
 | `--to STEP` | `reject`: the step to run again (the gated step, or one before it) |
 | `--source` | `show ID`: print the file's text, with its sha256 and problems, valid or not; see [Reading a definition's file](#reading-a-definitions-file) |
+| `--since N` | `events`: only the events after line N of the run's history (a whole number, 0 or more; default 0) |
 | `--id ID` | `validate`: check the text as this workflow id |
 | `--all` | `status`: finished runs too |
 | `--if-sha256 SHA` | `update`: the sha256 of the file's raw bytes, from `show ID --source` or `list`; required |
@@ -173,6 +176,12 @@ Under the exclusive lock `add` and `update` take, `remove` checks that the file 
 
 `remove` writes no event-log line.
 
+### Reading a run's events
+
+`workflow events RUN` prints the run's history file (`<RUN>.events.jsonl`, in `runs/` while the run is going and in `archive/` after), one line per event: the line number, the time, the type and the rest of the line's keys as `key=value`. It reads the file and writes nothing; a run with no history file has no events. An unknown run is refused with `unknown_run`. `--since N` must be a whole number, 0 or more, or it is a usage error.
+
+Each event's `n` is its 1-based line number in the file, so a reader that remembers the last `n` (or `next_since`) asks for `--since N` and gets only what is new. A complete line that is not a JSON object (hand-edited, or blank: a blank line counts as a bad line) is skipped, keeps its number and is named in `warnings`. A last line with no newline yet is an event still being written: it is not returned, counted or warned about, and `next_since` stays at the last complete line, so the next poll gets it. At most 1000 events are answered; when more follow, `truncated` is true and `next_since` is the line number to pass as `--since`.
+
 ### Reading a definition's file
 
 `workflow show ID --source` answers the file itself, for an editor: the text exactly as stored, the `sha256` of its raw bytes and every problem the checks find. It works on a preset and on a global file that does not pass the checks (exit 0, where `show ID` fails with `invalid_workflow`), so a broken file can be loaded, fixed and saved. Without `--json` it prints the text alone and writes the problems to stderr. `--source` needs an ID.
@@ -263,6 +272,13 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `workflow add --json` prints an [action document](README.json.md#actions) with one row: `outcome` `added` (or `dry_run`, with the document's `status` `dry_run`), `workspace` `null`, `workflow` (the id), `path` (the file written, or that would be) and `sha256` (of the text's bytes, as `show ID --source` will report it). Refusals print the error envelope: `invalid_workflow` (with `details.problems`), `workflow_exists` (`details.workflow`, `details.path`) or `usage`.
 
+`workflow events --json` prints `{"schema_version":1,"ok":true,"run":ID,"events":[...],"truncated":false,"next_since":N,"warnings":[]}`. Each event is `{"n","ts","type", ...}`: `n` the line number from 1, then the line's own keys (`ts`, `type` and the event's details; `n` in a line is ignored). `next_since` is the last event's `n` when `truncated`, else the number of the last line read (or `--since` when nothing was read), so it is always the value to ask for next. For example, `workflow events wr_2610250930abcd --since 1 --json` on a run whose third line is not an object:
+
+<!-- workflow-events-example -->
+```json
+{"schema_version":1,"ok":true,"run":"wr_2610250930abcd","events":[{"n":2,"ts":"2026-10-25T09:30:00Z","type":"step_dispatched","step":"research","attempt":1},{"n":4,"ts":"2026-10-25T09:30:00Z","type":"step_done","step":"research","attempt":1,"status":"pass"}],"truncated":false,"next_since":4,"warnings":["Line 3 of the history is not a JSON object; skipped."]}
+```
+
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, and `current`: written during this attempt), `check` (whether the step has one) and `reported` (`status` and `summary`, or `null`).
 
 Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
@@ -279,6 +295,7 @@ cat draft.yml | workspace workflow validate - --id ship
 workspace workflow add ship draft.yml --dry-run --json
 cat draft.yml | workspace workflow add ship -
 workspace workflow remove ship --yes
+workspace workflow events wr_2610041230559x3k --since 40 --json
 workspace workflow update ship draft.yml --if-sha256 "$(workspace workflow show ship --source --json | jq -r .sha256)"
 workspace workflow show
 workspace workflow show rpiv

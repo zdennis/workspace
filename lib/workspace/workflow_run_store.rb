@@ -135,7 +135,53 @@ module Workspace
       File.join(dir, "#{id}.events.jsonl")
     end
 
+    EVENTS_LIMIT = 1000
+
+    # Reads a run's history, oldest first, for a reader that follows it.
+    #
+    # @param id [String] a run id, going or finished
+    # @param since [Integer] only lines after this line number (0 reads from the start)
+    # @param limit [Integer] the most events to answer
+    # @return [Hash{String=>Object}] `events` (each `{"n" => line number from 1, "ts", "type", ...}`),
+    #   `truncated` (more events follow the last one), `next_since` (the line number to pass as `since`
+    #   to continue: the last event's when truncated, else the last line read) and `warnings`
+    #   (a complete line that is not a JSON object is skipped and named here; a last line with no
+    #   newline yet is being written, so it is left for the next call)
+    # @raise [Workspace::Error] code `unknown_run` when no run has that id
+    def events(id, since: 0, limit: EVENTS_LIMIT)
+      find(id)
+      result = {"events" => [], "truncated" => false, "next_since" => since, "warnings" => []}
+      File.open(events_path(id), "r") do |file|
+        file.each_line.with_index(1) do |line, n|
+          break unless line.end_with?("\n")
+          next if n <= since
+          event = parse_event(line)
+          if event.nil?
+            result["warnings"] << "Line #{n} of the history is not a JSON object; skipped."
+          elsif result["events"].size >= limit
+            result["truncated"] = true
+            break
+          else
+            result["events"] << {"n" => n}.merge(event.except("n"))
+          end
+          result["next_since"] = n
+        end
+      end
+      result
+    rescue Errno::ENOENT
+      result
+    rescue SystemCallError => e
+      raise store_error(e)
+    end
+
     private
+
+    def parse_event(line)
+      event = JSON.parse(line)
+      event.is_a?(Hash) ? event : nil
+    rescue JSON::ParserError, EncodingError
+      nil
+    end
 
     def valid_id?(id)
       id.is_a?(String) && RunLiveness::ID_PATTERN.match?(id)

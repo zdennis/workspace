@@ -635,6 +635,79 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#events" do
+    around do |example|
+      Dir.mktmpdir("wf-events") do |dir|
+        @runs = File.join(dir, "runs")
+        example.run
+      end
+    end
+
+    let(:real_store) do
+      Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: File.join(File.dirname(@runs), "archive"),
+        clock: -> { Time.utc(2026, 10, 25, 9, 30, 0) }, id_generator: -> { "wr_2610250930abcd" })
+    end
+    let(:events_command) do
+      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, output: output)
+    end
+
+    # The run the docs' example (docs/README.workflow.md, "workflow events --json") shows.
+    def fixture_run
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "research", "steps" => {"research" => {"state" => "running", "attempts" => []}}, "definition" => {"steps" => [{"id" => "research"}]})
+      real_store.record_event("wr_2610250930abcd", "run_started", "workflow" => "rpiv")
+      real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "research", "attempt" => 1)
+      File.open(real_store.events_path("wr_2610250930abcd"), "a") { |file| file.write("not an object\n") }
+      real_store.record_event("wr_2610250930abcd", "step_done", "step" => "research", "attempt" => 1, "status" => "pass")
+    end
+
+    it "prints the documented JSON for the fixture run" do
+      fixture_run
+
+      events_command.events(run: "wr_2610250930abcd", since: 1, json: true)
+
+      expect(json).to eq(
+        "schema_version" => 1, "ok" => true, "run" => "wr_2610250930abcd",
+        "events" => [
+          {"n" => 2, "ts" => "2026-10-25T09:30:00Z", "type" => "step_dispatched", "step" => "research", "attempt" => 1},
+          {"n" => 4, "ts" => "2026-10-25T09:30:00Z", "type" => "step_done", "step" => "research", "attempt" => 1, "status" => "pass"}
+        ],
+        "truncated" => false, "next_since" => 4,
+        "warnings" => ["Line 3 of the history is not a JSON object; skipped."]
+      )
+      docs = File.read(File.expand_path("../../../docs/README.workflow.md", __dir__))
+      example = docs[/<!-- workflow-events-example -->\n```json\n(.*?)\n```/m, 1]
+      expect(JSON.parse(example)).to eq(json)
+    end
+
+    it "prints one line per event, then the warnings" do
+      fixture_run
+
+      events_command.events(run: "wr_2610250930abcd")
+
+      expect(output.string.lines.map(&:chomp)).to eq([
+        "   1  2026-10-25T09:30:00Z  run_started  workflow=rpiv",
+        "   2  2026-10-25T09:30:00Z  step_dispatched  step=research  attempt=1",
+        "   4  2026-10-25T09:30:00Z  step_done  step=research  attempt=1  status=pass",
+        "Warning: Line 3 of the history is not a JSON object; skipped."
+      ])
+    end
+
+    it "says so when there is nothing after since, and how to continue when capped" do
+      fixture_run
+      events_command.events(run: "wr_2610250930abcd", since: 4)
+      expect(output.string).to eq("No events after line 4 for wr_2610250930abcd.\n")
+
+      allow(real_store).to receive(:events).and_return("events" => [{"n" => 1, "ts" => "t", "type" => "a"}], "truncated" => true, "next_since" => 1, "warnings" => [])
+      output.truncate(0)
+      events_command.events(run: "wr_2610250930abcd")
+      expect(output.string).to end_with("More events follow: pass --since 1.\n")
+    end
+
+    it "refuses an unknown run with unknown_run" do
+      expect { events_command.events(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+  end
+
   describe "#validate" do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }

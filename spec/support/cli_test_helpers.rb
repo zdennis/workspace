@@ -823,7 +823,7 @@ module CLITestHelpers
       @row = {"workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1", "state" => "running"}}
     end
 
-    %i[show validate status advance step_status].each do |name|
+    %i[show validate status events advance step_status].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error

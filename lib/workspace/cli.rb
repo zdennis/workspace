@@ -5021,7 +5021,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run status resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run status events resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5032,6 +5032,7 @@ module Workspace
           "       workspace workflow remove ID [--yes] [--dry-run] [--json]\n" \
           "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
           "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
+          "       workspace workflow events RUN [--since N] [--json]\n" \
           "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
           "       workspace workflow cancel RUN [--json]\n" \
           "       workspace workflow approve RUN [--note TEXT] [--json]\n" \
@@ -5072,6 +5073,9 @@ module Workspace
         opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
         opts.separator "            is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
         opts.separator "            failed_check or pane_gone, with the commands that resolve it"
+        opts.separator "  events    a run's history (going or finished), one line per event: n (its line number), ts,"
+        opts.separator "            type and the rest; oldest first, at most 1000 after --since N (default 0); --json"
+        opts.separator "            adds truncated and next_since to continue from"
         opts.separator "  resume    get a run going again: ask for its lock again, run a failed or undelivered"
         opts.separator "            step again, look again at a step whose files were missing, or move it to the"
         opts.separator "            workspace's Claude pane when its own is gone; --from STEP starts again there"
@@ -5090,6 +5094,7 @@ module Workspace
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
         opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
+        opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--all", "status: finished runs too") { options[:all] = true }
         opts.on("--dry-run", "run: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
@@ -5111,6 +5116,7 @@ module Workspace
         opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
         opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\""
         opts.separator "  workspace workflow status --json"
+        opts.separator "  workspace workflow events wr_2610041230559x3k --since 40 --json"
         opts.separator "  workspace workflow approve wr_2610041230559x3k --note \"Skip the migration.\""
         opts.separator "  workspace workflow reject wr_2610041230559x3k --note \"Too big; split it.\""
         opts.separator "  workspace workflow resume wr_2610041230559x3k --from implement"
@@ -5128,16 +5134,17 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, status, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, status, events, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
       source_path = args.shift if %w[add update].include?(subcommand)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
       raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?))
 
+      raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
 
@@ -5155,6 +5162,8 @@ module Workspace
           raise UsageError, "workflow remove --json never prompts: pass --yes to remove, or --dry-run to preview." if options[:json]
         end
         workflow_action("workflow remove", options) { @workflow_command.remove(id: subject, yes: options[:yes], dry_run: options[:dry_run]) }
+      when "events"
+        @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])
       when "status"
         @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])
       when "advance"
@@ -5194,6 +5203,12 @@ module Workspace
       return unless index
       flag = (index.positive? && args[index - 1].start_with?("--")) ? args[index - 1] : "An argument"
       raise UsageError, "#{flag} holds bytes that are not valid UTF-8 text (was it cut in the middle of a character?)."
+    end
+
+    def workflow_since(text)
+      return 0 if text.nil?
+      raise UsageError, "--since needs a whole number of 0 or more, got #{text.to_s[0, 40].inspect}." unless text.match?(/\A\d+\z/)
+      text.to_i
     end
 
     def workflow_time(text)

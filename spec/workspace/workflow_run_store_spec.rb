@@ -68,6 +68,106 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(store.find("wr_1")).not_to have_key("note")
   end
 
+  describe "#events" do
+    def record(*types)
+      types.each { |type| store.record_event("wr_1", type, "step" => "plan") }
+    end
+
+    it "answers each line as {n, ts, type, ...}, oldest first, n counting lines from 1" do
+      create
+      record("run_started", "step_dispatched")
+
+      expect(store.events("wr_1")).to eq(
+        "events" => [
+          {"n" => 1, "ts" => "2026-10-04T12:00:00Z", "type" => "run_started", "step" => "plan"},
+          {"n" => 2, "ts" => "2026-10-04T12:00:00Z", "type" => "step_dispatched", "step" => "plan"}
+        ],
+        "truncated" => false, "next_since" => 2, "warnings" => []
+      )
+    end
+
+    it "answers only the lines after since, and nothing new when since is the last line" do
+      create
+      record("a", "b", "c")
+
+      expect(store.events("wr_1", since: 1)["events"].map { |event| event["n"] }).to eq([2, 3])
+      expect(store.events("wr_1", since: 3)).to include("events" => [], "next_since" => 3, "truncated" => false)
+      expect(store.events("wr_1", since: 99)).to include("events" => [], "next_since" => 99)
+    end
+
+    it "stops at the limit, says more follows and gives the line to continue from" do
+      create
+      record("a", "b", "c", "d", "e")
+
+      first = store.events("wr_1", limit: 2)
+      expect(first["events"].map { |event| event["type"] }).to eq(%w[a b])
+      expect(first).to include("truncated" => true, "next_since" => 2)
+
+      rest = store.events("wr_1", since: first["next_since"], limit: 3)
+      expect(rest["events"].map { |event| event["n"] }).to eq([3, 4, 5])
+      expect(rest).to include("truncated" => false, "next_since" => 5)
+    end
+
+    it "is not truncated when the history is exactly the limit" do
+      create
+      record("a", "b")
+
+      expect(store.events("wr_1", limit: 2)).to include("truncated" => false, "next_since" => 2)
+    end
+
+    it "skips a line that is not a JSON object and names it, keeping later lines' numbers" do
+      create
+      record("a")
+      File.open(store.events_path("wr_1"), "a") { |file| file.write("not json\n[1,2]\n\"text\"\n\n") }
+      record("b")
+
+      result = store.events("wr_1")
+      expect(result["events"].map { |event| [event["n"], event["type"]] }).to eq([[1, "a"], [6, "b"]])
+      expect(result["warnings"].size).to eq(4)
+      expect(result["warnings"].first).to match(/Line 2 .*not a JSON object/)
+    end
+
+    it "leaves a last line with no newline for the next poll, then returns it once complete" do
+      create
+      record("a")
+      File.open(store.events_path("wr_1"), "a") { |file| file.write('{"ts":"t","type":"b"') }
+
+      partial = store.events("wr_1")
+      expect(partial["events"].map { |event| event["n"] }).to eq([1])
+      expect(partial).to include("next_since" => 1, "warnings" => [])
+
+      File.open(store.events_path("wr_1"), "a") { |file| file.write("}\n") }
+      done = store.events("wr_1", since: partial["next_since"])
+      expect(done["events"]).to eq([{"n" => 2, "ts" => "t", "type" => "b"}])
+      expect(done["next_since"]).to eq(2)
+    end
+
+    it "does not trust an n inside a line" do
+      create
+      File.write(store.events_path("wr_1"), JSON.generate("n" => 99, "ts" => "t", "type" => "a") + "\n")
+
+      expect(store.events("wr_1")["events"]).to eq([{"n" => 1, "ts" => "t", "type" => "a"}])
+    end
+
+    it "is empty for a run with no history file" do
+      create
+
+      expect(store.events("wr_1")).to eq("events" => [], "truncated" => false, "next_since" => 0, "warnings" => [])
+    end
+
+    it "reads the history of a run that finished" do
+      create
+      record("a", "b")
+      store.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T12:05:00Z") }
+
+      expect(store.events("wr_1")["events"].map { |event| event["type"] }).to eq(%w[a b])
+    end
+
+    it "refuses an unknown run with unknown_run" do
+      expect { store.events("wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+  end
+
   it "moves a run that finished to the archive with its history, so it is no longer alive and still found" do
     create
     store.record_event("wr_1", "run_started", "workflow" => "rpiv")

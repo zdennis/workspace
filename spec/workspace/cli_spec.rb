@@ -6502,6 +6502,23 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    it "reads a run's events, with --since" do
+      cli.run(["workflow", "events", "wr_1"])
+      cli.run(["workflow", "events", "wr_1", "--since", "40", "--json"])
+
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: false}], [:events, {run: "wr_1", since: 40, json: true}]])
+    end
+
+    it "refuses a negative or non-integer --since as a usage error, as an envelope under --json" do
+      ["-1", "x", "1.5", ""].each do |value|
+        expect { cli.run(["workflow", "events", "wr_1", "--since", value, "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage")
+        expect(JSON.parse(output.string.lines.last)["error"]).to match(/--since needs a whole number/)
+      end
+      expect { cli.run(["workflow", "status", "--since", "1"]) }.to raise_error(FakeSystemExit)
+      expect(workflow_command.calls.map(&:first)).not_to include(:events)
+    end
+
     it "validates a PATH or stdin, with --id" do
       cli.run(["workflow", "validate", "a.yml", "--json"])
       cli.run(["workflow", "validate", "-", "--id", "ship"])
@@ -6683,9 +6700,10 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, status, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, status, events, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
+        ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "show", "--source"] => /workflow show --source needs an ID/,
         ["workflow", "status", "--source"] => /--source is for `workflow show ID`/,
         ["workflow", "run"] => /workflow run needs an ID/,
@@ -6723,7 +6741,7 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)

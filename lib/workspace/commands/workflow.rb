@@ -208,6 +208,25 @@ module Workspace
         result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
       end
 
+      # Prints a run's history, oldest first, going or finished.
+      #
+      # @param run [String] a run id
+      # @param since [Integer] only events on lines after this line number
+      # @param json [Boolean]
+      # @return [void]
+      # @raise [Workspace::Error] code `unknown_run`
+      def events(run:, since: 0, json: false)
+        result = @store.events(run, since: since)
+        return document("run" => run, "events" => result["events"], "truncated" => result["truncated"], "next_since" => result["next_since"], "warnings" => result["warnings"]) if json
+        @output.puts "No events#{" after line #{since}" if since.positive?} for #{run}." if result["events"].empty?
+        result["events"].each do |event|
+          rest = event.except("n", "ts", "type").map { |key, value| "#{key}=#{value.is_a?(String) ? value : JSON.generate(value)}" }
+          @output.puts [event["n"].to_s.rjust(4), event["ts"], event["type"], *rest].join("  ")
+        end
+        @output.puts "More events follow: pass --since #{result["next_since"]}." if result["truncated"]
+        result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
+      end
+
       # Gets a run going again. Everything the engine would refuse is refused
       # first; only then is a daemon started or a pane picked.
       #
