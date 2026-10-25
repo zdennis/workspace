@@ -105,14 +105,15 @@ module Workspace
         project
       end
 
-      # Whether HEAD is already on the remote default branch, from the refs
-      # last fetched (no fetch here). A squash or rebase merge leaves the
-      # commits off that branch, so it reads as not merged.
+      # Whether the worktree's branch is already on the default branch, by
+      # {Git#merged_into_base?}'s one rule (local refs only, no fetch). A
+      # squash or rebase merge leaves the commits off that branch, so it reads
+      # as not merged; so does a detached HEAD or an answer git cannot give.
       def merged_into_default?(worktree_path)
-        base = @git.base_ref(worktree_path)
-        return false unless base&.start_with?("origin/")
+        branch = @git.worktree_branch(worktree_path)
+        return false if branch.nil?
 
-        @git.ancestor?(worktree_path, "HEAD", base)
+        @git.merged_into_base?(worktree_path, branch) == true
       end
 
       def check_clean_and_pushed!(project, worktree_path)

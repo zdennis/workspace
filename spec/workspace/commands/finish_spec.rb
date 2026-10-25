@@ -30,7 +30,7 @@ RSpec.describe Workspace::Commands::Finish do
   let(:worktree_path) { "/path/to/worktree" }
 
   before do
-    allow(git).to receive(:base_ref).and_return(nil)
+    allow(git).to receive(:merged_into_base?).and_return(false)
     allow(kill_command).to receive(:notes_inside_worktree).and_return(nil)
     allow(kill_command).to receive(:dev_stopped).and_return(false)
     allow(project_config).to receive(:config_path_for)
@@ -159,9 +159,8 @@ RSpec.describe Workspace::Commands::Finish do
                 allow(kill_command).to receive(:call)
               end
 
-              it "reports merged when HEAD is an ancestor of origin/<default>" do
-                allow(git).to receive(:base_ref).with(worktree_path).and_return("origin/main")
-                allow(git).to receive(:ancestor?).with(worktree_path, "HEAD", "origin/main").and_return(true)
+              it "reports merged when the branch is on the default branch" do
+                allow(git).to receive(:merged_into_base?).with(worktree_path, "feature/x").and_return(true)
 
                 command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
 
@@ -169,9 +168,17 @@ RSpec.describe Workspace::Commands::Finish do
                 expect(JSON.parse(output.string)["outcome"]).to eq("merged")
               end
 
-              it "reports pushed when HEAD is not on origin/<default>" do
-                allow(git).to receive(:base_ref).with(worktree_path).and_return("origin/main")
-                allow(git).to receive(:ancestor?).with(worktree_path, "HEAD", "origin/main").and_return(false)
+              it "reports pushed, without asking git, when HEAD turns out detached" do
+                allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x", nil)
+                expect(git).not_to receive(:merged_into_base?)
+
+                command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+
+                expect(JSON.parse(output.string)["outcome"]).to eq("pushed")
+              end
+
+              it "reports pushed when the branch is not on the default branch" do
+                allow(git).to receive(:merged_into_base?).with(worktree_path, "feature/x").and_return(false)
 
                 command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
 
@@ -179,13 +186,12 @@ RSpec.describe Workspace::Commands::Finish do
                 expect(JSON.parse(output.string)["outcome"]).to eq("pushed")
               end
 
-              it "reports pushed, without asking git, when only a local default branch exists" do
-                allow(git).to receive(:base_ref).with(worktree_path).and_return("main")
-                expect(git).not_to receive(:ancestor?)
+              it "reports pushed when git cannot tell (nil)" do
+                allow(git).to receive(:merged_into_base?).with(worktree_path, "feature/x").and_return(nil)
 
                 command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
 
-                expect(kill_command).to have_received(:call).with(anything, hash_including(outcome: "pushed"))
+                expect(JSON.parse(output.string)["outcome"]).to eq("pushed")
               end
             end
 
