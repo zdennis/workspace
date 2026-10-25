@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket spine pr rebase push promote projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket spine journey goal pr rebase push promote projects
       capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
@@ -101,6 +101,7 @@ module Workspace
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
     # @param events_command [Workspace::Commands::Events, nil] pre-built events command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
+    # @param goal_command [Workspace::Commands::Goal, nil] pre-built `goal` command; optional so test builders need not wire it
     # @param inbox_command [Workspace::Commands::Inbox, nil] pre-built inbox command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
     # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
@@ -120,7 +121,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -200,6 +201,7 @@ module Workspace
       @review_command = review_command
       @restore_command = restore_command
       @snapshot_command = snapshot_command
+      @goal_command = goal_command
       @events_command = events_command
       @config_report = config_report
       @tmuxinator_report = tmuxinator_report
@@ -282,8 +284,10 @@ module Workspace
         cmd_plan(args)
       when "ticket"
         cmd_ticket(args)
-      when "spine"
+      when "spine", "journey"
         cmd_spine(args)
+      when "goal"
+        cmd_goal(args)
       when "pr"
         cmd_pr(args)
       when "rebase"
@@ -619,6 +623,8 @@ module Workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
           spine           Read and set a workspace's stages (stage files in spine/ in its notes directory): show, init, set a stage's status, tick its checklist, record a check verdict (verify), start an agent on a stage
+          journey         Another name for spine
+          goal            Say where a workspace's goal is: its stage, workflow step, agent turn and tool call, what it waits for and on whom (show), or one line per goal (list)
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -7515,6 +7521,50 @@ module Workspace
     def ticket_workspace_here
       name = @project_detector.detect(@working_dir)
       name if name && @project_config.project_root_for(name)
+    end
+
+    def cmd_goal(args)
+      options = {json: false, all: false}
+      parser = goal_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      subcommand = args.shift
+      raise UsageError, "Missing subcommand: show or list.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown goal subcommand: #{subcommand}. Run 'workspace goal --help'." unless %w[show list].include?(subcommand)
+      raise Error, "goal is not available: no goal command was wired" unless @goal_command
+
+      if subcommand == "list"
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace goal --help'." if args.any?
+
+        return @goal_command.list(all: options[:all], json: options[:json])
+      end
+      raise UsageError, "--all applies to 'goal list' only." if options[:all]
+      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace goal --help'." if args.size > 1
+
+      @goal_command.show(args.first || current_workspace!(nil), json: options[:json])
+    end
+
+    def goal_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace goal show [REF] [--json]\n       workspace goal list [--all] [--json]"
+        opts.separator ""
+        opts.separator "show: where a goal is at each level (the goal, its journey stage, its workflow step, the agent's"
+        opts.separator "turn, the tool call), what it waits for and on whom, and the next expected event. A goal is a"
+        opts.separator "workspace. REF is a workspace name, a workflow run id, a task id, a ticket key or URL, or a branch;"
+        opts.separator "with none, the workspace of the current directory. Reads only: nothing is written and 'gh' is not run."
+        opts.separator ""
+        opts.separator "list: one line per goal: workspace, state, stage, step, agent state."
+        opts.separator ""
+        opts.on("--all", "list: include workspaces with no plan, run or spine (state none)") { options[:all] = true }
+        opts.on("--json", "Print one JSON document (see docs/README.goal.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace goal show                  # the workspace you are in"
+        opts.separator "  workspace goal show LAB-1 --json"
+        opts.separator "  workspace goal list"
+      end
     end
 
     def spine_parser(options)

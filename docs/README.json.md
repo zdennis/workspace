@@ -299,6 +299,8 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `no_agent_pane` | No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or `plan start` or `spine start` found no agent pane to type into (with `--pane`, the named pane runs no coding agent the agent daemon knows, and `details.pane` names it). `details.workspace`. |
 | `pane_has_run` | The pane already runs another workflow run. `details.pane`, `details.run_id`. |
 | `unknown_run` | No workflow run has that id. `details.run_id`; `details.path` when a run file of that id exists and can't be read as a run. |
+| `unknown_goal` | `goal show` was given a REF that matches no workspace name, run id, task id, ticket key or URL, or branch. `details.ref`, `details.tried` (`workspace`, `run`, `task`, `ref`, `branch`). |
+| `ambiguous_goal` | `goal show` was given a REF that matches more than one workspace, such as a branch checked out in two projects. `details.ref`, `details.matches` (each `workspace`, `project`, `branch`); name the workspace. |
 | `run_not_active` | The workflow run has finished, so nothing more can happen to it. `details.run_id`, `details.state`. |
 | `gate_not_waiting` | workflow approve or reject named a run that isn't waiting at a gate. `details.run_id`, `details.step`, `details.state`. |
 | `gate_waiting` | workflow resume named a run that waits at a gate; approve or reject it. `details.run_id`, `details.step`. |

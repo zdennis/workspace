@@ -158,6 +158,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("ticket" => 2)
     end
 
+    it "reports goal 1 once goal show and goal list exist" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("goal" => 1)
+    end
+
     it "reports spine 3 once spine show has roll-ups, --stage, --body and the check counts" do
       command.call(json: true)
 
