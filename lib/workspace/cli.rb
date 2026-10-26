@@ -636,7 +636,7 @@ module Workspace
           ui              Open a workspace-ui:// link: a task, a review, notes or the inbox
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
-          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands
+          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; manage your own definitions (validate, add, update, remove); read a run's history (events, files)
 
         Global options:
           --debug         Print detailed debug output to stderr
@@ -5062,7 +5062,7 @@ module Workspace
         opts.separator "            A preset of the same id is left alone and the copy shadows it. A relative"
         opts.separator "            prompt_file: is read from that directory; --dry-run checks and writes no definition"
         opts.separator "  update    replace your ID.yml (a file, or - for stdin) after the checks add runs, only if the"
-        opts.separator "            file's raw bytes still hash to --if-sha256 (from `show ID --source` or `list`; a broken"
+        opts.separator "            file's raw bytes still hash to --if-sha256 (from `show ID --source`; a broken"
         opts.separator "            file can be replaced); refused with stale_workflow when it changed, builtin_workflow"
         opts.separator "            for a preset with no file of yours; --dry-run checks and writes no definition"
         opts.separator "  remove    delete your ID.yml (a link itself, never its target); asks first unless --yes or"
