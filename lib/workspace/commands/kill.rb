@@ -243,8 +243,10 @@ module Workspace
         elsif status["available"] == false
           details = {"branch" => branch, "reason" => status["reason"]}
           details["detail"] = status["detail"] if status["detail"]
-          message = if status["reason"] == "timeout"
-            "GitHub did not answer in time, so kill could not tell whether branch #{branch} has an open pull request; not deleting its remote branch.\nRun the same command again to retry, or rerun with --force (this also skips the unsaved-work check) to delete it anyway."
+          timeout = status["reason"] == "timeout"
+          retry_with = {"flags" => [], "destructive" => false} if timeout
+          message = if timeout
+            "gh did not answer in time, so kill could not tell whether branch #{branch} has an open pull request; not deleting its remote branch.\nRun the same command again to retry, or rerun with --force (this also skips the unsaved-work check) to delete it anyway."
           else
             "Could not tell whether branch #{branch} has an open pull request (#{status["reason"]}); not deleting its remote branch.\nRerun with --force (this also skips the unsaved-work check) to delete it anyway."
           end
