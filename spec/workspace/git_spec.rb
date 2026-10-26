@@ -428,6 +428,36 @@ RSpec.describe Workspace::Git do
         expect(git.worktree_branch(path)).to eq("brand-new")
         expect(upstream_of(path)).to eq("")
       end
+
+      it "marks a new branch as created by workspace" do
+        create("brand-new", base: "main")
+
+        expect(git.workspace_created_branch?(@repo_dir, "brand-new")).to be(true)
+      end
+
+      it "does not mark an existing local branch" do
+        run!("git", "branch", "local-only", chdir: @repo_dir)
+        create("local-only")
+
+        expect(git.workspace_created_branch?(@repo_dir, "local-only")).to be(false)
+      end
+
+      it "does not mark a branch made from origin" do
+        create("feature/remote-only")
+
+        expect(git.workspace_created_branch?(@repo_dir, "feature/remote-only")).to be(false)
+      end
+
+      it "still creates the worktree when the marker cannot be set" do
+        failed = instance_double(Process::Status, success?: false)
+        allow(git).to receive(:capture_git).and_call_original
+        allow(git).to receive(:capture_git).with("-C", anything, "config", "branch.brand-new.workspace-created", "true").and_return(["", "boom", failed])
+
+        path = create("brand-new", base: "main")
+
+        expect(git.worktree_branch(path)).to eq("brand-new")
+        expect(git.workspace_created_branch?(@repo_dir, "brand-new")).to be(false)
+      end
     end
 
     describe "#changed_files_count" do
@@ -1183,6 +1213,59 @@ RSpec.describe Workspace::Git, "write operations on a checkout" do
     expect { slow.fetch(repo) }.to raise_error(Workspace::Error, "git fetch did not finish within #{described_class::FETCH_TIMEOUT} seconds.")
     expect { slow.rebase(repo, "main") }.to raise_error(Workspace::Error, /git rebase did not finish within/)
     expect { slow.push(repo, "main") }.to raise_error(Workspace::Error, /git push of .main. did not finish within #{described_class::PUSH_TIMEOUT} seconds/o) { |e| expect(e.code).to eq("push_timeout") }
+  end
+
+  describe "branch deletion and the created marker" do
+    def with_runner(result = ["", "", true], &block)
+      calls = []
+      runner = block || ->(argv, chdir:, timeout:, env: {}) { calls << [argv, chdir, timeout, env] && result }
+      [described_class.new(runner: runner), calls]
+    end
+
+    it "reads the marker as true only when the value is true" do
+      yes, calls = with_runner(["true\n", "", true])
+      no, = with_runner(["false\n", "", true])
+      unset, = with_runner(["", "", false])
+
+      expect(yes.workspace_created_branch?(repo, "feature/x")).to be(true)
+      expect(calls.first[0]).to eq(%w[git config --get branch.feature/x.workspace-created])
+      expect(no.workspace_created_branch?(repo, "feature/x")).to be(false)
+      expect(unset.workspace_created_branch?(repo, "feature/x")).to be(false)
+    end
+
+    it "deletes a branch with -d, or -D when forced" do
+      safe, safe_calls = with_runner
+      forced, forced_calls = with_runner(["", "not fully merged", false])
+
+      expect(safe.delete_branch(repo, "x", force: false)).to eq([true, ""])
+      expect(safe_calls.first[0]).to eq(%w[git branch -d x])
+      expect(forced.delete_branch(repo, "x", force: true)).to eq([false, "not fully merged"])
+      expect(forced_calls.first[0]).to eq(%w[git branch -D x])
+    end
+
+    it "deletes a remote branch" do
+      git, calls = with_runner
+      expect(git.delete_remote_branch(repo, "origin", "x")).to eq([:deleted, ""])
+      expect(calls).to eq([[%w[git push origin --delete x], repo, described_class::PUSH_TIMEOUT, described_class::ENGLISH]])
+    end
+
+    it "tells a missing remote branch from other failures" do
+      gone, = with_runner(["", "error: unable to delete 'x': remote ref does not exist\n", false])
+      broken, = with_runner(["", "fatal: Authentication failed\n", false])
+
+      expect(gone.delete_remote_branch(repo, "origin", "x")).to eq([:not_found, "error: unable to delete 'x': remote ref does not exist\n"])
+      expect(broken.delete_remote_branch(repo, "origin", "x")).to eq([:error, "fatal: Authentication failed\n"])
+    end
+
+    it "reports a remote delete that runs too long, and raises when git is missing" do
+      slow, = with_runner { |*, **| raise Timeout::Error }
+      missing, = with_runner { |*, **| raise Errno::ENOENT }
+
+      status, message = slow.delete_remote_branch(repo, "origin", "x")
+      expect(status).to eq(:timeout)
+      expect(message).to match(/did not finish within #{described_class::PUSH_TIMEOUT} seconds/o)
+      expect { missing.delete_remote_branch(repo, "origin", "x") }.to raise_error(Workspace::Error, "git is not installed.")
+    end
   end
 
   it "runs git through the injected runner with the checkout as its directory" do
