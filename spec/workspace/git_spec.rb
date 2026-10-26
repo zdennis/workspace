@@ -1370,3 +1370,41 @@ RSpec.describe Workspace::Git, "stash by tag" do
     expect(sh("stash", "list", "--format=%H")).to include(stash.sha)
   end
 end
+
+RSpec.describe Workspace::Git, "deleting a branch start made" do
+  subject(:git) { described_class.new(output: StringIO.new, input: StringIO.new) }
+
+  around do |example|
+    Dir.mktmpdir { |dir| (@repo = File.realpath(dir)) && example.run }
+  end
+
+  def sh(*args)
+    out = IO.popen(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", @repo, *args], err: [:child, :out], &:read)
+    raise "git #{args.join(" ")} failed: #{out}" unless $?.success?
+    out
+  end
+
+  before do
+    sh("init", "-q", "-b", "main")
+    File.write(File.join(@repo, "a.txt"), "base\n")
+    sh("add", ".")
+    sh("commit", "-q", "-m", "init")
+    sh("switch", "-q", "-c", "PROJ-123")
+    sh("config", "branch.PROJ-123.workspace-created", "true")
+    File.write(File.join(@repo, "b.txt"), "work\n")
+    sh("add", ".")
+    sh("commit", "-q", "-m", "work")
+    sh("switch", "-q", "main")
+    sh("merge", "-q", "--no-ff", "-m", "merge", "PROJ-123")
+  end
+
+  it "deletes a merged branch with -d from the git directory, as kill does, and its marker goes with it" do
+    expect(git.workspace_created_branch?(@repo, "PROJ-123")).to be(true)
+
+    expect(git.delete_branch(File.join(@repo, ".git"), "PROJ-123")).to eq([true, ""])
+
+    expect(sh("branch", "--list", "PROJ-123")).to eq("")
+    expect(git.workspace_created_branch?(@repo, "PROJ-123")).to be(false)
+    expect(IO.popen(["git", "-C", @repo, "config", "--get-regexp", "^branch\\.PROJ-123\\."], err: File::NULL, &:read)).to eq("")
+  end
+end

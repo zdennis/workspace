@@ -451,6 +451,16 @@ RSpec.describe Workspace::Commands::Kill do
               end
             end
 
+            it "does nothing remote without delete_branch" do
+              expect(command.call(name, delete_branch: false, delete_remote: true, confirm: false)).to eq(name)
+
+              expect(pr_status).not_to have_received(:call)
+              expect(git).not_to have_received(:delete_remote_branch)
+              expect(git).not_to have_received(:delete_branch)
+              expect(command.remote_branch_result).to be_nil
+              expect(command.branch_result).to be_nil
+            end
+
             it "goes on when there is no pull request" do
               kill_remote
 
