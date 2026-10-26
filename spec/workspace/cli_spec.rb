@@ -1276,7 +1276,7 @@ RSpec.describe Workspace::CLI do
 
         cli.run(["kill"])
 
-        expect(kill_command).to have_received(:call).with("myproject.worktree-x", force: false, working_dir: root)
+        expect(kill_command).to have_received(:call).with("myproject.worktree-x", force: false, working_dir: root, delete_branch: true, delete_remote: false)
       end
     end
 
@@ -1288,8 +1288,42 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["kill", "--name", "myproject.worktree-x", "--json"])
 
-      expect(kill_command).to have_received(:call).with("myproject.worktree-x", force: false, working_dir: anything)
+      expect(kill_command).to have_received(:call).with("myproject.worktree-x", force: false, working_dir: anything, delete_branch: true, delete_remote: false)
       expect(JSON.parse(raw.string)["results"]).to eq([{"workspace" => "myproject.worktree-x", "outcome" => "cancelled", "reason" => "declined", "message" => "Not confirmed; nothing was removed."}])
+    end
+
+    it "puts the branch result in the JSON row, and the remote branch only with --delete-remote" do
+      branch = {"name" => "x", "deleted" => true, "kept_reason" => nil}
+      remote = {"name" => "x", "remote" => "origin", "deleted" => true, "kept_reason" => nil}
+      kill_command = instance_double(Workspace::Commands::Kill, dev_stopped: false, notes_inside_worktree: nil, branch_result: branch)
+      allow(kill_command).to receive(:call).and_return("myproject.worktree-x")
+      allow(kill_command).to receive(:remote_branch_result).and_return(nil)
+      raw = StringIO.new
+      cli, = build_test_cli(kill_command: kill_command, output: Workspace::OutputGate.new(raw))
+
+      cli.run(["kill", "--name", "myproject.worktree-x", "--json"])
+      row = JSON.parse(raw.string)["results"].first
+      expect(row).to include("branch" => branch)
+      expect(row).not_to have_key("remote_branch")
+
+      raw.truncate(0)
+      raw.rewind
+      allow(kill_command).to receive(:remote_branch_result).and_return(remote)
+      cli.run(["kill", "--name", "myproject.worktree-x", "--delete-remote", "--json"])
+      expect(kill_command).to have_received(:call).with("myproject.worktree-x", force: false, working_dir: anything, delete_branch: true, delete_remote: true)
+      expect(JSON.parse(raw.string)["results"].first).to include("branch" => branch, "remote_branch" => remote)
+    end
+
+    it "reports an open pull request refusal as a JSON error with its code and retry" do
+      kill_command = instance_double(Workspace::Commands::Kill)
+      allow(kill_command).to receive(:call).and_raise(Workspace::Error.new("open", code: "open_pull_request",
+        details: {"branch" => "x"}, retry_with: {"flags" => ["--force"], "destructive" => true}))
+      raw = StringIO.new
+      cli, = build_test_cli(kill_command: kill_command, output: Workspace::OutputGate.new(raw))
+
+      expect { cli.run(["kill", "--name", "myproject.worktree-x", "--delete-remote", "--json"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "open_pull_request", "retry" => include("flags" => ["--force"]))
     end
 
     it "refuses a positional and a --name that differ" do
@@ -1300,7 +1334,7 @@ RSpec.describe Workspace::CLI do
 
     it "runs the post_kill hook from inside Kill, before the session is stopped" do
       kill_command = instance_double(Workspace::Commands::Kill)
-      allow(kill_command).to receive(:call).with("myproject", force: true, working_dir: anything)
+      allow(kill_command).to receive(:call).with("myproject", force: true, working_dir: anything, delete_branch: true, delete_remote: false)
         .and_yield("myproject").and_return("myproject")
       hook_runner = CLITestHelpers::FakeHookRunner.new
 
@@ -11149,6 +11183,8 @@ RSpec.describe Workspace::CLI do
         kill = double("kill")
         allow(kill).to receive(:call).and_return("myproj.worktree-x")
         allow(kill).to receive(:notes_inside_worktree).and_return(nil)
+        allow(kill).to receive(:branch_result).and_return({"name" => "x", "deleted" => true, "kept_reason" => nil})
+        allow(kill).to receive(:remote_branch_result).and_return(nil)
         allow(kill).to receive(:dev_stopped).and_return(false)
         cli, raw, = action_cli(kill_command: kill)
 
@@ -11164,6 +11200,8 @@ RSpec.describe Workspace::CLI do
         kill = double("kill")
         allow(kill).to receive(:call).and_return("myproj.worktree-x")
         allow(kill).to receive(:notes_inside_worktree).and_return(nil)
+        allow(kill).to receive(:branch_result).and_return({"name" => "x", "deleted" => true, "kept_reason" => nil})
+        allow(kill).to receive(:remote_branch_result).and_return(nil)
         allow(kill).to receive(:dev_stopped).and_return(true)
         cli, raw, = action_cli(kill_command: kill)
 
@@ -11177,6 +11215,8 @@ RSpec.describe Workspace::CLI do
         kill = double("kill")
         allow(kill).to receive(:call).and_return("myproj.worktree-x")
         allow(kill).to receive(:notes_inside_worktree).and_return(held)
+        allow(kill).to receive(:branch_result).and_return({"name" => "x", "deleted" => true, "kept_reason" => nil})
+        allow(kill).to receive(:remote_branch_result).and_return(nil)
         allow(kill).to receive(:dev_stopped).and_return(false)
         cli, raw, = action_cli(kill_command: kill)
 

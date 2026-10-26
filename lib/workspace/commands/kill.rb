@@ -227,12 +227,12 @@ module Workspace
         branch = @git.worktree_branch(worktree_path)
         status = @pr_status&.call(worktree_path) || {"available" => false, "reason" => "unavailable"}
         if status["state"] == "OPEN"
-          raise Workspace::Error.new("Branch #{branch} has an open pull request (#{status["url"] || "##{status["number"]}"}); not deleting its remote branch.\nClose or merge it, or rerun with --force.",
+          raise Workspace::Error.new("Branch #{branch} has an open pull request (#{status["url"] || "##{status["number"]}"}); not deleting its remote branch.\nClose or merge it, or rerun with --force (this also skips the unsaved-work check).",
             code: "open_pull_request", details: {"branch" => branch, "number" => status["number"], "url" => status["url"]}, retry_with: retry_with)
         elsif status["available"] == false
           details = {"branch" => branch, "reason" => status["reason"]}
           details["detail"] = status["detail"] if status["detail"]
-          raise Workspace::Error.new("Could not tell whether branch #{branch} has an open pull request (#{status["reason"]}); not deleting its remote branch.\nRerun with --force to delete it anyway.",
+          raise Workspace::Error.new("Could not tell whether branch #{branch} has an open pull request (#{status["reason"]}); not deleting its remote branch.\nRerun with --force (this also skips the unsaved-work check) to delete it anyway.",
             code: "pull_request_status_unknown", details: details, retry_with: retry_with)
         end
       end
@@ -259,9 +259,9 @@ module Workspace
         when "detached_head"
           return keep_remote_branch(plan, "detached_head", "Kept remote branch: the worktree's HEAD is detached", out)
         when "no_remote"
-          return keep_remote_branch(plan, "no_remote", "Warning: the repository has no remote, so branch #{name} was not deleted from one", out)
+          return keep_remote_branch(plan, "no_remote", "Warning: kept remote branch #{name}: the repository has no remote", out)
         when "no_upstream"
-          return keep_remote_branch(plan, "no_upstream", "Warning: branch #{name} has no upstream, so no remote branch was deleted", out)
+          return keep_remote_branch(plan, "no_upstream", "Warning: kept remote branch #{name}: it has no upstream", out)
         end
         remote = plan[:remote]
         return keep_remote_branch(plan, "error", "Warning: could not find the repository of branch #{name}, so #{remote}/#{name} was kept", out) unless plan[:root]
@@ -271,7 +271,7 @@ module Workspace
           @remote_branch_result = {"name" => name, "remote" => remote, "deleted" => true, "kept_reason" => nil}
           out.puts "Deleted remote branch #{remote}/#{name}"
         when :not_found
-          keep_remote_branch(plan, "not_found", "Remote branch #{remote}/#{name} was already gone", out)
+          keep_remote_branch(plan, "not_found", "Remote branch #{remote}/#{name} was already gone (nothing to delete)", out)
         else
           detail = (status == :timeout) ? "the remote did not answer in time" : message.to_s.strip
           keep_remote_branch(plan, (status == :timeout) ? "timeout" : "error", "Warning: could not delete remote branch #{remote}/#{name}: #{detail}", out)
@@ -305,12 +305,10 @@ module Workspace
           out.puts "Deleted branch #{branch}"
         elsif stderr.to_s.match?(/not fully merged/i)
           @branch_result = {"name" => branch, "deleted" => false, "kept_reason" => "not_merged"}
-          out.puts "Warning: branch #{branch} is not fully merged, so it was kept. Delete it with: git branch -D #{branch}"
-          out.puts "Kept branch #{branch} (not fully merged)"
+          out.puts "Warning: kept branch #{branch}: not fully merged. Delete it with: git branch -D #{branch} (or rerun kill with --force)"
         else
           @branch_result = {"name" => branch, "deleted" => false, "kept_reason" => "error"}
-          out.puts "Warning: could not delete branch #{branch}: #{stderr.to_s.strip}"
-          out.puts "Kept branch #{branch} (git could not delete it)"
+          out.puts "Warning: kept branch #{branch}: git could not delete it: #{stderr.to_s.strip}"
         end
       end
 

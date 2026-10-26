@@ -180,8 +180,7 @@ RSpec.describe Workspace::Commands::Kill do
             it "warns, keeps the branch and still kills" do
               expect(command.call(name, force: true, delete_branch: true)).to eq(name)
 
-              expect(output.string).to include("Warning: branch PROJ-123 is not fully merged")
-              expect(output.string).to include("Kept branch PROJ-123 (not fully merged)")
+              expect(output.string).to include("Warning: kept branch PROJ-123: not fully merged. Delete it with: git branch -D PROJ-123")
               expect(command.branch_result["kept_reason"]).to eq("not_merged")
               expect(stop_command).to have_received(:call)
             end
@@ -193,7 +192,7 @@ RSpec.describe Workspace::Commands::Kill do
             it "reports an error and still kills" do
               expect(command.call(name, force: true, delete_branch: true)).to eq(name)
 
-              expect(output.string).to include("Warning: could not delete branch PROJ-123: fatal: boom")
+              expect(output.string).to include("Warning: kept branch PROJ-123: git could not delete it: fatal: boom")
               expect(command.branch_result).to eq("name" => "PROJ-123", "deleted" => false, "kept_reason" => "error")
             end
           end
@@ -323,7 +322,7 @@ RSpec.describe Workspace::Commands::Kill do
               it "warns and keeps going" do
                 expect(kill_remote).to eq(name)
 
-                expect(output.string).to include("Warning: the repository has no remote")
+                expect(output.string).to include("Warning: kept remote branch PROJ-123: the repository has no remote")
                 expect(command.remote_branch_result["kept_reason"]).to eq("no_remote")
                 expect(git).not_to have_received(:delete_remote_branch)
               end
@@ -335,7 +334,7 @@ RSpec.describe Workspace::Commands::Kill do
               it "warns and keeps going" do
                 expect(kill_remote).to eq(name)
 
-                expect(output.string).to include("Warning: branch PROJ-123 has no upstream")
+                expect(output.string).to include("Warning: kept remote branch PROJ-123: it has no upstream")
                 expect(command.remote_branch_result["kept_reason"]).to eq("no_upstream")
                 expect(git).not_to have_received(:delete_remote_branch)
               end
@@ -369,7 +368,7 @@ RSpec.describe Workspace::Commands::Kill do
               it "says so without a warning" do
                 kill_remote
 
-                expect(output.string).to include("Remote branch origin/PROJ-123 was already gone")
+                expect(output.string).to include("Remote branch origin/PROJ-123 was already gone (nothing to delete)")
                 expect(output.string).not_to include("Warning: could not delete remote")
                 expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "not_found")
               end

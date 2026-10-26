@@ -590,7 +590,7 @@ module Workspace
           init            Install tmuxinator templates and create config directory
           inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, spine, promote)
-          kill            Kill a worktree project and remove its worktree (default: the current one)
+          kill            Kill a worktree project, remove its worktree and the branch start made (default: the current one)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           library         Store named plays, prompts, recipes, agents and skills, beside the built-in packs (alias: lib)
@@ -1144,10 +1144,11 @@ module Workspace
 
     def cmd_kill(args)
       force = false
+      delete_remote = false
       json = false
       name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace kill [--name WS] [--force] [--json] [project]"
+        opts.banner = "Usage: workspace kill [--name WS] [--force] [--delete-remote] [--json] [project]"
         opts.separator ""
         opts.separator "Kill a worktree project's session and remove its git worktree."
         opts.separator "The inverse of 'workspace start'."
@@ -1161,11 +1162,19 @@ module Workspace
         opts.separator "or commits that haven't been pushed anywhere (untracked files don't"
         opts.separator "count). --force skips this check along with the confirmation prompt."
         opts.separator ""
+        opts.separator "Deletes the local branch too when 'workspace start' created it (git branch -d,"
+        opts.separator "so an unmerged branch is kept with a warning). A branch that existed before"
+        opts.separator "start is kept. With --force the branch is deleted even if unmerged (git branch -D)."
+        opts.separator "--delete-remote also deletes the branch on its upstream remote."
+        opts.separator ""
         opts.separator "Options:"
         opts.on("--name NAME", "The worktree workspace to kill (default: the one detected from the current directory)") { |v| name = v }
-        opts.on("-f", "--force", "Skip confirmation, and skip the uncommitted/unpushed-work check") do
+        opts.on("-f", "--force", "Skip confirmation, skip the uncommitted/unpushed-work check and the open",
+          "pull request check, and delete an unmerged start-created branch (-D)") do
           force = true
         end
+        opts.on("--delete-remote", "Also delete the branch on its upstream remote, even when the local branch existed before",
+          "start (the local one is kept); refuses over an open pull request (open_pull_request) unless --force") { delete_remote = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
           "to stderr; a refusal is the error envelope with a retry hint") { json = true }
         opts.separator ""
@@ -1173,7 +1182,8 @@ module Workspace
         opts.separator "  workspace kill    # kill the current worktree project (auto-detected from cwd)"
         opts.separator "  workspace kill myproject.worktree-PROJ-123    # kill a specific worktree project"
         opts.separator "  workspace kill --name myproject.worktree-PROJ-123 --json    # the same, scripted"
-        opts.separator "  workspace kill -f myproject.worktree-PROJ-123    # skip confirmation and the unsaved-work check"
+        opts.separator "  workspace kill -f myproject.worktree-PROJ-123    # skip confirmation and the unsaved-work check, and force-delete the branch start made"
+        opts.separator "  workspace kill --delete-remote    # also delete the branch on its remote"
       end
       parser.parse!(args)
       target = current_workspace!(single_workspace_arg(args, name, "kill"))
@@ -1181,13 +1191,16 @@ module Workspace
       # The hook runs from inside Kill, before the session is killed: kill may
       # be running inside that session, and nothing after the kill would run.
       run_action("kill", json: json) do
-        killed = @kill_command.call(target, force: force, working_dir: @working_dir) do |project|
+        killed = @kill_command.call(target, force: force, working_dir: @working_dir, delete_branch: true, delete_remote: delete_remote) do |project|
           @hook_runner.run(project, "post_kill")
         end
         if !json
           {}
         elsif killed
           extra = @kill_command.dev_stopped ? {dev_stopped: true} : {}
+          extra[:branch] = @kill_command.branch_result
+          remote_branch = @kill_command.remote_branch_result
+          extra[:remote_branch] = remote_branch if remote_branch
           held = @kill_command.notes_inside_worktree
           if held
             {results: [action_row(killed, "killed", notes_inside_worktree: held, **extra)], warnings: [Workspace::Commands::Kill.notes_sentence(held)]}
