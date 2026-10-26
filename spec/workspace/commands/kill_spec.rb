@@ -122,6 +122,136 @@ RSpec.describe Workspace::Commands::Kill do
           end
         end
 
+        context "with delete_branch: true" do
+          let(:order) { [] }
+          let(:name) { "myproject.worktree-PROJ-123" }
+          let(:marked) { true }
+          let(:deletion) { [true, ""] }
+
+          before do
+            allow(git).to receive(:remove_worktree) { order << :remove }
+            allow(stop_command).to receive(:call).and_return([])
+            allow(project_config).to receive(:remove)
+            allow(project_settings).to receive(:remove)
+            allow(git).to receive(:worktree_branch).with("/path/to/worktree").and_return("PROJ-123")
+            allow(git).to receive(:common_dir_from_files).with("/path/to/worktree").and_return("/repos/main.git")
+            allow(git).to receive(:workspace_created_branch?).with("/repos/main.git", "PROJ-123").and_return(marked)
+            allow(git).to receive(:delete_branch) { |*_args, **_kw|
+              order << :delete
+              deletion
+            }
+          end
+
+          it "deletes a branch start made, after the worktree is removed, from the main checkout" do
+            command.call(name, force: true, delete_branch: true)
+
+            expect(git).to have_received(:delete_branch).with("/repos/main.git", "PROJ-123", force: true)
+            expect(order).to eq([:remove, :delete])
+            expect(output.string).to include("Deleted branch PROJ-123")
+            expect(command.branch_result).to eq("name" => "PROJ-123", "deleted" => true, "kept_reason" => nil)
+          end
+
+          it "uses -d without force" do
+            input.puts "y"
+            input.rewind
+
+            command.call(name, delete_branch: true)
+
+            expect(git).to have_received(:delete_branch).with("/repos/main.git", "PROJ-123", force: false)
+          end
+
+          context "when start did not make the branch" do
+            let(:marked) { false }
+
+            it "keeps it" do
+              command.call(name, force: true, delete_branch: true)
+
+              expect(git).not_to have_received(:delete_branch)
+              expect(output.string).to include("Kept branch PROJ-123 (it existed before start)")
+              expect(command.branch_result).to eq("name" => "PROJ-123", "deleted" => false, "kept_reason" => "existed_before_start")
+            end
+          end
+
+          context "when -d refuses an unmerged branch" do
+            let(:deletion) { [false, "error: The branch 'PROJ-123' is not fully merged."] }
+
+            it "warns, keeps the branch and still kills" do
+              expect(command.call(name, force: true, delete_branch: true)).to eq(name)
+
+              expect(output.string).to include("Warning: branch PROJ-123 is not fully merged")
+              expect(output.string).to include("Kept branch PROJ-123 (not fully merged)")
+              expect(command.branch_result["kept_reason"]).to eq("not_merged")
+              expect(stop_command).to have_received(:call)
+            end
+          end
+
+          context "when git fails for another reason" do
+            let(:deletion) { [false, "fatal: boom\n"] }
+
+            it "reports an error and still kills" do
+              expect(command.call(name, force: true, delete_branch: true)).to eq(name)
+
+              expect(output.string).to include("Warning: could not delete branch PROJ-123: fatal: boom")
+              expect(command.branch_result).to eq("name" => "PROJ-123", "deleted" => false, "kept_reason" => "error")
+            end
+          end
+
+          it "makes no branch git calls by default" do
+            command.call(name, force: true)
+
+            expect(git).not_to have_received(:worktree_branch)
+            expect(git).not_to have_received(:workspace_created_branch?)
+            expect(git).not_to have_received(:delete_branch)
+            expect(command.branch_result).to be_nil
+          end
+
+          it "forgets the result on the next call" do
+            command.call(name, force: true, delete_branch: true)
+            command.call(name, force: true)
+
+            expect(command.branch_result).to be_nil
+          end
+
+          it "keeps the branch and says so when the checkout is already gone" do
+            command.call(name, force: true, delete_branch: true, missing_ok: true)
+
+            expect(git).not_to have_received(:delete_branch)
+            expect(output.string).to include("Kept branch: the checkout was already gone")
+            expect(command.branch_result).to eq("name" => nil, "deleted" => false, "kept_reason" => "checkout_missing")
+          end
+
+          it "names the branch from the task record when the checkout is gone" do
+            task_store = double("task_store", active_for: {"branch" => "PROJ-123"}, archive: nil)
+            cmd = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+              stop_command: stop_command, project_detector: project_detector, task_store: task_store, output: output, input: input)
+
+            cmd.call(name, force: true, delete_branch: true, missing_ok: true)
+
+            expect(output.string).to include("Kept branch PROJ-123: the checkout was already gone")
+            expect(cmd.branch_result).to eq("name" => "PROJ-123", "deleted" => false, "kept_reason" => "checkout_missing")
+          end
+
+          it "keeps the branch when HEAD is detached" do
+            allow(git).to receive(:worktree_branch).with("/path/to/worktree").and_return(nil)
+
+            command.call(name, force: true, delete_branch: true)
+
+            expect(git).not_to have_received(:delete_branch)
+            expect(output.string).to include("Kept branch: the worktree's HEAD is detached")
+            expect(command.branch_result).to eq("name" => nil, "deleted" => false, "kept_reason" => "detached_head")
+          end
+
+          it "warns and keeps the branch when the git directory cannot be read" do
+            allow(git).to receive(:common_dir_from_files).and_return(nil)
+
+            expect(command.call(name, force: true, delete_branch: true)).to eq(name)
+
+            expect(git).not_to have_received(:delete_branch)
+            expect(output.string).to include("Warning: could not find the repository of branch PROJ-123")
+            expect(command.branch_result).to eq("name" => "PROJ-123", "deleted" => false, "kept_reason" => "error")
+          end
+        end
+
         context "with a dev command wired" do
           let(:dev) { double("dev") }
           let(:order) { [] }

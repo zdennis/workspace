@@ -787,7 +787,7 @@ module Workspace
     # lives in the shared repository config and goes with the branch on `branch -d`,
     # `-D` and `-m`. A branch whose marker could not be written reads false, and is kept.
     #
-    # @param repo [String] a checkout of the repository
+    # @param repo [String] a checkout of the repository, or its git directory
     # @param branch [String]
     # @return [Boolean] true only when the marker is set to `true`
     def workspace_created_branch?(repo, branch)
@@ -797,12 +797,12 @@ module Workspace
 
     # Deletes a local branch.
     #
-    # @param repo [String] a checkout of the repository
+    # @param repo [String] a checkout of the repository, or its git directory
     # @param branch [String]
     # @param force [Boolean] `-D` (even when unmerged) instead of `-d`
     # @return [Array(Boolean, String)] success and git's stderr (a missing branch is false)
     def delete_branch(repo, branch, force: false)
-      _, stderr, success = run_git(repo, "branch", force ? "-D" : "-d", branch, timeout: QUICK_TIMEOUT)
+      _, stderr, success = run_git(repo, "branch", force ? "-D" : "-d", branch, timeout: QUICK_TIMEOUT, env: ENGLISH)
       [success, stderr]
     end
 
@@ -1112,7 +1112,8 @@ module Workspace
 
     # Runs git in +path+ through the runner, turning a missing git and a
     # timeout into errors.
-    def run_git(path, *args, timeout:)
+    def run_git(path, *args, timeout:, env: nil)
+      return @runner.call(["git", *args], chdir: path, timeout: timeout, env: env) if env
       @runner.call(["git", *args], chdir: path, timeout: timeout)
     rescue Errno::ENOENT
       raise Workspace::Error, "git is not installed."

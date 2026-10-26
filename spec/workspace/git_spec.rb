@@ -1243,6 +1243,13 @@ RSpec.describe Workspace::Git, "write operations on a checkout" do
       expect(forced_calls.first[0]).to eq(%w[git branch -D x])
     end
 
+    it "runs the delete in English so its refusal can be recognised" do
+      git, calls = with_runner
+      git.delete_branch(repo, "x")
+
+      expect(calls.first[3]).to eq(described_class::ENGLISH)
+    end
+
     it "deletes a remote branch" do
       git, calls = with_runner
       expect(git.delete_remote_branch(repo, "origin", "x")).to eq([:deleted, ""])

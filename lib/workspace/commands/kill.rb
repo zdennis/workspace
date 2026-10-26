@@ -38,6 +38,7 @@ module Workspace
         @workflow_runs = workflow_runs
         @notes = notes
         @notes_inside_worktree = nil
+        @branch_result = nil
         @output = output
         @input = input
       end
@@ -55,6 +56,14 @@ module Workspace
       #
       # @return [Boolean]
       attr_reader :dev_stopped
+
+      # What the last {#call} did with the workspace's branch when asked to delete it. Reset at the start
+      # of every call.
+      #
+      # @return [Hash, nil] `{"name" => branch, "deleted" => Boolean, "kept_reason" => String or nil}` where
+      #   `kept_reason` is `existed_before_start`, `not_merged`, `detached_head`, `checkout_missing` or
+      #   `error`; nil when no deletion was asked for
+      attr_reader :branch_result
 
       # @param held [Hash] a {#notes_inside_worktree} answer
       # @return [String] the sentence for `warnings` and the text warning
@@ -95,16 +104,21 @@ module Workspace
       #   is not active, so there is no session to stop
       # @param outcome [String, nil] the outcome the project's task is archived with
       #   (`merged`, `discarded`, `abandoned`); nil is `discarded` with force, else `abandoned`
+      # @param delete_branch [Boolean] after the worktree is removed, delete its branch when `start` made it
+      #   (never one that existed before); a branch git refuses to delete is kept with a warning, and never
+      #   fails the kill. Force makes it `-D`. A checkout already gone (+missing_ok+), a detached HEAD or
+      #   an unreadable repository keeps the branch and says why in {#branch_result}.
       # @yieldparam project [String] the project, after its worktree is removed and
       #   before its config, settings and session go
       # @return [String, nil] the project name, or nil if the user cancelled
       # @raise [Workspace::UnsavedWorkError] if it has unsaved work and force is false
       # @raise [Workspace::Error] `not_in_workspace` when no project is given and none holds +working_dir+,
       #   or when the project config is not a worktree project
-      def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd, missing_ok: false, warn_inactive: true, outcome: nil)
+      def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd, missing_ok: false, warn_inactive: true, outcome: nil, delete_branch: false)
         out = quiet ? StringIO.new : @output
         @notes_inside_worktree = nil
         @dev_stopped = false
+        @branch_result = nil
         project ||= @project_detector.detect(working_dir)
         unless project
           raise Workspace::Error.new("No workspace found for #{working_dir}. Run from inside a worktree workspace or name one (--name WS).",
@@ -125,6 +139,8 @@ module Workspace
           unsaved = @git.unsaved_work(worktree_path)
           raise_unsaved_work!(project, worktree_path, unsaved) if unsaved
         end
+
+        branch_plan = plan_branch_deletion(worktree_path) if delete_branch && !missing
 
         out.puts "Stopping #{project}..."
         out.puts "  Worktree: #{worktree_path}"
@@ -150,6 +166,9 @@ module Workspace
           end
         end
 
+        finish_branch(branch_plan, force, out) if branch_plan
+        keep_missing_branch(project, out) if delete_branch && missing
+
         outcome ||= force ? "discarded" : "abandoned"
         end_workflow_runs(project, out)
         archive_task(project, outcome, out)
@@ -166,6 +185,52 @@ module Workspace
       end
 
       private
+
+      # Read before the worktree goes: its branch, the shared git directory to run git in (it works as the
+      # repository for any layout, bare included), and whether `start` made the branch.
+      def plan_branch_deletion(worktree_path)
+        branch = @git.worktree_branch(worktree_path)
+        return {kept_reason: "detached_head"} unless branch
+        common_dir = @git.common_dir_from_files(worktree_path)
+        return {branch: branch, kept_reason: "error"} unless common_dir
+        {branch: branch, root: common_dir, created: @git.workspace_created_branch?(common_dir, branch)}
+      end
+
+      def keep_branch(name, reason, line, out, warning: false)
+        @branch_result = {"name" => name, "deleted" => false, "kept_reason" => reason}
+        out.puts "#{"Warning: " if warning}#{line}"
+      end
+
+      def keep_missing_branch(project, out)
+        name = @task_store&.active_for(project)&.dig("branch")
+        line = name ? "Kept branch #{name}: the checkout was already gone" : "Kept branch: the checkout was already gone"
+        keep_branch(name, "checkout_missing", line, out)
+      end
+
+      # Runs against the shared git directory, as the worktree is gone. A refusal is a warning, never a failed kill.
+      def finish_branch(plan, force, out)
+        branch = plan[:branch]
+        case plan[:kept_reason]
+        when "detached_head"
+          return keep_branch(nil, "detached_head", "Kept branch: the worktree's HEAD is detached", out)
+        when "error"
+          return keep_branch(branch, "error", "could not find the repository of branch #{branch}, so it was kept", out, warning: true)
+        end
+        return keep_branch(branch, "existed_before_start", "Kept branch #{branch} (it existed before start)", out) unless plan[:created]
+        deleted, stderr = @git.delete_branch(plan[:root], branch, force: force)
+        if deleted
+          @branch_result = {"name" => branch, "deleted" => true, "kept_reason" => nil}
+          out.puts "Deleted branch #{branch}"
+        elsif stderr.to_s.match?(/not fully merged/i)
+          @branch_result = {"name" => branch, "deleted" => false, "kept_reason" => "not_merged"}
+          out.puts "Warning: branch #{branch} is not fully merged, so it was kept. Delete it with: git branch -D #{branch}"
+          out.puts "Kept branch #{branch} (not fully merged)"
+        else
+          @branch_result = {"name" => branch, "deleted" => false, "kept_reason" => "error"}
+          out.puts "Warning: could not delete branch #{branch}: #{stderr.to_s.strip}"
+          out.puts "Kept branch #{branch} (git could not delete it)"
+        end
+      end
 
       # Stops the dev environment this worktree holds, before its directory goes. One that cannot
       # be stopped is reported and the removal goes on, as the person asked for it.
