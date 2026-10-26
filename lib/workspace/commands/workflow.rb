@@ -27,7 +27,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files: nil, run_files: nil, clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @catalog = catalog
         @files = files
         @run_files = run_files
@@ -73,7 +73,7 @@ module Workspace
       # PATH and against the current directory for stdin.
       #
       # @param path [String] a file, or "-" for stdin
-      # @param id [String, nil] the id to check it as; else a string `id:` in the text, else the file's name, else "stdin"
+      # @param id [String, nil] the id to check it as; else a string `id:` in the text, else the file's name, else "stdin" for `-` or "file"
       # @param json [Boolean]
       # @return [void]
       # @raise [Workspace::UsageError] when PATH can't be read
@@ -119,7 +119,7 @@ module Workspace
       #
       # @param id [String] the workflow's id
       # @param path [String] a file, or "-" for stdin
-      # @param if_sha256 [String] the sha256 of the file's raw bytes, from `show ID --source` or `list`
+      # @param if_sha256 [String] the sha256 of the file's raw bytes, from `show ID --source --json` or `show --json`
       # @param dry_run [Boolean] run every check and write no definition
       # @return [Hash{String=>Object}] the action row: outcome "updated" or "dry_run", with "workflow", "path" and "sha256"
       # @raise [Workspace::UsageError] when PATH can't be read
@@ -380,6 +380,7 @@ module Workspace
 
       # The id a text with no --id is checked as when it names none.
       STDIN_ID = "stdin"
+      FILE_ID = "file"
 
       def read_text(path, stdin)
         (stdin ? @input.read : File.binread(path)).to_s.dup.force_encoding(Encoding::UTF_8)
@@ -397,7 +398,7 @@ module Workspace
 
       def file_id(path)
         name = File.basename(path, ".*")
-        WorkflowDefinition::ID_PATTERN.match?(name) ? name : STDIN_ID
+        WorkflowDefinition::ID_PATTERN.match?(name) ? name : FILE_ID
       end
 
       def document(body)

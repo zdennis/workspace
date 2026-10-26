@@ -6356,7 +6356,7 @@ RSpec.describe Workspace::CLI do
         File.write(File.join(dir, "global", "bad.yml"), bad)
         catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: File.join(dir, "global"), builtin_workflows_dir: File.join(dir, "none")))
         out = StringIO.new
-        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, output: out))[0]
+        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, output: out))[0]
 
         real_cli.run(["workflow", "show", "bad", "--source", "--json"])
         doc = JSON.parse(out.string)
@@ -6386,7 +6386,7 @@ RSpec.describe Workspace::CLI do
         catalog = Workspace::WorkflowCatalog.new(config: config)
         text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
         command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, output: StringIO.new, input: StringIO.new(text))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
 
         real_cli.run(["workflow", "add", "ship", "-", "--json"])
@@ -6426,7 +6426,7 @@ RSpec.describe Workspace::CLI do
         config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, output: StringIO.new, input: StringIO.new(text))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
         old_sha = Digest::SHA256.hexdigest(old_text)
 
@@ -6476,7 +6476,7 @@ RSpec.describe Workspace::CLI do
         config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, output: StringIO.new, input: StringIO.new("n\n"))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, output: StringIO.new, input: StringIO.new("n\n"))
         real_cli, out = build_test_cli(workflow_command: command)
 
         expect { real_cli.run(["workflow", "remove", "ship"]) }.not_to raise_error
@@ -6517,6 +6517,11 @@ RSpec.describe Workspace::CLI do
       end
       expect { cli.run(["workflow", "status", "--since", "1"]) }.to raise_error(FakeSystemExit)
       expect(workflow_command.calls.map(&:first)).not_to include(:events)
+    end
+
+    it "refuses --id outside validate" do
+      expect { cli.run(["workflow", "add", "ship", "x.yml", "--id", "other"]) }.to raise_error(FakeSystemExit)
+      expect(workflow_command.calls).to eq([])
     end
 
     it "lists a run's files" do
@@ -6781,7 +6786,7 @@ RSpec.describe Workspace::CLI do
     end
     let(:command) do
       Workspace::Commands::Workflow.new(catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
-        status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, output: StringIO.new)
+        status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, files: nil, run_files: nil, output: StringIO.new)
     end
     let(:cli) { build_test_cli(workflow_command: command)[0] }
     # The daemon's nudger, with the process it would start run here instead.

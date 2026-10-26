@@ -70,7 +70,13 @@ module Workspace
         raise_missing(id) unless File.exist?(target) || File.symlink?(target)
         current = current_sha256(target)
         unless current && current == if_sha256.to_s.strip.downcase
-          hint = current ? "" : " The file can't be read; `workflow remove #{id}` or fixing the file by hand is the way out."
+          hint = if current
+            ""
+          elsif File.directory?(target) && !File.symlink?(target)
+            " #{target} is a directory, not a workflow file; nothing was changed. Remove it by hand."
+          else
+            " The file can't be read; `workflow remove #{id}` or fixing the file by hand is the way out."
+          end
           raise Workspace::Error.new("The workflow file #{target} changed: its sha256 is #{current || "unreadable"}, not #{if_sha256}. Nothing was changed.#{hint}",
             code: "stale_workflow", details: {"workflow" => id, "path" => target, "sha256" => current})
         end

@@ -53,7 +53,7 @@ workspace step status [--json]
 | `--since N` | `events`: only the events after line N of the run's history (a whole number, 0 or more; default 0) |
 | `--id ID` | `validate`: check the text as this workflow id |
 | `--all` | `status`: finished runs too |
-| `--if-sha256 SHA` | `update`: the sha256 of the file's raw bytes, from `show ID --source` or `list`; required |
+| `--if-sha256 SHA` | `update`: the sha256 of the file's raw bytes, from `show ID --source --json` or `show --json` (the list); required |
 | `--dry-run` | `run`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
 | `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
@@ -145,7 +145,7 @@ Text in `instructions` and `prompt` may use `{{workspace}}`, `{{branch}}`, `{{ar
 
 `workflow validate PATH` reads the file; `workflow validate -` reads stdin. It runs the same checks `show` and `run` do, reports every problem at once, and writes nothing (it does not touch `~/.config/workspace/workflows/`). It exits 0 when the text is valid and 1 with `invalid_workflow` when it is not. A file that is not UTF-8 text or not a YAML mapping fails the same way; a PATH that can't be read is a usage error.
 
-The id the text is checked as is `--id`, else a string `id:` in the text, else the file's name without its extension, else `stdin` (for `-`, or a file name that is not an id). An `id:` that differs from `--id` is a problem. A relative `prompt_file:` is read from the file's directory for a PATH and from the current directory for `-`. The problems name the paths they looked at, never their contents.
+The id the text is checked as is `--id`, else a string `id:` in the text, else the file's name without its extension, else `stdin` for `-`, or `file` for a file whose name is not an id. An `id:` that differs from `--id` is a problem. A relative `prompt_file:` is read from the file's directory for a PATH and from the current directory for `-`. The problems name the paths they looked at, never their contents.
 
 ### Adding a definition
 
@@ -274,9 +274,9 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `workflow validate --json` on a valid text prints `{"schema_version":1,"ok":true,"workflow":{...}}`: the definition with defaults filled in (as `show ID` gives it), plus `source` (`file`, or `stdin`), `path` (absolute, or `null` for stdin) and `sha256` of the text's bytes. On an invalid one it prints the error envelope with `code: "invalid_workflow"` and `details: {"workflow": ID, "path": PATH or null, "problems": [...]}`, and exits 1.
 
-`workflow update --json` prints the same row with `outcome` `updated` (or `dry_run`) and the new `sha256`. Refusals print the error envelope: `invalid_workflow`, `unknown_workflow`, `builtin_workflow` (`details.workflow`), `stale_workflow` (`details.workflow`, `details.path`, `details.sha256` of the current file, or `null` when unreadable) or `usage`. For example `{"schema_version":1,"ok":false,"code":"stale_workflow","message":"The workflow file /home/me/.config/workspace/workflows/ship.yml changed: its sha256 is 9f2c..., not ab12.... Nothing was changed.","details":{"workflow":"ship","path":"/home/me/.config/workspace/workflows/ship.yml","sha256":"9f2c..."}}`.
+`workflow update --json` prints the same row with `outcome` `updated` (or `dry_run`) and the new `sha256`. Refusals print the error envelope: `invalid_workflow`, `unknown_workflow`, `builtin_workflow` (`details.workflow`), `stale_workflow` (`details.workflow`, `details.path`, `details.sha256` of the current file, or `null` when unreadable) or `usage`. For example `{"schema_version":1,"ok":false,"error":"The workflow file /home/me/.config/workspace/workflows/ship.yml changed: its sha256 is 9f2c..., not ab12.... Nothing was changed.","details":{"workflow":"ship","path":"/home/me/.config/workspace/workflows/ship.yml","sha256":"9f2c..."}}`.
 
-`workflow remove --json` prints the same row with `outcome` `removed` (or `dry_run`), `workflow` and `path` (the file removed, or that would be). Refusals print the error envelope: `invalid_workflow`, `unknown_workflow`, `builtin_workflow`, `confirmation_required` or `usage`.
+`workflow remove --json` prints the same row with `outcome` `removed` (or `dry_run`), `workflow` and `path` (the file removed, or that would be). Refusals print the error envelope: `invalid_workflow` (an id that could not be a file name, or a directory at the path), `unknown_workflow`, `builtin_workflow`, `confirmation_required` or `usage`.
 
 `workflow add --json` prints an [action document](README.json.md#actions) with one row: `outcome` `added` (or `dry_run`, with the document's `status` `dry_run`), `workspace` `null`, `workflow` (the id), `path` (the file written, or that would be) and `sha256` (of the text's bytes, as `show ID --source` will report it). Refusals print the error envelope: `invalid_workflow` (with `details.problems`), `workflow_exists` (`details.workflow`, `details.path`) or `usage`.
 
@@ -312,7 +312,7 @@ cat draft.yml | workspace workflow add ship -
 workspace workflow remove ship --yes
 workspace workflow events wr_2610041230559x3k --since 40 --json
 workspace workflow files wr_2610041230559x3k --json
-workspace workflow update ship draft.yml --if-sha256 "$(workspace workflow show ship --source --json | jq -r .sha256)"
+workspace workflow update ship draft.yml --if-sha256 "$(workspace workflow show ship --source --json | jq -r .workflow.sha256)"
 workspace workflow show
 workspace workflow show rpiv
 workspace workflow show rpiv --source --json

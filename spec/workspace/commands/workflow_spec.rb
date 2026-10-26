@@ -11,7 +11,7 @@ RSpec.describe Workspace::Commands::Workflow do
   let(:panes) { instance_double(Workspace::WorkflowPanes) }
   let(:output) { StringIO.new }
   subject(:command) do
-    described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes,
+    described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
       clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
   end
 
@@ -573,7 +573,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, output: output, error_output: error_output)
+      described_class.new(catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, output: output, error_output: error_output)
     end
 
     before { FileUtils.mkdir_p([global_dir, builtin_dir]) }
@@ -648,7 +648,7 @@ RSpec.describe Workspace::Commands::Workflow do
       Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: File.join(@root, "archive"), id_generator: -> { "wr_2610250930abcd" })
     end
     let(:files_command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, run_files: Workspace::WorkflowRunFiles.new, output: output)
+      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: Workspace::WorkflowRunFiles.new, output: output)
     end
     let(:artifacts) { File.join(@root, "app", ".workflow", "wr_2610250930abcd") }
 
@@ -736,7 +736,7 @@ RSpec.describe Workspace::Commands::Workflow do
         clock: -> { Time.utc(2026, 10, 25, 9, 30, 0) }, id_generator: -> { "wr_2610250930abcd" })
     end
     let(:events_command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, output: output)
+      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, output: output)
     end
 
     # The run the docs' example (docs/README.workflow.md, "workflow events --json") shows.
@@ -800,7 +800,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }
     subject(:command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, output: output, input: input)
+      described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, output: output, input: input)
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -851,7 +851,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "uses the placeholder when the file's name is not an id" do
       command.validate(path: write("Bad Name.yml", valid), json: true)
 
-      expect(json["workflow"]["id"]).to eq("stdin")
+      expect(json["workflow"]["id"]).to eq("file")
     end
 
     it "fails an --id that differs from the file's id: key" do
@@ -913,7 +913,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     let(:target) { File.join(global_dir, "flow.yml") }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: input)
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: input)
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -1026,7 +1026,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     let(:target) { File.join(global_dir, "flow.yml") }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: input, error_output: error_output)
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: input, error_output: error_output)
     end
 
     before do
@@ -1174,7 +1174,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:target) { File.join(global_dir, "flow.yml") }
     let(:body) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: input)
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: input)
     end
 
     before do
@@ -1220,7 +1220,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "refuses with confirmation_required under no-input, before touching anything" do
       guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
-      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: guarded)
+      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: guarded)
       expect { cmd.remove(id: "flow") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("confirmation_required") }
       expect(File.exist?(target)).to be(true)
       expect(File.exist?(File.join(global_dir, ".flow.yml.lock"))).to be(false)
@@ -1237,7 +1237,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "names an unknown id or a lone preset before any prompt, even under no-input" do
       File.write(File.join(builtin_dir, "rpiv.yml"), body)
       guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
-      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, output: output, input: guarded)
+      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: guarded)
       expect { cmd.remove(id: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
       expect { cmd.remove(id: "rpiv") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("builtin_workflow") }
       expect(output.string).to eq("")

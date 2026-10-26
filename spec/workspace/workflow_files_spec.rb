@@ -111,6 +111,17 @@ RSpec.describe Workspace::WorkflowFiles do
       expect(File.exist?(File.join(global_dir, "nope.yml"))).to be(false)
     end
 
+    it "says a directory at the path is removed by hand, not by workflow remove" do
+      File.delete(target)
+      Dir.mkdir(target)
+
+      expect { files.update("flow", text, if_sha256: old_sha) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("stale_workflow")
+        expect(e.message).to include("is a directory").and include("Remove it by hand")
+        expect(e.message).not_to include("workflow remove")
+      }
+    end
+
     it "counts a link to a file that is gone as there but stale, and never writes through it" do
       File.delete(target)
       gone = File.join(dir, "gone.yml")
