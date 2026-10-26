@@ -45,7 +45,8 @@ Exit 0, or 1 with an error (the [`--json` error envelope](README.json.md) under 
 | `nothing_to_push` | The branch has no commits ahead of its base. `details.branch`, `details.base` |
 | `not_in_workspace` | No `--name` and the current directory is in no workspace |
 | `unknown_workspace` | `--name` names no workspace |
-| `error` | A detached HEAD, a push `git` refused, or a `gh pr create` that failed or did not answer in time. The message has the tool's first line |
+| `no_remote`, `push_auth_failed`, `protected_branch`, `push_rejected`, `push_network`, `push_timeout`, `push_failed` | The push `git` refused or did not finish; `push_network` is temporary (run the same command again), `push_timeout` may have landed. `details.permanent` says which. See [README.json.md](README.json.md) |
+| `error` | A detached HEAD, or a `gh pr create` that failed or did not answer in time. The message has the tool's first line |
 
 ## JSON output
 

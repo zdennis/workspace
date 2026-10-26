@@ -2,6 +2,8 @@
 
 Read a workspace's stages (`workspace spine`), set a stage's status, and start an agent on a stage. The stages are the step level of a workspace's plan (research, plan, implement, verify, ...): one Markdown file per stage in a `spine/` folder of the workspace's notes directory. The task level is [`IMPLEMENTATION_PLAN.md`](README.plan.md), which the stages link to and does not replace.
 
+`workspace journey` is another name for `spine`; every form below works with either.
+
 ## Usage
 
 ```sh
