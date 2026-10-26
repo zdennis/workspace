@@ -243,7 +243,12 @@ module Workspace
         elsif status["available"] == false
           details = {"branch" => branch, "reason" => status["reason"]}
           details["detail"] = status["detail"] if status["detail"]
-          raise Workspace::Error.new("Could not tell whether branch #{branch} has an open pull request (#{status["reason"]}); not deleting its remote branch.\nRerun with --force (this also skips the unsaved-work check) to delete it anyway.",
+          message = if status["reason"] == "timeout"
+            "GitHub did not answer in time, so kill could not tell whether branch #{branch} has an open pull request; not deleting its remote branch.\nRun the same command again to retry, or rerun with --force (this also skips the unsaved-work check) to delete it anyway."
+          else
+            "Could not tell whether branch #{branch} has an open pull request (#{status["reason"]}); not deleting its remote branch.\nRerun with --force (this also skips the unsaved-work check) to delete it anyway."
+          end
+          raise Workspace::Error.new(message,
             code: "pull_request_status_unknown", details: details, retry_with: retry_with)
         end
       end

@@ -49,7 +49,7 @@ Only works on worktree-based projects created by `workspace start`. For non-work
 
 A branch that cannot be deleted is a warning, never a failed `kill`.
 
-With `--delete-remote`, `kill` also deletes the branch on its upstream remote (the remote and branch named by the branch's upstream setting). It runs before anything is removed: a branch with an open pull request is refused with `open_pull_request`, and one whose pull request state `gh` cannot read with `pull_request_status_unknown`, and nothing is removed. `--force` skips both checks. They run only when a delete would follow, so a branch kept for one of the reasons below is never refused. A remote that will not delete is a warning, not a failed `kill`. It is kept, with a reason, when:
+With `--delete-remote`, `kill` also deletes the branch on its upstream remote (the remote and branch named by the branch's upstream setting). It runs before anything is removed: a branch with an open pull request is refused with `open_pull_request`, and one whose pull request state `gh` cannot read with `pull_request_status_unknown`, and nothing is removed. `--force` skips both checks. A `timeout` (`details.reason`) is often brief: run the same command again before reaching for `--force`. They run only when a delete would follow, so a branch kept for one of the reasons below is never refused. A remote that will not delete is a warning, not a failed `kill`. It is kept, with a reason, when:
 
 - the repository has no remote (`no_remote`) or the branch has no upstream (`no_upstream`);
 - the upstream has another name than the local branch (`upstream_mismatch`), as when `start --base origin/main` left the branch tracking `main`; `--force` does not change this;

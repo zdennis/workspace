@@ -386,6 +386,33 @@ RSpec.describe Workspace::Commands::Kill do
                   expect(e.code).to eq("pull_request_status_unknown")
                   expect(e.details).to eq("branch" => "PROJ-123", "reason" => "error", "detail" => "boom")
                   expect(e.retry).to eq("flags" => ["--force"], "destructive" => true)
+                  expect(e.message).to include("(error)", "Rerun with --force")
+                  expect(e.message).not_to include("to retry")
+                }
+                expect(git).not_to have_received(:remove_worktree)
+              end
+
+              ["gh_missing", "unavailable"].each do |reason|
+                it "refuses with only the --force way out when the reason is #{reason}" do
+                  allow(pr_status).to receive(:call).and_return({"available" => false, "reason" => reason})
+
+                  expect { kill_remote }.to raise_error(Workspace::Error) { |e|
+                    expect(e.code).to eq("pull_request_status_unknown")
+                    expect(e.details).to eq("branch" => "PROJ-123", "reason" => reason)
+                    expect(e.message).to include("(#{reason})", "Rerun with --force")
+                    expect(e.message).not_to include("to retry")
+                  }
+                end
+              end
+
+              it "says a timeout can simply be retried" do
+                allow(pr_status).to receive(:call).and_return({"available" => false, "reason" => "timeout"})
+
+                expect { kill_remote }.to raise_error(Workspace::Error) { |e|
+                  expect(e.code).to eq("pull_request_status_unknown")
+                  expect(e.details).to eq("branch" => "PROJ-123", "reason" => "timeout")
+                  expect(e.retry).to eq("flags" => ["--force"], "destructive" => true)
+                  expect(e.message).to include("GitHub did not answer in time", "Run the same command again to retry, or rerun with --force")
                 }
                 expect(git).not_to have_received(:remove_worktree)
               end
