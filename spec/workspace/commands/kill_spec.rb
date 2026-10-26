@@ -206,6 +206,7 @@ RSpec.describe Workspace::Commands::Kill do
             before do
               allow(git).to receive(:remotes?).with("/path/to/worktree").and_return(has_remotes)
               allow(git).to receive(:upstream_config).with("/path/to/worktree", "PROJ-123").and_return(upstream)
+              allow(git).to receive(:default_branch_name).with("/path/to/worktree").and_return("main")
               allow(git).to receive(:unsaved_work).and_return(nil)
               allow(git).to receive(:delete_remote_branch) { |*_args|
                 order << :delete_remote
@@ -226,12 +227,67 @@ RSpec.describe Workspace::Commands::Kill do
               expect(command.remote_branch_result).to eq("name" => "PROJ-123", "remote" => "origin", "deleted" => true, "kept_reason" => nil)
             end
 
-            it "uses the upstream's own branch name" do
-              allow(git).to receive(:upstream_config).and_return(["origin", "refs/heads/other/name"])
+            it "keeps an upstream of another name, even with force" do
+              allow(git).to receive(:upstream_config).and_return(["origin", "refs/heads/main"])
 
-              kill_remote
+              [false, true].each do |force|
+                expect(kill_remote(force: force)).to eq(name)
+                expect(command.remote_branch_result).to eq("name" => "main", "remote" => "origin", "deleted" => false, "kept_reason" => "upstream_mismatch")
+              end
 
-              expect(git).to have_received(:delete_remote_branch).with("/repos/main.git", "origin", "other/name")
+              expect(pr_status).not_to have_received(:call)
+              expect(git).not_to have_received(:delete_remote_branch)
+              expect(output.string).to include("Warning: kept remote branch origin/main: it is the upstream of PROJ-123, not a branch of the same name")
+            end
+
+            it "keeps the default branch, even with force" do
+              allow(git).to receive(:default_branch_name).with("/path/to/worktree").and_return("PROJ-123")
+
+              kill_remote(force: true)
+
+              expect(git).not_to have_received(:delete_remote_branch)
+              expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "default_branch")
+              expect(output.string).to include("Warning: kept remote branch origin/PROJ-123: it is the default branch")
+            end
+
+            context "when start did not make the branch" do
+              let(:marked) { false }
+
+              it "keeps the remote branch without asking about pull requests" do
+                expect(kill_remote).to eq(name)
+
+                expect(pr_status).not_to have_received(:call)
+                expect(git).not_to have_received(:delete_remote_branch)
+                expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "existed_before_start")
+                expect(output.string).to include("Kept remote branch origin/PROJ-123 (the branch existed before start; rerun with --force to delete it)")
+              end
+
+              it "deletes it with force" do
+                kill_remote(force: true)
+
+                expect(git).to have_received(:delete_remote_branch).with("/repos/main.git", "origin", "PROJ-123")
+              end
+            end
+
+            it "keeps the remote branch, without asking about pull requests, when the git directory cannot be read" do
+              allow(git).to receive(:common_dir_from_files).and_return(nil)
+
+              expect(kill_remote).to eq(name)
+
+              expect(pr_status).not_to have_received(:call)
+              expect(git).not_to have_received(:delete_remote_branch)
+              expect(command.remote_branch_result).to include("name" => "PROJ-123", "deleted" => false, "kept_reason" => "error")
+              expect(output.string).to include("Warning: could not find the repository of branch PROJ-123, so its remote branch was kept")
+            end
+
+            it "does not ask about pull requests when HEAD is detached" do
+              allow(git).to receive(:worktree_branch).with("/path/to/worktree").and_return(nil)
+              allow(pr_status).to receive(:call).and_return({"available" => false, "reason" => "error"})
+
+              expect(kill_remote).to eq(name)
+
+              expect(pr_status).not_to have_received(:call)
+              expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "detached_head")
             end
 
             it "makes no remote calls by default" do
@@ -331,9 +387,12 @@ RSpec.describe Workspace::Commands::Kill do
             context "without an upstream" do
               let(:upstream) { nil }
 
-              it "warns and keeps going" do
+              it "warns and keeps going, without asking about pull requests" do
+                allow(pr_status).to receive(:call).and_return({"available" => false, "reason" => "error"})
+
                 expect(kill_remote).to eq(name)
 
+                expect(pr_status).not_to have_received(:call)
                 expect(output.string).to include("Warning: kept remote branch PROJ-123: it has no upstream")
                 expect(command.remote_branch_result["kept_reason"]).to eq("no_upstream")
                 expect(git).not_to have_received(:delete_remote_branch)

@@ -73,8 +73,9 @@ module Workspace
       # of every call.
       #
       # @return [Hash, nil] `{"name" => branch name on the remote, "remote" => remote name, "deleted" => Boolean,
-      #   "kept_reason" => String or nil}` where `kept_reason` is `no_remote`, `no_upstream`, `not_found`,
-      #   `detached_head`, `checkout_missing`, `timeout` or `error`; nil when no remote deletion was asked for
+      #   "kept_reason" => String or nil}` where `kept_reason` is `no_remote`, `no_upstream`, `upstream_mismatch`,
+      #   `default_branch`, `existed_before_start`, `not_found`, `detached_head`, `checkout_missing`, `timeout` or
+      #   `error`; nil when no remote deletion was asked for
       attr_reader :remote_branch_result
 
       # @param held [Hash] a {#notes_inside_worktree} answer
@@ -121,10 +122,11 @@ module Workspace
       #   fails the kill. Force makes it `-D`. A checkout already gone (+missing_ok+), a detached HEAD or
       #   an unreadable repository keeps the branch and says why in {#branch_result}.
       # @param delete_remote [Boolean] with +delete_branch+, also delete the branch's upstream branch on its remote
-      #   after the local step. Without force, an open pull request for the branch refuses
+      #   after the local step, only when the upstream has the same name, is not the default branch, and (unless
+      #   force) `start` made the branch. Without force, an open pull request for the branch refuses
       #   (`open_pull_request`), and so does a pull request state that cannot be read or a checkout already gone
-      #   (`pull_request_status_unknown`), before anything is removed. A remote that cannot delete it is a
-      #   warning, never a failed kill.
+      #   (`pull_request_status_unknown`), before anything is removed; it is asked only when a delete would
+      #   run. A remote that cannot delete it is a warning, never a failed kill.
       # @yieldparam project [String] the project, after its worktree is removed and
       #   before its config, settings and session go
       # @return [String, nil] the project name, or nil if the user cancelled
@@ -159,9 +161,9 @@ module Workspace
         end
 
         delete_remote &&= delete_branch
-        check_pull_request!(worktree_path) if delete_remote && !force && !missing
         branch_plan = plan_branch_deletion(worktree_path) if delete_branch && !missing
-        remote_plan = plan_remote_deletion(worktree_path, branch_plan) if delete_remote && branch_plan
+        remote_plan = plan_remote_deletion(worktree_path, branch_plan, force) if delete_remote && branch_plan
+        check_pull_request!(worktree_path) if remote_plan && !remote_plan[:kept_reason] && !force
 
         out.puts "Stopping #{project}..."
         out.puts "  Worktree: #{worktree_path}"
@@ -237,14 +239,21 @@ module Workspace
         end
       end
 
-      # Read before the worktree goes and before the local delete drops the branch's config.
-      def plan_remote_deletion(worktree_path, branch_plan)
+      # Read before the worktree goes and before the local delete drops the branch's config. Only an
+      # upstream of the same name is deleted (a branch made from `--base origin/main` tracks main), never
+      # the default branch, and only a branch start made unless the person forces.
+      def plan_remote_deletion(worktree_path, branch_plan, force)
         branch = branch_plan[:branch]
         return {kept_reason: "detached_head"} unless branch
+        return {name: branch, kept_reason: "error"} unless branch_plan[:root]
         return {name: branch, kept_reason: "no_remote"} if @git.remotes?(worktree_path) == false
         remote, merge = @git.upstream_config(worktree_path, branch)
         return {name: branch, kept_reason: "no_upstream"} if remote.nil? || remote == "." || merge.nil?
-        {name: merge.sub(%r{\Arefs/heads/}, ""), remote: remote, root: branch_plan[:root]}
+        name = merge.sub(%r{\Arefs/heads/}, "")
+        return {name: name, remote: remote, kept_reason: "upstream_mismatch", branch: branch} unless name == branch
+        return {name: name, remote: remote, kept_reason: "default_branch"} if name == @git.default_branch_name(worktree_path)
+        return {name: name, remote: remote, kept_reason: "existed_before_start"} unless branch_plan[:created] || force
+        {name: name, remote: remote, root: branch_plan[:root]}
       end
 
       def keep_remote_branch(plan, reason, line, out)
@@ -260,11 +269,18 @@ module Workspace
           return keep_remote_branch(plan, "detached_head", "Kept remote branch: the worktree's HEAD is detached", out)
         when "no_remote"
           return keep_remote_branch(plan, "no_remote", "Warning: kept remote branch #{name}: the repository has no remote", out)
+        when "error"
+          return keep_remote_branch(plan, "error", "Warning: could not find the repository of branch #{name}, so its remote branch was kept", out)
         when "no_upstream"
           return keep_remote_branch(plan, "no_upstream", "Warning: kept remote branch #{name}: it has no upstream", out)
+        when "upstream_mismatch"
+          return keep_remote_branch(plan, "upstream_mismatch", "Warning: kept remote branch #{plan[:remote]}/#{name}: it is the upstream of #{plan[:branch]}, not a branch of the same name", out)
+        when "default_branch"
+          return keep_remote_branch(plan, "default_branch", "Warning: kept remote branch #{plan[:remote]}/#{name}: it is the default branch", out)
+        when "existed_before_start"
+          return keep_remote_branch(plan, "existed_before_start", "Kept remote branch #{plan[:remote]}/#{name} (the branch existed before start; rerun with --force to delete it)", out)
         end
         remote = plan[:remote]
-        return keep_remote_branch(plan, "error", "Warning: could not find the repository of branch #{name}, so #{remote}/#{name} was kept", out) unless plan[:root]
         status, message = @git.delete_remote_branch(plan[:root], remote, name)
         case status
         when :deleted

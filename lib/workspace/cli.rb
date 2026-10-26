@@ -1173,8 +1173,9 @@ module Workspace
           "pull request check, and delete an unmerged start-created branch (-D)") do
           force = true
         end
-        opts.on("--delete-remote", "Also delete the branch on its upstream remote, even when the local branch existed before",
-          "start (the local one is kept); refuses over an open pull request (open_pull_request) unless --force") { delete_remote = true }
+        opts.on("--delete-remote", "Also delete the branch on its upstream remote when start created it (any branch",
+          "with --force), never an upstream of another name or the default branch; refuses",
+          "over an open pull request (open_pull_request) unless --force") { delete_remote = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
           "to stderr; a refusal is the error envelope with a retry hint") { json = true }
         opts.separator ""

@@ -14,7 +14,7 @@ workspace kill [options] [project]
 |--------|-------------|
 | `--name WS` | The worktree workspace to kill, the same as the positional `project` (giving both with different values is a usage error) |
 | `-f`, `--force` | Skip confirmation, the uncommitted/unpushed-work check and the open-pull-request check, and delete an unmerged start-created branch with `git branch -D` |
-| `--delete-remote` | Also delete the branch on its upstream remote, even when the local branch existed before `start` (the local one is kept). Refuses with `open_pull_request` when the branch has an open pull request, unless `--force` |
+| `--delete-remote` | Also delete the branch on its upstream remote when `start` created it (any branch with `--force`). Never deletes an upstream of another name or the default branch. Refuses with `open_pull_request` when the branch has an open pull request, unless `--force` |
 
 ## Details
 
@@ -24,7 +24,7 @@ Removes the git worktree, cleans up the tmuxinator config, project settings and 
 
 ### Order of steps
 
-1. Check for unsaved work (skipped with `--force`). With `--delete-remote`, also check that the branch has no open pull request (skipped with `--force`).
+1. Check for unsaved work (skipped with `--force`). With `--delete-remote`, when the remote branch would be deleted, also check that the branch has no open pull request (skipped with `--force`).
 2. Ask for confirmation (skipped with `--force`).
 3. If this worktree holds the `devenv` lock (see [`dev`](README.dev.md)), stop its dev environment as `dev down` does. One that cannot be stopped is reported and the removal goes on.
 4. Check for unsaved work again, then remove the worktree with `git worktree remove --force`, so untracked files go with it. An edit made while the prompt waited is refused here, not deleted. Once the worktree is gone, the workspace's [workflow runs](README.workflow.md) are cancelled (`cancelled_by: "kill"`), so none goes on holding a lock (a run whose file is malformed is named in a warning instead, and `kill` goes on), and its [task](README.start.md#tasks) is archived as `abandoned` (`discarded` with `--force`).
@@ -49,14 +49,17 @@ Only works on worktree-based projects created by `workspace start`. For non-work
 
 A branch that cannot be deleted is a warning, never a failed `kill`.
 
-With `--delete-remote`, `kill` also deletes the branch on its upstream remote (the remote and branch named by the branch's upstream setting). It runs before anything is removed: a branch with an open pull request is refused with `open_pull_request`, and one whose pull request state `gh` cannot read with `pull_request_status_unknown`, and nothing is removed. `--force` skips both checks. Caution: the remote branch is deleted whether or not `start` created the branch, so it goes even when the local branch existed before `start` (the local one is kept). A remote that will not delete is a warning, not a failed `kill`. It is kept, with a reason, when:
+With `--delete-remote`, `kill` also deletes the branch on its upstream remote (the remote and branch named by the branch's upstream setting). It runs before anything is removed: a branch with an open pull request is refused with `open_pull_request`, and one whose pull request state `gh` cannot read with `pull_request_status_unknown`, and nothing is removed. `--force` skips both checks. They run only when a delete would follow, so a branch kept for one of the reasons below is never refused. A remote that will not delete is a warning, not a failed `kill`. It is kept, with a reason, when:
 
 - the repository has no remote (`no_remote`) or the branch has no upstream (`no_upstream`);
+- the upstream has another name than the local branch (`upstream_mismatch`), as when `start --base origin/main` left the branch tracking `main`; `--force` does not change this;
+- the upstream is the default branch (`default_branch`); `--force` does not change this;
+- `start` did not create the branch (`existed_before_start`); `--force` deletes it anyway;
 - the remote branch was already gone (`not_found`);
 - the remote did not answer in time (`timeout`) or git failed (`error`);
 - the HEAD is detached (`detached_head`) or the checkout was already gone (`checkout_missing`).
 
-Text output has one line for each: `Deleted branch NAME`, `Kept branch NAME (it existed before start)`, `Warning: kept branch NAME: not fully merged. ...` (one line, naming `git branch -D NAME` and `--force`), `Deleted remote branch REMOTE/NAME`, or a `Warning:` line naming the cause.
+Text output has one line for each: `Deleted branch NAME`, `Kept branch NAME (it existed before start)`, `Warning: kept branch NAME: not fully merged. ...` (one line, naming `git branch -D NAME` and `--force`), `Deleted remote branch REMOTE/NAME`, `Kept remote branch REMOTE/NAME (the branch existed before start; rerun with --force to delete it)`, or a `Warning:` line naming the cause.
 
 ### Notes inside the worktree
 
@@ -96,4 +99,4 @@ workspace kill --delete-remote
 
 ## JSON output
 
-`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. When the notes directory was inside the worktree and held files, the row also has `"notes_inside_worktree":{"dir":"/abs","files":3}` and `warnings` has the sentence above; the key is absent otherwise. When step 3 stopped a dev environment the row also has `"dev_stopped": true`; the key is absent otherwise. The `killed` row always has `"branch":{"name":"PROJ-123","deleted":true,"kept_reason":null}`; `name` is null when there is no branch, and `kept_reason` is one of `existed_before_start`, `not_merged`, `detached_head`, `checkout_missing` or `error`. With `--delete-remote` the row also has `"remote_branch":{"name":"PROJ-123","remote":"origin","deleted":true,"kept_reason":null}`; `name` and `remote` may be null, and `kept_reason` is one of `no_remote`, `no_upstream`, `not_found`, `error`, `timeout`, `detached_head` or `checkout_missing`. The key is absent without the flag. A `cancelled` row has neither key. A refusal is the failure envelope with `code` `unsaved_work`, `open_pull_request` or `pull_request_status_unknown`, each with `retry.flags` `["--force"]`; outside any workspace with no project named, `code` is `not_in_workspace`. Run it from outside the session being killed, which ends last.
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. When the notes directory was inside the worktree and held files, the row also has `"notes_inside_worktree":{"dir":"/abs","files":3}` and `warnings` has the sentence above; the key is absent otherwise. When step 3 stopped a dev environment the row also has `"dev_stopped": true`; the key is absent otherwise. The `killed` row always has `"branch":{"name":"PROJ-123","deleted":true,"kept_reason":null}`; `name` is null when there is no branch, and `kept_reason` is one of `existed_before_start`, `not_merged`, `detached_head`, `checkout_missing` or `error`. With `--delete-remote` the row also has `"remote_branch":{"name":"PROJ-123","remote":"origin","deleted":true,"kept_reason":null}`; `name` and `remote` may be null, and `kept_reason` is one of `no_remote`, `no_upstream`, `upstream_mismatch`, `default_branch`, `existed_before_start`, `not_found`, `error`, `timeout`, `detached_head` or `checkout_missing`. The key is absent without the flag. A `cancelled` row has neither key. A refusal is the failure envelope with `code` `unsaved_work`, `open_pull_request` or `pull_request_status_unknown`, each with `retry.flags` `["--force"]`; outside any workspace with no project named, `code` is `not_in_workspace`. Run it from outside the session being killed, which ends last.
