@@ -635,6 +635,94 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#files" do
+    around do |example|
+      Dir.mktmpdir("wf-files") do |dir|
+        @root = File.realpath(dir)
+        @runs = File.join(@root, "runs")
+        example.run
+      end
+    end
+
+    let(:real_store) do
+      Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: File.join(@root, "archive"), id_generator: -> { "wr_2610250930abcd" })
+    end
+    let(:files_command) do
+      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, run_files: Workspace::WorkflowRunFiles.new, output: output)
+    end
+    let(:artifacts) { File.join(@root, "app", ".workflow", "wr_2610250930abcd") }
+
+    # The run the docs' example (docs/README.workflow.md, "workflow files --json") shows.
+    def fixture_run
+      FileUtils.mkdir_p(File.join(artifacts, "steps"))
+      File.write(File.join(artifacts, "steps", "research.1.prompt.md"), "prompt text\n")
+      File.write(File.join(artifacts, "steps", "research.1.check.log"), "ok\n")
+      File.write(File.join(artifacts, "research.md"), "# Research\n")
+      File.write(File.join(@root, "big.bin"), "x" * 5000)
+      File.symlink(File.join(@root, "big.bin"), File.join(artifacts, "notes.md"))
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "worktree" => File.join(@root, "app"), "state" => "running", "current" => "research",
+        "artifacts_dir" => artifacts,
+        "steps" => {"research" => {"state" => "running", "attempts" => [{"n" => 1, "prompt_file" => File.join(artifacts, "steps", "research.1.prompt.md"), "check" => {"log" => File.join(artifacts, "steps", "research.1.check.log")}}]}},
+        "definition" => {"steps" => [{"id" => "research", "produces" => ["research.md", "plan.md", "notes.md", "../../../outside.md"]}]})
+    end
+
+    it "prints the documented JSON for the fixture run" do
+      fixture_run
+
+      files_command.files(run: "wr_2610250930abcd", json: true)
+
+      shown = JSON.parse(output.string.gsub(File.join(@root, "app"), "/work/app"))
+      expect(shown["files"].map { |row| row["kind"] }).to eq(%w[prompt check_log produces produces produces])
+      docs = File.read(File.expand_path("../../../docs/README.workflow.md", __dir__))
+      example = docs[/<!-- workflow-files-example -->\n```json\n(.*?)\n```/m, 1]
+      expect(JSON.parse(example)).to eq(shown)
+    end
+
+    it "prints one line per file" do
+      fixture_run
+
+      files_command.files(run: "wr_2610250930abcd")
+
+      expect(output.string.gsub(@root, "").lines.map(&:chomp)).to eq([
+        "prompt     research  attempt 1  12 bytes  /app/.workflow/wr_2610250930abcd/steps/research.1.prompt.md",
+        "check_log  research  attempt 1  3 bytes  /app/.workflow/wr_2610250930abcd/steps/research.1.check.log",
+        "produces   research  -  11 bytes  /app/.workflow/wr_2610250930abcd/research.md",
+        "produces   research  -  missing  /app/.workflow/wr_2610250930abcd/plan.md",
+        "produces   research  -  link  /app/.workflow/wr_2610250930abcd/notes.md"
+      ])
+    end
+
+    it "says so when a run records no files" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "research", "worktree" => File.join(@root, "app"), "definition" => {"steps" => [{"id" => "research", "produces" => []}]}, "steps" => {"research" => {"attempts" => []}})
+
+      files_command.files(run: "wr_2610250930abcd")
+
+      expect(output.string).to eq("No files recorded for wr_2610250930abcd.\n")
+    end
+
+    it "uses the default artifacts directory for a run without one" do
+      FileUtils.mkdir_p(artifacts)
+      File.write(File.join(artifacts, "research.md"), "# Research\n")
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "research", "worktree" => File.join(@root, "app"), "steps" => {"research" => {"attempts" => []}}, "definition" => {"steps" => [{"id" => "research", "produces" => ["research.md"]}]})
+
+      files_command.files(run: "wr_2610250930abcd", json: true)
+
+      expect(json).to include("artifacts_dir" => artifacts, "files" => [include("exists" => true, "bytes" => 11)])
+    end
+
+    it "answers a null artifacts_dir and no files for a run with neither artifacts_dir nor worktree" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "research", "steps" => {"research" => {"attempts" => []}}, "definition" => {"steps" => [{"id" => "research", "produces" => ["research.md"]}]})
+
+      files_command.files(run: "wr_2610250930abcd", json: true)
+
+      expect(json).to include("artifacts_dir" => nil, "files" => [])
+    end
+
+    it "refuses an unknown run with unknown_run" do
+      expect { files_command.files(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+  end
+
   describe "#events" do
     around do |example|
       Dir.mktmpdir("wf-events") do |dir|

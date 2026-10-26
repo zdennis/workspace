@@ -22,13 +22,15 @@ module Workspace
       # @param store [Workspace::WorkflowRunStore]
       # @param panes [Workspace::WorkflowPanes]
       # @param files [Workspace::WorkflowFiles] writes a user's definitions (`add`)
+      # @param run_files [Workspace::WorkflowRunFiles] lists a run's files (`files`)
       # @param clock [#call] returns the current Time
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files: nil, clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
+      def initialize(catalog:, engine:, status:, store:, panes:, files: nil, run_files: nil, clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @catalog = catalog
         @files = files
+        @run_files = run_files
         @engine = engine
         @status = status
         @store = store
@@ -225,6 +227,29 @@ module Workspace
         end
         @output.puts "More events follow: pass --since #{result["next_since"]}." if result["truncated"]
         result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
+      end
+
+      # Prints the files a run keeps (each attempt's prompt and check log, each
+      # step's `produces` entries) and whether each exists. Reads file metadata
+      # only; a symlink is reported as a link and never followed.
+      #
+      # @param run [String] a run id
+      # @param json [Boolean]
+      # @return [void]
+      # @raise [Workspace::Error] code `unknown_run`
+      def files(run:, json: false)
+        record = @store.find(run)
+        rows = @run_files.list(record)
+        return document("run" => run, "artifacts_dir" => @run_files.artifacts_dir(record), "files" => rows) if json
+        @output.puts "No files recorded for #{run}." if rows.empty?
+        rows.each do |file|
+          state = if file["link"]
+            "link"
+          else
+            (file["exists"] ? "#{file["bytes"]} bytes" : "missing")
+          end
+          @output.puts [file["kind"].ljust(9), file["step"], file["attempt"] ? "attempt #{file["attempt"]}" : "-", state, file["path"]].join("  ")
+        end
       end
 
       # Gets a run going again. Everything the engine would refuse is refused

@@ -275,6 +275,7 @@ require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_catalog"
 require_relative "workspace/workflow_files"
 require_relative "workspace/workflow_run_store"
+require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_engine"
@@ -559,6 +560,7 @@ module Workspace
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
+      run_files: WorkflowRunFiles.new,
       engine: workflow_engine,
       status: workflow_status,
       store: workflow_store,

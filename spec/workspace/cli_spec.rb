@@ -6519,6 +6519,12 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls.map(&:first)).not_to include(:events)
     end
 
+    it "lists a run's files" do
+      cli.run(["workflow", "files", "wr_1", "--json"])
+
+      expect(workflow_command.calls).to eq([[:files, {run: "wr_1", json: true}]])
+    end
+
     it "validates a PATH or stdin, with --id" do
       cli.run(["workflow", "validate", "a.yml", "--json"])
       cli.run(["workflow", "validate", "-", "--id", "ship"])
@@ -6700,10 +6706,11 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, status, events, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, status, events, files, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
+        ["workflow", "files"] => /workflow files needs a RUN id/,
         ["workflow", "show", "--source"] => /workflow show --source needs an ID/,
         ["workflow", "status", "--source"] => /--source is for `workflow show ID`/,
         ["workflow", "run"] => /workflow run needs an ID/,
@@ -6741,7 +6748,7 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)
