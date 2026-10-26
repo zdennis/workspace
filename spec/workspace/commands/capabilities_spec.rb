@@ -229,6 +229,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("lifecycle_current" => 1)
     end
 
+    it "reports kill_branches 1 once kill deletes the branch start created" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("kill_branches" => 1)
+    end
+
     it "reports launch_prompt_status 1 once the closing line tells a lost prompt" do
       command.call(json: true)
 

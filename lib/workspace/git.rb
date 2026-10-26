@@ -759,6 +759,7 @@ module Workspace
     #   +origin/<branch>+.
     def create_worktree(path, branch, base: nil, quiet: false)
       cmd = ["git", "worktree", "add"]
+      created_branch = false
       if local_branch_exists?(branch)
         cmd += [path, branch]
       elsif remote_branch_exists?(branch)
@@ -768,6 +769,7 @@ module Workspace
       else
         cmd += ["-b", branch, path]
         cmd << base if base
+        created_branch = true
       end
 
       @logger.debug { "git: #{cmd.join(" ")}" }
@@ -776,6 +778,52 @@ module Workspace
       unless status.success?
         raise Workspace::Error, "Error creating worktree: #{stderr}"
       end
+
+      mark_workspace_created(path, branch) if created_branch
+    end
+
+    # Whether `start` made +branch+ itself (a new branch made with `-b`), as
+    # recorded by the `branch.<branch>.workspace-created` marker in +repo+. The marker
+    # lives in the shared repository config and goes with the branch on `branch -d`,
+    # `-D` and `-m`. A branch whose marker could not be written reads false, and is kept.
+    #
+    # @param repo [String] a checkout of the repository, or its git directory
+    # @param branch [String]
+    # @return [Boolean] true only when the marker is set to `true`
+    def workspace_created_branch?(repo, branch)
+      stdout, _, success = run_git(repo, "config", "--get", "branch.#{branch}.workspace-created", timeout: QUICK_TIMEOUT)
+      success && stdout.strip == "true"
+    end
+
+    # Deletes a local branch.
+    #
+    # @param repo [String] a checkout of the repository, or its git directory
+    # @param branch [String]
+    # @param force [Boolean] `-D` (even when unmerged) instead of `-d`
+    # @return [Array(Boolean, String)] success and git's stderr (a missing branch is false)
+    def delete_branch(repo, branch, force: false)
+      _, stderr, success = run_git(repo, "branch", force ? "-D" : "-d", branch, timeout: QUICK_TIMEOUT, env: ENGLISH)
+      [success, stderr]
+    end
+
+    # Deletes a branch on a remote with `git push <remote> --delete`.
+    #
+    # @param repo [String] a checkout of the repository
+    # @param remote [String]
+    # @param branch [String]
+    # @return [Array(Symbol, String)] the outcome and a message (git's stderr, empty when deleted):
+    #   `:deleted`, `:not_found` (the remote has no such branch), `:error` (git failed), or
+    #   `:timeout` (past {PUSH_TIMEOUT} seconds)
+    # @raise [Workspace::Error] git is not installed
+    def delete_remote_branch(repo, remote, branch)
+      _, stderr, success = @runner.call(["git", "push", remote, "--delete", branch], chdir: repo, timeout: PUSH_TIMEOUT, env: ENGLISH)
+      return [:deleted, ""] if success
+      return [:not_found, stderr] if stderr.match?(/remote ref does not exist/i)
+      [:error, stderr]
+    rescue Errno::ENOENT
+      raise Workspace::Error, "git is not installed."
+    rescue Timeout::Error
+      [:timeout, "git push --delete of '#{branch}' did not finish within #{PUSH_TIMEOUT} seconds."]
     end
 
     # @param path [String] the checkout
@@ -1054,9 +1102,18 @@ module Workspace
       end
     end
 
+    # Records that workspace created +branch+; a failure is only logged.
+    def mark_workspace_created(path, branch)
+      _, stderr, status = capture_git("-C", path, "config", "branch.#{branch}.workspace-created", "true")
+      @logger.debug { "git: could not mark #{branch} as workspace-created: #{stderr.to_s.strip}" } unless status.success?
+    rescue SystemCallError => e
+      @logger.debug { "git: could not mark #{branch} as workspace-created: #{e.message}" }
+    end
+
     # Runs git in +path+ through the runner, turning a missing git and a
     # timeout into errors.
-    def run_git(path, *args, timeout:)
+    def run_git(path, *args, timeout:, env: nil)
+      return @runner.call(["git", *args], chdir: path, timeout: timeout, env: env) if env
       @runner.call(["git", *args], chdir: path, timeout: timeout)
     rescue Errno::ENOENT
       raise Workspace::Error, "git is not installed."
