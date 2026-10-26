@@ -31,6 +31,26 @@ module Workspace
     # Restart errors that mean there is no pane to type into.
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
 
+    # Seconds after an attempt starts during which its line may still be on its
+    # way: the daemon's answer to `restart_agent`, plus a minute to start it.
+    DELIVERY_WINDOW = WorkflowPanes::REPLY_TIMEOUT + 60
+
+    # Where the line that starts an attempt stands. An attempt is stored as
+    # `delivering` before its line is typed, outside the run's lock, and the
+    # mark is cleared once the daemon answers or a turn's end shows the agent
+    # had it. A mark older than {DELIVERY_WINDOW} was left by a process that
+    # died while it waited: the line may or may not have reached the agent.
+    #
+    # @param attempt [Hash{String=>Object}, nil] a step's last attempt
+    # @param now [Time]
+    # @return [Symbol, nil] :delivering, :unknown, or nil when the line was delivered or never sent
+    def self.delivery(attempt, now)
+      return nil unless attempt && attempt["delivery"] == "delivering"
+      (now - Time.iso8601(attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
+    rescue ArgumentError, TypeError
+      :unknown
+    end
+
     # @param store [Workspace::WorkflowRunStore]
     # @param resources [Workspace::RunResources] holds each step's `uses:` for the run
     # @param composer [Workspace::InstructionComposer] builds a step's instructions
@@ -60,6 +80,7 @@ module Workspace
       @event_log = event_log
       @task_store = task_store
       @clock = clock
+      @delivery = nil
     end
 
     # Whether a run is one only a timer will wake: it waits for a lock, or
@@ -353,17 +374,21 @@ module Workspace
 
     private
 
-    # Runs one change to a run under its lock and announces it.
+    # Runs one change to a run under its lock and announces it, then types
+    # the line of a step the change started, once the lock is given up.
     def transition(run_id, nonblocking: false)
       before = nil
+      # The one step line this change started, if any; taken before {#deliver} runs a transition of its own.
+      @delivery = nil
       run = @store.update(run_id, nonblocking: nonblocking) do |stored|
         before = fingerprint(stored)
         yield stored
         stored
       end
+      delivery, @delivery = @delivery, nil
       return nil unless run
       changed(run) unless before == fingerprint(run)
-      run
+      delivery ? deliver(run_id, delivery) : run
     end
 
     # What `workflow status` shows of a run's progress; a change in it is announced.
@@ -473,6 +498,10 @@ module Workspace
     def left_alone(run, state, pane, turn_over)
       case state["state"]
       when "running"
+        # Another process is still typing this attempt's line; typing it again would start the step twice.
+        if !pane && self.class.delivery(state["attempts"].last, @clock.call) == :delivering
+          return "step #{run["current"]}'s line is still being delivered to pane #{bound_pane(run)}"
+        end
         # The turn's end counts only for the attempt it was seen on: the run may have moved on since.
         over = turn_over && turn_over["step"] == run["current"] && turn_over["attempt"] == state["attempts"].last&.fetch("n", nil)
         "an agent is working on step #{run["current"]}" unless pane || run["reason"] || over
@@ -482,7 +511,10 @@ module Workspace
     end
 
     # Starts the current step: takes its resources, writes its instructions,
-    # binds the pane and types the one line that points the agent at them.
+    # binds the pane and stores the attempt as running and `delivering`. The
+    # line that points the agent at the instructions is typed by {#deliver}
+    # after the run's lock is given up, so a process that dies while the
+    # daemon answers leaves an attempt a turn's end can decide.
     def dispatch(run, context: nil)
       step = step_def(run)
       state = step_state(run)
@@ -499,26 +531,54 @@ module Workspace
       return wait_for_lock(run, state, waiting) if waiting
 
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
-      attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"]}
+      attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
+                 "delivery" => "delivering"}
       run["pending_context"] = []
       attempt["prompt_file"] = write_prompt(run, step, attempt)
       state["attempts"] << attempt
       @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
         instructions: attempt["prompt_file"], artifacts: run["artifacts_dir"])
       run["pane"] = pane
-      kick = @panes.kick(workspace: run["workspace"], pane: pane, text: format(KICK, attempt["prompt_file"]),
-        fresh: (context || step["context"]) == "fresh")
-      event(run, "step_dispatched", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane, "delivered" => kick[:ok])
-      return not_delivered(run, state, attempt, kick) unless kick[:ok]
       state["state"] = "running"
       run["state"] = "running"
       run["reason"] = nil
+      event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane)
+      @delivery = {"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
+                   "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh"}
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
     end
 
+    # Types the line of an attempt {#dispatch} stored, then records the
+    # daemon's answer under the run's lock, if the run is still on that
+    # attempt and nothing else (a turn's end, a cancel, a resume) has
+    # settled it meanwhile. A line that could not be typed makes the run wait
+    # as before; a late answer for an attempt already settled changes nothing.
+    def deliver(run_id, delivery)
+      kick = begin
+        @panes.kick(workspace: delivery["workspace"], pane: delivery["pane"], text: delivery["text"], fresh: delivery["fresh"])
+      rescue => e
+        # Whatever went wrong, the mark is settled here: left set, it would hold off `resume` for nothing.
+        {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
+      end
+      @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
+        "pane" => delivery["pane"], "delivered" => kick[:ok])
+      transition(run_id) do |stored|
+        state = stored["steps"].fetch(delivery["step"])
+        attempt = state["attempts"].last
+        next unless stored["current"] == delivery["step"] && attempt["n"] == delivery["attempt"] && attempt["delivery"] == "delivering"
+        attempt.delete("delivery")
+        not_delivered(stored, state, attempt, kick) unless kick[:ok]
+      end
+    rescue Workspace::Error => e
+      # Cancelled while the line was on its way: the cancel stands.
+      raise unless e.code == "run_not_active"
+      @store.find(run_id)
+    end
+
     def not_delivered(run, state, attempt, kick)
+      attempt&.delete("delivery")
       attempt&.merge!("ended_at" => now_iso, "outcome" => "not_delivered")
       # The next attempt is told what this one would have been.
       run["pending_context"] = attempt["context"] + run["pending_context"] if attempt
@@ -643,6 +703,8 @@ module Workspace
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
+      # A turn that ended on the attempt shows its line reached the agent.
+      attempt.delete("delivery")
       reported = attempt["reported"]
       if reported && reported["status"] == "fail"
         fail_step(run, "cause" => "reported", "summary" => reported["summary"])

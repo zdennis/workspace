@@ -227,6 +227,51 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(current["flags"]).to eq([])
   end
 
+  describe "an attempt whose line was on its way to the agent" do
+    def delivering
+      create
+      store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last["delivery"] = "delivering" }
+    end
+
+    it "flags it delivering, and not idle, while the line may still be on its way" do
+      delivering
+      snapshot["panes"].first["state"] = "idle"
+      now[0] = Time.utc(2026, 10, 4, 12, 40, 0) + Workspace::WorkflowEngine::DELIVERY_WINDOW
+
+      expect(current).to include("state" => "running", "reason" => nil, "flags" => ["delivering"])
+    end
+
+    it "says waiting_you, kind delivery, once the window is past and the pane's agent has ended its turn" do
+      delivering
+      snapshot["panes"].first["state"] = "idle"
+      now[0] = Time.utc(2026, 10, 4, 12, 40, 1) + Workspace::WorkflowEngine::DELIVERY_WINDOW
+
+      expect(current).to include("state" => "running", "flags" => [])
+      expect(current["reason"]).to eq(
+        "code" => "waiting_you", "since" => "2026-10-04T12:40:00Z",
+        "details" => {"kind" => "delivery", "step" => "plan", "attempt" => 2, "pane" => "%5", "workspace" => "app"},
+        "actions" => [action("focus", "app", "--pane", "%5"), action("workflow resume", "wr_1"),
+          action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")]
+      )
+      expect(status.run("wr_1")["runs"].first["state"]).to eq("waiting")
+    end
+
+    it "says pane_gone, not delivery, when the pane itself is gone" do
+      delivering
+      panes.stale << "wr_1"
+      now[0] = Time.utc(2026, 10, 4, 12, 40, 1) + Workspace::WorkflowEngine::DELIVERY_WINDOW
+
+      expect(current["reason"]).to include("code" => "pane_gone")
+    end
+
+    it "says nothing more while the pane's agent is working: it had the line" do
+      delivering
+      now[0] = Time.utc(2026, 10, 4, 12, 40, 1) + Workspace::WorkflowEngine::DELIVERY_WINDOW
+
+      expect(current).to include("reason" => nil, "flags" => [])
+    end
+  end
+
   it "flags a step that reads running while its pane's agent is idle: the turn ended and nothing saw it" do
     create
     snapshot["panes"].first["state"] = "idle"

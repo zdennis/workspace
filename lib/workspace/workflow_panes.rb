@@ -223,7 +223,7 @@ module Workspace
       socket = @connector.call(@config.agent_socket_path(workspace))
       begin
         socket.puts(JSON.generate(message))
-        # The run's own lock is held while this waits, so it never waits for good.
+        # A step's dispatch waits for this, so it never waits for good.
         unless socket.wait_readable(@reply_timeout)
           raise Workspace::Error.new("The agent daemon for '#{workspace}' did not answer within #{@reply_timeout.round}s.", code: "connection_failed")
         end

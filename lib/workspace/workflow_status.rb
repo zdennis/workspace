@@ -8,7 +8,11 @@ module Workspace
   # `workspace ask` question from that pane. A step past its `timeout:` gets
   # the flag `timed_out`; nothing is stopped for it. A step that reads
   # `running` with no reason while its pane's agent is idle gets the flag
-  # `idle`: its turn ended unseen, and `workflow resume` decides it.
+  # `idle`: its turn ended unseen, and `workflow resume` decides it. A step
+  # whose line is still on its way to the agent gets the flag `delivering`;
+  # one whose line was left on its way by a process that died, in a pane
+  # whose agent has ended its turn, reads `waiting_you` with kind `delivery`:
+  # nobody can tell whether the agent had the line.
   #
   # Every reason carries `actions`, the commands that would resolve it, as
   # `{action, args, needs}` entries. With `needs` empty, `workspace <action>
@@ -119,7 +123,14 @@ module Workspace
         return {"code" => "pane_gone", "since" => stored&.fetch("since", nil) || run["steps"].fetch(run["current"])["attempts"].last&.fetch("started_at", nil),
                 "details" => {"step" => run["current"], "pane" => pane, "workspace" => run["workspace"]}}
       end
-      waiting_on_person(run, pane, shown, warnings) || stored
+      waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || stored
+    end
+
+    def lost_delivery(run, pane, shown)
+      attempt = run["steps"].fetch(run["current"])["attempts"].last
+      return nil unless WorkflowEngine.delivery(attempt, @clock.call) == :unknown && WorkflowPanes.turn_over?(shown, @clock.call)
+      {"code" => "waiting_you", "since" => attempt["started_at"],
+       "details" => {"kind" => "delivery", "step" => run["current"], "attempt" => attempt["n"], "pane" => pane, "workspace" => run["workspace"]}}
     end
 
     def waiting_on_person(run, pane, shown, warnings)
@@ -159,8 +170,12 @@ module Workspace
       if timeout && started && %w[running checking].include?(state["state"]) && @clock.call - Time.iso8601(started) > timeout
         flags << "timed_out"
       end
+      delivering = WorkflowEngine.delivery(state["attempts"].last, @clock.call) == :delivering
+      flags << "delivering" if delivering
       # The agent is idle on a step that still reads as being worked on: its turn ended unseen.
-      flags << "idle" if state["state"] == "running" && reason.nil? && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
+      if state["state"] == "running" && reason.nil? && !delivering && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
+        flags << "idle"
+      end
       flags
     end
 
@@ -186,6 +201,8 @@ module Workspace
         when "gate" then [action("workflow approve", id), action("workflow reject", id, needs: [need("note", "--note")]), cancel]
         when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run["workspace"], needs: [need("answer", nil)]), focus]
         when "prompt" then [focus]
+        # Resume decides the step as a turn's end would; --from types the line again.
+        when "delivery" then [focus, resume, action("workflow resume", id, "--from", reason.dig("details", "step").to_s), cancel]
         else [resume, cancel]
         end
       when "turn_ended_incomplete" then [focus, resume, cancel]

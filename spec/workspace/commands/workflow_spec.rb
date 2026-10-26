@@ -224,6 +224,8 @@ RSpec.describe Workspace::Commands::Workflow do
           "waiting_you: open question a1: Postgres or sqlite?",
         reason("waiting_you", {"kind" => "dispatch", "step" => "plan", "error" => "pane_busy", "message" => "pane %5 did not go quiet"}) =>
           "waiting_you: step plan could not be started (pane_busy): pane %5 did not go quiet",
+        reason("waiting_you", {"kind" => "delivery", "step" => "plan", "attempt" => 1, "pane" => "%5"}) =>
+          "waiting_you: step plan's line was on its way to pane %5 when the process typing it stopped; the agent may not have it",
         reason("turn_ended_incomplete", {"missing" => ["/a/plan.md", "/a/risks.md"]}) =>
           "turn_ended_incomplete: the turn ended without /a/plan.md, /a/risks.md",
         reason("turn_ended_incomplete", {"missing" => [], "stale" => ["/a/plan.md"]}) =>
