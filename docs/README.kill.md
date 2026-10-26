@@ -55,7 +55,7 @@ With `--delete-remote`, `kill` also deletes the branch on its upstream remote (t
 - the upstream has another name than the local branch (`upstream_mismatch`), as when `start --base origin/main` left the branch tracking `main`; `--force` does not change this;
 - the upstream is the default branch (`default_branch`); `--force` does not change this;
 - `start` did not create the branch (`existed_before_start`); `--force` deletes it anyway;
-- the branch is not merged into the default branch, or that cannot be told (`not_merged`); `--force` deletes it anyway. A squash-merged branch counts as not merged;
+- the branch is not merged into the default branch, the remote branch (as last fetched) has commits the local branch lacks, or that cannot be told (`not_merged`); `--force` deletes it anyway. A squash-merged branch counts as not merged;
 - the remote branch was already gone (`not_found`);
 - the remote did not answer in time (`timeout`) or git failed (`error`);
 - the HEAD is detached (`detached_head`) or the checkout was already gone (`checkout_missing`).

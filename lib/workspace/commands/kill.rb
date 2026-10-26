@@ -74,7 +74,7 @@ module Workspace
       #
       # @return [Hash, nil] `{"name" => branch name on the remote, "remote" => remote name, "deleted" => Boolean,
       #   "kept_reason" => String or nil}` where `kept_reason` is `no_remote`, `no_upstream`, `upstream_mismatch`,
-      #   `default_branch`, `existed_before_start`, `not_found`, `detached_head`, `checkout_missing`, `timeout` or
+      #   `default_branch`, `existed_before_start`, `not_merged`, `not_found`, `detached_head`, `checkout_missing`, `timeout` or
       #   `error`; nil when no remote deletion was asked for
       attr_reader :remote_branch_result
 
@@ -270,9 +270,15 @@ module Workspace
         return {name: name, remote: remote, kept_reason: "default_branch"} if name == @git.default_branch_name(worktree_path)
         return {name: name, remote: remote, kept_reason: "existed_before_start"} unless branch_plan[:created] || force
         # `git branch -d` checks a branch with an upstream against that upstream, so it can delete a pushed,
-        # unmerged branch locally; deleting the remote copy too would lose the commits.
-        return {name: name, remote: remote, kept_reason: "not_merged"} unless force || @git.merged_into_base?(worktree_path, branch) == true
+        # unmerged branch locally; deleting the remote copy too would lose the commits. The remote copy must
+        # also hold nothing the local branch lacks, as commits pushed from elsewhere would go with it.
+        return {name: name, remote: remote, kept_reason: "not_merged"} unless force || remote_merged?(worktree_path, branch, remote)
         {name: name, remote: remote, root: branch_plan[:root]}
+      end
+
+      def remote_merged?(worktree_path, branch, remote)
+        @git.merged_into_base?(worktree_path, branch) == true &&
+          @git.ancestor?(worktree_path, "refs/remotes/#{remote}/#{branch}", "refs/heads/#{branch}")
       end
 
       def keep_remote_branch(plan, reason, line, out)
@@ -299,7 +305,7 @@ module Workspace
         when "existed_before_start"
           return keep_remote_branch(plan, "existed_before_start", "Kept remote branch #{plan[:remote]}/#{name} (the branch existed before start; rerun with --force to delete it)", out)
         when "not_merged"
-          return keep_remote_branch(plan, "not_merged", "Warning: kept remote branch #{plan[:remote]}/#{name}: it is not merged into the default branch (rerun with --force to delete it)", out)
+          return keep_remote_branch(plan, "not_merged", "Warning: kept remote branch #{plan[:remote]}/#{name}: it is not merged into the default branch, or has commits the local branch lacks (rerun with --force to delete it)", out)
         end
         remote = plan[:remote]
         status, message = @git.delete_remote_branch(plan[:root], remote, name)
