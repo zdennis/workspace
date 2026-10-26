@@ -246,6 +246,7 @@ RSpec.describe Workspace::Commands::Kill do
               allow(git).to receive(:upstream_config).with("/path/to/worktree", "PROJ-123").and_return(upstream)
               allow(git).to receive(:default_branch_name).with("/path/to/worktree").and_return("main")
               allow(git).to receive(:unsaved_work).and_return(nil)
+              allow(git).to receive(:merged_into_base?).and_return(true)
               allow(git).to receive(:delete_remote_branch) { |*_args|
                 order << :delete_remote
                 remote_delete
@@ -306,6 +307,41 @@ RSpec.describe Workspace::Commands::Kill do
               expect(git).not_to have_received(:delete_remote_branch)
               expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "default_branch")
               expect(output.string).to include("Warning: kept remote branch origin/PROJ-123: it is the default branch")
+            end
+
+            context "when the branch is not merged into the default branch" do
+              before { allow(git).to receive(:merged_into_base?).with("/path/to/worktree", "PROJ-123").and_return(false) }
+
+              it "keeps the remote branch, without a pull request check or a mention in the prompt" do
+                input.puts "n"
+                input.rewind
+                command.call(name, delete_branch: true, delete_remote: true)
+                expect(output.string).to include("Remove worktree, delete branch PROJ-123, and kill session? [y/N]")
+                expect(output.string).not_to include("origin/PROJ-123,")
+
+                expect(kill_remote).to eq(name)
+
+                expect(pr_status).not_to have_received(:call)
+                expect(git).not_to have_received(:delete_remote_branch)
+                expect(command.remote_branch_result).to eq("name" => "PROJ-123", "remote" => "origin", "deleted" => false, "kept_reason" => "not_merged")
+                expect(output.string).to include("Warning: kept remote branch origin/PROJ-123: it is not merged into the default branch (rerun with --force to delete it)")
+              end
+
+              it "deletes it with force, without a merge check" do
+                kill_remote(force: true)
+
+                expect(git).not_to have_received(:merged_into_base?)
+                expect(git).to have_received(:delete_remote_branch).with("/repos/main.git", "origin", "PROJ-123")
+              end
+            end
+
+            it "keeps the remote branch when whether it is merged is unknown" do
+              allow(git).to receive(:merged_into_base?).and_return(nil)
+
+              kill_remote
+
+              expect(git).not_to have_received(:delete_remote_branch)
+              expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "not_merged")
             end
 
             context "when start did not make the branch" do

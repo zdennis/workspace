@@ -267,6 +267,9 @@ module Workspace
         return {name: name, remote: remote, kept_reason: "upstream_mismatch", branch: branch} unless name == branch
         return {name: name, remote: remote, kept_reason: "default_branch"} if name == @git.default_branch_name(worktree_path)
         return {name: name, remote: remote, kept_reason: "existed_before_start"} unless branch_plan[:created] || force
+        # `git branch -d` checks a branch with an upstream against that upstream, so it can delete a pushed,
+        # unmerged branch locally; deleting the remote copy too would lose the commits.
+        return {name: name, remote: remote, kept_reason: "not_merged"} unless force || @git.merged_into_base?(worktree_path, branch) == true
         {name: name, remote: remote, root: branch_plan[:root]}
       end
 
@@ -293,6 +296,8 @@ module Workspace
           return keep_remote_branch(plan, "default_branch", "Warning: kept remote branch #{plan[:remote]}/#{name}: it is the default branch", out)
         when "existed_before_start"
           return keep_remote_branch(plan, "existed_before_start", "Kept remote branch #{plan[:remote]}/#{name} (the branch existed before start; rerun with --force to delete it)", out)
+        when "not_merged"
+          return keep_remote_branch(plan, "not_merged", "Warning: kept remote branch #{plan[:remote]}/#{name}: it is not merged into the default branch (rerun with --force to delete it)", out)
         end
         remote = plan[:remote]
         status, message = @git.delete_remote_branch(plan[:root], remote, name)
