@@ -162,6 +162,44 @@ RSpec.describe Workspace::Commands::Kill do
             expect(git).to have_received(:delete_branch).with("/repos/main.git", "PROJ-123", force: false)
           end
 
+          describe "the confirmation prompt" do
+            before do
+              input.puts "n"
+              input.rewind
+            end
+
+            it "names the branch start made" do
+              command.call(name, delete_branch: true)
+
+              expect(output.string).to include("Remove worktree, delete branch PROJ-123, and kill session? [y/N]")
+            end
+
+            context "when start did not make the branch" do
+              let(:marked) { false }
+
+              it "keeps today's wording" do
+                command.call(name, delete_branch: true)
+
+                expect(output.string).to include("Remove worktree and kill session? [y/N]")
+              end
+            end
+
+            it "keeps today's wording for a detached HEAD" do
+              allow(git).to receive(:worktree_branch).with("/path/to/worktree").and_return(nil)
+
+              command.call(name, delete_branch: true)
+
+              expect(output.string).to include("Remove worktree and kill session? [y/N]")
+            end
+
+            it "keeps today's wording without delete_branch" do
+              command.call(name)
+
+              expect(output.string).to include("Remove worktree and kill session? [y/N]")
+              expect(git).not_to have_received(:worktree_branch)
+            end
+          end
+
           context "when start did not make the branch" do
             let(:marked) { false }
 
@@ -225,6 +263,26 @@ RSpec.describe Workspace::Commands::Kill do
               expect(order).to eq([:remove, :delete, :delete_remote])
               expect(output.string).to include("Deleted remote branch origin/PROJ-123")
               expect(command.remote_branch_result).to eq("name" => "PROJ-123", "remote" => "origin", "deleted" => true, "kept_reason" => nil)
+            end
+
+            it "names both branches in the confirmation prompt" do
+              input.puts "n"
+              input.rewind
+
+              command.call(name, delete_branch: true, delete_remote: true)
+
+              expect(output.string).to include("Remove worktree, delete branch PROJ-123 and remote branch origin/PROJ-123, and kill session? [y/N]")
+              expect(git).not_to have_received(:delete_remote_branch)
+            end
+
+            it "names only the local branch when the remote one is kept" do
+              allow(git).to receive(:upstream_config).and_return([nil, nil])
+              input.puts "n"
+              input.rewind
+
+              command.call(name, delete_branch: true, delete_remote: true)
+
+              expect(output.string).to include("Remove worktree, delete branch PROJ-123, and kill session? [y/N]")
             end
 
             it "keeps an upstream of another name, even with force" do

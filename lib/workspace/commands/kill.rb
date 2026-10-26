@@ -170,7 +170,7 @@ module Workspace
         warn_about_notes(project, missing, out)
 
         if confirm && !force
-          answer = Prompt.ask(@input, out, "Remove worktree and kill session? [y/N] ", retry_flags: ["--force"], destructive: true)&.strip
+          answer = Prompt.ask(@input, out, confirmation_question(branch_plan, remote_plan), retry_flags: ["--force"], destructive: true)&.strip
           unless answer&.match?(/\Ay(es)?\z/i)
             out.puts "Cancelled."
             return
@@ -210,6 +210,15 @@ module Workspace
       end
 
       private
+
+      # Names the branches the kill is set to delete, so the person sees them before saying yes.
+      def confirmation_question(branch_plan, remote_plan)
+        branches = []
+        branches << "branch #{branch_plan[:branch]}" if branch_plan && branch_plan[:created] && !branch_plan[:kept_reason]
+        branches << "remote branch #{remote_plan[:remote]}/#{remote_plan[:name]}" if remote_plan && !remote_plan[:kept_reason]
+        return "Remove worktree and kill session? [y/N] " if branches.empty?
+        "Remove worktree, delete #{branches.join(" and ")}, and kill session? [y/N] "
+      end
 
       # Read before the worktree goes: its branch, the shared git directory to run git in (it works as the
       # repository for any layout, bare included), and whether `start` made the branch.

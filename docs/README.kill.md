@@ -25,7 +25,7 @@ Removes the git worktree, cleans up the tmuxinator config, project settings and 
 ### Order of steps
 
 1. Check for unsaved work (skipped with `--force`). With `--delete-remote`, when the remote branch would be deleted, also check that the branch has no open pull request (skipped with `--force`).
-2. Ask for confirmation (skipped with `--force`).
+2. Ask for confirmation (skipped with `--force`). When the kill will delete branches, the question names them: `Remove worktree, delete branch PROJ-123 and remote branch origin/PROJ-123, and kill session? [y/N]`. Otherwise it is `Remove worktree and kill session? [y/N]`. A named local branch that turns out not to be merged is still kept (`git branch -d` refuses it), and the kill reports it as kept.
 3. If this worktree holds the `devenv` lock (see [`dev`](README.dev.md)), stop its dev environment as `dev down` does. One that cannot be stopped is reported and the removal goes on.
 4. Check for unsaved work again, then remove the worktree with `git worktree remove --force`, so untracked files go with it. An edit made while the prompt waited is refused here, not deleted. Once the worktree is gone, the workspace's [workflow runs](README.workflow.md) are cancelled (`cancelled_by: "kill"`), so none goes on holding a lock (a run whose file is malformed is named in a warning instead, and `kill` goes on), and its [task](README.start.md#tasks) is archived as `abandoned` (`discarded` with `--force`).
 5. Run the `post_kill` hook.
