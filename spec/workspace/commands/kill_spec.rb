@@ -12,6 +12,7 @@ RSpec.describe Workspace::Commands::Kill do
   let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
   let(:notes) { nil }
   let(:dev) { nil }
+  let(:pr_status) { nil }
   let(:window_positions) { Workspace::WindowPositions.new(dir: File.join(tmpdir, "positions")) }
 
   subject(:command) do
@@ -24,6 +25,7 @@ RSpec.describe Workspace::Commands::Kill do
       window_positions: window_positions,
       notes: notes,
       dev: dev,
+      pr_status: pr_status,
       output: output,
       input: input
     )
@@ -193,6 +195,184 @@ RSpec.describe Workspace::Commands::Kill do
 
               expect(output.string).to include("Warning: could not delete branch PROJ-123: fatal: boom")
               expect(command.branch_result).to eq("name" => "PROJ-123", "deleted" => false, "kept_reason" => "error")
+            end
+          end
+
+          context "with delete_remote: true" do
+            let(:pr_status) { double("pr_status", call: {"available" => true, "found" => false}) }
+            let(:has_remotes) { true }
+            let(:upstream) { ["origin", "refs/heads/PROJ-123"] }
+            let(:remote_delete) { [:deleted, ""] }
+
+            before do
+              allow(git).to receive(:remotes?).with("/path/to/worktree").and_return(has_remotes)
+              allow(git).to receive(:upstream_config).with("/path/to/worktree", "PROJ-123").and_return(upstream)
+              allow(git).to receive(:unsaved_work).and_return(nil)
+              allow(git).to receive(:delete_remote_branch) { |*_args|
+                order << :delete_remote
+                remote_delete
+              }
+            end
+
+            def kill_remote(**opts)
+              command.call(name, delete_branch: true, delete_remote: true, confirm: false, **opts)
+            end
+
+            it "deletes the upstream branch after the local delete" do
+              kill_remote
+
+              expect(git).to have_received(:delete_remote_branch).with("/repos/main.git", "origin", "PROJ-123")
+              expect(order).to eq([:remove, :delete, :delete_remote])
+              expect(output.string).to include("Deleted remote branch origin/PROJ-123")
+              expect(command.remote_branch_result).to eq("name" => "PROJ-123", "remote" => "origin", "deleted" => true, "kept_reason" => nil)
+            end
+
+            it "uses the upstream's own branch name" do
+              allow(git).to receive(:upstream_config).and_return(["origin", "refs/heads/other/name"])
+
+              kill_remote
+
+              expect(git).to have_received(:delete_remote_branch).with("/repos/main.git", "origin", "other/name")
+            end
+
+            it "makes no remote calls by default" do
+              command.call(name, force: true, delete_branch: true)
+
+              expect(pr_status).not_to have_received(:call)
+              expect(git).not_to have_received(:delete_remote_branch)
+              expect(command.remote_branch_result).to be_nil
+            end
+
+            context "with an open pull request" do
+              let(:pr_status) { double("pr_status", call: {"available" => true, "found" => true, "state" => "OPEN", "number" => 7, "url" => "https://x/pull/7"}) }
+
+              it "refuses before the prompt, with nothing removed" do
+                expect { command.call(name, delete_branch: true, delete_remote: true) }.to raise_error(Workspace::Error) { |e|
+                  expect(e.code).to eq("open_pull_request")
+                  expect(e.details).to eq("branch" => "PROJ-123", "number" => 7, "url" => "https://x/pull/7")
+                  expect(e.retry).to eq("flags" => ["--force"], "destructive" => true)
+                }
+
+                expect(git).not_to have_received(:remove_worktree)
+                expect(output.string).not_to include("Remove worktree")
+              end
+
+              it "is skipped by force" do
+                kill_remote(force: true)
+
+                expect(pr_status).not_to have_received(:call)
+                expect(git).to have_received(:delete_remote_branch)
+              end
+            end
+
+            context "with a pull request status that cannot be read" do
+              let(:pr_status) { double("pr_status", call: {"available" => false, "reason" => "error", "detail" => "boom"}) }
+
+              it "refuses" do
+                expect { kill_remote }.to raise_error(Workspace::Error) { |e|
+                  expect(e.code).to eq("pull_request_status_unknown")
+                  expect(e.details).to eq("branch" => "PROJ-123", "reason" => "error", "detail" => "boom")
+                  expect(e.retry).to eq("flags" => ["--force"], "destructive" => true)
+                }
+                expect(git).not_to have_received(:remove_worktree)
+              end
+            end
+
+            it "keeps the remote branch of a missing checkout without asking, force or not" do
+              allow(project_config).to receive(:remove)
+
+              [false, true].each do |force|
+                expect(kill_remote(missing_ok: true, force: force)).to eq(name)
+                expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "checkout_missing")
+              end
+
+              expect(pr_status).not_to have_received(:call)
+              expect(git).not_to have_received(:delete_remote_branch)
+              expect(output.string).to include("Kept remote branch: the checkout was already gone")
+            end
+
+            it "has no pull request answer to read without a pr_status" do
+              cmd = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+                stop_command: stop_command, project_detector: project_detector, output: output, input: input)
+
+              expect { cmd.call(name, delete_branch: true, delete_remote: true, confirm: false) }.to raise_error(Workspace::Error) { |e|
+                expect(e.code).to eq("pull_request_status_unknown")
+                expect(e.details).to eq("branch" => "PROJ-123", "reason" => "unavailable")
+              }
+            end
+
+            ["MERGED", "CLOSED"].each do |state|
+              it "goes on when the pull request is #{state}" do
+                allow(pr_status).to receive(:call).and_return({"available" => true, "found" => true, "state" => state, "number" => 7, "url" => "u"})
+
+                kill_remote
+
+                expect(git).to have_received(:delete_remote_branch)
+              end
+            end
+
+            it "goes on when there is no pull request" do
+              kill_remote
+
+              expect(git).to have_received(:delete_remote_branch)
+            end
+
+            context "without a remote" do
+              let(:has_remotes) { false }
+
+              it "warns and keeps going" do
+                expect(kill_remote).to eq(name)
+
+                expect(output.string).to include("Warning: the repository has no remote")
+                expect(command.remote_branch_result["kept_reason"]).to eq("no_remote")
+                expect(git).not_to have_received(:delete_remote_branch)
+              end
+            end
+
+            context "without an upstream" do
+              let(:upstream) { nil }
+
+              it "warns and keeps going" do
+                expect(kill_remote).to eq(name)
+
+                expect(output.string).to include("Warning: branch PROJ-123 has no upstream")
+                expect(command.remote_branch_result["kept_reason"]).to eq("no_upstream")
+                expect(git).not_to have_received(:delete_remote_branch)
+              end
+            end
+
+            context "when the push fails" do
+              let(:remote_delete) { [:error, "remote: denied\n"] }
+
+              it "warns and still kills" do
+                expect(kill_remote).to eq(name)
+
+                expect(output.string).to include("Warning: could not delete remote branch origin/PROJ-123: remote: denied")
+                expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "error")
+              end
+            end
+
+            context "when the push times out" do
+              let(:remote_delete) { [:timeout, ""] }
+
+              it "warns and still kills" do
+                expect(kill_remote).to eq(name)
+
+                expect(output.string).to include("Warning: could not delete remote branch origin/PROJ-123: the remote did not answer in time")
+                expect(command.remote_branch_result["kept_reason"]).to eq("timeout")
+              end
+            end
+
+            context "when the remote no longer has the branch" do
+              let(:remote_delete) { [:not_found, "remote ref does not exist"] }
+
+              it "says so without a warning" do
+                kill_remote
+
+                expect(output.string).to include("Remote branch origin/PROJ-123 was already gone")
+                expect(output.string).not_to include("Warning: could not delete remote")
+                expect(command.remote_branch_result).to include("deleted" => false, "kept_reason" => "not_found")
+              end
             end
           end
 
