@@ -122,6 +122,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("agent_commands" => 1)
     end
 
+    it "reports agent_pane_refresh once launch records the agent pane rewrite" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("agent_pane_refresh" => 1)
+    end
+
     it "reports agent_executables once the agent programs on PATH can be listed" do
       command.call(json: true)
 

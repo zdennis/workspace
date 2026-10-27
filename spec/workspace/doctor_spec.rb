@@ -1098,6 +1098,17 @@ RSpec.describe Workspace::Doctor do
         expect(Dir.glob("#{path}.tmp*")).to be_empty
       end
 
+      it "writes an agent_pane_refreshed event for each rewritten config" do
+        path = write_config("myapp", pane)
+        event_log = instance_double(Workspace::EventLog, record: true)
+
+        doctor_with(event_log: event_log).report(headless: true, fix: true)
+
+        backup = Dir.glob("#{path}.workspace-backup-*").first
+        expect(event_log).to have_received(:record).with(type: "agent_pane_refreshed", project: "myapp",
+          data: {"workspace" => "myapp", "path" => path, "running" => "claude", "wanted" => "claude-dev", "backup" => backup})
+      end
+
       it "reads each config once per run" do
         write_config("myapp", pane)
         allow(main_agent).to receive(:kind).and_call_original

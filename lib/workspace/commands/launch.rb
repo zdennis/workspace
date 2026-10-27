@@ -45,7 +45,7 @@ module Workspace
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, main_agent: nil, file_backup: nil, sleeper: ->(seconds) { sleep(seconds) },
+        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, main_agent: nil, file_backup: nil, event_log: nil, sleeper: ->(seconds) { sleep(seconds) },
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
@@ -64,6 +64,7 @@ module Workspace
         @agent_commands = agent_commands
         @main_agent = main_agent
         @file_backup = file_backup
+        @event_log = event_log
         @sleeper = sleeper
         @clock = clock
         @output = output
@@ -444,6 +445,8 @@ module Workspace
         return unless stale
         backup = @file_backup.backup(stale[:path], quiet: true)
         @project_config.write_config(stale[:path], stale[:content])
+        @event_log&.record(type: "agent_pane_refreshed", project: project,
+          data: {"workspace" => project, "path" => stale[:path], "running" => stale[:running], "wanted" => stale[:wanted], "backup" => backup})
         message = "#{project}: agent pane now runs #{stale[:wanted]}"
         message += " (backup: #{backup})" if backup
         log(message)
