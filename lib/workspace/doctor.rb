@@ -38,7 +38,7 @@ module Workspace
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -56,6 +56,7 @@ module Workspace
       @agent_commands = agent_commands
       @project_config = project_config
       @main_agent = main_agent
+      @event_log = event_log
       @file_backup = file_backup || FileBackup.new(output: output)
       @working_dir = working_dir
       @output = output
@@ -277,6 +278,8 @@ module Workspace
       stale.select do |entry|
         backup = @file_backup.backup(entry[:path])
         @project_config.write_config(entry[:path], entry[:content])
+        @event_log&.record(type: "agent_pane_refreshed", project: entry[:workspace],
+          data: {"workspace" => entry[:workspace], "path" => entry[:path], "running" => entry[:running], "wanted" => entry[:wanted], "backup" => backup})
         message = "#{entry[:workspace]}: agent pane now runs #{entry[:wanted]}"
         message += " (backup: #{backup})" if backup
         @output.puts "--fix: #{message}; a running session keeps the old program until you relaunch it"

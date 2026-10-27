@@ -817,9 +817,10 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
       project_config: project_config, window_layout: double("wl", arrange: nil), config: config,
       pipeline_config: double("pipeline_config", stages_for: nil, literal_sentinel_warnings: []),
       agent_ensurer: double("ensurer", call: Workspace::Commands::EnsureAgent::Result.new(:started)),
-      main_agent: main_agent, file_backup: file_backup,
+      main_agent: main_agent, file_backup: file_backup, event_log: event_log,
       sleeper: ->(_seconds) {}, output: output, error_output: error_output)
   end
+  let(:event_log) { instance_double(Workspace::EventLog, record: true) }
 
   before do
     allow(Process).to receive(:spawn).and_return(999)
@@ -862,6 +863,7 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
 
     expect(launch[:exit_code]).to eq(0)
     expect(error_output.string).to include("Warning: proj1: agent pane not brought up to date")
+    expect(event_log).not_to have_received(:record)
   end
 
   it "rewrites the config before a headless start" do
@@ -884,6 +886,15 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
 
       expect(project_config).to have_received(:write_config)
       expect(output.string).to eq("")
+    end
+
+    it "still writes the agent_pane_refreshed event" do
+      allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+
+      launch
+
+      expect(event_log).to have_received(:record).with(type: "agent_pane_refreshed", project: "proj1",
+        data: {"workspace" => "proj1", "path" => path, "running" => "claude", "wanted" => "claude-dev", "backup" => "#{path}.workspace-backup-1"})
     end
   end
 end
