@@ -259,7 +259,52 @@ module Workspace
       lines.join
     end
 
+    # Whether a workspace's tmuxinator config has an agent pane that runs another program than the
+    # configured command for +kind+, with the config as {#rewrite_agent_pane} would write it.
+    #
+    # @param workspace [String]
+    # @param kind [String] an {AgentProvider} key; "none" is never stale
+    # @return [Hash, nil] `path`, `running` and `wanted` (programs) and `content`; nil when the pane is
+    #   current, none is found, or the config can't be read
+    def stale_agent_pane(workspace, kind)
+      return if kind == "none"
+      path = config_path_for(workspace)
+      content = File.read(path)
+      rewritten = rewrite_agent_pane(content, kind, workspace)
+      return unless rewritten && rewritten != content
+      running, wanted = changed_pane_programs(content, rewritten)
+      return if running.nil? || wanted.nil? || running == wanted
+      {path: path, running: running, wanted: wanted, content: rewritten}
+    rescue SystemCallError, IOError, Psych::Exception
+      nil
+    end
+
+    # Writes a config through a temp file and rename.
+    #
+    # @param path [String]
+    # @param content [String]
+    def write_config(path, content)
+      tmp = "#{path}.tmp#{Process.pid}"
+      File.write(tmp, content)
+      File.rename(tmp, path)
+    ensure
+      File.delete(tmp) if tmp && File.exist?(tmp)
+    end
+
     private
+
+    # @return [Array<String, nil>] the programs of the one pane line that differs between two contents
+    def changed_pane_programs(before, after)
+      old_line, new_line = before.lines.zip(after.lines).find { |old, new| old != new }
+      [pane_program(old_line), pane_program(new_line)]
+    end
+
+    def pane_program(line)
+      item = YAML.safe_load(line.to_s.strip)&.first
+      item.is_a?(String) ? AgentCommands.program_for(item.split(" || ").first) : nil
+    rescue Psych::Exception
+      nil
+    end
 
     # @return [Array(String, String), nil] the indent and the text of a YAML list item line, a quoted
     #   scalar read back to its value

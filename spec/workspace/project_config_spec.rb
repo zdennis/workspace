@@ -327,6 +327,39 @@ RSpec.describe Workspace::ProjectConfig do
         end
       end
 
+      describe "#stale_agent_pane" do
+        let(:settings) { {"agent" => {"commands" => {"claude" => "claude-new"}}} }
+        let(:path) { File.join(tmpdir, "workspace.myapp.yml") }
+
+        it "describes the pane line that runs another program" do
+          File.write(path, "panes:\n  - claude --dangerously-skip-permissions\n")
+
+          stale = pc.stale_agent_pane("myapp", "claude")
+
+          expect(stale).to include(path: path, running: "claude", wanted: "claude-new",
+            content: "panes:\n  - claude-new --dangerously-skip-permissions\n")
+        end
+
+        it "is nil for a current pane, kind none, a missing pane and an unreadable config" do
+          File.write(path, "panes:\n  - claude-new --dangerously-skip-permissions\n")
+          expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
+          expect(pc.stale_agent_pane("myapp", "none")).to be_nil
+          File.write(path, "panes:\n  - echo hi\n")
+          expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
+          expect(pc.stale_agent_pane("nope", "claude")).to be_nil
+        end
+      end
+
+      describe "#write_config" do
+        it "replaces the file and leaves no temp file" do
+          path = File.join(tmpdir, "w.yml")
+          File.write(path, "old")
+          pc.write_config(path, "new")
+          expect(File.read(path)).to eq("new")
+          expect(Dir.glob("#{path}.tmp*")).to be_empty
+        end
+      end
+
       describe "#rewrite_agent_pane" do
         let(:settings) { {"agent" => {"commands" => {"claude" => "claude-old", "codex" => "codex-dev"}}} }
 

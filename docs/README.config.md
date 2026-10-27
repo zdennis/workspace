@@ -178,7 +178,7 @@ To add an environment variable or flags of your own, put them before `"$@"`:
 exec env FOO=1 claude --model sonnet "$@"
 ```
 
-The command is used by every config written from then on, and at once by what workspace types itself: `restore`, `reactivate` and `--spawn`. A pane whose program is the configured command counts as that agent for `sessions`, `handoff` and the rest. Configs written earlier keep the pane they have; `workspace doctor` lists them and `workspace doctor --fix` rewrites the pane line (see [`doctor`](README.doctor.md#agent-pane-commands)). `launch` never rewrites it. The `agent.commands.*` keys only take effect in an agent daemon the next time it starts, and the value can carry `VAR=value` words, so `config show --json` masks it. Quote a program path that has a space (`"/Users/me/my bin/claude-dev" --model x`); the command is still typed as written.
+The command is used by every config written from then on, and at once by what workspace types itself: `restore`, `reactivate` and `--spawn`. A pane whose program is the configured command counts as that agent for `sessions`, `handoff` and the rest. Configs written earlier keep the pane they have; `workspace doctor` lists them and `workspace doctor --fix` rewrites the pane line (see [`doctor`](README.doctor.md#agent-pane-commands)). `launch` also rewrites it, but only just before it starts a session that is not running (see [`launch`](README.launch.md#agent-pane-refresh)). The `agent.commands.*` keys only take effect in an agent daemon the next time it starts, and the value can carry `VAR=value` words, so `config show --json` masks it. Quote a program path that has a space (`"/Users/me/my bin/claude-dev" --model x`); the command is still typed as written.
 
 ### Scopes
 

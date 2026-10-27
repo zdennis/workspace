@@ -412,7 +412,8 @@ module Workspace
     pane_locator = PaneLocator.new(tmux: tmux)
     pane_bindings = PaneBindings.new(path: config.pane_bindings_path, logger: logger, error_output: error_output)
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
-    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
+    main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
+    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
@@ -428,7 +429,6 @@ module Workspace
       spine_facts: -> { spine_facts }, spine_inferred: -> { spine_inferred }, output: output)
     spine_config = SpineConfig.new(config_resolver: config_resolver)
     spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, spine_config: spine_config, output: output)
-    main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     commands_config = CommandsConfig.new(config_resolver: config_resolver)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
       commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(config_resolver: config_resolver),
