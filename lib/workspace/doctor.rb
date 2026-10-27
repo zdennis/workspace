@@ -276,7 +276,7 @@ module Workspace
     def fix_agent_panes(stale)
       stale.select do |entry|
         backup = @file_backup.backup(entry[:path])
-        write_atomically(entry[:path], entry[:content])
+        @project_config.write_config(entry[:path], entry[:content])
         message = "#{entry[:workspace]}: agent pane now runs #{entry[:wanted]}"
         message += " (backup: #{backup})" if backup
         @output.puts "--fix: #{message}; a running session keeps the old program until you relaunch it"
@@ -288,45 +288,15 @@ module Workspace
       end
     end
 
-    def write_atomically(path, content)
-      tmp = "#{path}.tmp#{Process.pid}"
-      File.write(tmp, content)
-      File.rename(tmp, path)
-    ensure
-      File.delete(tmp) if tmp && File.exist?(tmp)
-    end
-
-    # @return [Array<Hash>] for each stale config: `workspace`, `path`, `kind`, `running`, `wanted` (programs)
-    #   and `content`, the config as {ProjectConfig#rewrite_agent_pane} would write it
+    # @return [Array<Hash>] for each stale config: `workspace`, `kind` and {ProjectConfig#stale_agent_pane}'s fields
     def stale_agent_panes
       return [] unless @project_config && @main_agent
 
       @project_config.available_projects.filter_map do |workspace|
-        path = @project_config.config_path_for(workspace)
-        content = File.read(path)
         kind = @main_agent.kind(workspace)
-        next if kind == "none"
-        rewritten = @project_config.rewrite_agent_pane(content, kind, workspace)
-        next unless rewritten && rewritten != content
-        running, wanted = changed_pane_programs(content, rewritten)
-        next if running.nil? || wanted.nil? || running == wanted
-        {workspace: workspace, path: path, kind: kind, running: running, wanted: wanted, content: rewritten}
-      rescue SystemCallError, IOError, Psych::Exception
-        nil
+        stale = @project_config.stale_agent_pane(workspace, kind)
+        stale && {workspace: workspace, kind: kind, **stale}
       end
-    end
-
-    # @return [Array<String, nil>] the programs of the one pane line that differs between two contents
-    def changed_pane_programs(before, after)
-      old_line, new_line = before.lines.zip(after.lines).find { |old, new| old != new }
-      [pane_program(old_line), pane_program(new_line)]
-    end
-
-    def pane_program(line)
-      item = YAML.safe_load(line.to_s.strip)&.first
-      item.is_a?(String) ? AgentCommands.program_for(item.split(" || ").first) : nil
-    rescue Psych::Exception
-      nil
     end
 
     def check_duplicate_window_ids

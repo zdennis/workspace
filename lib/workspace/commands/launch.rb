@@ -37,12 +37,15 @@ module Workspace
       #   delivered to, for the projects +bindings:+ names; nil binds nothing
       # @param agent_commands [Workspace::AgentCommands, nil] says which program names count as an agent
       #   in a project's panes; nil knows only the providers' executables
+      # @param main_agent [Workspace::MainAgent, nil] says which agent a config's pane runs; with +file_backup+,
+      #   a config about to be started has its agent pane brought up to date. nil leaves configs alone
+      # @param file_backup [Workspace::FileBackup, nil] copies a config aside before it is rewritten
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param clock [#call] monotonic seconds, bounding the wait for sessions
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, sleeper: ->(seconds) { sleep(seconds) },
+        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, main_agent: nil, file_backup: nil, sleeper: ->(seconds) { sleep(seconds) },
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
@@ -59,6 +62,8 @@ module Workspace
         @restore_enabled = restore_enabled
         @binder = binder
         @agent_commands = agent_commands
+        @main_agent = main_agent
+        @file_backup = file_backup
         @sleeper = sleeper
         @clock = clock
         @output = output
@@ -239,6 +244,7 @@ module Workspace
         unless running.include?(session)
           failure = with_start_lock(project) do
             next :running if @tmux.sessions.include?(session)
+            refresh_agent_pane(project)
             log("Starting #{project} headless (tmux session #{session})...")
             @tmux.start_headless(project)
           end
@@ -425,7 +431,24 @@ module Workspace
           reused << project
           return @tmux.reattach_or_start(session, @tmux.command_for(project, reattach: false))
         end
+        refresh_agent_pane(project)
         @tmux.command_for(project, reattach: reattach)
+      end
+
+      # Rewrites the config's agent pane to the configured command before tmuxinator starts a session from
+      # it, after a backup. Only called for a project with no running session. A config that can't be
+      # rewritten is a warning and is started as it is.
+      def refresh_agent_pane(project)
+        return unless @main_agent && @file_backup
+        stale = @project_config.stale_agent_pane(project, @main_agent.kind(project))
+        return unless stale
+        backup = @file_backup.backup(stale[:path], quiet: true)
+        @project_config.write_config(stale[:path], stale[:content])
+        message = "#{project}: agent pane now runs #{stale[:wanted]}"
+        message += " (backup: #{backup})" if backup
+        log(message)
+      rescue SystemCallError, IOError => e
+        @error_output.puts "Warning: #{project}: agent pane not brought up to date: #{e.message}"
       end
 
       # Polls for tmux sessions to appear, checking before each wait: a

@@ -791,3 +791,99 @@ RSpec.describe Workspace::Commands::Launch, "window position restore" do
     end
   end
 end
+
+RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
+  let(:state) do
+    allow(config).to receive(:state_file).and_return(File.join(tmpdir, "state.json"))
+    allow(config).to receive(:event_log_file).and_return(File.join(tmpdir, "events.jsonl"))
+    Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
+  end
+  let(:output) { StringIO.new }
+  let(:error_output) { StringIO.new }
+  let(:iterm) { double("iterm") }
+  let(:tmux) { double("tmux") }
+  let(:path) { File.join(tmpdir, "workspace.proj1.yml") }
+  let(:stale) { {path: path, running: "claude", wanted: "claude-dev", content: "new\n"} }
+  let(:project_config) { double("project_config", exists?: true, stale_agent_pane: stale, write_config: nil) }
+  let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
+  let(:file_backup) { instance_double(Workspace::FileBackup, backup: "#{path}.workspace-backup-1") }
+  let(:running) { [] }
+  let(:quiet) { false }
+
+  subject(:command) do
+    described_class.new(state: state, iterm: iterm, window_manager: double("wm", screens: [], iterm_windows: {}), tmux: tmux,
+      project_config: project_config, window_layout: double("wl", arrange: nil), config: config,
+      pipeline_config: double("pipeline_config", stages_for: nil, literal_sentinel_warnings: []),
+      agent_ensurer: double("ensurer", call: Workspace::Commands::EnsureAgent::Result.new(:started)),
+      main_agent: main_agent, file_backup: file_backup,
+      sleeper: ->(_seconds) {}, output: output, error_output: error_output)
+  end
+
+  before do
+    allow(Process).to receive(:spawn).and_return(999)
+    allow(Process).to receive(:detach)
+    allow(tmux).to receive_messages(start_server: nil, rename_window: nil)
+    allow(tmux).to receive(:command_for) { |name, **| "tmuxinator start #{name}" }
+    allow(tmux).to receive(:session_name_for) { |name| name }
+    allow(tmux).to receive(:reattach_or_start) { |_session, start| start }
+    allow(tmux).to receive(:sessions) { running + ["proj1"] }
+    allow(iterm).to receive_messages(session_map: {}, find_existing_sessions: {}, find_launcher_window_id: nil)
+    allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "uid-1"})
+  end
+
+  def launch
+    command.call(["proj1"], quiet: quiet)
+  end
+
+  it "rewrites the config before starting a session that is not running" do
+    allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+
+    launch
+
+    expect(file_backup).to have_received(:backup).with(path, quiet: true)
+    expect(project_config).to have_received(:write_config).with(path, "new\n")
+    expect(output.string).to include("proj1: agent pane now runs claude-dev (backup: #{path}.workspace-backup-1)")
+  end
+
+  it "leaves the config alone when the session is running" do
+    allow(tmux).to receive(:sessions).and_return(["proj1"])
+
+    launch
+
+    expect(project_config).not_to have_received(:write_config)
+    expect(file_backup).not_to have_received(:backup)
+  end
+
+  it "warns and goes on when the config can't be written" do
+    allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+    allow(project_config).to receive(:write_config).and_raise(Errno::EACCES)
+
+    expect(launch[:exit_code]).to eq(0)
+    expect(error_output.string).to include("Warning: proj1: agent pane not brought up to date")
+  end
+
+  it "rewrites the config before a headless start" do
+    allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+    allow(tmux).to receive(:custom_socket_option).and_return(nil)
+    allow(tmux).to receive(:start_headless) { expect(project_config).to have_received(:write_config).with(path, "new\n") }
+
+    command.call(["proj1"], headless: true)
+
+    expect(tmux).to have_received(:start_headless).with("proj1")
+  end
+
+  context "when quiet" do
+    let(:quiet) { true }
+
+    it "rewrites without printing" do
+      allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+
+      launch
+
+      expect(project_config).to have_received(:write_config)
+      expect(output.string).to eq("")
+    end
+  end
+end
