@@ -89,7 +89,7 @@ workspace <subcommand> [options]
 | event-log | [README](docs/README.event-log.md) | Show or compact the append-only event log of state changes and agent activity |
 | events | [README](docs/README.events.md) | Read or follow the event log and every agent's hook events (tool, sub-agent, session, prompt) as one stream, resumable by cursor |
 | finish | [README](docs/README.finish.md) | Verify a worktree is clean and pushed, then remove it (default: the one you are in; optionally opens a PR) |
-| focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
+| focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front, optionally centering it on its screen (`--center`) |
 | goal | [README](docs/README.goal.md) | Say where a workspace's goal is (`show [REF]`): its journey stage, workflow step, agent turn and tool call, what it waits for and on whom, and the next expected event; or one line per goal (`list`). Reads only; `journey` is another name for `spine` |
 | handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
