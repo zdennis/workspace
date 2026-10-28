@@ -52,6 +52,21 @@ RSpec.describe Workspace do
       end
     end
 
+    it "wires the shared ConfigResolver into the config command, so config get can print the layered hint" do
+      cli = Workspace.build_cli(
+        output: StringIO.new,
+        error_output: StringIO.new,
+        input: StringIO.new
+      )
+
+      config_command = cli.instance_variable_get(:@config_command)
+      resolver = config_command.instance_variable_get(:@config_resolver)
+
+      expect(resolver).to be_a(Workspace::ConfigResolver)
+      # The one resolver build_cli hands every reader, not a second build.
+      expect(resolver).to equal(cli.instance_variable_get(:@notes_command).instance_variable_get(:@config_resolver))
+    end
+
     it "wires a real LockReaper into the agent command's session monitor" do
       cli = Workspace.build_cli(
         output: StringIO.new,

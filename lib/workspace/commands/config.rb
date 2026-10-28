@@ -66,9 +66,11 @@ module Workspace
       # @param project_detector [Workspace::ProjectDetector, nil] with no name given, a project or workspace
       #   file is acted on only when cwd is in a workspace it detects (or one `project_config` knows by the
       #   lineage name), else `not_in_workspace`; nil makes no such check
+      # @param config_resolver [Workspace::ConfigResolver, nil] reads the layered result for `get`'s hint
+      #   when the target layer's file doesn't set the key; nil prints no hint
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] output stream for user-facing errors
-      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, project_config: nil, agent_command_check: nil, project_detector: nil, output: $stdout, error_output: $stderr)
+      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, project_config: nil, agent_command_check: nil, project_detector: nil, config_resolver: nil, output: $stdout, error_output: $stderr)
         @project_settings = project_settings
         @lineage = lineage
         @file_backup = file_backup
@@ -76,6 +78,7 @@ module Workspace
         @project_config = project_config
         @agent_command_check = agent_command_check
         @project_detector = project_detector
+        @config_resolver = config_resolver
         @output = output
         @error_output = error_output
       end
@@ -117,10 +120,47 @@ module Workspace
         value = data.dig(*key.split("."))
         if value.nil?
           @error_output.puts target.name ? "#{key} is not set for '#{target.name}'." : "#{key} is not set."
+          print_layered_hint(key, target, named: !project.nil?)
           false
         else
           @output.puts value
           true
+        end
+      end
+
+      # After `get` found nothing in the target layer's file: whether the layered
+      # result would find the key in another layer, and where. Nothing is printed
+      # when no other layer sets the key, no {Workspace::ConfigResolver} was
+      # injected, or a layer's file can't be parsed (a corrupt file must not turn
+      # the "not set" note into a raise).
+      def print_layered_hint(key, target, named:)
+        return if @config_resolver.nil? || target.workspace.nil?
+        winner = begin
+          @config_resolver.view(workspace: target.workspace).resolve(key).winner
+        rescue Workspace::ConfigParseError
+          nil
+        end
+        return if winner.nil? || winner.layer == target.layer
+        path = layer_path(winner.layer, target.workspace)
+        where = "#{LAYER_SCOPES.fetch(winner.layer)} layer#{" (#{path})" if path}"
+        # A workspace named through --name or a positional WS may not be the one
+        # cwd resolves to, so the suggested commands must name it too.
+        name_opt = named ? " --name #{target.workspace}" : ""
+        if ConfigSchema.key(key).sensitive
+          # A sensitive key's value never prints, so point at the read that shows it.
+          @error_output.puts "It is set in the #{where}. Run `workspace config get #{key} --scope #{LAYER_SCOPES.fetch(winner.layer)}#{name_opt}` to read it."
+        else
+          shown = winner.value.is_a?(String) ? "'#{winner.value}'" : JSON.generate(winner.value)
+          @error_output.puts "The layered result is #{shown}, from the #{where}. Run `workspace config #{key}#{name_opt}` for the layered result."
+        end
+      end
+
+      # The file one layer's winner came from, for {#print_layered_hint}.
+      def layer_path(layer, workspace)
+        case layer
+        when "global" then @project_settings.global_config_path
+        when "worktree" then @project_settings.project_config_path(workspace)
+        when "project" then @project_settings.project_config_path(WorkspaceLineage.split_worktree_name(workspace)&.first || workspace)
         end
       end
 

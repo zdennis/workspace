@@ -4,13 +4,14 @@ require "tmpdir"
 require "fileutils"
 
 RSpec.describe Workspace::Commands::Config do
-  def build_command(output: StringIO.new, error_output: StringIO.new)
+  def build_command(output: StringIO.new, error_output: StringIO.new, with_resolver: false)
     dir = Dir.mktmpdir("ws-config")
     fake_path_config = Struct.new(:workspace_config_dir).new(dir)
     project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
     lineage = Workspace::WorkspaceLineage.new
     file_backup = Workspace::FileBackup.new(output: output)
-    command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output, error_output: error_output)
+    config_resolver = with_resolver ? Workspace::ConfigResolver.new(project_settings: project_settings) : nil
+    command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, config_resolver: config_resolver, output: output, error_output: error_output)
     remember_last_write(command)
     [command, project_settings]
   end
@@ -697,6 +698,127 @@ RSpec.describe Workspace::Commands::Config do
       project_dir = Dir.mktmpdir("ws-config-project")
 
       expect { command.get("dev.bogus", cwd: project_dir) }.to raise_error(Workspace::Error, /Unknown config key 'dev.bogus'/) { |e| expect(e.code).to eq("unknown_config_key") }
+    end
+
+    describe "the layered hint when the target layer's file doesn't set the key" do
+      it "names the layered result's layer, value and file for a non-sensitive key" do
+        output = StringIO.new
+        error_output = StringIO.new
+        command, project_settings = build_command(error_output: error_output, with_resolver: true)
+        project_settings.save("myapp", {"agentd" => {"poll_interval" => "45"}})
+
+        result = command.get("agentd.poll_interval", project: "myapp.worktree-fix", cwd: Dir.pwd)
+
+        expect(result).to eq(false)
+        expect(output.string).to eq("")
+        path = project_settings.project_config_path("myapp")
+        expect(error_output.string).to eq(
+          "agentd.poll_interval is not set for 'myapp.worktree-fix'.\n" \
+          "The layered result is '45', from the project layer (#{path}). Run `workspace config agentd.poll_interval --name myapp.worktree-fix` for the layered result.\n"
+        )
+      end
+
+      it "hides a sensitive key's value and points at the read that shows it" do
+        error_output = StringIO.new
+        command, project_settings = build_command(error_output: error_output, with_resolver: true)
+        project_settings.save("myapp", {"dev" => {"up" => "./start-dev"}})
+
+        command.get("dev.up", project: "myapp.worktree-fix", cwd: Dir.pwd)
+
+        path = project_settings.project_config_path("myapp")
+        expect(error_output.string).to eq(
+          "dev.up is not set for 'myapp.worktree-fix'.\n" \
+          "It is set in the project layer (#{path}). Run `workspace config get dev.up --scope project --name myapp.worktree-fix` to read it.\n"
+        )
+      end
+
+      it "suggests no --name when the workspace was inferred from cwd" do
+        error_output = StringIO.new
+        command, project_settings = build_command(error_output: error_output, with_resolver: true)
+        project_dir = Dir.mktmpdir("ws-config-project")
+        project_settings.save_global("workflows" => {"defaults" => {"include" => "binding, commits"}})
+
+        command.get("workflows.defaults.include", scope: "workspace", cwd: project_dir)
+
+        # The workspace was resolved from cwd, so the suggested command is one the
+        # same cwd answers for; no --name is needed.
+        expect(error_output.string).to include("Run `workspace config workflows.defaults.include` for the layered result")
+        expect(error_output.string).not_to include("--name")
+      end
+
+      it "names the worktree's own file when it is the layer the value comes from" do
+        error_output = StringIO.new
+        command, project_settings = build_command(error_output: error_output, with_resolver: true)
+        project_settings.save("myapp.worktree-fix", {"agentd" => {"poll_interval" => "45"}})
+
+        command.get("agentd.poll_interval", project: "myapp.worktree-fix", scope: "global", cwd: Dir.pwd)
+
+        path = project_settings.project_config_path("myapp.worktree-fix")
+        expect(error_output.string).to eq(
+          "agentd.poll_interval is not set.\n" \
+          "The layered result is '45', from the workspace layer (#{path}). Run `workspace config agentd.poll_interval --name myapp.worktree-fix` for the layered result.\n"
+        )
+      end
+
+      it "prints no hint when another layer's file can't be parsed" do
+        error_output = StringIO.new
+        command, project_settings = build_command(error_output: error_output, with_resolver: true)
+        path = project_settings.project_config_path("myapp")
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "agentd: [unclosed\n\tbad: yaml")
+
+        command.get("agentd.poll_interval", project: "myapp.worktree-fix", cwd: Dir.pwd)
+
+        expect(error_output.string).to eq("agentd.poll_interval is not set for 'myapp.worktree-fix'.\n")
+      end
+
+      it "names the global file when the global layer is the winner" do
+        error_output = StringIO.new
+        command, project_settings = build_command(error_output: error_output, with_resolver: true)
+        project_settings.save_global("workflows" => {"defaults" => {"include" => "binding, commits"}})
+
+        command.get("workflows.defaults.include", project: "myapp.worktree-fix", scope: "workspace", cwd: Dir.pwd)
+
+        path = project_settings.global_config_path
+        expect(error_output.string).to eq(
+          "workflows.defaults.include is not set for 'myapp.worktree-fix'.\n" \
+          "The layered result is 'binding, commits', from the global layer (#{path}). Run `workspace config workflows.defaults.include --name myapp.worktree-fix` for the layered result.\n"
+        )
+      end
+
+      it "renders a non-string value as JSON" do
+        error_output = StringIO.new
+        command, project_settings = build_command(error_output: error_output, with_resolver: true)
+        project_settings.save("myapp", {"dev" => {"release_on_session_end" => false}})
+
+        command.get("dev.release_on_session_end", project: "myapp.worktree-fix", cwd: Dir.pwd)
+
+        path = project_settings.project_config_path("myapp")
+        expect(error_output.string).to eq(
+          "dev.release_on_session_end is not set for 'myapp.worktree-fix'.\n" \
+          "The layered result is false, from the project layer (#{path}). Run `workspace config dev.release_on_session_end --name myapp.worktree-fix` for the layered result.\n"
+        )
+      end
+
+      it "prints no hint when no other layer sets the key" do
+        error_output = StringIO.new
+        command, = build_command(error_output: error_output, with_resolver: true)
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        command.get("dev.up", cwd: project_dir)
+
+        expect(error_output.string).to eq("dev.up is not set for '#{File.basename(project_dir)}'.\n")
+      end
+
+      it "prints no hint when no config resolver was injected" do
+        error_output = StringIO.new
+        command, project_settings = build_command(error_output: error_output)
+        project_settings.save("myapp", {"dev" => {"up" => "./start-dev"}})
+
+        command.get("dev.up", project: "myapp.worktree-fix", cwd: Dir.pwd)
+
+        expect(error_output.string).to eq("dev.up is not set for 'myapp.worktree-fix'.\n")
+      end
     end
   end
 
