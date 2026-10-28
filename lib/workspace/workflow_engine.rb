@@ -219,7 +219,7 @@ module Workspace
       transition(run_id) do |stored|
         gate = waiting_gate(stored)
         gate.merge!("state" => "approved", "at" => now_iso, "note" => note)
-        event(stored, "gate_approved", "step" => stored["current"])
+        event(stored, "gate_approved", with_note({"step" => stored["current"]}, note))
         stored["pending_context"] << "The #{stored["current"]} step was approved with this note: #{note}" if note
         advance(stored)
       end
@@ -241,7 +241,7 @@ module Workspace
           raise UsageError, "--to must be #{stored["current"]} or a step before it (#{ids.first(ids.index(stored["current"]) + 1).join(", ")}), got #{target.to_s[0, 60].inspect}."
         end
         gate.merge!("state" => "rejected", "at" => now_iso, "note" => note)
-        event(stored, "gate_rejected", "step" => stored["current"], "to" => target)
+        event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
         stored["current"] = target
         dispatch(stored)
@@ -405,6 +405,11 @@ module Workspace
 
     def event(run, type, data = {})
       @store.record_event(run["id"], type, data)
+    end
+
+    # A gate event carries the person's note only when one was given.
+    def with_note(data, note)
+      note.to_s.strip.empty? ? data : data.merge("note" => note)
     end
 
     def now_iso

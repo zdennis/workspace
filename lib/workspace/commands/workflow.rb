@@ -222,7 +222,7 @@ module Workspace
         return document("run" => run, "events" => result["events"], "truncated" => result["truncated"], "next_since" => result["next_since"], "warnings" => result["warnings"]) if json
         @output.puts "No events#{" after line #{since}" if since.positive?} for #{run}." if result["events"].empty?
         result["events"].each do |event|
-          rest = event.except("n", "ts", "type").map { |key, value| "#{key}=#{value.is_a?(String) ? value : JSON.generate(value)}" }
+          rest = event.except("n", "ts", "type").map { |key, value| "#{key}=#{(value.is_a?(String) && !value.match?(/[[:cntrl:]]/)) ? value : JSON.generate(value)}" }
           @output.puts [event["n"].to_s.rjust(4), event["ts"], event["type"], *rest].join("  ")
         end
         @output.puts "More events follow: pass --since #{result["next_since"]}." if result["truncated"]

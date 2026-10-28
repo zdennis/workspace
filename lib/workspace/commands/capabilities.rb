@@ -46,7 +46,7 @@ module Workspace
         "library_installed" => 1,
         "instructions" => 1,
         "restore" => 1,
-        "workflow" => 3,
+        "workflow" => 4,
         "window_state" => 1,
         "window_position" => 1,
         "cleanup_dry_run" => 1,

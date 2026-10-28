@@ -112,6 +112,10 @@ RSpec.describe Workspace::WorkflowEngine do
     File.readlines(store.events_path(run_id)).map { |line| JSON.parse(line)["type"] }
   end
 
+  def history_lines(run_id = "wr_1")
+    File.readlines(store.events_path(run_id)).map { |line| JSON.parse(line) }
+  end
+
   # Takes a run past its gated first step, to the build step.
   def to_build
     start
@@ -875,6 +879,15 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
       expect(run["steps"]["plan"]["gate"]).to include("state" => "approved", "note" => "Skip the migration.")
       expect(run["steps"]["build"]["attempts"].last["context"]).to eq(["The plan step was approved with this note: Skip the migration."])
+      expect(history_lines.find { |line| line["type"] == "gate_approved" }).to include("step" => "plan", "note" => "Skip the migration.")
+    end
+
+    it "leaves note off the gate_approved event when the note is blank" do
+      engine.turn_ended("wr_1", pane: "%5")
+
+      engine.approve("wr_1", note: "  ")
+
+      expect(history_lines.find { |line| line["type"] == "gate_approved" }).not_to have_key("note")
     end
 
     it "refuses to approve or reject a run that is not at a gate" do
@@ -895,6 +908,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["steps"]["plan"]).not_to have_key("gate")
       expect(run["steps"]["plan"]["attempts"].last).to include("n" => 2, "context" => ["The plan step was rejected at its gate: Too big; split it."])
       expect(File.read(run["steps"]["plan"]["attempts"].last["prompt_file"])).to include("The plan step was rejected at its gate: Too big; split it.")
+      expect(history_lines.find { |line| line["type"] == "gate_rejected" }).to include("step" => "plan", "to" => "plan", "note" => "Too big; split it.")
     end
 
     it "refuses to reject to a step after the gated one" do

@@ -782,6 +782,15 @@ RSpec.describe Workspace::Commands::Workflow do
       ])
     end
 
+    it "keeps a note with a line break on its event's one line" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan", "steps" => {"plan" => {"state" => "running", "attempts" => []}}, "definition" => {"steps" => [{"id" => "plan"}]})
+      real_store.record_event("wr_2610250930abcd", "gate_rejected", "step" => "plan", "to" => "plan", "note" => "Too big.\nSplit it.")
+
+      events_command.events(run: "wr_2610250930abcd")
+
+      expect(output.string).to eq(%(   1  2026-10-25T09:30:00Z  gate_rejected  step=plan  to=plan  note="Too big.\\nSplit it."\n))
+    end
+
     it "says so when there is nothing after since, and how to continue when capped" do
       fixture_run
       events_command.events(run: "wr_2610250930abcd", since: 4)
