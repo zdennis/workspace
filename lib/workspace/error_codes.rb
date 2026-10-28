@@ -32,6 +32,7 @@ module Workspace
       "no_window" => "The workspace has no iTerm window recorded.",
       "no_windows_to_cycle" => "focus --cycle found no tracked workspace with a live iTerm window.",
       "window_gone" => "The recorded iTerm window no longer exists.",
+      "no_screen_geometry" => "focus --center: the connected screens could not be read, so the window could not be centered. details.workspace, details.iterm_window_id.",
       "checkout_missing" => "The workspace's checkout directory no longer exists.",
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",
       "unknown_config_key" => "config set, get, unset or show was given a key that is not a config key, or config keys matched nothing.",

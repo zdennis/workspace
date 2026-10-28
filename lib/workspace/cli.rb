@@ -1275,6 +1275,7 @@ module Workspace
       pane = nil
       cycle = false
       reverse = false
+      center = false
       name_opt = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace focus [options] [project]"
@@ -1298,6 +1299,7 @@ module Workspace
           "window.pane (0.1). Must belong to the project's tmux session") { |v| pane = v }
         opts.on("--cycle", "Focus the next tracked project with a live window, by name, after the one in front") { cycle = true }
         opts.on("--reverse", "With --cycle, go to the previous one") { reverse = true }
+        opts.on("--center", "Center the window on the visible area of its screen after focusing, keeping its size") { center = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
@@ -1309,6 +1311,7 @@ module Workspace
         opts.separator "  workspace focus --highlight --color blue my-notes    # highlight in another color"
         opts.separator "  workspace focus --cycle    # focus the next workspace window; repeat to keep going"
         opts.separator "  workspace focus --cycle --reverse    # go the other way"
+        opts.separator "  workspace focus --center my-notes    # center the window on its screen"
       end
       parser.parse!(args)
 
@@ -1317,7 +1320,7 @@ module Workspace
         raise UsageError, "--cycle takes no project; it picks one\n\n#{parser.help}" if args.any? || name_opt
         raise UsageError, "--cycle can't be combined with --pane\n\n#{parser.help}" if pane
         return run_action("focus", json: json) do
-          project = @focus_command.cycle(reverse: reverse, shake: shake, highlight: highlight ? highlight_color : nil)
+          project = @focus_command.cycle(reverse: reverse, shake: shake, highlight: highlight ? highlight_color : nil, center: center)
           @hook_runner.run(project, "post_focus")
           if json
             @state.load
@@ -1332,7 +1335,7 @@ module Workspace
       raise UsageError, parser.help unless project
 
       run_action("focus", json: json) do
-        focused_pane = @focus_command.call(project, shake: shake, highlight: highlight ? highlight_color : nil, pane: pane)
+        focused_pane = @focus_command.call(project, shake: shake, highlight: highlight ? highlight_color : nil, pane: pane, center: center)
         @hook_runner.run(project, "post_focus")
         if json
           @state.load

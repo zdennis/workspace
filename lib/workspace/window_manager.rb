@@ -129,8 +129,10 @@ module Workspace
 
     # The connected screens, from `window-tool screens --json`.
     #
-    # @return [Array<Hash>] one `{x:, y:, width:, height:}` per screen (its full frame);
-    #   empty when window-tool fails or answers something unreadable
+    # @return [Array<Hash>] one `{x:, y:, width:, height:, visible_x:, visible_y:, visible_width:, visible_height:}`
+    #   per screen — x/y/width/height are its full frame, the visible_* keys the
+    #   area not taken by the menu bar and Dock (the frame's values when the
+    #   screen reports none); empty when window-tool fails or answers something unreadable
     def screens
       require "json"
       output, _, status = window_tool("screens", "--json")
@@ -139,10 +141,43 @@ module Workspace
       JSON.parse(output).filter_map do |s|
         rect = %w[frame_x frame_y frame_width frame_height].map { |key| s[key] }
         next unless rect.all?(Numeric)
-        {x: rect[0], y: rect[1], width: rect[2], height: rect[3]}
+        visible = %w[visible_x visible_y visible_width visible_height].map { |key| s[key] }
+        visible = rect unless visible.all?(Numeric)
+        {x: rect[0], y: rect[1], width: rect[2], height: rect[3],
+         visible_x: visible[0], visible_y: visible[1], visible_width: visible[2], visible_height: visible[3]}
       end
     rescue JSON::ParserError, NoMethodError, TypeError
       []
+    end
+
+    # Centers the window on the visible area of the screen it is on, keeping its size.
+    #
+    # @param window_id [String, Integer] window ID (CGWindowID)
+    # @return [Array<Integer>, false] the new `[x, y]`, or false when the window's
+    #   bounds or the screens could not be read, or the move did not complete
+    def center_window(window_id)
+      bounds = all_window_bounds([window_id])[window_id.to_i]
+      return false unless bounds
+      screen = screen_for_window(bounds)
+      return false unless screen
+
+      x, y = self.class.center_position(bounds: bounds, screen: screen)
+      return false unless set_window_bounds(window_id, x, y, bounds[:width], bounds[:height])
+      [x, y]
+    end
+
+    # Where centering puts a window: the top-left of the centered rect. Pure, for tests.
+    #
+    # @param bounds [Hash] `{x:, y:, width:, height:}` of the window
+    # @param screen [Hash] the screen's hash (from {#screens}, or any hash carrying
+    #   visible_* values that fall back to x/y/width/height)
+    # @return [Array<Integer>] `[x, y]`
+    def self.center_position(bounds:, screen:)
+      vx = screen[:visible_x] || screen[:x]
+      vy = screen[:visible_y] || screen[:y]
+      vw = screen[:visible_width] || screen[:width]
+      vh = screen[:visible_height] || screen[:height]
+      [vx + ((vw - bounds[:width]) / 2), vy + ((vh - bounds[:height]) / 2)]
     end
 
     # @param window_id [String, Integer] window ID (CGWindowID)
@@ -170,6 +205,36 @@ module Workspace
     end
 
     private
+
+    # The screen the window is on: the one whose full frame holds the window's
+    # center, else the one sharing the most of its area.
+    #
+    # @param bounds [Hash] `{x:, y:, width:, height:}` of the window
+    # @return [Hash, nil] a screen hash, or nil when no screens are connected
+    def screen_for_window(bounds)
+      all = screens
+      return nil if all.empty?
+
+      center_x = bounds[:x] + bounds[:width] / 2
+      center_y = bounds[:y] + bounds[:height] / 2
+      containing = all.find do |s|
+        center_x >= s[:x] && center_x < s[:x] + s[:width] &&
+          center_y >= s[:y] && center_y < s[:y] + s[:height]
+      end
+      return containing if containing
+
+      all.max_by { |s| overlap_area(bounds, s) }
+    end
+
+    # @param bounds [Hash] the window's bounds
+    # @param screen [Hash] a screen's full-frame hash
+    # @return [Integer] the shared area, 0 when they do not overlap
+    def overlap_area(bounds, screen)
+      width = [bounds[:x] + bounds[:width], screen[:x] + screen[:width]].min - [bounds[:x], screen[:x]].max
+      height = [bounds[:y] + bounds[:height], screen[:y] + screen[:height]].min - [bounds[:y], screen[:y]].max
+      return 0 if width <= 0 || height <= 0
+      width * height
+    end
 
     FailedStatus = Struct.new(:success?)
 

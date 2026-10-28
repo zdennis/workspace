@@ -11485,6 +11485,24 @@ RSpec.describe Workspace::CLI do
         expect(parse_one(raw)).to include("ok" => false, "code" => "no_window", "details" => {"workspace" => "api"})
         expect(parse_one(raw)["error"]).to include("No iTerm window found for 'api'")
       end
+
+      it "centers the window with --center" do
+        state = CLITestHelpers::FakeState.new
+        state["api"] = {"iterm_window_id" => 77}
+        hooks = CLITestHelpers::FakeHookRunner.new
+        windows = double("window_manager")
+        allow(windows).to receive(:focus_by_id).and_return(true)
+        allow(windows).to receive(:center_window).with(77).and_return([0, 0])
+        cli, raw, err = action_cli(state: state, hook_runner: hooks) do |out|
+          {focus_command: Workspace::Commands::Focus.new(state: state, window_manager: windows, output: out)}
+        end
+
+        cli.run(["focus", "api", "--center", "--json"])
+
+        expect(windows).to have_received(:center_window).with(77)
+        expect(parse_one(raw)["results"].first).to include("workspace" => "api", "outcome" => "focused")
+        expect(err.string).to include("Focusing api...")
+      end
     end
 
     describe "focus --cycle" do
@@ -11976,9 +11994,9 @@ RSpec.describe Workspace::CLI do
         cli.run(["focus"])
         cli.run(["focus", "--name", "other"])
         cli.run(["focus", "pos", "--pane", "%1"])
-        expect(focus).to have_received(:call).with("detected-ws", shake: false, highlight: nil, pane: nil)
-        expect(focus).to have_received(:call).with("other", shake: false, highlight: nil, pane: nil)
-        expect(focus).to have_received(:call).with("pos", shake: false, highlight: nil, pane: "%1")
+        expect(focus).to have_received(:call).with("detected-ws", shake: false, highlight: nil, pane: nil, center: false)
+        expect(focus).to have_received(:call).with("other", shake: false, highlight: nil, pane: nil, center: false)
+        expect(focus).to have_received(:call).with("pos", shake: false, highlight: nil, pane: "%1", center: false)
       end
 
       it "refuses a differing --name and positional, and --cycle with --name" do
