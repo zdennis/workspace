@@ -128,12 +128,26 @@ RSpec.describe Workspace::WindowManager do
   end
 
   describe "#screens" do
-    it "returns each screen's full frame" do
+    it "returns each screen's full frame and its visible area" do
+      json = '[{"frame_x": 0, "frame_y": 0, "frame_width": 1728, "frame_height": 1117, "visible_x": 0, "visible_y": 25, "visible_width": 1728, "visible_height": 1057}, {"frame_x": -1920, "frame_y": 0, "frame_width": 1920, "frame_height": 1080, "visible_x": -1920, "visible_y": 25, "visible_width": 1920, "visible_height": 1020}]'
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(config.window_tool, "screens", "--json").and_return([json, "", status])
+
+      expect(manager.screens).to eq([
+        {x: 0, y: 0, width: 1728, height: 1117, visible_x: 0, visible_y: 25, visible_width: 1728, visible_height: 1057},
+        {x: -1920, y: 0, width: 1920, height: 1080, visible_x: -1920, visible_y: 25, visible_width: 1920, visible_height: 1020}
+      ])
+    end
+
+    it "falls back to the full frame for the visible area when the screen reports none" do
       json = '[{"frame_x": 0, "frame_y": 0, "frame_width": 1728, "frame_height": 1117, "visible_width": 1728}, {"frame_x": -1920, "frame_y": 0, "frame_width": 1920, "frame_height": 1080}]'
       status = instance_double(Process::Status, success?: true)
       allow(Open3).to receive(:capture3).with(config.window_tool, "screens", "--json").and_return([json, "", status])
 
-      expect(manager.screens).to eq([{x: 0, y: 0, width: 1728, height: 1117}, {x: -1920, y: 0, width: 1920, height: 1080}])
+      expect(manager.screens).to eq([
+        {x: 0, y: 0, width: 1728, height: 1117, visible_x: 0, visible_y: 0, visible_width: 1728, visible_height: 1117},
+        {x: -1920, y: 0, width: 1920, height: 1080, visible_x: -1920, visible_y: 0, visible_width: 1920, visible_height: 1080}
+      ])
     end
 
     it "returns an empty list when window-tool fails" do
@@ -165,6 +179,106 @@ RSpec.describe Workspace::WindowManager do
       manager.set_window_bounds(42, 100, 50, 800, 600)
 
       expect(manager).to have_received(:system).with(config.window_tool, "move", "id=42", "100", "50", "800", "600")
+    end
+  end
+
+  describe "#center_window" do
+    def stub_bounds_and_screens(list_json, screens_json)
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--app", "iTerm2", "--json").and_return([list_json, "", status])
+      allow(Open3).to receive(:capture3).with(config.window_tool, "screens", "--json").and_return([screens_json, "", status])
+      allow(manager).to receive(:system).and_return(true)
+    end
+
+    it "moves the window to the middle of its screen's visible area, keeping its size" do
+      stub_bounds_and_screens(
+        '[{"window_id": 42, "x": 110, "y": 60, "width": 800, "height": 600}]',
+        '[{"frame_x": 0, "frame_y": 0, "frame_width": 1920, "frame_height": 1080, "visible_x": 0, "visible_y": 25, "visible_width": 1920, "visible_height": 1055}]'
+      )
+
+      expect(manager.center_window(42)).to eq([560, 252])
+      expect(manager).to have_received(:system).with(config.window_tool, "move", "id=42", "560", "252", "800", "600")
+    end
+
+    it "returns false when the window is gone" do
+      stub_bounds_and_screens("[]", '[{"frame_x": 0, "frame_y": 0, "frame_width": 1920, "frame_height": 1080}]')
+
+      expect(manager.center_window(42)).to be false
+      expect(manager).not_to have_received(:system)
+    end
+
+    it "returns false when there are no screens" do
+      stub_bounds_and_screens(
+        '[{"window_id": 42, "x": 0, "y": 0, "width": 800, "height": 600}]',
+        "[]"
+      )
+
+      expect(manager.center_window(42)).to be false
+      expect(manager).not_to have_received(:system)
+    end
+
+    it "returns false when the screens cannot be read" do
+      status = instance_double(Process::Status, success?: false)
+      list_status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--app", "iTerm2", "--json").and_return(['[{"window_id": 42, "x": 0, "y": 0, "width": 800, "height": 600}]', "", list_status])
+      allow(Open3).to receive(:capture3).with(config.window_tool, "screens", "--json").and_return(["", "", status])
+      allow(manager).to receive(:system).and_return(true)
+
+      expect(manager.center_window(42)).to be false
+      expect(manager).not_to have_received(:system)
+    end
+
+    it "returns false when the move fails" do
+      stub_bounds_and_screens(
+        '[{"window_id": 42, "x": 110, "y": 60, "width": 800, "height": 600}]',
+        '[{"frame_x": 0, "frame_y": 0, "frame_width": 1920, "frame_height": 1080, "visible_x": 0, "visible_y": 25, "visible_width": 1920, "visible_height": 1055}]'
+      )
+      allow(manager).to receive(:system).and_return(false)
+
+      expect(manager.center_window(42)).to be false
+      expect(manager).to have_received(:system).with(config.window_tool, "move", "id=42", "560", "252", "800", "600")
+    end
+
+    it "picks the screen holding the window's center over the one it shares more area with" do
+      stub_bounds_and_screens(
+        '[{"window_id": 42, "x": -500, "y": 100, "width": 2600, "height": 800}]',
+        '[{"frame_x": 0, "frame_y": 0, "frame_width": 1000, "frame_height": 1000}, {"frame_x": 1000, "frame_y": 0, "frame_width": 1000, "frame_height": 1000}]'
+      )
+
+      # The window's center (800) is on the first screen, though more of it lies on the second.
+      expect(manager.center_window(42)).to eq([-800, 100])
+      expect(manager).to have_received(:system).with(config.window_tool, "move", "id=42", "-800", "100", "2600", "800")
+    end
+
+    it "picks the screen with the largest overlap when no screen holds the window's center" do
+      stub_bounds_and_screens(
+        '[{"window_id": 42, "x": 950, "y": 300, "width": 300, "height": 400}]',
+        '[{"frame_x": 0, "frame_y": 0, "frame_width": 1000, "frame_height": 1000}, {"frame_x": 1100, "frame_y": 0, "frame_width": 1000, "frame_height": 1000}]'
+      )
+
+      # The window's center (1100) sits between the screens; it shares more of the second.
+      expect(manager.center_window(42)).to eq([1450, 300])
+      expect(manager).to have_received(:system).with(config.window_tool, "move", "id=42", "1450", "300", "300", "400")
+    end
+  end
+
+  describe ".center_position" do
+    it "centers on the visible area" do
+      position = described_class.center_position(
+        bounds: {x: 110, y: 60, width: 800, height: 600},
+        screen: {x: 0, y: 0, width: 1920, height: 1080, visible_x: 0, visible_y: 25, visible_width: 1920, visible_height: 1055}
+      )
+
+      expect(position).to eq([560, 252])
+    end
+
+    it "falls back to the full frame without visible values" do
+      position = described_class.center_position(
+        bounds: {x: 0, y: 0, width: 800, height: 600},
+        screen: {x: 100, y: 50, width: 1920, height: 1080}
+      )
+
+      expect(position).to eq([660, 290])
     end
   end
 

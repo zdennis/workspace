@@ -123,6 +123,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `no_window` | `focus` found no iTerm window recorded for the workspace. `details.workspace`. |
 | `no_windows_to_cycle` | `focus --cycle` found no tracked workspace with a live iTerm window. |
 | `window_gone` | `focus` found that the recorded iTerm window no longer exists. `details.workspace`, `details.iterm_window_id`. |
+| `no_screen_geometry` | `focus --center` could not read the connected screens, so the window could not be centered. `details.workspace`, `details.iterm_window_id`. |
 | `checkout_missing` | The workspace's checkout directory no longer exists. |
 | `config_parse` | A config file exists but can't be parsed as a YAML mapping. `details.path` and `details.reason`. |
 | `unknown_config_key` | `config set`, `get`, `unset` or `show <key>` was given a key that is not a config key, or `config keys QUERY` matched no key. `details.key`. (Before this code existed these commands reported `usage`; the exit code is still 1.) |

@@ -37,12 +37,15 @@ module Workspace
       # @param highlight [String, nil] color to highlight the window, or nil to skip
       # @param pane [String, nil] a pane id ("%19") or "window.pane" ("0.1") to select
       #   once the window is up front; checked before anything is focused
+      # @param center [Boolean] center the window on the visible area of its screen
+      #   after focusing (and after shaking), keeping its size
       # @return [String, nil] the selected pane's id, or nil without +pane+
       # @raise [Workspace::Error] `no_window` if none is recorded, `window_gone` if iTerm no longer has it,
       #   or the project runs headless;
       #   for +pane+, the {Workspace::PaneLocator} codes, or `focus_failed` when tmux
-      #   couldn't select it (the window is already in front)
-      def call(project, shake: false, highlight: nil, pane: nil)
+      #   couldn't select it (the window is already in front);
+      #   with +center+, `no_screen_geometry` when the screens could not be read
+      def call(project, shake: false, highlight: nil, pane: nil, center: false)
         @state.load
         raise Workspace::Error, Focus.headless_message(project, @tmux) if @state.dig(project, "headless")
         located = pane && locate_pane(project, pane)
@@ -66,6 +69,13 @@ module Workspace
         end
 
         @window_manager.shake_by_id(window_id) if shake
+        if center && !@window_manager.center_window(window_id)
+          raise Workspace::Error.new(
+            "The window could not be centered: its bounds or the connected screens could not be read, or the move did not complete.\n" \
+            "Is window-tool up to date? Run 'workspace doctor' to check it.",
+            code: "no_screen_geometry", details: {"workspace" => project, "iterm_window_id" => window_id}
+          )
+        end
         select_pane(project, located) if located
         located && located[:id]
       end
@@ -77,10 +87,11 @@ module Workspace
       # @param reverse [Boolean] go to the previous project instead
       # @param shake [Boolean]
       # @param highlight [String, nil]
+      # @param center [Boolean] center the window after focusing (see {#call})
       # @return [String] the project focused
       # @raise [Workspace::Error] `no_windows_to_cycle` when no tracked project has a live window;
       #   otherwise the codes of {#call}
-      def cycle(reverse: false, shake: false, highlight: nil)
+      def cycle(reverse: false, shake: false, highlight: nil, center: false)
         @state.load
         raise Workspace::Error, "focus --cycle is not available in this build" unless @window_liveness
         live = @window_liveness.call(@state.to_h)
@@ -95,7 +106,7 @@ module Workspace
         names.reverse! if reverse
         current = front_project(names)
         target = current ? names[(names.index(current) + 1) % names.size] : names.first
-        call(target, shake: shake, highlight: highlight)
+        call(target, shake: shake, highlight: highlight, center: center)
         target
       end
 

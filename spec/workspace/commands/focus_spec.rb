@@ -69,6 +69,47 @@ RSpec.describe Workspace::Commands::Focus do
       expect(window_manager).to have_received(:focus_by_id).with(42, highlight: "green")
     end
 
+    it "centers the window when center: true, after shaking" do
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+
+      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:shake_by_id).with(42)
+      allow(window_manager).to receive(:center_window).with(42).and_return([560, 240])
+
+      command.call("myproject", shake: true, center: true)
+
+      expect(window_manager).to have_received(:shake_by_id).with(42).ordered
+      expect(window_manager).to have_received(:center_window).with(42).ordered
+    end
+
+    it "raises no_screen_geometry when the window could not be centered" do
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+
+      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:center_window).with(42).and_return(false)
+
+      expect { command.call("myproject", center: true) }.to raise_error(
+        Workspace::Error, /window could not be centered/
+      ) { |error|
+        expect(error.code).to eq("no_screen_geometry")
+        expect(error.details).to eq("workspace" => "myproject", "iterm_window_id" => 42)
+      }
+    end
+
+    it "does not center when center: false" do
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+
+      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:center_window)
+
+      command.call("myproject")
+
+      expect(window_manager).not_to have_received(:center_window)
+    end
+
     it "raises Workspace::Error when no window ID in state" do
       state.save
 
@@ -237,6 +278,15 @@ RSpec.describe Workspace::Commands::Focus do
 
       expect(window_manager).to have_received(:focus_by_id).with(2, highlight: "blue")
       expect(window_manager).to have_received(:shake_by_id).with(2)
+    end
+
+    it "passes center on to the focus" do
+      front.replace([1])
+      allow(window_manager).to receive(:center_window).with(2).and_return([0, 0])
+
+      cycler.cycle(center: true)
+
+      expect(window_manager).to have_received(:center_window).with(2)
     end
 
     it "still cycles when the window order cannot be read" do
