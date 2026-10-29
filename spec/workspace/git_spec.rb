@@ -368,6 +368,73 @@ RSpec.describe Workspace::Git do
       FileUtils.remove_entry(@repo_dir) if @repo_dir && File.exist?(@repo_dir)
     end
 
+    describe "#drop_unresolved_upstream" do
+      def config_get(key)
+        stdout, _ = Open3.capture3("git", "-C", @repo_dir, "config", "--get", key)
+        stdout.strip
+      end
+
+      def set_config(key, value)
+        run!("git", "config", key, value, chdir: @repo_dir)
+      end
+
+      def expect_cleared
+        %w[remote merge pushRemote].each { |key| expect(config_get("branch.fix-bug.#{key}")).to eq("") }
+      end
+
+      before do
+        run!("git", "checkout", "-b", "fix-bug", chdir: @repo_dir)
+      end
+
+      it "keeps an upstream that resolves" do
+        run!("git", "push", "-u", "origin", "fix-bug", chdir: @repo_dir)
+
+        expect(git.drop_unresolved_upstream(@repo_dir, "fix-bug")).to be(false)
+        expect(config_get("branch.fix-bug.merge")).to eq("refs/heads/fix-bug")
+      end
+
+      it "keeps a resolving upstream when HEAD is on another branch" do
+        run!("git", "push", "-u", "origin", "fix-bug", chdir: @repo_dir)
+        run!("git", "checkout", "--detach", chdir: @repo_dir)
+
+        expect(git.drop_unresolved_upstream(@repo_dir, "fix-bug")).to be(false)
+        expect(config_get("branch.fix-bug.merge")).to eq("refs/heads/fix-bug")
+      end
+
+      it "removes a URL remote upstream with a URL pushRemote" do
+        set_config("branch.fix-bug.remote", "https://github.com/fork/repo.git")
+        set_config("branch.fix-bug.merge", "refs/heads/fix-bug")
+        set_config("branch.fix-bug.pushRemote", "https://github.com/fork/repo.git")
+
+        expect(git.drop_unresolved_upstream(@repo_dir, "fix-bug")).to be(true)
+        expect_cleared
+      end
+
+      it "removes an origin refs/pull/N/head upstream with an origin pushRemote" do
+        set_config("branch.fix-bug.remote", "origin")
+        set_config("branch.fix-bug.merge", "refs/pull/12/head")
+        set_config("branch.fix-bug.pushRemote", "origin")
+
+        expect(git.drop_unresolved_upstream(@repo_dir, "fix-bug")).to be(true)
+        expect_cleared
+      end
+
+      it "does nothing when the branch has no upstream configured" do
+        set_config("branch.fix-bug.pushRemote", "origin")
+
+        expect(git.drop_unresolved_upstream(@repo_dir, "fix-bug")).to be(false)
+        expect(config_get("branch.fix-bug.pushRemote")).to eq("origin")
+      end
+
+      it "removes an unresolved upstream that has no pushRemote" do
+        set_config("branch.fix-bug.remote", "origin")
+        set_config("branch.fix-bug.merge", "refs/pull/12/head")
+
+        expect(git.drop_unresolved_upstream(@repo_dir, "fix-bug")).to be(true)
+        expect_cleared
+      end
+    end
+
     describe "#create_worktree" do
       def upstream_of(path)
         stdout, _ = Open3.capture3("git", "-C", path, "rev-parse", "--abbrev-ref", "@{upstream}")
