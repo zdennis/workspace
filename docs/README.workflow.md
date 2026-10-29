@@ -11,6 +11,8 @@ workspace workflow add ID PATH|- [--dry-run] [--json]
 workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
 workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
+workspace workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]
+                         [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]
 workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]
 workspace workflow events RUN [--since N] [--json]
 workspace workflow files RUN [--json]
@@ -31,6 +33,7 @@ workspace step status [--json]
 | `workflow update` | Replace your `ID.yml` with new text, from a file or `-` for stdin, only if the file still has the `--if-sha256` you read. A file that does not pass the checks can be replaced. Refused with `stale_workflow` when it changed, `builtin_workflow` for a preset with no file of yours. See [Updating a definition](#updating-a-definition) |
 | `workflow remove` | Delete your `ID.yml` (a link itself, never its target). Asks first unless `--yes` or `--dry-run`; refused with `confirmation_required` under `--no-input`. A preset of the same id is in effect again. See [Removing a definition](#removing-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing |
+| `workflow start` | Make a workspace from a ticket, pull request, issue or branch `REF`, or from `--prompt TEXT`, wait for its coding agent and run the workflow in it. `--dry-run` checks everything and makes nothing. See [Starting from a ticket or a prompt](#starting-from-a-ticket-or-a-prompt) |
 | `workflow status` | The runs still going, one workspace's (`--name`), finished ones too (`--all`), or one run. Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck) |
 | `workflow events` | A run's history (going or finished), one line per event, oldest first. `--since N` gives only the events after line N; at most 1000 at a time. See [Reading a run's events](#reading-a-runs-events) |
 | `workflow files` | The files a run keeps: each attempt's prompt and check log and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
@@ -44,17 +47,24 @@ workspace step status [--json]
 | Option | Description |
 |--------|-------------|
 | `--name WORKSPACE` | `run`: the workspace to run in. `status`: only this workspace's runs |
-| `--input KEY=VALUE` | `run`: a value for one of the workflow's inputs (repeatable) |
-| `--note TEXT` | `run`: added to every step's instructions. `resume`, `approve`, `reject`: added to the next attempt's |
+| `--input KEY=VALUE` | `run`, `start`: a value for one of the workflow's inputs (repeatable) |
+| `--note TEXT` | `run`, `start`: added to every step's instructions. `resume`, `approve`, `reject`: added to the next attempt's |
 | `--pane PANE` | `run`, `resume`: the pane to run in (`%19` or `0.1`), instead of the workspace's Claude pane |
 | `--from STEP` | `resume`: start again at this step |
 | `--to STEP` | `reject`: the step to run again (the gated step, or one before it) |
 | `--source` | `show ID`: print the file's text, with its sha256 and problems, valid or not; see [Reading a definition's file](#reading-a-definitions-file) |
+| `--prompt TEXT` | `start`: the task as free text: the workflow's `task` input, and the branch's name when there is no `REF` |
+| `--branch BRANCH` | `start`: the branch for a `--prompt` (default: the prompt's words). Refused with a `REF`, whose branch comes from the ref |
+| `--slug` | `start`: add the ticket title's words to a JIRA or issue branch, as `start --slug` |
+| `--base REF` | `start`: the branch or ref a new branch starts from |
+| `--[no-]headless` | `start`: start the session in plain tmux, as `start --headless` |
+| `--agent-kind KIND` | `start`: the coding agent the main agent pane runs |
+| `--prompt-timeout DURATION` | `start`: how long to wait for the coding agent to be ready (60s by default) |
 | `--since N` | `events`: only the events after line N of the run's history (a whole number, 0 or more; default 0) |
 | `--id ID` | `validate`: check the text as this workflow id |
 | `--all` | `status`: finished runs too |
 | `--if-sha256 SHA` | `update`: the sha256 of the file's raw bytes, from `show ID --source --json` or `show --json` (the list); required |
-| `--dry-run` | `run`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
+| `--dry-run` | `run`, `start`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
 | `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
 | `--json` | Print one JSON document |
@@ -77,6 +87,20 @@ A step is done when the agent's turn ends in the bound pane, every file the step
 `.workflow/` is listed in the repository's `info/exclude` (the common dir's, for a linked worktree), so the checkout stays clean and `.gitignore` is not touched. Run state lives outside the checkout, in `~/.local/state/workspace/.workflows/` (`$XDG_STATE_HOME`): `runs/<run>.json` and `runs/<run>.events.jsonl` while a run is going, `archive/` once it has finished (the newest 200 are kept).
 
 Killing a workspace ([`kill`](README.kill.md), [`finish`](README.finish.md), `projects kill`) cancels its runs. Stopping one leaves its runs as they are: `status` shows `pane_gone`, and `workflow resume` after a relaunch moves the run to the workspace's Claude pane. A run of a stopped workspace keeps the locks it holds and its place in a queue, and takes a lock that frees while nobody can start its step: its workspace's agent daemon is what moves it. `status` warns about such a run; the ways out are `workflow cancel`, relaunching the workspace and `workflow resume`, or `workspace lock clear NAME`. [`restore`](README.restore.md) carries a run's binding to the pane it recreates, so the run goes on there.
+
+## Starting from a ticket or a prompt
+
+`workflow start ID [REF | --prompt TEXT]` is `start` and `workflow run` in one step, for work that has no workspace yet. `workflow run` needs a workspace; `start` makes one. It takes a `REF`, `--prompt`, or both, not neither; `--name` and `--pane` are refused, because the run goes in the new workspace's own agent pane.
+
+1. It reads the `REF` as [`start`](README.start.md) does (a JIRA key or URL, a pull request, an issue or a branch) and, for a ticket, reads its title, body and URL with `gh` or `jira`.
+2. It picks the branch. With a `REF` it is the ref's own: the JIRA key (plus the title's words with `--slug`), `issue-<n>` for an issue, `pr-<n>` for a pull request, a plain branch as given. With only `--prompt` it is `--branch`, else the prompt's words with no prefix (`add a hello script` is `add-a-hello-script`). A prompt with no letters or digits is a usage error asking for `--branch`. `--branch` is only for a `--prompt`; with a `REF` it is a usage error.
+3. It seeds the definition's inputs. `task` is `KEY: title (url)` for a ticket, the prompt text for a prompt, and the ticket line then the prompt when both are given. `spec` is the path of the ticket body, written to `.workflow/tickets/<key>.md` in the new checkout (listed in `info/exclude`), and only when the ticket has a body. Only inputs the definition declares are seeded, and an `--input` you give always wins.
+4. It runs the checks `workflow run` makes (`input_required`, `workflow_command_unset`) against the project's main checkout, so a refusal leaves nothing behind.
+5. It makes the workspace as `start` does, with no confirmation, no play, no packs and no spine (the run's steps send their own instructions), waits for the coding agent (`--prompt-timeout`), and starts the run in that pane.
+
+A ticket that cannot be read is refused (`ticket_not_found`, `ticket_source_unavailable`) when it was the only source of `task`; with `--prompt` or `--input task=` it is a warning and the run goes on without it. A branch derived from `--prompt` that already exists, locally or as `.worktrees/<branch>`, is refused with `branch_exists`: pass `--branch NAME` to use it, or another name. A workspace that already exists for a `REF`, or for a `--branch` you named, is reused, as `start` does (`would_create` is `false` in the dry run), and the run starts in its agent pane.
+
+Once the workspace exists, a failure never removes it. The error keeps its code and gains `details.workspace`, `details.path` and `details.next`, an array holding one command: the `workflow run` command with the same inputs and note, which starts the workflow in that workspace by hand. This covers `agent_not_ready` (the agent was not ready in time) and a refusal from the run itself such as `pane_has_run`.
 
 ## Definitions
 
@@ -231,7 +255,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 ## JSON output
 
-`workflow run`, `resume`, `cancel`, `approve`, `reject` and `step done` print one [action document](README.json.md#actions). Its one result row has `workspace`, `outcome`, `reason` (the reason code, or `null`), `message`, and `run`, the run as `status` shows it:
+`workflow run`, `start`, `resume`, `cancel`, `approve`, `reject` and `step done` print one [action document](README.json.md#actions). Its one result row has `workspace`, `outcome`, `reason` (the reason code, or `null`), `message`, and `run`, the run as `status` shows it:
 
 ```json
 {"schema_version":1,"ok":true,"action":"workflow run","status":"ok",
@@ -240,7 +264,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
  "warnings":[],"summary":{"started":1}}
 ```
 
-`outcome` is `started`, `resumed`, `unchanged` (a `resume` that did nothing: an agent is working on the step, its line is still on its way, or its check is still running; `message` says which, exit 0), `cancelled`, `approved`, `rejected` or `recorded` (`step done`). A run that waits (for a lock, at a gate) still has that outcome, with the reason code in `reason`. When a step's line could not be typed the outcome is `failed`, `status` is `failed` and the exit code is 1; the run exists, `message` says why, and `workflow resume` tries again. `run --dry-run` prints `status: "dry_run"` with a row of `workflow`, `step`, `pane` (`null` when the agent daemon is not running yet), `inputs` and `packs`. `step done`'s row has `run_id`, `step`, `attempt` and `reported` (`status`, `pass` or `fail`, and `summary`, as `step status` gives it) in place of `run`. `run_id` is always a run's id, in rows, events and error `details`; `run` is only the run object in an action row.
+`outcome` is `started`, `resumed`, `unchanged` (a `resume` that did nothing: an agent is working on the step, its line is still on its way, or its check is still running; `message` says which, exit 0), `cancelled`, `approved`, `rejected` or `recorded` (`step done`). A run that waits (for a lock, at a gate) still has that outcome, with the reason code in `reason`. When a step's line could not be typed the outcome is `failed`, `status` is `failed` and the exit code is 1; the run exists, `message` says why, and `workflow resume` tries again. `workflow start` prints the same action document; its row is the `run` row merged with `branch`, `path`, `created`, `task`, `ticket` (`key`, `title`, `url`; `null` when none was read) and `warnings`. `start --dry-run` prints `status: "dry_run"` with a row of `workflow`, `step`, `project`, `branch`, `path`, `would_create` (`false` when an existing workspace would be reused), `inputs`, `packs`, `warnings` and `ticket`. `run --dry-run` prints `status: "dry_run"` with a row of `workflow`, `step`, `pane` (`null` when the agent daemon is not running yet), `inputs` and `packs`. `step done`'s row has `run_id`, `step`, `attempt` and `reported` (`status`, `pass` or `fail`, and `summary`, as `step status` gives it) in place of `run`. `run_id` is always a run's id, in rows, events and error `details`; `run` is only the run object in an action row.
 
 `workflow status --json`:
 
@@ -320,6 +344,9 @@ workspace workflow show rpiv
 workspace workflow show rpiv --source --json
 workspace workflow run rpiv --name my-app.worktree-pdf --input task="PROJ-101 invoice PDF export" --dry-run
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export" --note "Keep the public API as it is."
+workspace workflow start rpiv PROJ-101 --dry-run --json
+workspace workflow start rpiv PROJ-101 --slug --base main
+workspace workflow start rpiv --prompt "add a hello script" --headless
 workspace workflow status
 workspace workflow status --json | jq '.runs[] | {id, step: .current.step, why: .current.reason.code}'
 workspace workflow approve wr_2610041230559x3k --note "Skip the migration."

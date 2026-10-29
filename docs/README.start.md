@@ -288,4 +288,6 @@ workspace start PROJ-123 --base main --yes --json
 
 ## See also
 
+To make a workspace and run a workflow in it in one command, use [`workflow start`](README.workflow.md#starting-from-a-ticket-or-a-prompt).
+
 To move work already in a main checkout into a new workspace, use [`promote`](README.promote.md). It makes the worktree a workspace through `start` and marks the `worktree_started` event `promoted: true`.

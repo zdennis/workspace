@@ -5117,8 +5117,8 @@ module Workspace
         opts.separator "on when a turn ends; it is not meant to be typed."
         opts.separator ""
         opts.on("--name WORKSPACE", "run: the workspace to run in; status: only this workspace's runs") { |v| options[:name] = v }
-        opts.on("--input KEY=VALUE", "run: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
-        opts.on("--note TEXT", "run: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
+        opts.on("--input KEY=VALUE", "run, start: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
+        opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
         opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
@@ -5126,11 +5126,11 @@ module Workspace
         opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--all", "status: finished runs too") { options[:all] = true }
-        opts.on("--dry-run", "run: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
+        opts.on("--dry-run", "run, start: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
         opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
         opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
-        opts.on("--branch BRANCH", "start: the branch for a --prompt (default: the prompt's words)") { |v| options[:branch] = v }
+        opts.on("--branch BRANCH", "start: the branch for a --prompt (default: the prompt's words); refused with a REF") { |v| options[:branch] = v }
         opts.on("--slug", "start: add the ticket title's words to a JIRA or issue branch, as `workspace start --slug`") { options[:slug] = true }
         opts.on("--base REF", "start: the branch or ref a new branch starts from") { |v| options[:base] = v }
         opts.on("--[no-]headless", "start: start the session in plain tmux, as `workspace start --headless`") { |v| options[:headless] = v }
