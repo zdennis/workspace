@@ -393,6 +393,14 @@ RSpec.describe Workspace::Git do
         expect(config_get("branch.fix-bug.merge")).to eq("refs/heads/fix-bug")
       end
 
+      it "keeps a resolving upstream when HEAD is on another branch" do
+        run!("git", "push", "-u", "origin", "fix-bug", chdir: @repo_dir)
+        run!("git", "checkout", "--detach", chdir: @repo_dir)
+
+        expect(git.drop_unresolved_upstream(@repo_dir, "fix-bug")).to be(false)
+        expect(config_get("branch.fix-bug.merge")).to eq("refs/heads/fix-bug")
+      end
+
       it "removes a URL remote upstream with a URL pushRemote" do
         set_config("branch.fix-bug.remote", "https://github.com/fork/repo.git")
         set_config("branch.fix-bug.merge", "refs/heads/fix-bug")

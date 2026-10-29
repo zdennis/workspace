@@ -605,7 +605,8 @@ module Workspace
     # @return [Boolean] true when an unresolved upstream was removed, false when there was
     #   nothing to remove or it could not be removed
     def drop_unresolved_upstream(path, branch)
-      return false if upstream_branch(path)
+      _, _, resolved = capture_git("-C", path, "rev-parse", "--verify", "--quiet", "#{branch}@{u}")
+      return false if resolved.success?
       return false unless upstream_config(path, branch)
 
       _, stderr, status = capture_git("-C", path, "branch", "--unset-upstream", branch)
