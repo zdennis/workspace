@@ -20,7 +20,9 @@ module Workspace
   # read as described next.
   #
   # * `scrape` — reads the pane's own visible text and applies
-  #   `context.pattern` (a regex with one capture group).
+  #   `context.pattern` (a regex with one capture group); here too the last
+  #   match counts, so a percentage in the agent's output above the footer
+  #   is never read as its context use.
   class ContextReader
     # How long a successfully scraped reading stays fresh enough to serve
     # while every scan slot is busy, so a `sessions` request under load still
@@ -161,10 +163,10 @@ module Workspace
       return scraped if scraped.is_a?(Hash)
       return absent(ContextReasons::PATTERN_NO_MATCH) unless scraped
 
-      match = Regexp.new(pattern).match(scraped)
-      return cache_scrape(pane_id, absent(ContextReasons::PATTERN_NO_MATCH)) unless match && match[1]
+      captured = last_capture(scraped, Regexp.new(pattern))
+      return cache_scrape(pane_id, absent(ContextReasons::PATTERN_NO_MATCH)) unless captured
 
-      scraped_reading(pane_id, match[1].to_i)
+      scraped_reading(pane_id, captured.to_i)
     rescue RegexpError => e
       @logger.debug { "context_reader: invalid context.pattern (#{e.message})" }
       absent(ContextReasons::PATTERN_NO_MATCH)
