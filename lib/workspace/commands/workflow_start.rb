@@ -33,6 +33,7 @@ module Workspace
       # @param start_ref [Workspace::StartRef]
       # @param ticket_source [Workspace::TicketSource]
       # @param git [Workspace::Git]
+      # @param project_config [Workspace::ProjectConfig] names the project's and its worktrees' workspaces, as `start` does
       # @param start [Workspace::Commands::Start] makes the workspace, through #payload
       # @param workflow [Workspace::Commands::Workflow] starts the run
       # @param readiness [Workspace::AgentReadiness] waits for the new workspace's agent
@@ -40,12 +41,13 @@ module Workspace
       # @param agent_commands [Workspace::AgentCommands] finds the agent in a pane
       # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
       # @param output [IO]
-      def initialize(catalog:, engine:, start_ref:, ticket_source:, git:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, output: $stdout)
+      def initialize(catalog:, engine:, start_ref:, ticket_source:, git:, project_config:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, output: $stdout)
         @catalog = catalog
         @engine = engine
         @start_ref = start_ref
         @ticket_source = ticket_source
         @git = git
+        @project_config = project_config
         @start = start
         @workflow = workflow
         @readiness = readiness
@@ -75,7 +77,7 @@ module Workspace
       def call(id:, ref: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
         agent_kind: nil, prompt_timeout: nil, dry_run: false)
         definition = @catalog.find(id)
-        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs)
+        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind)
         return dry_run_row(id, plan) if dry_run
 
         start_workspace(plan, note: note, base: base, headless: headless, agent_kind: agent_kind, prompt_timeout: prompt_timeout, slug: slug)
@@ -83,7 +85,7 @@ module Workspace
 
       private
 
-      def plan(definition, ref:, prompt:, branch:, slug:, inputs:)
+      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:)
         prompt = prompt.to_s.strip
         prompt = nil if prompt.empty?
         raise Workspace::UsageError, "workflow start needs a REF or --prompt." unless ref || prompt
@@ -91,6 +93,8 @@ module Workspace
 
         root = @git.root or raise Workspace::Error, "workflow start must run inside a git repository."
         project = @start_ref.project(root)
+        project_workspace = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
+        require_claude!(agent_kind || @agent_commands.kind(project_workspace))
         warnings = []
         resolved = ref && @start_ref.call(ref)
         ticket = read_ticket(resolved, root, definition, inputs: inputs, prompt: prompt, slug: slug, warnings: warnings)
@@ -98,7 +102,13 @@ module Workspace
         path = File.join(project.root, ".worktrees", @git.sanitize_for_filesystem(name))
         derived = resolved.nil? && branch.nil?
         exists = @git.worktree_exists?(path)
-        refuse_existing(name, path, exists) if derived && (exists || @git.local_branch_exists?(name))
+        refuse_existing(name, path, exists) if derived && (exists || File.exist?(path) || @git.branch_exists?(name))
+        # `start` adopts a branch that is checked out in another worktree.
+        adopted = (exists || derived) ? nil : @git.find_worktree_by_branch(name, repo: project.root)
+        path = adopted if adopted
+        exists ||= !adopted.nil?
+        # A reused or adopted worktree can have an agent kind of its own.
+        require_claude!(@agent_commands.kind(@project_config.worktree_config_name(project_workspace, File.basename(path)))) if exists && !agent_kind
 
         spec_path = spec_file(definition, resolved, ticket, path, inputs)
         seeded = seed(definition, ticket, prompt, inputs, spec_path)
@@ -135,6 +145,15 @@ module Workspace
           raise Workspace::UsageError, "#{name.inspect} is not a valid branch name."
         end
         name
+      end
+
+      # The run's steps go to the workspace's Claude Code pane, so another agent has nowhere to run.
+      def require_claude!(kind)
+        return if kind == "claude"
+
+        raise Workspace::Error.new("workflow start needs Claude Code as the workspace's agent, and the agent kind is #{kind}. " \
+          "Use --agent-kind claude, or run the workflow in a workspace with `workflow run`.",
+          code: "workflow_needs_claude", details: {"agent_kind" => kind})
       end
 
       def refuse_existing(name, path, worktree)
@@ -182,15 +201,21 @@ module Workspace
       # `start` has made the workspace any failure keeps it and names the command that runs the
       # workflow in it by hand.
       def start_workspace(plan, note:, base:, headless:, agent_kind:, prompt_timeout:, slug:)
-        options = {yes: true, base: base, headless: headless, spine: false}
+        options = {yes: true, base: base, headless: headless, spine: false, no_packs: true}
         options[:agent_kind] = agent_kind if agent_kind
-        options[:slug] = slug if slug
+        options[:slug] = true if slug && plan.ticket
         title = plan.ticket&.fetch("title") || plan.prompt
         options[:title] = title if title
         # The ref as given, not the branch: `start` resolves it again to check out a pull request or an issue.
-        started = @start.payload(plan.ref ? plan.ref.input : plan.branch, **options).fetch(:json)
-        if started["ok"] == false
-          raise Workspace::Error.new(started["error"] || "start failed", code: started["code"], details: started["details"])
+        begin
+          result = @start.payload(plan.ref ? plan.ref.input : plan.branch, **options)
+        rescue => e
+          raise unless plan.would_create && @git.worktree_exists?(plan.path)
+          raise with_next(e, plan, plan.spec_path ? plan.inputs.except("spec") : plan.inputs, note, nil, plan.path, plan.warnings)
+        end
+        started = result.fetch(:json)
+        if started["ok"] == false || !started["workspace"] || !started["path"]
+          raise Workspace::Error.new(started["error"] || "start returned no workspace", code: started["code"] || "start_failed")
         end
         workspace = started.fetch("workspace")
         path = started.fetch("path")
@@ -202,6 +227,9 @@ module Workspace
           inputs = inputs.merge("spec" => spec_file)
         end
         begin
+          if result[:exit_code].to_i != 0 || started["launched"] == false
+            raise Workspace::Error.new(started["error"] || "The workspace session did not start.", code: "start_failed")
+          end
           write_ticket(plan, spec_file, path)
           pane_id = wait_for_agent(workspace, prompt_timeout)
           row = @workflow.run(id: plan.definition.to_h["id"], workspace: workspace, worktree: path, inputs: inputs, note: note, pane: pane_id)
@@ -232,13 +260,16 @@ module Workspace
       # A UsageError stays one; any other class becomes a plain Workspace::Error, as in promote, because
       # the subclasses do not share a constructor.
       def with_next(error, plan, inputs, note, workspace, path, warnings)
-        command = ["workspace workflow run", Shellwords.escape(plan.definition.to_h["id"]), "--name", Shellwords.escape(workspace)]
-        inputs.each { |name, value| command.push("--input", "#{name}=#{Shellwords.escape(value)}") }
-        command.push("--note", Shellwords.escape(note)) if note
-        details = ((error.respond_to?(:details) && error.details) || {}).merge("workspace" => workspace, "path" => path, "next" => [command.join(" ")])
+        run = ["workspace workflow run", Shellwords.escape(plan.definition.to_h["id"])]
+        run.push("--name", Shellwords.escape(workspace)) if workspace
+        inputs.each { |name, value| run.push("--input", "#{name}=#{Shellwords.escape(value)}") }
+        run.push("--note", Shellwords.escape(note)) if note
+        command = workspace ? run.join(" ") : "cd #{Shellwords.escape(path)} && #{run.join(" ")}"
+        details = ((error.respond_to?(:details) && error.details) || {}).merge("path" => path, "next" => [command])
+        details["workspace"] = workspace if workspace
         details["warnings"] = warnings if warnings.any?
         klass = error.is_a?(Workspace::UsageError) ? Workspace::UsageError : Workspace::Error
-        klass.new("#{error.message} The workspace #{workspace} was made at #{path}; run `#{details["next"].first}` to start the workflow in it.",
+        klass.new("#{error.message} The workspace #{workspace || "checkout"} was made at #{path}; run `#{command}` to start the workflow in it.",
           code: (error.respond_to?(:code) && error.code) || "error", details: details, retry_with: (error.retry if error.respond_to?(:retry)))
       end
     end
