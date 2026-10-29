@@ -32,7 +32,7 @@ To ask which of these a given CLI supports, run `workspace capabilities --json` 
 
 ## Actions
 
-These commands take `--json` and print one action document: `add`, `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `dev wait`, `dev leave`, `lock release`, `config set`, `config unset`, `config edit`, `daemon restart` (also with `--all`), `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `prune`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow add`, `workflow update`, `workflow remove`, `workflow run`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
+These commands take `--json` and print one action document: `add`, `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `dev wait`, `dev leave`, `lock release`, `config set`, `config unset`, `config edit`, `daemon restart` (also with `--all`), `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `prune`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow add`, `workflow update`, `workflow remove`, `workflow run`, `workflow start`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
 
 ```json
 {"schema_version":1,"ok":true,"action":"stop","status":"ok",
@@ -204,7 +204,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `path_conflicts` | Untracked files where a deleted tracked file was (or inside or around it). `details.paths`, `details.count`. |
 | `no_default_branch` | No local default branch. `details.path`. |
 | `branch_required` | On the default branch with no `BRANCH` (a usage error, exit 2; `--dry-run` answers `branch_required: true` instead). `details.from_branch`. |
-| `branch_exists` | The branch exists at a commit other than `HEAD`. `details.branch`, `details.commit`. |
+| `branch_exists` | The branch exists at a commit other than `HEAD`. `details.branch`, `details.commit`. Also `workflow start`: the branch derived from `--prompt`, or a workspace for it, already exists (name it with `--branch` to reuse it); nothing was created. `details.branch`, `details.path`, `details.worktree`. |
 | `branch_checked_out` | The branch (or the default branch) is checked out in another worktree. `details.branch`, `details.path`, `details.workspace` (or null). |
 | `worktree_exists` | `.worktrees/<branch>` already exists. `details.path`. |
 | `nothing_to_move` | No changes and no commits ahead of the default branch (use `workspace start BRANCH`). `details.branch`. |
@@ -323,6 +323,9 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `input_required` | workflow run is missing a required input. `details.workflow`, `details.inputs` (each `name` and `description`). |
 | `workflow_command_unset` | A step's check names the project's test or lint command and the project has none. `details.workflow`, `details.project`, `details.commands`. |
 | `no_agent_pane` | No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or `plan start` or `spine start` found no agent pane to type into (with `--pane`, the named pane runs no coding agent the agent daemon knows, and `details.pane` names it). `details.workspace`. |
+| `start_failed` | `workflow start` made the workspace, but its session did not start. The workspace is kept. `details.workspace`, `details.path`, `details.next`. |
+| `workflow_needs_claude` | `workflow start` was asked to run in a workspace whose agent kind (`--agent-kind`, else `agent.kind`) is not `claude`; nothing was created. `details.agent_kind`. |
+| `agent_not_ready` | `workflow start` made the workspace, but its coding agent was not ready within `--prompt-timeout` seconds (60 by default). The workspace is kept. `details.workspace`, `details.path`, `details.next` (the `workspace workflow run` command to start the workflow in it). |
 | `pane_has_run` | The pane already runs another workflow run. `details.pane`, `details.run_id`. |
 | `unknown_run` | No workflow run has that id. `details.run_id`; `details.path` when a run file of that id exists and can't be read as a run. |
 | `unknown_goal` | `goal show` was given a REF that matches no workspace name, run id, task id, ticket key or URL, or branch. `details.ref`, `details.tried` (`workspace`, `run`, `task`, `ref`, `branch`). |
