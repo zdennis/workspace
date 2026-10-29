@@ -25,8 +25,18 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     YAML
   end
   let(:definition) { Workspace::WorkflowDefinition.parse(yaml, id: "flow", source: "global", path: "/defs/flow.yml") }
-  subject(:command) do
-    described_class.new(catalog: catalog, engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git, output: output)
+  let(:start) { instance_double(Workspace::Commands::Start) }
+  let(:workflow) { instance_double(Workspace::Commands::Workflow) }
+  let(:readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 99.0) }
+  let(:tmux) { instance_double(Workspace::Tmux) }
+  let(:agent_commands) { instance_double(Workspace::AgentCommands, detector: :detector) }
+  let(:excludes) { instance_double(Workspace::GitExclude, add: true) }
+  let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.0", pane_id: "%7", label: "Claude Code") }
+  subject(:command) { build_command(engine) }
+
+  def build_command(engine)
+    described_class.new(catalog: catalog, engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git, start: start,
+      workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, output: output)
   end
 
   before do
@@ -209,7 +219,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
           status: {command: test}
     YAML
     allow(catalog).to receive(:find).with("flow").and_return(checking)
-    command = described_class.new(catalog: catalog, engine: real, start_ref: start_ref, ticket_source: ticket_source, git: git, output: output)
+    command = build_command(real)
 
     row = command.call(id: "flow", prompt: "Fix it", dry_run: true)
 
@@ -235,7 +245,139 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
   end
 
-  it "leaves creating the workspace to the extension point" do
-    expect { command.call(id: "flow", prompt: "Fix it") }.to raise_error(NotImplementedError)
+  describe "creating the workspace" do
+    let(:dir) { Dir.mktmpdir("wfs") }
+    let(:path) { File.join(dir, ".worktrees", "PROJ-1") }
+    let(:started) { {"workspace" => "app.worktree-PROJ-1", "path" => path, "branch" => "PROJ-1", "created" => true, "task" => {"id" => "t1", "title" => "Fix login"}} }
+
+    before do
+      allow(git).to receive(:root).and_return(dir)
+      allow(start).to receive(:payload).and_return({exit_code: 0, json: started})
+      allow(tmux).to receive(:session_name_for).with("app.worktree-PROJ-1").and_return("app-wt")
+      allow(readiness).to receive(:wait).and_return(ready)
+      allow(workflow).to receive(:run).and_return({"workspace" => "app.worktree-PROJ-1", "outcome" => "started", "run_id" => "wr_1"})
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "starts the workspace with no prompt, waits on its session, and runs in the ready pane" do
+      row = command.call(id: "flow", ref: "PROJ-1", base: "main", headless: true, prompt_timeout: 30)
+
+      expect(start).to have_received(:payload).with("PROJ-1", yes: true, base: "main", headless: true, spine: false, title: "Fix login")
+      expect(readiness).to have_received(:deadline_in).with(30)
+      expect(readiness).to have_received(:wait).with("app-wt", deadline: 99.0, detector: :detector)
+      expect(workflow).to have_received(:run).with(hash_including(id: "flow", workspace: "app.worktree-PROJ-1", worktree: path, pane: "%7", note: nil))
+      expect(row).to include("outcome" => "started", "run_id" => "wr_1", "branch" => "PROJ-1", "path" => path, "created" => true,
+        "task" => {"id" => "t1", "title" => "Fix login"}, "warnings" => [])
+      expect(row["ticket"]).to include("key" => "PROJ-1")
+    end
+
+    it "titles the task with the prompt when there is no ticket" do
+      command.call(id: "flow", prompt: "Fix the login bug")
+
+      expect(start).to have_received(:payload).with("fix-the-login-bug", hash_including(title: "Fix the login bug"))
+    end
+
+    it "writes the ticket body to the spec file and excludes .workflow/, only when spec is declared" do
+      command.call(id: "flow", ref: "PROJ-1")
+
+      expect(File.read(File.join(path, ".workflow/tickets/PROJ-1.md"))).to eq("Details.")
+      expect(excludes).to have_received(:add).with(path, "/.workflow/")
+      expect(workflow).to have_received(:run).with(hash_including(inputs: hash_including("spec" => File.join(path, ".workflow/tickets/PROJ-1.md"))))
+    end
+
+    it "writes the ticket file under the path start returned and points spec at it" do
+      other = File.join(dir, "elsewhere")
+      allow(start).to receive(:payload).and_return({exit_code: 0, json: started.merge("path" => other)})
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "slow"))
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) { |e| expect(e.details["next"].first).to include(File.join(other, ".workflow/tickets/PROJ-1.md")) }
+      expect(File.read(File.join(other, ".workflow/tickets/PROJ-1.md"))).to eq("Details.")
+      expect(excludes).to have_received(:add).with(other, "/.workflow/")
+
+      allow(readiness).to receive(:wait).and_return(ready)
+      command.call(id: "flow", ref: "PROJ-1")
+      expect(workflow).to have_received(:run).with(hash_including(worktree: other, inputs: hash_including("spec" => File.join(other, ".workflow/tickets/PROJ-1.md"))))
+    end
+
+    it "leaves a spec given with --input alone, with a ticket or a prompt" do
+      mine = File.join(dir, "mine.md")
+      File.write(mine, "mine")
+
+      command.call(id: "flow", ref: "PROJ-1", inputs: {"spec" => mine})
+      expect { command.call(id: "flow", prompt: "Fix it", inputs: {"spec" => mine}) }.not_to raise_error
+
+      expect(File.read(mine)).to eq("mine")
+      expect(File.exist?(File.join(path, ".workflow"))).to be false
+      expect(workflow).to have_received(:run).with(hash_including(inputs: hash_including("spec" => mine))).twice
+    end
+
+    it "keeps the workspace and names the command when writing the ticket fails" do
+      allow(File).to receive(:write).and_raise(Errno::EACCES)
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("error")
+        expect(e.details).to include("workspace" => "app.worktree-PROJ-1", "path" => path)
+        expect(e.details["next"].first).to start_with("workspace workflow run flow --name app.worktree-PROJ-1")
+      end
+    end
+
+    it "keeps a UsageError a UsageError and carries start's warnings" do
+      allow(start).to receive(:payload).and_return({exit_code: 0, json: started.merge("warnings" => ["careful"])})
+      allow(workflow).to receive(:run).and_raise(Workspace::UsageError, "bad")
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::UsageError) { |e| expect(e.details["warnings"]).to eq(["careful"]) }
+    end
+
+    it "raises start's code when its document says it failed" do
+      allow(start).to receive(:payload).and_return({exit_code: 1, json: {"ok" => false, "error" => "no base", "code" => "usage"}})
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) { |e| expect([e.code, e.message]).to eq(["usage", "no base"]) }
+    end
+
+    it "passes agent_kind and slug to start, and waits the default time without a prompt_timeout" do
+      command.call(id: "flow", ref: "PROJ-1", agent_kind: "codex", slug: true)
+
+      expect(start).to have_received(:payload).with("PROJ-1", hash_including(agent_kind: "codex", slug: true))
+      expect(readiness).to have_received(:deadline_in).with(Workspace::AgentReadiness::DEFAULT_TIMEOUT)
+    end
+
+    it "writes no file when the definition declares no spec" do
+      bare = Workspace::WorkflowDefinition.parse("inputs:\n  task: {required: true}\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/d.yml")
+      allow(catalog).to receive(:find).with("flow").and_return(bare)
+
+      command.call(id: "flow", ref: "PROJ-1")
+
+      expect(File.exist?(File.join(path, ".workflow"))).to be false
+      expect(excludes).not_to have_received(:add)
+    end
+
+    it "keeps the workspace and names the command when the agent is not ready" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "still starting up"))
+
+      expect { command.call(id: "flow", ref: "PROJ-1", inputs: {"task" => "do it"}) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("agent_not_ready")
+        expect(e.message).to include("(waited up to 60s)")
+        expect(e.details).to include("workspace" => "app.worktree-PROJ-1", "path" => path)
+        expect(e.details["next"].first).to start_with("workspace workflow run flow --name app.worktree-PROJ-1 --input task=do\\ it")
+      end
+      expect(workflow).not_to have_received(:run)
+    end
+
+    it "keeps the code of a failed run and adds where the workspace is" do
+      allow(workflow).to receive(:run).and_raise(Workspace::Error.new("busy", code: "pane_has_run", details: {"pane" => "%7"}))
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("pane_has_run")
+        expect(e.details).to include("pane" => "%7", "workspace" => "app.worktree-PROJ-1", "path" => path)
+        expect(e.details["next"].first).to match(/\Aworkspace workflow run flow --name app\.worktree-PROJ-1 /)
+      end
+    end
+
+    it "gives start's own failure unchanged, as nothing was made" do
+      allow(start).to receive(:payload).and_raise(Workspace::Error.new("no base", code: "usage"))
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details]).to eq(["usage", {}]) }
+    end
   end
 end

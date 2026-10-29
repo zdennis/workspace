@@ -1,3 +1,6 @@
+require "fileutils"
+require "shellwords"
+
 module Workspace
   module Commands
     # `workflow start`: makes a workspace from a ref or a prompt, then runs a workflow in it.
@@ -22,20 +25,33 @@ module Workspace
       # @!attribute spec_path [String, nil] the file the ticket body is written to
       # @!attribute checked [Hash] {Workspace::WorkflowEngine#preflight}'s answer
       # @!attribute warnings [Array<String>]
-      Plan = Struct.new(:definition, :ref, :branch, :project, :path, :would_create, :inputs, :ticket, :spec_path, :checked, :warnings, keyword_init: true)
+      # @!attribute prompt [String, nil] the --prompt text
+      Plan = Struct.new(:definition, :ref, :branch, :project, :path, :would_create, :inputs, :ticket, :spec_path, :checked, :warnings, :prompt, keyword_init: true)
 
       # @param catalog [Workspace::WorkflowCatalog]
       # @param engine [Workspace::WorkflowEngine] checks the run would pass, through #preflight
       # @param start_ref [Workspace::StartRef]
       # @param ticket_source [Workspace::TicketSource]
       # @param git [Workspace::Git]
+      # @param start [Workspace::Commands::Start] makes the workspace, through #payload
+      # @param workflow [Workspace::Commands::Workflow] starts the run
+      # @param readiness [Workspace::AgentReadiness] waits for the new workspace's agent
+      # @param tmux [Workspace::Tmux] names the workspace's session
+      # @param agent_commands [Workspace::AgentCommands] finds the agent in a pane
+      # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
       # @param output [IO]
-      def initialize(catalog:, engine:, start_ref:, ticket_source:, git:, output: $stdout)
+      def initialize(catalog:, engine:, start_ref:, ticket_source:, git:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, output: $stdout)
         @catalog = catalog
         @engine = engine
         @start_ref = start_ref
         @ticket_source = ticket_source
         @git = git
+        @start = start
+        @workflow = workflow
+        @readiness = readiness
+        @tmux = tmux
+        @agent_commands = agent_commands
+        @excludes = excludes
         @output = output
       end
 
@@ -88,7 +104,7 @@ module Workspace
         seeded = seed(definition, ticket, prompt, inputs, spec_path)
         checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil)
         Plan.new(definition: definition, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
-          ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings)
+          ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt)
       end
 
       # The ticket's fields, nil for a prompt or a plain branch. A failed read is refused when
@@ -162,9 +178,67 @@ module Workspace
          "ticket" => plan.ticket&.slice("key", "title", "url")}
       end
 
-      # The extension point for creating the workspace and starting the run.
-      def start_workspace(_plan, **_options)
-        raise NotImplementedError, "workflow start does not create a workspace yet"
+      # Makes the workspace, writes the ticket file, waits for the agent and starts the run. Once
+      # `start` has made the workspace any failure keeps it and names the command that runs the
+      # workflow in it by hand.
+      def start_workspace(plan, note:, base:, headless:, agent_kind:, prompt_timeout:, slug:)
+        options = {yes: true, base: base, headless: headless, spine: false}
+        options[:agent_kind] = agent_kind if agent_kind
+        options[:slug] = slug if slug
+        title = plan.ticket&.fetch("title") || plan.prompt
+        options[:title] = title if title
+        # The ref as given, not the branch: `start` resolves it again to check out a pull request or an issue.
+        started = @start.payload(plan.ref ? plan.ref.input : plan.branch, **options).fetch(:json)
+        if started["ok"] == false
+          raise Workspace::Error.new(started["error"] || "start failed", code: started["code"], details: started["details"])
+        end
+        workspace = started.fetch("workspace")
+        path = started.fetch("path")
+        warnings = plan.warnings + Array(started["warnings"])
+        inputs = plan.inputs
+        spec_file = nil
+        if plan.spec_path
+          spec_file = File.join(path, TICKET_DIR, File.basename(plan.spec_path))
+          inputs = inputs.merge("spec" => spec_file)
+        end
+        begin
+          write_ticket(plan, spec_file, path)
+          pane_id = wait_for_agent(workspace, prompt_timeout)
+          row = @workflow.run(id: plan.definition.to_h["id"], workspace: workspace, worktree: path, inputs: inputs, note: note, pane: pane_id)
+        rescue => e
+          raise with_next(e, plan, inputs, workspace, path, warnings)
+        end
+        row.merge("branch" => started["branch"], "path" => path, "created" => started["created"], "task" => started["task"],
+          "ticket" => plan.ticket&.slice("key", "title", "url"), "warnings" => warnings)
+      end
+
+      # The ticket body goes under the new checkout, where git does not list it.
+      def write_ticket(plan, file, path)
+        return unless file
+
+        FileUtils.mkdir_p(File.dirname(file))
+        File.write(file, plan.ticket["body"])
+        @excludes.add(path, "/.workflow/")
+      end
+
+      def wait_for_agent(workspace, prompt_timeout)
+        seconds = prompt_timeout || AgentReadiness::DEFAULT_TIMEOUT
+        ready = @readiness.wait(@tmux.session_name_for(workspace), deadline: @readiness.deadline_in(seconds), detector: @agent_commands.detector(workspace))
+        return ready.pane_id if ready.ready?
+
+        raise Workspace::Error.new("The coding agent in #{workspace} was not ready: #{ready.reason} (waited up to #{seconds}s).", code: "agent_not_ready")
+      end
+
+      # A UsageError stays one; any other class becomes a plain Workspace::Error, as in promote, because
+      # the subclasses do not share a constructor.
+      def with_next(error, plan, inputs, workspace, path, warnings)
+        command = ["workspace workflow run", Shellwords.escape(plan.definition.to_h["id"]), "--name", Shellwords.escape(workspace)]
+        inputs.each { |name, value| command.push("--input", "#{name}=#{Shellwords.escape(value)}") }
+        details = ((error.respond_to?(:details) && error.details) || {}).merge("workspace" => workspace, "path" => path, "next" => [command.join(" ")])
+        details["warnings"] = warnings if warnings.any?
+        klass = error.is_a?(Workspace::UsageError) ? Workspace::UsageError : Workspace::Error
+        klass.new("#{error.message} The workspace #{workspace} was made at #{path}; run `#{details["next"].first}` to start the workflow in it.",
+          code: (error.respond_to?(:code) && error.code) || "error", details: details, retry_with: (error.retry if error.respond_to?(:retry)))
       end
     end
   end

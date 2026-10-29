@@ -214,6 +214,7 @@ module Workspace
       "input_required" => "workflow run is missing a required input.",
       "workflow_command_unset" => "A step's check names the project's test or lint command and the project has none.",
       "no_agent_pane" => "No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or plan start or spine start found no agent pane to type into (with --pane, the named pane runs no coding agent).",
+      "agent_not_ready" => "workflow start made the workspace but its coding agent was not ready in time. The workspace is kept. details.workspace, details.path, details.next.",
       "pane_has_run" => "The pane already runs another workflow run.",
       "unknown_run" => "No workflow run has that id.",
       "unknown_goal" => "goal show: REF matches no workspace, run, task, ticket or branch. details.ref, details.tried.",

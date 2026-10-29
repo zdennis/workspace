@@ -323,6 +323,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `input_required` | workflow run is missing a required input. `details.workflow`, `details.inputs` (each `name` and `description`). |
 | `workflow_command_unset` | A step's check names the project's test or lint command and the project has none. `details.workflow`, `details.project`, `details.commands`. |
 | `no_agent_pane` | No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or `plan start` or `spine start` found no agent pane to type into (with `--pane`, the named pane runs no coding agent the agent daemon knows, and `details.pane` names it). `details.workspace`. |
+| `agent_not_ready` | `workflow start` made the workspace, but its coding agent was not ready within `--prompt-timeout` seconds (60 by default). The workspace is kept. `details.workspace`, `details.path`, `details.next` (the `workspace workflow run` command to start the workflow in it). |
 | `pane_has_run` | The pane already runs another workflow run. `details.pane`, `details.run_id`. |
 | `unknown_run` | No workflow run has that id. `details.run_id`; `details.path` when a run file of that id exists and can't be read as a run. |
 | `unknown_goal` | `goal show` was given a REF that matches no workspace name, run id, task id, ticket key or URL, or branch. `details.ref`, `details.tried` (`workspace`, `run`, `task`, `ref`, `branch`). |
