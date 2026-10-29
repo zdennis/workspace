@@ -97,6 +97,7 @@ module Workspace
     # @param instructions_command [Workspace::Commands::Instructions, nil] pre-built instructions command
     # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs `launch` sends with the first prompt
     # @param workflow_command [Workspace::Commands::Workflow, nil] pre-built `workflow` and `step` command
+    # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] pre-built `workflow start` command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
     # @param events_command [Workspace::Commands::Events, nil] pre-built events command
@@ -121,7 +122,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -195,6 +196,7 @@ module Workspace
       @binding_command = binding_command
       @library_command = library_command
       @workflow_command = workflow_command
+      @workflow_start_command = workflow_start_command
       @library = library
       @instructions_command = instructions_command
       @instruction_composer = instruction_composer
@@ -5040,7 +5042,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run status events files resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start status events files resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5050,6 +5052,8 @@ module Workspace
           "       workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]\n" \
           "       workspace workflow remove ID [--yes] [--dry-run] [--json]\n" \
           "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
+          "       workspace workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]\n" \
+          "                                [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]\n" \
           "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
           "       workspace workflow events RUN [--since N] [--json]\n" \
           "       workspace workflow files RUN [--json]\n" \
@@ -5090,6 +5094,9 @@ module Workspace
         opts.separator "            builtin_workflow for a preset alone; --dry-run checks and deletes nothing"
         opts.separator "  run       start a run in a workspace (the current one, or --name); --dry-run checks"
         opts.separator "            the inputs, the project's commands and the pane, and starts nothing"
+        opts.separator "  start     make a workspace from a ticket or pull request REF (a JIRA key or URL, PR, issue or"
+        opts.separator "            branch) or from --prompt TEXT, wait for its agent, and run ID in it; --dry-run checks"
+        opts.separator "            everything and makes nothing"
         opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
         opts.separator "            is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
         opts.separator "            failed_check or pane_gone, with the commands that resolve it"
@@ -5122,6 +5129,15 @@ module Workspace
         opts.on("--dry-run", "run: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
         opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
+        opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
+        opts.on("--branch BRANCH", "start: the branch for a --prompt (default: the prompt's words)") { |v| options[:branch] = v }
+        opts.on("--slug", "start: add the ticket title's words to a JIRA or issue branch, as `workspace start --slug`") { options[:slug] = true }
+        opts.on("--base REF", "start: the branch or ref a new branch starts from") { |v| options[:base] = v }
+        opts.on("--[no-]headless", "start: start the session in plain tmux, as `workspace start --headless`") { |v| options[:headless] = v }
+        opts.on("--agent-kind KIND", "start: the coding agent the main agent pane runs: #{AgentProvider.all.map(&:key).join(", ")}") { |v| options[:agent_kind] = v }
+        opts.on("--prompt-timeout DURATION", "start: how long to wait for the coding agent to be ready (default #{AgentReadiness::DEFAULT_TIMEOUT}s)") do |v|
+          options[:prompt_timeout] = parse_duration_option("--prompt-timeout", v, positive: true)
+        end
         opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
         opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
         opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
@@ -5137,6 +5153,8 @@ module Workspace
         opts.separator "  workspace workflow remove ship --yes --json"
         opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
         opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\""
+        opts.separator "  workspace workflow start rpiv PROJ-101 --dry-run --json"
+        opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\""
         opts.separator "  workspace workflow status --json"
         opts.separator "  workspace workflow events wr_2610041230559x3k --since 40 --json"
         opts.separator "  workspace workflow files wr_2610041230559x3k --json"
@@ -5157,13 +5175,14 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, status, events, files, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
       source_path = args.shift if %w[add update].include?(subcommand)
+      start_ref = args.shift if subcommand == "start"
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "start" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
       raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?))
 
@@ -5171,6 +5190,17 @@ module Workspace
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
+
+      start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout}
+      if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
+        raise UsageError, "#{flag.first} is for `workflow start ID [REF]`."
+      end
+      if subcommand == "start"
+        raise UsageError, "workflow start makes its own workspace: --name is for `workflow run`." if options[:name]
+        raise UsageError, "workflow start runs in the new workspace's pane: --pane is for `workflow run`." if options[:pane]
+        raise UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." if start_ref.nil? && options[:prompt].to_s.strip.empty?
+        raise Error, "workflow start is not available: no workflow start command was wired" unless @workflow_start_command
+      end
 
       case subcommand
       when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source])
@@ -5203,6 +5233,13 @@ module Workspace
           root = options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
           @workflow_command.run(id: subject, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: inputs,
             pane: options[:pane], note: options[:note], dry_run: options[:dry_run])
+        end
+      when "start"
+        inputs = workflow_inputs(options[:inputs])
+        workflow_action("workflow start", options) do
+          @workflow_start_command.call(id: subject, ref: start_ref, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
+            note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
+            prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run])
         end
       when "resume"
         workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], caller_pane: ENV["TMUX_PANE"]) }

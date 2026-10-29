@@ -599,6 +599,11 @@ module Workspace
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog, groups: project_groups,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, hooks_config: hooks_config, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, agent_commands: agent_commands, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, excluder: bookkeeping_exclude, output: output, input: input)
+    workflow_start_command = Commands::WorkflowStart.new(
+      catalog: workflow_catalog, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
+      start: start_command, workflow: workflow_command, readiness: agent_readiness, tmux: tmux, agent_commands: agent_commands,
+      excludes: GitExclude.new(git: git), output: output
+    )
     workspace_at = lambda do |path|
       real = CheckoutMove.real_path(path)
       project_config.available_projects.find { |name| (root = project_config.project_root_for(name)) && CheckoutMove.real_path(File.expand_path(root)) == real }
@@ -773,6 +778,7 @@ module Workspace
       instructions_command: instructions_command,
       instruction_composer: instruction_composer,
       workflow_command: workflow_command,
+      workflow_start_command: workflow_start_command,
       review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,

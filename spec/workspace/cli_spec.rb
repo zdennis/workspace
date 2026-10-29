@@ -128,6 +128,7 @@ RSpec.describe Workspace::CLI do
       instructions_command: overrides[:instructions_command],
       instruction_composer: overrides[:instruction_composer],
       workflow_command: overrides[:workflow_command],
+      workflow_start_command: overrides[:workflow_start_command],
       library: overrides[:library],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
@@ -6401,6 +6402,63 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    context "start" do
+      let(:start_command) { CLITestHelpers::FakeWorkflowStartCommand.new }
+      let(:built) { build_test_cli(workflow_command: workflow_command, workflow_start_command: start_command, project_config: project_config, project_detector: detector, working_dir: "/some/dir") }
+
+      it "passes the ID, REF and flags to workflow start" do
+        cli.run(["workflow", "start", "rpiv", "PROJ-1", "--branch", "b", "--slug", "--base", "main", "--input", "task=x", "--note", "n", "--agent-kind", "codex", "--prompt-timeout", "2m", "--no-headless", "--dry-run"])
+
+        expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", prompt: nil, branch: "b", slug: true, inputs: {"task" => "x"}, note: "n", base: "main",
+                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true}])
+      end
+
+      it "takes --prompt with no REF, and headless from the launch mode" do
+        cli.run(["workflow", "start", "rpiv", "--prompt", "add a script"])
+
+        expect(start_command.calls.first).to include(id: "rpiv", ref: nil, prompt: "add a script", slug: false, headless: false, dry_run: false)
+      end
+
+      it "needs a REF or --prompt" do
+        expect { cli.run(["workflow", "start", "rpiv"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to match(/needs a REF.*--prompt/)
+        expect(start_command.calls).to be_empty
+      end
+
+      it "gives a JSON error for a missing REF under --json" do
+        expect { cli.run(["workflow", "start", "rpiv", "--json"]) }.to raise_error(FakeSystemExit)
+
+        expect(JSON.parse(output.string)).to include("ok" => false)
+        expect(start_command.calls).to be_empty
+      end
+
+      it "refuses --name and --pane" do
+        expect { cli.run(["workflow", "start", "rpiv", "PROJ-1", "--name", "ws"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--name is for `workflow run`")
+        expect { cli.run(["workflow", "start", "rpiv", "PROJ-1", "--pane", "%1"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--pane is for `workflow run`")
+        expect(start_command.calls).to be_empty
+      end
+
+      it "writes one document for --dry-run --json" do
+        start_command.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would start.", "branch" => "add-a-script"}
+
+        cli.run(["workflow", "start", "rpiv", "--prompt", "add a script", "--dry-run", "--json"])
+
+        doc = JSON.parse(output.string)
+        expect(doc).to include("ok" => true, "action" => "workflow start", "status" => "dry_run")
+        expect(doc["results"]).to eq([start_command.row])
+      end
+
+      it "refuses a start-only flag with workflow run" do
+        expect { cli.run(["workflow", "run", "rpiv", "--prompt", "x"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--prompt is for `workflow start")
+        expect { cli.run(["workflow", "run", "rpiv", "--slug"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--slug is for `workflow start")
+        expect(workflow_command.calls).to be_empty
+      end
+    end
+
     it "parses add ID PATH, with --dry-run, as an action document" do
       workflow_command.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would add workflow ship at /g/ship.yml.",
                               "workflow" => "ship", "path" => "/g/ship.yml", "sha256" => "abc"}
@@ -6745,7 +6803,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, status, events, files, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
