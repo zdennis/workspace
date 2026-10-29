@@ -109,6 +109,7 @@ That fix line packs three independent options together. Pick one:
    workspace config set context.source scrape
    workspace config set context.pattern '(\d+)% ctx'
    ```
+   The last match on the screen counts, since the status line is the pane's lowest line; a percentage in the agent's output above it is never read as context use.
 
 Or skip detection entirely for one call with `--context-pct N`.
 

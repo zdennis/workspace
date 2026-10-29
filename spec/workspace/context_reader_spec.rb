@@ -161,6 +161,14 @@ RSpec.describe Workspace::ContextReader do
       expect(result[:updated_at]).not_to be_nil
     end
 
+    it "reads the footer's percentage, not one in the output above it" do
+      global_config["context"]["pattern"] = '(\d+)%'
+      allow(tmux).to receive(:capture_screen).with("%1")
+        .and_return("The business did 50% better this quarter than\n\n███░░ 8% ctx | $0.42")
+
+      expect(reader.read(pane_id: "%1")[:pct]).to eq(8)
+    end
+
     it "reports a pattern mismatch when the pane text doesn't match" do
       allow(tmux).to receive(:capture_screen).with("%1").and_return("nothing here")
 
