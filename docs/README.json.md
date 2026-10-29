@@ -204,7 +204,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `path_conflicts` | Untracked files where a deleted tracked file was (or inside or around it). `details.paths`, `details.count`. |
 | `no_default_branch` | No local default branch. `details.path`. |
 | `branch_required` | On the default branch with no `BRANCH` (a usage error, exit 2; `--dry-run` answers `branch_required: true` instead). `details.from_branch`. |
-| `branch_exists` | The branch exists at a commit other than `HEAD`. `details.branch`, `details.commit`. |
+| `branch_exists` | The branch exists at a commit other than `HEAD`. `details.branch`, `details.commit`. Also `workflow start`: the branch derived from `--prompt`, or a workspace for it, already exists (name it with `--branch` to reuse it); nothing was created. `details.branch`, `details.path`, `details.worktree`. |
 | `branch_checked_out` | The branch (or the default branch) is checked out in another worktree. `details.branch`, `details.path`, `details.workspace` (or null). |
 | `worktree_exists` | `.worktrees/<branch>` already exists. `details.path`. |
 | `nothing_to_move` | No changes and no commits ahead of the default branch (use `workspace start BRANCH`). `details.branch`. |

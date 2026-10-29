@@ -107,7 +107,7 @@ module Workspace
       "path_conflicts" => "promote: untracked files sit where a deleted tracked file was (or inside or around it), which a stash cannot apply back. details.paths, details.count.",
       "no_default_branch" => "promote: the main checkout has no local default branch. details.path.",
       "branch_required" => "promote: the main checkout is on the default branch and no BRANCH was named (a usage error, exit 2). details.from_branch.",
-      "branch_exists" => "promote: the named branch exists at a commit other than the main checkout's HEAD. details.branch, details.commit.",
+      "branch_exists" => "promote: the named branch exists at a commit other than the main checkout's HEAD. details.branch, details.commit. workflow start: the branch derived from --prompt, or a workspace for it, already exists (details.branch, details.path, details.worktree); nothing was created.",
       "branch_checked_out" => "promote: the branch (or the default branch) is checked out in another worktree. details.branch, details.path, details.workspace (or null).",
       "worktree_exists" => "promote: .worktrees/<branch> already exists. details.path.",
       "nothing_to_move" => "promote: no changes and no commits ahead of the default branch; use workspace start BRANCH. details.branch.",
