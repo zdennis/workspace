@@ -595,6 +595,35 @@ module Workspace
       [remote.strip, merge.strip]
     end
 
+    # Removes a branch's upstream config when git cannot resolve it, as `gh pr checkout
+    # --worktree` leaves for fork PRs (a URL remote, or a `refs/pull/N/head` merge ref),
+    # along with its `pushRemote`. A resolving upstream is left alone. A failed git call
+    # is only logged.
+    #
+    # @param path [String] the checkout
+    # @param branch [String]
+    # @return [Boolean] true when an unresolved upstream was removed, false when there was
+    #   nothing to remove or it could not be removed
+    def drop_unresolved_upstream(path, branch)
+      return false if upstream_branch(path)
+      return false unless upstream_config(path, branch)
+
+      _, stderr, status = capture_git("-C", path, "branch", "--unset-upstream", branch)
+      unless status.success?
+        @logger.debug { "git: could not unset the upstream of #{branch}: #{stderr.to_s.strip}" }
+        return false
+      end
+
+      _, stderr, status = capture_git("-C", path, "config", "--unset", "branch.#{branch}.pushRemote")
+      unless status.success? || status.exitstatus == 5
+        @logger.debug { "git: could not unset pushRemote of #{branch}: #{stderr.to_s.strip}" }
+      end
+      true
+    rescue SystemCallError => e
+      @logger.debug { "git: could not drop the upstream of #{branch}: #{e.message}" }
+      false
+    end
+
     # @param path [String] worktree directory path
     # @return [Integer, nil] number of commits on HEAD not in its upstream, or
     #   nil if there is no upstream or git could not answer
