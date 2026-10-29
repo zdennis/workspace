@@ -46,6 +46,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
         allow(git).to receive(:local_branch_exists?).with("pr-123").and_return(false)
         allow(git).to receive(:checkout_pr_worktree)
+        allow(git).to receive(:drop_unresolved_upstream).and_return(false)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-pr-123")
         allow(launch_command).to receive(:call)
       end
@@ -174,6 +175,50 @@ RSpec.describe Workspace::Commands::Start do
         payload = JSON.parse(output.string)
         expect(payload).to include("branch" => "pr-123", "base" => nil, "created" => true, "path" => pr_worktree_path)
         expect(git).to have_received(:checkout_pr_worktree).with(anything, hash_including(quiet: true))
+      end
+
+      it "drops an upstream git cannot resolve after the checkout and says how to set one" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+        allow(git).to receive(:drop_unresolved_upstream).and_return(true)
+
+        command.call("#123")
+
+        expect(git).to have_received(:drop_unresolved_upstream).with(pr_worktree_path, "pr-123")
+        expect(output.string).to include("No upstream set for pr-123; the first `workspace push` or `workspace pr create` sets one.")
+      end
+
+      it "stays silent when there was no unresolved upstream to drop" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+
+        command.call("#123")
+
+        expect(git).to have_received(:drop_unresolved_upstream).with(pr_worktree_path, "pr-123")
+        expect(output.string).not_to include("No upstream set")
+      end
+
+      it "does not print the upstream note when quiet" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+        allow(git).to receive(:drop_unresolved_upstream).and_return(true)
+
+        command.call("#123", json: true)
+
+        expect(output.string).not_to include("No upstream set")
+      end
+
+      it "does not touch the upstream of a reused, adopted or failed PR checkout" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+        allow(git).to receive(:worktree_exists?).with(pr_worktree_path).and_return(true)
+        command.call("#123")
+
+        allow(git).to receive(:worktree_exists?).with(pr_worktree_path).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).with("pr-123", repo: tmpdir).and_return(File.join(tmpdir, "elsewhere"))
+        command.call("#123")
+
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:checkout_pr_worktree).and_raise(Workspace::Error, "boom")
+        command.call("#123", json: true)
+
+        expect(git).not_to have_received(:drop_unresolved_upstream)
       end
 
       it "emits the JSON error payload and launches nothing when gh fails" do
@@ -1839,6 +1884,7 @@ RSpec.describe Workspace::Commands::Start do
           allow(git).to receive(:parse_start_input).with("#9").and_return({type: :pr_url, value: "#9", repo: nil, number: "9"})
           allow(git).to receive(:local_branch_exists?).and_return(false)
           allow(git).to receive(:checkout_pr_worktree)
+          allow(git).to receive(:drop_unresolved_upstream).and_return(false)
 
           ticket_command.call("#9", json: true, title_from_ticket: true)
 
@@ -1851,6 +1897,7 @@ RSpec.describe Workspace::Commands::Start do
           allow(git).to receive(:parse_start_input).with("#9").and_return({type: :pr_url, value: "#9", repo: nil, number: "9"})
           allow(git).to receive(:local_branch_exists?).and_return(false)
           allow(git).to receive(:checkout_pr_worktree)
+          allow(git).to receive(:drop_unresolved_upstream).and_return(false)
 
           ticket_command.call("#9", json: true, slug: true)
 

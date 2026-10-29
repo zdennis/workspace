@@ -264,6 +264,9 @@ module Workspace
           if pr
             log(quiet, "Checking out PR ##{pr[:number]}...")
             @git.checkout_pr_worktree(worktree_path, number: pr[:number], repo: pr[:repo], branch: branch_name, chdir: root, quiet: quiet)
+            if @git.drop_unresolved_upstream(worktree_path, branch_name)
+              log(quiet, "No upstream set for #{branch_name}; the first `workspace push` or `workspace pr create` sets one.")
+            end
           else
             @git.create_worktree(worktree_path, branch_name, base: result[:base_branch], quiet: quiet)
           end
