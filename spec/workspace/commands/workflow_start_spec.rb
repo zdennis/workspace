@@ -318,6 +318,12 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       expect(start).to have_received(:payload).with("fix-the-login-bug", hash_including(title: "Fix the login bug"))
     end
 
+    it "titles the task with only the prompt's first line" do
+      command.call(id: "flow", prompt: "Fix the login bug\n\nIt fails on Safari.", branch: "fix-login")
+
+      expect(start).to have_received(:payload).with("fix-login", hash_including(title: "Fix the login bug"))
+    end
+
     it "writes the ticket body to the spec file and excludes .workflow/, only when spec is declared" do
       command.call(id: "flow", ref: "PROJ-1")
 
@@ -414,6 +420,24 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       expect { command.call(id: "flow", ref: "PROJ-1", inputs: {"task" => "do it"}, note: "first try") }.to raise_error(Workspace::Error) do |e|
         expect(e.details["next"].first).to end_with(" --note first\\ try")
+      end
+    end
+
+    it "leaves an input that was never set out of the command it names" do
+      allow(engine).to receive(:preflight) { |inputs:, **| {"step" => "plan", "inputs" => inputs.merge("spec" => ""), "packs" => []} }
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "still starting up"))
+
+      expect { command.call(id: "flow", ref: "PROJ-1", inputs: {"task" => "do it", "spec" => "s.md"}) }.to raise_error(Workspace::Error) do |e|
+        expect(e.details["next"].first).not_to include("--input spec=")
+      end
+    end
+
+    it "says the workspace is there, not that it was made, when it was reused" do
+      worktrees << path
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "still starting up"))
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
+        expect(e.message).to include("The workspace app.worktree-PROJ-1 is at #{path}")
       end
     end
 

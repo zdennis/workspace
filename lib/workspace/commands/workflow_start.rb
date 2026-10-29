@@ -204,7 +204,7 @@ module Workspace
         options = {yes: true, base: base, headless: headless, spine: false, no_packs: true}
         options[:agent_kind] = agent_kind if agent_kind
         options[:slug] = true if slug && plan.ticket
-        title = plan.ticket&.fetch("title") || plan.prompt
+        title = plan.ticket&.fetch("title") || plan.prompt&.lines&.first&.strip
         options[:title] = title if title
         # The ref as given, not the branch: `start` resolves it again to check out a pull request or an issue.
         begin
@@ -262,14 +262,14 @@ module Workspace
       def with_next(error, plan, inputs, note, workspace, path, warnings)
         run = ["workspace workflow run", Shellwords.escape(plan.definition.to_h["id"])]
         run.push("--name", Shellwords.escape(workspace)) if workspace
-        inputs.each { |name, value| run.push("--input", "#{name}=#{Shellwords.escape(value)}") }
+        inputs.each { |name, value| run.push("--input", "#{name}=#{Shellwords.escape(value)}") unless value.to_s.empty? }
         run.push("--note", Shellwords.escape(note)) if note
         command = workspace ? run.join(" ") : "cd #{Shellwords.escape(path)} && #{run.join(" ")}"
         details = ((error.respond_to?(:details) && error.details) || {}).merge("path" => path, "next" => [command])
         details["workspace"] = workspace if workspace
         details["warnings"] = warnings if warnings.any?
         klass = error.is_a?(Workspace::UsageError) ? Workspace::UsageError : Workspace::Error
-        klass.new("#{error.message} The workspace #{workspace || "checkout"} was made at #{path}; run `#{command}` to start the workflow in it.",
+        klass.new("#{error.message} The workspace #{workspace || "checkout"} #{plan.would_create ? "was made" : "is"} at #{path}; run `#{command}` to start the workflow in it.",
           code: (error.respond_to?(:code) && error.code) || "error", details: details, retry_with: (error.retry if error.respond_to?(:retry)))
       end
     end
