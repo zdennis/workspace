@@ -364,6 +364,14 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       expect(workflow).not_to have_received(:run)
     end
 
+    it "carries the note into the command it names" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "still starting up"))
+
+      expect { command.call(id: "flow", ref: "PROJ-1", inputs: {"task" => "do it"}, note: "first try") }.to raise_error(Workspace::Error) do |e|
+        expect(e.details["next"].first).to end_with(" --note first\\ try")
+      end
+    end
+
     it "keeps the code of a failed run and adds where the workspace is" do
       allow(workflow).to receive(:run).and_raise(Workspace::Error.new("busy", code: "pane_has_run", details: {"pane" => "%7"}))
 

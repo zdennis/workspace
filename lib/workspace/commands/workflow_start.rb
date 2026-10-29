@@ -206,7 +206,7 @@ module Workspace
           pane_id = wait_for_agent(workspace, prompt_timeout)
           row = @workflow.run(id: plan.definition.to_h["id"], workspace: workspace, worktree: path, inputs: inputs, note: note, pane: pane_id)
         rescue => e
-          raise with_next(e, plan, inputs, workspace, path, warnings)
+          raise with_next(e, plan, inputs, note, workspace, path, warnings)
         end
         row.merge("branch" => started["branch"], "path" => path, "created" => started["created"], "task" => started["task"],
           "ticket" => plan.ticket&.slice("key", "title", "url"), "warnings" => warnings)
@@ -231,9 +231,10 @@ module Workspace
 
       # A UsageError stays one; any other class becomes a plain Workspace::Error, as in promote, because
       # the subclasses do not share a constructor.
-      def with_next(error, plan, inputs, workspace, path, warnings)
+      def with_next(error, plan, inputs, note, workspace, path, warnings)
         command = ["workspace workflow run", Shellwords.escape(plan.definition.to_h["id"]), "--name", Shellwords.escape(workspace)]
         inputs.each { |name, value| command.push("--input", "#{name}=#{Shellwords.escape(value)}") }
+        command.push("--note", Shellwords.escape(note)) if note
         details = ((error.respond_to?(:details) && error.details) || {}).merge("workspace" => workspace, "path" => path, "next" => [command.join(" ")])
         details["warnings"] = warnings if warnings.any?
         klass = error.is_a?(Workspace::UsageError) ? Workspace::UsageError : Workspace::Error
