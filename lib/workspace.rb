@@ -641,7 +641,7 @@ module Workspace
       plan_command: plan_command, plan_dispatch: plan_dispatch_command, workspace_at: workspace_at, locks: held_locks, event_log: event_log, env: env,
       output: output, error_output: error_output
     )
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, event_log: event_log, output: output)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, event_log: event_log, skills: skills_command, output: output)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )

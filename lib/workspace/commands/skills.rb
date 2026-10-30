@@ -102,7 +102,61 @@ module Workspace
         ok
       end
 
+      # What `doctor` reports: one entry per harness found and not declined. `status` is `ok`
+      # (all four links resolve, whichever install they point at), `missing`, `dangling` (a link
+      # of ours to nothing; wins over missing) or `conflict` (a real file or directory, or
+      # someone else's link, in our spot; wins over both). Reads only.
+      #
+      # @return [Array<Hash>] `key`, `name`, `dir`, `status`
+      def health
+        declined = @state.declined
+        @harnesses.found.reject { |harness| declined.include?(harness.key) }.map do |harness|
+          states = SkillSource::NAMES.map { |name| link_state(File.join(harness.dir, name), name) }
+          status = %i[conflict dangling missing].find { |s| states.include?(s) } || :ok
+          {"key" => harness.key, "name" => harness.name, "dir" => harness.dir, "status" => status.to_s}
+        end
+      end
+
+      # What `doctor --fix` does: links the skills that are missing or dangling in each harness
+      # {#health} lists as not ok, and in `~/.agents/skills` when it exists. Never replaces
+      # anything: a link that resolves, a real directory (even one equal to the source) and
+      # someone else's link stay, and a directory with a refusal is not written at all.
+      #
+      # @return [Hash] `fixed` (names of the harnesses given links) and `warnings`
+      # @raise [Workspace::Error] `skill_source_worktree`, `skills_source_missing`
+      def repair
+        broken = health.reject { |entry| entry["status"] == "ok" }
+        return {"fixed" => [], "warnings" => []} if broken.empty?
+        source = @source.resolve
+        dirs = broken.map { |entry| [entry["name"], entry["dir"]] }
+        dirs << ["shared skills", @harnesses.agents_dir] if @harnesses.agents_dir?
+        fixed = []
+        warnings = []
+        dirs.each do |name, dir|
+          plan = @links.plan(dir, source.root, SkillSource::NAMES)
+          plan.steps.each do |step|
+            keep = %w[relinked adopted].include?(step.outcome) && link_state(File.join(dir, step.name), step.name) != :dangling
+            step.outcome = "unchanged" if keep
+          end
+          warnings.concat(plan.warnings)
+          @links.apply(plan)
+          plan.steps.select { |step| %w[refused failed].include?(step.outcome) }.each { |step| warnings << "#{name}: #{step.message}" }
+          changed = plan.steps.any? { |step| %w[linked relinked].include?(step.outcome) }
+          fixed << name if changed && broken.any? { |entry| entry["name"] == name }
+        end
+        {"fixed" => fixed, "warnings" => warnings}
+      end
+
       private
+
+      def link_state(path, name)
+        if File.symlink?(path)
+          return :conflict unless @links.ours?(path, name)
+          File.exist?(path) ? :ok : :dangling
+        else
+          File.exist?(path) ? :conflict : :missing
+        end
+      end
 
       def note(code, message)
         message ? "  #{code}: #{message}" : ""
