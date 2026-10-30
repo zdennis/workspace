@@ -1,6 +1,6 @@
 ---
 name: workspace-inbox
-description: "Leave something for the person in the `workspace inbox`, or record a question with `workspace ask` when running unattended in a workspace pane: a durable to-do, a finished note to read, the default you took. List, close, snooze or answer them. Not vault or Obsidian notes. Not for messaging another agent: use workspace-agent-run."
+description: "Leave something for the person in the `workspace inbox`, or record a question with `workspace ask` when unattended: a to-do, a finished note, the default you took. List the inbox (`inbox list --include-derived`), close, snooze, or answer an ask from an agent (`ask answer`, even for a pane like %12). Not vault or Obsidian notes. Not for messaging another agent: use workspace-agent-run."
 ---
 
 Written against workspace 0.75.0; check with the working --help form (`workspace inbox --help`, `workspace ask --help`).
@@ -17,6 +17,7 @@ Shared rules (`--json`, exit codes, error envelope): [machine-contract](../works
 | You want the person to approve or look over something | `inbox add --type review_request` |
 | The same thing as both | Pick one. A question belongs in `ask`; `inbox list --include-derived` shows open asks |
 | You want another agent to do something | Not here. Use workspace-agent-run |
+| You answer a question an agent asked ("answer the question from %12") | `ask answer ID "text" --deliver` here, not `agent-run send` |
 
 `ask` never waits. It writes the question to disk and returns, and you carry on with the default you named. Do not use it when you cannot go on without the answer.
 
