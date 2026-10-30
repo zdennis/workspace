@@ -979,6 +979,11 @@ RSpec.describe Workspace::Doctor do
       sh("update-ref", "refs/workspace/promote/abc", head)
       sh("update-ref", "refs/workspace/promote/def", head)
 
+      templates = File.join(@dir, "tmuxinator")
+      FileUtils.mkdir_p(templates)
+      FileUtils.touch(%w[workspace.project-template.yml workspace.project-worktree-template.yml].map { |t| File.join(templates, t) })
+      allow(config).to receive(:tmuxinator_dir).and_return(templates)
+
       result = doctor.report(headless: true)
       row = rows(result).first
 

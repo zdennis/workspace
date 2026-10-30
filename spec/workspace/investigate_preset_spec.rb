@@ -146,6 +146,7 @@ RSpec.describe "the investigate preset" do
     before do
       FileUtils.mkdir_p(worktree)
       system("git", "-C", worktree, "init", "-q", "-b", "feature/x", exception: true)
+      QuietGit.configure(worktree)
       system("git", "-C", worktree, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "start", exception: true)
       allow(lock_namespace).to receive(:resolve).with(cwd: worktree).and_return(key: "ns", display: "app", dir: File.join(dir, "locks"))
     end
@@ -200,6 +201,7 @@ RSpec.describe "the investigate preset" do
       odd = File.join(dir, "Zoë Smith app")
       FileUtils.mkdir_p(odd)
       system("git", "-C", odd, "init", "-q", "-b", "feature/x", exception: true)
+      QuietGit.configure(odd)
       system("git", "-C", odd, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "start", exception: true)
       allow(lock_namespace).to receive(:resolve).with(cwd: odd).and_return(key: "ns", display: "app", dir: File.join(dir, "locks"))
 

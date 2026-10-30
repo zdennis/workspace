@@ -362,6 +362,7 @@ RSpec.describe Workspace::Git do
 
       repo_dir = Dir.mktmpdir
       run!("git", "clone", remote_dir, repo_dir, chdir: Dir.pwd)
+      QuietGit.configure(remote_dir, repo_dir)
       run!("git", "config", "user.email", "test@example.com", chdir: repo_dir)
       run!("git", "config", "user.name", "Test", chdir: repo_dir)
       File.write(File.join(repo_dir, "README.md"), "hi\n")

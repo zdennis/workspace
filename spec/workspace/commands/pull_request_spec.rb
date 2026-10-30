@@ -47,6 +47,7 @@ RSpec.describe Workspace::Commands::PullRequest do
       sh("init", "-q", "--bare", "-b", "main", origin, dir: root)
       FileUtils.mkdir_p(main)
       sh("init", "-q", "-b", "main", dir: main)
+      QuietGit.configure(origin, main)
       sh("commit", "-q", "--allow-empty", "-m", "init", dir: main)
       sh("remote", "add", "origin", origin, dir: main)
       sh("push", "-q", "-u", "origin", "main", dir: main)

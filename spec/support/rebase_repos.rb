@@ -9,7 +9,9 @@ require "fileutils"
 module RebaseRepos
   # Git starts detached background maintenance after fetch, rebase, commit and
   # push; it writes `objects/maintenance.lock` while mktmpdir deletes the tree.
-  # Env config reaches the specs own git calls and the ones the code under test makes.
+  # Env config reaches the specs' own git calls and the ones the code under test
+  # makes, for specs that cannot configure each repository (see QuietGit for
+  # the per-repository form).
   NO_MAINTENANCE = {
     "GIT_CONFIG_COUNT" => "3",
     "GIT_CONFIG_KEY_0" => "gc.auto", "GIT_CONFIG_VALUE_0" => "0",
@@ -63,6 +65,7 @@ module RebaseRepos
     sh("init", "-q", "--bare", "-b", "main", origin, dir: root)
     FileUtils.mkdir_p(main)
     sh("init", "-q", "-b", "main", dir: main)
+    QuietGit.configure(origin, main)
     sh("config", "user.name", "t", dir: main)
     sh("config", "user.email", "t@example.com", dir: main)
     commit_file("base.txt", "base\n", "init", dir: main)
