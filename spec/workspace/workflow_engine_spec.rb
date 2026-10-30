@@ -57,8 +57,10 @@ RSpec.describe Workspace::WorkflowEngine do
 
   before do
     FileUtils.mkdir_p(worktree)
-    system("git", "-C", worktree, "init", "-q", "-b", "feature/x", exception: true)
-    system("git", "-C", worktree, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-q", "--allow-empty", "-m", "start", exception: true)
+    RepoTemplate.copy(:workflow_engine_app, to: worktree) do |root|
+      system("git", "-C", root, "init", "-q", "-b", "feature/x", exception: true)
+      system("git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-q", "--allow-empty", "-m", "start", exception: true)
+    end
     allow(lock_namespace).to receive(:resolve).with(cwd: worktree).and_return(key: "ns", display: "app", dir: lock_dir)
   end
 
