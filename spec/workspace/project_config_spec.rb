@@ -347,6 +347,44 @@ RSpec.describe Workspace::ProjectConfig do
         end
       end
 
+      context "with a template line that has no skip-permissions flag and a configured claude-dev" do
+        let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+        let(:project_template_path) { File.join(tmpdir, "project-template.yml") }
+
+        def project_pane = YAML.safe_load_file(File.join(tmpdir, "workspace.myapp.yml")).fetch("panes").last
+
+        def write_templates(line)
+          [template_path, project_template_path].each { |p| File.write(p, "panes:\n  - echo hi\n  - #{line}\n") }
+        end
+
+        before do
+          allow(config).to receive(:project_template_path).and_return(project_template_path)
+          write_templates("claude-dev --continue || claude")
+        end
+
+        it "runs claude-dev on both sides of || in a worktree config (start)" do
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "claude")
+
+          expect(pane).to eq("claude-dev --continue || claude-dev")
+        end
+
+        it "runs claude-dev on both sides of || in a project config (add)" do
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(project_pane).to eq("claude-dev --continue || claude-dev")
+        end
+
+        it "does the same for a bare claude line with no kind given" do
+          write_templates("claude --continue || claude")
+
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(pane).to eq("claude-dev --continue || claude-dev")
+          expect(project_pane).to eq("claude-dev --continue || claude-dev")
+        end
+      end
+
       describe "#agent_pane_command" do
         let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev", "codex" => "codex-x"}}} }
 
