@@ -143,7 +143,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 ## Examples
 
 ```sh
-workspace capabilities
-workspace capabilities --json | jq '.features.no_input'
-workspace capabilities --json | jq -r '.dependencies.window_tool.path'
+workspace capabilities    # a readable summary
+workspace capabilities --json | jq '.features.no_input'    # 1 when --no-input is supported
+workspace capabilities --json | jq -r '.dependencies.window_tool.path'    # where window-tool was found, for a script that needs it
 ```

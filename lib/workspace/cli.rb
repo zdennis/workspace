@@ -5377,8 +5377,11 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace snapshot --json"
-        opts.separator "  workspace snapshot --json --name my-app.worktree-fix-login --pr"
+        opts.separator "  workspace snapshot --json    # one document with every project and workspace, for a UI or script to poll"
+        opts.separator "  workspace snapshot --json --name my-app    # only one workspace, when a script watches a single project"
+        opts.separator "  workspace snapshot --json --name my-app --name my-app.worktree-fix-login    # two workspaces in one read"
+        opts.separator "  workspace snapshot --json --pr    # also read each branch's pull request, when you need review state"
+        opts.separator "  workspace snapshot --json | jq -r '.projects[].members[] | select(.running) | .workspace'    # list the running workspaces"
       end
     end
 
@@ -5419,8 +5422,9 @@ module Workspace
           uninstall   Remove workspace's hooks for one agent, keeping your own
 
         Examples:
-          workspace hooks uninstall --agent codex --dry-run
-          workspace hooks uninstall --agent=codex --json
+          workspace hooks uninstall --agent codex --dry-run    # see what would go from Codex's hooks.json
+          workspace hooks uninstall --agent codex    # remove workspace's Codex hooks, keeping your own
+          workspace hooks uninstall --agent claude --project --dry-run    # preview a clean-up of every checkout of this project
       HELP
     end
 
@@ -5450,10 +5454,11 @@ module Workspace
         opts.on("--json", "Print one action document (exit 3 when some checkouts failed)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace hooks uninstall --agent claude --project --dry-run"
-        opts.separator "  workspace hooks uninstall --agent claude --name my-feature"
-        opts.separator "  workspace hooks uninstall --agent codex --dry-run"
-        opts.separator "  workspace hooks uninstall --agent=codex --json"
+        opts.separator "  workspace hooks uninstall --agent codex --dry-run    # see what would go from Codex's hooks.json first"
+        opts.separator "  workspace hooks uninstall --agent codex    # stop Codex reporting to workspace, keeping your own hooks"
+        opts.separator "  workspace hooks uninstall --agent claude --name my-feature    # clean up one workspace's checkout"
+        opts.separator "  workspace hooks uninstall --agent claude --project --dry-run    # preview every checkout of this project"
+        opts.separator "  workspace hooks uninstall --agent=codex --json    # a script removing the hooks and reading the outcome"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -5523,11 +5528,15 @@ module Workspace
           agent = value
         end
         opts.separator ""
+        opts.separator "These show what hooks send. Running one records it as a real event: a"
+        opts.separator "session start writes a ledger row, and in a tmux pane the event reaches"
+        opts.separator "the daemon."
+        opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  echo '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"abc\"}' | workspace session-event"
-        opts.separator "  echo '{\"hook_event_name\":\"Stop\"}' | workspace session-event --workspace my-project"
-        opts.separator "  echo '{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\"}' | workspace session-event --workspace my-project"
-        opts.separator "  echo '{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\"}' | workspace session-event --agent=codex"
+        opts.separator "  workspace session-event <<< '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"abc\"}'    # as a Claude Code hook calls it, from the agent's pane"
+        opts.separator "  workspace session-event --workspace my-project <<< '{\"hook_event_name\":\"Stop\"}'    # from a tmux pane, send to my-project instead of the pane's own session"
+        opts.separator "  workspace session-event <<< '{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\",\"cwd\":\"/src/api\"}'    # in a repo where another agent holds the edit lock: exits 2, deny message on stderr"
+        opts.separator "  workspace session-event --agent=codex <<< '{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\"}'    # a Codex approval prompt, as Codex's hook sends it"
       end
       parser.parse!(args)
 
@@ -5822,8 +5831,18 @@ module Workspace
         opts.separator "config set') delegates rendering to another command; a slow or hung"
         opts.separator "delegate falls back to the built-in line."
         opts.separator ""
-        opts.separator "Example (installed in ~/.claude/settings.json):"
+        opts.separator "Install it by adding this to ~/.claude/settings.json (or run"
+        opts.separator "'workspace doctor --fix'):"
         opts.separator "  { \"statusLine\": { \"type\": \"command\", \"command\": \"workspace statusline\" } }"
+        opts.separator ""
+        opts.separator "Each run records its reading against $TMUX_PANE (or $CLAUDE_PID), which"
+        opts.separator "'workspace sessions --json' then reports. Run these examples outside an"
+        opts.separator "agent's pane so they don't overwrite its real reading."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace statusline <<< '{\"context_window\":{\"used_percentage\":42}}'    # see the line Claude Code would show for 42% context used"
+        opts.separator "  workspace statusline <<< '{}'    # empty input still prints a line and exits 0"
+        opts.separator "  workspace statusline < payload.json    # replay a saved Claude Code payload while debugging a delegate command"
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
@@ -6595,6 +6614,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace capabilities    # a readable summary"
         opts.separator "  workspace capabilities --json | jq '.features.no_input'    # 1 when --no-input is supported"
+        opts.separator "  workspace capabilities --json | jq -r '.dependencies.window_tool.path'    # where window-tool was found, for a script that needs it"
       end
       parser.parse!(args)
       return @output.puts(parser.help) if help
@@ -8601,6 +8621,11 @@ module Workspace
         opts.separator ""
         opts.separator "Install or update the Alfred workflow for workspace focus."
         opts.separator "Copies workflow files to Alfred's preferences directory."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace alfred install    # add the 'wf' workflow to Alfred, or update it after upgrading workspace"
+        opts.separator "  workspace alfred install && workspace alfred info    # install, then confirm where it went"
+        opts.separator "  workspace alfred install | grep Installed    # print the line saying where it was installed"
       end
       parser.parse!(args)
 
@@ -8638,7 +8663,14 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace alfred uninstall"
         opts.separator ""
-        opts.separator "Remove the Alfred workflow for workspace focus."
+        opts.separator "Remove the Alfred workflow for workspace focus. Asks for a y/N"
+        opts.separator "confirmation before deleting; nothing is removed if the workflow is"
+        opts.separator "not installed."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace alfred uninstall    # remove the workflow from Alfred, after confirming"
+        opts.separator "  workspace alfred uninstall </dev/null    # answer nothing: it cancels and removes nothing"
+        opts.separator "  WORKSPACE_NO_INPUT=1 workspace alfred uninstall    # in an unattended script with the workflow installed: exits 1 with an error instead of waiting"
       end
       parser.parse!(args)
 
@@ -8663,6 +8695,11 @@ module Workspace
         opts.banner = "Usage: workspace alfred info"
         opts.separator ""
         opts.separator "Show the installation status of the Alfred workflow."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace alfred info    # see whether the workflow is installed, and where"
+        opts.separator "  workspace alfred info | grep -q 'is installed' || workspace alfred install    # install it only when missing"
+        opts.separator "  workspace alfred info | grep Location    # find the workflow's folder to edit it by hand"
       end
       parser.parse!(args)
 

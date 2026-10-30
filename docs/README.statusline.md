@@ -21,6 +21,16 @@ If `.claude/settings.local.json` also has a `statusLine` entry, it wins over thi
 
 Claude Code runs this on every render, piping one JSON payload on stdin (model, cwd, cost, `context_window.used_percentage`, etc.) and printing whatever it writes to stdout.
 
+## Examples
+
+Each run records its reading against `$TMUX_PANE` (or `$CLAUDE_PID`), which `workspace sessions --json` then reports. Run these examples outside an agent's pane so they don't overwrite its real reading.
+
+```sh
+workspace statusline <<< '{"context_window":{"used_percentage":42}}'    # see the line Claude Code would show for 42% context used
+workspace statusline <<< '{}'    # empty input still prints a line and exits 0
+workspace statusline < payload.json    # replay a saved Claude Code payload while debugging a delegate command
+```
+
 ## What it does
 
 1. **Records the reading.** `context_window.used_percentage` is stored keyed on `$TMUX_PANE` — the same pane identity `workspace session-event` and `workspace sessions` use — along with the session's total cost (`cost.total_cost_usd`), its total duration (`cost.total_duration_ms`) and the model's display name, the fields [`workspace sessions --json`](README.sessions.md) reports. If `$TMUX_PANE` isn't set (rare, but the environment a status-line process runs in isn't guaranteed to have it), the reading is stored under `$CLAUDE_PID` instead, so [`workspace sessions --json`](README.sessions.md) can still find it via the pane's process tree. Nothing is ever guessed: if no reading was recorded, `sessions --json` says so and gives a reason.

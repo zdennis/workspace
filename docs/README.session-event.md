@@ -73,13 +73,18 @@ A `SessionStart` for a pane bound with [`workspace binding`](README.binding.md) 
 
 ## Examples
 
+These show what hooks send. Running one records it as a real event: a session start writes a ledger row, and in a tmux pane the event reaches the daemon.
+
 ```sh
-# As installed by a hook (payload piped in by the coding agent)
-echo '{"hook_event_name":"SessionStart","session_id":"abc"}' | workspace session-event
+# As a Claude Code hook calls it, from the agent's pane
+workspace session-event <<< '{"hook_event_name":"SessionStart","session_id":"abc"}'
 
-# Force delivery to a specific workspace, bypassing pane detection
-echo '{"hook_event_name":"Stop"}' | workspace session-event --workspace my-project
+# From a tmux pane, send to my-project instead of the pane's own session
+workspace session-event --workspace my-project <<< '{"hook_event_name":"Stop"}'
 
-# A Codex approval prompt, as Codex's hook pipes it in
-echo '{"hook_event_name":"PermissionRequest","tool_name":"Bash"}' | workspace session-event --agent=codex
+# In a repo where another agent holds the edit lock: exits 2, deny message on stderr
+workspace session-event <<< '{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":"/src/api"}'
+
+# A Codex approval prompt, as Codex's hook sends it
+workspace session-event --agent=codex <<< '{"hook_event_name":"PermissionRequest","tool_name":"Bash"}'
 ```

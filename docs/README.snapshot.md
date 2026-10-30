@@ -73,3 +73,13 @@ The daemons are read in parallel, one second each: a daemon serves one connectio
 - `warnings` entries are `{"code","message"}` (and `workspace` for `checkout_missing`, `questions_unavailable`, `plan_unavailable` and `spine_unavailable`).
 
 A failure is the error envelope (see [`--json` output](README.json.md)) with exit status 1.
+
+## Examples
+
+```sh
+workspace snapshot --json    # one document with every project and workspace, for a UI or script to poll
+workspace snapshot --json --name my-app    # only one workspace, when a script watches a single project
+workspace snapshot --json --name my-app --name my-app.worktree-fix-login    # two workspaces in one read
+workspace snapshot --json --pr    # also read each branch's pull request, when you need review state
+workspace snapshot --json | jq -r '.projects[].members[] | select(.running) | .workspace'    # list the running workspaces
+```

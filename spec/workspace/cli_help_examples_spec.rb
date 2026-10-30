@@ -149,17 +149,6 @@ module HelpExamplesSpec
     "workflow update",
     "workflow validate",
 
-    # T10: health and machine output
-    "alfred info",
-    "alfred install",
-    "alfred uninstall",
-    "capabilities",
-    "hooks",
-    "hooks uninstall",
-    "session-event",
-    "snapshot",
-    "statusline",
-
     # T11: agents
     "agent",
     "agent executables",
