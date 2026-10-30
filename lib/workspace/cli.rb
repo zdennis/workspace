@@ -593,7 +593,7 @@ module Workspace
           help            Show this help message
           init            Install tmuxinator templates and create config directory
           inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
-          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, spine, promote)
+          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, report, plan-review, spine, promote)
           kill            Kill a worktree project, remove its worktree and the branch start made (default: the current one)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)

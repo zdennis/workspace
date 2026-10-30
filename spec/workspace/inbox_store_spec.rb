@@ -47,6 +47,23 @@ RSpec.describe Workspace::InboxStore do
       expect(result.record).to include("state" => "snoozed", "snooze_until" => "2026-10-17T00:00:00Z", "title" => "Newer")
     end
 
+    it "keeps the stored type when a repeat passes a different one" do
+      first = store.upsert(keyed.merge("type" => "review_request")).record
+
+      result = store.upsert(keyed.merge("type" => "note"))
+
+      expect(result.outcome).to eq("updated")
+      expect(result.record).to include("id" => first["id"], "type" => "review_request")
+    end
+
+    it "refreshes source.ref on a repeat" do
+      store.upsert(keyed.merge("source" => {"kind" => "agent", "ref" => "aaaa1111"}))
+
+      result = store.upsert(keyed.merge("source" => {"kind" => "agent", "ref" => "bbbb2222"}))
+
+      expect(result.record["source"]).to include("kind" => "agent", "ref" => "bbbb2222")
+    end
+
     it "leaves a resolved item alone as suppressed" do
       id = store.upsert(keyed).record["id"]
       store.transition(id, to: "dismissed", by: {"kind" => "user"})
