@@ -1,15 +1,22 @@
 require "spec_helper"
 require "timeout"
 
-# Returns each canned capture in turn, repeating the last one forever.
+# Returns each canned capture in turn, repeating the last one forever, and
+# counts the captures taken.
 class ScriptedTmux
+  attr_reader :calls
+
   def initialize(captures)
     @captures = captures
     @mutex = Mutex.new
+    @calls = 0
   end
 
   def capture_pane(_session, _pane, **_opts)
-    @mutex.synchronize { (@captures.size > 1) ? @captures.shift : @captures.first }
+    @mutex.synchronize do
+      @calls += 1
+      (@captures.size > 1) ? @captures.shift : @captures.first
+    end
   end
 end
 
@@ -17,21 +24,30 @@ RSpec.describe Workspace::SentinelPoller do
   let(:error_output) { StringIO.new }
 
   # Runs the poller against a canned sequence of pane captures. The first entry
-  # is what the pane held when the poller started.
-  def poll(captures, timeout: 0.5, token: nil)
+  # is what the pane held when the poller started. With no summary, it watches
+  # until the last capture has been read +late_polls+ more times, then answers
+  # nil; the short poll interval keeps that cheap. Running out of +timeout+
+  # first raises, since fewer polls than that would prove less.
+  def poll(captures, timeout: 10, token: nil, late_polls: 45)
+    reads = captures.size + late_polls
+    tmux = ScriptedTmux.new(captures)
     poller = described_class.new(
-      tmux: ScriptedTmux.new(captures), session_name: "myapp", pane: 0, token: token,
-      poll_interval: 0.01, error_output: error_output
+      tmux: tmux, session_name: "myapp", pane: 0, token: token,
+      poll_interval: 0.001, error_output: error_output
     )
     summary = Queue.new
-    poller.start { |text| summary << text }
-    begin
-      Timeout.timeout(timeout) { summary.pop }
-    rescue Timeout::Error
-      nil
-    ensure
-      poller.stop
+    thread = poller.start { |text| summary << text }
+    give_up = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    until !summary.empty? || tmux.calls >= reads
+      raise "poller read the pane #{tmux.calls} times in #{timeout}s" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= give_up
+      sleep 0.001
     end
+    poller.stop
+    thread.join
+    summary.empty? ? nil : summary.pop
+  ensure
+    poller&.stop
+    thread&.join
   end
 
   describe "with a dispatch token" do
