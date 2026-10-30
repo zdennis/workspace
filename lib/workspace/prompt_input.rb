@@ -63,7 +63,9 @@ module Workspace
       return unless input.respond_to?(:no_input?) && input.no_input?
 
       prompt = text.strip
-      raise Error.new("Can't ask \"#{prompt}\" with --no-input (or WORKSPACE_NO_INPUT) set.",
+      message = "Can't ask \"#{prompt}\" with --no-input (or WORKSPACE_NO_INPUT) set."
+      message += " Pass #{retry_flags.join(" or ")} to skip the prompt." unless retry_flags.empty?
+      raise Error.new(message,
         code: "confirmation_required", details: {"prompt" => prompt},
         retry_with: retry_flags.empty? ? nil : {"flags" => retry_flags, "destructive" => destructive})
     end

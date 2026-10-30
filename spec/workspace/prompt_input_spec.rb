@@ -64,9 +64,18 @@ RSpec.describe Workspace::Prompt do
       expect(input.read).to eq("y\n")
     end
 
+    it "names every flag that skips the prompt in the message" do
+      expect { described_class.ask(input, output, "Go? ", retry_flags: ["--force", "--yes"], destructive: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.message).to end_with("Pass --force or --yes to skip the prompt.")
+      }
+    end
+
     it "offers the flags that answer for the caller" do
       expect { described_class.ask(input, output, "Go? ", retry_flags: ["--force"], destructive: true) }.to raise_error(Workspace::Error) { |e|
         expect(e.retry).to eq({"flags" => ["--force"], "destructive" => true})
+        expect(e.message).to eq("Can't ask \"Go?\" with --no-input (or WORKSPACE_NO_INPUT) set. Pass --force to skip the prompt.")
+        expect(e.code).to eq("confirmation_required")
+        expect(e.details).to eq({"prompt" => "Go?"})
       }
     end
   end
