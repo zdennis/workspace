@@ -5087,7 +5087,7 @@ module Workspace
         opts.separator "holds, in the same queue as `lock acquire` and `dev up`."
         opts.separator ""
         opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml, then the presets that"
-        opts.separator "ship with workspace (rpiv: research, plan, implement, verify; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix). See docs/README.workflow.md."
+        opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix). See docs/README.workflow.md."
         opts.separator ""
         opts.separator "  show      list the definitions, or print one (inputs, steps); --source gives the file's text, its sha256 and"
         opts.separator "            its problems even when it is invalid (exit 0), for an editor"

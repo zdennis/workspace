@@ -10,7 +10,7 @@ A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Laun
 - **Kill** and **relaunch** workspace projects with session state preservation
 - **Add** new projects from any directory
 - **Agent** — run a long-lived daemon that registers with [work-coordinator](https://github.com/zdennis/work-coordinator), routes commands to the right pane, and drives multi-step pipelines
-- **Workflow** — run ordered steps (the `rpiv` preset: research, plan, implement, verify; the `pr-feedback` preset: triage a pull request's review feedback, then fix; the `investigate` preset: reproduce a failure, diagnose it behind a gate, then fix) in a workspace's agent pane, with gates, checks, locks the run holds, and a reason whenever a run is stuck
+- **Workflow** — run ordered steps (the `rpiv` preset: research, plan, implement, verify; `rpiv-auto-approve`, the same with two reviewer agents approving the plan; the `pr-feedback` preset: triage a pull request's review feedback, then fix; the `investigate` preset: reproduce a failure, diagnose it behind a gate, then fix) in a workspace's agent pane, with gates, checks, locks the run holds, and a reason whenever a run is stuck
 - **Pipeline** (deprecated, use Workflow) — sequence panes as a staged pipeline (researcher → implementer → reviewer) with automatic handoff and sentinel-based completion detection
 - Reuses existing launcher panes instead of creating new windows
 - Tracks iTerm window IDs for reliable window management across tab switches

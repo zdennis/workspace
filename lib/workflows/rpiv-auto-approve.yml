@@ -1,0 +1,116 @@
+schema_version: 1
+id: rpiv-auto-approve
+title: Research, Plan, Implement, Verify (auto-approve)
+description: One feature end to end with no person, two reviewer agents approving the plan, and a test-backed verify loop.
+
+inputs:
+  task:
+    description: What to build. A ticket key with a sentence, or a path to a spec in the worktree.
+    required: true
+  spec:
+    description: Optional spec or ticket file to read first.
+
+instructions: |
+  You are working on {{inputs.task}} in workspace {{workspace}}, branch {{branch}}.
+  Spec (may be empty): {{inputs.spec}}
+  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
+  inputs; read them before you start.
+
+# Five steps, two plan rejections and three trips back from verify fit in fifteen.
+max_attempts: 15
+
+steps:
+  research:
+    title: Research
+    prompt: |
+      Research {{inputs.task}}. Read the code it touches, the tests that cover it, and
+      related docs. Don't change code or commit.
+      Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
+      constraints, open questions, risks.
+    produces: [research.md]
+    timeout: 45m
+
+  plan:
+    title: Plan
+    include: [notes, implementation-plan]
+    prompt: |
+      If {{artifacts}}/plan-approval.md exists, reviewers turned the last plan down: answer
+      every objection in it.
+      Using {{artifacts}}/research.md, write the plan as the workspace plan: the
+      IMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title "<title>"` first if it does not exist), in the syntax the
+      implementation-plan instructions give, so `workspace plan status` shows it.
+      One task per commit, in order, with the files touched, tests to add and how you'll
+      know it works under that task in Task details. Call out anything that needs the
+      dev environment or the test database. Set `status: active` and leave every task `[ ]`.
+      You only write the plan here; do not start any task, and do not set `status: done`.
+      Then write {{artifacts}}/plan.md: the approach, the risks, and
+      the path of the plan file. Do not copy the task list into it. The step is not
+      finished until plan.md exists.
+      Don't change code.
+    produces: [plan.md]
+    # Done only when the workspace plan exists and has at least one task.
+    status:
+      run: |
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 ? 0 : 1)'
+    timeout: 45m
+
+  plan_review:
+    title: Plan review
+    prompt: |
+      Decide whether the workspace plan (`workspace plan path`) may go ahead. No person will
+      look at it, so this review is the only approval it gets.
+      Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
+      {{artifacts}}/research.md. Do not edit the plan or change code.
+      Start two reviewer sub-agents in one message, each with its own fresh context, giving each
+      the paths and this task, and neither the other's answer:
+      - supportive: look for what makes the plan sound, and approve unless something would
+        really stop it working.
+      - skeptical: assume the plan is wrong and try to prove it: missing cases, wrong order,
+        steps that can't be undone, requirements of the task it doesn't meet. Approve only
+        if you can't find a blocking problem.
+      Each answers approve or reject, with its reasons. Don't resolve a disagreement yourself and
+      don't run a reviewer again: one reject is a rejection.
+      Write {{artifacts}}/plan-approval.md, these three lines first, then each reviewer's reasons:
+      plan_revision: REV
+      supportive: approve or reject
+      skeptical: approve or reject
+    produces: [plan-approval.md]
+    # Done only when both approved the plan as it stands now. A rejection goes back to plan.
+    status:
+      run: |
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; text = File.read(File.join(ENV.fetch("WORKSPACE_RUN_ARTIFACTS"), "plan-approval.md")); revision = plan && plan["revision"]; exit(revision && text[/^plan_revision: (\S+)$/, 1] == revision && text.match?(/^supportive: approve$/) && text.match?(/^skeptical: approve$/) ? 0 : 1)'
+    on_fail:
+      goto: plan
+      max: 2
+    timeout: 30m
+
+  implement:
+    title: Implement
+    include: [notes, implementation-plan]
+    prompt: |
+      Implement the workspace plan (`workspace plan path`) one task at a time, marking
+      each task as the instructions say. Run the relevant tests before each commit. If the
+      plan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.
+      Write {{artifacts}}/implement.md listing the commits you made before you set the
+      plan's `status: done`; the run is waiting on that file.
+    produces: [implement.md]
+    timeout: 3h
+
+  verify:
+    title: Verify
+    include: [review]
+    prompt: |
+      Verify the work against the workspace plan (`workspace plan path`). Run the full test suite and the
+      linter, then review the branch's diff against its base.
+      Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    uses: [test-db]
+    status:
+      command: test
+    timeout: 90m
+    on_fail:
+      goto: implement
+      max: 3
+      context: continue
