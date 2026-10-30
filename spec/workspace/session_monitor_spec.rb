@@ -135,6 +135,22 @@ RSpec.describe Workspace::SessionMonitor do
       expect(slotted.snapshot["panes"].map { |p| p["pane_id"] }).to eq(["%1", "%2"])
     end
 
+    it "rescans a pane even while the scan slot is busy" do
+      allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+      allow(tmux).to receive(:pane_details).and_return([{id: "%2", index: 1, pid: 200, command: "zsh", cwd: "/project", title: "Claude"}])
+      allow(snapshot).to receive(:find_descendant).with(200, ["claude"], anything).and_return(nil)
+      slotted.rescan_pane("%2")
+      expect(slotted.pane_kind("%2")).to eq("shell")
+
+      allow(snapshot).to receive(:find_descendant)
+        .with(200, ["claude"], hash_including(include_root: true))
+        .and_return({pid: 250, command: "claude", args: "claude"})
+      slotted.rescan_pane("%2")
+
+      expect(slotted.pane_kind("%2")).to eq("claude")
+      expect(scan_slots).not_to have_received(:with_scan_slot)
+    end
+
     it "skips the scan when no slot is available" do
       allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
 
@@ -768,6 +784,35 @@ RSpec.describe Workspace::SessionMonitor do
     it "returns nil for a pane it hasn't scanned" do
       expect(monitor.pane_kind("%9")).to be_nil
       expect(monitor.pane_state("%9")).to be_nil
+    end
+  end
+
+  describe "#rescan_pane" do
+    it "re-reads one pane so a stale shell reading becomes the agent that has started since" do
+      stale = [{id: "%2", index: 1, pid: 200, command: "zsh", cwd: "/project", title: "Claude"}]
+      allow(tmux).to receive(:pane_details).and_return(stale)
+      allow(snapshot).to receive(:find_descendant).with(200, ["claude"], anything).and_return(nil)
+      monitor.scan
+      expect(monitor.pane_kind("%2")).to eq("shell")
+
+      allow(snapshot).to receive(:find_descendant)
+        .with(200, ["claude"], hash_including(include_root: true))
+        .and_return({pid: 250, command: "claude", args: "claude"})
+      monitor.rescan_pane("%2")
+
+      expect(monitor.pane_kind("%2")).to eq("claude")
+      expect(monitor.agent_pid("%2")).to eq(250)
+    end
+
+    it "leaves the cache alone when the process table can't be read, and ignores a pane tmux doesn't list" do
+      monitor.scan
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps failed")
+      monitor.rescan_pane("%2")
+      expect(monitor.pane_kind("%2")).to eq("claude")
+
+      allow(process_tree).to receive(:snapshot).and_return(snapshot)
+      expect { monitor.rescan_pane("%9") }.not_to raise_error
+      expect(monitor.pane_kind("%9")).to be_nil
     end
   end
 

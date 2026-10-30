@@ -34,6 +34,14 @@ class RestartMessageMonitor
   def pane_kind(id) = @kinds[id]
   def agent_pid(id) = @pids[id]
   def pane_state(_id) = "idle"
+
+  def rescan_pane(id)
+    (@rescans ||= []) << id
+    @kinds[id] = @after_rescan[id] if @after_rescan&.key?(id)
+  end
+
+  attr_reader :rescans
+  attr_writer :after_rescan
 end
 
 # Records what it was asked to do and finishes when the spec says so.
@@ -277,6 +285,14 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   it "refuses a pane running a shell" do
     run_agent do
       expect(send_restart("pane" => "0.0")).to include("ok" => false, "error" => "not_an_agent", "pane" => "0.0")
+    end
+  end
+
+  it "rescans a pane read as a shell once and goes on when an agent is there now" do
+    monitor.after_rescan = {"%17" => "claude"}
+    run_agent do
+      expect(send_restart("pane" => "0.0")).not_to include("error" => "not_an_agent")
+      expect(monitor.rescans).to eq(["%17"])
     end
   end
 

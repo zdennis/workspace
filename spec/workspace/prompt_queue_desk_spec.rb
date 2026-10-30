@@ -64,6 +64,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       allow(m).to receive(:delivery_facts) { |id| (id == "%5") ? facts : nil }
       allow(m).to receive(:fresh_since) { facts[:fresh_since] }
       allow(m).to receive(:typing_facts) { typing }
+      allow(m).to receive(:rescan_pane)
     end
   end
 
@@ -482,10 +483,27 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
   end
 
+  describe "a stale shell reading" do
+    it "rescans a pane read as a shell once, and queues when an agent is there now" do
+      facts[:kind] = "shell"
+      allow(monitor).to receive(:rescan_pane).with("%5") { facts[:kind] = "claude" }
+
+      expect(send_prompt).not_to include("error" => "not_an_agent")
+      expect(monitor).to have_received(:rescan_pane).with("%5").once
+    end
+  end
+
   describe "refusals, which queue nothing" do
     it "refuses a shell" do
       facts[:kind] = "shell"
       expect(send_prompt).to include("ok" => false, "error" => "not_an_agent", "pane_id" => "%5")
+    end
+
+    it "still refuses a shell after the rescan" do
+      facts[:kind] = "shell"
+
+      expect(send_prompt).to include("error" => "not_an_agent")
+      expect(monitor).to have_received(:rescan_pane).with("%5").once
     end
 
     it "refuses an agent whose screen can't be checked" do
@@ -985,6 +1003,16 @@ RSpec.describe Workspace::PromptQueueDesk do
       restarting << "%5"
       expect(interrupt_send).to include("error" => "pane_busy", "reason" => "restarting")
       expect(tmux.log).to eq([])
+    end
+
+    it "rescans a pane read as a shell once before refusing it" do
+      facts[:kind] = "shell"
+      allow(monitor).to receive(:rescan_pane).with("%5") { facts[:kind] = "codex" }
+      expect(interrupt_send).to include("error" => "unsupported_agent", "kind" => "codex")
+
+      facts[:kind] = "shell"
+      allow(monitor).to receive(:rescan_pane).with("%5")
+      expect(interrupt_send).to include("error" => "not_an_agent")
     end
 
     it "stops, typing nothing, when a key press fails" do

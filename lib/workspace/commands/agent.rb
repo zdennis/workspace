@@ -582,6 +582,11 @@ module Workspace
 
         kind = @session_monitor&.pane_kind(pane_id)
         if kind == "shell"
+          # The agent may have started since the last scan; look once more.
+          @session_monitor.rescan_pane(pane_id)
+          kind = @session_monitor.pane_kind(pane_id)
+        end
+        if kind == "shell"
           return [nil, restart_error("not_an_agent", "pane #{target} (#{pane_id}) is running a shell, not a coding agent", target)]
         end
         # /clear is the clear command of Claude Code and Codex; another agent

@@ -121,7 +121,7 @@ module Workspace
       return error("pane_not_ready", "tmux didn't list the session's panes; try again", "reason" => "unknown") if detail == :unknown
       return error("no_such_pane", "no pane #{pane_id.inspect} in tmux session #{@session_name}") unless detail
       context = {"pane" => "#{detail[:window]}.#{detail[:index]}", "pane_id" => pane_id}
-      facts = @session_monitor.delivery_facts(pane_id)
+      facts = fresh_delivery_facts(pane_id)
       refused = refusal(pane_id, facts, clear_first)
       return refused.merge(context) if refused
 
@@ -298,9 +298,18 @@ module Workspace
       end
     end
 
+    # A pane read as a shell (or not scanned yet) may have just had its agent
+    # started, so the monitor rescans that one pane once before a refusal.
+    def fresh_delivery_facts(pane_id)
+      facts = @session_monitor.delivery_facts(pane_id)
+      return facts if facts && facts[:kind] != "shell"
+      @session_monitor.rescan_pane(pane_id)
+      @session_monitor.delivery_facts(pane_id)
+    end
+
     # The refusals made before anything is pressed; yields the interrupt keys.
     def interrupt_refusal(pane_id)
-      facts = @session_monitor.delivery_facts(pane_id)
+      facts = fresh_delivery_facts(pane_id)
       return error("pane_not_ready", "the agent daemon hasn't scanned this pane yet; try again in a few seconds", "reason" => "unknown") unless facts
       return error("not_an_agent", "the pane is running a shell, not a coding agent") if facts[:kind] == "shell"
       provider = @providers.find { |p| p.key == facts[:kind] }
