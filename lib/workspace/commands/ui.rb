@@ -39,7 +39,7 @@ module Workspace
       # @param opener [#call] `(argv)` runs the command and returns `[stdout, stderr, status]`;
       #   raises SystemCallError when the executable is missing
       # @param output [IO]
-      def initialize(opener: ->(argv) { Open3.capture3(*argv) }, output: $stdout, notes:)
+      def initialize(notes:, opener: ->(argv) { Open3.capture3(*argv) }, output: $stdout)
         @notes = notes
         @opener = opener
         @output = output
