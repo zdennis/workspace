@@ -42,10 +42,12 @@ module Workspace
       #   project that is not active
       # @param save_position [Boolean] save each target's window bounds first (`kill` passes false: its
       #   workspace is going away)
+      # @param session_names [Hash{String => String}] tmux session name per project, read by the caller
+      #   while the config still existed; a project not listed is looked up from its config
       # @return [Array<String>] names of stopped projects. If iTerm2 does not
       #   answer in time, the launcher windows are left open and {#warnings}
       #   says so; the entries are still removed and saved.
-      def call(projects = [], quiet: false, warn_inactive: true, save_position: true)
+      def call(projects = [], quiet: false, warn_inactive: true, save_position: true, session_names: {})
         out = quiet ? StringIO.new : @output
         @warnings = []
         @state.load
@@ -70,7 +72,7 @@ module Workspace
         @state.save
 
         out.puts "Stopped #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
-        kill_tmux_sessions(targets, out)
+        kill_tmux_sessions(targets, out, session_names)
         close_launcher_windows(launcher_window_ids_to_close, out)
         killed_projects
       end
@@ -129,10 +131,10 @@ module Workspace
         end
       end
 
-      def kill_tmux_sessions(targets, out)
+      def kill_tmux_sessions(targets, out, session_names = {})
         active_sessions = @tmux.sessions
         targets.each do |project|
-          session_name = @tmux.session_name_for(project)
+          session_name = session_names[project] || @tmux.session_name_for(project)
           # A session on a custom socket never shows in the default socket's list.
           if active_sessions.include?(session_name) || @tmux.custom_socket_option(project)
             out.puts "Killing tmux session: #{session_name}"

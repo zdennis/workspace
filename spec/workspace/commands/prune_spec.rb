@@ -283,7 +283,7 @@ RSpec.describe Workspace::Commands::Prune do
 
       it "kills the live session, removes worktree, config, settings, and state entry" do
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
-        expect(stop_command).to receive(:call).with(["wt-confirm"])
+        expect(stop_command).to receive(:call).with(["wt-confirm"], session_names: {})
         expect(git).to receive(:remove_worktree).with(project_root, force: false)
         expect(project_config).to receive(:remove).with("wt-confirm")
         expect(project_settings).to receive(:remove).with("wt-confirm")
@@ -301,7 +301,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(git).to receive(:remove_worktree)
         allow(project_config).to receive(:remove)
         allow(project_settings).to receive(:remove)
-        expect(stop_command).to receive(:call).with(["wt-confirm"]) { state.delete("wt-confirm") }
+        expect(stop_command).to receive(:call).with(["wt-confirm"], session_names: {}) { state.delete("wt-confirm") }
 
         command.call
 
@@ -461,7 +461,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(false)
         allow(project_config).to receive(:remove).with("wt-state-only")
         allow(project_settings).to receive(:remove).with("wt-state-only")
-        expect(stop_command).to receive(:call).with(["wt-state-only"])
+        expect(stop_command).to receive(:call).with(["wt-state-only"], session_names: {})
 
         result = command.call
         expect(result).to include("wt-state-only")
@@ -675,11 +675,22 @@ RSpec.describe Workspace::Commands::Prune do
 
     it "stops a live session and drops the state entry of a removed candidate" do
       state["wt-clean"] = {"unique_id" => "x"}
-      expect(stop_command).to receive(:call).with(["wt-clean"])
+      expect(stop_command).to receive(:call).with(["wt-clean"], session_names: {})
 
       command.call_structured(names: ["wt-clean"])
 
       expect(state["wt-clean"]).to be_nil
+    end
+
+    it "hands stop the session name read before the config was removed" do
+      tmux = double("tmux")
+      allow(tmux).to receive(:session_name_for).with("wt-clean").and_return("proj-wt-clean")
+      pruner = described_class.new(state: state, project_config: project_config, project_settings: project_settings,
+        git: git, stop_command: stop_command, event_log: state.event_log, tmux: tmux, output: output, input: input)
+      state["wt-clean"] = {"unique_id" => "x"}
+      expect(stop_command).to receive(:call).with(["wt-clean"], session_names: {"wt-clean" => "proj-wt-clean"})
+
+      pruner.call_structured(names: ["wt-clean"])
     end
 
     it "dry run reports skipped_unsaved with the same error codes removal would" do

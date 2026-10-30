@@ -87,6 +87,29 @@ RSpec.describe Workspace::Commands::Stop do
         expect(result).to eq(["proj1"])
       end
 
+      it "kills the session named by session_names without reading the config" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for)
+        allow(tmux).to receive(:sessions).and_return(["proj-wt-1"])
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["proj1"], session_names: {"proj1" => "proj-wt-1"})
+
+        expect(tmux).to have_received(:kill_session).with("proj-wt-1", project: "proj1")
+        expect(tmux).not_to have_received(:session_name_for)
+      end
+
+      it "falls back to the config for a project missing from session_names" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("from-config")
+        allow(tmux).to receive(:sessions).and_return(["from-config"])
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["proj1"], session_names: {"other" => "x"})
+
+        expect(tmux).to have_received(:kill_session).with("from-config", project: "proj1")
+      end
+
       it "resolves tmux session name before killing" do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("custom-session")
