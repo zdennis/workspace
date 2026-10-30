@@ -223,6 +223,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine_pack" => 4)
     end
 
+    it "reports plan_review_pack 1 once the plan-review play posts its verdict under stable inbox keys" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("plan_review_pack" => 1)
+    end
+
     it "reports spine_report 1 once the daemon records owner_finished" do
       command.call(json: true)
 

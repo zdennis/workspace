@@ -88,6 +88,7 @@ module Workspace
         "add_json" => 1,
         "plan_progress" => 1,
         "spine_events" => 2,
+        "plan_review_pack" => 1,
         "agent_status" => 1,
         "agent_queue" => 1,
         "agent_send_interrupt" => 1,
