@@ -16,7 +16,7 @@ Convenience command that stops all active projects and then relaunches them. Use
 
 Exits with a non-zero status if there are no active projects to relaunch.
 
-## Example
+## Examples
 
 ```sh
 $ workspace relaunch

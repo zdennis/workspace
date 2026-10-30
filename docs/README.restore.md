@@ -71,7 +71,7 @@ A resumed session is started with `--dangerously-skip-permissions` when the work
 - In a session restore has just launched, the config's `claude --continue` may pick up the same conversation a hand-split pane had. Check `--dry-run` when two agents shared a directory.
 - Only Claude Code sessions are recorded in the ledger.
 
-## Example
+## Examples
 
 ```sh
 $ workspace restore --dry-run

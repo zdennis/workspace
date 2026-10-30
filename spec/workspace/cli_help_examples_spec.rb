@@ -153,11 +153,6 @@ module HelpExamplesSpec
     "workflow update",
     "workflow validate",
 
-    # T5: lifecycle
-    "relaunch",
-    "restore",
-    "start",
-
     # T6: endings and repair
     "promote",
     "repair",

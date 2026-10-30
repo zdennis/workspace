@@ -1027,17 +1027,11 @@ module Workspace
         opts.separator "  workspace start '#471'    # check out PR 471 of the current repo, fork or not"
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
         opts.separator "  workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"    # point the agent at a library play"
-        opts.separator "  workspace start PROJ-123 --play kickoff,review    # two plays; --play kickoff --play review does the same"
         opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
-        opts.separator "  workspace start PROJ-123 --agent-kind codex    # the main agent pane runs Codex"
-        opts.separator "  workspace start PROJ-123 --recipe review-pass --agent-kind codex    # a saved start; the flag wins over the recipe"
+        opts.separator "  workspace start PROJ-123 --slug    # give the branch a readable name from the ticket title"
         opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
-        opts.separator "  workspace start PROJ-123 --spine=team    # also make the stages from the 'team' template"
         opts.separator "  workspace start PROJ-123 --plan --prompt \"Add SSO login\"    # the agent drafts a plan for that goal first"
-        opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
-        opts.separator "  workspace start PROJ-123 --slug    # branch and task title from the ticket: PROJ-123-fix-the-login-bug"
-        opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
-        opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"
+        opts.separator "  workspace start PROJ-123 --base main --headless --yes --json    # non-interactive, e.g. from CI, branching from main"
       end
       parser.parse!(args)
 
@@ -5554,8 +5548,10 @@ module Workspace
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") { json = true }
         opts.separator ""
-        opts.separator "Example:"
+        opts.separator "Examples:"
         opts.separator "  workspace relaunch    # stop every active project and relaunch it (headless ones stay headless)"
+        opts.separator "  workspace relaunch --json    # a script relaunching everything and checking the result"
+        opts.separator "  workspace relaunch --json 2>/dev/null    # keep the progress text out of the way when piping the document"
       end
       parser.parse!(args)
 
@@ -5621,10 +5617,10 @@ module Workspace
         opts.separator "A recorded pane that could not be matched is reported, not a failure."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace restore --dry-run    # what would come back here, and what can't"
         opts.separator "  workspace restore    # restore the workspace you are in"
+        opts.separator "  workspace restore --dry-run    # what would come back here, and what can't"
         opts.separator "  workspace restore --all    # restore every active workspace"
-        opts.separator "  workspace restore my-app --json"
+        opts.separator "  workspace restore my-app --json    # bring back my-app only; a script reads the result"
       end
       parser.parse!(args)
       raise Error, "restore is not available: no restore command was wired" unless @restore_command
@@ -5698,7 +5694,7 @@ module Workspace
           "others are added. Exit 0 if no row failed, 3 if some did, 1 if all did") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace add ~/Code/my-project   # add a project by path"
+        opts.separator "  workspace add ~/Code/my-project    # add a project by path"
         opts.separator "  workspace add .    # add the current directory"
         opts.separator "  workspace add ~/Code/project-a ~/Code/project-b    # add multiple projects"
         opts.separator "  workspace add --json ~/Code/my-project    # created or exists, as JSON"
