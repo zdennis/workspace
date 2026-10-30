@@ -544,16 +544,10 @@ module Workspace
     # @return [Array] the SessionStart (`:at`, `:source`, `:session_id`), or
     #   nil and why it wasn't confirmed
     def wait_for_clear(pane_id, cleared_at, deadline)
-      voided = [nil, "a prompt was submitted in the pane after the clear"]
       loop do
-        facts = @session_monitor.delivery_facts(pane_id)
-        prompt = facts&.dig(:last_user_prompt_at)
-        prompt = nil unless prompt && prompt >= cleared_at
-        started = facts&.dig(:last_session_start)
-        if started && started[:source] == "clear" && started[:at] >= cleared_at
-          return (prompt && prompt < started[:at]) ? voided : [started, nil]
-        end
-        return voided if prompt
+        status, started = ClearConfirmation.check(@session_monitor.delivery_facts(pane_id), cleared_at)
+        return [started, nil] if status == :confirmed
+        return [nil, "a prompt was submitted in the pane after the clear"] if status == :voided
         return [nil, "no SessionStart with source clear came from the pane within #{CLEAR_TIMEOUT}s"] if @clock.now >= deadline
         @sleeper.call(POLL_INTERVAL)
       end

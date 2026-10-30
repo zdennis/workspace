@@ -186,7 +186,7 @@ If step 3 times out, the prompt is not typed. Without `wait`, the reply comes at
 | `error: "restart_in_progress"` | Another restart is running on this pane |
 | `error: "missing_prompt"` / `"bad_timeout"` | The prompt was empty, or `timeout` wasn't 1–600 seconds |
 | `error: "pane_busy"` / `"pane_gone"` | (`wait`) The pane never went quiet, or closed; see `message` for what was typed |
-| `error: "clear_not_confirmed"` | (`wait`) `/clear` was typed but usage didn't drop in time; the prompt was not typed |
+| `error: "clear_not_confirmed"` | (`wait`) `/clear` was typed but neither a new conversation's reading nor a SessionStart hook event with source `clear` arrived in time; the prompt was not typed |
 | `error: "not_delivered"` | (`wait`) `/clear` or the prompt never reached the pane |
 
 ### Version

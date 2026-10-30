@@ -21,7 +21,7 @@ class RestartMessageTmux < CLITestHelpers::FakeTmux
 end
 
 class RestartMessageMonitor
-  attr_accessor :kinds, :pids
+  attr_accessor :kinds, :pids, :facts
 
   def initialize
     @kinds = {"%17" => "shell", "%18" => "claude"}
@@ -34,6 +34,7 @@ class RestartMessageMonitor
   def pane_kind(id) = @kinds[id]
   def agent_pid(id) = @pids[id]
   def pane_state(_id) = "idle"
+  def delivery_facts(_id) = @facts
 
   def rescan_pane(id)
     (@rescans ||= []) << id
@@ -387,6 +388,45 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
       expect(send_restart).to include("ok" => false, "error" => "context_unknown",
         "reason" => Workspace::ContextReasons::NO_PATTERN)
       expect(restart.calls).to be_empty
+    end
+  end
+
+  context "when the pane's hooks reach the daemon" do
+    [["NO_READING on a pane that is not Claude", "unknown", Workspace::ContextReasons::NO_READING],
+      ["NO_PATTERN", "claude", Workspace::ContextReasons::NO_PATTERN]].each do |label, kind, error|
+      it "starts the restart despite #{label}" do
+        monitor.kinds["%18"] = kind
+        monitor.facts = {hooks: true}
+        allow(context_reader).to receive(:read).and_return({pct: nil, error: error, updated_at: nil})
+
+        run_agent do
+          expect(send_restart).to include("ok" => true, "status" => "started")
+          restart.finish
+        end
+      end
+
+      [{hooks: false}, nil].each do |facts|
+        it "still refuses #{label} with facts #{facts.inspect}" do
+          monitor.kinds["%18"] = kind
+          monitor.facts = facts
+          allow(context_reader).to receive(:read).and_return({pct: nil, error: error, updated_at: nil})
+
+          run_agent do
+            expect(send_restart).to include("ok" => false, "error" => "context_unknown")
+            expect(restart.calls).to be_empty
+          end
+        end
+      end
+    end
+
+    it "gives the restart worker the monitor's delivery facts" do
+      monitor.facts = {hooks: true, last_session_start: {source: "clear", at: Time.at(1)}}
+
+      run_agent do
+        send_restart
+        restart.calls.pop(timeout: 2)
+        expect(restart.built_with[:delivery_facts].call("%18")).to eq(monitor.facts)
+      end
     end
   end
 

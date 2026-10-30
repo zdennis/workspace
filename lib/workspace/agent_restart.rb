@@ -3,7 +3,7 @@ require "time"
 module Workspace
   # Gives a Claude Code or Codex agent in one pane a fresh conversation: waits for
   # the pane to go quiet, types the agent's clear command (`/clear` for both), waits for a status-line reading from
-  # the new conversation, then types the prompt. The daemon runs it on a
+  # the new conversation (or a SessionStart hook event with source `clear`), then types the prompt. The daemon runs it on a
   # worker thread for a `restart_agent` message.
   #
   # Every wait is bounded. The prompt is typed only after the clear is
@@ -50,9 +50,15 @@ module Workspace
     #   "codex", ...) or nil; it picks the clear command and how the context is read
     # @param agent_pid [#call] returns the pid of the coding agent in a pane
     #   id, or nil; a reading recorded without $TMUX_PANE is found by it
+    # @param delivery_facts [#call] returns the session monitor's delivery facts for a
+    #   pane id (see {Workspace::SessionMonitor#delivery_facts}) or nil. A SessionStart
+    #   with source "clear" in them also confirms the /clear, which a fresh session
+    #   needs because its status-line reading does not change; a pane whose hooks
+    #   reach the daemon is restarted even when its reading could not confirm one
     # @param clock [#call] monotonic seconds, for the bounded waits
     # @param wall_clock [#call] the current Time, compared with when a reading
-    #   was recorded
+    #   was recorded and with the monitor's hook times; the session monitor's clock
+    #   is Time, so the two agree
     # @param sleeper [#call] sleeps the given seconds
     # @param quiet_timeout [Numeric] see {QUIET_TIMEOUT}
     # @param quiet_for [Numeric] see {QUIET_FOR}
@@ -62,6 +68,7 @@ module Workspace
       pane_state: ->(_pane_id) {},
       agent_pid: ->(_pane_id) {},
       pane_kind: ->(_pane_id) {},
+      delivery_facts: ->(_pane_id) {},
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
       wall_clock: -> { Time.now },
       sleeper: ->(seconds) { sleep(seconds) },
@@ -75,6 +82,7 @@ module Workspace
       @pane_state = pane_state
       @agent_pid = agent_pid
       @pane_kind = pane_kind
+      @delivery_facts = delivery_facts
       @clock = clock
       @wall_clock = wall_clock
       @sleeper = sleeper
@@ -107,7 +115,7 @@ module Workspace
       kind = @pane_kind.call(pane_id)
       @clear_command = AgentProvider.find(kind.to_s)&.clear_command || CLEAR_COMMAND
       before = read_context(pane_id)
-      unless self.class.confirmable?(before)
+      unless self.class.confirmable?(before) || self.class.hooks?(@delivery_facts.call(pane_id))
         return reply.merge(failure("context_unknown",
           "can't read context usage for pane #{pane_id} (#{before[:error]}), so a /clear couldn't be confirmed; " \
           "nothing was typed. #{ContextReasons.fix_hint(kind)}"))
@@ -125,7 +133,7 @@ module Workspace
       unless after
         last = read_context(pane_id)
         return reply.merge(failure("clear_not_confirmed",
-          "typed /clear into pane #{pane_id}, but no status-line reading from a new conversation arrived " \
+          "typed /clear into pane #{pane_id}, but no status-line reading from a new conversation and no SessionStart with source clear arrived " \
           "within #{confirm_timeout}s (before: #{describe(before)}; last reading: #{describe(last)}); the prompt was not sent"))
       end
       reply["context_after"] = after[:pct]
@@ -149,6 +157,16 @@ module Workspace
     # @return [Boolean]
     def self.confirmable?(reading)
       !reading[:pct].nil? || !reading[:updated_at].nil? || reading[:error] == ContextReasons::NO_READING
+    end
+
+    # Whether a pane's delivery facts say its agent's hooks reach the daemon, so
+    # a SessionStart with source `clear` can confirm a /clear. Shared by the
+    # pre-check in Commands::Agent#restart_agent and {#call}.
+    #
+    # @param facts [Hash, nil] {Workspace::SessionMonitor#delivery_facts}
+    # @return [Boolean]
+    def self.hooks?(facts)
+      facts&.dig(:hooks) == true
     end
 
     private
@@ -204,6 +222,8 @@ module Workspace
       loop do
         reading = read_context(pane_id)
         return reading if clear_confirmed?(reading, before, cleared_at)
+        # The old conversation's reading says nothing of the new one's usage.
+        return {pct: nil} if session_cleared?(pane_id, cleared_at)
         return nil if @clock.call >= deadline
         @sleeper.call(@poll_interval)
       end
@@ -226,6 +246,12 @@ module Workspace
       end
     rescue ArgumentError
       false
+    end
+
+    # Whether the pane's agent reported a SessionStart with source `clear` after
+    # /clear was typed (see {ClearConfirmation}).
+    def session_cleared?(pane_id, cleared_at)
+      ClearConfirmation.check(@delivery_facts.call(pane_id), cleared_at).first == :confirmed
     end
 
     def describe(reading)

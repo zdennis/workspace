@@ -610,13 +610,17 @@ module Workspace
         # freshly launched Claude pane may not have rendered its status
         # line yet, so NO_READING is expected there; an unknown-kind pane
         # with no reading is refused with FIX_HINT instead of guessed at.
-        # Mirrors AgentRestart.confirmable? (lib/workspace/agent_restart.rb) —
-        # keep both in sync if this changes.
+        # A pane whose hooks reach this daemon is let through whatever the reading
+        # says: its SessionStart with source clear confirms the clear
+        # (AgentRestart.hooks?, also checked by AgentRestart#call). The rest mirrors
+        # AgentRestart.confirmable? (lib/workspace/agent_restart.rb) — keep both in
+        # sync if this changes.
         # Looked up as `sessions` and `handoff check` do: a reading recorded
         # without $TMUX_PANE is keyed by the agent's pid, not the pane id.
         reading = @context_reader.read(pane_id: pane_id, agent_pid: @session_monitor&.agent_pid(pane_id), kind: kind)
-        confirmable = AgentRestart.confirmable?(reading) &&
-          (reading[:error] != ContextReasons::NO_READING || kind == "claude")
+        confirmable = AgentRestart.hooks?(@session_monitor&.delivery_facts(pane_id)) ||
+          (AgentRestart.confirmable?(reading) &&
+            (reading[:error] != ContextReasons::NO_READING || kind == "claude"))
         unless confirmable
           return [nil, restart_error("context_unknown",
             "can't read context usage for pane #{target} (#{reading[:error]}), so a /clear couldn't be confirmed; " \
@@ -706,7 +710,8 @@ module Workspace
             pipeline_ref: method(:pipeline_ref_on),
             pane_state: ->(id) { @session_monitor&.restart_state(id) },
             agent_pid: ->(id) { @session_monitor&.agent_pid(id) },
-            pane_kind: ->(id) { @session_monitor&.pane_kind(id) }
+            pane_kind: ->(id) { @session_monitor&.pane_kind(id) },
+            delivery_facts: ->(id) { @session_monitor&.delivery_facts(id) }
           )
           restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout)
         rescue => e
@@ -749,10 +754,11 @@ module Workspace
         workers.each { |worker| worker.join(1) }
       end
 
-      def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:)
+      def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
+        delivery_facts: ->(_pane_id) {})
         AgentRestart.new(tmux: @tmux, context_reader: @context_reader, session_name: session_name,
           delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid, pane_kind: pane_kind,
-          logger: @logger)
+          delivery_facts: delivery_facts, logger: @logger)
       end
 
       def urgent_steer_reply(ref, entry, body)
