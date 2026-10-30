@@ -2302,7 +2302,7 @@ RSpec.describe Workspace::Commands::Start do
         command.call("PROJ-123", no_launch: true, json: true)
 
         expect(agent_commands).to have_received(:kind).with(File.basename(tmpdir).downcase)
-        expect(project_config).to have_received(:check_agent_kind!).with("codex")
+        expect(project_config).to have_received(:check_agent_kind!).with("codex", File.basename(tmpdir).downcase)
         expect(project_config).to have_received(:create_worktree).with(anything, anything, anything, anything, quiet: true)
         expect(JSON.parse(output.string)).to include("agent_kind" => "codex")
       end

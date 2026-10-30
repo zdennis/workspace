@@ -327,6 +327,73 @@ RSpec.describe Workspace::ProjectConfig do
           expect(pc.agent_pane_command("codex", "myapp")).to eq("codex-x")
           expect(pc.agent_pane_command("codex")).to eq("codex")
         end
+
+        context "with a template line without the skip-permissions flag" do
+          def template(line) = File.write(template_path, "panes:\n  - echo hi\n  - #{line}\n")
+
+          it "finds it and swaps the program in each half that runs Claude Code" do
+            template("claude-dev --continue || claude")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to eq("claude-dev --continue || claude-dev")
+            expect { pc.check_agent_kind!("codex") }.not_to raise_error
+          end
+
+          it "finds it for a nil workspace through the bare executable in its second half, leaving the first half" do
+            template("claude-dev --continue || claude")
+
+            expect(pc.agent_pane_command("claude")).to eq("claude-dev --continue || claude")
+          end
+
+          it "finds it for a nil workspace through its first program" do
+            template("claude --continue || echo failed")
+
+            expect(pc.agent_pane_command("claude")).to eq("claude --continue || echo failed")
+          end
+
+          it "finds a line whose first half runs another program" do
+            template("echo x || claude")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to eq("echo x || claude-dev")
+          end
+
+          it "prefers the flagged pane over an earlier plain Claude Code line" do
+            File.write(template_path, "panes:\n  - claude --version\n  - #{claude_line}\n")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to eq(claude_line.gsub("claude ", "claude-dev "))
+          end
+
+          it "does not take a Claude Code entry of a hook list before panes:" do
+            File.write(template_path, "pre_window:\n  - claude --version\npanes:\n  - echo hi\n  - #{claude_line}\n")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to eq(claude_line.gsub("claude ", "claude-dev "))
+          end
+
+          it "finds no pane when only a hook list runs Claude Code" do
+            File.write(template_path, "pre_window:\n  - claude --version\npanes:\n  - echo hi\n")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to be_nil
+          end
+
+          it "lets check_agent_kind! pass for an all-custom line when given the configured workspace" do
+            settings.replace("agent" => {"commands" => {"claude" => "mycl"}})
+            template("mycl --continue || mycl")
+
+            expect { pc.check_agent_kind!("codex", "myapp") }.not_to raise_error
+          end
+
+          it "rewrites a codex pane through the template fallback" do
+            template("claude --continue || claude")
+
+            expect(pc.rewrite_agent_pane("panes:\n  - codex\n", "claude", "myapp")).to eq("panes:\n  - claude-dev --continue || claude-dev\n")
+          end
+
+          it "does not take a line of another program for the template's pane" do
+            template("echo x || echo y")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to be_nil
+            expect { pc.check_agent_kind!("codex") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("template_outdated") }
+          end
+        end
       end
 
       describe "#stale_agent_pane" do

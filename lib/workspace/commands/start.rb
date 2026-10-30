@@ -208,7 +208,7 @@ module Workspace
         root = project.root
         project_name = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
         @effective_kind = effective_kind(project_name)
-        @project_config.check_agent_kind!(@effective_kind) if @effective_kind
+        @project_config.check_agent_kind!(@effective_kind, project_name) if @effective_kind
         @plays = resolve_plays(plays, root)
         @plays = [resolve_plan_play(root)] if @plays.empty? && plan && !no_launch
         @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @effective_kind)

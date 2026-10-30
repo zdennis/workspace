@@ -203,15 +203,14 @@ module Workspace
     # creates anything.
     #
     # @param kind [String] an {AgentProvider} key
+    # @param workspace [String, nil] the workspace whose configured Claude Code command the template may run
     # @raise [Workspace::Error] code `template_outdated` when the template has no Claude Code pane to swap
-    def check_agent_kind!(kind)
+    def check_agent_kind!(kind, workspace = nil)
       return if kind == "claude" || !File.exist?(@config.worktree_template_path)
-      return if File.read(@config.worktree_template_path).match?(AGENT_PANE)
+      return if template_claude_line(workspace)
       raise Workspace::Error.new("The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it.",
         code: "template_outdated", details: {"kind" => kind})
     end
-
-    AGENT_PANE = /^(\s*- )(claude --dangerously-skip-permissions.*)$/
 
     # The pane command a new config runs for an agent kind: for `claude` the installed worktree
     # template's Claude Code pane with `claude` swapped for the configured command in each half of its
@@ -226,7 +225,7 @@ module Workspace
       command = configured_command(kind, workspace)
       return command unless kind == "claude"
       return unless File.exist?(@config.worktree_template_path)
-      line = File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
+      line = template_claude_line(workspace)
       line && claude_line(line, command, claude_names(workspace))
     end
 
@@ -252,7 +251,7 @@ module Workspace
       indent, text = pane_item(lines[index])
       pane = if kind == "claude"
         claude = claude_names(workspace)
-        base = runs_program?(text.split(" || ").first, claude) ? text : claude_template_line
+        base = runs_program?(text.split(" || ").first, claude) ? text : template_claude_line(workspace)
         return unless base
         claude_line(base, command, claude)
       else
@@ -323,8 +322,12 @@ module Workspace
       [match[1], value.is_a?(String) ? value : text]
     end
 
+    def flagged_pane?(text)
+      text.start_with?("claude --dangerously-skip-permissions")
+    end
+
     def agent_pane_text?(text, names)
-      return true if text.start_with?("claude --dangerously-skip-permissions")
+      return true if flagged_pane?(text)
       program = AgentCommands.program_for(text.split(" || ").first)
       !program.nil? && names.include?(program)
     end
@@ -335,9 +338,19 @@ module Workspace
       end.uniq
     end
 
-    def claude_template_line
+    # The text of the worktree template's Claude Code pane, looking only at pane items from the first
+    # `panes:` line on: the item with the skip-permissions flag anywhere in the file, else the first item
+    # whose `||` chain runs a program of {#claude_names} in any half (unlike {#agent_pane_text?}, which
+    # reads the first half only). With no workspace (or no {AgentCommands}) those names are the bare
+    # executable, so `claude-dev --continue || claude` is found through its second half.
+    def template_claude_line(workspace)
       return unless File.exist?(@config.worktree_template_path)
-      File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
+      lines = File.readlines(@config.worktree_template_path)
+      start = lines.index { |line| line.match?(/\A\s*(- )?panes:/) }
+      return unless start
+      texts = lines[start..].filter_map { |line| pane_item(line)&.at(1)&.strip }
+      names = claude_names(workspace)
+      texts.find { |text| flagged_pane?(text) } || texts.find { |text| runs_program?(text, names) }
     end
 
     # +line+ with the program of each `||` half that runs one of +names+ swapped for +command+; flags and
