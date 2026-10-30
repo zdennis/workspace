@@ -111,7 +111,7 @@ RSpec.describe Workspace::Commands::PrFeedback do
     end
 
     context "with hostile text" do
-      let(:threads) { [thread(comments: [comment(body: "\e[2Jx‮y​z\u0085⁧", author: "a\rb")])] }
+      let(:threads) { [thread(comments: [comment(body: "\e[2Jx\u202ey\u200bz\u0085\u2067", author: "a\rb")])] }
       let(:read_title) { "T\e]0;x\a" }
 
       it "escapes control, bidi and zero-width characters" do
@@ -119,20 +119,20 @@ RSpec.describe Workspace::Commands::PrFeedback do
         command.call(working_dir: "/w")
 
         expect(output.string).to include("\\e[2Jx\\u202Ey\\u200Bz\\u0085\\u2067", "a\\rb", "T\\e]0;x\\u0007")
-        expect(output.string).not_to match(/[\e‮​\u0085\r\a]/)
+        expect(output.string).not_to match(/[\e\u202e\u200b\u0085\r\a]/)
       end
     end
   end
 
   context "with hostile names and ghost authors" do
-    let(:failed) { [{"name" => "ci\e[31m‮", "url" => nil, "run_id" => 1}] }
-    let(:threads) { [thread(comments: [comment(author: nil, body: "\e[2Jraw")]).merge("path" => "a​\e.rb")] }
+    let(:failed) { [{"name" => "ci\e[31m\u202e", "url" => nil, "run_id" => 1}] }
+    let(:threads) { [thread(comments: [comment(author: nil, body: "\e[2Jraw")]).merge("path" => "a\u200b\e.rb")] }
 
     it "escapes the check name and path, and prints a ghost author as unknown" do
       command.call(working_dir: "/w")
 
       expect(output.string).to include("failing check: ci\\e[31m\\u202E", "a\\u200B\\e.rb:12  unknown: \\e[2Jraw")
-      expect(output.string).not_to match(/[\e‮​]/)
+      expect(output.string).not_to match(/[\e\u202e\u200b]/)
     end
 
     it "leaves bodies raw under --json" do

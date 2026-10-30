@@ -14,7 +14,7 @@ module Workspace
       BODY_LIMIT = 4_000
 
       # C0 and C1 controls, line separators, bidi overrides and isolates, and zero-width characters.
-      UNSAFE = /[\u0000-\u001f\u007f-\u009f​-‏ -‮؜⁠-⁤⁦-⁩﻿]/
+      UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u061c\u2060-\u2064\u2066-\u2069\ufeff]/
       private_constant :UNSAFE
 
       # @param feedback [Workspace::PullRequestFeedback]
