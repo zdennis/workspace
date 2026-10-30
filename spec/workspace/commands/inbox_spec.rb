@@ -23,10 +23,29 @@ RSpec.describe Workspace::Commands::Inbox do
     ->(path:, scope:, error_output:) { Workspace::InboxStore.new(path: path, scope: scope, clock: -> { now }, error_output: error_output) }
   end
 
+  let(:notes_dir) { File.join(tmpdir, "notes") }
+  let(:notes_dirs) { {"api.fix" => notes_dir, "other" => File.join(tmpdir, "other-notes")} }
+  let(:inside_checkout) { false }
+
+  let(:notes) do
+    instance_double(Workspace::Commands::Notes).tap do |fake|
+      allow(fake).to receive(:info) do |name:, **|
+        dir = notes_dirs.fetch(name) { raise Workspace::Error.new("no #{name}", code: "unknown_workspace") }
+        {"dir" => dir, "inside_worktree" => inside_checkout}
+      end
+    end
+  end
+
   subject(:command) do
-    described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+    described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
       session_ledger: session_ledger, store_factory: store_factory, env: env, input: input,
       clock: -> { now }, output: output, error_output: error_output)
+  end
+
+  def write_note(rel, dir = notes_dir)
+    path = File.join(dir, rel)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "# note")
   end
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
@@ -95,7 +114,7 @@ RSpec.describe Workspace::Commands::Inbox do
     end
 
     it "says projects are unavailable when no catalog was wired" do
-      bare = described_class.new(config: config, project_detector: project_detector, store_factory: store_factory, output: output)
+      bare = described_class.new(config: config, notes: notes, project_detector: project_detector, store_factory: store_factory, output: output)
 
       expect { bare.add(title: "x", target: {project: "api"}, working_dir: "/app") }
         .to raise_error(Workspace::Error, /Projects are not available/)
@@ -282,6 +301,126 @@ RSpec.describe Workspace::Commands::Inbox do
         expect(e.code).to eq("inbox_store_unreadable")
       }
       expect(File.read(path)).to eq("{nope")
+    end
+  end
+
+  describe "#add with a note" do
+    before { write_note("findings.md") }
+
+    it "stores the path and nil without a note" do
+      command.add(title: "Research: x", type: "note", note: "findings.md", working_dir: "/app")
+      command.add(title: "Plain", working_dir: "/app")
+
+      items = stored(config.inbox_path("workspace", "api.fix"))
+      expect(items.map { |i| i["note"] }).to eq([{"path" => "findings.md"}, nil])
+    end
+
+    it "uses the workspace named by --name" do
+      write_note("o.md", notes_dirs["other"])
+      command.add(title: "x", note: "o.md", target: {name: "other"}, working_dir: "/app")
+
+      expect(stored(config.inbox_path("workspace", "other")).first["note"]).to eq("path" => "o.md")
+    end
+
+    it "refuses a bad shape and a missing file with note.path and the reason" do
+      expect(refused_field { command.add(title: "x", note: "a.txt", working_dir: "/app") }).to eq("note.path")
+      expect(@details["reason"]).to eq("must end in .md or .markdown")
+      expect(refused_field { command.add(title: "x", note: "gone.md", working_dir: "/app") }).to eq("note.path")
+      expect(@details["reason"]).to eq("no such file in the notes directory")
+      expect(Dir.glob(File.join(tmpdir, ".inbox", "**", "*.json"))).to be_empty
+    end
+
+    it "refuses a symlink inside the notes directory" do
+      File.symlink(File.join(notes_dir, "findings.md"), File.join(notes_dir, "link.md"))
+
+      expect(refused_field { command.add(title: "x", note: "link.md", working_dir: "/app") }).to eq("note.path")
+    end
+
+    it "refuses project and global scope" do
+      [{project: "api"}, {global: true}].each do |target|
+        expect(refused_field { command.add(title: "x", note: "findings.md", target: target, working_dir: "/app") }).to eq("note.path")
+        expect(@details["reason"]).to eq("needs a workspace scope")
+      end
+    end
+
+    it "passes unknown_workspace through" do
+      expect { command.add(title: "x", note: "a.md", target: {name: "nope"}, working_dir: "/app") }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
+    end
+
+    it "warns when the notes directory is inside the checkout" do
+      command.add(title: "x", note: "findings.md", working_dir: "/app")
+      expect(error_output.string).to eq("")
+
+      stub = described_class.new(config: config, project_detector: project_detector, store_factory: store_factory,
+        notes: instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir, "inside_worktree" => true}),
+        output: output, error_output: error_output)
+      stub.add(title: "y", note: "findings.md", working_dir: "/app")
+      expect(error_output.string).to include("inside its checkout")
+    end
+
+    it "still adds, with no warning, when the lookup fails after the note is checked" do
+      calls = 0
+      flaky = instance_double(Workspace::Commands::Notes)
+      allow(flaky).to receive(:info) do
+        calls += 1
+        raise Workspace::Error.new("gone", code: "unknown_workspace") if calls > 1
+        {"dir" => notes_dir, "inside_worktree" => true}
+      end
+      cmd = described_class.new(config: config, project_detector: project_detector, store_factory: store_factory,
+        notes: flaky, output: output, error_output: error_output)
+
+      result = cmd.add(title: "x", note: "findings.md", working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(0)
+      expect(error_output.string).to eq("")
+      expect(stored(config.inbox_path("workspace", "api.fix")).first["note"]).to eq("path" => "findings.md")
+    end
+
+    it "leaves the stored note alone on a suppressed dedupe repeat of a resolved item" do
+      write_note("two.md")
+      id = command.add(title: "x", dedupe_key: "k", note: "findings.md", working_dir: "/app")[:results].first["id"]
+      command.dismiss([id], working_dir: "/app")
+
+      result = command.add(title: "x", dedupe_key: "k", note: "two.md", working_dir: "/app")
+
+      expect(result[:results].first["outcome"]).to eq("suppressed")
+      expect(stored(config.inbox_path("workspace", "api.fix")).first["note"]).to eq("path" => "findings.md")
+    end
+
+    it "replaces and clears the note on an upsert" do
+      write_note("two.md")
+      command.add(title: "x", dedupe_key: "k", note: "findings.md", working_dir: "/app")
+      command.add(title: "x", dedupe_key: "k", note: "two.md", working_dir: "/app")
+      expect(stored(config.inbox_path("workspace", "api.fix")).first["note"]).to eq("path" => "two.md")
+
+      command.add(title: "x", dedupe_key: "k", working_dir: "/app")
+      expect(stored(config.inbox_path("workspace", "api.fix")).first["note"]).to be_nil
+    end
+  end
+
+  describe "#add_from_json with a note" do
+    before { write_note("findings.md") }
+
+    def post_note(note)
+      input.string = JSON.generate({"title" => "T", "note" => note})
+      command.add_from_json("-", working_dir: "/app")
+    end
+
+    it "stores the note" do
+      post_note({"path" => "findings.md"})
+      expect(stored(config.inbox_path("workspace", "api.fix")).first["note"]).to eq("path" => "findings.md")
+    end
+
+    it "refuses a bad note object" do
+      [[{"path" => 5}, "note.path"], [{"x" => "a.md"}, "note.x"], [{}, "note.path"], ["a.md", "note"], [{"path" => "../a.md"}, "note.path"]].each do |note, field|
+        expect(refused_field { post_note(note) }).to eq(field)
+      end
+    end
+
+    it "refuses a global scope with a note" do
+      input.string = JSON.generate({"title" => "T", "note" => {"path" => "findings.md"}, "scope" => {"kind" => "global"}})
+      expect(refused_field { command.add_from_json("-", working_dir: "/app") }).to eq("note.path")
     end
   end
 
@@ -630,7 +769,7 @@ RSpec.describe Workspace::Commands::Inbox do
 
     it "lists newest change first" do
       later = Time.utc(2026, 10, 16, 13, 0, 0)
-      newer = described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      newer = described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
         session_ledger: session_ledger, env: env, clock: -> { later }, output: StringIO.new, error_output: error_output,
         store_factory: ->(path:, scope:, error_output:) { Workspace::InboxStore.new(path: path, scope: scope, clock: -> { later }, error_output: error_output) })
       newer.add(title: "newest", target: {global: true}, working_dir: "/app")
@@ -706,7 +845,7 @@ RSpec.describe Workspace::Commands::Inbox do
       end.new
     end
     let(:with_derived) do
-      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
         session_ledger: session_ledger, store_factory: store_factory, env: env, input: input, derived: derived,
         clock: -> { now }, output: output, error_output: error_output)
     end
@@ -823,6 +962,39 @@ RSpec.describe Workspace::Commands::Inbox do
       command.show(item["id"], working_dir: "/app", json: true)
 
       expect(JSON.parse(output.string)["item"]["state"]).to eq("dismissed")
+    end
+
+    context "with a note" do
+      def note_item(name)
+        write_note("n.md", notes_dirs[name])
+        command.add(title: "N", note: "n.md", target: {name: name}, working_dir: "/app")
+        output.truncate(0)
+        output.rewind
+        JSON.parse(File.read(config.inbox_path("workspace", name))).last
+      end
+
+      it "prints the relative and absolute path from the item's own workspace, without --name" do
+        item = note_item("other")
+
+        command.show(item["id"], working_dir: "/app")
+
+        expect(output.string).to include("  Note:     n.md (#{File.join(notes_dirs["other"], "n.md")})")
+      end
+
+      it "carries the note in --json" do
+        item = note_item("other")
+        command.show(item["id"], working_dir: "/app", json: true)
+        expect(JSON.parse(output.string)["item"]["note"]).to eq("path" => "n.md")
+      end
+
+      it "prints the relative path alone when the directory can't be resolved" do
+        item = note_item("other")
+        notes_dirs.delete("other")
+
+        command.show(item["id"], working_dir: "/app")
+
+        expect(output.string).to include("  Note:     n.md\n")
+      end
     end
 
     it "prints text with the body indented and control characters escaped" do
@@ -1026,7 +1198,7 @@ RSpec.describe Workspace::Commands::Inbox do
   describe "#edit" do
     let(:event_log) { CLITestHelpers::FakeEventLog.new }
     let(:logged) do
-      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
         session_ledger: session_ledger, store_factory: store_factory, env: env, input: input,
         clock: -> { now }, event_log: event_log, output: output, error_output: error_output)
     end
@@ -1042,7 +1214,7 @@ RSpec.describe Workspace::Commands::Inbox do
     it "changes the title, body, expiry and links, keeping the rest, and stamps updated_at" do
       item = add_item(body: "old", links: {pane: "%1", pr: 3})
       later = now + 60
-      editor = described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      editor = described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
         session_ledger: session_ledger, store_factory: ->(path:, scope:, error_output:) { Workspace::InboxStore.new(path: path, scope: scope, clock: -> { later }, error_output: error_output) },
         env: env, input: input, clock: -> { later }, output: output, error_output: error_output)
 
@@ -1208,7 +1380,7 @@ RSpec.describe Workspace::Commands::Inbox do
     let(:event_log) { CLITestHelpers::FakeEventLog.new }
 
     subject(:command) do
-      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
         session_ledger: session_ledger, store_factory: store_factory, env: env, input: input,
         clock: -> { now }, event_log: event_log, output: output, error_output: error_output)
     end
@@ -1293,7 +1465,7 @@ RSpec.describe Workspace::Commands::Inbox do
     it "still succeeds when the log cannot be written" do
       unwritable = instance_double(Workspace::Config, event_log_file: File.join(tmpdir, "missing-dir", "events.jsonl"))
       real = Workspace::EventLog.new(config: unwritable, error_output: StringIO.new)
-      failing = described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      failing = described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
         session_ledger: session_ledger, store_factory: store_factory, env: env, input: input,
         clock: -> { now }, event_log: real, output: output, error_output: error_output)
 
@@ -1304,7 +1476,7 @@ RSpec.describe Workspace::Commands::Inbox do
   end
   # Commands built on a clock of their own, over the same temp store.
   def inbox_at(time, **extra)
-    described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+    described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
       session_ledger: session_ledger, env: env, input: input, clock: -> { time },
       output: extra.delete(:output) || StringIO.new, error_output: error_output,
       store_factory: ->(path:, scope:, error_output:) { Workspace::InboxStore.new(path: path, scope: scope, clock: -> { time }, error_output: error_output) },
@@ -1532,7 +1704,7 @@ RSpec.describe Workspace::Commands::Inbox do
     let(:acks_path) { File.join(tmpdir, ".inbox", "acks.json") }
     let(:acks) { Workspace::InboxAcks.new(path: acks_path, clock: -> { now }) }
     let(:with_acks) do
-      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
         session_ledger: session_ledger, store_factory: store_factory, env: env, input: input, derived: derived, acks: acks,
         clock: -> { now }, event_log: event_log, output: output, error_output: error_output)
     end
@@ -1703,7 +1875,7 @@ RSpec.describe Workspace::Commands::Inbox do
       it "shows the row again after until" do
         with_acks.snooze([pane_id], until_time: "2026-10-16T13:00:00Z", working_dir: "/app")
         later = Workspace::InboxAcks.new(path: acks_path, clock: -> { Time.utc(2026, 10, 16, 13, 0, 1) })
-        reader = described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+        reader = described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
           session_ledger: session_ledger, store_factory: store_factory, env: env, input: input, derived: derived, acks: later,
           clock: -> { Time.utc(2026, 10, 16, 13, 0, 1) }, output: output, error_output: error_output)
         output.truncate(0)
@@ -1782,7 +1954,7 @@ RSpec.describe Workspace::Commands::Inbox do
     end
 
     def with_derived_only
-      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      described_class.new(config: config, notes: notes, project_detector: project_detector, project_catalog: project_catalog,
         session_ledger: session_ledger, store_factory: store_factory, env: env, input: input, derived: derived,
         clock: -> { now }, output: output, error_output: error_output)
     end

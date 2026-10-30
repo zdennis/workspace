@@ -93,8 +93,8 @@ workspace <subcommand> [options]
 | goal | [README](docs/README.goal.md) | Say where a workspace's goal is (`show [REF]`): its journey stage, workflow step, agent turn and tool call, what it waits for and on whom, and the next expected event; or one line per goal (`list`). Reads only; `journey` is another name for `spine` |
 | handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
-| inbox | [README](docs/README.inbox.md) | A durable list of things that need a person, per workspace, project or globally: `add` (also `--from-json`, `--dedupe-key`), `list`, `show`, `edit`, `done`, `dismiss`, `reopen`, `snooze`, `ack` (derived rows), `list --include-derived` |
-| instructions | [README](docs/README.instructions.md) | Print the instructions built from library packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`, `research`, `spine`) |
+| inbox | [README](docs/README.inbox.md) | A durable list of things that need a person, per workspace, project or globally: `add` (also `--from-json`, `--dedupe-key`, `--note REL` to point at a note in the notes dir that workspace-ui can open), `list`, `show`, `edit`, `done`, `dismiss`, `reopen`, `snooze`, `ack` (derived rows), `list --include-derived` |
+| instructions | [README](docs/README.instructions.md) | Print the instructions built from library packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`, `research`, `spine`); the `research` pack ends with an inbox item pointing at the note and a link from `ui open notes --path` |
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree (default: the one you are in) |
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows, or headless in plain tmux |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
@@ -137,7 +137,7 @@ workspace <subcommand> [options]
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
 | ticket | [README](docs/README.ticket.md) | Look up a ticket the way `start` reads it (`show`): a JIRA key, pull request, issue or branch, with its title and body from `gh` or `jira` and whether a workspace for it already exists; or list the tickets assigned to you or changed lately (`list`) |
 | tmux | [README](docs/README.tmux.md) | Show a workspace's tmuxinator file as windows and panes |
-| ui | [README](docs/README.ui.md) | Open a `workspace-ui://` link: a task, a review, notes or the inbox |
+| ui | [README](docs/README.ui.md) | Open a `workspace-ui://` link: a task, a review, notes (or one note with `--path`) or the inbox |
 | version | [README](docs/README.version.md) | Print the workspace version |
 | wait-until-content | [README](docs/README.wait-until-content.md) | Block until a pane shows content, then exec a command |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |

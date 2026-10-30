@@ -92,6 +92,13 @@ RSpec.describe Workspace::Commands::Notes do
       expect(command.info(name: "api.worktree-x")).to include("excluded" => true, "inside_worktree" => false)
     end
 
+    it "answers with the dir string and inside_worktree boolean that Commands::Inbox reads" do
+      answer = command.info(name: "api.worktree-x")
+
+      expect(answer["dir"]).to be_a(String)
+      expect(answer["inside_worktree"]).to be(true).or be(false)
+    end
+
     it "does not create anything or touch the exclude file without create" do
       command.dir(name: "api.worktree-x")
 

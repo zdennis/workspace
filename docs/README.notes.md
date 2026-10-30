@@ -73,6 +73,9 @@ $ cd "$(workspace notes dir --create)"
 $ workspace ui open notes api --print
 workspace-ui://notes/api
 
+$ workspace ui open notes api --path research/findings.md --print
+workspace-ui://notes/api/research/findings.md
+
 $ workspace notes dir --name api --json
 {"schema_version":1,"ok":true,"workspace":"api","dir":"/Users/z/notes/api","source":"project","exists":true,"inside_worktree":false,"excluded":true}
 ```

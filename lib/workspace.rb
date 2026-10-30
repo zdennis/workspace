@@ -205,6 +205,7 @@ require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/project_agents"
 require_relative "workspace/project_facts"
 require_relative "workspace/duration"
+require_relative "workspace/note_path"
 require_relative "workspace/byte_size"
 require_relative "workspace/events_config"
 require_relative "workspace/dev_config"
@@ -533,7 +534,7 @@ module Workspace
     capabilities_command = Commands::Capabilities.new(config: config, output: output)
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
       process_tree: ProcessTree.new(logger: logger), output: output)
-    ui_command = Commands::Ui.new(output: output)
+    ui_command = Commands::Ui.new(output: output, notes: notes_command)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log,
       installer: library_installer, checkout: workspace_checkout)
@@ -669,7 +670,7 @@ module Workspace
     inbox_acks = InboxAcks.new(path: config.inbox_acks_path)
     inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
       session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, derived: inbox_derived, acks: inbox_acks,
-      output: output, error_output: error_output)
+      output: output, error_output: error_output, notes: notes_command)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,

@@ -6,7 +6,7 @@ A durable list of things that need a person. Agents, scripts and outside tools p
 
 ```sh
 workspace inbox add TITLE [--type TYPE] [--body TEXT | --body-file PATH|-] [--source-kind K] [--source-ref R] [--source-url URL]
-                          [--dedupe-key KEY [--reopen]] [--expires DURATION|ISO] [--link-pane P] [--link-plan-task T] [--link-pr N] [--link-run R]
+                          [--dedupe-key KEY [--reopen]] [--expires DURATION|ISO] [--note REL] [--link-pane P] [--link-plan-task T] [--link-pr N] [--link-run R]
                           [--as-user] [scope] [--json]
 workspace inbox add --from-json PATH|- [--json]
 workspace inbox list [--state S[,S]] [--type TYPE] [--all] [--include-derived] [scope] [--json]
@@ -58,6 +58,7 @@ echo '{"title":"CI failed","type":"alert","source":{"kind":"github_check","ref":
 | `source` | Object with `kind`, `ref`, `url` |
 | `links` | Object with `pane`, `plan_task`, `run_id` (strings) and `pr` (a positive integer) |
 | `scope` | `{"kind": "global"}`, or `{"kind": "workspace" or "project", "name": "..."}`; left out, the workspace of the current directory |
+| `note` | Object with `path` (a string): the same as `--note` |
 | `dedupe_key` | A string or `null`; a string makes the add an upsert (see Dedupe). `--reopen` has no key here: to reopen a resolved item by key, use the flag form |
 
 Any other key, a value of the wrong type, a non-object, invalid JSON or UTF-8, or input over 64 KB is `invalid_inbox_item` (`details.field` names the key, such as `state` or `source.host`; `json` for the document itself). Every field then passes the checks in the table below, and nothing is written when one fails.
@@ -125,6 +126,7 @@ A source that can't be read adds a warning and no rows, never an empty answer: `
 | `source.url` | `https://` only |
 | `links` | `pane`, `plan_task`, `run_id` up to 64 characters; `pr` a positive number |
 | `expires_at` | From `--expires`: a duration such as `2h` or an ISO 8601 time in the future. Once passed, the item reads as `dismissed` with `resolved_by` `{"kind":"expiry"}` and `resolved_at` set to the expiry time |
+| `note.path` | From `--note REL`: a Markdown file in the workspace's notes directory, so a client can open it. `REL` is at most 4 segments of letters, digits, `.`, `_` and `-`, each at most 255 characters and none starting with a dot, ending in `.md` or `.markdown`; it must exist as a regular file whose real path is the notes directory plus `REL` (a symlink inside the directory or a case mismatch is refused). It needs a workspace scope (detected or `--name`); a project or global scope is refused. Any refusal is `invalid_inbox_item` with `details.field` `note.path` and a `details.reason`. The check is advisory: the app checks again when it opens the note. Stored as `{"path": REL}`, or `null`; a repeat of a dedupe key without `--note` clears it. `edit` can't change `note` yet: use a dedupe upsert (`add --dedupe-key KEY --note REL`) to change it. A notes directory inside the checkout is deleted by `finish` and `kill`, with the note, so `add` prints a warning on stderr when it is. `show` prints `Note: REL (absolute path)`, the relative path alone when the directory can't be resolved, and does not check that the file still exists |
 | `created_by` | `kind` is `agent` when the session ledger shows an agent session open in `$TMUX_PANE`, `user` with `--as-user`, else `cli`; also `pane`, `session_id`, `tmux_server` |
 
 Text with NUL or another control character (an escape sequence, a C1 control, a line separator) is refused as `invalid_inbox_item`; a body may hold `\n` and `\t`. Text is data: it is never run, typed into a pane or put in the event log, and human output shows any control character as an escape such as `\e`.
@@ -145,6 +147,6 @@ Snoozes and expiries are time-driven, so reads work them out and never write: `l
 
 Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `inbox_store_unreadable`, `unknown_derived_item`, `use_ask_answer`, `not_in_workspace`, `unknown_workspace`, `usage`.
 
-`workspace capabilities --json` reports `features.inbox: 3` for these commands (level 2: `edit`, `snooze`, `--dedupe-key`, expiry and the caps below; level 3: `list --include-derived`, `ack` and `snooze` of derived ids).
+`workspace capabilities --json` reports `features.inbox: 5` for these commands (level 2: `edit`, `snooze`, `--dedupe-key`, expiry and the caps below; level 3: `list --include-derived`, `ack` and `snooze` of derived ids; level 4: `list --all --name WS`; level 5 adds `note.path`: `add --note`, `--from-json` `note`; `show` and `list --json` carry it).
 
 Exit 0, 1 on an error; `done`, `dismiss`, `reopen` and `snooze` exit 3 when only some ids failed.

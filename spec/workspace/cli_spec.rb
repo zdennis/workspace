@@ -2829,6 +2829,14 @@ RSpec.describe Workspace::CLI do
         "--link-plan-task", "T1", "--link-run", "run1"])
     end
 
+    it "passes --note to add" do
+      expect(inbox_command).to receive(:add).with(
+        title: "T", target: {}, working_dir: anything, type: "note", source: {}, links: {}, note: "findings.md"
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "add", "T", "--type", "note", "--note", "findings.md"])
+    end
+
     it "passes --dedupe-key and --reopen to add" do
       expect(inbox_command).to receive(:add).with(
         title: "T", target: {global: true}, working_dir: anything, type: "todo", source: {}, links: {},
@@ -8138,6 +8146,28 @@ RSpec.describe Workspace::CLI do
 
       expect(detector).to have_received(:detect).with("/some/dir").once
       expect(ui_command.calls.map { |c| c[:workspace] }).to eq(["detected-ws", nil])
+    end
+
+    it "passes --path to the notes view and adds it to the json row" do
+      cli.run(["ui", "open", "notes", "app", "--path", "research/a.md", "--print", "--json"])
+
+      expect(ui_command.calls).to eq([{view: "notes", workspace: "app", print_only: true, path: "research/a.md"}])
+      expect(JSON.parse(output.string)["results"].first).to include("path" => "research/a.md")
+    end
+
+    it "reports invalid_note_path in the --json error envelope and exits 1" do
+      ui_command.error = Workspace::Error.new("Invalid note path: x.", code: "invalid_note_path",
+        details: {"workspace" => "app", "path" => "x.md", "reason" => "no such file in the notes directory"})
+
+      expect { cli.run(["ui", "open", "notes", "app", "--path", "x.md", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => false, "code" => "invalid_note_path")
+      expect(doc["details"]).to eq("workspace" => "app", "path" => "x.md", "reason" => "no such file in the notes directory")
+    end
+
+    it "lists --path in the ui help" do
+      cli.run(["ui", "--help"])
+      expect(output.string).to include("--path REL")
     end
 
     it "prints an action document under --json, text on stderr" do

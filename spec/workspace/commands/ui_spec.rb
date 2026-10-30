@@ -22,7 +22,8 @@ end
 RSpec.describe Workspace::Commands::Ui do
   let(:opener) { UiFakeOpener.new }
   let(:output) { StringIO.new }
-  subject(:command) { described_class.new(opener: opener, output: output) }
+  let(:notes) { instance_double(Workspace::Commands::Notes) }
+  subject(:command) { described_class.new(opener: opener, output: output, notes: notes) }
 
   describe "#url_for" do
     it "builds a task, review and inbox link" do
@@ -95,6 +96,63 @@ RSpec.describe Workspace::Commands::Ui do
     end
   end
 
+  describe "notes --path" do
+    let(:dir) { Dir.mktmpdir }
+    before do
+      allow(notes).to receive(:info).with(name: "app").and_return({"dir" => dir})
+      FileUtils.mkdir_p(File.join(dir, "research"))
+      File.write(File.join(dir, "research", "findings.md"), "x")
+      File.write(File.join(dir, "a.md"), "x")
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "builds a notes link that ends in the checked path" do
+      expect(command.url_for(view: "notes", workspace: "app", path: "research/findings.md")).to eq("workspace-ui://notes/app/research/findings.md")
+    end
+
+    it "prints the link and opens nothing under print_only" do
+      result = command.open(view: "notes", workspace: "app", path: "a.md", print_only: true)
+      expect(result).to have_attributes(outcome: "printed", url: "workspace-ui://notes/app/a.md")
+      expect(output.string).to eq("workspace-ui://notes/app/a.md\n")
+      expect(opener.calls).to eq([])
+    end
+
+    it "refuses a missing file with invalid_note_path and its details" do
+      expect { command.url_for(view: "notes", workspace: "app", path: "nope.md") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_note_path")
+        expect(e.details).to eq("workspace" => "app", "path" => "nope.md", "reason" => "no such file in the notes directory")
+      }
+    end
+
+    it "refuses a badly shaped path and a symlink" do
+      File.symlink(File.join(dir, "a.md"), File.join(dir, "link.md"))
+      ["../a.md", "/a.md", "a.txt", "link.md", "my note.md"].each do |bad|
+        expect { command.url_for(view: "notes", workspace: "app", path: bad) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_note_path") }, bad
+      end
+    end
+
+    it "refuses --path on every other view" do
+      %w[task review plan].each do |view|
+        expect { command.url_for(view: view, workspace: "app", path: "a.md") }.to raise_error(Workspace::UsageError, /takes no --path/)
+      end
+      expect { command.url_for(view: "inbox", path: "a.md") }.to raise_error(Workspace::UsageError, /inbox takes no --path/)
+      expect { command.url_for(view: "pane", workspace: "app", pane: "%1", path: "a.md") }.to raise_error(Workspace::UsageError, /takes no --path/)
+    end
+
+    it "cuts details.path to 200 characters for a long bad path" do
+      expect { command.url_for(view: "notes", workspace: "app", path: "#{"a" * 300}.md") }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["path"].length).to eq(200)
+      }
+    end
+
+    it "is wired with the notes command by build_cli" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
+      ui = cli.instance_variable_get(:@ui_command)
+      expect(ui.instance_variable_get(:@notes)).to be_a(Workspace::Commands::Notes)
+    end
+  end
+
   describe "#open" do
     it "hands the URL to `open` as one argv element" do
       result = command.open(view: "task", workspace: "my-app")
@@ -123,7 +181,7 @@ RSpec.describe Workspace::Commands::Ui do
 
     it "reports no registered handler as a failed row with open's own message" do
       failing = UiFakeOpener.new(status: 1, stderr: "LSOpenURLsWithRole() failed with error -10814 for the URL workspace-ui://inbox.\n")
-      result = described_class.new(opener: failing, output: output).open(view: "inbox")
+      result = described_class.new(opener: failing, output: output, notes: notes).open(view: "inbox")
 
       expect(result).to have_attributes(outcome: "failed", reason: "open_failed")
       expect(result.message).to include("-10814").and include("workspace-ui://inbox").and include("UI app installed").and include("--print")
@@ -132,7 +190,7 @@ RSpec.describe Workspace::Commands::Ui do
     end
 
     it "reports a missing `open` executable as a failed row" do
-      result = described_class.new(opener: UiFakeOpener.new(missing: true), output: output).open(view: "inbox")
+      result = described_class.new(opener: UiFakeOpener.new(missing: true), output: output, notes: notes).open(view: "inbox")
 
       expect(result).to have_attributes(outcome: "failed", reason: "open_unavailable")
       expect(result.message).to include("open")
