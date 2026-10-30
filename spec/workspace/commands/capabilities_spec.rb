@@ -268,7 +268,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports rebase 2 once rebase and push exist" do
       command.call(json: true)
 
-      expect(document["features"]).to include("rebase" => 3)
+      expect(document["features"]).to include("rebase" => 4)
     end
 
     it "ignores a PATH entry that is not executable or is a directory" do

@@ -77,6 +77,15 @@ RSpec.describe Workspace do
       expect(command.instance_variable_get(:@checkout)).to equal(cli.instance_variable_get(:@push_command).instance_variable_get(:@checkout))
     end
 
+    it "hands push a PullRequestStatus to check a pull request checkout's head" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      command = cli.instance_variable_get(:@push_command)
+
+      expect(command).to be_a(Workspace::Commands::Push)
+      expect(command.instance_variable_get(:@pr_status)).to be_a(Workspace::PullRequestStatus)
+    end
+
     it "wires a real LockReaper into the agent command's session monitor" do
       cli = Workspace.build_cli(
         output: StringIO.new,

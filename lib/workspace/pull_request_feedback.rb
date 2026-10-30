@@ -26,6 +26,7 @@ module Workspace
     LAST_COMMENTS = 3
 
     TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
+    # HOST, OWNER, REPO and NOT_LOGGED_IN are public: PullRequestStatus checks with them too.
     HOST = /\A[A-Za-z0-9.-]+\z/
     OWNER = /\A[A-Za-z0-9-]{1,39}\z/
     REPO = /\A[A-Za-z0-9._-]{1,100}\z/
@@ -33,7 +34,7 @@ module Workspace
     NOT_LOGGED_IN = /gh auth login|not logged in|not authenticated|authentication required|bad credentials|http 401|requires authentication/i
     RATE_LIMIT = /rate limit/i
     NO_PULL_REQUEST = /no pull requests found/i
-    private_constant :TRUSTED_ASSOCIATIONS, :HOST, :OWNER, :REPO, :PULL_URL, :NOT_LOGGED_IN, :RATE_LIMIT, :NO_PULL_REQUEST
+    private_constant :TRUSTED_ASSOCIATIONS, :PULL_URL, :RATE_LIMIT, :NO_PULL_REQUEST
 
     COMMENT_FIELDS = "databaseId author { login __typename } authorAssociation body createdAt url isMinimized".freeze
     private_constant :COMMENT_FIELDS

@@ -8160,6 +8160,8 @@ module Workspace
         opts.separator "Push a workspace's branch to origin. A branch with no upstream is pushed with -u. When the"
         opts.separator "upstream has commits the branch lacks, the push uses --force-with-lease, but only if the"
         opts.separator "branch's own history once held all of them (a rebase replaced them); otherwise it is refused."
+        opts.separator "A pull request checkout (pr-N, from `start '#N'`) is pushed to the pull request's head branch"
+        opts.separator "once gh confirms the pull request is open, comes from origin, and is at the commit fetched."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
         opts.on("--json", "Print one JSON document (see docs/README.rebase.md)") { options[:json] = true }

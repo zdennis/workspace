@@ -79,7 +79,7 @@ module Workspace
         "spine_report" => 1,
         "pr_create" => 2,
         "pr_feedback" => 1,
-        "rebase" => 3,
+        "rebase" => 4,
         "inbox" => 6,
         "ask_withdraw" => 1,
         "ask_deliver" => 1,

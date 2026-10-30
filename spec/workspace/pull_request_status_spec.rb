@@ -155,6 +155,80 @@ RSpec.describe Workspace::PullRequestStatus do
     end
   end
 
+  describe "#head" do
+    def head_json(**overrides)
+      JSON.generate({"state" => "OPEN", "isCrossRepository" => false, "headRefName" => "fix/thing", "headRefOid" => "a" * 40,
+                     "headRepository" => {"id" => "R_1", "name" => "api"}, "headRepositoryOwner" => {"id" => "U_1", "login" => "acme"}}.merge(overrides))
+    end
+
+    it "asks gh for the numbered pull request of the named repository" do
+      runner, calls = runner_returning(stdout: head_json)
+
+      described_class.new(runner: runner, timeout: 3).head("/w", number: 12, repo: "github.com/acme/api")
+
+      expect(calls).to eq([{args: ["pr", "view", "12", "--repo", "github.com/acme/api", "--json",
+        "state,isCrossRepository,headRefName,headRefOid,headRepository,headRepositoryOwner"], chdir: "/w", timeout: 3}])
+    end
+
+    it "reports the head branch, commit and repository" do
+      runner, = runner_returning(stdout: head_json)
+
+      expect(described_class.new(runner: runner).head("/w", number: 12, repo: "github.com/acme/api")).to eq(
+        "available" => true, "state" => "OPEN", "cross_repository" => false, "head_ref" => "fix/thing",
+        "head_sha" => "a" * 40, "head_owner" => "acme", "head_name" => "api"
+      )
+    end
+
+    it "leaves the head repository nil when gh gives none (a deleted fork)" do
+      runner, = runner_returning(stdout: head_json("headRepository" => nil, "headRepositoryOwner" => nil))
+
+      expect(described_class.new(runner: runner).head("/w", number: 12, repo: "github.com/acme/api")).to include("head_owner" => nil, "head_name" => nil)
+    end
+
+    it "reports not_logged_in apart from other failures, with gh\x27s first line" do
+      runner, = runner_returning(stderr: "\nTo get started with GitHub CLI, please run:  gh auth login\n", success: false)
+
+      expect(described_class.new(runner: runner).head("/w", number: 12, repo: "github.com/acme/api")).to eq(
+        "available" => false, "reason" => "not_logged_in", "detail" => "To get started with GitHub CLI, please run:  gh auth login"
+      )
+    end
+
+    it "reports any other failure as error with gh\x27s first line" do
+      runner, = runner_returning(stderr: "GraphQL: Could not resolve to a PullRequest with the number of 12.\n", success: false)
+
+      expect(described_class.new(runner: runner).head("/w", number: 12, repo: "github.com/acme/api")).to eq(
+        "available" => false, "reason" => "error", "detail" => "GraphQL: Could not resolve to a PullRequest with the number of 12."
+      )
+    end
+
+    it "reports gh missing, a timeout and an unreadable reply as facts" do
+      missing = ->(*, **) { raise Errno::ENOENT }
+      slow = ->(*, **) { raise Timeout::Error }
+      garbled, = runner_returning(stdout: "[]")
+
+      expect(described_class.new(runner: missing).head("/w", number: 1, repo: "h/o/n")).to eq("available" => false, "reason" => "gh_missing")
+      expect(described_class.new(runner: slow).head("/w", number: 1, repo: "h/o/n")).to eq("available" => false, "reason" => "timeout")
+      expect(described_class.new(runner: garbled).head("/w", number: 1, repo: "h/o/n")).to include("available" => false, "reason" => "error")
+    end
+  end
+
+  describe ".github_repo" do
+    it "reads https, ssh:// and scp-like origin URLs" do
+      expect(described_class.github_repo("https://github.com/acme/api.git")).to eq(%w[github.com acme api])
+      expect(described_class.github_repo("https://github.com/acme/api")).to eq(%w[github.com acme api])
+      expect(described_class.github_repo("https://x-token@ghe.example.com/acme/api.js.git")).to eq(%w[ghe.example.com acme api.js])
+      expect(described_class.github_repo("ssh://git@github.com/acme/api.git")).to eq(%w[github.com acme api])
+      expect(described_class.github_repo("git@github.com:acme/api.git")).to eq(%w[github.com acme api])
+    end
+
+    it "refuses anything else" do
+      ["/tmp/remote.git", "file:///tmp/remote.git", "ssh://git@github.com:22/acme/api.git", "https://github.com/acme/api/extra",
+        "https://github.com/ac_me/api", "https://github.com/acme/a%20pi", "git@github.com:acme", "", nil].each do |url|
+        expect(described_class.github_repo(url)).to be_nil, url.inspect
+      end
+    end
+  end
+
   describe ".outcome" do
     it "reads a check run by status and conclusion and a commit status by state" do
       expect(described_class.outcome({"status" => "COMPLETED", "conclusion" => "FAILURE"})).to eq(:failing)
