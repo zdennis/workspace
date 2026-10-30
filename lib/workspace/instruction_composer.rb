@@ -1,7 +1,7 @@
 module Workspace
   # Builds the instructions an agent is given from library packs. A pack is a
   # play: the built-in ones (`binding`, `orchestrator`, `commits`, `review`, `notes`,
-  # `handoff`, `dev`, `spine`)
+  # `handoff`, `dev`, `implementation-plan`, `research`, `report`, `spine`, `promote`)
   # ship with workspace and can't be replaced, and any other play can be
   # named as a pack too (see {Library#pack}).
   #

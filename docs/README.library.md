@@ -64,7 +64,7 @@ Reads (`list`, `show`, `info`) search the project of the current directory first
 
 ## Built-in plays
 
-workspace ships ten plays, the instruction packs [`workspace instructions compose`](README.instructions.md) builds its output from: `binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`, `research` and `spine`. `workspace library list --builtin` lists them and `workspace library show orchestrator --builtin` prints one. They can't be changed, and there are no built-in prompts, agents or skills.
+workspace ships twelve plays, the instruction packs [`workspace instructions compose`](README.instructions.md) builds its output from: `binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`, `research`, `report`, `promote` and `spine`. `workspace library list --builtin` lists them and `workspace library show orchestrator --builtin` prints one. They can't be changed, and there are no built-in prompts, agents or skills.
 
 The built-in scope is searched last here and by `--play`, so `workspace start --play orchestrator` sends the built-in play unless you have a project or global play of that name. `instructions compose --pack NAME` is the one lookup that searches built-in first: a play of yours named `review` never takes the place of the `review` pack. `start --agent` and `--skill` search the project and global stores only.
 

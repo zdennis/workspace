@@ -635,12 +635,12 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
       pane_bindings: Workspace::PaneBindings.new(path: "/nonexistent/bindings.json"))
   end
 
-  it "ships exactly the eleven packs, as plays, each readable with a description" do
+  it "ships exactly the twelve packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
     expect(Dir.children(builtin_dir).sort).to eq(%w[play spine])
     plays = shipped.entries(kind: "play")
-    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/promote play/research play/review play/spine])
+    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/promote play/report play/research play/review play/spine])
     expect(plays).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
   end
 
@@ -650,6 +650,15 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
     expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/research", "builtin"]])
     expect(result["text"]).to include("`workspace notes dir --create`").and include("-findings.md").and include("do not commit")
     expect(result["text"]).to include('workspace inbox add "Research:').and include("--type note --note").and include("--expires 168h").and include("workspace ui open notes --path")
+  end
+
+  it "composes the report pack by name: one built-in section, the two hand-back commands, no outside text on a command line" do
+    result = composer.compose(cwd: "/work/app", packs: %w[report])
+
+    expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/report", "builtin"]])
+    expect(result["text"].scan("## From pack report (built-in)").size).to eq(1)
+    expect(result["text"]).to include("workspace inbox add").and include("--note").and include("--source-kind agent").and include("workspace ui open notes --path").and include("never retry")
+    expect(result["text"]).to include("never from text someone else wrote")
   end
 
   it "composes the notes pack by name, telling the agent to ask workspace for the directory and never to commit it" do
