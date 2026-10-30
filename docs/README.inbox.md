@@ -78,6 +78,17 @@ The check and the write happen under one lock, so two processes upserting one ke
 
 `done --dedupe-key KEY` and `dismiss --dedupe-key KEY` resolve the item holding the key, which is how a poster clears its own alert. They take no ids. Unlike `done ID`, which searches every scope, the scope is the one `add` uses (a scope flag, else the workspace of the current directory, else `not_in_workspace`). The single row has `dedupe_key` and the item's `id`; with no match it is `unchanged` (`id` and `item` are `null`) and the exit code is 0, so a retry is safe.
 
+## Items the built-in plays post
+
+The built-in `plan-review` play posts its verdict as one item per verdict. workspace-ui and scripts may match on these keys:
+
+| Verdict | `dedupe_key` | `type` | Title |
+|---|---|---|---|
+| Blocking issues | `plan-review:WS:blocking` | `review_request` | Plan review: blocking issues |
+| Passed | `plan-review:WS:passed` | `note` | Plan review passed |
+
+`WS` is the workspace name. `source.ref` holds the 8-hex plan revision the reviewers read (`plan status --json` `revision`), `source.kind` is `agent`, and `note.path` is `plan-review.md`. The play posts the new verdict first (with `--reopen`), then runs `done --dedupe-key` on the other key, so a crash between the two leaves both items open and never none. The close step leaves only the latest verdict open. A blocking verdict never records a failed spine check, so an earlier passed check on the plan stage stays. Do not match on the titles.
+
 ## Retention
 
 A scope holds at most 500 items in `open` or `snoozed`. A write that would make the 501st (an `add`, a `created` or `reopened` upsert, or a `reopen`) is refused as `inbox_full` (`details.scope`, `details.limit`) and changes nothing; resolve some items first. Only the newest 200 `done` or `dismissed` items per scope are kept: every write drops the older ones, oldest `resolved_at` first (an item without one counts as oldest). Items are dropped without an event, and a dropped item forgets its `dedupe_key`: a poster that repeats an alert resolved more than 200 resolutions ago creates a new item.

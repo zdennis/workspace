@@ -635,12 +635,12 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
       pane_bindings: Workspace::PaneBindings.new(path: "/nonexistent/bindings.json"))
   end
 
-  it "ships exactly the twelve packs, as plays, each readable with a description" do
+  it "ships exactly the thirteen packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
     expect(Dir.children(builtin_dir).sort).to eq(%w[play spine])
     plays = shipped.entries(kind: "play")
-    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/promote play/report play/research play/review play/spine])
+    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/plan-review play/promote play/report play/research play/review play/spine])
     expect(plays).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
   end
 
@@ -650,6 +650,27 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
     expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/research", "builtin"]])
     expect(result["text"]).to include("`workspace notes dir --create`").and include("-findings.md").and include("do not commit")
     expect(result["text"]).to include('workspace inbox add "Research:').and include("--type note --note").and include("--expires 168h").and include("workspace ui open notes --path")
+  end
+
+  it "composes the plan-review pack by name: the keys, flags and spine rules workspace-ui reads" do
+    result = composer.compose(cwd: "/work/app", packs: %w[plan-review])
+
+    expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/plan-review", "builtin"]])
+    expect(result["text"]).to include("plan-review:WS:blocking").and include("plan-review:WS:passed").and include("--reopen").and include("--source-ref REV")
+    expect(result["text"]).to include("--type review_request").and include("--type note").and include("--note plan-review.md")
+    expect(result["text"]).to include("inbox done").and include("spine verify").and include("--pass").and include("never run `spine verify --fail`").and include("skip")
+    expect(result["text"]).to include("never pass `--as-user`")
+    text = result["text"]
+    lines = text.lines
+    blocking = lines.index { |l| l.include?("workspace inbox add \"Plan review: blocking issues\"") }
+    passed = lines.index { |l| l.include?("workspace inbox add \"Plan review passed\"") }
+    done = lines.index { |l| l.include?("workspace inbox done") }
+    expect(lines[blocking]).to include("--name WS", "--type review_request", "--dedupe-key plan-review:WS:blocking", "--source-kind agent")
+    expect(lines[passed]).to include("--name WS", "--type note", "--dedupe-key plan-review:WS:passed", "--source-kind agent")
+    expect(lines[done]).to include("--name WS", "--dedupe-key plan-review:WS:")
+    expect(done).to be > [blocking, passed].max
+    expect(lines.find { |l| l.include?("workspace spine verify") }).to include("--pass")
+    expect(text).to include("ok: true")
   end
 
   it "composes the report pack by name: one built-in section, the two hand-back commands, no outside text on a command line" do
