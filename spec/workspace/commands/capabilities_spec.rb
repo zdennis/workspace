@@ -259,6 +259,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("pr_create" => 2)
     end
 
+    it "reports pr_feedback 1 once pr feedback exists" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("pr_feedback" => 1)
+    end
+
     it "reports rebase 2 once rebase and push exist" do
       command.call(json: true)
 

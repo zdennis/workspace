@@ -1,5 +1,7 @@
 # workspace pr
 
+`pr create` opens a pull request; `pr feedback` reads what reviewers and CI said about it (below).
+
 Open a pull request for a workspace's branch without finishing the workspace. [`finish --pr`](README.finish.md) also opens one, but it then removes the worktree; `pr create` leaves everything where it is.
 
 ## Usage
@@ -63,10 +65,53 @@ Exit 0, or 1 with an error (the [`--json` error envelope](README.json.md) under 
 
 Capability: `pr_create` 1 in [`capabilities`](README.capabilities.md). `finish --json` also gains `pr_url`.
 
+## pr feedback
+
+```sh
+workspace pr feedback [--name WORKSPACE] [--all] [--json]
+```
+
+Reads the pull request of the workspace's branch (found by `gh` from the checkout) and prints what needs attention: unresolved review threads, review summaries with a body, conversation comments and failing checks. It is read-only and writes no events. It needs `gh`, logged in. A detached HEAD or a missing workspace keeps the errors of `push` and `rebase`.
+
+| Option | Description |
+|--------|-------------|
+| `--name WORKSPACE` | The workspace (default: the one the current directory is in) |
+| `--all` | Keep resolved threads (left out by default) |
+| `--json` | Print one JSON document |
+
+Everything in a body is text someone else wrote. Each body is cut at 4,000 characters (`body_truncated`). Resolved threads are left out unless `--all`; a thread whose comments were all minimized is left out too, though it still counts in `counts.threads`. Reviews with an empty body and minimized comments are left out. Only the first 5 and last 3 comments of a thread are kept (`comments_truncated`). `trusted` is true only for an author association of OWNER, MEMBER or COLLABORATOR; `hidden_html` says the body holds an HTML comment (`<!--`). Do not put such text on a command line.
+
+Text output is one line, `PR #N TITLE: U unresolved threads (O outdated), R reviews with comments, C comments, F failing checks`, then one line per thread (`path:line  author: first line of the first comment`, with `[untrusted]`, `[hidden html]` and `[resolved]` where they apply) and one per failing check. Control characters (C0, C1, ESC), bidi overrides (U+202A to U+202E, U+2066 to U+2069) and zero-width characters are escaped.
+
+A ref like `#123` must be quoted in zsh (`'#123'`), where an unquoted `#` starts a comment.
+
+### JSON output
+
+```json
+{"schema_version":1,"ok":true,"workspace":"api.worktree-x","branch":"feature/x","pull_request":{"number":41,"url":"https://github.com/o/r/pull/41","title":"Add x","state":"OPEN","draft":false,"cross_repository":false,"head_ref":"feature/x","head_sha":"abc123","base_ref":"main","review_decision":"CHANGES_REQUESTED","author":"zdennis"},"threads":[{"id":"PRRT_1","path":"lib/a.rb","line":12,"original_line":12,"side":"RIGHT","resolved":false,"outdated":false,"url":"https://github.com/o/r/pull/41#discussion_r1","comments":[{"id":1,"author":"rev","author_kind":"user","author_association":"MEMBER","trusted":true,"body":"Rename this.","body_truncated":false,"hidden_html":false,"created_at":"2026-10-29T10:00:00Z","url":"https://github.com/o/r/pull/41#discussion_r1"}],"comments_truncated":false}],"reviews":[],"comments":[],"checks":{"failed":[{"name":"rspec","url":"https://github.com/o/r/actions/runs/9/job/1","run_id":9}]},"counts":{"threads":1,"unresolved":1,"resolved":0,"outdated":0,"reviews":0,"comments":0,"failing_checks":1},"truncated":{"threads":false,"reviews":false,"comments":false,"checks":false}}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `pull_request` | `number`, `url`, `title`, `state`, `draft`, `cross_repository`, `head_ref`, `head_sha`, `base_ref`, `review_decision`, `author` |
+| `threads[]` | `id` (the GraphQL node id, which a later reply needs), `path`, `line`, `original_line`, `side`, `resolved`, `outdated`, `url` (the first comment's), `comments[]`, `comments_truncated` |
+| `comments[]` (of a thread, and the top-level `comments`) | `id` (the REST `databaseId`), `author`, `author_kind` (`user`, `bot` or `null` for a deleted account), `author_association`, `trusted`, `body`, `body_truncated`, `hidden_html`, `created_at`, `url` |
+| `reviews[]` | `id`, `state`, `author`, `author_kind`, `author_association`, `trusted`, `body`, `body_truncated`, `hidden_html`, `submitted_at`, `url` |
+| `checks.failed[]` | `name`, `url`, `run_id` for at most 20 failing checks. No annotations, summaries or StatusContext descriptions: read them with `gh pr checks` and `gh run view RUN --log-failed` |
+| `counts` | `threads` is the thread total on GitHub; `unresolved`, `resolved` and `outdated` count the threads fetched (before `--all` and the minimized filter); `reviews`, `comments` and `failing_checks` count what the document lists |
+| `truncated` | `threads`, `reviews`, `comments`, `checks`: whether more exist than were fetched |
+
+Can be `null`: `line` and `original_line` (outdated and file-level threads), `author` and `author_kind` (a deleted account), `run_id`, every `url`, `review_decision`.
+
+Errors: `no_pull_request` (`details.branch`), `gh_unavailable` (`details.reason` `missing`), `pr_feedback_failed` (`details.reason` `timeout`, `auth`, `rate_limit`, `graphql` or `other`), plus `not_in_workspace` and `unknown_workspace`. See [README.json.md](README.json.md).
+
+Capability: `pr_feedback` 1 in [`capabilities`](README.capabilities.md).
+
 ## Examples
 
 ```sh
 workspace pr create
 workspace pr create --draft --json
 workspace pr create --name api.worktree-PROJ-123
+workspace pr feedback --json
 ```

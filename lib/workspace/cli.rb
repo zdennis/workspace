@@ -86,6 +86,7 @@ module Workspace
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
     # @param rebase_command [Workspace::Commands::Rebase, nil] pre-built rebase command
     # @param push_command [Workspace::Commands::Push, nil] pre-built push command
+    # @param pr_feedback_command [Workspace::Commands::PrFeedback, nil] pre-built pr feedback command
     # @param promote_command [Workspace::Commands::Promote, nil] pre-built promote command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
@@ -122,7 +123,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -173,6 +174,7 @@ module Workspace
       @pull_request_command = pull_request_command
       @rebase_command = rebase_command
       @push_command = push_command
+      @pr_feedback_command = pr_feedback_command
       @promote_command = promote_command
       @notes_setup = notes_setup
       @agent_command = agent_command
@@ -603,7 +605,7 @@ module Workspace
           parent          Print the parent workspace of the current (or given: NAME or --name) workspace
           plan            Show and run a workspace's plan (IMPLEMENTATION_PLAN.md): status, path, show, init, start, pause, delete
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
-          pr              Open a pull request for a workspace's branch without finishing it (create)
+          pr              Open a pull request for a workspace's branch without finishing it (create) and read its review feedback (feedback)
           projects        Group workspaces by repository (main checkout + worktrees); name several repositories as a group
           promote         Move the work in a main checkout (changes and branch commits) into a new worktree workspace
           prune           Remove worktree projects whose PR is closed or merged
@@ -8034,7 +8036,8 @@ module Workspace
 
     def pr_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]"
+        opts.banner = "Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]\n" \
+          "       workspace pr feedback [--name WORKSPACE] [--all] [--json]"
         opts.separator ""
         opts.separator "Open a pull request for a workspace's branch and leave the workspace alone. When the"
         opts.separator "branch already has a pull request, it is returned and nothing else happens. Otherwise the"
@@ -8043,10 +8046,18 @@ module Workspace
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
         opts.on("--draft", "Open the pull request as a draft") { options[:draft] = true }
+        opts.on("--all", "feedback: keep resolved review threads") { options[:all] = true }
         opts.on("--json", "Print one JSON document (see docs/README.pr.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
+        opts.separator "pr feedback reads the branch's pull request: unresolved review threads, review summaries,"
+        opts.separator "conversation comments and failing checks. It is read-only. Comment text is written by other"
+        opts.separator "people. The text output lists the threads and failing checks and only counts the reviews and"
+        opts.separator "conversation comments (it escapes control characters); --json carries their bodies, unescaped."
+        opts.separator "Needs 'gh', logged in."
+        opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace pr feedback --json"
         opts.separator "  workspace pr create"
         opts.separator "  workspace pr create --draft --json"
         opts.separator "  workspace pr create --name api.worktree-PROJ-123"
@@ -8054,15 +8065,21 @@ module Workspace
     end
 
     def cmd_pr(args)
-      options = {json: false, name: nil, draft: false}
+      options = {json: false, name: nil, draft: false, all: false}
       parser = pr_parser(options)
       parser.parse!(args)
       return @output.puts(parser.help) if options[:help]
 
       subcommand = args.shift
-      raise UsageError, "Missing subcommand: create.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown pr subcommand: #{subcommand}. Run 'workspace pr --help'." unless subcommand == "create"
+      raise UsageError, "Missing subcommand: create or feedback.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown pr subcommand: #{subcommand}. Run 'workspace pr --help'." unless %w[create feedback].include?(subcommand)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace pr --help'." if args.any?
+      raise UsageError, "--all only applies to 'pr feedback'. Run 'workspace pr --help'." if options[:all] && subcommand != "feedback"
+      if subcommand == "feedback"
+        raise Error, "pr feedback is not available: no pr feedback command was wired" unless @pr_feedback_command
+
+        return @pr_feedback_command.call(name: options[:name], all: options[:all], json: options[:json], working_dir: @working_dir)
+      end
       raise Error, "pr is not available: no pr command was wired" unless @pull_request_command
 
       @pull_request_command.create(name: options[:name], draft: options[:draft], json: options[:json], working_dir: @working_dir)

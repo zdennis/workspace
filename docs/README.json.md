@@ -169,9 +169,9 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `no_task_section` | `plan task add` found no `## Tasks` section. `details.path`. |
 | `task_done` | `plan start --task` named a task that is done or skipped. `details.name`, `details.path`, `details.task`, `details.state`. |
 | `task_owned` | `plan start --task`: the task's owner pane is working on it, and another pane (or `--spawn`) was asked for. `details.workspace`, `details.task`, `details.owner`. |
-| `gh_unavailable` | `pr create` (or `finish --pr`) needs `gh`, which is not installed (`details.reason` `missing`) or not logged in (`not_logged_in`, with `details.detail`). |
-| `no_pull_request` | `pr feedback`: the branch has no pull request. `details.branch`. |
-| `pr_feedback_failed` | `pr feedback`: gh could not read the pull request. `details.reason` (`timeout`, `auth`, `rate_limit`, `graphql`, `other`), `details.detail`. |
+| `gh_unavailable` | `pr create` (or `finish --pr`) needs `gh`, which is not installed (`details.reason` `missing`) or not logged in (`not_logged_in`, with `details.detail`). `pr feedback`: `gh` is not installed (`details.reason` `missing`); every other `gh` failure there is `pr_feedback_failed`. |
+| `no_pull_request` | `pr feedback`: the branch has no pull request. `details.branch` is the plain branch name. |
+| `pr_feedback_failed` | `pr feedback`: `gh` could not read the pull request. `details.reason` is `timeout` (carries `retry`), `auth` (not logged in, or the token is refused), `rate_limit`, `graphql` (an `errors` array, unreadable JSON or URL) or `other` (anything else, including a reply over 8 MiB); `details.detail` is the first line `gh` said. |
 | `nothing_to_push` | `pr create`: the branch has no commits ahead of its base. `details.branch`, `details.base`. |
 | `dirty_worktree` | `rebase`: the workspace has changes to tracked files. `details.path`, `details.files`. |
 | `rebase_in_progress` | `rebase` or `promote`: a rebase is already stopped in the workspace, or git ran past its time limit during the rebase and `git rebase --abort` failed (`details.aborted` `false`). `details.path`. |

@@ -67,6 +67,16 @@ RSpec.describe Workspace do
       expect(resolver).to equal(cli.instance_variable_get(:@notes_command).instance_variable_get(:@config_resolver))
     end
 
+    it "wires pr feedback to the reader and the shared workspace checkout" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      command = cli.instance_variable_get(:@pr_feedback_command)
+
+      expect(command).to be_a(Workspace::Commands::PrFeedback)
+      expect(command.instance_variable_get(:@feedback)).to be_a(Workspace::PullRequestFeedback)
+      expect(command.instance_variable_get(:@checkout)).to equal(cli.instance_variable_get(:@push_command).instance_variable_get(:@checkout))
+    end
+
     it "wires a real LockReaper into the agent command's session monitor" do
       cli = Workspace.build_cli(
         output: StringIO.new,

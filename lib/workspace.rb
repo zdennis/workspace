@@ -299,6 +299,7 @@ require_relative "workspace/commands/kill"
 require_relative "workspace/commands/pull_request"
 require_relative "workspace/commands/rebase"
 require_relative "workspace/commands/push"
+require_relative "workspace/commands/pr_feedback"
 require_relative "workspace/commands/promote"
 require_relative "workspace/commands/finish"
 require_relative "workspace/commands/focus"
@@ -578,6 +579,7 @@ module Workspace
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)
     push_command = Commands::Push.new(git: git, checkout: workspace_checkout, output: output)
+    pr_feedback_command = Commands::PrFeedback.new(feedback: PullRequestFeedback.new, checkout: workspace_checkout, output: output)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, pull_request: pull_request_command, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
@@ -769,6 +771,7 @@ module Workspace
       pull_request_command: pull_request_command,
       rebase_command: rebase_command,
       push_command: push_command,
+      pr_feedback_command: pr_feedback_command,
       promote_command: promote_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,

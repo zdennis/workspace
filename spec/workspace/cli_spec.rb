@@ -115,6 +115,7 @@ RSpec.describe Workspace::CLI do
       pull_request_command: overrides[:pull_request_command],
       rebase_command: overrides[:rebase_command],
       push_command: overrides[:push_command],
+      pr_feedback_command: overrides[:pr_feedback_command],
       promote_command: overrides[:promote_command],
       projects_command: overrides[:projects_command],
       groups_command: overrides[:groups_command],
@@ -8048,6 +8049,63 @@ RSpec.describe Workspace::CLI do
         expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
         expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
       end
+      expect(pull_request_command).not_to have_received(:create)
+    end
+
+    it "reads feedback with the defaults" do
+      feedback = instance_double(Workspace::Commands::PrFeedback, call: nil)
+      cli, = build_test_cli(pr_feedback_command: feedback)
+
+      cli.run(["pr", "feedback"])
+
+      expect(feedback).to have_received(:call).with(name: nil, all: false, json: false, working_dir: an_instance_of(String))
+    end
+
+    it "passes --name, --all and --json to feedback" do
+      feedback = instance_double(Workspace::Commands::PrFeedback, call: nil)
+      cli, = build_test_cli(pr_feedback_command: feedback)
+
+      cli.run(["pr", "feedback", "--json", "--all", "--name", "api"])
+
+      expect(feedback).to have_received(:call).with(name: "api", all: true, json: true, working_dir: an_instance_of(String))
+    end
+
+    it "rejects extra arguments to feedback and says so when it was not wired" do
+      feedback = instance_double(Workspace::Commands::PrFeedback, call: nil)
+      cli, output, = build_test_cli(pr_feedback_command: feedback)
+
+      expect { cli.run(["pr", "feedback", "extra", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string.lines.last)).to include("code" => "usage")
+      expect(feedback).not_to have_received(:call)
+
+      cli, _, error_output, = build_test_cli
+      expect { cli.run(["pr", "feedback"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("pr feedback is not available")
+    end
+
+    [
+      ["no_pull_request", {"branch" => "x"}, nil],
+      ["pr_feedback_failed", {"reason" => "timeout", "detail" => "slow"}, {"flags" => [], "destructive" => false}],
+      ["gh_unavailable", {"reason" => "missing"}, nil]
+    ].each do |code, details, retry_with|
+      it "prints #{code} from pr feedback as the one JSON envelope on stdout" do
+        feedback = instance_double(Workspace::Commands::PrFeedback)
+        allow(feedback).to receive(:call).and_raise(Workspace::Error.new("failed", code: code, details: details, retry_with: retry_with))
+        cli, output, error_output, = build_test_cli(pr_feedback_command: feedback)
+
+        expect { cli.run(["pr", "feedback", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        document = JSON.parse(output.string)
+        expect(document).to include("ok" => false, "code" => code, "details" => details)
+        expect(document["retry"]).to eq(retry_with) if retry_with
+        expect(document).not_to have_key("retry") unless retry_with
+        expect(error_output.string).to eq("")
+      end
+    end
+
+    it "refuses --all on pr create" do
+      expect { cli.run(["pr", "create", "--all", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string.lines.last)).to include("code" => "usage")
       expect(pull_request_command).not_to have_received(:create)
     end
 

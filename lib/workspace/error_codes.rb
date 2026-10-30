@@ -63,7 +63,7 @@ module Workspace
       "task_owned" => "plan start --task: the task's owner pane is working on it and another pane (or --spawn) was asked for. details.workspace, details.task, details.owner.",
       "ticket_not_found" => "ticket show: the ticket tool says no ticket has that key, number or URL.",
       "ticket_source_unavailable" => "ticket show: gh or jira is not installed, did not answer in time, or failed; details.source says which. ticket list and start --title-from-ticket report it as a warning instead.",
-      "gh_unavailable" => "pr create (or finish --pr): gh is not installed or is not logged in; details.reason says which (missing or not_logged_in).",
+      "gh_unavailable" => "pr create (or finish --pr): gh is not installed or is not logged in; details.reason says which (missing or not_logged_in). pr feedback: gh is not installed (details.reason missing); every other gh failure there is pr_feedback_failed.",
       "no_pull_request" => "pr feedback: the branch has no pull request. details.branch.",
       "pr_feedback_failed" => "pr feedback: gh could not read the pull request; details.reason is timeout, auth, rate_limit, graphql or other, details.detail the first line gh said.",
       "nothing_to_push" => "pr create: the branch has no commits ahead of its base, so there is nothing to open a pull request for.",
