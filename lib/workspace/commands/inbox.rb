@@ -580,6 +580,7 @@ module Workspace
           code: "ambiguous_inbox_item", details: {"id" => id, "scopes" => labels})
       end
 
+      # Input validators; the printed form is `TerminalText`, whose set is wider. Keep them in step.
       # C0 controls (and DEL), C1 controls, and the Unicode line separators.
       CONTROL = /[\u0000-\u001f\u007f-\u009f  ]/
       # The same, minus a newline and a tab, which a body may hold.
@@ -995,19 +996,8 @@ module Workspace
         (scope["kind"] == "global") ? "global" : "#{scope["kind"]}:#{scope["name"] || scope["key"]}"
       end
 
-      # Text for a terminal: every control character shown as an escape, so a
-      # posted title can't move the cursor, recolor the screen or fake a line.
       def escape(text, keep_tabs: false)
-        text.to_s.scrub.gsub(CONTROL) do |char|
-          next char if keep_tabs && char == "\t"
-          case char
-          when "\e" then "\\e"
-          when "\n" then "\\n"
-          when "\r" then "\\r"
-          when "\t" then "\\t"
-          else format("\\u%04X", char.ord)
-          end
-        end
+        TerminalText.escape(text, keep_tabs: keep_tabs)
       end
     end
   end

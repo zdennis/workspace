@@ -137,22 +137,11 @@ module Workspace
           text = entry["text"].to_s
           {"id" => entry["id"], "pane_id" => entry["pane_id"], "position" => positions[entry["pane_id"]] += 1,
            "state" => entry["state"], "queued_at" => entry["queued_at"], "clear_first" => entry["clear_first"] == true,
-           "preview" => escape(text[0, PREVIEW_LENGTH]), "length" => text.length}
+           "preview" => TerminalText.escape(text[0, PREVIEW_LENGTH]), "length" => text.length}
         end
         oldest = rows.group_by { |r| r["pane_id"] }.transform_values { |group| group.map { |r| r["queued_at"].to_s }.min }
         panes = rows.map { |r| r["pane_id"] }.uniq.each_with_index.sort_by { |pane_id, index| [oldest[pane_id], index] }.map(&:first)
         panes.flat_map { |pane_id| rows.select { |r| r["pane_id"] == pane_id } }
-      end
-
-      def escape(text)
-        text.gsub(/[[:cntrl:]]/) do |char|
-          case char
-          when "\n" then "\\n"
-          when "\r" then "\\r"
-          when "\t" then "\\t"
-          else format("\\u%04X", char.ord)
-          end
-        end
       end
 
       def render(rows, name)
