@@ -98,7 +98,7 @@ module Workspace
       reason = with_gate_file(run, reason, warnings) if reason
       {
         "id" => run["id"], "workflow" => run["workflow"], "title" => run["title"], "workspace" => run["workspace"],
-        "project" => run["project"], "state" => (reason && run["state"] == "running") ? "waiting" : run["state"],
+        "project" => run["project"], "state" => shown_state(run, reason, shown),
         "created_at" => run["created_at"], "started_at" => run["started_at"], "ended_at" => run["ended_at"],
         "cancelled_by" => run["cancelled_by"],
         "current" => {"step" => run["current"], "attempt" => state["attempts"].last&.fetch("n", nil), "state" => state["state"],
@@ -108,6 +108,13 @@ module Workspace
         "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
         "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
       }
+    end
+
+    # The stored state, except that a hidden turn_ended_incomplete leaves the run running.
+    def shown_state(run, reason, shown)
+      return "waiting" if reason && run["state"] == "running"
+      return "running" if reason.nil? && hidden_incomplete?(run["reason"], shown)
+      run["state"]
     end
 
     # An approved gate's note, as recorded, and whether its bytes changed since.
@@ -154,7 +161,17 @@ module Workspace
         return {"code" => "pane_gone", "since" => stored&.fetch("since", nil) || run["steps"].fetch(run["current"])["attempts"].last&.fetch("started_at", nil),
                 "details" => {"step" => run["current"], "pane" => pane, "workspace" => run["workspace"]}}
       end
-      waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || stored
+      waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || hide_while_working(stored, shown)
+    end
+
+    # A turn that ended while a background sub-agent ran reads turn_ended_incomplete; once the
+    # pane is working again the agent is still on it, so nobody has to act.
+    def hide_while_working(stored, shown)
+      hidden_incomplete?(stored, shown) ? nil : stored
+    end
+
+    def hidden_incomplete?(reason, shown)
+      !!reason && reason["code"] == "turn_ended_incomplete" && !!shown && shown["state"] == "working"
     end
 
     def lost_delivery(run, pane, shown)
