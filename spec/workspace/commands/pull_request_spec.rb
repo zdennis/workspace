@@ -41,14 +41,18 @@ RSpec.describe Workspace::Commands::PullRequest do
   def gh_calls = calls.select { |c| c[:argv].first == "gh" }
 
   before do
-    sh("init", "-q", "--bare", "-b", "main", remote, dir: @dir)
-    FileUtils.mkdir_p(repo)
-    sh("init", "-q", "-b", "main")
-    sh("commit", "-q", "--allow-empty", "-m", "init")
-    sh("remote", "add", "origin", remote)
-    sh("push", "-q", "-u", "origin", "main")
-    sh("switch", "-q", "-c", "feature/x")
-    sh("commit", "-q", "--allow-empty", "-m", "work")
+    RepoTemplate.copy(:pull_request, to: @dir) do |root|
+      origin = File.join(root, "remote.git")
+      main = File.join(root, "api")
+      sh("init", "-q", "--bare", "-b", "main", origin, dir: root)
+      FileUtils.mkdir_p(main)
+      sh("init", "-q", "-b", "main", dir: main)
+      sh("commit", "-q", "--allow-empty", "-m", "init", dir: main)
+      sh("remote", "add", "origin", origin, dir: main)
+      sh("push", "-q", "-u", "origin", "main", dir: main)
+      sh("switch", "-q", "-c", "feature/x", dir: main)
+      sh("commit", "-q", "--allow-empty", "-m", "work", dir: main)
+    end
     allow(project_config).to receive(:project_root_for).with("api").and_return(repo)
   end
 
