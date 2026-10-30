@@ -191,7 +191,8 @@ module Workspace
         next unless step && step["gate"] == "waiting"
         row(id: "workflow:waiting_you:#{run["id"]}", kind: "workflow_waiting_you", fingerprint: "#{current["step"]}:#{reason["since"]}",
           scope: workspace_scope(run["workspace"]), title: "Workflow #{run["title"] || run["workflow"]} waits for approval at #{current["step"]}",
-          body: nil, since: reason["since"], links: {"run_id" => run["id"]})
+          body: nil, since: reason["since"],
+          links: {"run_id" => run["id"], "step" => current["step"], "attempt" => current["attempt"]})
       end
     end
 

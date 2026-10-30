@@ -55,12 +55,14 @@ module Workspace
       # @param derived [Workspace::InboxDerived, nil] works out the rows `list --include-derived` adds;
       #   read only with that flag
       # @param acks [Workspace::InboxAcks, nil] the derived rows acknowledged or snoozed; `list` leaves them out
+      # @param run_store [Workspace::WorkflowRunStore, nil] read to stamp `links.step` and `links.attempt` on an item
+      #   that links a run; nil stamps nothing
       # @param notes [Workspace::Commands::Notes] `#info(name:)` gives a workspace's notes `"dir"` and
       #   whether it is `"inside_worktree"` (where `finish` and `kill` delete it)
       # @param output [IO]
       # @param error_output [IO]
       def initialize(config:, project_detector:, store_factory:, notes:, project_catalog: nil, session_ledger: nil,
-        env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, derived: nil, acks: nil,
+        run_store: nil, env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, derived: nil, acks: nil,
         output: $stdout, error_output: $stderr)
         @config = config
         @project_detector = project_detector
@@ -76,6 +78,7 @@ module Workspace
         @output = output
         @error_output = error_output
         @notes = notes
+        @run_store = run_store
       end
 
       # Creates an item, or with +dedupe_key+ adds it once: an item already holding the key in the
@@ -91,7 +94,8 @@ module Workspace
       # @param reopen [Boolean] with +dedupe_key+, reopen a resolved item instead of leaving it
       # @param expires [String, nil] a duration (`2h`) or an ISO 8601 time in the future
       # @param expires_field [String] the field name an expiry error reports (`expires_at` for JSON input)
-      # @param links [Hash] `:pane`, `:plan_task`, `:pr`, `:run_id`
+      # @param links [Hash] `:pane`, `:plan_task`, `:pr`, `:run_id`; a +run_id+ also stamps `step` and `attempt` from
+      #   the run when it is going in the item's workspace (else both are null, with a line on stderr)
       # @param note [String, nil] a note path relative to the workspace's notes directory (`.md` or
       #   `.markdown`, checked by {Workspace::NotePath}); needs a workspace scope
       # @param as_user [Boolean] record the item as made by a person, not a script or agent
@@ -114,7 +118,7 @@ module Workspace
           "source" => checked_source(source, created_by["kind"]),
           "dedupe_key" => checked_dedupe_key(dedupe_key),
           "created_by" => created_by,
-          "links" => checked_links(links),
+          "links" => stamped_links(checked_links(links), scope),
           "expires_at" => checked_expiry(expires, expires_field),
           "note" => checked_note(note, scope)
         }
@@ -196,7 +200,7 @@ module Workspace
         if include_derived && states.include?("open") && [nil, "alert"].include?(type)
           derived = derived_rows(target, working_dir, all_scopes, with_project: all)
           shown = @acks ? @acks.filter(derived[:rows]) : {rows: derived[:rows], warnings: []}
-          items += shown[:rows]
+          items += mark_covered(shown[:rows], warnings)
           warnings += derived[:warnings] + shown[:warnings]
         end
         items = items.sort_by { |item| [item["updated_at"].to_s, item["id"].to_s] }.reverse
@@ -205,7 +209,7 @@ module Workspace
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "items" => items, "warnings" => warnings})
         else
           warnings.each { |w| @error_output.puts w["message"] }
-          print_table(items)
+          print_table(items.reject { |item| item["covered_by"] })
         end
         {exit_code: 0}
       end
@@ -291,12 +295,16 @@ module Workspace
         cleared, given = links.partition { |_, value| value == "" }.map(&:to_h)
         checked = checked_links(given)
         scope, found = locate(id, lookup_scopes(target, working_dir), @error_output)
+        stamp = run_stamp(checked["run_id"], found["scope"]) if given.key?(:run_id)
         changed = false
         item = store_for(scope).update(found["id"]) do |record|
           before = record.dup
           changes.each { |field, value| record[field] = value unless record[field] == value }
           held = record["links"].is_a?(Hash) ? record["links"] : {}
           wanted = given.to_h { |key, _| [key.to_s, checked[key.to_s]] }.merge(cleared.to_h { |key, _| [key.to_s, nil] })
+          wanted.merge!(stamp) if stamp
+          wanted.update("step" => nil, "attempt" => nil) if cleared.key?(:run_id)
+          wanted.reject! { |key, value| value.nil? && !held.key?(key) && %w[step attempt].include?(key) } unless stamp
           record["links"] = held.merge(wanted) if wanted.any? { |key, value| held[key] != value }
           changed = record != before
         end
@@ -623,6 +631,30 @@ module Workspace
         text
       end
 
+      # Adds the run's own step and attempt to links that name a run; a run that is not going in
+      # the scope's workspace stamps null and says so, so a client never binds the item to a gate.
+      def stamped_links(links, scope)
+        links["run_id"] ? links.merge(run_stamp(links["run_id"], {"kind" => scope.kind, "key" => scope.key})) : links
+      end
+
+      def run_stamp(run_id, item_scope)
+        return {} unless @run_store
+        run = begin
+          @run_store.find(run_id)
+        rescue Workspace::Error
+          nil
+        end
+        going = run && !WorkflowRunStore::TERMINAL_STATES.include?(run["state"]) && item_scope["kind"] == "workspace" && run["workspace"] == item_scope["key"]
+        unless going
+          @error_output.puts((item_scope["kind"] == "workspace") ?
+            "Run #{escape(run_id)} is not going in this workspace, so this item is not tied to a step." :
+            "Run links need a workspace-scoped item, so this item is not tied to a step.")
+          return {"step" => nil, "attempt" => nil}
+        end
+        step = run["current"]
+        {"step" => step, "attempt" => run.dig("steps", step, "attempts")&.last&.fetch("n", nil)}
+      end
+
       def checked_links(links)
         pr = links[:pr]
         raise invalid("links.pr", "must be a positive number") if pr && !(pr.is_a?(Integer) && pr.positive?)
@@ -799,6 +831,32 @@ module Workspace
           scopes << project_scope(project) if project
         end
         scopes << global_scope
+      end
+
+      # Gives each derived gate row `covered_by`: the id of the one open or snoozed `review_request`
+      # in its workspace, posted by an agent session, that links the gate's run, when that item is at
+      # the gate's step and attempt; else null. Every candidate for the run counts, not only the one
+      # at the gate's attempt, so an app that folds by the same rule picks the same item or none.
+      def mark_covered(rows, warnings)
+        stored = {}
+        rows.each do |row|
+          next unless row["kind"] == "workflow_waiting_you"
+          workspace = row.dig("scope", "key")
+          stored[workspace] ||= begin
+            sink = StringIO.new
+            found = store_for(workspace_scope(workspace), sink).list
+            warnings.concat(warnings_from(sink))
+            found
+          end.select do |item|
+            item["type"] == "review_request" && %w[open snoozed].include?(item["state"]) &&
+              item.dig("source", "kind") == "agent" && item.dig("created_by", "kind") == "agent"
+          end
+          candidates = stored[workspace].select { |item| item.dig("links", "run_id") == row.dig("links", "run_id") }
+          sole = candidates.first if candidates.size == 1
+          at_gate = sole && sole["links"]["step"] == row["links"]["step"] && sole["links"]["attempt"] == row["links"]["attempt"]
+          row["covered_by"] = at_gate ? sole["id"] : nil
+        end
+        rows
       end
 
       # Derived rows for the workspaces and projects the listed scopes stand for: a workspace scope's

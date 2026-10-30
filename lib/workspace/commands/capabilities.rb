@@ -80,7 +80,7 @@ module Workspace
         "pr_create" => 2,
         "pr_feedback" => 1,
         "rebase" => 3,
-        "inbox" => 5,
+        "inbox" => 6,
         "ask_withdraw" => 1,
         "ask_deliver" => 1,
         "review" => 1,

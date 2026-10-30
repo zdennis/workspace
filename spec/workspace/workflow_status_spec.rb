@@ -170,7 +170,7 @@ RSpec.describe Workspace::WorkflowStatus do
     # A gate is rejected with a note: the caller supplies it after `--note`; it is never in `args`. Both name the
     # step and attempt they were offered for, so a stale one can't pass a later gate.
     at = ["--step", "plan", "--attempt", "2"]
-    expect(current("wr_1")["reason"]).to eq(gate.merge("details" => gate["details"].merge("gate_file" => nil),
+    expect(current("wr_1")["reason"]).to eq(gate.merge("details" => gate["details"].merge("gate_file" => nil, "gate_file_error" => nil),
       "actions" => [action("workflow approve", "wr_1", *at),
         action("workflow reject", "wr_1", *at, needs: [{"name" => "note", "flag" => "--note"}]), action("workflow cancel", "wr_1")]))
     expect(current("wr_2")["reason"]["actions"]).to eq([action("workflow status", "wr_9"), action("workflow cancel", "wr_2")])
@@ -455,7 +455,7 @@ RSpec.describe Workspace::WorkflowStatus do
 
       result = status.run("wr_1")
 
-      expect(result["runs"].first["current"]["reason"]["details"]).to include("gate_file" => nil)
+      expect(result["runs"].first["current"]["reason"]["details"]).to include("gate_file" => nil, "gate_file_error" => nil)
       expect(result["warnings"]).to eq([])
     end
 
@@ -465,7 +465,7 @@ RSpec.describe Workspace::WorkflowStatus do
 
       result = status.run("wr_1")
 
-      expect(result["runs"].first["current"]["reason"]["details"]).to include("gate_file" => nil)
+      expect(result["runs"].first["current"]["reason"]["details"]).to include("gate_file" => nil, "gate_file_error" => "gate_note_unreadable")
       expect(result["warnings"]).to eq(["The gate of step plan in run wr_1 has no note that can be read: 2026-10-29-pr-7-feedback.md no such file in the notes directory."])
     end
 

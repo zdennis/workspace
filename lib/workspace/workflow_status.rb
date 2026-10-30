@@ -116,17 +116,19 @@ module Workspace
     end
 
     # A waiting gate's reason names the note to read, hashed now; null when the gate names
-    # none, and null with a warning when the note can't be read.
+    # none, and null with a warning (and `gate_file_error` `gate_note_unreadable`) when the note can't be read.
     def with_gate_file(run, reason, warnings)
       return reason unless reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
+      error = nil
       file = begin
         @gate_note.find(run)
       rescue Workspace::Error => e
         raise unless e.code == "gate_note_unreadable"
         warnings << e.message
+        error = e.code
         nil
       end
-      reason.merge("details" => reason["details"].merge("gate_file" => file))
+      reason.merge("details" => reason["details"].merge("gate_file" => file, "gate_file_error" => error))
     end
 
     # Nothing moves a run whose workspace has no agent daemon: no turn's end
