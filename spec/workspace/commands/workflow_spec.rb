@@ -53,6 +53,31 @@ RSpec.describe Workspace::Commands::Workflow do
     JSON.parse(output.string)
   end
 
+  describe "a checkout whose path is unsafe in shell commands" do
+    let(:unsafe) { Workspace::Error.new("unsafe", code: "unsafe_checkout_path") }
+
+    before do
+      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(engine).to receive(:preflight).and_raise(unsafe)
+    end
+
+    it "refuses run --dry-run" do
+      allow(panes).to receive(:default_pane).and_return(nil)
+
+      expect { command.run(id: "flow", workspace: "app", worktree: "/x/a'b", dry_run: true) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+      expect(engine).to have_received(:preflight).with(hash_including(worktree: "/x/a'b"))
+    end
+
+    it "refuses run without starting anything" do
+      allow(panes).to receive(:default_pane).and_return(nil)
+      allow(engine).to receive(:start).and_raise(unsafe)
+
+      expect { command.run(id: "flow", workspace: "app", worktree: "/x/a'b") }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+    end
+  end
+
   describe "#show" do
     it "lists the definitions, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([

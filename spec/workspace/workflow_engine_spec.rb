@@ -213,6 +213,77 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.kicks).to eq([])
     end
 
+    describe "unsafe paths" do
+      let(:gated) do
+        definition(<<~YAML)
+          steps:
+            a:
+              prompt: P
+              produces: [a.md]
+              gate: approve
+        YAML
+      end
+
+      def refusal(**args)
+        engine.preflight(definition: three_steps, workspace: "app.worktree-x", worktree: worktree, inputs: {"task" => "X-1"}, **args)
+        nil
+      rescue Workspace::Error => e
+        e
+      end
+
+      it "refuses a checkout that does not exist yet when it holds a quote" do
+        error = refusal(checkout: "/p/a'b")
+
+        expect(error.code).to eq("unsafe_checkout_path")
+        expect(error.details).to include("characters" => ["single quote"], "path_kind" => "checkout")
+        expect(error.message).not_to include("/p/a'b")
+      end
+
+      it "refuses start with an unsafe worktree" do
+        expect { engine.start(definition: three_steps, workspace: "app.worktree-x", worktree: "/p/a'b", inputs: {"task" => "X-1"}, pane: "%5") }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+      end
+
+      it "names an invisible character" do
+        expect(refusal(checkout: "/p/a‮b").details["characters"]).to eq(["U+202E"])
+      end
+
+      it "does not refuse a missing checkout, or one equal to the worktree" do
+        expect(refusal(checkout: nil)).to be_nil
+        expect(refusal(checkout: worktree)).to be_nil
+      end
+
+      context "with a notes directory that holds a quote" do
+        let(:notes_dir) { File.join(@dir, "notes", "x'$(id)'") }
+
+        it "refuses a workflow with a gate, naming the notes directory" do
+          error = begin
+            engine.preflight(definition: gated, workspace: "app.worktree-x", worktree: worktree, inputs: {})
+            nil
+          rescue Workspace::Error => e
+            e
+          end
+
+          expect(error.code).to eq("unsafe_checkout_path")
+          expect(error.details["path_kind"]).to eq("notes directory")
+        end
+
+        it "leaves a workflow with no gate alone" do
+          plain = definition("steps:\n  a:\n    prompt: P\n")
+          expect(engine.preflight(definition: plain, workspace: "app.worktree-x", worktree: worktree, inputs: {})["step"]).to eq("a")
+        end
+
+        it "makes the gate note unreadable" do
+          run = {"id" => "wr_1", "workspace" => "app.worktree-x", "current" => "a", "artifacts_dir" => File.join(@dir, "art"),
+                 "definition" => gated.to_h, "steps" => {"a" => {"attempts" => [{"n" => 1}]}}}
+          FileUtils.mkdir_p(run["artifacts_dir"])
+          File.write(File.join(run["artifacts_dir"], "a.md"), "note: n.md\n")
+
+          expect { gate_note.find(run) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_note_unreadable") }
+        end
+      end
+    end
+
     describe "input patterns" do
       let(:patterned) do
         definition(<<~'YAML')

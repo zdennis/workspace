@@ -128,7 +128,7 @@ module Workspace
         spec_path = spec_file(definition, resolved, ticket, path, inputs)
         seeded = seed(definition, ticket, prompt, inputs, spec_path, resolved)
         # A checkout that is already there is the one the agent starts in, so its tree is checked; a new one starts clean.
-        checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil, tree: exists ? path : nil)
+        checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil, tree: exists ? path : nil, checkout: path)
         Plan.new(definition: definition, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
           ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt, checkout: checkout_ref(resolved, ticket))
       end

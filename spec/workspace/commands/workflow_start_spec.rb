@@ -329,6 +329,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
         real.instance_variable_set(:@guard, Workspace::WorkflowGuard.new)
         real.instance_variable_set(:@lineage, lineage)
         real.instance_variable_set(:@panes, nil)
+        real.instance_variable_set(:@gate_note, instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil))
         real.instance_variable_set(:@commands_config, instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
         allow(real).to receive(:compose).and_return({"packs" => []})
       end
@@ -792,6 +793,34 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     row = command.call(id: "flow", prompt: "Fix it", dry_run: true)
 
     expect(row).to include("outcome" => "dry_run", "step" => "verify")
+  end
+
+  describe "a new checkout whose path is unsafe in shell commands" do
+    before do
+      allow(engine).to receive(:preflight) do |definition:, inputs:, checkout: nil, **|
+        raise Workspace::Error.new("unsafe", code: "unsafe_checkout_path") if checkout.to_s.include?("'")
+        {"workflow" => "flow", "workspace" => "app", "project" => "app", "step" => "plan", "pane" => nil, "inputs" => inputs, "packs" => []}
+      end
+    end
+
+    it "is refused before start is called" do
+      expect(start).not_to receive(:payload)
+      expect(start).not_to receive(:call)
+
+      expect { command.call(id: "flow", prompt: "x", branch: "x'y") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+      expect(engine).to have_received(:preflight).with(hash_including(checkout: "/src/app/.worktrees/x'y"))
+    end
+
+    it "is refused under --dry-run" do
+      expect { command.call(id: "flow", prompt: "x", branch: "x'y", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+    end
+
+    it "lets a safe new path through" do
+      row = command.call(id: "flow", prompt: "x", branch: "fine", dry_run: true)
+
+      expect(row["outcome"]).to eq("dry_run")
+      expect(engine).to have_received(:preflight).with(hash_including(checkout: "/src/app/.worktrees/fine"))
+    end
   end
 
   describe "the dry run" do

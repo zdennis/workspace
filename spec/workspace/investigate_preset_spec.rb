@@ -76,7 +76,8 @@ RSpec.describe "the investigate preset" do
       "/w/app/.workflow/tickets/x.md\n", "/w/app/tickets/x.md",
       "/tmp/$(id)/.workflow/tickets/a.md", "/tmp/a\\b/.workflow/tickets/a.md", "/tmp/a\u0000b/.workflow/tickets/a.md", "/tmp/a b/.workflow/tickets/a.md",
       "/tmp/a'b/.workflow/tickets/a.md", "/tmp/a`b/.workflow/tickets/a.md", "/tmp/../.workflow/tickets/a.md", "/tmp/a/../b/.workflow/tickets/a.md",
-      "/tmp/a\u007fb/.workflow/tickets/a.md", "/tmp/a\u0085b/.workflow/tickets/a.md", "/tmp/a‮b/.workflow/tickets/a.md"].each { |value| expect(matches?("spec", value)).to be(false) }
+      "/tmp/a\u007fb/.workflow/tickets/a.md", "/tmp/a﻿b/.workflow/tickets/a.md", "/tmp/a⁠b/.workflow/tickets/a.md",
+      "/tmp/a؜b/.workflow/tickets/a.md", "/tmp/a᠎b/.workflow/tickets/a.md", "/tmp/a\u0085b/.workflow/tickets/a.md", "/tmp/a‮b/.workflow/tickets/a.md"].each { |value| expect(matches?("spec", value)).to be(false) }
   end
 
   it "renders no text that holds the task or a run input, and puts the run id in the three dedupe keys" do
@@ -138,7 +139,7 @@ RSpec.describe "the investigate preset" do
       Workspace::WorkflowEngine.new(store: store, resources: resources, composer: FakeStepComposer.new, panes: FakeWorkflowPanes.new,
         checker: ->(**) { {exit_code: 0, timed_out: false} }, commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "t", lint: nil}),
         lineage: lineage, git: git, guard: Workspace::WorkflowGuard.new, excludes: Workspace::GitExclude.new(git: git),
-        gate_note: instance_double(Workspace::WorkflowGateNote), env_stopper: ->(**) {}, event_log: instance_double(Workspace::EventLog, record: nil),
+        gate_note: instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil), env_stopper: ->(**) {}, event_log: instance_double(Workspace::EventLog, record: nil),
         task_store: instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}))
     end
 
@@ -176,6 +177,33 @@ RSpec.describe "the investigate preset" do
 
       expect { preflight({}) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("dirty_worktree") }
       expect(preflight({}, tree: nil)["step"]).to eq("reproduce")
+    end
+
+    it "refuses a checkout path that holds a quote, a substitution or a control character, and names the characters, not the path" do
+      ["x'$(id)'", "bob's repo", "a\"b", "a\u0060b", "a\u0024b", "a\u005cb", "a\u0007b", "a\u007fb", "a\u0085b", "a\u2028b", "a\u2029b", "a\u202eb", "a\u200bb", "a\ufeffb"].each do |name|
+        path = File.join(dir, name)
+        expect { engine.preflight(definition: definition, workspace: "app", worktree: path, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq("unsafe_checkout_path")
+          expect(error.details["workflow"]).to eq("investigate")
+          expect(error.details["characters"]).to be_a(Array).and all(be_a(String))
+          expect(error.message).not_to include(name)
+        }
+      end
+    end
+
+    it "refuses the unsafe path when only the tree is unsafe, and under a dry-run's call shape, before any git read" do
+      expect { engine.preflight(definition: definition, workspace: "app", worktree: worktree, inputs: {}, tree: File.join(dir, "it's")) }
+        .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unsafe_checkout_path") }
+    end
+
+    it "accepts a path with spaces and non-ASCII letters" do
+      odd = File.join(dir, "Zoë Smith app")
+      FileUtils.mkdir_p(odd)
+      system("git", "-C", odd, "init", "-q", "-b", "feature/x", exception: true)
+      system("git", "-C", odd, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "start", exception: true)
+      allow(lock_namespace).to receive(:resolve).with(cwd: odd).and_return(key: "ns", display: "app", dir: File.join(dir, "locks"))
+
+      expect(engine.preflight(definition: definition, workspace: "app", worktree: odd, inputs: {})["step"]).to eq("reproduce")
     end
 
     it "lets a new untracked file pass the tree check" do

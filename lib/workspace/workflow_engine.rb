@@ -117,15 +117,19 @@ module Workspace
     # @param tree [String, nil] the checkout a `guard: unchanged` step would run in, which must
     #   be clean (no commit to start from, no git operation stopped, no change to a tracked
     #   file); nil skips the look
+    # @param checkout [String, nil] the path of a checkout that does not exist yet (the worktree `workflow start`
+    #   will have `start` make), checked for characters unsafe in shell commands like +worktree+ and +tree+
     # @return [Hash{String=>Object}] "workflow", "workspace", "project", "step" (the first
     #   step), "pane", "inputs" and "packs" (the refs the first step's instructions use)
     # @raise [Workspace::Error] code `input_required` for a missing input, `usage` for an
     #   unknown one, `workflow_command_unset` when a step's check names a command the
     #   project has not set, `dirty_worktree` when +tree+ is not clean for a guarded step, `pane_has_run` when the pane already runs a workflow, and
     #   the composer's errors for a pack that can't be read
-    def preflight(definition:, workspace:, worktree:, inputs:, pane: nil, tree: worktree)
+    def preflight(definition:, workspace:, worktree:, inputs:, pane: nil, tree: worktree, checkout: nil)
       data = definition.to_h
       inputs = check_inputs(data, inputs)
+      check_checkout_path(data, [worktree, tree, checkout].compact.uniq)
+      check_notes_path(data, workspace)
       check_tree(data, tree)
       project = @lineage.resolve(cwd: worktree).name
       check_commands(data, project)
@@ -864,6 +868,30 @@ module Workspace
         "WORKSPACE_RUN_ID" => run["id"], "WORKSPACE_RUN_ARTIFACTS" => run["artifacts_dir"].to_s,
         "WORKSPACE_RUN_BASE_SHA" => run["base_sha"].to_s
       )
+    end
+
+    # The steps' prompts hand the agent shell commands that hold the run's artifacts path
+    # (under the checkout) and the gate note's path (under the notes directory), so a path that
+    # can end a quote or start a substitution is refused. Only the names of the characters are
+    # reported, never the path. +what+ says which path it is.
+    def check_checkout_path(data, paths, what: "checkout")
+      paths.each do |path|
+        found = ShellSafePath.unsafe_characters(path)
+        next if found.empty?
+        raise Workspace::Error.new(
+          "Workflow #{data["id"]} can't run with a #{what} whose path holds #{found.join(", ")}: its instructions put the path in shell commands. " \
+          "Use a #{what} whose path has none of them.",
+          code: "unsafe_checkout_path", details: {"workflow" => data["id"], "characters" => found, "path_kind" => what}
+        )
+      end
+    end
+
+    # The notes directory is read only for a workflow with a gate, whose note the fix step is
+    # handed the path of; one that can't be found yet (a worktree not made) is left to the gate.
+    def check_notes_path(data, workspace)
+      return unless data["steps"].any? { |step| step["gate"] }
+      dir = @gate_note.notes_dir_of(workspace)
+      check_checkout_path(data, [dir].compact, what: "notes directory")
     end
 
     # A definition with a `guard: unchanged` step starts from a clean checkout: a commit to
