@@ -41,6 +41,7 @@ module HelpExamplesSpec
     "lookup", "notes", "notes dir", "parent",
     "pipeline", "pipeline start", "pipeline advance", "pipeline status", "pipeline reset",
     "plan", "plan status", "plan path", "plan show", "plan init", "plan start", "plan pause", "plan delete",
+    "plan task add", "plan task set-state", "plan task set-title", "plan task move",
     "pr", "pr create", "pr feedback",
     "projects", "projects list", "projects show", "projects members", "projects stop", "projects kill",
     "projects group", "projects group create", "projects group add", "projects group list", "projects group show",
@@ -77,7 +78,7 @@ module HelpExamplesSpec
     "layout restore",
     "layout save",
 
-    # T3: verbs that share their command's page
+    # T3 gave these a page of their own; their examples come with the group tasks
     "binding clear",
     "binding set",
     "binding show",
@@ -246,6 +247,10 @@ module HelpExamplesSpec
     # T15: plans and stages
     "goal",
     "plan",
+    "plan task add",
+    "plan task move",
+    "plan task set-state",
+    "plan task set-title",
     "review",
     "spine",
     "step",
@@ -300,9 +305,6 @@ RSpec.describe "help pages end with examples" do
     Dir.mktmpdir("workspace-help-home") do |home|
       Dir.mktmpdir("workspace-help-cwd") do |cwd|
         saved = ENV.to_h
-        saved_streams = [$stdout, $stderr]
-        $stdout = out
-        $stderr = err
         begin
           # Fakes are not used: cli_spec.rb's builder is local to that file and leaves most
           # commands nil, and the help of library, config and the like reads real Config paths.
@@ -314,17 +316,22 @@ RSpec.describe "help pages end with examples" do
               raise "#{path} is outside the throwaway HOME" unless path.start_with?(home)
             end
             cli = Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {})
+            # OptionParser's own --help writes to $stdout, so only the run itself swaps the streams.
+            saved_streams = [$stdout, $stderr]
             begin
+              $stdout = out
+              $stderr = err
               cli.run(argv + ["--help"])
             rescue SystemExit => e
               status = e.status
             rescue Workspace::Error => e
               status = 1
               err.puts e.message
+            ensure
+              $stdout, $stderr = saved_streams
             end
           end
         ensure
-          $stdout, $stderr = saved_streams
           ENV.replace(saved)
         end
         text = out.string.gsub(home, "$HOME")

@@ -7084,7 +7084,11 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE")
+      output.truncate(0)
+      output.rewind
+      cli.run(["workflow", "status", "--help"])
+      expect(output.string).to include("Usage: workspace workflow status [RUN]", "waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)
@@ -8948,7 +8952,7 @@ RSpec.describe Workspace::CLI do
     it "prints its help without running anything" do
       cli.run(["review", "--help"])
 
-      expect(output.string).to include("Usage: workspace review [show] [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]", "review show list", "--max-bytes N")
+      expect(output.string).to include("Usage: workspace review show [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]", "review list [PROJECT]", "--max-bytes N")
       expect(review_command.calls).to eq([])
     end
 
@@ -9529,10 +9533,11 @@ RSpec.describe Workspace::CLI do
       expect(projects_command.calls).to be_empty
     end
 
-    it "prints the same help for `projects list --help`" do
+    it "prints the page of `projects list` for `projects list --help`" do
       cli.run(["projects", "list", "--help"])
 
-      expect(output.string).to include("A project is a repository's main checkout plus its linked git worktrees.")
+      expect(output.string).to include("Usage: workspace projects list [--running] [--git] [--json]", "--running")
+      expect(output.string).not_to include("Subcommands:")
       expect(projects_command.calls).to be_empty
     end
 

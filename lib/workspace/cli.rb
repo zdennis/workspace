@@ -2885,8 +2885,33 @@ module Workspace
     end
 
     # Whether +args+ ask for help, so a verb shows its page before it parses or acts.
-    def help_requested?(args)
-      args.include?("--help") || args.include?("-h")
+    # Only the words before a `--` count, and with a +page+ the word after a flag
+    # that takes a value is that value, so `--note --help` stays literal.
+    def help_requested?(args, page = nil)
+      value_flags = page ? HelpPages.value_flags(page) : []
+      skip = false
+      args.each do |arg|
+        break if arg == "--"
+        if skip
+          skip = false
+        elsif ["--help", "-h"].include?(arg)
+          return true
+        else
+          skip = value_flags.include?(arg)
+        end
+      end
+      false
+    end
+
+    # Prints the page of the verb that leads +args+ when help is asked for, before
+    # anything is parsed or acted on. False when there is no verb or no request,
+    # so the bare command keeps its overview.
+    def verb_help_shown?(table, args)
+      _key, page = HelpPages.lookup(table, args)
+      return false unless page && help_requested?(args, page)
+
+      @output.puts HelpPages.render(page)
+      true
     end
 
     # Whether --json was requested, even when the parse error happened before
@@ -4442,22 +4467,15 @@ module Workspace
 
     def review_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace review [show] [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]\n       workspace review list [PROJECT] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::REVIEW)
         opts.separator ""
         opts.separator "Collect what you need to review a coding agent's finished work. A workspace is ready"
         opts.separator "when its agent is done (the Stop hook fired and no pane is working or waiting) and its"
         opts.separator "branch has commits its base branch (origin's default branch) lacks. A stopped workspace"
         opts.separator "is judged by its agent's last recorded state (agent_state_source \"recorded\" in --json)."
         opts.separator ""
-        opts.separator "  show [WORKSPACE]  One workspace's packet: agent state, task, diffstat and commits against the"
-        opts.separator "                    base, the pull request and its checks (read with `gh pr view`), open"
-        opts.separator "                    questions, session count and the agent's last message. WORKSPACE"
-        opts.separator "                    defaults to the one for the current directory. A workspace named"
-        opts.separator "                    \"list\" is reviewed with `review show list`."
-        opts.separator "                    --patch adds the unified patch of the same range as the diffstat."
-        opts.separator "  list [PROJECT]    The project's workspaces that are ready. PROJECT is a project name, a"
-        opts.separator "                    member workspace name or a path; it defaults to the current directory's."
-        opts.separator "                    Runs git only for workspaces whose agent is done, and never calls gh."
+        HelpPages.overview_verbs(HelpPages::REVIEW).each { |line| opts.separator line }
+        opts.separator "Run `workspace review VERB --help` for a verb's options."
         opts.separator ""
         opts.separator "Reads only; nothing is written. A source that can't answer (no agent daemon, git or gh"
         opts.separator "failing or too slow) is reported as unavailable, never as clean."
@@ -4477,6 +4495,8 @@ module Workspace
     end
 
     def cmd_review(args)
+      return if verb_help_shown?(HelpPages::REVIEW, args)
+
       options = {json: false}
       given = args.dup
       parser = review_parser(options)
@@ -4513,22 +4533,11 @@ module Workspace
 
     def daemon_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace daemon status [WORKSPACE] [--json]\n" \
-          "       workspace daemon restart [WORKSPACE] [--wc-socket PATH] [--json]\n" \
-          "       workspace daemon restart --all [--json]\n" \
-          "       workspace daemon list [--json]\n" \
-          "       workspace daemon log [WORKSPACE] [--lines N] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::DAEMON)
         opts.separator ""
         opts.separator "Inspect or control a workspace's agent daemon (see `workspace agentd`)."
-        opts.separator "  status    whether the daemon answers on its socket, its pid, and its socket and log paths"
-        opts.separator "  restart   stop the daemon holding the socket (SIGTERM, even a hung one) and start a new one in the"
-        opts.separator "            background; a daemon run in a terminal is replaced by a detached one. With none"
-        opts.separator "            running, just start one"
-        opts.separator "            --all restarts every running daemon, one after another, so each runs the code that is"
-        opts.separator "            installed now; one that fails does not stop the rest, and the exit status is non-zero if any failed"
-        opts.separator "  list      every running daemon: its workspace, pid, start time and socket"
-        opts.separator "  log       the last lines of the log a background daemon writes; a daemon run in a"
-        opts.separator "            terminal logs to that terminal instead"
+        HelpPages.overview_verbs(HelpPages::DAEMON).each { |line| opts.separator line }
+        opts.separator "Run `workspace daemon VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--name NAME", "Workspace name (defaults to WORKSPACE or the project detected from the current directory)") { |v| options[:name] = v }
         opts.on("--lines N", Integer, "log: how many trailing lines (default #{Commands::Daemon::DEFAULT_LINES})") { |v| options[:lines] = v }
@@ -4547,6 +4556,8 @@ module Workspace
     end
 
     def cmd_daemon(args)
+      return if verb_help_shown?(HelpPages::DAEMON, args)
+
       options = {json: false}
       given = args.dup
       parser = daemon_parser(options)
@@ -4631,24 +4642,9 @@ module Workspace
 
     def ui_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ui open task|review|plan [WORKSPACE] [--print] [--json]\n" \
-          "       workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]\n" \
-          "       workspace ui open pane [WORKSPACE] PANE [--print] [--json]\n" \
-          "       workspace ui open inbox [--print] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::UI)
         opts.separator ""
-        opts.separator "Open a view of the workspace UI through its workspace-ui:// link:"
-        opts.separator "  task WORKSPACE     workspace-ui://task/WORKSPACE"
-        opts.separator "  review WORKSPACE   workspace-ui://review/WORKSPACE"
-        opts.separator "  notes WORKSPACE    workspace-ui://notes/WORKSPACE, or .../REL when --path REL is given (an existing .md note in the notes directory)"
-        opts.separator "  plan WORKSPACE     workspace-ui://plan/WORKSPACE"
-        opts.separator "  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE"
-        opts.separator "                     (PANE is a tmux pane id such as %19; WORKSPACE may be left out as for the others)"
-        opts.separator "  inbox              workspace-ui://inbox"
-        opts.separator ""
-        opts.separator "A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)"
-        opts.separator "defaults to the project detected from the current directory. Opening needs the UI app"
-        opts.separator "installed, since it registers the scheme; without it `open` fails, the exit status is 1, and"
-        opts.separator "--print still shows the link."
+        HelpPages::UI["open"][:about].each { |line| opts.separator line }
         opts.separator ""
         opts.on("--name NAME", "Workspace name (every view but inbox)") { |v| options[:name] = v }
         opts.on("--path REL", "Note to open, relative to the notes directory (notes view only)") { |v| options[:path] = v }
@@ -4668,6 +4664,8 @@ module Workspace
     end
 
     def cmd_ui(args)
+      return if verb_help_shown?(HelpPages::UI, args)
+
       options = {json: false, print: false}
       given = args.dup
       parser = ui_parser(options)
@@ -4713,9 +4711,7 @@ module Workspace
 
     def binding_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--pack NAME]... [options]\n" \
-          "       workspace binding show [--pane %ID] [--json]\n" \
-          "       workspace binding clear [--pane %ID] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::BINDING)
         opts.separator ""
         opts.separator "Bind a tmux pane to a workflow run, a PR review or a library play. When the agent"
         opts.separator "in a bound pane starts a session (startup, /clear, resume or compact), session-event"
@@ -4764,6 +4760,8 @@ module Workspace
     end
 
     def cmd_binding(args)
+      return if verb_help_shown?(HelpPages::BINDING, args)
+
       options = {json: false}
       given = args.dup
       parser = binding_parser(options)
@@ -4813,15 +4811,7 @@ module Workspace
 
     def library_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace library list [--kind KIND] [--global | --builtin | --project [NAME]] [--json]\n" \
-          "       workspace library show REF [--global | --builtin | --project [NAME]] [--json]\n" \
-          "       workspace library info REF [--global | --builtin | --project [NAME]] [--json]\n" \
-          "       workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]\n" \
-          "       workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]\n" \
-          "       workspace library installed [--name WS | --user] [--kind skill|agent] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::LIBRARY)
         opts.separator ""
         opts.separator "A store of named plays, prompts, recipes, agents and skills under #{@config.library_dir}."
         opts.separator "A play is a document an agent reads and follows; a prompt is short text sent as typed;"
@@ -4836,26 +4826,8 @@ module Workspace
         opts.separator "show search them last, so a project or global play of the same name comes first there;"
         opts.separator "`instructions compose --pack` always uses the built-in one."
         opts.separator ""
-        opts.separator "  list      every entry visible from here, sorted by kind then name"
-        opts.separator "  show      print the body, so --prompt \"$(workspace library show prompt/kickoff)\" works"
-        opts.separator "  info      kind, name, scope, path, link target, description, modified time, effective"
-        opts.separator "  add       copy PATH in (or link it with --link, or read - from stdin with --as NAME);"
-        opts.separator "            the name defaults to the file name in kebab case; identical content is a no-op,"
-        opts.separator "            different content under the same name needs --force"
-        opts.separator "  update    replace an existing entry's content, or repoint its link"
-        opts.separator "  remove    delete the entry or its link from the store; the source file is never touched"
-        opts.separator "  install   copy a library skill or agent into an existing workspace's checkout"
-        opts.separator "            (.claude/skills/NAME/ or .claude/agents/NAME.md unless library.install.skills_dir or"
-        opts.separator "            agents_dir says otherwise), as start --skill/--agent does for a new one: identical"
-        opts.separator "            content is unchanged, different content needs --force, a path the repo tracks is"
-        opts.separator "            never overwritten; the copy is listed in info/exclude. --user copies to your home-level"
-        opts.separator "            directory instead (library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default)."
-        opts.separator "            --from global|project copies that store's entry, not the project's over the global one"
-        opts.separator "  uninstall delete that copy from the checkout, or with --user from the home-level directory; a copy that"
-        opts.separator "            differs from the library entry needs --force; the library entry and the info/exclude line stay"
-        opts.separator "  installed list the copies install made in a workspace's checkout (--name WS, default: the current"
-        opts.separator "            directory's) or at user level (--user); read-only. A copy counts when its name is a library"
-        opts.separator "            entry's or the repo's info/exclude lists it; modified = differs from that entry"
+        HelpPages.overview_verbs(HelpPages::LIBRARY).each { |line| opts.separator line }
+        opts.separator "Run `workspace library VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--kind KIND", "agent, play, prompt, recipe, skill or spine (add: required; list: a filter);",
           "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt (for 'start --recipe');",
@@ -4888,6 +4860,8 @@ module Workspace
     end
 
     def cmd_library(args)
+      return if verb_help_shown?(HelpPages::LIBRARY, args)
+
       options = {json: false, link: false, force: false, yes: false, dry_run: false, user: false}
       given = args.dup
       parser = library_parser(options)
@@ -5004,29 +4978,9 @@ module Workspace
 
     def instructions_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]\n       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::INSTRUCTIONS)
         opts.separator ""
-        opts.separator "Print the instructions an agent is given, built from library packs. A pack is a"
-        opts.separator "library play; workspace ships eight: binding (how to work in a bound pane),"
-        opts.separator "orchestrator (delegate to sub-agents), commits (how to commit), review (review a"
-        opts.separator "diff with reviewer sub-agents), notes (where working notes go), handoff (run"
-        opts.separator "'workspace handoff check' after every task), dev (queue for the shared dev"
-        opts.separator "environment before testing, release it when done) and implementation-plan"
-        opts.separator "(keep the counted task list in IMPLEMENTATION_PLAN.md). With no"
-        opts.separator "--pack, binding, orchestrator and commits are composed, in that order. Each"
-        opts.separator "pack is printed under a heading that names where it came from."
-        opts.separator ""
-        opts.separator "Any other library play can be named as a pack too: the project's library is searched,"
-        opts.separator "then global. A play named like a built-in pack never takes its place here; give your"
-        opts.separator "own another name. `workspace library list --builtin` lists the built-in packs and"
-        opts.separator "`workspace library show NAME --builtin` prints one."
-        opts.separator ""
-        opts.separator "Two packs get lines for the caller. binding is followed by the binding of --pane"
-        opts.separator "when that pane is bound, and commits by the project's commands.test and"
-        opts.separator "commands.lint when they are set (workspace config set commands.test ...)."
-        opts.separator "--pane defaults to $TMUX_PANE, the pane the command runs in, unless --name is given."
-        opts.separator "Text composed for another pane, as in start --prompt \"$(...)\", would carry this"
-        opts.separator "pane's binding: name the packs and leave binding out, or bind that pane first."
+        HelpPages::INSTRUCTIONS["compose"][:about].each { |line| opts.separator line }
         opts.separator ""
         opts.on("--pack NAME", "A pack to compose (repeatable, composed in the order given)") { |v| options[:packs] << v }
         opts.on("--pane PANE", "Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)") { |v| options[:pane] = v }
@@ -5047,6 +5001,8 @@ module Workspace
     end
 
     def cmd_instructions(args)
+      return if verb_help_shown?(HelpPages::INSTRUCTIONS, args)
+
       options = {json: false, packs: [], start: false, no_packs: false}
       given = args.dup
       parser = instructions_parser(options)
@@ -5077,21 +5033,7 @@ module Workspace
 
     def workflow_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace workflow show [ID] [--source] [--json]\n" \
-          "       workspace workflow validate PATH|- [--id ID] [--json]\n" \
-          "       workspace workflow add ID PATH|- [--dry-run] [--json]\n" \
-          "       workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]\n" \
-          "       workspace workflow remove ID [--yes] [--dry-run] [--json]\n" \
-          "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
-          "       workspace workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]\n" \
-          "                                [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]\n" \
-          "       workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--json]\n" \
-          "       workspace workflow events RUN [--since N] [--json]\n" \
-          "       workspace workflow files RUN [--json]\n" \
-          "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
-          "       workspace workflow cancel RUN [--json]\n" \
-          "       workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]\n" \
-          "       workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::WORKFLOW)
         opts.separator ""
         opts.separator "Run a workflow in a workspace: an ordered list of steps, each done by the agent in the"
         opts.separator "workspace's Claude pane. A step gets its instructions in a file under .workflow/ in the"
@@ -5105,50 +5047,8 @@ module Workspace
         opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml, then the presets that"
         opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix). See docs/README.workflow.md."
         opts.separator ""
-        opts.separator "  show      list the definitions, or print one (inputs, steps); --source gives the file's text, its sha256 and"
-        opts.separator "            its problems even when it is invalid (exit 0), for an editor"
-        opts.separator "  validate  check a definition's text (a file, or - for stdin) with the checks a definition on"
-        opts.separator "            disk gets, listing every problem at once; writes nothing. The id is --id, else"
-        opts.separator "            its id: key, else the file's name (stdin: \"stdin\"); a relative prompt_file: is"
-        opts.separator "            read from the file's directory (stdin: the current directory)"
-        opts.separator "  add       save a definition (a file, or - for stdin) as ID.yml in the directory above, after"
-        opts.separator "            the checks validate runs; refused with workflow_exists when that file is there."
-        opts.separator "            A preset of the same id is left alone and the copy shadows it. A relative"
-        opts.separator "            prompt_file: is read from that directory; --dry-run checks and writes no definition"
-        opts.separator "  update    replace your ID.yml (a file, or - for stdin) after the checks add runs, only if the"
-        opts.separator "            file's raw bytes still hash to --if-sha256 (from `show ID --source`; a broken"
-        opts.separator "            file can be replaced); refused with stale_workflow when it changed, builtin_workflow"
-        opts.separator "            for a preset with no file of yours; --dry-run checks and writes no definition"
-        opts.separator "  remove    delete your ID.yml (a link itself, never its target); asks first unless --yes or"
-        opts.separator "            --dry-run, and refuses with confirmation_required under --no-input; a preset of the"
-        opts.separator "            same id is then in effect again; unknown_workflow when you have no file,"
-        opts.separator "            builtin_workflow for a preset alone; --dry-run checks and deletes nothing"
-        opts.separator "  run       start a run in a workspace (the current one, or --name); --dry-run checks"
-        opts.separator "            the inputs, the project's commands and the pane, and starts nothing"
-        opts.separator "  start     make a workspace from a ticket or pull request REF (a JIRA key or URL, PR, issue or"
-        opts.separator "            branch) or from --prompt TEXT, wait for its agent, and run ID in it; --dry-run checks"
-        opts.separator "            everything and makes nothing; a fork's pull request, or a branch tracking another"
-        opts.separator "            repository, is refused with fork_pull_request before anything is made"
-        opts.separator "  status    the runs still going in this workspace (or --name WORKSPACE's), or one RUN,"
-        opts.separator "            or --project [NAME]'s: the main checkout and its worktrees, finished runs too,"
-        opts.separator "            or --all: every workspace, finished runs too. Each run shows its step and, when"
-        opts.separator "            it is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
-        opts.separator "            failed_check or pane_gone, with the commands that resolve it"
-        opts.separator "  events    a run's history (going or finished), one line per event: n (its line number), ts,"
-        opts.separator "            type and the rest; oldest first, at most 1000 after --since N (default 0); --json"
-        opts.separator "            adds truncated and next_since to continue from"
-        opts.separator "  files     the files a run keeps: each attempt's prompt and check log, each step's produces"
-        opts.separator "            entries, with whether each exists and its size (a link is reported, never followed)"
-        opts.separator "  resume    get a run going again: ask for its lock again, run a failed or undelivered"
-        opts.separator "            step again, look again at a step whose files were missing, or move it to the"
-        opts.separator "            workspace's Claude pane when its own is gone; --from STEP starts again there"
-        opts.separator "  cancel    end a run and release what it holds"
-        opts.separator "  approve   pass a gate; refused from a pane a run is bound to (as is resume --from at"
-        opts.separator "            a gate) and from a process under the run's own pane, so an agent doesn't pass"
-        opts.separator "            its own plan by mistake. When the gated step's first file starts with"
-        opts.separator "            `note: FILE`, the note's sha256 is recorded and given to the next step"
-        opts.separator "  reject    turn a gate down: the gated step (or --to an earlier one) runs again with the note;"
-        opts.separator "            refused where approve is"
+        HelpPages.overview_verbs(HelpPages::WORKFLOW).each { |line| opts.separator line }
+        opts.separator "Run `workspace workflow VERB --help` for a verb's options."
         opts.separator ""
         opts.separator "approve and reject with --step (and --attempt) are refused with gate_not_waiting unless the run"
         opts.separator "waits at that step's gate (on that attempt), so a stale button can't pass a later gate. These"
@@ -5213,6 +5113,8 @@ module Workspace
     end
 
     def cmd_workflow(args)
+      return if verb_help_shown?(HelpPages::WORKFLOW, args)
+
       options = {json: false, inputs: [], background: [], all: false, dry_run: false, turn_ended: false, source: false}
       given = args.dup
       parser = workflow_parser(options)
@@ -5379,17 +5281,14 @@ module Workspace
 
     def step_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]\n" \
-          "       workspace step status [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::STEP)
         opts.separator ""
         opts.separator "For the agent working on a workflow step, run from the pane the run is bound to."
         opts.separator "Neither is required: a step is decided when the agent's turn ends, from the files it"
         opts.separator "was told to leave and the step's check (see `workspace workflow --help`)."
         opts.separator ""
-        opts.separator "  done      record what you say about the step, then end your turn. --status fail fails"
-        opts.separator "            the step at the turn's end without running its check"
-        opts.separator "  status    which run, step and attempt this pane is on, where its instructions are,"
-        opts.separator "            and whether the files the step must leave exist"
+        HelpPages.overview_verbs(HelpPages::STEP).each { |line| opts.separator line }
+        opts.separator "Run `workspace step VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--status STATUS", "done: pass (default) or fail") { |v| options[:status] = v }
         opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
@@ -5406,6 +5305,8 @@ module Workspace
     end
 
     def cmd_step(args)
+      return if verb_help_shown?(HelpPages::STEP, args)
+
       options = {json: false, status: "pass"}
       given = args.dup
       parser = step_parser(options)
@@ -5902,6 +5803,8 @@ module Workspace
     end
 
     def cmd_config(args)
+      return if verb_help_shown?(HelpPages::CONFIG, args)
+
       case args.first
       when "set"
         args.shift
@@ -7207,7 +7110,9 @@ module Workspace
 
       case subcommand
       when "list", nil
-        if rest.include?("--help") || rest.include?("-h")
+        if subcommand && verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
+          nil
+        elsif help_requested?(rest)
           @output.puts projects_help
         else
           cmd_projects_list(rest)
@@ -7493,39 +7398,22 @@ module Workspace
     end
 
     def projects_group_help
-      <<~HELP
-        Usage: workspace projects group create NAME [--json]
-               workspace projects group add GROUP PATH [--json]
-               workspace projects group list [--json]
-               workspace projects group show GROUP [--json] [--no-agents] [--no-git] [--timeout SECONDS]
-
-        A group names several repositories that belong together. Its id is group:<slug>
-        (the slug is NAME in lowercase with dashes). Each repository is kept by the
-        realpath of its git common dir, so a moved checkout stays in its group. The group
-        is a file at ~/.config/workspace/groups/<slug>.yml that you may edit by hand.
-
-        Subcommands:
-          create NAME       Make an empty group
-          add GROUP PATH    Add the repository containing PATH (a main checkout or a worktree).
-                            GROUP is an id, a slug or a name. A repository in another group is
-                            refused; adding it again to the same group does nothing.
-          list              Every group with its repositories (exists: false when one is gone).
-                            A group file that can't be read is named in "warnings" (--json) or on stderr.
-          show GROUP        Each repository as 'projects show' shows it
-
-        Options:
-          --json            Print schema-versioned JSON (see docs/README.projects.md)
-          --no-agents, --no-git, --timeout SECONDS
-                            For show: the same as 'projects show'
-
-        Examples:
-          workspace projects group create Billing
-          workspace projects group add billing ~/src/api
-          workspace projects group list --json
-      HELP
+      [HelpPages.overview_usage(HelpPages::GROUPS), "",
+        "A group names several repositories that belong together. Its id is group:<slug>",
+        "(the slug is NAME in lowercase with dashes). Each repository is kept by the",
+        "realpath of its git common dir, so a moved checkout stays in its group. The group",
+        "is a file at ~/.config/workspace/groups/<slug>.yml that you may edit by hand.", "",
+        "Subcommands:", *HelpPages.overview_verbs(HelpPages::GROUPS),
+        "Run `workspace projects group VERB --help` for a verb's options.", "",
+        "Examples:",
+        "  workspace projects group create Billing",
+        "  workspace projects group add billing ~/src/api",
+        "  workspace projects group list --json"].join("\n")
     end
 
     def cmd_projects_group(args)
+      return if verb_help_shown?(HelpPages::GROUPS, args)
+
       sub = args.index { |a| !a.start_with?("-") }
       action = sub && args[sub]
       rest = sub ? args[0...sub] + args[(sub + 1)..] : args.dup
@@ -7625,18 +7513,9 @@ module Workspace
 
     def notes_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace notes dir [--name WORKSPACE] [--create] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::NOTES)
         opts.separator ""
-        opts.separator "Notes are the working files an agent or a person keeps for a workspace (plans,"
-        opts.separator "findings, handoffs), outside the source tree."
-        opts.separator ""
-        opts.separator "Print where a workspace's notes are kept: the absolute path alone, so"
-        opts.separator "\"$(workspace notes dir)\" works. The workspace is the one detected from the"
-        opts.separator "current directory unless --name picks another."
-        opts.separator ""
-        opts.separator "The path is the workspace's own notes.dir (a worktree's own, or the project's for"
-        opts.separator "a main checkout), else the project's notes.default_dir rule, else"
-        opts.separator "tmp/workspace-notes in the checkout. Nothing is written to config."
+        HelpPages::NOTES["dir"][:about].each { |line| opts.separator line }
         opts.separator ""
         opts.on("--name NAME", "Workspace to answer for instead of the one detected from the current directory") { |v| options[:name] = v }
         opts.on("--create", "Make the directory; inside the checkout, also keep it out of git (info/exclude)") { options[:create] = true }
@@ -7651,6 +7530,8 @@ module Workspace
     end
 
     def cmd_notes(args)
+      return if verb_help_shown?(HelpPages::NOTES, args)
+
       options = {json: false, create: false}
       parser = notes_parser(options)
       subcommand = args.shift if args.first == "dir"
@@ -7731,7 +7612,7 @@ module Workspace
 
     def ticket_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ticket show REF [--name WORKSPACE] [--json]\n       workspace ticket list [--assigned|--recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::TICKET)
         opts.separator ""
         opts.separator "show: read a ticket the way 'workspace start' reads its argument, and say whether a worktree for"
         opts.separator "it already exists. REF is a JIRA key or URL, a pull request URL or #n, a GitHub issue URL,"
@@ -7766,6 +7647,8 @@ module Workspace
     end
 
     def cmd_ticket(args)
+      return if verb_help_shown?(HelpPages::TICKET, args)
+
       options = {json: false, name: nil}
       parser = ticket_parser(options)
       parser.parse!(args)
@@ -7799,6 +7682,8 @@ module Workspace
     end
 
     def cmd_goal(args)
+      return if verb_help_shown?(HelpPages::GOAL, args)
+
       options = {json: false, all: false}
       parser = goal_parser(options)
       parser.parse!(args)
@@ -7822,7 +7707,7 @@ module Workspace
 
     def goal_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace goal show [REF] [--json]\n       workspace goal list [--all] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::GOAL)
         opts.separator ""
         opts.separator "show: where a goal is at each level (the goal, its journey stage, its workflow step, the agent's"
         opts.separator "turn, the tool call), what it waits for and on whom, and the next expected event. A goal is a"
@@ -7844,59 +7729,14 @@ module Workspace
 
     def spine_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]\n" \
-                      "       workspace spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE]\n" \
-                      "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]\n" \
-                      "       workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone)\n" \
-                      "                             [--if-revision REV] [--by LABEL] [--json]\n" \
-                      "       workspace spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--by LABEL]\n" \
-                      "                              [--if-revision REV] [--json]\n" \
-                      "       workspace spine goal set [WORKSPACE] TEXT [--if-revision REV] [--by LABEL] [--json]\n" \
-                      "       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF]\n" \
-                      "                             [--if-revision REV] [--json]\n" \
-                      "       workspace spine start [WORKSPACE] STAGE-PATH --fan-out [--spawn KIND] [--max N] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::SPINE)
         opts.separator ""
-        opts.separator "show reads a workspace's stages: the stage files in spine/ of its notes directory, one"
-        opts.separator "Markdown file per stage (10-research.md, 20-plan.md, ...), and sub-stages in a folder named"
-        opts.separator "like a stage file without .md. Statuses are read as one of not_started, in_progress,"
-        opts.separator "blocked, completed, skipped or unknown. A bad file is a warning in the answer, never an"
-        opts.separator "error, and nothing is written, created or followed through a link."
+        opts.separator "A spine is the stage files in spine/ of a workspace's notes directory, one Markdown file"
+        opts.separator "per stage. Writers of a workspace take turns."
         opts.separator ""
-        opts.separator "set changes one stage's status, note or owner (give at least one). STAGE-PATH is the ids"
-        opts.separator "joined with /, as show reports `path`, such as verify or implement/api. It rewrites only the"
-        opts.separator "status, note, owner, updated and updated_by lines of the stage file and writes a spine_changed"
-        opts.separator "event. Writers of a workspace take turns."
-        opts.separator ""
-        opts.separator "check ticks (--done) or unticks (--undone) items of a stage's '## Done when' checklist; N is the"
-        opts.separator "item's 1-based position, as show lists them. Only the [ ] or [x] on that item's line changes, not"
-        opts.separator "the frontmatter. An item already in the asked state is left alone. It writes a spine_changed event"
-        opts.separator "with change done_when. Refuses an item that is not there (unknown_item)."
-        opts.separator ""
-        opts.separator "verify records a separate check of a completed stage: check (passed with --pass, failed with --fail),"
-        opts.separator "checked_by, checked_at and check_note, and no other line. A stage opts in with a check: line in its file"
-        opts.separator "(check: required); 'set --status completed' then makes it check: pending, and any other status resets it"
-        opts.separator "to required. Refuses a stage that has not opted in (check_not_required) and one that is not completed"
-        opts.separator "(stage_not_completed). It writes a spine_changed event with change check."
-        opts.separator ""
-        opts.separator "goal set writes title: in spine/goal.md (one line, at most 120 characters), keeping the rest of an"
-        opts.separator "existing file, and makes the file (spine: 1, title, a '# TEXT' heading) when it is missing. Refuses"
-        opts.separator "a workspace with no spine/ (no_spine). It writes a spine_changed event with change goal."
-        opts.separator ""
-        opts.separator "start gets an agent working on one stage: the pane named, a new one (--spawn), the stage's"
-        opts.separator "owner when it is a live agent pane, else the main Claude Code or Codex pane; a workspace with"
-        opts.separator "no session is launched. It first sets the stage in_progress with that pane as its owner, then"
-        opts.separator "types the brief (the play, the spine pack, and the stage's path and file), then binds the pane."
-        opts.separator "Refuses a stage that is completed or skipped (stage_done; not one whose check failed, which it reopens) or whose depends_on stages are not"
-        opts.separator "(stage_waiting), and a pane that is busy (pane_busy)."
-        opts.separator ""
-        opts.separator "start --fan-out starts every sub-stage of STAGE-PATH (the folder named like its file) that is not"
-        opts.separator "started and has no unmet depends_on, each in its own new pane (--spawn, default the main agent's"
-        opts.separator "kind), at most --max (default 3); the rest are skipped. One result per sub-stage: spawned, refused"
-        opts.separator "(with the code start would give, such as stage_waiting or stage_owned) or skipped. Exit status 1"
-        opts.separator "only when nothing was spawned and something was refused. A stopped workspace (no_session), no"
-        opts.separator "daemon (no_daemon) or a stage without sub-stages (no_substages) refuses the whole fan-out."
-        opts.separator ""
-        opts.separator "Other verb: init (create the folder from a template; run 'workspace spine init --help')."
+        opts.separator "Verbs:"
+        HelpPages.overview_verbs(HelpPages::SPINE).each { |line| opts.separator line }
+        opts.separator "Run `workspace spine VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
         opts.on("--stage STAGE-PATH", "show: only that stage (with its sub-stages); unknown_stage when there is none") { |v| options[:stage] = v }
@@ -8004,6 +7844,8 @@ module Workspace
     end
 
     def cmd_spine(args)
+      return if verb_help_shown?(HelpPages::SPINE, args)
+
       index = spine_verb_index(args)
       if index && args[index] == "init"
         args.delete_at(index)
@@ -8173,8 +8015,7 @@ module Workspace
 
     def pr_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]\n" \
-          "       workspace pr feedback [--name WORKSPACE] [--all] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::PR)
         opts.separator ""
         opts.separator "Open a pull request for a workspace's branch and leave the workspace alone. When the"
         opts.separator "branch already has a pull request, it is returned and nothing else happens. Otherwise the"
@@ -8202,6 +8043,8 @@ module Workspace
     end
 
     def cmd_pr(args)
+      return if verb_help_shown?(HelpPages::PR, args)
+
       options = {json: false, name: nil, draft: false, all: false}
       parser = pr_parser(options)
       parser.parse!(args)
@@ -8401,6 +8244,16 @@ module Workspace
 
     def plan_parser(options)
       OptionParser.new do |opts|
+        opts.banner = HelpPages.overview_usage(HelpPages::PLAN)
+        opts.separator ""
+        opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
+        opts.separator "line per task under '## Tasks'. workspace counts it, and works out one state from the"
+        opts.separator "plan, the session and the pane that owns the plan."
+        opts.separator ""
+        opts.separator "Subcommands:"
+        HelpPages.overview_verbs(HelpPages::PLAN).each { |line| opts.separator line }
+        opts.separator "Run `workspace plan VERB --help` for a verb's options. Task states: #{PlanFile::TASK_STATES.join(", ")}."
+        opts.separator ""
         opts.banner = "Usage: workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]\n" \
           "       workspace plan path [--name WORKSPACE] [--json]\n" \
           "       workspace plan show [--name WORKSPACE]\n" \
@@ -8479,6 +8332,8 @@ module Workspace
     end
 
     def cmd_plan(args)
+      return if verb_help_shown?(HelpPages::PLAN, args)
+
       options = {given: [], json: false, force: false, yes: false}
       parser = plan_parser(options)
       parser.parse!(args)
