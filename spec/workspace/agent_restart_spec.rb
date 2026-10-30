@@ -54,6 +54,7 @@ RSpec.describe Workspace::AgentRestart do
   let(:pane_states) { {} }
   let(:readings) { [] }
   let(:context_reader) { RestartFakeContextReader.new(wall, readings) }
+  let(:delivery_facts) { ->(id) { @facts_fn&.call(id) } }
 
   subject(:restart) do
     described_class.new(
@@ -61,6 +62,7 @@ RSpec.describe Workspace::AgentRestart do
       delivery_lock: Mutex.new,
       pipeline_ref: ->(index) { pipeline_refs[index] },
       pane_state: ->(id) { pane_states[id] },
+      delivery_facts: ->(id) { delivery_facts.call(id) },
       clock: -> { now[0] },
       wall_clock: -> { wall[0] },
       sleeper: ->(seconds) {
@@ -134,6 +136,71 @@ RSpec.describe Workspace::AgentRestart do
 
     expect(result["error"]).to eq("clear_not_confirmed")
     expect(result["message"]).to include("last reading: 1% at #{stale.iso8601}")
+  end
+
+  context "when the pane's hooks report SessionStart events" do
+    let(:stale_reading) { reading(nil, at: Time.utc(2026, 9, 27, 11, 0, 0)) }
+
+    def start_event(source, offset: 0, prompt_offset: nil, hooks: true)
+      lambda do |_id|
+        next {hooks: hooks} unless tmux.delivered.any?
+        {hooks: hooks, last_session_start: {source: source, at: wall[0] + offset},
+         last_user_prompt_at: prompt_offset && wall[0] + prompt_offset}
+      end
+    end
+
+    it "confirms a fresh session whose reading never changes" do
+      readings.push(stale_reading)
+      @facts_fn = start_event("clear")
+
+      result = call(confirm_timeout: 3)
+
+      expect(result).to include("ok" => true, "status" => "restarted", "context_after" => nil)
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+    end
+
+    it "does not count a SessionStart when a prompt was submitted after the /clear and before it" do
+      readings.push(stale_reading)
+      @facts_fn = start_event("clear", offset: 1, prompt_offset: 0.5)
+
+      result = call(confirm_timeout: 2)
+
+      expect(result["error"]).to eq("clear_not_confirmed")
+      expect(result["message"]).to include("no SessionStart with source clear")
+    end
+
+    it "types /clear on a pane whose reading could not confirm it, because its hooks reach the daemon" do
+      readings.push({pct: nil, error: Workspace::ContextReasons::NO_PATTERN, updated_at: nil})
+      @facts_fn = start_event("clear")
+
+      expect(call(confirm_timeout: 2)).to include("ok" => true, "status" => "restarted")
+      expect(tmux.delivered.first[:text]).to eq("/clear")
+    end
+
+    it "refuses that pane with no hooks, typing nothing" do
+      readings.push({pct: nil, error: Workspace::ContextReasons::NO_PATTERN, updated_at: nil})
+      @facts_fn = ->(_id) { {hooks: false} }
+
+      expect(call(confirm_timeout: 2)["error"]).to eq("context_unknown")
+      expect(tmux.delivered).to be_empty
+    end
+
+    it "does not count a SessionStart from before the /clear" do
+      readings.push(stale_reading)
+      @facts_fn = start_event("clear", offset: -60)
+
+      result = call(confirm_timeout: 2)
+
+      expect(result["error"]).to eq("clear_not_confirmed")
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+    end
+
+    it "does not count a SessionStart with another source" do
+      readings.push(stale_reading)
+      @facts_fn = start_event("startup")
+
+      expect(call(confirm_timeout: 2)["error"]).to eq("clear_not_confirmed")
+    end
   end
 
   context "when the readings carry a session id" do

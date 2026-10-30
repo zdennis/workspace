@@ -105,7 +105,7 @@ RSpec.describe "T4 finish/kill/prune adversarial findings" do
         allow(project_settings).to receive(:remove).with("myproject")
 
         stop_command = double("stop_command")
-        allow(stop_command).to receive(:call).with(["myproject"], quiet: true, warn_inactive: true, save_position: false)
+        allow(stop_command).to receive(:call).with(["myproject"], quiet: true, warn_inactive: true, save_position: false, session_names: {})
 
         state = CLITestHelpers::FakeState.new
         project_detector = Workspace::ProjectDetector.new(state: state, project_config: project_config)

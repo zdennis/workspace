@@ -25,8 +25,11 @@ module Workspace
       #   is removed, when the worktree holds the `devenv` lock; nil leaves it alone
       # @param pr_status [#call, nil] reads a checkout's pull request (`PullRequestStatus`); `delete_remote` asks it
       #   before anything is removed. nil reads as no answer, which refuses without force.
+      # @param tmux [Workspace::Tmux, nil] reads the project's tmux session name from its config before the config
+      #   is removed, so stop can still kill a session whose name differs from the config name; nil uses the config name
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, pr_status: nil, window_positions: nil, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, pr_status: nil, window_positions: nil, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, tmux: nil, output: $stdout, input: $stdin)
+        @tmux = tmux
         @dev = dev
         @pr_status = pr_status
         @dev_stopped = false
@@ -195,6 +198,8 @@ module Workspace
         keep_remote_branch({}, "checkout_missing", "Kept remote branch: the checkout was already gone, so its upstream could not be read", out) if delete_remote && missing
 
         outcome ||= force ? "discarded" : "abandoned"
+        # The session name lives in the config's `name:`, so read it before the config is removed.
+        session_name = @tmux&.session_name_for(project)
         end_workflow_runs(project, out)
         archive_task(project, outcome, out)
         yield project if block_given?
@@ -205,7 +210,7 @@ module Workspace
         @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => outcome})
 
         out.puts "Killing session..."
-        @stop_command.call([project], quiet: quiet, warn_inactive: warn_inactive, save_position: false)
+        @stop_command.call([project], quiet: quiet, warn_inactive: warn_inactive, save_position: false, session_names: {project => session_name}.compact)
         project
       end
 

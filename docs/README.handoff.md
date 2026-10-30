@@ -76,7 +76,7 @@ Capability `handoff_wait` (level 1). Without `--wait`, `new` returns once the ag
 Waiting has two bounds, and each timeout has its own `code`, so it is not mistaken for another failure:
 
 - `pane_busy`: the pane did not go quiet (screen unchanged for 2s and the agent neither working nor waiting on a person) within 120s. Nothing was typed.
-- `clear_not_confirmed`: `/clear` was typed but no reading from a new conversation arrived within 30s. The resume prompt was not typed, and the pane may be cleared.
+- `clear_not_confirmed`: `/clear` was typed but neither a reading from a new conversation nor a SessionStart hook event with source `clear` arrived within 30s. The resume prompt was not typed, and the pane may be cleared.
 
 Neither bound is configurable from `handoff new`: the 120s is fixed, and `handoff new` sends no timeout, so the 30s default applies (`agent-run restart --timeout` can change only that second bound, up to 600s). The client has no deadline of its own, so the worst case is about 150s plus the delivery. Do not run `--wait` from the agent being restarted.
 
@@ -133,7 +133,7 @@ Every `check --json` document (the three above) also carries `next`, the exit co
 
 - **Clearing.** Codex's `/clear` clears the terminal and starts a fresh chat, so `new` types `/clear` into a Codex pane as it does for Claude Code, then types the resume prompt once the clear is confirmed.
 - **Reading usage.** Codex has no status line for `workspace statusline` to route. Its status footer shows a line such as `Context 72% used · Context 28% left`, so `sessions --json` and `check` scrape the "used" half of that line from the pane and report the percent used (`72`). When the screen holds the text more than once, the last match counts, since the footer is the lowest line. Codex panes need no `context.source` setting for this.
-- **Confirming the clear.** A Codex pane has no session id, so `new` counts the clear as done when a reading taken after `/clear` was typed shows less use than before. A pane at 0% used cannot be confirmed that way: `new` then reports `clear_not_confirmed` after the wait and does not type the resume prompt.
+- **Confirming the clear.** A SessionStart with source `clear` from the pane's hooks, recorded after `/clear` was typed, confirms it for any agent that sends hooks. A Codex pane has no session id, so `new` counts the clear as done when a reading taken after `/clear` was typed shows less use than before. A pane at 0% used cannot be confirmed that way: `new` then reports `clear_not_confirmed` after the wait and does not type the resume prompt.
 - **Other footers.** If your Codex footer reads differently (for example a custom `/statusline`), set `context.patterns` in `~/.config/workspace/config.yml` to a regex with one capture group that captures the percent *used*. A pattern listed there for an agent kind replaces the built-in one for that kind; `context.pattern` remains the fallback in `scrape` mode for a kind with neither:
 
   ```yaml

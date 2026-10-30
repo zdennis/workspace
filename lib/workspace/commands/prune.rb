@@ -17,9 +17,11 @@ module Workspace
       # @param git [Workspace::Git] git operations
       # @param stop_command [Workspace::Commands::Stop] pre-built stop command for session teardown
       # @param event_log [Workspace::EventLog, nil] records `worktree_finished` (outcome `pruned`) for each removed project
+      # @param tmux [Workspace::Tmux, nil] reads a project's session name before its config is removed; nil uses the config name
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, output: $stdout, input: $stdin)
+      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, output: $stdout, input: $stdin)
+        @tmux = tmux
         @state = state
         @project_config = project_config
         @project_settings = project_settings
@@ -349,11 +351,12 @@ module Workspace
           end
         end
 
+        session_name = @tmux&.session_name_for(project)
         @project_config.remove(project)
         @project_settings.remove(project)
         # EventLog#record never raises.
         @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => "pruned"})
-        @stop_command.call([project]) if @state[project]
+        @stop_command.call([project], session_names: {project => session_name}.compact) if @state[project]
         # Stop already removed a live entry; deleting again would log a second state_removed.
         @state.delete(project) if @state[project]
         {outcome: "removed"}

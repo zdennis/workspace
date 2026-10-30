@@ -746,7 +746,7 @@ RSpec.describe Workspace::Commands::Kill do
           command.call("myproject.worktree-PROJ-123")
 
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
-          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false, session_names: {})
           expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123", quiet: false)
           expect(project_settings).to have_received(:remove).with("myproject.worktree-PROJ-123")
           expect(output.string).to include("Killing session...")
@@ -781,6 +781,33 @@ RSpec.describe Workspace::Commands::Kill do
           command.call("myproject.worktree-PROJ-123")
 
           expect(order).to eq([:remove_worktree, :remove_config, :remove_settings, :kill])
+        end
+
+        it "reads the session name before the config is removed and hands it to stop" do
+          tmux = double("tmux")
+          kill = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+            stop_command: stop_command, project_detector: project_detector, window_positions: window_positions,
+            tmux: tmux, output: output, input: input)
+          order = []
+          allow(tmux).to receive(:session_name_for).with("myproject.worktree-PROJ-123") {
+            order << :read_session
+            "myproject-wt-PROJ-123"
+          }
+          allow(git).to receive(:remove_worktree)
+          allow(project_config).to receive(:remove) { order << :remove_config }
+          allow(project_settings).to receive(:remove)
+          allow(stop_command).to receive(:call) { |*, **|
+            order << :kill
+            []
+          }
+
+          kill.call("myproject.worktree-PROJ-123", force: true)
+
+          expect(order).to eq([:read_session, :remove_config, :kill])
+          expect(stop_command).to have_received(:call).with(
+            ["myproject.worktree-PROJ-123"],
+            hash_including(session_names: {"myproject.worktree-PROJ-123" => "myproject-wt-PROJ-123"})
+          )
         end
 
         it "skips confirmation with force flag" do
@@ -819,7 +846,7 @@ RSpec.describe Workspace::Commands::Kill do
 
           expect(output.string).to eq("")
           expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123", quiet: true)
-          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true, warn_inactive: true, save_position: false)
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true, warn_inactive: true, save_position: false, session_names: {})
         end
 
         it "yields the project after removing the worktree and before removing config or stopping" do
@@ -921,7 +948,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: marker_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false, session_names: {})
         expect(output.string).to include("Killing session...")
       end
 
@@ -945,7 +972,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: sub_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false, session_names: {})
       end
 
       it "kills the active workspace whose root holds the directory when there is no marker" do
@@ -968,7 +995,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: sub_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false, session_names: {})
       end
 
       it "raises not_in_workspace when no workspace holds the directory and no project is given" do

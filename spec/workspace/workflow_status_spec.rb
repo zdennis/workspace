@@ -151,12 +151,44 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(run["current"]["reason"]).to be_nil
   end
 
-  it "keeps a stored turn_ended_incomplete when the pane shows nothing more urgent" do
-    create(state: "waiting", reason: {"code" => "turn_ended_incomplete", "since" => "2026-10-04T12:50:00Z",
-                                      "details" => {"step" => "plan", "attempt" => 2, "missing" => ["/src/app/.workflow/wr/plan.md"]}})
+  describe "a stored turn_ended_incomplete" do
+    let(:incomplete) do
+      {"code" => "turn_ended_incomplete", "since" => "2026-10-04T12:50:00Z",
+       "details" => {"step" => "plan", "attempt" => 2, "missing" => ["/src/app/.workflow/wr/plan.md"]}}
+    end
 
-    expect(current["reason"]).to include("code" => "turn_ended_incomplete",
-      "actions" => [action("focus", "app", "--pane", "%5"), action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+    it "is kept when the pane is idle" do
+      create(state: "waiting", reason: incomplete)
+      snapshot["panes"].first["state"] = "idle"
+
+      expect(current["reason"]).to include("code" => "turn_ended_incomplete",
+        "actions" => [action("focus", "app", "--pane", "%5"), action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+    end
+
+    it "is kept when the pane waits on nothing a person must answer" do
+      create(state: "waiting", reason: incomplete)
+      snapshot["panes"].first["state"] = "done"
+
+      expect(current["reason"]).to include("code" => "turn_ended_incomplete")
+    end
+
+    it "is hidden while the pane is working, and the run reads running" do
+      create(state: "waiting", reason: incomplete)
+
+      result = status.run("wr_1")["runs"].first
+
+      expect(result["current"]["reason"]).to be_nil
+      expect(result["state"]).to eq("running")
+    end
+
+    it "is hidden in the --json document's current reason too" do
+      create(state: "running", reason: incomplete)
+
+      document = JSON.parse(JSON.generate(status.runs))
+
+      expect(document["runs"].first["current"]["reason"]).to be_nil
+      expect(document["runs"].first["state"]).to eq("running")
+    end
   end
 
   it "does not look at the pane for a run that waits at a gate, for a lock or on a failed step" do

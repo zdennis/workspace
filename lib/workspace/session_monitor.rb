@@ -189,6 +189,33 @@ module Workspace
       @scan_slots.with_scan_slot { perform_scan }
     end
 
+    # Re-reads one pane now instead of waiting for the next {#scan}, so a
+    # caller about to refuse on a stale reading (a shell seen just before an
+    # agent started in the pane) can decide on a fresh one. Updates the pane's
+    # cached kind and activity only; alerts and logged changes are left to the
+    # next scan. Reads once; a failed tmux or process listing leaves the cache
+    # as it was. Takes no scan slot, which a busy scan thread or another
+    # daemon would hold, so the rescan can answer under load. A scan that read
+    # the process table before the agent started may still overwrite the fresh
+    # kind; the next scan corrects it.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [void]
+    def rescan_pane(pane_id)
+      detail = @tmux.pane_details(@session_name).find { |d| d[:id] == pane_id }
+      return unless detail
+      tree = @process_tree.snapshot
+      now = @clock.now
+      @lock.synchronize do
+        @history ||= load_history
+        refresh_pane(detail, tree, now)
+      end
+      nil
+    rescue Workspace::Error => e
+      @logger.debug { "session monitor: pane rescan skipped: #{e.message}" }
+      nil
+    end
+
     # Records a hook event reported by an agent.
     #
     # @param event [Hash] a "session_event" payload
