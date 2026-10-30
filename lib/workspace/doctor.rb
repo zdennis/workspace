@@ -35,10 +35,11 @@ module Workspace
     #   stale agent pane check; nil skips that check
     # @param main_agent [Workspace::MainAgent, nil] says which agent a config's pane runs; nil skips the stale pane check
     # @param file_backup [Workspace::FileBackup, nil] copies a config aside before `--fix` rewrites it; nil builds one
+    # @param skills [Workspace::Commands::Skills, nil] reads and repairs the skill links of each harness found; nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -57,6 +58,9 @@ module Workspace
       @project_config = project_config
       @main_agent = main_agent
       @event_log = event_log
+      @skills = skills
+      @skills_fixed = []
+      @skills_notes = []
       @file_backup = file_backup || FileBackup.new(output: output)
       @working_dir = working_dir
       @output = output
@@ -92,9 +96,12 @@ module Workspace
     # @return [Hash] `:mode` (`headless`, `reason`), `:rows` and `:issues`
     def report(headless: nil, fix: false)
       @rows = []
+      @skills_fixed = []
+      @skills_notes = []
       stale = stale_agent_panes
       fixed = fix ? fix_agent_panes(stale) : []
-      apply_fixes(fixed.size) if fix
+      skills_fixed = fix ? fix_skills : 0
+      apply_fixes(fixed.size + skills_fixed) if fix
       mode = @launch_mode.resolve(headless)
 
       dependency_checks.each { |entry| run_dependency_check(entry, mode) }
@@ -104,6 +111,7 @@ module Workspace
       check_promote_snapshots
       check_session_monitoring
       check_agent_panes(stale - fixed)
+      check_skills
       # A failed --fix is a `fix` row, so `doctor --fix` still exits non-zero
       # when there was nothing it could actually do.
       issues = @rows.count { |row| row[:status] == "fail" }
@@ -256,6 +264,54 @@ module Workspace
     # Whether the program the project's configured command starts for +provider+ is on PATH.
     def on_path?(provider, project)
       @which.call(@agent_commands ? @agent_commands.executable_for(project, provider.key) : provider.executable)
+    end
+
+    # `--fix` for the skill links: gives links to the harnesses found, not declined, that miss some or
+    # hold dangling ones (a first install, or a repair). Runs with or without a project. A source it
+    # can't link into (a linked worktree, an install without the skills) is a warning, not a failure.
+    #
+    # @return [Integer] how many harnesses were given links
+    def fix_skills
+      return 0 unless @skills
+      result = @skills.repair
+      @skills_fixed = result["fixed"]
+      @skills_notes = result["warnings"]
+      @skills_fixed.each { |name| @output.puts "--fix: #{name} skills linked" }
+      @skills_fixed.size
+    rescue Workspace::Error => e
+      @skills_notes = ["skills not linked: #{e.message}"]
+      0
+    end
+
+    # One row per harness found and not declined (declined get none): ok when the four links resolve,
+    # whichever install they point at; a warning when they are missing or something else sits in their
+    # place (never replaced); a failure for a dangling link of ours.
+    def check_skills
+      return unless @skills
+      blocked = @skills_notes.any?
+      @skills.health.each do |entry|
+        id = "skills-#{entry["key"]}"
+        label = "#{entry["name"]} skills (#{entry["dir"]})"
+        case entry["status"]
+        when "ok"
+          add_row(id, "ok", @skills_fixed.include?(entry["name"]) ? "#{label} linked now" : "#{label} linked")
+        when "missing"
+          add_row(id, "warn", "#{label} not installed", **skills_fix(blocked, "run 'workspace skills install' or 'workspace doctor --fix'", "workspace skills install"))
+        when "dangling"
+          add_row(id, "fail", "#{label} has a link to a checkout or install that no longer exists", **skills_fix(blocked, "run 'workspace doctor --fix' to relink it", "workspace doctor --fix"))
+        else
+          add_row(id, "warn", "#{label} holds a file, directory or foreign link where a workspace skill belongs; left alone",
+            fix: "run 'workspace skills install' to see the mv that moves it aside, then run it again")
+        end
+      end
+      @skills_notes.each { |note| add_row("skills", "warn", "--fix: #{note}") }
+    end
+
+    # Fix text for a missing or dangling link; when `--fix` was refused (a linked worktree, an install
+    # without the skills) it points at the place the install can be run from instead.
+    def skills_fix(blocked, text, command)
+      return {fix: text, fix_command: command} unless blocked
+      {fix: "run 'workspace skills install' from the main checkout or a Homebrew install"}
     end
 
     # Warns about each tmuxinator config whose agent pane runs a different program than the command

@@ -108,6 +108,7 @@ RSpec.describe Workspace::CLI do
       plan_dispatch_command: overrides[:plan_dispatch_command],
       plan_task_command: overrides[:plan_task_command],
       ticket_command: overrides[:ticket_command],
+      skills_command: overrides[:skills_command],
       goal_command: overrides[:goal_command],
       spine_command: overrides[:spine_command],
       spine_init_command: overrides[:spine_init_command],
@@ -7385,6 +7386,51 @@ RSpec.describe Workspace::CLI do
     it "refuses --all on show and an unknown subcommand" do
       expect { cli.run(["goal", "show", "x", "--all"]) }.to raise_error(FakeSystemExit)
       expect { cli.run(["goal", "nope"]) }.to raise_error(FakeSystemExit)
+    end
+  end
+
+  describe "#run with skills" do
+    let(:skills_command) { instance_double(Workspace::Commands::Skills, install: true, uninstall: true) }
+    let(:built) { build_test_cli(skills_command: skills_command) }
+    let(:cli) { built[0] }
+
+    it "passes install's flags through" do
+      cli.run(["skills", "install", "--install-all", "--dry-run", "--json"])
+
+      expect(skills_command).to have_received(:install).with(install_all: true, dry_run: true, json: true)
+    end
+
+    it "installs with no flags by default and accepts --no-input anywhere" do
+      cli.run(["skills", "install", "--no-input"])
+
+      expect(skills_command).to have_received(:install).with(install_all: false, dry_run: false, json: false)
+    end
+
+    it "passes uninstall's flags through" do
+      cli.run(["skills", "uninstall", "--dry-run"])
+
+      expect(skills_command).to have_received(:uninstall).with(dry_run: true, json: false)
+    end
+
+    it "exits 1 when the command says something was refused" do
+      allow(skills_command).to receive(:install).and_return(false)
+
+      expect { cli.run(["skills", "install"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "refuses --install-all on uninstall, a missing or unknown subcommand and extra arguments" do
+      expect { cli.run(["skills", "uninstall", "--install-all"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["skills"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["skills", "nope"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["skills", "install", "extra"]) }.to raise_error(FakeSystemExit)
+      expect(skills_command).not_to have_received(:install)
+    end
+
+    it "lists skills in the main help" do
+      built[1].truncate(0)
+      cli.run(["help"])
+
+      expect(built[1].string).to match(/^\s+skills\s+Link the workspace skills/)
     end
   end
 

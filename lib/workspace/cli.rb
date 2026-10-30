@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket spine journey goal pr rebase push promote projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects
       capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
@@ -80,6 +80,7 @@ module Workspace
     # @param plan_dispatch_command [Workspace::Commands::PlanDispatch, nil] pre-built plan start command
     # @param plan_task_command [Workspace::Commands::PlanTask, nil] pre-built plan task command
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
+    # @param skills_command [Workspace::Commands::Skills, nil] pre-built `skills install`/`uninstall` command
     # @param spine_command [Workspace::Commands::Spine, nil] pre-built spine command
     # @param spine_init_command [Workspace::Commands::SpineInit, nil] pre-built spine init command
     # @param spine_start_command [Workspace::Commands::SpineStart, nil] pre-built spine start command
@@ -123,7 +124,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -168,6 +169,7 @@ module Workspace
       @plan_dispatch_command = plan_dispatch_command
       @plan_task_command = plan_task_command
       @ticket_command = ticket_command
+      @skills_command = skills_command
       @spine_command = spine_command
       @spine_init_command = spine_init_command
       @spine_start_command = spine_start_command
@@ -288,6 +290,8 @@ module Workspace
         cmd_plan(args)
       when "ticket"
         cmd_ticket(args)
+      when "skills"
+        cmd_skills(args)
       when "spine", "journey"
         cmd_spine(args)
       when "goal"
@@ -626,6 +630,7 @@ module Workspace
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
+          skills          Link the workspace skills into your coding agents' skill directories (install), or remove the links (uninstall)
           spine           Read and set a workspace's stages (stage files in spine/ in its notes directory): show, init, set a stage's status, tick its checklist, record a check verdict (verify), start an agent on a stage
           journey         Another name for spine
           goal            Say where a workspace's goal is: its stage, workflow step, agent turn and tool call, what it waits for and on whom (show), or one line per goal (list)
@@ -7623,6 +7628,65 @@ module Workspace
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
       @notes_command.dir(name: name, create: options[:create], json: options[:json])
+    end
+
+    def skills_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace skills install [--install-all] [--dry-run] [--json] [--no-input]\n       workspace skills uninstall [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "install: link the four workspace skills (workspace, workspace-agent-run, workspace-inbox,"
+        opts.separator "workspace-lifecycle), each as a link to its whole directory, into the skills directory of the"
+        opts.separator "coding agents found on this machine (Claude Code ~/.claude/skills, Codex ~/.codex/skills,"
+        opts.separator "Pi ~/.pi/agent/skills, OpenCode ~/.config/opencode/skills) and into ~/.agents/skills when it"
+        opts.separator "exists. It asks once which of the harnesses found to install for; the ones left out are"
+        opts.separator "remembered and not asked again (end of input means none). All four skills are linked in a"
+        opts.separator "directory, or none: a path already there that is not our link (a real directory with other"
+        opts.separator "content, a file, someone else's link) is never replaced, it is refused and the mv to clear it"
+        opts.separator "is printed. A real directory identical to ours is moved to the state directory's"
+        opts.separator "skill-backups and linked. A re-run refreshes links and says what changed. From a linked git"
+        opts.separator "worktree it refuses (skill_source_worktree): run it from the main checkout or a Homebrew install."
+        opts.separator ""
+        opts.separator "uninstall: remove our links (one of the four names, pointing at a lib/skills/<name> of this"
+        opts.separator "tool, dangling ones too) from every known skills directory. Real directories and other links"
+        opts.separator "stay and are reported. It records no decline."
+        opts.separator ""
+        opts.separator "Exit status: 0 done or already current; 1 something was refused or failed, no harness found,"
+        opts.separator "or the install has no skills; 2 usage."
+        opts.separator ""
+        opts.on("--install-all", "install: every harness found, no question; clears recorded declines") { options[:install_all] = true }
+        opts.on("--dry-run", "Print what would happen; write nothing") { options[:dry_run] = true }
+        opts.on("--json", "Print one JSON document (see docs/README.json.md); questions go to stderr") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Without --install-all, install fails with confirmation_required under --no-input (or"
+        opts.separator "WORKSPACE_NO_INPUT) when it would have to ask; a re-run with nothing to ask is fine."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace skills install"
+        opts.separator "  workspace skills install --install-all --no-input --json"
+        opts.separator "  workspace skills uninstall --dry-run"
+      end
+    end
+
+    def cmd_skills(args)
+      options = {json: false, dry_run: false, install_all: false}
+      parser = skills_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      subcommand = args.shift
+      raise UsageError, "Missing subcommand: install or uninstall.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown skills subcommand: #{subcommand}. Run 'workspace skills --help'." unless %w[install uninstall].include?(subcommand)
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace skills --help'." if args.any?
+      raise UsageError, "--install-all applies to 'skills install' only." if subcommand == "uninstall" && options[:install_all]
+      raise Error, "skills is not available: no skills command was wired" unless @skills_command
+
+      ok = if subcommand == "install"
+        @skills_command.install(install_all: options[:install_all], dry_run: options[:dry_run], json: options[:json])
+      else
+        @skills_command.uninstall(dry_run: options[:dry_run], json: options[:json])
+      end
+      @exit_handler.exit(1) unless ok
     end
 
     def ticket_parser(options)

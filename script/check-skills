@@ -1,0 +1,391 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Checks the workspace skills in lib/skills against the real `workspace` CLI.
+#
+#   script/check-skills [REPO_ROOT] [--skills-dir DIR] [-v]
+#
+# REPO_ROOT defaults to $WORKSPACE_WORKTREE, else the repository this script is in.
+# DIR defaults to $SKILLS_DIR, else lib/skills in REPO_ROOT.
+#
+# What it checks, per backtick span and code-fence line in the five skill files:
+#   commands  `workspace a b c ...` (and bare `a b ...` when `a` is a subcommand):
+#             each subcommand word against the help of its parent
+#   flags     each --flag against `--help` of the command path, then its parents,
+#             then global options; a span of flags alone (`--when-idle`) is read
+#             against every help text seen
+#   codes     each snake_case span against lib/workspace/error_codes.rb
+#
+# Safety: the only thing ever run is `bin/workspace <words> --help`, with HOME and
+# cwd in an empty temp directory and TMUX unset. Words come from the skill text and
+# are run only after the parent's help lists them as subcommands.
+# Exit 0 when nothing mismatches, 1 otherwise.
+
+require "open3"
+require "tmpdir"
+require "timeout"
+require "fileutils"
+
+DEFAULT_WORKTREE = File.expand_path("..", __dir__)
+FILES = %w[
+  workspace/SKILL.md
+  workspace/references/machine-contract.md
+  workspace-agent-run/SKILL.md
+  workspace-inbox/SKILL.md
+  workspace-lifecycle/SKILL.md
+].freeze
+
+args = ARGV.dup
+verbose = !!args.delete("-v")
+skills_dir = ENV["SKILLS_DIR"]
+if (i = args.index("--skills-dir"))
+  skills_dir = args[i + 1] or abort "--skills-dir needs a directory"
+  args.slice!(i, 2)
+end
+WORKTREE_ROOT = File.expand_path(args.first || ENV["WORKSPACE_WORKTREE"] || DEFAULT_WORKTREE)
+skills_dir ||= File.join(WORKTREE_ROOT, "lib/skills")
+BIN = File.join(WORKTREE_ROOT, "bin/workspace")
+abort "no bin/workspace in #{WORKTREE_ROOT} (pass the repo root as the first argument)" unless File.executable?(BIN)
+
+SANDBOX = Dir.mktmpdir("check-skills")
+at_exit { FileUtils.remove_entry(SANDBOX) if File.exist?(SANDBOX) }
+
+# ---- help ------------------------------------------------------------------
+
+# Runs `workspace *words --help` and returns its text, or nil when it printed an
+# "Unknown ..." refusal, nothing, or timed out.
+def run_help(words)
+  @help_runs ||= {}
+  key = words.join(" ")
+  return @help_runs[key] if @help_runs.key?(key)
+  env = {"HOME" => SANDBOX, "TMUX" => nil, "TMUX_PANE" => nil, "WORKSPACE_NO_INPUT" => "1"}
+  text = nil
+  begin
+    Timeout.timeout(20) do
+      out, err, _st = Open3.capture3(env, BIN, *words, "--help", chdir: SANDBOX, stdin_data: "")
+      text = out.empty? ? err : out
+    end
+  rescue Timeout::Error
+    text = nil
+  end
+  text = nil if text.nil? || text.strip.empty? || text.start_with?("Unknown")
+  @help_runs[key] = text
+end
+
+# The help to read for a path: its own, or, when a top-level one is a stub (no
+# "workspace WORD" in it, as `agent-run --help` is), the `WORD help --help` form.
+def help_of(path)
+  @help_of ||= {}
+  key = path.join(" ")
+  return @help_of[key] if @help_of.key?(key)
+  text = run_help(path)
+  if path.size == 1 && (text.nil? || !text.include?("workspace #{path[0]}"))
+    alt = run_help([path[0], "help"])
+    text = alt if alt&.include?("workspace #{path[0]}")
+  end
+  @help_of[key] = text
+end
+
+def main_help
+  @main_help ||= `#{BIN} --help`
+end
+
+def top_commands
+  @top_commands ||= begin
+    names = main_help[/^Subcommands:\n(.*?)^\S/m, 1].to_s.lines.filter_map { |l| l[/\A  ([a-z][a-z-]*)\s/, 1] }
+    (names + %w[help version]).uniq
+  end
+end
+
+def global_flags
+  @global_flags ||= main_help[/^Global options:\n(.*?)^\S/m, 1].to_s.scan(/(?<![\w-])--[a-z][a-z0-9-]*/).uniq + ["--help"]
+end
+
+def flags_in(text)
+  text.scan(/(?<![\w-])--[a-z][a-z0-9-]*/).uniq
+end
+
+ALT = /[a-z][a-z-]*(?:\|[a-z][a-z-]*)*/
+
+# Subcommand words a help text lists for `path`: usage and example lines
+# ("workspace a b WORD|WORD"), and the indented rows of a "Subcommands:" block.
+def verbs_of(path)
+  @verbs ||= {}
+  key = path.join(" ")
+  return @verbs[key] if @verbs.key?(key)
+  text = help_of(path)
+  verbs = []
+  if text
+    prefix = Regexp.escape("workspace #{key}")
+    tail = Regexp.escape(key)
+    text.each_line do |l|
+      verbs.concat($1.split("|")) if l =~ /\A(?:Usage: |\s{7,})#{prefix}\s+(#{ALT})/
+      verbs.concat($1.split("|")) if l =~ /\A\s+\|\s+#{tail}\s+(#{ALT})/
+    end
+    if (block = text[/^Subcommands:\n(.*?)(?:\n\S|\n\n|\z)/m, 1])
+      block.each_line { |l| verbs.concat($1.split("|")) if l =~ /\A\s{2}(#{ALT})(?:\s|\z)/ }
+    end
+    # `projects` writes its list in one usage line: [list | show | members ...]
+    if path.size == 1 && text.lines.first =~ /\AUsage: workspace #{Regexp.escape(path[0])} \[.* \| /
+      verbs.concat(text.lines.first(6).join.scan(/(?:\[|\|\s*)([a-z][a-z-]*)(?=\s|\||\])/).flatten)
+    end
+  end
+  @verbs[key] = verbs.uniq
+end
+
+# ---- registry --------------------------------------------------------------
+
+REGISTRY = File.read(File.join(WORKTREE_ROOT, "lib/workspace/error_codes.rb"))
+  .scan(/^\s+"([a-z0-9_]+)"\s*=>/).flatten.freeze
+raise "empty registry" if REGISTRY.empty?
+
+# snake_case names the skills use that are not error codes: JSON fields, an event,
+# an inbox type, a status, the `lock_cleared` exit-code name, `lock_busy` (a details.reason of spine_unwritable). Feature names are
+# read from commands/capabilities.rb. Anything else that is not in error_codes.rb
+# is a mismatch.
+NOT_CODES = %w[
+  maybe_delivered schema_version dry_run exit_code lock_cleared hook_mode
+  waiting_message review_request prompt_queued lock_busy
+].freeze
+
+def feature_names
+  @feature_names ||= File.read(File.join(WORKTREE_ROOT, "lib/workspace/commands/capabilities.rb"))
+    .scan(/[a-z][a-z0-9]*(?:_[a-z0-9]+)+/).uniq
+end
+
+# Every snake_case word in lib/ and docs/: a span that is none of them is invented.
+def repo_words
+  @repo_words ||= begin
+    words = {}
+    Dir.glob(File.join(WORKTREE_ROOT, "{lib,docs}/**/*.{rb,md,yml}")).each do |f|
+      next if f.start_with?(File.join(WORKTREE_ROOT, "lib/skills") + "/")
+      File.read(f).scan(/[a-z][a-z0-9]*(?:_[a-z0-9]+)+/) { |w| words[w] = true }
+    rescue SystemCallError, ArgumentError
+      next
+    end
+    words
+  end
+end
+
+# ---- extraction ------------------------------------------------------------
+
+Claim = Struct.new(:file, :line, :text, :section)
+
+def spans_of(path, file)
+  claims = []
+  in_fence = false
+  section = 0
+  File.readlines(path, chomp: true).each_with_index do |line, i|
+    if line.start_with?("```")
+      in_fence = !in_fence
+      next
+    end
+    section += 1 if !in_fence && line.start_with?("#")
+    if in_fence
+      claims << Claim.new(file, i + 1, line.sub(/\A\s*\$\s+/, ""), section)
+    else
+      line.scan(/`([^`]+)`/) { |m| claims << Claim.new(file, i + 1, m[0].gsub("\\|", "|"), section) }
+    end
+  end
+  claims
+end
+
+# Tokens of a command string as [text, quoted?]; a quoted string is one token.
+def tokenize(text)
+  text.scan(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/).map do |a, b, c|
+    [a || b || c, !(a || b).nil?]
+  end
+end
+
+def clean(tok)
+  tok.sub(/\A[\[(<]+/, "").sub(/[\])>,.;:]+\z/, "").sub(/\.\.\.\z/, "")
+end
+
+# Reads one span or fence line. Returns [commands, flags, nested]: commands are
+# {words:, flags:, text:}; flags are those of a span made of flags alone; nested
+# are quoted strings that mention a workspace command.
+def parse_span(text, top)
+  toks = tokenize(text)
+  return [[], [], []] if toks.empty?
+
+  first = clean(toks[0][0])
+  if first == "workspace" && !toks[0][1]
+    rest = toks[1..]
+  elsif top.include?(first) && toks.size > 1 && !toks[0][1]
+    rest = toks
+  elsif first.start_with?("--") && !toks[0][1]
+    flags = toks.reject { |_, q| q }.filter_map { |t, _| clean(t)[/\A--[a-z][a-z0-9-]*/] }
+    return [[], flags, []]
+  else
+    return [[], [], []]
+  end
+  return [[], [], []] if rest.empty?
+
+  words = []
+  flags = []
+  nested = []
+  path_open = true
+  rest.each do |tok, quoted|
+    if quoted
+      path_open = false
+      nested << tok if tok =~ /\bworkspace\s+[a-z]/
+      next
+    end
+    raw = tok.gsub("\\|", "|")
+    c = clean(raw)
+    if c.start_with?("--")
+      path_open = false
+      f = c[/\A--[a-z][a-z0-9-]*/]
+      flags << f if f
+    elsif c.start_with?("-")
+      path_open = false
+    elsif path_open && c =~ /\A#{ALT}\z/o && raw !~ /\A[\[<]/
+      words << c
+    else
+      path_open = false
+    end
+  end
+  [words.empty? ? [] : [{words: words, flags: flags, text: text}], [], nested]
+end
+
+# ---- checking --------------------------------------------------------------
+
+mismatches = []
+recent_paths = []
+current_section = [0]
+non_registry = Hash.new { |h, k| h[k] = [] }
+totals = Hash.new(0)
+flag_sources = Hash.new { |h, k| h[k] = [] }
+
+check_command = lambda do |cmd, file, line|
+  words = cmd[:words]
+  totals[:commands] += 1
+  alts = words[0].split("|")
+  bad_top = alts.reject { |t| top_commands.include?(t) }
+  unless bad_top.empty?
+    mismatches << [file, line, cmd[:text], "`#{bad_top.join("`, `")}` is not a subcommand in `workspace --help`"]
+    next
+  end
+  path = [alts[0]]
+  words[1..].each do |w|
+    break if path.size >= 3
+    verbs = verbs_of(path)
+    break if verbs.empty? # no subcommands listed: the word is a positional argument
+    wa = w.split("|")
+    bad = wa.reject { |a| verbs.include?(a) }
+    unless bad.empty?
+      mismatches << [file, line, cmd[:text], "`workspace #{path.join(" ")}` has no subcommand `#{bad.join("`, `")}` (its help lists: #{verbs.join(", ")})"]
+      path = nil
+      break
+    end
+    path << wa[0]
+  end
+  next unless path
+
+  recent_paths << [file, line, path, current_section[0]]
+  cands = path.size.downto(1).map { |n| path[0, n] }
+  cmd[:flags].each do |f|
+    next if f == "--help"
+    totals[:flags] += 1
+    src = nil
+    cands.each do |p|
+      t = help_of(p)
+      next unless t && flags_in(t).include?(f)
+      src = (p == path) ? "its own help" : "parent help"
+      flag_sources[src] << [file, line, f, "workspace #{p.join(" ")} --help"]
+      break
+    end
+    if src.nil? && global_flags.include?(f)
+      flag_sources["global options"] << [file, line, f, "workspace --help"]
+      src = "global"
+    end
+    next if src
+    seen = cands.filter_map { |p| "workspace #{p.join(" ")} --help" if help_of(p) }
+    seen << "workspace --help" if seen.empty?
+    mismatches << [file, line, cmd[:text], "flag #{f} is not in #{seen.join(", ")}"]
+  end
+end
+
+bare_flags = []
+FILES.each do |rel|
+  full = File.join(skills_dir, rel)
+  unless File.exist?(full)
+    mismatches << [rel, 0, rel, "file not found in #{skills_dir}"]
+    next
+  end
+  spans_of(full, rel).each do |claim|
+    section = claim.section
+    current_section[0] = section
+    queue = [claim.text]
+    until queue.empty?
+      t = queue.shift
+      cmds, flags, nested = parse_span(t, top_commands)
+      cmds.each { |c| check_command.call(c, rel, claim.line) }
+      flags.each { |f| bare_flags << [rel, claim.line, f, t, section] unless f == "--help" }
+      queue.concat(nested.flat_map { |n| n.scan(/\bworkspace\s+(?:#{top_commands.map { |c| Regexp.escape(c) }.join("|")})\b[^"]*/) })
+    end
+
+    # error codes: a snake_case word is a code when error_codes.rb lists it; one
+    # that is nowhere in lib/ or docs/ is invented; the rest are field, feature or
+    # event names and are left alone.
+    next if claim.text.start_with?("workspace ")
+    claim.text.scan(/(?<![\w.-])([a-z][a-z0-9]*(?:_[a-z0-9*]+)+)(?![\w.-])/).flatten.each do |w|
+      if w.include?("*")
+        totals[:codes] += 1
+        re = /\A#{Regexp.escape(w).gsub("\\*", "[a-z0-9_]*")}\z/
+        mismatches << [rel, claim.line, w, "pattern matches no code in error_codes.rb"] unless REGISTRY.any? { |c| c.match?(re) }
+      elsif REGISTRY.include?(w)
+        totals[:codes] += 1
+      elsif NOT_CODES.include?(w) || feature_names.include?(w)
+        non_registry[w] << [rel, claim.line]
+      else
+        totals[:codes] += 1
+        mismatches << [rel, claim.line, w, (repo_words.key?(w) ? "not in error_codes.rb (it appears elsewhere in lib/ or docs/ as a detail or field, not a code)" : "not in error_codes.rb and not anywhere in lib/ or docs/")]
+      end
+    end
+    totals[:codes] += 1 if REGISTRY.include?(claim.text) && !claim.text.include?("_")
+  end
+end
+
+# Flags in a span of flags alone name no command, so read them against the
+# commands on the same line, then those earlier in the same heading section,
+# then any help text read so far, then every top-level help.
+bare_flags.each do |file, line, f, text, section|
+  totals[:flags] += 1
+  cand_help = lambda do |path|
+    path.size.downto(1).any? { |n| (t = help_of(path[0, n])) && flags_in(t).include?(f) }
+  end
+  found = nil
+  recent_paths.select { |fl, l, _, _| fl == file && l == line }.each { |_, _, p, _| found ||= ["same line", p.join(" ")] if cand_help.call(p) }
+  recent_paths.select { |fl, l, _, sec| fl == file && sec == section && l < line }.reverse_each { |_, _, p, _| found ||= ["same section", p.join(" ")] if cand_help.call(p) }
+  found ||= (k = @help_of.find { |_, t| t && flags_in(t).include?(f) }&.first) && ["any help read", k]
+  found ||= ["global options", ""] if global_flags.include?(f)
+  found ||= (c = top_commands.find { |x| cand_help.call([x]) }) && ["any top-level help", c]
+  if found
+    flag_sources["bare-flag span, #{found[0]}"] << [file, line, f, "help of `#{found[1]}`"]
+  else
+    mismatches << [file, line, text, "flag #{f} is in no help text (nothing in the span names a command)"]
+  end
+end
+
+mismatches.uniq!
+mismatches.sort_by! { |f, l, *_| [FILES.index(f) || 99, l] }
+mismatches.each { |f, l, claim, why| puts "#{f}:#{l}: #{claim} -- #{why}" }
+
+if verbose
+  puts
+  puts "snake_case spans not in error_codes.rb but allowed (NOT_CODES or capabilities features):"
+  non_registry.each { |w, at| puts "  #{w} #{at.map { |f, l| "#{f}:#{l}" }.join(", ")}" }
+  puts
+  flag_sources.each do |src, rows|
+    puts "flags matched via #{src}: #{rows.size}"
+    rows.each { |f, l, flag, where| puts "  #{f}:#{l} #{flag} (#{where})" }
+  end
+end
+
+puts
+puts "checked: #{totals[:commands]} commands, #{totals[:flags]} flags, #{totals[:codes]} codes " \
+     "(flags matched in: own help #{flag_sources["its own help"].size}, parent help #{flag_sources["parent help"].size}, " \
+     "global options #{flag_sources["global options"].size}; bare-flag spans: #{flag_sources.select { |k, _| k.start_with?("bare") }.map { |k, v| "#{k.sub("bare-flag span, ", "")} #{v.size}" }.join(", ")}); " \
+     "#{mismatches.size} mismatches; #{(@help_runs || {}).size} --help runs"
+exit(mismatches.empty? ? 0 : 1)

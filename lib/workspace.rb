@@ -156,6 +156,10 @@ require_relative "workspace/event_stream"
 require_relative "workspace/state"
 require_relative "workspace/git"
 require_relative "workspace/which"
+require_relative "workspace/skill_harnesses"
+require_relative "workspace/skill_source"
+require_relative "workspace/skills_state"
+require_relative "workspace/skill_links"
 require_relative "workspace/agent_command_check"
 require_relative "workspace/launch_mode"
 require_relative "workspace/doctor"
@@ -333,6 +337,7 @@ require_relative "workspace/commands/plan_dispatch"
 require_relative "workspace/commands/plan_task"
 require_relative "workspace/commands/plan"
 require_relative "workspace/commands/ticket"
+require_relative "workspace/commands/skills"
 require_relative "workspace/delivery_facts"
 require_relative "workspace/goal_state"
 require_relative "workspace/commands/goal"
@@ -448,6 +453,9 @@ module Workspace
       main_agent: main_agent)
     start_ref = StartRef.new(git: git, lineage: lineage)
     ticket_source = TicketSource.new
+    skills_home = env["HOME"].to_s.empty? ? Dir.home : env["HOME"]
+    skills_command = Commands::Skills.new(harnesses: SkillHarnesses.new(home: skills_home, env: env), source: SkillSource.new(workspace_dir: config.workspace_dir),
+      links: SkillLinks.new(state_dir: config.state_dir), state: SkillsState.new(dir: config.state_dir), input: input, output: output, error_output: error_output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: ticket_source, output: output, error_output: error_output)
     agent_snapshot_client = AgentSnapshotClient.new(config: config)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, client: agent_snapshot_client, output: output)
@@ -633,7 +641,7 @@ module Workspace
       plan_command: plan_command, plan_dispatch: plan_dispatch_command, workspace_at: workspace_at, locks: held_locks, event_log: event_log, env: env,
       output: output, error_output: error_output
     )
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, event_log: event_log, output: output)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, event_log: event_log, skills: skills_command, output: output)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )
@@ -778,6 +786,7 @@ module Workspace
       plan_dispatch_command: plan_dispatch_command,
       plan_task_command: plan_task_command,
       ticket_command: ticket_command,
+      skills_command: skills_command,
       spine_command: spine_command,
       spine_init_command: spine_init_command,
       spine_start_command: spine_start_command,

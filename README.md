@@ -128,6 +128,7 @@ workspace <subcommand> [options]
 | review | [README](docs/README.review.md) | Show a workspace's finished work for review, or list the workspaces that are ready |
 | snapshot | [README](docs/README.snapshot.md) | Print everything a UI polls (projects, panes, git, questions, locks, dev) as one JSON document |
 | sessions | [README](docs/README.sessions.md) | Show coding-agent sessions and sub-agents running in a project's panes |
+| skills | [README](docs/README.skills.md) | Link the workspace skills into your coding agents (`install`, `--install-all`), or remove the links (`uninstall`) |
 | spine | [README](docs/README.spine.md) | Read a workspace's stages (the stage files in `spine/` of its notes directory): `show` lists the stages with canonical statuses, a revision per file, roll-ups and warnings; `init` creates the folder from a template; `set` changes one stage's status (and optionally its sub-stages') in the stage file's frontmatter; `verify` records a separate check of a completed stage that opted in with `check:` (`--pass` or `--fail`, and a note); `start` sets a stage in progress, sends an agent its brief and binds the pane |
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
