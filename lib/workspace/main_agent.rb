@@ -42,14 +42,21 @@ module Workspace
     # worktree config would run for it ({ProjectConfig#agent_pane_command}), else the bare executable.
     # Of a chain such as `claude --flag --continue || claude --flag`, the first part that starts the
     # agent without resuming is taken, so a spawned Claude Code keeps the main pane's flags but not its conversation.
+    # For Claude Code its program is swapped for the configured command ({ProjectConfig#with_configured_program}),
+    # so a stale `claude` fallback half of `claude-dev --continue || claude` starts `claude-dev`;
+    # the template's command is already swapped, so it is not swapped again.
     #
     # @param workspace [String] the workspace (its own tmuxinator config is read)
     # @param kind [String] an {AgentProvider} key
     # @return [String]
     def spawn_command(workspace, kind)
       provider = AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
-      [*own_commands(workspace), @project_config.agent_pane_command(kind, workspace)].compact.each do |command|
+      own_commands(workspace).each do |command|
         fresh = fresh_part(command, provider, workspace)
+        return @project_config.with_configured_program(fresh, kind, workspace) if fresh
+      end
+      if (template = @project_config.agent_pane_command(kind, workspace))
+        fresh = fresh_part(template, provider, workspace)
         return fresh if fresh
       end
       @agent_commands ? @agent_commands.command_for(workspace, kind) : provider.executable

@@ -203,15 +203,14 @@ module Workspace
     # creates anything.
     #
     # @param kind [String] an {AgentProvider} key
+    # @param workspace [String, nil] the workspace whose configured Claude Code command the template may run
     # @raise [Workspace::Error] code `template_outdated` when the template has no Claude Code pane to swap
-    def check_agent_kind!(kind)
+    def check_agent_kind!(kind, workspace = nil)
       return if kind == "claude" || !File.exist?(@config.worktree_template_path)
-      return if File.read(@config.worktree_template_path).match?(AGENT_PANE)
+      return if template_claude_line(workspace)
       raise Workspace::Error.new("The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it.",
         code: "template_outdated", details: {"kind" => kind})
     end
-
-    AGENT_PANE = /^(\s*- )(claude --dangerously-skip-permissions.*)$/
 
     # The pane command a new config runs for an agent kind: for `claude` the installed worktree
     # template's Claude Code pane with `claude` swapped for the configured command in each half of its
@@ -226,14 +225,38 @@ module Workspace
       command = configured_command(kind, workspace)
       return command unless kind == "claude"
       return unless File.exist?(@config.worktree_template_path)
-      line = File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
-      line && claude_line(line, command)
+      line = template_claude_line(workspace)
+      line && claude_line(line, command, claude_names(workspace))
+    end
+
+    # +text+ with the program of each `||` half that runs a Claude Code program swapped for the configured
+    # command, flags kept: the same half rewrite as {#agent_pane_command} and {#rewrite_agent_pane}. A half
+    # that already starts with the configured command is left as written, so a command with extra words
+    # (`mycl --flag`) is applied once however many times a line is passed through. Only `claude` has a
+    # program to swap; any other kind returns +text+.
+    #
+    # @param text [String] a pane command, or one part of it
+    # @param kind [String] an {AgentProvider} key
+    # @param workspace [String, nil] the workspace whose config layers pick the command
+    # @return [String]
+    def with_configured_program(text, kind, workspace = nil)
+      return text unless kind == "claude"
+      command = configured_command(kind, workspace)
+      return text unless command
+      wanted = command.split
+      names = claude_names(workspace)
+      text.split(" || ").map do |half|
+        words = half.split
+        (words.first(wanted.size) == wanted) ? half : claude_line(half, command, names)
+      end.join(" || ")
     end
 
     # Points the agent pane line of a tmuxinator config at the configured command for a kind. The line is
     # found whether it runs the template's `claude --dangerously-skip-permissions ...` or a command already
-    # written for any kind (a program of {AgentCommands#names_for}). For `claude` the line's flags stay and
-    # only the program changes in each half of a `||` chain; for another kind the line becomes the command.
+    # written for any kind (a program of {AgentCommands#names_for}). For `claude` a line that already runs a
+    # Claude Code program keeps its flags (none are added) and only the program changes in each half of a
+    # `||` chain that runs one; a line of another agent takes the template's Claude Code line; for another
+    # kind the line becomes the command.
     #
     # @param content [String] a tmuxinator config
     # @param kind [String] an {AgentProvider} key
@@ -249,9 +272,10 @@ module Workspace
       return unless index
       indent, text = pane_item(lines[index])
       pane = if kind == "claude"
-        base = text.include?("--dangerously-skip-permissions") ? text : claude_template_line
+        claude = claude_names(workspace)
+        base = runs_program?(text.split(" || ").first, claude) ? text : template_claude_line(workspace)
         return unless base
-        claude_line(base, command)
+        claude_line(base, command, claude)
       else
         command
       end
@@ -293,17 +317,21 @@ module Workspace
 
     private
 
-    # @return [Array<String, nil>] the programs of the one pane line that differs between two contents
+    # @return [Array<String, nil>] the programs of the one pane line that differs between two contents:
+    #   the first `||` half whose program changed, else the first half
     def changed_pane_programs(before, after)
       old_line, new_line = before.lines.zip(after.lines).find { |old, new| old != new }
-      [pane_program(old_line), pane_program(new_line)]
+      pairs = pane_programs(old_line).zip(pane_programs(new_line))
+      first = pairs.first || [nil, nil]
+      return first if first.any?(&:nil?)
+      pairs.find { |old, new| old && new && old != new } || first
     end
 
-    def pane_program(line)
+    def pane_programs(line)
       item = YAML.safe_load(line.to_s.strip)&.first
-      item.is_a?(String) ? AgentCommands.program_for(item.split(" || ").first) : nil
+      item.is_a?(String) ? item.split(" || ").map { |half| AgentCommands.program_for(half) } : [nil]
     rescue Psych::Exception
-      nil
+      [nil]
     end
 
     # @return [Array(String, String), nil] the indent and the text of a YAML list item line, a quoted
@@ -320,8 +348,12 @@ module Workspace
       [match[1], value.is_a?(String) ? value : text]
     end
 
+    def flagged_pane?(text)
+      text.start_with?("claude --dangerously-skip-permissions")
+    end
+
     def agent_pane_text?(text, names)
-      return true if text.start_with?("claude --dangerously-skip-permissions")
+      return true if flagged_pane?(text)
       program = AgentCommands.program_for(text.split(" || ").first)
       !program.nil? && names.include?(program)
     end
@@ -332,17 +364,38 @@ module Workspace
       end.uniq
     end
 
-    def claude_template_line
+    # The text of the worktree template's Claude Code pane, looking only at pane items from the first
+    # `panes:` line on: the item with the skip-permissions flag anywhere in the file, else the first item
+    # whose `||` chain runs a program of {#claude_names} in any half (unlike {#agent_pane_text?}, which
+    # reads the first half only). With no workspace (or no {AgentCommands}) those names are the bare
+    # executable, so `claude-dev --continue || claude` is found through its second half.
+    def template_claude_line(workspace)
       return unless File.exist?(@config.worktree_template_path)
-      File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
+      lines = File.readlines(@config.worktree_template_path)
+      start = lines.index { |line| line.match?(/\A\s*(- )?panes:/) }
+      return unless start
+      texts = lines[start..].filter_map { |line| pane_item(line)&.at(1)&.strip }
+      names = claude_names(workspace)
+      texts.find { |text| flagged_pane?(text) } || texts.find { |text| runs_program?(text, names) }
     end
 
-    def claude_line(line, command)
+    # +line+ with the program of each `||` half that runs one of +names+ swapped for +command+; flags and
+    # halves that run another program (a fallback `echo failed`) stay as written.
+    def claude_line(line, command, names)
       line.split(" || ").map do |half|
+        next half unless runs_program?(half, names)
         words = raw_words(half)
         words[words.size - AgentCommands.program_words(half).size] = command
         words.join(" ")
       end.join(" || ")
+    end
+
+    def runs_program?(text, names)
+      text.split(" || ").any? { |half| (program = AgentCommands.program_for(half)) && names.include?(program) }
+    end
+
+    def claude_names(workspace)
+      (workspace && @agent_commands) ? @agent_commands.names_for(workspace, "claude") : [AgentProvider.find("claude").executable]
     end
 
     # The words of +text+ as written (quotes and escapes kept), counted the way {AgentCommands.program_words} does.

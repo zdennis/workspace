@@ -220,6 +220,39 @@ RSpec.describe Workspace::Commands::Init do
   end
 
   describe "#call" do
+    context "guards the shipped templates against drifting from a configured claude-dev" do
+      let(:repo_root) { File.expand_path("../../..", __dir__) }
+      let(:config) { Workspace::Config.new(workspace_dir: repo_root) }
+      let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}) }
+      let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
+      let(:project_config) { Workspace::ProjectConfig.new(config: config, output: StringIO.new, git: Workspace::Git.new, agent_commands: agent_commands) }
+      let(:both_halves) { "claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions" }
+
+      before do
+        allow(project_settings).to receive(:load).and_return({})
+        allow(config).to receive(:config_path_for) { |name| File.join(tmuxinator_dir, "workspace.#{name}.yml") }
+        command.call
+      end
+
+      def agent_pane(name)
+        doc = YAML.safe_load_file(File.join(tmuxinator_dir, "workspace.#{name}.yml"), aliases: true)
+        doc.fetch("windows").flat_map { |w| w.values.first.fetch("panes") }
+          .map { |p| p.is_a?(Hash) ? p.values.first : p }.grep(/claude/)
+      end
+
+      it "keeps both halves on the configured command in a project config" do
+        project_config.create("myapp", "/tmp/myapp")
+
+        expect(agent_pane("myapp")).to eq([both_halves])
+      end
+
+      it "keeps both halves on the configured command in a worktree config" do
+        name = project_config.create_worktree("myapp", "feat", "/tmp/wt/feat", "feat", quiet: true, agent_kind: "claude")
+
+        expect(agent_pane(name)).to eq([both_halves])
+      end
+    end
+
     context "fresh install" do
       it "creates tmuxinator dir and copies templates" do
         create_source_templates

@@ -181,6 +181,34 @@ RSpec.describe Workspace::ProjectConfig do
       end
     end
 
+    describe "#with_configured_program" do
+      let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+      let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: settings, load: {}) }
+      let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
+      subject(:pc) { described_class.new(config: config, output: output, git: git, agent_commands: agent_commands) }
+
+      it "swaps the program in each half of the chain, keeping flags and other halves" do
+        expect(pc.with_configured_program("claude --a --continue || claude --a", "claude", "app")).to eq("claude-dev --a --continue || claude-dev --a")
+        expect(pc.with_configured_program("claude-dev --continue || claude", "claude", "app")).to eq("claude-dev --continue || claude-dev")
+        expect(pc.with_configured_program("claude || echo failed", "claude", "app")).to eq("claude-dev || echo failed")
+      end
+
+      it "applies a command with extra words once, however often a line is passed through" do
+        settings.replace("agent" => {"commands" => {"claude" => "mycl --flag"}})
+
+        once = pc.with_configured_program("claude --x", "claude", "app")
+        expect(once).to eq("mycl --flag --x")
+        expect(pc.with_configured_program(once, "claude", "app")).to eq(once)
+        expect(pc.with_configured_program("mycl --flag --x", "claude", "app")).to eq("mycl --flag --x")
+      end
+
+      it "returns the text for another kind and the executable when nothing is configured" do
+        expect(pc.with_configured_program("codex --yolo", "codex", "app")).to eq("codex --yolo")
+        settings.clear
+        expect(pc.with_configured_program("claude --a", "claude", "app")).to eq("claude --a")
+      end
+    end
+
     describe "#check_agent_kind!" do
       it "raises template_outdated for a template with no Claude Code pane" do
         path = File.join(tmpdir, "t.yml")
@@ -250,6 +278,8 @@ RSpec.describe Workspace::ProjectConfig do
       context "with a configured claude command" do
         let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
 
+        before { allow(project_settings).to receive(:load).with("myapp").and_return({}) }
+
         it "replaces claude in both halves of the chain" do
           pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
 
@@ -317,6 +347,44 @@ RSpec.describe Workspace::ProjectConfig do
         end
       end
 
+      context "with a template line that has no skip-permissions flag and a configured claude-dev" do
+        let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+        let(:project_template_path) { File.join(tmpdir, "project-template.yml") }
+
+        def project_pane = YAML.safe_load_file(File.join(tmpdir, "workspace.myapp.yml")).fetch("panes").last
+
+        def write_templates(line)
+          [template_path, project_template_path].each { |p| File.write(p, "panes:\n  - echo hi\n  - #{line}\n") }
+        end
+
+        before do
+          allow(config).to receive(:project_template_path).and_return(project_template_path)
+          write_templates("claude-dev --continue || claude")
+        end
+
+        it "runs claude-dev on both sides of || in a worktree config (start)" do
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "claude")
+
+          expect(pane).to eq("claude-dev --continue || claude-dev")
+        end
+
+        it "runs claude-dev on both sides of || in a project config (add)" do
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(project_pane).to eq("claude-dev --continue || claude-dev")
+        end
+
+        it "does the same for a bare claude line with no kind given" do
+          write_templates("claude --continue || claude")
+
+          pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+          pc.create("myapp", "/tmp/myapp")
+
+          expect(pane).to eq("claude-dev --continue || claude-dev")
+          expect(project_pane).to eq("claude-dev --continue || claude-dev")
+        end
+      end
+
       describe "#agent_pane_command" do
         let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev", "codex" => "codex-x"}}} }
 
@@ -324,6 +392,73 @@ RSpec.describe Workspace::ProjectConfig do
           expect(pc.agent_pane_command("claude", "myapp")).to eq(claude_line.gsub("claude ", "claude-dev "))
           expect(pc.agent_pane_command("codex", "myapp")).to eq("codex-x")
           expect(pc.agent_pane_command("codex")).to eq("codex")
+        end
+
+        context "with a template line without the skip-permissions flag" do
+          def template(line) = File.write(template_path, "panes:\n  - echo hi\n  - #{line}\n")
+
+          it "finds it and swaps the program in each half that runs Claude Code" do
+            template("claude-dev --continue || claude")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to eq("claude-dev --continue || claude-dev")
+            expect { pc.check_agent_kind!("codex") }.not_to raise_error
+          end
+
+          it "finds it for a nil workspace through the bare executable in its second half, leaving the first half" do
+            template("claude-dev --continue || claude")
+
+            expect(pc.agent_pane_command("claude")).to eq("claude-dev --continue || claude")
+          end
+
+          it "finds it for a nil workspace through its first program" do
+            template("claude --continue || echo failed")
+
+            expect(pc.agent_pane_command("claude")).to eq("claude --continue || echo failed")
+          end
+
+          it "finds a line whose first half runs another program" do
+            template("echo x || claude")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to eq("echo x || claude-dev")
+          end
+
+          it "prefers the flagged pane over an earlier plain Claude Code line" do
+            File.write(template_path, "panes:\n  - claude --version\n  - #{claude_line}\n")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to eq(claude_line.gsub("claude ", "claude-dev "))
+          end
+
+          it "does not take a Claude Code entry of a hook list before panes:" do
+            File.write(template_path, "pre_window:\n  - claude --version\npanes:\n  - echo hi\n  - #{claude_line}\n")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to eq(claude_line.gsub("claude ", "claude-dev "))
+          end
+
+          it "finds no pane when only a hook list runs Claude Code" do
+            File.write(template_path, "pre_window:\n  - claude --version\npanes:\n  - echo hi\n")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to be_nil
+          end
+
+          it "lets check_agent_kind! pass for an all-custom line when given the configured workspace" do
+            settings.replace("agent" => {"commands" => {"claude" => "mycl"}})
+            template("mycl --continue || mycl")
+
+            expect { pc.check_agent_kind!("codex", "myapp") }.not_to raise_error
+          end
+
+          it "rewrites a codex pane through the template fallback" do
+            template("claude --continue || claude")
+
+            expect(pc.rewrite_agent_pane("panes:\n  - codex\n", "claude", "myapp")).to eq("panes:\n  - claude-dev --continue || claude-dev\n")
+          end
+
+          it "does not take a line of another program for the template's pane" do
+            template("echo x || echo y")
+
+            expect(pc.agent_pane_command("claude", "myapp")).to be_nil
+            expect { pc.check_agent_kind!("codex") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("template_outdated") }
+          end
         end
       end
 
@@ -338,6 +473,33 @@ RSpec.describe Workspace::ProjectConfig do
 
           expect(stale).to include(path: path, running: "claude", wanted: "claude-new",
             content: "panes:\n  - claude-new --dangerously-skip-permissions\n")
+        end
+
+        it "is stale when a fallback half runs another program, naming the fallback's program" do
+          File.write(path, "panes:\n  - claude-new --continue || claude --continue\n")
+
+          expect(pc.stale_agent_pane("myapp", "claude")).to include(running: "claude", wanted: "claude-new",
+            content: "panes:\n  - claude-new --continue || claude-new --continue\n")
+        end
+
+        it "is not stale for flag differences or a non-agent fallback" do
+          File.write(path, "panes:\n  - claude-new --continue || claude-new --other\n")
+          expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
+          File.write(path, "panes:\n  - claude-new --continue || echo failed\n")
+          expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
+        end
+
+        it "names the first half's program when several halves are stale" do
+          File.write(path, "panes:\n  - claude --continue || claude\n")
+
+          expect(pc.stale_agent_pane("myapp", "claude")).to include(running: "claude", wanted: "claude-new")
+        end
+
+        it "is not stale for an ordinary claude || claude line with no key set" do
+          settings.clear
+          File.write(path, "panes:\n  - claude --continue || claude\n")
+
+          expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
         end
 
         it "is nil for a current pane, kind none, a missing pane and an unreadable config" do
@@ -364,6 +526,60 @@ RSpec.describe Workspace::ProjectConfig do
         let(:settings) { {"agent" => {"commands" => {"claude" => "claude-old", "codex" => "codex-dev"}}} }
 
         before { allow(project_settings).to receive(:load).with("myapp").and_return({"agent" => {"commands" => {"claude" => "claude-new"}}}) }
+
+        context "with a line that has no --dangerously-skip-permissions" do
+          let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+
+          before { allow(project_settings).to receive(:load).with("myapp").and_return({}) }
+
+          def rewrite(line) = pc.rewrite_agent_pane("panes:\n  - #{line}\n", "claude", "myapp")
+
+          it "swaps the fallback half too and adds no flag" do
+            expect(rewrite("claude-dev --continue || claude")).to eq("panes:\n  - claude-dev --continue || claude-dev\n")
+          end
+
+          it "swaps a plain claude line" do
+            expect(rewrite("claude --continue || claude")).to eq("panes:\n  - claude-dev --continue || claude-dev\n")
+          end
+
+          it "keeps different flags in each half" do
+            expect(rewrite("claude --resume || claude --model opus")).to eq("panes:\n  - claude-dev --resume || claude-dev --model opus\n")
+          end
+
+          it "keeps a half that runs another program" do
+            expect(rewrite("claude-dev --continue || echo failed")).to eq("panes:\n  - claude-dev --continue || echo failed\n")
+          end
+
+          it "returns the same content when the line is already right" do
+            content = "panes:\n  - claude-dev --continue || claude-dev\n"
+
+            expect(pc.rewrite_agent_pane(content, "claude", "myapp")).to eq(content)
+          end
+
+          it "keeps a quoted path and VAR=value words" do
+            expect(rewrite("\x27FOO=1 \"/my bin/claude\" --continue || claude\x27")).to eq("panes:\n  - FOO=1 claude-dev --continue || claude-dev\n")
+          end
+
+          it "takes the template line for a line of another agent" do
+            expect(pc.rewrite_agent_pane("panes:\n  - codex --x || claude --y\n", "claude", "myapp")).to eq(
+              "panes:\n  - claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions\n"
+            )
+            expect(pc.rewrite_agent_pane("panes:\n  - codex --x\n", "claude", "myapp")).to eq(
+              "panes:\n  - claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions\n"
+            )
+          end
+
+          it "prints no warning when generation meets the reported line" do
+            project_template = File.join(tmpdir, "project-template.yml")
+            File.write(project_template, "panes:\n  - claude-dev --continue || claude\n")
+            allow(config).to receive(:project_template_path).and_return(project_template)
+
+            pc.create("myapp", "/tmp/myapp")
+
+            expect(output.string).not_to include("Warning")
+            expect(File.read(File.join(tmpdir, "workspace.myapp.yml"))).to eq("panes:\n  - claude-dev --continue || claude-dev\n")
+          end
+        end
 
         it "rewrites a line already running a configured command, keeping the flags" do
           content = "panes:\n  - echo hi\n  - claude-old --dangerously-skip-permissions --continue || claude-old --dangerously-skip-permissions\n"

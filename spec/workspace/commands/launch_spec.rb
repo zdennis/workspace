@@ -876,6 +876,34 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
     expect(tmux).to have_received(:start_headless).with("proj1")
   end
 
+  context "with a real project config and a stale fallback half" do
+    let(:agent_commands) do
+      settings = Struct.new(:x) {
+        def load_global = {"agent" => {"commands" => {"claude" => "claude-dev"}}}
+
+        def load(_name) = {}
+      }.new
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+    end
+    let(:project_config) { Workspace::ProjectConfig.new(config: config, git: double("git"), output: StringIO.new, agent_commands: agent_commands) }
+    let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
+
+    before do
+      allow(config).to receive(:tmuxinator_dir).and_return(tmpdir)
+      File.write(path, "name: proj1\nwindows:\n  - w:\n      panes:\n        - claude-dev --continue || claude --continue\n")
+    end
+
+    it "rewrites the fallback half and records the refresh" do
+      allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+
+      launch
+
+      expect(File.read(path)).to include("- claude-dev --continue || claude-dev --continue")
+      expect(event_log).to have_received(:record).with(hash_including(type: "agent_pane_refreshed",
+        data: hash_including("running" => "claude", "wanted" => "claude-dev")))
+    end
+  end
+
   context "when quiet" do
     let(:quiet) { true }
 
