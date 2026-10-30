@@ -86,6 +86,7 @@ module Workspace
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
     # @param rebase_command [Workspace::Commands::Rebase, nil] pre-built rebase command
     # @param push_command [Workspace::Commands::Push, nil] pre-built push command
+    # @param pr_feedback_command [Workspace::Commands::PrFeedback, nil] pre-built pr feedback command
     # @param promote_command [Workspace::Commands::Promote, nil] pre-built promote command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
@@ -122,7 +123,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -173,6 +174,7 @@ module Workspace
       @pull_request_command = pull_request_command
       @rebase_command = rebase_command
       @push_command = push_command
+      @pr_feedback_command = pr_feedback_command
       @promote_command = promote_command
       @notes_setup = notes_setup
       @agent_command = agent_command
@@ -603,7 +605,7 @@ module Workspace
           parent          Print the parent workspace of the current (or given: NAME or --name) workspace
           plan            Show and run a workspace's plan (IMPLEMENTATION_PLAN.md): status, path, show, init, start, pause, delete
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
-          pr              Open a pull request for a workspace's branch without finishing it (create)
+          pr              Open a pull request for a workspace's branch without finishing it (create) and read its review feedback (feedback)
           projects        Group workspaces by repository (main checkout + worktrees); name several repositories as a group
           promote         Move the work in a main checkout (changes and branch commits) into a new worktree workspace
           prune           Remove worktree projects whose PR is closed or merged
@@ -5067,8 +5069,8 @@ module Workspace
           "       workspace workflow files RUN [--json]\n" \
           "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
           "       workspace workflow cancel RUN [--json]\n" \
-          "       workspace workflow approve RUN [--note TEXT] [--json]\n" \
-          "       workspace workflow reject RUN --note TEXT [--to STEP] [--json]"
+          "       workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]\n" \
+          "       workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]"
         opts.separator ""
         opts.separator "Run a workflow in a workspace: an ordered list of steps, each done by the agent in the"
         opts.separator "workspace's Claude pane. A step gets its instructions in a file under .workflow/ in the"
@@ -5118,8 +5120,15 @@ module Workspace
         opts.separator "            workspace's Claude pane when its own is gone; --from STEP starts again there"
         opts.separator "  cancel    end a run and release what it holds"
         opts.separator "  approve   pass a gate; refused from a pane a run is bound to (as is resume --from at"
-        opts.separator "            a gate), so an agent doesn't pass its own plan by mistake"
-        opts.separator "  reject    turn a gate down: the gated step (or --to an earlier one) runs again with the note"
+        opts.separator "            a gate) and from a process under the run's own pane, so an agent doesn't pass"
+        opts.separator "            its own plan by mistake. When the gated step's first file starts with"
+        opts.separator "            `note: FILE`, the note's sha256 is recorded and given to the next step"
+        opts.separator "  reject    turn a gate down: the gated step (or --to an earlier one) runs again with the note;"
+        opts.separator "            refused where approve is"
+        opts.separator ""
+        opts.separator "approve and reject with --step (and --attempt) are refused with gate_not_waiting unless the run"
+        opts.separator "waits at that step's gate (on that attempt), so a stale button can't pass a later gate. These"
+        opts.separator "checks guard against mistakes; they are not a security boundary (docs/README.workflow.md)."
         opts.separator ""
         opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT]]` is what the agent daemon runs to move a run"
         opts.separator "on when a turn ends; it is not meant to be typed."
@@ -5130,6 +5139,9 @@ module Workspace
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
         opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
+        opts.on("--step STEP", "approve, reject: the gated step you saw (current.step in status --json); refused unless the run waits there") { |v| options[:step] = v }
+        opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
+        opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
         opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
@@ -5167,6 +5179,7 @@ module Workspace
         opts.separator "  workspace workflow events wr_2610041230559x3k --since 40 --json"
         opts.separator "  workspace workflow files wr_2610041230559x3k --json"
         opts.separator "  workspace workflow approve wr_2610041230559x3k --note \"Skip the migration.\""
+        opts.separator "  workspace workflow approve wr_2610041230559x3k --step plan --attempt 2 --note-sha256 HEX --json"
         opts.separator "  workspace workflow reject wr_2610041230559x3k --note \"Too big; split it.\""
         opts.separator "  workspace workflow resume wr_2610041230559x3k --from implement"
       end
@@ -5198,6 +5211,7 @@ module Workspace
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
+      gate_options = workflow_gate_options(subcommand, options)
 
       start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout}
       if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
@@ -5253,14 +5267,32 @@ module Workspace
         workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], caller_pane: ENV["TMUX_PANE"]) }
       when "cancel" then workflow_action("workflow cancel", options) { @workflow_command.cancel(run: subject) }
       when "approve"
-        workflow_action("workflow approve", options) { @workflow_command.approve(run: subject, note: options[:note], caller_pane: ENV["TMUX_PANE"]) }
+        workflow_action("workflow approve", options) do
+          @workflow_command.approve(run: subject, note: options[:note], **gate_options, note_sha256: options[:note_sha256], caller_pane: ENV["TMUX_PANE"])
+        end
       when "reject"
         raise UsageError, "workflow reject needs --note TEXT: the step runs again with it." if options[:note].to_s.strip.empty?
-        workflow_action("workflow reject", options) { @workflow_command.reject(run: subject, note: options[:note], to: options[:to]) }
+        workflow_action("workflow reject", options) do
+          @workflow_command.reject(run: subject, note: options[:note], to: options[:to], **gate_options, caller_pane: ENV["TMUX_PANE"])
+        end
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # The `--step`/`--attempt` pair of approve and reject, checked; `--note-sha256` is approve's.
+    def workflow_gate_options(subcommand, options)
+      gated = %w[approve reject].include?(subcommand)
+      raise UsageError, "--step and --attempt are for `workflow approve` and `workflow reject`." if !gated && (options[:step] || options[:attempt])
+      raise UsageError, "--note-sha256 is for `workflow approve`." if options[:note_sha256] && subcommand != "approve"
+      raise UsageError, "--attempt needs --step: the attempt is of the gated step." if options[:attempt] && !options[:step]
+      if options[:note_sha256] && !options[:note_sha256].match?(/\A[0-9a-f]{64}\z/)
+        raise UsageError, "--note-sha256 must be 64 lowercase hex digits (gate_file.sha256 in `workflow status --json`)."
+      end
+      attempt = options[:attempt]
+      raise UsageError, "--attempt must be a whole number from 1 up, got #{attempt.to_s[0, 20].inspect}." if attempt && !attempt.match?(/\A[1-9]\d{0,8}\z/)
+      gated ? {step: options[:step], attempt: attempt&.to_i} : {}
     end
 
     # Text that is not valid in its encoding can't be parsed as an option or stored in a
@@ -8034,7 +8066,8 @@ module Workspace
 
     def pr_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]"
+        opts.banner = "Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]\n" \
+          "       workspace pr feedback [--name WORKSPACE] [--all] [--json]"
         opts.separator ""
         opts.separator "Open a pull request for a workspace's branch and leave the workspace alone. When the"
         opts.separator "branch already has a pull request, it is returned and nothing else happens. Otherwise the"
@@ -8043,10 +8076,18 @@ module Workspace
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
         opts.on("--draft", "Open the pull request as a draft") { options[:draft] = true }
+        opts.on("--all", "feedback: keep resolved review threads") { options[:all] = true }
         opts.on("--json", "Print one JSON document (see docs/README.pr.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
+        opts.separator "pr feedback reads the branch's pull request: unresolved review threads, review summaries,"
+        opts.separator "conversation comments and failing checks. It is read-only. Comment text is written by other"
+        opts.separator "people. The text output lists the threads and failing checks and only counts the reviews and"
+        opts.separator "conversation comments (it escapes control characters); --json carries their bodies, unescaped."
+        opts.separator "Needs 'gh', logged in."
+        opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace pr feedback --json"
         opts.separator "  workspace pr create"
         opts.separator "  workspace pr create --draft --json"
         opts.separator "  workspace pr create --name api.worktree-PROJ-123"
@@ -8054,15 +8095,21 @@ module Workspace
     end
 
     def cmd_pr(args)
-      options = {json: false, name: nil, draft: false}
+      options = {json: false, name: nil, draft: false, all: false}
       parser = pr_parser(options)
       parser.parse!(args)
       return @output.puts(parser.help) if options[:help]
 
       subcommand = args.shift
-      raise UsageError, "Missing subcommand: create.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown pr subcommand: #{subcommand}. Run 'workspace pr --help'." unless subcommand == "create"
+      raise UsageError, "Missing subcommand: create or feedback.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown pr subcommand: #{subcommand}. Run 'workspace pr --help'." unless %w[create feedback].include?(subcommand)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace pr --help'." if args.any?
+      raise UsageError, "--all only applies to 'pr feedback'. Run 'workspace pr --help'." if options[:all] && subcommand != "feedback"
+      if subcommand == "feedback"
+        raise Error, "pr feedback is not available: no pr feedback command was wired" unless @pr_feedback_command
+
+        return @pr_feedback_command.call(name: options[:name], all: options[:all], json: options[:json], working_dir: @working_dir)
+      end
       raise Error, "pr is not available: no pr command was wired" unless @pull_request_command
 
       @pull_request_command.create(name: options[:name], draft: options[:draft], json: options[:json], working_dir: @working_dir)
@@ -8113,6 +8160,8 @@ module Workspace
         opts.separator "Push a workspace's branch to origin. A branch with no upstream is pushed with -u. When the"
         opts.separator "upstream has commits the branch lacks, the push uses --force-with-lease, but only if the"
         opts.separator "branch's own history once held all of them (a rebase replaced them); otherwise it is refused."
+        opts.separator "A pull request checkout (pr-N, from `start '#N'`) is pushed to the pull request's head branch"
+        opts.separator "once gh confirms the pull request is open, comes from origin, and is at the commit fetched."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
         opts.on("--json", "Print one JSON document (see docs/README.rebase.md)") { options[:json] = true }

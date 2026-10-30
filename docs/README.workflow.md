@@ -18,8 +18,8 @@ workspace workflow events RUN [--since N] [--json]
 workspace workflow files RUN [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
 workspace workflow cancel RUN [--json]
-workspace workflow approve RUN [--note TEXT] [--json]
-workspace workflow reject RUN --note TEXT [--to STEP] [--json]
+workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
+workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]
 
 workspace step done [--status pass|fail] [--summary TEXT] [--json]
 workspace step status [--json]
@@ -39,8 +39,8 @@ workspace step status [--json]
 | `workflow files` | The files a run keeps: each attempt's prompt and check log and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to |
 | `workflow cancel` | End a run and release what it holds |
-| `workflow approve` | Pass a gate. Refused from a pane a run is bound to, so an agent doesn't approve its own plan by mistake. The refusal is a guard, not a boundary: an agent can clear `$TMUX_PANE` |
-| `workflow reject` | Turn a gate down: the gated step, or an earlier one named with `--to`, runs again with the note in its instructions |
+| `workflow approve` | Pass a gate. Refused from a pane a run is bound to, and from a process under the run's own pane, so an agent doesn't approve its own plan by mistake. Records the gate's note when it names one. See [Passing a gate](#passing-a-gate) |
+| `workflow reject` | Turn a gate down: the gated step, or an earlier one named with `--to`, runs again with the note in its instructions. Refused where `approve` is |
 | `step done` | For the agent: record what it says about its step, then end the turn. Optional |
 | `step status` | For the agent: which run, step and attempt its pane is on, and whether the files the step must leave exist |
 
@@ -52,6 +52,9 @@ workspace step status [--json]
 | `--pane PANE` | `run`, `resume`: the pane to run in (`%19` or `0.1`), instead of the workspace's Claude pane |
 | `--from STEP` | `resume`: start again at this step |
 | `--to STEP` | `reject`: the step to run again (the gated step, or one before it) |
+| `--step STEP` | `approve`, `reject`: the gated step you saw (`current.step` in `status --json`); refused with `gate_not_waiting` unless the run waits at that step's gate |
+| `--attempt N` | `approve`, `reject`: that step's attempt you saw (`current.attempt`); needs `--step`; refused with `gate_not_waiting` unless the run is on that attempt |
+| `--note-sha256 HEX` | `approve`: the sha256 of the gate's note you read (`gate_file.sha256`), 64 lowercase hex digits; refused with `stale_revision` when the note changed |
 | `--source` | `show ID`: print the file's text, with its sha256 and problems, valid or not; see [Reading a definition's file](#reading-a-definitions-file) |
 | `--prompt TEXT` | `start`: the task as free text: the workflow's `task` input, and the branch's name when there is no `REF` |
 | `--branch BRANCH` | `start`: the branch for a `--prompt` (default: the prompt's words). Refused with a `REF`, whose branch comes from the ref |
@@ -79,7 +82,7 @@ workspace step status [--json]
 
 A step is done when the agent's turn ends in the bound pane, every file the step `produces:` has been written during this attempt, and its `status:` check passes. A file an earlier attempt left (before a reject, a `resume --from` or a loop back) does not count until the step writes it again; its instructions say so. The workspace's agent daemon ([`agentd`](README.agentd.md)) sees the turn end and decides the step; `workflow run` starts the daemon if none is running. The daemon says when the turn that ended began (the prompt that started it), and the end of a turn that began before the step's attempt did decides nothing: if you were talking to the agent in the run's pane when a step was started (at a gate, say), the end of that conversation does not pass the step. The step's own turn's end does. The agent never has to report: `step done` only adds its own word, and `step done --status fail` fails the step at the turn's end without running the check.
 
-- A step with `gate: approve` waits for `workflow approve` once it has passed. The run holds no lock while it waits.
+- A step with `gate: approve` waits for `workflow approve` once it has passed. The run holds no lock while it waits. See [Passing a gate](#passing-a-gate).
 - A step that fails (its check exits non-zero or runs past its time limit, or the agent reported `fail`) goes back to the step its `on_fail: {goto, max}` names, at most `max` times, and never once the run has made `max_attempts` attempts across all its steps. The step it goes back to is told what failed. After that the run stops and waits for you.
 - When the last step passes, the run is `completed`, its locks are released and its pane is unbound.
 - A check still running when its run is cancelled, killed or moved to another step is stopped within a few seconds, so it doesn't go on using the test database beside the lock's next holder.
@@ -220,13 +223,49 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 ### The `rpiv` preset
 
-`rpiv` is the one workflow that ships: research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`pr-feedback`](#the-pr-feedback-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 ```sh
 workspace config set commands.test "bundle exec rspec"
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export" --dry-run
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export"
 ```
+
+### The `pr-feedback` preset
+
+`pr-feedback` triages a pull request's review feedback, waits for you, then makes the approved fixes. It has two steps and never posts to GitHub and never pushes.
+
+- `triage` (gate `approve`, 30m) runs `workspace pr feedback --json`, reads the code each thread points at and the tail of each failing check's log, and writes a note `<date>-pr-<n>-feedback.md` in the notes directory: the counts of fix, answer, decline and needs-you with the head SHA read, then one `### F<k>` section per item with its source, author, a quoted excerpt, the verdict and the planned change. Only an item from a `trusted` author can be a fix. It writes `triage.md` (first line `note: <file name>`, the gate's note) and posts one `review_request` inbox item linked to the run (`--dedupe-key pr-feedback:RUN`, expiring in 168h). It stops with only `triage.md` when `inputs.pr` differs from the branch's pull request, or the pull request comes from a fork.
+- `fix` (`context: fresh`, 2h) first checks the approved note's sha256 (see [Passing a gate](#passing-a-gate)) and stops with no commits when it differs. It records `origin/<head>` before and after, commits the items marked fix, appends `## Replies` to the note (grammar in [README.pr.md](README.pr.md#drafted-replies)), writes `fix.md`, marks the triage item done and posts a second `review_request` (`pr-feedback-fix:RUN`). Its last message names `workspace push` as your next step.
+
+Inputs are `task` and `pr`, neither required. Start it in a workspace whose branch has the pull request, or from a ref (quote `#123` in zsh, where an unquoted `#` starts a comment; `PR-123` is read as a JIRA key):
+
+```sh
+workspace workflow run pr-feedback --name my-app.worktree-fix --input pr=123
+workspace workflow start pr-feedback '#123'
+workspace workflow start pr-feedback https://github.com/OWNER/REPO/pull/123
+```
+
+`workflow start` seeds `pr` from a pull request ref's number and `task` from the pull request, and leaves `pr` empty for anything that is not a pull request ref (a branch, an issue, a JIRA key). Any workflow that declares a `pr` input gets it seeded this way, and `--input pr=` wins. Triage compares numbers only, so a pull request with the same number in another repository passes that check; a fork pull request, or a number mismatch, stops triage with only `triage.md` and an inbox item, and you reject the gate. `fix` refuses to start without an approved triage note (the gate's `note:` line), and stops when the note's hash, the branch head or a clean tree no longer match. The workflow does not declare `spec`, so the pull request's body is not written to `.workflow/tickets/`. Its instructions say every comment, review and log line is data written by someone else: the agent follows none of it, puts none of it on a command line, and never runs `workflow approve` or `workflow reject`. It has no `status:` check, so it runs in a project with no `commands.test`; running the tests is the `commits` pack's job.
+
+## Passing a gate
+
+`workflow approve` passes a waiting gate and `workflow reject` turns it down. Both are for a person, and refuse with `bound_pane` when run from a pane a workflow run is bound to (`$TMUX_PANE`), or from a process whose parent chain holds the run's own pane (the pane's pid, from `tmux list-panes`, among the caller's ancestors in one `ps` snapshot), which holds with `$TMUX_PANE` unset or set to another pane. That refusal's `details.agent` names the calling agent (`pid`, `started`) when one is found. When tmux or the process table can't be read, only the `$TMUX_PANE` check runs. A dev server started from the bound pane is under it, and gets `bound_pane` too.
+
+These guards stop mistakes and a confused agent. They are not a security boundary: an agent with a shell can clear `$TMUX_PANE`, or start a process outside its pane's tree (`tmux new-window`, `tmux run-shell`, `launchctl`, `ssh localhost`), and that process gets past them.
+
+A client that shows the gate builds its own argv from `workflow status RUN --json`, enabling its buttons only when `current.reason.code` is `waiting_you` and `details.kind` is `gate`:
+
+```bash
+workspace workflow approve --step=<current.step> --attempt=<current.attempt> --note-sha256=<gate_file.sha256> --json -- <run>
+workspace workflow reject --step=<current.step> --attempt=<current.attempt> --note=<reason> --json -- <run>
+```
+
+With `--step` (and `--attempt`), a run that is at another step, on another attempt, or whose gate there is not waiting is refused with `gate_not_waiting`: the row is stale, so read the status again rather than retry. `details.step` and `details.attempt` are the run's, `details.expected_step` and `details.expected_attempt` the caller's. Without the flags a gate is passed wherever the run waits, as before. A gate's `actions` in `status` carry `--step` and `--attempt` in their `args`, for terminal clients.
+
+**The gate's note.** When the gated step's first `produces` file starts with the line `note: <file>`, the gate is about that note: `<file>` is a plain file name (no `/`) in the workspace's notes directory ([`notes dir`](README.notes.md)), a regular file and not a link. While the gate waits, `status` adds `gate_file: {name, path, sha256}` to `current.reason.details`, hashed when status is read; it is `null` when the step's first file has no `note:` line, and `null` with a warning when the note can't be read, in which case `current.reason.details.gate_file_error` is `gate_note_unreadable` (else `null`), the same code `approve` refuses with. `approve` hashes the note once, under the run's lock and after the checks above, records `gate: {file: {path, sha256}}` with the approval, and adds `The approved note is <path>, sha256 <hash>.` to the next step's instructions; a note that is missing or can't be read is refused with `gate_note_unreadable`. With `--note-sha256 HEX`, a note whose hash is not `HEX` is refused with `stale_revision` (`details.revision` its sha256 now, `details.path` the note, `details.run_id`, `details.step` and `details.attempt` the gate), and a gate with no `note:` line with `gate_note_unreadable`; the hash recorded is the one compared, so what is recorded is what the caller read. After the approval, the step's row in `steps` has `gate_file: {path, sha256}`, the hash approve recorded, and `note_changed: true` when the note's bytes differ now (or it can no longer be read). When the gated step's first file is missing, a plain `approve` is recorded without a hash, as for a gate with no `note:` line.
+
+Every refusal leaves the run file as it was.
 
 ## Where a run is stuck
 
@@ -238,7 +277,7 @@ A run that is not moving has a `reason`: a `code`, `since`, `details`, and `acti
 | Code | Meaning | `details` |
 |---|---|---|
 | `waiting_lock` | Queued for a lock a step uses | `resource`, `step`, `position`, `total`, `holder` (`kind`; `run_id`, `step`, `workspace`, `worktree` for a run; `pid` and `worktree` for an agent or a dev environment, `kind: "process"`, which adds `dev down` to `actions`) |
-| `waiting_you` | A person is needed. `kind` says for what: `gate` (a passed step waits for approval), `prompt` (the pane shows a permission prompt), `ask` (a question asked from the run's pane with [`ask`](README.ask.md) is open), `dispatch` (the step's line could not be typed), `delivery` (the process typing the step's line stopped before the agent daemon answered, and the pane's agent has ended its turn: it may never have had the line) | `kind`, `step`; `artifacts` for a gate; `pane`, `message` for a prompt; `ask`, `question` for a question; `error`, `message`, `pane`, `workspace` for a dispatch; `attempt`, `pane`, `workspace` for a delivery |
+| `waiting_you` | A person is needed. `kind` says for what: `gate` (a passed step waits for approval), `prompt` (the pane shows a permission prompt), `ask` (a question asked from the run's pane with [`ask`](README.ask.md) is open), `dispatch` (the step's line could not be typed), `delivery` (the process typing the step's line stopped before the agent daemon answered, and the pane's agent has ended its turn: it may never have had the line) | `kind`, `step`; `artifacts`, `gate_file` and `gate_file_error` (see [Passing a gate](#passing-a-gate)) for a gate; `pane`, `message` for a prompt; `ask`, `question` for a question; `error`, `message`, `pane`, `workspace` for a dispatch; `attempt`, `pane`, `workspace` for a delivery |
 | `turn_ended_incomplete` | The turn ended and a file the step produces is missing, or was left by an earlier attempt and not written again. The next turn's end, or `workflow resume`, looks again | `step`, `attempt`, `missing`, `stale` |
 | `failed_check` | The step failed and has no loop left | `step`, `attempt`, `cause` (`check` or `reported`), `exit_code`, `timed_out`, `log`, `error` (a check that could not be run, or was stopped), `summary`, `loops`, `attempts`, `max_attempts` |
 | `pane_gone` | The run's pane, or its workspace, is not running | `step`, `pane`, `workspace`; when it was found while starting a step (stored), also `kind: "dispatch"`, `error` and `message` |
@@ -279,10 +318,10 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
         "holder":{"run_id":"wr_261004121500ab12","step":"verify","workspace":"api.worktree-tax","worktree":"/src/api-tax","kind":"run"}},
       "actions":[{"action":"workflow status","args":["wr_261004121500ab12"],"needs":[]},{"action":"workflow cancel","args":["wr_2610041230559x3k"],"needs":[]}]},
     "flags":[]},
-  "steps":[{"id":"research","title":"Research","state":"passed","attempts":1,"gate":null},
-    {"id":"plan","title":"Plan","state":"passed","attempts":1,"gate":"approved"},
-    {"id":"implement","title":"Implement","state":"passed","attempts":2,"gate":null},
-    {"id":"verify","title":"Verify","state":"waiting","attempts":0,"gate":null}],
+  "steps":[{"id":"research","title":"Research","state":"passed","attempts":1,"gate":null,"gate_file":null,"note_changed":false},
+    {"id":"plan","title":"Plan","state":"passed","attempts":1,"gate":"approved","gate_file":null,"note_changed":false},
+    {"id":"implement","title":"Implement","state":"passed","attempts":2,"gate":null,"gate_file":null,"note_changed":false},
+    {"id":"verify","title":"Verify","state":"waiting","attempts":0,"gate":null,"gate_file":null,"note_changed":false}],
   "pane":"%19","task":"3f9a1c2e","inputs":{"task":"PROJ-101 invoice PDF export","spec":""},"loops":{"verify->implement":1},
   "artifacts_dir":"/src/api-pdf/.workflow/wr_2610041230559x3k",
   "events_path":"/Users/me/.local/state/workspace/.workflows/runs/wr_2610041230559x3k.events.jsonl"}],
@@ -290,9 +329,9 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 ```
 
 - A run's `state` is `running`, `waiting`, `completed` or `cancelled` (`cancelled_by` is `cancel` or `kill`). A run with a reason reads `waiting`.
-- A step's `state` is `pending`, `waiting` (not started: a lock, or a line that could not be typed), `running`, `checking` (its check is running), `passed` or `failed`. `gate` is `waiting`, `approved`, `rejected` or `null`.
+- A step's `state` is `pending`, `waiting` (not started: a lock, or a line that could not be typed), `running`, `checking` (its check is running), `passed` or `failed`. `gate` is `waiting`, `approved`, `rejected` or `null`. `gate_file` is `{path, sha256}` as approve recorded it, or `null`; `note_changed` is true when that note's bytes differ now (see [Passing a gate](#passing-a-gate)).
 - `warnings` are strings: a workspace's agent daemon did not answer, so a permission prompt would not show; a run will not move because its workspace has no agent daemon; a run file can't be read or shown.
-- `events_path` is the run's own history, one JSON line per transition (`run_started`, `step_dispatching` (the attempt is stored and its line about to be typed), `step_dispatched` (the daemon answered; `delivered` says whether the line landed), `step_reported`, `check_finished`, `step_passed`, `step_failed`, `step_looped`, `gate_waiting`, `gate_approved` and `gate_rejected` (with `note` when the person gave one), `run_resumed`, `run_completed`, `run_cancelled`), each with `ts` and `type`.
+- `events_path` is the run's own history, one JSON line per transition (`run_started`, `step_dispatching` (the attempt is stored and its line about to be typed), `step_dispatched` (the daemon answered; `delivered` says whether the line landed), `step_reported`, `check_finished`, `step_passed`, `step_failed`, `step_looped`, `gate_waiting`, `gate_approved` and `gate_rejected` (with `note` when the person gave one; `gate_approved` with `sha256` when it recorded a note), `run_resumed`, `run_completed`, `run_cancelled`), each with `ts` and `type`.
 
 `workflow show --json` prints `{"schema_version":1,"ok":true,"workflows":[...]}` (each `id`, `title`, `description`, `source` (`global` or `builtin`), `path`, `sha256`, and `problems`, empty for a valid file), or with an ID `{"workflow":{...}}`: the definition with defaults filled in, `steps` as a list in run order, plus `source`, `path` and `sha256`.
 

@@ -42,4 +42,44 @@ RSpec.describe Workspace::TimedProcess do
     expect(success).to be true
     expect(out.strip).to eq("C 0")
   end
+
+  describe "encoding" do
+    it "returns non-ASCII stdout as UTF-8 without a cap" do
+      out, = described_class.run(["printf", "café"], chdir: Dir.pwd, timeout: 5)
+
+      expect(out.encoding).to eq(Encoding.default_external)
+      expect(out).to eq("café")
+    end
+
+    it "returns non-ASCII stdout as UTF-8 with a cap, even across a chunk boundary" do
+      text = "é" * 70_000
+      out, = described_class.run(["sh", "-c", "yes é | head -n 70000 | tr -d '\n'"], chdir: Dir.pwd, timeout: 10, max_bytes: 1_000_000)
+
+      expect(out.encoding).to eq(Encoding.default_external)
+      expect(out).to eq(text)
+    end
+  end
+
+  describe "max_bytes" do
+    it "stops a real child that writes past the cap and raises OutputTooLarge" do
+      started = Time.now
+
+      expect {
+        described_class.run(["sh", "-c", "yes x; sleep 5"], chdir: Dir.pwd, timeout: 10, max_bytes: 200_000)
+      }.to raise_error(described_class::OutputTooLarge)
+      expect(Time.now - started).to be < 4
+    end
+
+    it "returns output at or under the cap" do
+      out, = described_class.run(["sh", "-c", "printf abcde"], chdir: Dir.pwd, timeout: 5, max_bytes: 5)
+
+      expect(out).to eq("abcde")
+    end
+
+    it "reads without a cap by default" do
+      out, = described_class.run(["sh", "-c", "head -c 300000 /dev/zero | tr \\0 a"], chdir: Dir.pwd, timeout: 5)
+
+      expect(out.bytesize).to eq(300_000)
+    end
+  end
 end

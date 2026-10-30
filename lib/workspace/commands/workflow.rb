@@ -23,11 +23,20 @@ module Workspace
       # @param panes [Workspace::WorkflowPanes]
       # @param files [Workspace::WorkflowFiles] writes a user's definitions (`add`)
       # @param run_files [Workspace::WorkflowRunFiles] lists a run's files (`files`)
+      # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
+      # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
+      # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
+      # @param pid [Integer] this process
       # @param clock [#call] returns the current Time
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, pid: Process.pid,
+        clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
+        @tmux = tmux
+        @process_tree = process_tree
+        @lock_holder = lock_holder
+        @pid = pid
         @catalog = catalog
         @files = files
         @run_files = run_files
@@ -289,26 +298,35 @@ module Workspace
         row(@engine.cancel(run), "cancelled")
       end
 
-      # Passes a gate. Refused from a pane a run is bound to, so an agent
-      # can't pass its own gate.
+      # Passes a gate. Refused from a pane a run is bound to, and from a
+      # process under the run's own pane, so an agent can't pass its own gate.
       #
       # @param run [String] a run id
       # @param note [String, nil] added to the next step's instructions
+      # @param step [String, nil] the gated step the caller saw
+      # @param attempt [Integer, nil] that step's attempt the caller saw
+      # @param note_sha256 [String, nil] the sha256 of the gate's note the caller read
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#approve}
-      def approve(run:, note: nil, caller_pane: nil)
-        refuse_bound_pane!(caller_pane, "workflow approve")
-        row(@engine.approve(run, note: note), "approved")
+      def approve(run:, note: nil, step: nil, attempt: nil, note_sha256: nil, caller_pane: nil)
+        guard = ->(stored) { refuse_caller!(stored, caller_pane, "workflow approve") }
+        row(@engine.approve(run, note: note, step: step, attempt: attempt, note_sha256: note_sha256, guard: guard), "approved")
       end
 
+      # Turns a gate down, refused where {#approve} is.
+      #
       # @param run [String] a run id
       # @param note [String] why
       # @param to [String, nil] the step to run again
+      # @param step [String, nil] the gated step the caller saw
+      # @param attempt [Integer, nil] that step's attempt the caller saw
+      # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [Hash{String=>Object}] the action row
-      # @raise [Workspace::Error] see {Workspace::WorkflowEngine#reject}
-      def reject(run:, note:, to: nil)
-        row(@engine.reject(run, note: note, to: to), "rejected")
+      # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#reject}
+      def reject(run:, note:, to: nil, step: nil, attempt: nil, caller_pane: nil)
+        guard = ->(stored) { refuse_caller!(stored, caller_pane, "workflow reject") }
+        row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard), "rejected")
       end
 
       # What the agent daemon runs when a turn ends in a bound pane, and on
@@ -451,6 +469,40 @@ module Workspace
         raise Workspace::Error.new("A gate is passed by a person: this pane (#{caller_pane}) is bound to workflow run #{bound}, " \
           "so `#{verb}` is refused here. Run it from another terminal.",
           code: "bound_pane", details: {"pane" => caller_pane, "run_id" => bound})
+      end
+
+      # Both checks guard against an agent's mistake: `$TMUX_PANE` names a bound pane,
+      # or this process runs under the run's own pane (with `$TMUX_PANE` unset or another
+      # pane's). When tmux or the process table can't be read, only the first runs.
+      def refuse_caller!(run, caller_pane, verb)
+        refuse_bound_pane!(caller_pane, verb)
+        pane = @panes.pane_of(run["id"]) || run["pane"]
+        pane_pid = pane && pane_pid(run["workspace"], pane)
+        return unless pane_pid && under?(pane_pid)
+        agent = calling_agent
+        raise Workspace::Error.new("A gate is passed by a person: this process runs under pane #{pane}, which workflow run #{run["id"]} " \
+          "is bound to, so `#{verb}` is refused here. Run it from another terminal.",
+          code: "bound_pane", details: {"pane" => pane, "run_id" => run["id"], "agent" => agent})
+      end
+
+      def pane_pid(workspace, pane)
+        detail = @tmux.pane_details(@tmux.session_name_for(workspace), window: nil).find { |each| each[:id] == pane }
+        (detail && detail[:pid].positive?) ? detail[:pid] : nil
+      rescue SystemCallError
+        nil
+      end
+
+      def under?(pane_pid)
+        @process_tree.snapshot.ancestors(@pid).any? { |process| process[:pid] == pane_pid }
+      rescue Workspace::Error, SystemCallError
+        false
+      end
+
+      def calling_agent
+        holder = @lock_holder.current
+        holder && {"pid" => holder[:pid], "started" => holder[:started]}
+      rescue Workspace::Error
+        nil
       end
 
       def bound_run!(pane)

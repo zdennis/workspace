@@ -151,7 +151,7 @@ RSpec.describe Workspace::Commands::Inbox do
     end
 
     it "refuses a title with a newline, a C1 control, or a line separator" do
-      ["a\nb", "a\u009bb", "a b", "a\tb", "a\0b"].each do |title|
+      ["a\nb", "a\u009bb", "a\u2028b", "a\tb", "a\0b"].each do |title|
         expect(refused_field { command.add(title: title, working_dir: "/app") }).to eq("title")
       end
     end
@@ -1373,6 +1373,24 @@ RSpec.describe Workspace::Commands::Inbox do
 
       expect(output.string).to include("bad\\e[2J")
       expect(output.string).not_to include("\e")
+    end
+
+    it "escapes bidi and zero-width characters in stored text" do
+      item = add_item
+
+      edit_row(item["id"], title: "plain")
+      stored_path = config.inbox_path("workspace", "api.fix")
+      data = stored(stored_path)
+      data.first["title"] = "a\u202eb\u200bc"
+      File.write(stored_path, JSON.generate(data))
+      output.truncate(0)
+      output.rewind
+
+      edit_row(item["id"], body: "b")
+
+      expect(output.string).to include("a\\u202Eb\\u200Bc")
+      expect(output.string).not_to include("\u202e")
+      expect(output.string).not_to include("\u200b")
     end
   end
 

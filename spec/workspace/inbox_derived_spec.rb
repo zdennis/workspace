@@ -204,7 +204,7 @@ RSpec.describe Workspace::InboxDerived do
       expect(rows["pane_waiting"]).to include("body" => "Allow Bash?", "links" => a_hash_including("pane" => "%5"))
       expect(rows["plan_blocked"]).to include("title" => "Plan blocked in api.worktree-b", "body" => "Ship it")
       expect(rows["workflow_waiting_you"]).to include("scope" => a_hash_including("key" => "api.worktree-c"),
-        "links" => a_hash_including("run_id" => "r-gate"))
+        "links" => a_hash_including("run_id" => "r-gate", "step" => a_kind_of(String), "attempt" => a_kind_of(Integer)))
       expect(rows["lock_stale"]).to include("scope" => {"kind" => "project", "key" => "/src/api/.git", "name" => "api"},
         "links" => a_hash_including("pane" => "%12"))
     end

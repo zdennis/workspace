@@ -985,6 +985,67 @@ RSpec.describe Workspace::Git do
       end
     end
   end
+
+  describe "#push_urls" do
+    it "lists every push URL of origin" do
+      Dir.mktmpdir do |dir|
+        system("git", "-C", dir, "init", "--quiet")
+        system("git", "-C", dir, "remote", "add", "origin", "git@github.com:org/repo.git")
+        system("git", "-C", dir, "config", "--add", "remote.origin.pushurl", "git@github.com:org/repo.git")
+        system("git", "-C", dir, "config", "--add", "remote.origin.pushurl", "https://example.com/other/repo.git")
+
+        expect(git.push_urls(dir)).to eq(["git@github.com:org/repo.git", "https://example.com/other/repo.git"])
+      end
+    end
+
+    it "falls back to the fetch URL with no push URL set" do
+      Dir.mktmpdir do |dir|
+        system("git", "-C", dir, "init", "--quiet")
+        system("git", "-C", dir, "remote", "add", "origin", "git@github.com:org/repo.git")
+
+        expect(git.push_urls(dir)).to eq(["git@github.com:org/repo.git"])
+      end
+    end
+
+    it "returns nil with no origin remote" do
+      Dir.mktmpdir do |dir|
+        system("git", "-C", dir, "init", "--quiet")
+
+        expect(git.push_urls(dir)).to be_nil
+      end
+    end
+  end
+
+  describe "#push" do
+    def argv_for(*args, **opts)
+      calls = []
+      runner = ->(argv, chdir:, timeout:, env: {}) {
+        calls << argv
+        ["", "", true]
+      }
+      described_class.new(output: output, input: input, runner: runner).push("/w", *args, **opts)
+      calls.first
+    end
+
+    it "pushes the branch to its own name, naming both refs in full" do
+      expect(argv_for("feature/x")).to eq(%w[git push origin refs/heads/feature/x:refs/heads/feature/x])
+    end
+
+    it "pushes to another branch on origin with a full refspec" do
+      expect(argv_for("pr-12", dest: "fix/thing")).to eq(%w[git push origin refs/heads/pr-12:refs/heads/fix/thing])
+    end
+
+    it "never lets a branch named +x become a forced refspec" do
+      expect(argv_for("+x", set_upstream: true)).to eq(%w[git push -u origin refs/heads/+x:refs/heads/+x])
+    end
+
+    it "names the destination ref and the commit in the lease" do
+      sha = "a" * 40
+
+      expect(argv_for("pr-12", dest: "fix/thing", lease: sha)).to eq(["git", "push", "--force-with-lease=refs/heads/fix/thing:#{sha}", "origin", "refs/heads/pr-12:refs/heads/fix/thing"])
+      expect(argv_for("feature/x", lease: sha)).to eq(["git", "push", "--force-with-lease=refs/heads/feature/x:#{sha}", "origin", "refs/heads/feature/x:refs/heads/feature/x"])
+    end
+  end
 end
 
 RSpec.describe Workspace::Git, "checkout layout" do
@@ -1346,8 +1407,8 @@ RSpec.describe Workspace::Git, "write operations on a checkout" do
     calls = []
     git = described_class.new(runner: ->(argv, chdir:, timeout:, env: {}) { calls << [argv, chdir, timeout] && ["", "", true] })
 
-    expect(git.push(wt, "feature/x", set_upstream: true, force_with_lease: true)).to eq([true, ""])
-    expect(calls).to eq([[%w[git push -u --force-with-lease origin feature/x], wt, described_class::PUSH_TIMEOUT]])
+    expect(git.push(wt, "feature/x", set_upstream: true, lease: "b" * 40)).to eq([true, ""])
+    expect(calls).to eq([[["git", "push", "-u", "--force-with-lease=refs/heads/feature/x:#{"b" * 40}", "origin", "refs/heads/feature/x:refs/heads/feature/x"], wt, described_class::PUSH_TIMEOUT]])
   end
 end
 

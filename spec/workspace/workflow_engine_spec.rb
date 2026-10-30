@@ -45,9 +45,12 @@ RSpec.describe Workspace::WorkflowEngine do
   end
   let(:stopped) { [] }
   let(:task_store) { instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}) }
+  let(:notes_dir) { File.join(@dir, "notes") }
+  let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir}) }
+  let(:gate_note) { Workspace::WorkflowGateNote.new(notes: notes) }
   subject(:engine) do
     described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
-      commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git),
+      commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       env_stopper: ->(**args) { stopped << args }, event_log: event_log, task_store: task_store, clock: -> { now.first })
   end
 
@@ -100,7 +103,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
   def engine_with(**overrides)
     described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
-      commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git),
+      commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       clock: -> { now.first }, **overrides)
   end
 
@@ -715,7 +718,7 @@ RSpec.describe Workspace::WorkflowEngine do
         {exit_code: 0, timed_out: false}
       end
       slow = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: cancelling,
-        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), clock: -> { now.first })
+        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
 
       expect(slow.turn_ended("wr_1", pane: "%5")).to include("state" => "cancelled")
     end
@@ -738,7 +741,7 @@ RSpec.describe Workspace::WorkflowEngine do
         {exit_code: 0, timed_out: false}
       end
       moved = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: slow,
-        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), clock: -> { now.first })
+        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
 
       run = moved.turn_ended("wr_1", pane: "%5")
 
@@ -827,7 +830,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "starts the next step all the same when the environment can't be stopped" do
       failing = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
-        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git),
+        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
         env_stopper: ->(**) { raise Workspace::Error, "Could not read the lock store" }, clock: -> { now.first })
       two = definition("steps:\n  a:\n    prompt: P\n    uses: [devenv]\n  b:\n    prompt: P\n")
       failing.start(definition: two, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
@@ -894,7 +897,8 @@ RSpec.describe Workspace::WorkflowEngine do
       [-> { engine.approve("wr_1") }, -> { engine.reject("wr_1", note: "no") }].each do |call|
         expect(&call).to raise_error(Workspace::Error, "Run wr_1 is not waiting at a gate (step plan is running).") { |error|
           expect(error.code).to eq("gate_not_waiting")
-          expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "state" => "running")
+          expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempt" => 1, "state" => "running",
+            "expected_step" => nil, "expected_attempt" => nil)
         }
       end
     end
@@ -917,6 +921,172 @@ RSpec.describe Workspace::WorkflowEngine do
       expect { engine.reject("wr_1", note: "no", to: "build") }
         .to raise_error(Workspace::UsageError, '--to must be plan or a step before it (plan), got "build".')
       expect(store.find("wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
+    end
+  end
+
+  describe "a gate's guards" do
+    let(:run_file) { File.join(runs_dir, "wr_1.json") }
+    let(:note_path) { File.join(notes_dir, "2026-10-29-pr-7-feedback.md") }
+    let(:note_sha) { Digest::SHA256.hexdigest("# Triage\n\nF1: fix.\n") }
+
+    # The gated step's first file names the note on its first line, as the pr-feedback triage step writes it.
+    def gate_at(first_line = "note: 2026-10-29-pr-7-feedback.md")
+      start
+      File.write(artifact("plan.md"), "#{first_line}\nfix 1, answer 0\n")
+      FileUtils.mkdir_p(notes_dir)
+      File.write(note_path, "# Triage\n\nF1: fix.\n")
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    def unchanged
+      before = File.binread(run_file)
+      yield
+      expect(File.binread(run_file)).to eq(before)
+    end
+
+    it "approves at the step and attempt the caller saw" do
+      gate_at
+
+      run = engine.approve("wr_1", step: "plan", attempt: 1)
+
+      expect(run).to include("current" => "build", "state" => "running")
+    end
+
+    it "refuses a wrong step or attempt with gate_not_waiting, naming both, and leaves the run file as it was" do
+      gate_at
+
+      {["build", nil] => ["build", nil], ["plan", 2] => ["plan", 2]}.each do |(step, attempt), (expected_step, expected_attempt)|
+        unchanged do
+          expect { engine.approve("wr_1", step: step, attempt: attempt) }
+            .to raise_error(Workspace::Error, /Run wr_1 is not waiting at the gate of step #{expected_step}/) { |error|
+              expect(error.code).to eq("gate_not_waiting")
+              expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempt" => 1, "state" => "passed",
+                "expected_step" => expected_step, "expected_attempt" => expected_attempt)
+            }
+          expect { engine.reject("wr_1", note: "no", step: step, attempt: attempt) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_not_waiting") }
+        end
+      end
+    end
+
+    it "refuses an approval from before a reject once the gate waits again, on a later attempt" do
+      gate_at
+      engine.reject("wr_1", note: "Again.", step: "plan", attempt: 1)
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(store.find("wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
+
+      unchanged do
+        expect { engine.approve("wr_1", step: "plan", attempt: 1) }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq("gate_not_waiting")
+          expect(error.details).to include("step" => "plan", "attempt" => 2, "expected_attempt" => 1)
+        }
+      end
+      expect(engine.approve("wr_1", step: "plan", attempt: 2)).to include("current" => "build")
+    end
+
+    it "rejects at the step and attempt the caller saw, back to the step it names" do
+      gated = definition("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n    gate: approve\n")
+      start(gated, inputs: {})
+      engine.turn_ended("wr_1")
+      engine.turn_ended("wr_1")
+
+      run = engine.reject("wr_1", note: "Start over.", to: "a", step: "b", attempt: 1)
+
+      expect(run["current"]).to eq("a")
+      expect(run["steps"]["a"]["attempts"].size).to eq(2)
+    end
+
+    it "asks the guard after the step checks, under the run's lock, and changes nothing when it refuses" do
+      gate_at
+      seen = []
+      refuse = ->(stored) {
+        seen << stored["current"]
+        raise Workspace::Error.new("refused", code: "bound_pane")
+      }
+
+      expect { engine.approve("wr_1", step: "build", guard: refuse) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_not_waiting") }
+      expect(seen).to eq([])
+      unchanged do
+        expect { engine.approve("wr_1", step: "plan", attempt: 1, guard: refuse) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("bound_pane") }
+        expect { engine.reject("wr_1", note: "no", guard: refuse) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("bound_pane") }
+      end
+      expect(seen).to eq(%w[plan plan])
+    end
+
+    it "records the note's sha256 with the approval, and names it in the next step's instructions" do
+      gate_at
+
+      run = engine.approve("wr_1", note: "Skip F2.")
+
+      expect(run["steps"]["plan"]["gate"]).to include("state" => "approved", "file" => {"path" => note_path, "sha256" => note_sha})
+      expect(run["steps"]["build"]["attempts"].last["context"]).to eq(["The plan step was approved with this note: Skip F2.",
+        "The approved note is #{note_path}, sha256 #{note_sha}."])
+      expect(history_lines.find { |line| line["type"] == "gate_approved" }).to include("sha256" => note_sha)
+    end
+
+    it "approves a gate whose first file names no note as before, recording no file" do
+      gate_at("fix 1")
+
+      run = engine.approve("wr_1")
+
+      expect(run["steps"]["plan"]["gate"]).not_to have_key("file")
+      expect(run["steps"]["build"]["attempts"].last["context"]).to eq([])
+    end
+
+    it "refuses with gate_note_unreadable a note that is missing, a link, or not a plain file name, and leaves the run file as it was" do
+      gate_at
+      File.delete(note_path)
+      unchanged do
+        expect { engine.approve("wr_1") }.to raise_error(Workspace::Error, /The gate of step plan in run wr_1 has no note that can be read/) { |error|
+          expect(error.code).to eq("gate_note_unreadable")
+          expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempt" => 1, "name" => "2026-10-29-pr-7-feedback.md", "path" => note_path)
+        }
+      end
+
+      File.write(File.join(notes_dir, "real.md"), "x")
+      File.symlink(File.join(notes_dir, "real.md"), note_path)
+      unchanged { expect { engine.approve("wr_1") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_note_unreadable") } }
+
+      File.write(File.join(worktree, ".workflow", "wr_1", "plan.md"), "note: sub/2026-10-29-pr-7-feedback.md\n")
+      unchanged { expect { engine.approve("wr_1") }.to raise_error(Workspace::Error, /is not a plain file name/) { |e| expect(e.code).to eq("gate_note_unreadable") } }
+    end
+
+    it "approves with --note-sha256 when the note still has that hash, recording that hash" do
+      gate_at
+
+      run = engine.approve("wr_1", step: "plan", attempt: 1, note_sha256: note_sha)
+
+      expect(run["steps"]["plan"]["gate"]["file"]).to eq("path" => note_path, "sha256" => note_sha)
+    end
+
+    it "refuses --note-sha256 for a note that changed with stale_revision, naming its hash now, and leaves the run file as it was" do
+      gate_at
+      File.write(note_path, "# Triage\n\nF1: decline.\n")
+      now_sha = Digest::SHA256.hexdigest("# Triage\n\nF1: decline.\n")
+
+      unchanged do
+        expect { engine.approve("wr_1", note_sha256: note_sha) }.to raise_error(Workspace::Error, /The note #{Regexp.escape(note_path)} changed since that revision/) { |error|
+          expect(error.code).to eq("stale_revision")
+          expect(error.details).to eq("revision" => now_sha, "path" => note_path, "run_id" => "wr_1", "step" => "plan", "attempt" => 1)
+        }
+      end
+    end
+
+    it "refuses --note-sha256 on a gate that names no note with gate_note_unreadable" do
+      gate_at("fix 1")
+
+      unchanged do
+        expect { engine.approve("wr_1", note_sha256: note_sha) }.to raise_error(Workspace::Error, /has no `note:` line/) { |error|
+          expect(error.code).to eq("gate_note_unreadable")
+        }
+      end
+    end
+
+    it "checks the step before the note: a stale button on a changed note is gate_not_waiting" do
+      gate_at
+      File.write(note_path, "changed")
+
+      expect { engine.approve("wr_1", step: "plan", attempt: 3, note_sha256: note_sha) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_not_waiting") }
     end
   end
 

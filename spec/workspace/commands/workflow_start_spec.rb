@@ -89,6 +89,28 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     expect(row["inputs"]).to eq({})
   end
 
+  it "seeds a declared pr input from a pull request ref's number, never over --input, and not for a branch" do
+    definition = Workspace::WorkflowDefinition.parse("inputs:\n  task:\n  pr:\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+    allow(catalog).to receive(:find).with("flow").and_return(definition)
+    pr_ticket = ticket.merge("key" => "o/r#12")
+
+    allow(ticket_source).to receive(:fetch).and_return(pr_ticket)
+    expect(command.call(id: "flow", ref: "https://github.com/o/r/pull/12", dry_run: true)["inputs"]).to include("pr" => "12")
+    expect(command.call(id: "flow", ref: "https://github.com/o/r/pull/12", inputs: {"pr" => "99"}, dry_run: true)["inputs"]).to include("pr" => "99")
+    expect(command.call(id: "flow", ref: "my-branch", dry_run: true)["inputs"]).not_to have_key("pr")
+  end
+
+  it "leaves pr empty for an issue or JIRA ref, and for a workflow that does not declare it" do
+    with_pr = Workspace::WorkflowDefinition.parse("inputs:\n  pr:\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+    allow(catalog).to receive(:find).with("flow").and_return(with_pr)
+    expect(command.call(id: "flow", ref: "PROJ-1", dry_run: true)["inputs"]).not_to have_key("pr")
+    expect(command.call(id: "flow", ref: "https://github.com/o/r/issues/5", dry_run: true)["inputs"]).not_to have_key("pr")
+
+    without = Workspace::WorkflowDefinition.parse("inputs:\n  task:\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+    allow(catalog).to receive(:find).with("flow").and_return(without)
+    expect(command.call(id: "flow", ref: "https://github.com/o/r/pull/12", dry_run: true)["inputs"]).not_to have_key("pr")
+  end
+
   it "reports the file the ticket body would go to as spec, only when spec is declared and not given" do
     row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
     expect(row["inputs"]["spec"]).to eq("/src/app/.worktrees/PROJ-1/.workflow/tickets/PROJ-1.md")

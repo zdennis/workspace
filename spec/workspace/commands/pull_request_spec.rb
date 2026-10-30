@@ -56,7 +56,7 @@ RSpec.describe Workspace::Commands::PullRequest do
     it "pushes a branch with no upstream, then runs gh pr create --fill" do
       command.create(working_dir: repo)
 
-      expect(calls.map { |c| c[:argv] }).to eq([%w[git push -u origin feature/x], %w[gh pr create --fill]])
+      expect(calls.map { |c| c[:argv] }).to eq([%w[git push -u origin refs/heads/feature/x:refs/heads/feature/x], %w[gh pr create --fill]])
       expect(sh("rev-parse", "--abbrev-ref", "feature/x@{u}").strip).to eq("origin/feature/x")
       expect(calls.map { |c| c[:chdir] }.uniq).to eq([repo])
     end

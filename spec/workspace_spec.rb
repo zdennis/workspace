@@ -67,6 +67,25 @@ RSpec.describe Workspace do
       expect(resolver).to equal(cli.instance_variable_get(:@notes_command).instance_variable_get(:@config_resolver))
     end
 
+    it "wires pr feedback to the reader and the shared workspace checkout" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      command = cli.instance_variable_get(:@pr_feedback_command)
+
+      expect(command).to be_a(Workspace::Commands::PrFeedback)
+      expect(command.instance_variable_get(:@feedback)).to be_a(Workspace::PullRequestFeedback)
+      expect(command.instance_variable_get(:@checkout)).to equal(cli.instance_variable_get(:@push_command).instance_variable_get(:@checkout))
+    end
+
+    it "hands push a PullRequestStatus to check a pull request checkout's head" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      command = cli.instance_variable_get(:@push_command)
+
+      expect(command).to be_a(Workspace::Commands::Push)
+      expect(command.instance_variable_get(:@pr_status)).to be_a(Workspace::PullRequestStatus)
+    end
+
     it "wires a real LockReaper into the agent command's session monitor" do
       cli = Workspace.build_cli(
         output: StringIO.new,
@@ -283,6 +302,15 @@ RSpec.describe Workspace do
         expect(engine.instance_variable_get(:@composer).instance_variable_get(:@workflow_config)).to be_a(Workspace::WorkflowConfig)
         expect(panes.instance_variable_get(:@bindings)).to equal(cli.instance_variable_get(:@binding_command).instance_variable_get(:@bindings))
         expect(panes.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
+
+        # Approve and status name a gate's note through one resolver, over the notes command; the caller checks read tmux and ps.
+        gate_note = engine.instance_variable_get(:@gate_note)
+        expect(gate_note).to be_a(Workspace::WorkflowGateNote)
+        expect(workflow.instance_variable_get(:@status).instance_variable_get(:@gate_note)).to equal(gate_note)
+        expect(gate_note.instance_variable_get(:@notes)).to be_a(Workspace::Commands::Notes)
+        expect(workflow.instance_variable_get(:@tmux)).to be_a(Workspace::Tmux)
+        expect(workflow.instance_variable_get(:@process_tree)).to be_a(Workspace::ProcessTree)
+        expect(workflow.instance_variable_get(:@lock_holder)).to be_a(Workspace::LockHolder)
 
         # The engine's events go to the one shared log, and the environment a run left is stopped through `dev`.
         dev = cli.instance_variable_get(:@dev_command)

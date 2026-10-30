@@ -205,6 +205,7 @@ require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/project_agents"
 require_relative "workspace/project_facts"
 require_relative "workspace/duration"
+require_relative "workspace/terminal_text"
 require_relative "workspace/note_path"
 require_relative "workspace/byte_size"
 require_relative "workspace/events_config"
@@ -237,6 +238,7 @@ require_relative "workspace/inbox_derived"
 require_relative "workspace/inbox_acks"
 require_relative "workspace/task_store"
 require_relative "workspace/pull_request_status"
+require_relative "workspace/pull_request_feedback"
 require_relative "workspace/transcript_summary"
 require_relative "workspace/session_ledger"
 require_relative "workspace/transcript_label"
@@ -279,6 +281,7 @@ require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_panes"
+require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
 require_relative "workspace/workflow_nudger"
@@ -298,6 +301,7 @@ require_relative "workspace/commands/kill"
 require_relative "workspace/commands/pull_request"
 require_relative "workspace/commands/rebase"
 require_relative "workspace/commands/push"
+require_relative "workspace/commands/pr_feedback"
 require_relative "workspace/commands/promote"
 require_relative "workspace/commands/finish"
 require_relative "workspace/commands/focus"
@@ -543,6 +547,7 @@ module Workspace
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command)
+    workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
@@ -553,11 +558,13 @@ module Workspace
       lineage: lineage,
       git: git,
       excludes: GitExclude.new(git: git),
+      gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
       event_log: event_log,
       task_store: task_store
     )
-    workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for)
+    workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
+      gate_note: workflow_gate_note)
     workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
@@ -567,6 +574,9 @@ module Workspace
       status: workflow_status,
       store: workflow_store,
       panes: workflow_panes,
+      tmux: tmux,
+      process_tree: process_tree,
+      lock_holder: lock_holder,
       output: output,
       input: input,
       error_output: error_output
@@ -576,7 +586,8 @@ module Workspace
     kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, output: output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)
-    push_command = Commands::Push.new(git: git, checkout: workspace_checkout, output: output)
+    push_command = Commands::Push.new(git: git, checkout: workspace_checkout, pr_status: PullRequestStatus.new, output: output)
+    pr_feedback_command = Commands::PrFeedback.new(feedback: PullRequestFeedback.new, checkout: workspace_checkout, output: output)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, pull_request: pull_request_command, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
@@ -669,7 +680,7 @@ module Workspace
       lock_store_for: ->(dir) { LockStore.new(dir: dir, liveness: lock_holder) }, lock_config: lock_config)
     inbox_acks = InboxAcks.new(path: config.inbox_acks_path)
     inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
-      session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, derived: inbox_derived, acks: inbox_acks,
+      session_ledger: session_ledger, run_store: workflow_store, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, derived: inbox_derived, acks: inbox_acks,
       output: output, error_output: error_output, notes: notes_command)
 
     work_coordinator_client = WorkCoordinatorClient.new(
@@ -768,6 +779,7 @@ module Workspace
       pull_request_command: pull_request_command,
       rebase_command: rebase_command,
       push_command: push_command,
+      pr_feedback_command: pr_feedback_command,
       promote_command: promote_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,

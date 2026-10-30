@@ -148,7 +148,7 @@ RSpec.describe Workspace::PushFailure do
     it "runs git push in English" do
       expect { git.push("/tmp", "feature/x") }.to raise_error(Workspace::Error)
 
-      expect(argvs.first).to eq([%w[git push origin feature/x], {"LC_ALL" => "C", "LANGUAGE" => "C"}])
+      expect(argvs.first).to eq([%w[git push origin refs/heads/feature/x:refs/heads/feature/x], {"LC_ALL" => "C", "LANGUAGE" => "C"}])
     end
   end
 

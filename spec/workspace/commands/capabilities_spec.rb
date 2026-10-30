@@ -40,7 +40,7 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(features).to include("prune_safe" => 2)
       expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "action_json" => 1, "sessions" => 2)
       expect(features).to include("snapshot" => 6, "agent_send" => 1, "focus_pane" => 1, "focus_cycle" => 1, "actions_manifest" => 0)
-      expect(features).to include("config_json" => 2, "config_scopes" => 2, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 2, "daemon_control" => 4, "ui_open" => 4, "pane_bindings" => 3, "library" => 5, "spine_init" => 2, "library_play" => 3, "library_recipes" => 1, "library_copy" => 4, "library_installed" => 1, "instructions" => 1, "start_packs" => 2, "handoff_auto" => 2, "handoff_codex" => 1, "handoff_wait" => 1, "inbox" => 5, "ask_withdraw" => 1, "ask_deliver" => 1, "review" => 1, "review_patch" => 1, "add_json" => 1, "start_agent" => 1, "start_plan" => 1, "plan_progress" => 1, "spine_events" => 2, "agent_status" => 1, "agent_queue" => 1, "agent_send_interrupt" => 1, "agent_hooks" => 1, "codex_waiting" => 1, "projects_multi" => 1, "json_envelope" => 1, "remove" => 1, "promote" => 1, "bookkeeping_excluded" => 1)
+      expect(features).to include("config_json" => 2, "config_scopes" => 2, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 2, "daemon_control" => 4, "ui_open" => 4, "pane_bindings" => 3, "library" => 5, "spine_init" => 2, "library_play" => 3, "library_recipes" => 1, "library_copy" => 4, "library_installed" => 1, "instructions" => 1, "start_packs" => 2, "handoff_auto" => 2, "handoff_codex" => 1, "handoff_wait" => 1, "inbox" => 6, "ask_withdraw" => 1, "ask_deliver" => 1, "review" => 1, "review_patch" => 1, "add_json" => 1, "start_agent" => 1, "start_plan" => 1, "plan_progress" => 1, "spine_events" => 2, "agent_status" => 1, "agent_queue" => 1, "agent_send_interrupt" => 1, "agent_hooks" => 1, "codex_waiting" => 1, "projects_multi" => 1, "json_envelope" => 1, "remove" => 1, "promote" => 1, "bookkeeping_excluded" => 1)
     end
 
     it "reports the exit codes the CLI uses" do
@@ -71,7 +71,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports the workflow feature" do
       command.call(json: true)
 
-      expect(document["features"]).to include("workflow" => 5)
+      expect(document["features"]).to include("workflow" => 6)
     end
 
     it "reports the restore feature" do
@@ -259,10 +259,16 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("pr_create" => 2)
     end
 
+    it "reports pr_feedback 1 once pr feedback exists" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("pr_feedback" => 1)
+    end
+
     it "reports rebase 2 once rebase and push exist" do
       command.call(json: true)
 
-      expect(document["features"]).to include("rebase" => 3)
+      expect(document["features"]).to include("rebase" => 4)
     end
 
     it "ignores a PATH entry that is not executable or is a directory" do

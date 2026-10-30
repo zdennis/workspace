@@ -70,6 +70,25 @@ RSpec.describe Workspace::Commands::PromptQueue do
       expect(row["length"]).to eq(305)
     end
 
+    it "escapes ESC as \e, and bidi and zero-width characters" do
+      add("api", "a\e[2Jb‮c​d")
+
+      command.list(name: "api", json: true)
+
+      expect(json["entries"].first["preview"]).to eq("a\\e[2Jb\\u202Ec\\u200Bd")
+    end
+
+    it "does not raise on invalid UTF-8 in a stored prompt" do
+      entry = {"id" => "x", "pane_id" => "%5", "state" => "queued", "queued_at" => "t", "text" => (+"ok\xff!").force_encoding("UTF-8")}
+      store = double("store", entries: [entry])
+      bad = described_class.new(config: config, locator: locator, event_log: event_log, clock: clock, columns: -> { columns },
+        store_factory: ->(_path) { store }, output: output, error_output: error_output)
+
+      expect { bad.list(name: "api", json: true) }.not_to raise_error
+      expect(json["entries"].first["preview"]).to eq("ok�!")
+      expect { bad.list(name: "api", json: false) }.not_to raise_error
+    end
+
     it "counts the 200 characters, not bytes" do
       add("api", "é" * 250)
 

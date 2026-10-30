@@ -10,7 +10,7 @@ A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Laun
 - **Kill** and **relaunch** workspace projects with session state preservation
 - **Add** new projects from any directory
 - **Agent** — run a long-lived daemon that registers with [work-coordinator](https://github.com/zdennis/work-coordinator), routes commands to the right pane, and drives multi-step pipelines
-- **Workflow** — run ordered steps (the `rpiv` preset: research, plan, implement, verify) in a workspace's agent pane, with gates, checks, locks the run holds, and a reason whenever a run is stuck
+- **Workflow** — run ordered steps (the `rpiv` preset: research, plan, implement, verify; the `pr-feedback` preset: triage a pull request's review feedback, then fix) in a workspace's agent pane, with gates, checks, locks the run holds, and a reason whenever a run is stuck
 - **Pipeline** (deprecated, use Workflow) — sequence panes as a staged pipeline (researcher → implementer → reviewer) with automatic handoff and sentinel-based completion detection
 - Reuses existing launcher panes instead of creating new windows
 - Tracks iTerm window IDs for reliable window management across tab switches
@@ -111,7 +111,7 @@ workspace <subcommand> [options]
 | promote | [README](docs/README.promote.md) | Move a main checkout's work (changes and branch commits) into a new worktree workspace, carry its plan, spine and chosen notes, and leave the checkout clean; `--dry-run` previews, a failed move is undone or kept under a recovery ref |
 | projects | [README](docs/README.projects.md) | Group workspaces by repository: main checkout plus worktrees (`list` for running counts, `list --git` for unsaved work, `show` for one project's agents, git state, asks, pipeline, locks and dev env, `members` for a script-friendly list of its workspaces, `stop` to stop them all, `kill` to remove all its worktrees, `group create/add/list/show` to name several repositories as a group) |
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
-| push | [README](docs/README.rebase.md) | Push a workspace's branch to origin; forces with a lease only when a rebase replaced commits the upstream has |
+| push | [README](docs/README.rebase.md) | Push a workspace's branch to origin (a `pr-N` checkout to its pull request's head, after checking it with gh); forces with a lease only when a rebase replaced commits the upstream has |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | rebase | [README](docs/README.rebase.md) | Rebase a workspace's branch onto the default branch (`--onto local\|update\|remote\|upstream`); a conflict is aborted and reported |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |

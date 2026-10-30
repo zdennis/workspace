@@ -40,19 +40,22 @@ module Workspace
     # The file git keeps while each operation is stopped, and the name {#operation_in_progress} gives it.
     OPERATION_FILES = {"MERGE_HEAD" => "merge", "CHERRY_PICK_HEAD" => "cherry_pick", "REVERT_HEAD" => "revert", "BISECT_LOG" => "bisect"}.freeze
 
-    # Pushes a branch to origin.
+    # Pushes a branch to origin. The source is always the full `refs/heads/<branch>`, so a branch
+    # named like `+x` can't turn into a forced refspec and a tag of the same name is never sent.
     #
     # @param path [String] the checkout
     # @param branch [String]
     # @param set_upstream [Boolean] pass `-u`
-    # @param force_with_lease [Boolean] pass `--force-with-lease`
+    # @param dest [String, nil] the branch on origin; nil pushes to the branch's own name
+    # @param lease [String, nil] a commit id: pass `--force-with-lease=refs/heads/<dest>:<lease>`, which
+    #   overwrites the remote branch only while it still points at that commit
     # @return [Array(Boolean, String)] success and git's stderr
     # @raise [Workspace::Error] git is not installed (uncoded), or the push ran past {PUSH_TIMEOUT} seconds (`push_timeout`)
-    def push(path, branch, set_upstream: false, force_with_lease: false)
+    def push(path, branch, set_upstream: false, dest: nil, lease: nil)
       argv = ["push"]
       argv << "-u" if set_upstream
-      argv << "--force-with-lease" if force_with_lease
-      argv.push("origin", branch)
+      argv << "--force-with-lease=refs/heads/#{dest || branch}:#{lease}" if lease
+      argv.push("origin", "refs/heads/#{branch}:refs/heads/#{dest || branch}")
       _, stderr, success = @runner.call(["git", *argv], chdir: path, timeout: PUSH_TIMEOUT, env: ENGLISH)
       [success, stderr]
     rescue Errno::ENOENT
@@ -272,6 +275,15 @@ module Workspace
       status.success? ? stdout.strip : nil
     rescue
       nil
+    end
+
+    # Every URL a push to origin goes to: each `remote.origin.pushurl`, else the fetch URL.
+    #
+    # @param path [String] the checkout
+    # @return [Array<String>, nil] nil when git could not say
+    def push_urls(path)
+      stdout, _, status = capture_git("-C", path, "remote", "get-url", "--push", "--all", "origin")
+      status.success? ? stdout.scrub.lines.map(&:strip).reject(&:empty?) : nil
     end
 
     # Returns true if the given path is a linked git worktree (not the main worktree).

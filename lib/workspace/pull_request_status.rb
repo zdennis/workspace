@@ -14,12 +14,48 @@ module Workspace
     MAX_FAILED_CHECKS = 20
 
     FIELDS = "number,url,title,state,isDraft,reviewDecision,mergeable,statusCheckRollup".freeze
-    private_constant :FIELDS
+    HEAD_FIELDS = "state,isCrossRepository,headRefName,headRefOid,headRepository,headRepositoryOwner".freeze
+    private_constant :FIELDS, :HEAD_FIELDS
+
+    # Origin URLs {.github_repo} reads: https, ssh:// and scp-like, each with an optional user and `.git`.
+    REMOTE_URLS = [
+      %r{\Ahttps://(?:[^@/]+@)?([^/:]+)/([^/]+)/([^/]+?)(?:\.git)?/?\z},
+      %r{\Assh://(?:[^@/]+@)?([^/:]+)/([^/]+)/([^/]+?)(?:\.git)?/?\z},
+      %r{\A(?:[^@/:]+@)?([^/:]+):([^/]+)/([^/]+?)(?:\.git)?/?\z}
+    ].freeze
+    private_constant :REMOTE_URLS
 
     FAILED_CONCLUSIONS = %w[FAILURE TIMED_OUT CANCELLED STARTUP_FAILURE ACTION_REQUIRED STALE].freeze
     PASSED_CONCLUSIONS = %w[SUCCESS NEUTRAL SKIPPED].freeze
     FAILED_STATES = %w[FAILURE ERROR].freeze
     private_constant :FAILED_CONCLUSIONS, :PASSED_CONCLUSIONS, :FAILED_STATES
+
+    # @param entry [Hash] a check run (`status`, `conclusion`) or a commit status (`state`)
+    # @return [Symbol] `:passing`, `:failing` or `:pending`
+    def self.outcome(entry)
+      if entry.key?("state")
+        return :failing if FAILED_STATES.include?(entry["state"])
+        return :passing if entry["state"] == "SUCCESS"
+        return :pending
+      end
+      return :pending unless entry["status"] == "COMPLETED"
+      return :failing if FAILED_CONCLUSIONS.include?(entry["conclusion"])
+      PASSED_CONCLUSIONS.include?(entry["conclusion"]) ? :passing : :pending
+    end
+
+    # The repository an origin URL names, each part checked with {PullRequestFeedback}'s strict patterns.
+    #
+    # @param url [String, nil] what `git remote get-url origin` printed
+    # @return [Array(String, String, String), nil] host, owner and name, or nil when the URL is not one
+    #   of the forms in {REMOTE_URLS} or a part fails its pattern
+    def self.github_repo(url)
+      match = REMOTE_URLS.lazy.filter_map { |pattern| pattern.match(url.to_s) }.first
+      return nil unless match
+      host, owner, name = match.captures
+      return nil unless host.match?(PullRequestFeedback::HOST) && owner.match?(PullRequestFeedback::OWNER) &&
+        name.match?(PullRequestFeedback::REPO)
+      [host, owner, name]
+    end
 
     # @param runner [#call] `(args, chdir:, timeout:)` returning `[stdout, stderr, success]`;
     #   defaults to {TimedProcess}
@@ -39,6 +75,38 @@ module Workspace
       return facts(JSON.parse(stdout)) if success
       return {"available" => true, "found" => false} if stderr.to_s.include?("no pull requests found")
       {"available" => false, "reason" => "error", "detail" => stderr.to_s.scrub.lines.first.to_s.strip[0, 200]}
+    rescue Errno::ENOENT
+      {"available" => false, "reason" => "gh_missing"}
+    rescue Timeout::Error
+      {"available" => false, "reason" => "timeout"}
+    rescue JSON::ParserError, SystemCallError
+      {"available" => false, "reason" => "error", "detail" => "unreadable reply from gh"}
+    end
+
+    # Reads where a pull request's head is, for `push` to check a PR checkout against.
+    #
+    # @param path [String] the checkout `gh` runs in
+    # @param number [Integer] the pull request
+    # @param repo [String] `HOST/OWNER/NAME`, passed to `--repo`
+    # @return [Hash] `{"available" => true, "state", "cross_repository", "head_ref", "head_sha", "head_owner",
+    #   "head_name"}`, or `{"available" => false, "reason" => "gh_missing" | "not_logged_in" | "timeout" | "error"}`
+    #   (`detail`, gh's first line, with "not_logged_in" and "error")
+    def head(path, number:, repo:)
+      stdout, stderr, success = @runner.call(["pr", "view", Integer(number).to_s, "--repo", repo, "--json", HEAD_FIELDS],
+        chdir: path, timeout: @timeout)
+      unless success
+        detail = stderr.to_s.scrub.lines.map(&:strip).find { |line| !line.empty? }.to_s[0, 200]
+        reason = stderr.to_s.match?(PullRequestFeedback::NOT_LOGGED_IN) ? "not_logged_in" : "error"
+        return {"available" => false, "reason" => reason, "detail" => detail.empty? ? "gh failed" : detail}
+      end
+      doc = JSON.parse(stdout)
+      raise JSON::ParserError, "not an object" unless doc.is_a?(Hash)
+      {
+        "available" => true, "state" => doc["state"], "cross_repository" => doc["isCrossRepository"],
+        "head_ref" => doc["headRefName"], "head_sha" => doc["headRefOid"],
+        "head_owner" => doc["headRepositoryOwner"].is_a?(Hash) ? doc["headRepositoryOwner"]["login"] : nil,
+        "head_name" => doc["headRepository"].is_a?(Hash) ? doc["headRepository"]["name"] : nil
+      }
     rescue Errno::ENOENT
       {"available" => false, "reason" => "gh_missing"}
     rescue Timeout::Error
@@ -73,7 +141,7 @@ module Workspace
       failed = []
       passing = pending = 0
       entries.each do |entry|
-        case outcome(entry)
+        case self.class.outcome(entry)
         when :passing then passing += 1
         when :failing then failed << (entry["name"] || entry["context"]).to_s
         else pending += 1
@@ -81,17 +149,6 @@ module Workspace
       end
       {"total" => entries.size, "passing" => passing, "failing" => failed.size, "pending" => pending,
        "failed" => failed.first(MAX_FAILED_CHECKS)}
-    end
-
-    def outcome(entry)
-      if entry.key?("state")
-        return :failing if FAILED_STATES.include?(entry["state"])
-        return :passing if entry["state"] == "SUCCESS"
-        return :pending
-      end
-      return :pending unless entry["status"] == "COMPLETED"
-      return :failing if FAILED_CONCLUSIONS.include?(entry["conclusion"])
-      PASSED_CONCLUSIONS.include?(entry["conclusion"]) ? :passing : :pending
     end
   end
 end

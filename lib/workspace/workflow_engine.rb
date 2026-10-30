@@ -63,9 +63,10 @@ module Workspace
     # @param env_stopper [#call, nil] stops the dev environment a run left running under a lock it
     #   gave up (`run_id:`, `worktree:`), so nobody queues behind an environment no step uses
     # @param event_log [Workspace::EventLog, nil] gets `workflow_changed` and the run's lock events
+    # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
     # @param clock [#call] returns the current Time
-    def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, excludes:,
+    def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, excludes:, gate_note:,
       env_stopper: nil, event_log: nil, task_store: nil, clock: -> { Time.now })
       @store = store
       @resources = resources
@@ -76,6 +77,7 @@ module Workspace
       @lineage = lineage
       @git = git
       @excludes = excludes
+      @gate_note = gate_note
       @env_stopper = env_stopper
       @event_log = event_log
       @task_store = task_store
@@ -209,18 +211,34 @@ module Workspace
       result
     end
 
-    # Passes a gate: the run goes on to the step after the gated one.
+    # Passes a gate: the run goes on to the step after the gated one. When the
+    # gated step's first file names a note (`note: <file>`), the note's sha256
+    # is recorded with the approval and named in the next step's instructions.
+    # Every check runs under the run's lock, in this order: the gate is
+    # waiting (at +step+ and +attempt+ when given), +guard+, then the note.
+    # A refusal leaves the run file as it was.
     #
     # @param run_id [String]
     # @param note [String, nil] added to the next step's instructions
+    # @param step [String, nil] the gated step the caller saw; refused when the run is elsewhere
+    # @param attempt [Integer, nil] that step's attempt the caller saw (needs +step+)
+    # @param note_sha256 [String, nil] the note's sha256 the caller read; refused when it changed
+    # @param guard [#call, nil] called with the stored run after the step checks; raises to refuse
     # @return [Hash{String=>Object}] the run afterwards
-    # @raise [Workspace::Error] code `gate_not_waiting` when the run is not at a gate
-    def approve(run_id, note: nil)
+    # @raise [Workspace::Error] code `gate_not_waiting` when the run is not at a gate (or not at
+    #   +step+ and +attempt+), `stale_revision` when the note's sha256 is not +note_sha256+,
+    #   `gate_note_unreadable` when the named note can't be read, or when +note_sha256+ is given
+    #   and the gate names no note; and what +guard+ raises
+    def approve(run_id, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
       transition(run_id) do |stored|
-        gate = waiting_gate(stored)
+        gate = waiting_gate(stored, step: step, attempt: attempt)
+        guard&.call(stored)
+        file = gate_file(stored, note_sha256)
         gate.merge!("state" => "approved", "at" => now_iso, "note" => note)
-        event(stored, "gate_approved", with_note({"step" => stored["current"]}, note))
+        gate["file"] = file if file
+        event(stored, "gate_approved", with_note({"step" => stored["current"]}, note).merge(file ? {"sha256" => file["sha256"]} : {}))
         stored["pending_context"] << "The #{stored["current"]} step was approved with this note: #{note}" if note
+        stored["pending_context"] << "The approved note is #{file["path"]}, sha256 #{file["sha256"]}." if file
         advance(stored)
       end
     end
@@ -230,11 +248,16 @@ module Workspace
     # @param run_id [String]
     # @param note [String] why, added to that step's instructions
     # @param to [String, nil] the step to run again; nil for the gated step
+    # @param step [String, nil] the gated step the caller saw; refused when the run is elsewhere
+    # @param attempt [Integer, nil] that step's attempt the caller saw (needs +step+)
+    # @param guard [#call, nil] called with the stored run after the step checks; raises to refuse
     # @return [Hash{String=>Object}] the run afterwards
-    # @raise [Workspace::Error] code `gate_not_waiting`; `usage` when `to` is not the gated step or one before it
-    def reject(run_id, note:, to: nil)
+    # @raise [Workspace::Error] code `gate_not_waiting`; `usage` when `to` is not the gated step or
+    #   one before it; and what +guard+ raises
+    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil)
       transition(run_id) do |stored|
-        gate = waiting_gate(stored)
+        gate = waiting_gate(stored, step: step, attempt: attempt)
+        guard&.call(stored)
         target = to || stored["current"]
         ids = step_ids(stored)
         unless ids.first(ids.index(stored["current"]) + 1).include?(target)
@@ -486,11 +509,42 @@ module Workspace
       false
     end
 
-    def waiting_gate(run)
-      gate = step_state(run)["gate"]
-      return gate if gate && gate["state"] == "waiting"
-      raise Workspace::Error.new("Run #{run["id"]} is not waiting at a gate (step #{run["current"]} is #{step_state(run)["state"]}).",
-        code: "gate_not_waiting", details: {"run_id" => run["id"], "step" => run["current"], "state" => step_state(run)["state"]})
+    # The waiting gate of the run's step; with +step+ (and +attempt+), only when the
+    # run is at that step (and attempt), so a stale button can't pass a later gate.
+    def waiting_gate(run, step: nil, attempt: nil)
+      state = step_state(run)
+      gate = state["gate"]
+      current = state["attempts"].last&.fetch("n", nil)
+      waiting = gate && gate["state"] == "waiting"
+      return gate if waiting && (step.nil? || step == run["current"]) && (attempt.nil? || attempt == current)
+      message = if step
+        "Run #{run["id"]} is not waiting at the gate of step #{step.to_s[0, 60]}#{", attempt #{attempt}," if attempt} " \
+          "(step #{run["current"]}, attempt #{current.inspect}, is #{state["state"]}#{" and waits at its gate" if waiting}). " \
+          "Read `workspace workflow status #{run["id"]}` again."
+      else
+        "Run #{run["id"]} is not waiting at a gate (step #{run["current"]} is #{state["state"]})."
+      end
+      raise Workspace::Error.new(message,
+        code: "gate_not_waiting",
+        details: {"run_id" => run["id"], "step" => run["current"], "attempt" => current, "state" => state["state"],
+                  "expected_step" => step, "expected_attempt" => attempt})
+    end
+
+    # The note the approval is of, as {"path", "sha256"}: hashed once here, compared with
+    # what the caller read when it says, and recorded as read.
+    def gate_file(run, note_sha256)
+      found = @gate_note.find(run)
+      if note_sha256
+        raise @gate_note.missing(run) unless found
+        unless found["sha256"] == note_sha256
+          raise Workspace::Error.new("The note #{found["path"]} changed since that revision: its sha256 is now #{found["sha256"]}. " \
+            "Read it again before you approve.",
+            code: "stale_revision",
+            details: {"revision" => found["sha256"], "path" => found["path"], "run_id" => run["id"], "step" => run["current"],
+                      "attempt" => step_state(run)["attempts"].last&.fetch("n", nil)})
+        end
+      end
+      found&.slice("path", "sha256")
     end
 
     def rebind(run, pane)
