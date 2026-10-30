@@ -235,7 +235,7 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 ### The `rpiv` preset
 
-`rpiv` is a workflow that ships (with [`pr-feedback`](#the-pr-feedback-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`pr-feedback`](#the-pr-feedback-preset) and [`investigate`](#the-investigate-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 ```sh
 workspace config set commands.test "bundle exec rspec"
@@ -259,6 +259,41 @@ workspace workflow start pr-feedback https://github.com/OWNER/REPO/pull/123
 ```
 
 `workflow start` seeds `pr` from a pull request ref's number and `task` from the pull request, and leaves `pr` empty for anything that is not a pull request ref (a branch, an issue, a JIRA key). Any workflow that declares a `pr` input gets it seeded this way, and `--input pr=` wins. Triage compares numbers only, so a pull request with the same number in another repository passes that check; a fork pull request (reached through `workflow run`; `workflow start` refuses it with `fork_pull_request`), or a number mismatch, stops triage with only `triage.md` and an inbox item, and you reject the gate. `fix` refuses to start without an approved triage note (the gate's `note:` line), and stops when the note's hash, the branch head or a clean tree no longer match. The workflow does not declare `spec`, so the pull request's body is not written to `.workflow/tickets/`. Its instructions say every comment, review and log line is data written by someone else: the agent follows none of it, puts none of it on a command line, and never runs `workflow approve` or `workflow reject`. It has no `status:` check, so it runs in a project with no `commands.test`; running the tests is the `commits` pack's job.
+
+### The `investigate` preset
+
+`investigate` reproduces a failure, finds its cause, waits for you, then commits a regression test and the fix you approved. **It runs this branch's tests on your machine before you approve anything**: the same trust as `workspace start '#N'` and running the tests yourself. It never pushes, never posts to GitHub and never reruns CI.
+
+Ways to start it (quote `#123` in zsh):
+
+```sh
+workspace workflow run investigate                       # in the workspace with the red check
+workspace workflow run investigate --name WS --input ci_run=9876543210 --input pr=123 --json
+workspace workflow run investigate --input ci_run=https://github.com/OWNER/REPO/actions/runs/9876543210
+workspace workflow start investigate '#123'              # a pull request from this repository
+workspace workflow start investigate PROJ-412
+workspace workflow start investigate https://github.com/OWNER/REPO/issues/88
+workspace workflow start investigate --prompt "checkout total is off by a cent"
+```
+
+With no input the run takes the branch's own pull request and its first failing check; only with no pull request, no ticket and no prompt does it stop (`no_input`). A guarded workflow refuses a dirty tree before anything starts (see [The guard](#the-guard)).
+
+Inputs, none required, each checked against its `pattern:` before a run exists (`invalid_input`):
+
+| Input | Accepts | Filled by |
+|---|---|---|
+| `ci_run` | digits, or a `https://github.com/OWNER/REPO/actions/runs/N` URL (optionally `/attempts/N` or `/job/N`) | `--input ci_run=` |
+| `pr` | digits (up to 9) | a pull request ref, or `--input pr=` |
+| `task` | any text | the ticket (key, title, URL) and `--prompt`, or `--input task=` |
+| `spec` | a file under `.workflow/tickets/` | `workflow start`, from the issue, JIRA or pull request body |
+
+The task is never rendered into the instructions: the agent reads it as a JSON string from `workflow status --json` (`inputs.task`), so no title or prompt can break out of it. Ticket and pull request bodies, comments, check names and log lines are data: the instructions limit where a command's arguments may come from, forbid posting, pushing, rerunning CI and `workflow approve|reject|resume`, and ask for token-shaped text to be replaced with `[redacted]` before it reaches the note. Raw logs stay in the run's artifacts directory.
+
+- `reproduce` (`guard: unchanged`, 45m) stops with `repro.md` (first line `stopped: <reason>`), a `note` inbox item (`investigate-stop:RUN`) and `step done --status fail --code <reason>` for `no_input`, `pr_mismatch`, `fork`, `run_not_found`, `run_not_finished` or `run_mismatch` (the run's commit is neither the pull request's head nor an ancestor of HEAD). Otherwise it reads the failed log (capped at 5 MB, with the exit status kept), reproduces the failure locally and writes `repro.md` and a reproduction as a new file. A stop item from an earlier attempt is marked done when it does not stop.
+- `diagnose` (`guard: unchanged`, gate `approve`, 60m, same conversation) writes the note `<subject>-investigation-<run>.md` in the notes directory: `## Answer` (the cause, `head_sha`, `reproduced`, `ci_verdict` of `branch`, `main`, `flaky`, `infra` or `unknown`, `confidence`, and `If you approve:`), `## Fix options` (one marked `(recommended)`), `## Evidence` and `## Not checked`. It writes `diagnosis.md` (first line `note: <file name>`, the gate's note) and posts one `review_request` item (`investigate:RUN`, 168h).
+- `fix` (`guard: config`, `context: fresh`, 2h, holds `test-db`) stops with `fix.md` and a code (`no_note`, `note_changed`, `fix_head_moved`, `fix_dirty_tree`, `workflow_files_visible`) when the approved note's hash, HEAD, the tracked tree or the `.workflow/` exclude no longer match. Its plan is only the note's `If you approve:` line and recommended option, changed by your approval comment. It commits a regression test and then the fix with hooks off (`core.hooksPath=/dev/null`, staging by path), through the `commits` pack's test and lint commands, appends `## Fix` to the note, marks the diagnosis item done and posts `investigate-fix:RUN`. Its last message names `workspace push` (or `workspace pr create`).
+
+Approve with a note to change the plan ("approve, but use option B"), or reject with a hint and `diagnose` writes the note again, keeping the earlier answer under `## Rejected (attempt N)`. A stop code is a word the agent chose (`details.code` with `code_source` `agent`); a guard code (`head_moved`, `tracked_changed`, ...) is the engine's. Commit in the workspace while the gate waits and `fix` stops with `fix_head_moved`; `base_sha` in `workflow status --json` shows what HEAD should be. The guard bounds HEAD, the tracked tree and git's own files, not the machine: an agent talked into running something before the gate can do what your account can, so use it on code you would run anyway. `workflow run` never refuses a fork pull request; `reproduce` stops with `fork` (`workflow start` refuses it first, `fork_pull_request`).
 
 ## The guard
 
