@@ -227,13 +227,15 @@ module Workspace
       return command unless kind == "claude"
       return unless File.exist?(@config.worktree_template_path)
       line = File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
-      line && claude_line(line, command)
+      line && claude_line(line, command, claude_names(workspace))
     end
 
     # Points the agent pane line of a tmuxinator config at the configured command for a kind. The line is
     # found whether it runs the template's `claude --dangerously-skip-permissions ...` or a command already
-    # written for any kind (a program of {AgentCommands#names_for}). For `claude` the line's flags stay and
-    # only the program changes in each half of a `||` chain; for another kind the line becomes the command.
+    # written for any kind (a program of {AgentCommands#names_for}). For `claude` a line that already runs a
+    # Claude Code program keeps its flags (none are added) and only the program changes in each half of a
+    # `||` chain that runs one; a line of another agent takes the template's Claude Code line; for another
+    # kind the line becomes the command.
     #
     # @param content [String] a tmuxinator config
     # @param kind [String] an {AgentProvider} key
@@ -249,9 +251,10 @@ module Workspace
       return unless index
       indent, text = pane_item(lines[index])
       pane = if kind == "claude"
-        base = text.include?("--dangerously-skip-permissions") ? text : claude_template_line
+        claude = claude_names(workspace)
+        base = runs_program?(text.split(" || ").first, claude) ? text : claude_template_line
         return unless base
-        claude_line(base, command)
+        claude_line(base, command, claude)
       else
         command
       end
@@ -337,12 +340,23 @@ module Workspace
       File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
     end
 
-    def claude_line(line, command)
+    # +line+ with the program of each `||` half that runs one of +names+ swapped for +command+; flags and
+    # halves that run another program (a fallback `echo failed`) stay as written.
+    def claude_line(line, command, names)
       line.split(" || ").map do |half|
+        next half unless runs_program?(half, names)
         words = raw_words(half)
         words[words.size - AgentCommands.program_words(half).size] = command
         words.join(" ")
       end.join(" || ")
+    end
+
+    def runs_program?(text, names)
+      text.split(" || ").any? { |half| (program = AgentCommands.program_for(half)) && names.include?(program) }
+    end
+
+    def claude_names(workspace)
+      (workspace && @agent_commands) ? @agent_commands.names_for(workspace, "claude") : [AgentProvider.find("claude").executable]
     end
 
     # The words of +text+ as written (quotes and escapes kept), counted the way {AgentCommands.program_words} does.
