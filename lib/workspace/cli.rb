@@ -4608,14 +4608,15 @@ module Workspace
 
     def ui_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ui open task|review|notes|plan [WORKSPACE] [--print] [--json]\n" \
+        opts.banner = "Usage: workspace ui open task|review|plan [WORKSPACE] [--print] [--json]\n" \
+          "       workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]\n" \
           "       workspace ui open pane [WORKSPACE] PANE [--print] [--json]\n" \
           "       workspace ui open inbox [--print] [--json]"
         opts.separator ""
         opts.separator "Open a view of the workspace UI through its workspace-ui:// link:"
         opts.separator "  task WORKSPACE     workspace-ui://task/WORKSPACE"
         opts.separator "  review WORKSPACE   workspace-ui://review/WORKSPACE"
-        opts.separator "  notes WORKSPACE    workspace-ui://notes/WORKSPACE"
+        opts.separator "  notes WORKSPACE    workspace-ui://notes/WORKSPACE, or .../REL when --path REL is given (an existing .md note in the notes directory)"
         opts.separator "  plan WORKSPACE     workspace-ui://plan/WORKSPACE"
         opts.separator "  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE"
         opts.separator "                     (PANE is a tmux pane id such as %19; WORKSPACE may be left out as for the others)"
@@ -4627,6 +4628,7 @@ module Workspace
         opts.separator "--print still shows the link."
         opts.separator ""
         opts.on("--name NAME", "Workspace name (every view but inbox)") { |v| options[:name] = v }
+        opts.on("--path REL", "Note to open, relative to the notes directory (notes view only)") { |v| options[:path] = v }
         opts.on("--print", "Print the link and open nothing") { options[:print] = true }
         opts.on("--json", "Print one JSON action document (see docs/README.ui.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
@@ -4635,6 +4637,7 @@ module Workspace
         opts.separator "  workspace ui open task my-app"
         opts.separator "  workspace ui open review my-app.worktree-fix-login"
         opts.separator "  workspace ui open notes my-app"
+        opts.separator "  workspace ui open notes my-app --path payment-retries.md --print"
         opts.separator "  workspace ui open plan my-app"
         opts.separator "  workspace ui open pane my-app %19"
         opts.separator "  workspace ui open inbox --print"
@@ -4673,9 +4676,10 @@ module Workspace
       end
 
       run_action("ui open", json: options[:json]) do
-        opened = @ui_command.open(view: view, workspace: name, pane: pane, print_only: options[:print])
+        opened = @ui_command.open(view: view, workspace: name, pane: pane, path: options[:path], print_only: options[:print])
         @error_output.puts "Error: #{opened.message}" unless opened.ok?
         row_extra = pane ? {pane: pane} : {}
+        row_extra[:path] = options[:path] if options[:path]
         row = action_row(name, opened.outcome, reason: opened.reason, message: opened.message, view: opened.view, url: opened.url, **row_extra)
         {exit_code: opened.ok? ? 0 : 1, results: [row]}
       end

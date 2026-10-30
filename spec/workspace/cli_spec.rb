@@ -8148,6 +8148,28 @@ RSpec.describe Workspace::CLI do
       expect(ui_command.calls.map { |c| c[:workspace] }).to eq(["detected-ws", nil])
     end
 
+    it "passes --path to the notes view and adds it to the json row" do
+      cli.run(["ui", "open", "notes", "app", "--path", "research/a.md", "--print", "--json"])
+
+      expect(ui_command.calls).to eq([{view: "notes", workspace: "app", print_only: true, path: "research/a.md"}])
+      expect(JSON.parse(output.string)["results"].first).to include("path" => "research/a.md")
+    end
+
+    it "reports invalid_note_path in the --json error envelope and exits 1" do
+      ui_command.error = Workspace::Error.new("Invalid note path: x.", code: "invalid_note_path",
+        details: {"workspace" => "app", "path" => "x.md", "reason" => "no such file in the notes directory"})
+
+      expect { cli.run(["ui", "open", "notes", "app", "--path", "x.md", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => false, "code" => "invalid_note_path")
+      expect(doc["details"]).to eq("workspace" => "app", "path" => "x.md", "reason" => "no such file in the notes directory")
+    end
+
+    it "lists --path in the ui help" do
+      cli.run(["ui", "--help"])
+      expect(output.string).to include("--path REL")
+    end
+
     it "prints an action document under --json, text on stderr" do
       cli.run(["ui", "open", "task", "app", "--json"])
 

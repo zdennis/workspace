@@ -310,7 +310,8 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `inbox_full` | The scope already holds 500 open or snoozed items, so nothing was added (also for a reopen that would pass 500). `details.scope`, `details.limit`. |
 | `unknown_inbox_item` | No inbox item has that id. `details.id`. |
 | `ambiguous_inbox_item` | The id is in more than one inbox scope; pass `--name`, `--project` or `--global`. `details.id`, `details.scopes`. |
-| `invalid_inbox_item` | A field of an item being added doesn't pass the checks: a control character, a length over its cap, a non-https URL, an unknown type or source kind, an expiry in the past. `details.field` (such as `title` or `source.url`), `details.reason`. |
+| `invalid_inbox_item` | A field of an item being added doesn't pass the checks: a control character, a length over its cap, a non-https URL, an unknown type or source kind, an expiry in the past, a `note.path` that is not an existing note. `details.field` (such as `title`, `source.url` or `note.path`), `details.reason`. |
+| `invalid_note_path` | `ui open notes --path` was given a path that is not an existing Markdown file in the workspace's notes directory (bad shape, missing, through a symlink). `details.workspace`, `details.path`, `details.reason`. |
 | `unknown_derived_item` | `inbox ack` or `inbox snooze` named a derived id that no source produces right now (a pane that is no longer waiting, a stored item id given to `ack`). `details.id`. |
 | `ask_not_open` | `ask answer` or `ask withdraw` named a question that is already answered or withdrawn. `details.id`, `details.status`. |
 | `ask_not_answered` | `ask deliver` named a question with no recorded answer (still open or withdrawn). `details.id`, `details.status`. |

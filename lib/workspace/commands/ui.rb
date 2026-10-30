@@ -14,6 +14,9 @@ module Workspace
       # The one view that also names a tmux pane: `pane WORKSPACE PANE`.
       PANE_VIEW = "pane"
 
+      # The one view that also takes a note path: `notes WORKSPACE --path REL`.
+      NOTES_VIEW = "notes"
+
       # A tmux pane id such as `%19`.
       PANE_ID = /\A%\d{1,9}\z/
 
@@ -32,10 +35,12 @@ module Workspace
         end
       end
 
+      # @param notes [Workspace::Commands::Notes, nil] resolves a workspace's notes directory for `notes --path`
       # @param opener [#call] `(argv)` runs the command and returns `[stdout, stderr, status]`;
       #   raises SystemCallError when the executable is missing
       # @param output [IO]
-      def initialize(opener: ->(argv) { Open3.capture3(*argv) }, output: $stdout)
+      def initialize(opener: ->(argv) { Open3.capture3(*argv) }, output: $stdout, notes:)
+        @notes = notes
         @opener = opener
         @output = output
       end
@@ -43,11 +48,16 @@ module Workspace
       # @param view [String] one of {VIEWS}
       # @param workspace [String, nil] required for every view but inbox, which refuses it
       # @param pane [String, nil] tmux pane id (`%19`): required for pane, refused for the others
+      # @param path [String, nil] note path relative to the notes directory: only the notes view takes one,
+      #   and the file must exist (checked by {Workspace::NotePath})
       # @return [String] the deep link, with the workspace and pane percent-encoded
       # @raise [Workspace::UsageError] for an unknown view, a workspace or pane that doesn't fit the view,
       #   or a pane that is not a tmux pane id
-      def url_for(view:, workspace: nil, pane: nil)
+      # @raise [Workspace::Error] `invalid_note_path` when the note path is refused
+      def url_for(view:, workspace: nil, pane: nil, path: nil)
         raise UsageError, "Unknown view '#{view}': one of #{VIEWS.keys.join(", ")}. Run 'workspace ui --help'." unless VIEWS.key?(view)
+
+        raise UsageError, "#{view} takes no --path: only the notes view takes one. Run 'workspace ui --help'." if path && view != NOTES_VIEW
 
         if VIEWS.fetch(view)
           raise UsageError, "#{view} needs a workspace." if workspace.to_s.strip.empty?
@@ -63,6 +73,8 @@ module Workspace
             link = "#{link}/#{ERB::Util.url_encode(pane)}"
           elsif pane
             raise UsageError, "#{view} takes no pane: only the pane view takes one."
+          elsif path
+            link = "#{link}/#{NotePath.url_path(checked_note(workspace, path))}"
           end
           link
         else
@@ -77,11 +89,13 @@ module Workspace
       # @param view [String] one of {VIEWS}
       # @param workspace [String, nil]
       # @param pane [String, nil] see {#url_for}
+      # @param path [String, nil] see {#url_for}
       # @param print_only [Boolean] print the link and open nothing
       # @return [Result]
       # @raise [Workspace::UsageError] see {#url_for}
-      def open(view:, workspace: nil, pane: nil, print_only: false)
-        url = url_for(view: view, workspace: workspace, pane: pane)
+      # @raise [Workspace::Error] see {#url_for}
+      def open(view:, workspace: nil, pane: nil, path: nil, print_only: false)
+        url = url_for(view: view, workspace: workspace, pane: pane, path: path)
         if print_only
           @output.puts url
           return Result.new("printed", view, url)
@@ -101,6 +115,14 @@ module Workspace
       end
 
       private
+
+      def checked_note(workspace, path)
+        NotePath.resolve(path, @notes.info(name: workspace)["dir"])
+        NotePath.segments(path)
+      rescue NotePath::Refused => e
+        raise Error.new("Invalid note path: #{e.reason}. Paths are relative to the notes directory; run 'workspace notes dir --name #{workspace}' to see it.", code: "invalid_note_path",
+          details: {"workspace" => workspace, "path" => path.to_s[0, 200], "reason" => e.reason})
+      end
 
       def valid_name?(name)
         name.length <= MAX_NAME_LENGTH && !name.match?(/[[:cntrl:]]/)
