@@ -152,6 +152,8 @@ RSpec.describe "headless launch: concurrency and liveness (adversarial)" do
   end
 
   it "HC5: two launches saving state at the same moment both succeed" do
+    # The second save runs inside the first's lock, so it always waits this out.
+    stub_const("Workspace::State::LOCK_WAIT", 0.05)
     first = new_state.load
     second = new_state.load
     first["proj-a"] = {"headless" => true}
