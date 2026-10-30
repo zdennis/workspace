@@ -3297,6 +3297,7 @@ module Workspace
       parser.order!(args)  # stops at the first non-option so subcommand words survive
 
       return @output.puts(agent_run_help) if help
+      return if verb_help_shown?(HelpPages::AGENT_RUN, args)
 
       if body
         return cmd_agent_run_raw(body, dry_run: dry_run)
@@ -3341,66 +3342,24 @@ module Workspace
         Always prints the message being sent before sending it.
 
         Subcommands:
-          command    Send a "command" message (delivers work to the first pipeline stage)
-          inject     Send an "inject" message (steers a running work item)
-          restart    Clear the coding agent in one pane and type a fresh prompt into it
-          send       Type text or tmux keys into one named pane (straight through tmux; no daemon)
-          queue      List or cancel the prompts `send --when-idle` has queued (queue list, queue cancel; no daemon)
-          examples   Print all stock example messages without sending anything
+        #{HelpPages.overview_verbs(HelpPages::AGENT_RUN).join("\n")}
 
         Raw mode (paste a full message directly):
           --body JSON         Complete message JSON; workspace is read from the message
           --dry-run           Print without sending
 
-        Options (command):
-          --name NAME         Workspace name (default: detected from cwd)
-          --work-item REF     Work item reference, e.g. WC-42  (default: random UUID)
-          --body TEXT         Text to type into the first pipeline pane
-                              (default: "Begin work.")
-          --dry-run           Print the message without sending it
-
-        Options (inject):
-          --name NAME         Workspace name (default: detected from cwd)
-          --work-item REF     Work item reference  (required)
-          --body TEXT         Text to inject into the pane  (required)
-          --interrupt         Interrupt the running stage first (sends Ctrl-C)
-          --dry-run           Print the message without sending it
-
-        Options (restart; see `workspace agent-run restart --help`):
-          --name NAME         Workspace name (default: detected from cwd)
-          --pane PANE         Pane to restart: %12, 0.1, session:0.1, or a pane index  (required)
-          --prompt TEXT       Text typed once /clear is confirmed  (required)
-          --force             Restart even when a pipeline stage is running on the pane
-          --wait              Wait for the restart to finish and report how it went
-          --timeout DURATION  Longest wait for context usage to drop after /clear
-                              (e.g. "45s", or seconds); default 30s, at most 600s
-          --json              Print the result as JSON; errors as {"schema_version":1,"ok":false,"error":...}
-
-        Options (send; see `workspace agent-run send --help`):
-          --name NAME         Workspace name (default: detected from cwd)
-          --pane PANE         Pane to type into: a pane id (%19) or window.pane (0.1)  (required)
-          --body TEXT         Literal text to paste, then Enter  (one of --body/--keys)
-          --keys KEYS         Space-separated tmux key names: Escape, Enter, Up, C-c, y  (one of --body/--keys)
-          --no-enter          With --body, don't press Enter
-          --json              Print the result as JSON
-
-        Options (queue; see `workspace agent-run queue --help`):
-          queue list          [--name NAME] [--pane PANE] [--json]  What is queued, per pane
-          queue cancel        --id ID [--name NAME] [--json]  Take a queued prompt back; answers its text
+        Run `workspace agent-run VERB --help` for a verb's options.
 
         Examples:
-          workspace agent-run command --body "Add OAuth support"
-          workspace agent-run command --work-item WC-42 --body "Add OAuth support"
-          workspace agent-run command --name myapp --work-item WC-42 --body "Add OAuth support" --dry-run
-          workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"
-          workspace agent-run inject --work-item WC-42 --body "Stop and pivot to the auth approach" --interrupt
-          workspace agent-run restart --name myapp --pane 0.1 --prompt "Read HANDOFF.md and follow it." --wait
-          workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md" --json
-          workspace agent-run send --pane %19 --body "yes"
-          workspace agent-run send --pane %19 --keys Escape --json
-          workspace agent-run queue list --pane %19 --json
-          workspace agent-run queue cancel --id 3f9a2c41d07b5e88
-          workspace agent-run examples
+          workspace agent-run command --body "Add OAuth support"    # send a task to the current directory's workspace
+          workspace agent-run command --name myapp --dry-run    # see the message for a named workspace, send nothing
+          workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"    # steer a running work item
+          workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md"    # clear a pane's agent and give it a prompt
+          workspace agent-run send --pane %19 --body "yes"    # type into a pane and press Enter
+          workspace agent-run queue list    # what `send --when-idle` has queued
+          workspace agent-run queue cancel --id 3f9a2c41d07b5e88    # take a queued prompt back
+          workspace agent-run --body '{"type":"command","workspace":"myapp","work_item_ref":"WC-42","dispatch_id":"debug-1","body":"go"}' --dry-run    # a full message you wrote
+          workspace agent-run examples    # stock messages to copy, nothing sent
       HELP
     end
 
@@ -3534,42 +3493,22 @@ module Workspace
       json = false
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run restart --pane PANE --prompt TEXT [options]"
-        opts.separator ""
-        opts.separator "Clear the coding agent in one pane and give it a fresh prompt. The agent daemon"
-        opts.separator "first waits up to #{AgentRestart::QUIET_TIMEOUT}s (fixed, not bounded by --timeout) for the pane to go"
-        opts.separator "quiet, types /clear, then waits until the new session's first status-line render"
-        opts.separator "confirms the clear, then types the prompt. --timeout only bounds that confirm step."
-        opts.separator "If the clear can't be confirmed, the prompt is not typed. An agent can run this on"
-        opts.separator "its own pane and end its turn: the daemon types from outside the pane. Only Claude"
-        opts.separator "panes are accepted (other agents fail with code unsupported_agent). Needs context"
-        opts.separator "readings, so `workspace statusline` must be installed as Claude's statusLine."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--pane PANE", "Pane to restart: a pane id (%12), window.pane (0.1),",
-          "session:window.pane, or a pane index in window 0 (required)") { |v| pane = v }
-        opts.on("--prompt TEXT", "Text typed once /clear is confirmed (required)") { |v| prompt = v }
-        opts.on("--force", "Restart even when a pipeline stage is running on the pane") { force = true }
-        opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
-        opts.on("--timeout DURATION", "Longest wait for context usage to drop after /clear",
-          "(e.g. \"45s\", or seconds); default #{AgentRestart::CONFIRM_TIMEOUT}s, at most " \
-          "#{Commands::Agent::MAX_RESTART_TIMEOUT}s") do |v|
-          timeout = parse_duration_option("--timeout", v, positive: true)
-        end
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent-run restart --name myapp --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait"
-        opts.separator "  workspace agent-run restart --pane %18 --prompt \"Resume from HANDOFF.md\" --json"
+        opts.on("--name NAME") { |v| name = v }
+        opts.on("--pane PANE") { |v| pane = v }
+        opts.on("--prompt TEXT") { |v| prompt = v }
+        opts.on("--force") { force = true }
+        opts.on("--wait") { wait = true }
+        opts.on("--timeout DURATION") { |v| timeout = parse_duration_option("--timeout", v, positive: true) }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      page = HelpPages.render(HelpPages::AGENT_RUN.fetch("restart")).join("\n")
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
 
       name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{parser.help}" if pane.nil? || pane.strip.empty?
-      raise UsageError, "Missing --prompt.\n\n#{parser.help}" if prompt.nil? || prompt.strip.empty?
+      raise UsageError, "Missing workspace name (pass --name).\n\n#{page}" if name.nil?
+      raise UsageError, "Missing --pane.\n\n#{page}" if pane.nil? || pane.strip.empty?
+      raise UsageError, "Missing --prompt.\n\n#{page}" if prompt.nil? || prompt.strip.empty?
       if timeout && timeout > Commands::Agent::MAX_RESTART_TIMEOUT
         raise UsageError, "--timeout: at most #{Commands::Agent::MAX_RESTART_TIMEOUT}s"
       end
@@ -3598,77 +3537,36 @@ module Workspace
       json = false
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run send --pane PANE (--body TEXT | --keys KEYS) [options]"
-        opts.separator ""
-        opts.separator "Type into one pane of a workspace's tmux session, straight through tmux (no agent daemon)."
-        opts.separator "The pane is always named: a pane id (%19, from `workspace sessions --json`) or window.pane"
-        opts.separator "(0.1). It is checked against the workspace's own tmux session first, so a wrong or stale"
-        opts.separator "pane is an error, never a different pane."
-        opts.separator ""
-        opts.separator "  --body TEXT  pastes TEXT literally (no key names are interpreted), then presses Enter."
-        opts.separator "  --keys KEYS  sends tmux key names, never text and never an implicit Enter: add Enter"
-        opts.separator "               yourself (\"Escape\", \"Up Up Enter\", \"C-c\", \"y\"). Anything that isn't a key"
-        opts.separator "               name is refused before the first key is sent."
-        opts.separator ""
-        opts.separator "  --when-idle  hands --body to the workspace's agent daemon instead: typed now if the agent's"
-        opts.separator "               turn has ended, else queued and typed (paste, then Enter) when it ends, one"
-        opts.separator "               prompt per turn end, in order. Claude Code panes only; a pane waiting on a"
-        opts.separator "               person is refused (pane_waiting), and so is a 9th queued prompt (queue_full)."
-        opts.separator "  --clear-first  types the agent's clear (/clear) first and waits up to 15s for its hooks to report"
-        opts.separator "               the new conversation (SessionStart, source clear), then the text. Claude Code panes"
-        opts.separator "               with hooks only (else clear_unsupported). With --when-idle it waits for the turn to"
-        opts.separator "               end; without, a pane mid-turn, with a draft or with prompts queued is refused"
-        opts.separator "               (pane_busy). Not confirmed: nothing more"
-        opts.separator "               is typed (clear_unconfirmed, exit 75, details.clear_typed)."
-        opts.separator "  --interrupt  with --body, in one call: presses the agent's interrupt key (Escape), waits up to 15s"
-        opts.separator "               for its prompt to come back, then types the text. The agent daemon does all three"
-        opts.separator "               under its delivery lock, so no other writer types in between. Claude Code panes"
-        opts.separator "               only (unsupported_agent, no_interrupt_key); prompt not back in time: not_ready,"
-        opts.separator "               nothing typed. Not with --keys, --no-enter, --when-idle or --clear-first."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--pane PANE", "Pane id (%19) or window.pane (0.1)  (required)") { |v| pane = v }
-        opts.on("--body TEXT", "Literal text to paste, then Enter") { |v| body = v }
-        opts.on("--keys KEYS", "Space-separated tmux key names") { |v| keys = v }
-        opts.on("--no-enter", "With --body, paste the text without pressing Enter") { no_enter = true }
-        opts.on("--when-idle", "With --body, type it once the agent's turn ends (queued by the agent daemon)") { when_idle = true }
-        opts.on("--clear-first", "With --body, clear the conversation and confirm it before typing (agent daemon)") { clear_first = true }
-        opts.on("--interrupt", "With --body, interrupt the agent, wait for its prompt, then type (agent daemon)") { interrupt = true }
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
-        opts.separator ""
-        opts.separator "Exit codes: 0 delivered (or, with --when-idle, queued); 1 not delivered (safe to resend), refused or"
-        opts.separator "  bad input, except --when-idle's connection_failed with details.maybe_delivered (check first);"
-        opts.separator "  2 text landed but wasn't confirmed submitted (check the pane before resending);"
-        opts.separator "  75 --clear-first typed the clear but it wasn't confirmed, so the text wasn't typed (check, then retry)."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent-run send --name api --pane %19 --body \"yes\""
-        opts.separator "  workspace agent-run send --name api --pane %19 --keys Escape --json"
-        opts.separator "  workspace agent-run send --pane 0.1 --keys \"Up Enter\""
-        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Now run the specs\" --when-idle --json"
-        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Start on the docs\" --when-idle --clear-first --json"
-        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Stop; do this instead\" --interrupt --json"
+        opts.on("--name NAME") { |v| name = v }
+        opts.on("--pane PANE") { |v| pane = v }
+        opts.on("--body TEXT") { |v| body = v }
+        opts.on("--keys KEYS") { |v| keys = v }
+        opts.on("--no-enter") { no_enter = true }
+        opts.on("--when-idle") { when_idle = true }
+        opts.on("--clear-first") { clear_first = true }
+        opts.on("--interrupt") { interrupt = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      page = HelpPages.render(HelpPages::AGENT_RUN.fetch("send")).join("\n")
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
 
       name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{parser.help}" if pane.nil? || pane.strip.empty?
-      raise UsageError, "Pass --body or --keys, not both.\n\n#{parser.help}" if body && keys
-      raise UsageError, "Missing --body or --keys.\n\n#{parser.help}" if body.nil? && keys.nil?
-      raise UsageError, "--body can't be empty.\n\n#{parser.help}" if body && body.empty?
-      raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{parser.help}" if no_enter && keys
+      raise UsageError, "Missing workspace name (pass --name).\n\n#{page}" if name.nil?
+      raise UsageError, "Missing --pane.\n\n#{page}" if pane.nil? || pane.strip.empty?
+      raise UsageError, "Pass --body or --keys, not both.\n\n#{page}" if body && keys
+      raise UsageError, "Missing --body or --keys.\n\n#{page}" if body.nil? && keys.nil?
+      raise UsageError, "--body can't be empty.\n\n#{page}" if body && body.empty?
+      raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{page}" if no_enter && keys
       [["--when-idle", when_idle], ["--clear-first", clear_first]].each do |flag, given|
-        raise UsageError, "#{flag} takes --body, not --keys.\n\n#{parser.help}" if given && keys
-        raise UsageError, "#{flag} always presses Enter; drop --no-enter.\n\n#{parser.help}" if given && no_enter
+        raise UsageError, "#{flag} takes --body, not --keys.\n\n#{page}" if given && keys
+        raise UsageError, "#{flag} always presses Enter; drop --no-enter.\n\n#{page}" if given && no_enter
       end
       if interrupt
-        raise UsageError, "--interrupt takes --body, not --keys.\n\n#{parser.help}" if keys
-        raise UsageError, "--interrupt always presses Enter; drop --no-enter.\n\n#{parser.help}" if no_enter
+        raise UsageError, "--interrupt takes --body, not --keys.\n\n#{page}" if keys
+        raise UsageError, "--interrupt always presses Enter; drop --no-enter.\n\n#{page}" if no_enter
         if when_idle || clear_first
-          raise UsageError, "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first.\n\n#{parser.help}"
+          raise UsageError, "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first.\n\n#{page}"
         end
       end
       raise Error, "workspace agent-run send is not available in this build" unless @send_command
@@ -3683,26 +3581,7 @@ module Workspace
     end
 
     def agent_run_queue_help
-      <<~HELP
-        Usage: workspace agent-run queue list [--name NAME] [--pane PANE] [--json]
-               workspace agent-run queue cancel --id ID [--name NAME] [--json]
-
-        What `agent-run send --when-idle` has queued, and taking an entry back. Both read the
-        queue file directly, so they work with no agent daemon running.
-
-        list    One row per queued prompt: pane_id, position (from 1, within the pane), state
-                (queued or delivering), queued_at, clear_first, a 200-character preview and the
-                full length. Rows come grouped by pane, the pane with the oldest entry first.
-                --pane takes a pane id (%19, matched as given, no tmux call) or window.pane (0.1).
-        cancel  Removes a queued prompt and answers its full text. A prompt the daemon has claimed
-                but not started to paste is stopped before anything is typed. One already being
-                typed, already typed, or unknown is unknown_id (details.state "delivering" when it
-                is being typed). Without --name every workspace's queue is searched.
-
-        Examples:
-          workspace agent-run queue list --name api --json
-          workspace agent-run queue cancel --id 3f9a2c41d07b5e88 --json
-      HELP
+      HelpPages.render(HelpPages::AGENT_RUN.fetch("queue")).join("\n") + "\n"
     end
 
     def cmd_agent_run_queue(args)

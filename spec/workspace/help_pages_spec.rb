@@ -57,6 +57,15 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["config"].keys).to eq(["show"])
       expect(pages["ask"].keys).to match_array(%w[list answer deliver withdraw])
       expect(pages["inbox"].keys).to match_array(%w[add list show edit done dismiss reopen snooze ack])
+      expect(pages["agent-run"].keys).to eq(["command", "inject", "restart", "send", "queue", "queue list", "queue cancel", "examples"])
+    end
+
+    it "state the agent-run restart limits the code uses" do
+      restart = pages["agent-run"]["restart"]
+      expect(restart[:about].join(" ")).to include("up to #{Workspace::AgentRestart::QUIET_TIMEOUT}s")
+      timeout = restart[:options].to_h.fetch("--timeout DURATION")
+      expect(timeout).to include("default #{Workspace::AgentRestart::CONFIRM_TIMEOUT}s")
+      expect(timeout).to include("at most #{Workspace::Commands::Agent::MAX_RESTART_TIMEOUT}s")
     end
 
     it "give each plan verb the flags PLAN_FLAGS and PLAN_TASK_FLAGS allow" do

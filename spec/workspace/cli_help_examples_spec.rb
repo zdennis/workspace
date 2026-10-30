@@ -16,7 +16,7 @@ module HelpExamplesSpec
     "add", "agent", "agent run", "agent status", "agent status request", "agent status post", "agent executables",
     "agentd", "agentd restart",
     "agent-run", "agent-run command", "agent-run inject", "agent-run restart", "agent-run send",
-    "agent-run queue", "agent-run queue list", "agent-run queue cancel",
+    "agent-run queue", "agent-run queue list", "agent-run queue cancel", "agent-run examples",
     "alfred", "alfred install", "alfred uninstall", "alfred info",
     "ask", "ask list", "ask answer", "ask deliver", "ask withdraw",
     "binding", "binding set", "binding show", "binding clear",
@@ -71,7 +71,6 @@ module HelpExamplesSpec
   # deletes its block. Each must still fail, so a fixed page cannot stay here.
   KNOWN_GAPS = [
     # T2: verbs that ignore or mangle --help
-    "agent-run",
     "event-log compact",
     "handoff",
 
@@ -160,15 +159,6 @@ module HelpExamplesSpec
     "daemon",
     "handoff check",
     "handoff new",
-
-    # T12: agent-run
-    "agent-run command",
-    "agent-run inject",
-    "agent-run queue",
-    "agent-run queue cancel",
-    "agent-run queue list",
-    "agent-run restart",
-    "agent-run send",
 
     # T14: shared resources
     "dev",

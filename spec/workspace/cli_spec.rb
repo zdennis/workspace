@@ -1649,7 +1649,7 @@ RSpec.describe Workspace::CLI do
       cli, _, error_output = build_test_cli
 
       expect { cli.run(["agent-run"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("restart    Clear the coding agent in one pane")
+      expect(error_output.string).to include("restart   Clear the coding agent in one pane")
     end
   end
 
@@ -2102,7 +2102,7 @@ RSpec.describe Workspace::CLI do
       cli, _, error_output = build_test_cli
 
       expect { cli.run(["agent-run"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("send       Type text or tmux keys into one named pane")
+      expect(error_output.string).to include("send      Type text or tmux keys into one pane")
     end
   end
 
