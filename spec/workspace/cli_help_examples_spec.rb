@@ -96,7 +96,6 @@ module HelpExamplesSpec
     "library show",
     "library uninstall",
     "library update",
-    "notes dir",
     "plan delete",
     "plan init",
     "plan path",
@@ -149,15 +148,6 @@ module HelpExamplesSpec
     "workflow status",
     "workflow update",
     "workflow validate",
-
-    # T9: lookups and the root page
-    "",
-    "current",
-    "help",
-    "list",
-    "notes",
-    "version",
-    "whereis",
 
     # T10: health and machine output
     "alfred info",
@@ -322,7 +312,8 @@ RSpec.describe "help pages end with examples" do
 
   def problems(argv)
     text, status, = run_help(argv)
-    command = argv.join(" ")
+    # 'workspace help' prints the root page, whose examples start with plain 'workspace'
+    command = (argv == ["help"]) ? "" : argv.join(" ")
     found = []
     found << "exit #{status}" unless status == 0
     lines = text.lines.map(&:chomp)
@@ -335,8 +326,8 @@ RSpec.describe "help pages end with examples" do
     end
     examples = lines[(heading + 1)..].reject { |l| l.strip.empty? }
     found << "#{examples.size} examples, want 3 to 10" unless (3..10).cover?(examples.size)
-    start = /\A\s+(?:[A-Z_]+=\S+ )*workspace #{Regexp.escape(command)}(?:\s|\z)/
-    examples.reject { |l| l.match?(start) }.each { |l| found << "example does not start with workspace #{command}: #{l.strip}" }
+    start = /\A\s+(?:[A-Z_]+=\S+ )*#{Regexp.escape(["workspace", command].reject(&:empty?).join(" "))}(?:\s|\z)/
+    examples.reject { |l| l.match?(start) }.each { |l| found << "example does not start with #{["workspace", command].reject(&:empty?).join(" ")}: #{l.strip}" }
     examples.reject { |l| l.include?(" #") }.each { |l| found << "example has no # comment: #{l.strip}" }
     found
   end

@@ -398,8 +398,13 @@ module Workspace
 
             Print the workspace version.
 
-            Example:
-              workspace version
+            Prints "workspace" and the version number, for example "workspace X.Y.Z".
+            --version and -v print the same.
+
+            Examples:
+              workspace version    # which release is installed
+              workspace version | cut -d' ' -f2    # only the number, to compare in a script
+              workspace version >> bug-report.txt    # add the version to a bug report
           HELP
         else
           @output.puts "workspace #{Workspace::VERSION}"
@@ -663,6 +668,15 @@ module Workspace
         Environment variables:
           WORKSPACE_DEBUG   Enable debug output (same as --debug)
           WORKSPACE_NO_INPUT  Fail prompts instead of asking (same as --no-input; empty, 0 and false mean off)
+
+        Examples:
+          workspace doctor    # first run on a new machine: check the dependencies are installed
+          workspace list --all    # see which projects you can launch
+          workspace launch my-project    # open one project in an iTerm window
+          workspace start PROJ-123    # begin work on a ticket in its own worktree
+          workspace status    # which launched projects are still alive
+          workspace stop    # end the workspace you are standing in
+          workspace plan --help    # read the page of one subcommand
       HELP
     end
 
@@ -6399,7 +6413,6 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace list    # list active (launched) projects"
         opts.separator "  workspace list --all    # list all available projects"
-        opts.separator "  workspace list-projects    # alias for 'list --all'"
         opts.separator "  workspace list --show-urls    # each active project with its git origin URL"
         opts.separator "  workspace list --json    # active projects as JSON"
         opts.separator "  workspace list --json-envelope    # {\"schema_version\":1,\"ok\":true,\"workspaces\":[...],\"warnings\":[]}"
@@ -6601,8 +6614,9 @@ module Workspace
         opts.separator "then falls back to matching active project roots."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace current    # print the current directory's project name"
-        opts.separator "  PROJECT=$(workspace current) && workspace focus \"$PROJECT\"    # use in scripts"
+        opts.separator "  workspace current    # which workspace am I in"
+        opts.separator "  workspace current | xargs workspace focus    # bring this workspace's window to the front from a script"
+        opts.separator "  workspace current | xargs workspace dir    # the root directory of the workspace I am in"
       end
       parser.parse!(args)
 
@@ -7082,8 +7096,10 @@ module Workspace
         opts.separator ""
         opts.separator "Print the workspace installation directory."
         opts.separator ""
-        opts.separator "Example:"
-        opts.separator "  workspace whereis    # print the directory workspace is installed in"
+        opts.separator "Examples:"
+        opts.separator "  workspace whereis    # find out where a symlinked install really lives"
+        opts.separator "  workspace whereis | xargs -I{} ls {}/lib/templates    # look at the project templates it ships"
+        opts.separator "  workspace whereis | xargs -I{} git -C {} log -1 --oneline    # which commit this install runs"
       end
       parser.parse!(args)
 
@@ -7104,10 +7120,10 @@ module Workspace
         opts.separator "Returns the workspace project name if found, or exits with status 1 if not found."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace lookup ~/Code/zendesk/growth-engine/.worktrees/growth-engine-kick-test    # by worktree path"
-        opts.separator "  workspace lookup PUFFINS-1876-use-lock-version    # by branch name"
-        opts.separator "  workspace lookup growth-engine    # by project name"
-        opts.separator "  workspace lookup ~/Documents/Obsidian-LocalOnly/Zendesk    # by project root directory"
+        opts.separator "  workspace lookup ~/src/api    # which workspace has this directory as its root"
+        opts.separator "  workspace lookup ~/src/api/lib    # a directory inside a project's root resolves to that project"
+        opts.separator "  workspace lookup PROJ-1876-use-lock-version    # which workspace is on this branch"
+        opts.separator "  workspace lookup api    # does a project by this name exist (exit status 1 if not)"
       end
       parser.parse!(args)
 
@@ -7523,7 +7539,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace parent    # the parent of the current directory's workspace"
         opts.separator "  workspace parent app.worktree-login    # the parent of a named workspace"
-        opts.separator "  workspace parent --name app.worktree-login    # the same"
+        opts.separator "  workspace parent --name app.worktree-login    # in a script, where the flag reads clearer than a bare name"
         opts.separator "  workspace parent --path    # the parent's root directory"
         opts.separator "  workspace parent --json    # name, path, git_common_dir, is_worktree, worktree"
       end
@@ -7545,9 +7561,7 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace notes dir    # /src/api/.worktrees/x/tmp/workspace-notes"
-        opts.separator "  cd \"$(workspace notes dir --create)\"    # make it, then go there"
-        opts.separator "  workspace notes dir --name api.worktree-x --json"
+        HelpPages::NOTES["dir"][:examples].each { |command, scenario| opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}" }
       end
     end
 
@@ -8506,8 +8520,9 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace dir    # the root of the workspace you are in"
-        opts.separator "  workspace dir work-notes     # /Users/zdennis/Documents/Obsidian-LocalOnly/Zendesk"
-        opts.separator "  workspace dir --name growth-engine  # /Users/zdennis/Code/zendesk/growth-engine"
+        opts.separator "  workspace dir api    # where the api project lives, from anywhere"
+        opts.separator "  workspace dir api | pbcopy    # put its path on the clipboard"
+        opts.separator "  workspace dir --name api.worktree-login    # the checkout of one worktree workspace"
       end
       parser.parse!(args)
 

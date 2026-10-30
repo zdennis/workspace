@@ -68,7 +68,11 @@ Exit 0, or 1 with an error (the [`--json` error envelope](README.json.md) under 
 $ workspace notes dir
 /src/api/.worktrees/x/tmp/workspace-notes
 
-$ cd "$(workspace notes dir --create)"
+$ workspace notes dir --create
+/src/api/.worktrees/x/tmp/workspace-notes
+
+$ workspace notes dir --name api.worktree-login
+/src/api/.worktrees/api-login/tmp/workspace-notes
 
 $ workspace ui open notes api --print
 workspace-ui://notes/api

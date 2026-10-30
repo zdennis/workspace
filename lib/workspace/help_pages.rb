@@ -850,7 +850,12 @@ module Workspace
         options: [name_opt("Workspace to answer for instead of the one detected from the current directory"),
           ["--create", "Make the directory; inside the checkout, also keep it out of git (info/exclude)"],
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace notes dir", "where do this workspace's notes live"],
+          ["workspace notes dir --create", "first note of a new worktree: make the directory and keep it out of git"],
+          ["workspace notes dir --name api.worktree-login", "ask from outside the checkout, such as a script run from another workspace"],
+          ["workspace notes dir --json", "also learn where the path came from and whether the directory exists yet"]
+        ]
       }
     }.freeze
 
