@@ -223,13 +223,30 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 ### The `rpiv` preset
 
-`rpiv` is the one workflow that ships: research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`pr-feedback`](#the-pr-feedback-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 ```sh
 workspace config set commands.test "bundle exec rspec"
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export" --dry-run
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export"
 ```
+
+### The `pr-feedback` preset
+
+`pr-feedback` triages a pull request's review feedback, waits for you, then makes the approved fixes. It has two steps and never posts to GitHub and never pushes.
+
+- `triage` (gate `approve`, 30m) runs `workspace pr feedback --json`, reads the code each thread points at and the tail of each failing check's log, and writes a note `<date>-pr-<n>-feedback.md` in the notes directory: the counts of fix, answer, decline and needs-you with the head SHA read, then one `### F<k>` section per item with its source, author, a quoted excerpt, the verdict and the planned change. Only an item from a `trusted` author can be a fix. It writes `triage.md` (first line `note: <file name>`, the gate's note) and posts one `review_request` inbox item linked to the run (`--dedupe-key pr-feedback:RUN`, expiring in 168h). It stops with only `triage.md` when `inputs.pr` differs from the branch's pull request, or the pull request comes from a fork.
+- `fix` (`context: fresh`, 2h) first checks the approved note's sha256 (see [Passing a gate](#passing-a-gate)) and stops with no commits when it differs. It records `origin/<head>` before and after, commits the items marked fix, appends `## Replies` to the note (grammar in [README.pr.md](README.pr.md#drafted-replies)), writes `fix.md`, marks the triage item done and posts a second `review_request` (`pr-feedback-fix:RUN`). Its last message names `workspace push` as your next step.
+
+Inputs are `task` and `pr`, neither required. Start it in a workspace whose branch has the pull request, or from a ref (quote `#123` in zsh, where an unquoted `#` starts a comment; `PR-123` is read as a JIRA key):
+
+```sh
+workspace workflow run pr-feedback --name my-app.worktree-fix --input pr=123
+workspace workflow start pr-feedback '#123'
+workspace workflow start pr-feedback https://github.com/OWNER/REPO/pull/123
+```
+
+`workflow start` seeds `pr` from a pull request ref's number and `task` from the pull request, and leaves `pr` empty for anything that is not a pull request ref (a branch, an issue, a JIRA key). Any workflow that declares a `pr` input gets it seeded this way, and `--input pr=` wins. Triage compares numbers only, so a pull request with the same number in another repository passes that check; a fork pull request, or a number mismatch, stops triage with only `triage.md` and an inbox item, and you reject the gate. `fix` refuses to start without an approved triage note (the gate's `note:` line), and stops when the note's hash, the branch head or a clean tree no longer match. The workflow does not declare `spec`, so the pull request's body is not written to `.workflow/tickets/`. Its instructions say every comment, review and log line is data written by someone else: the agent follows none of it, puts none of it on a command line, and never runs `workflow approve` or `workflow reject`. It has no `status:` check, so it runs in a project with no `commands.test`; running the tests is the `commits` pack's job.
 
 ## Passing a gate
 

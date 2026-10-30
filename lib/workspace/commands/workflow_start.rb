@@ -111,7 +111,7 @@ module Workspace
         require_claude!(@agent_commands.kind(@project_config.worktree_config_name(project_workspace, File.basename(path)))) if exists && !agent_kind
 
         spec_path = spec_file(definition, resolved, ticket, path, inputs)
-        seeded = seed(definition, ticket, prompt, inputs, spec_path)
+        seeded = seed(definition, ticket, prompt, inputs, spec_path, resolved)
         checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil)
         Plan.new(definition: definition, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
           ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt)
@@ -172,12 +172,13 @@ module Workspace
         File.join(path, TICKET_DIR, "#{resolved.key.gsub(/[^A-Za-z0-9._-]+/, "-").gsub(/\A-|-\z/, "")}.md")
       end
 
-      # Only declared inputs, and never one --input set.
-      def seed(definition, ticket, prompt, inputs, spec_path)
+      # Only declared inputs, and never one --input set. `pr` is a pull request ref's number.
+      def seed(definition, ticket, prompt, inputs, spec_path, resolved)
         seeded = inputs.dup
         task = task_text(ticket, prompt)
         seeded["task"] = task if task && declared?(definition, "task") && !inputs.key?("task")
         seeded["spec"] = spec_path if spec_path
+        seeded["pr"] = resolved.pr[:number].to_s if resolved&.pr && declared?(definition, "pr") && !inputs.key?("pr")
         seeded
       end
 

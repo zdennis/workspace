@@ -107,6 +107,21 @@ Errors: `no_pull_request` (`details.branch`), `gh_unavailable` (`details.reason`
 
 Capability: `pr_feedback` 1 in [`capabilities`](README.capabilities.md).
 
+### Drafted replies
+
+The [`pr-feedback`](README.workflow.md#the-pr-feedback-preset) workflow's `fix` step appends `## Replies` to its triage note. Nothing parses this grammar yet; a person posts by copying a body. Each reply is a `### F<k>` heading, a visible line naming where it goes, a marker comment, then the body:
+
+````markdown
+## Replies
+
+### F3
+Thread by @alice on `lib/foo.rb:42`: https://github.com/o/r/pull/123#discussion_r1234
+<!-- workspace-reply target="thread:PRRT_kwDOAbc123" -->
+Fixed in 1a2b3c4: the retry count now comes from config.
+````
+
+`target` is `thread:PRRT_[A-Za-z0-9_-]+` (a reply on an inline thread, the thread `id` from `pr feedback`), `review:\d+` (a review summary by `id`, answered with a conversation comment) or `pr:\d+` (a new conversation comment). A body runs to the next marker or to the next `## ` or `### ` heading outside a code fence, so quoted text goes in fenced blocks. Notes render without HTML comments, so the marker is invisible in the app. A later poster must check `thread:` against a fresh `pr feedback` for the pull request and `pr:` against the note's pull request, and refuse a body that holds a marker or a heading inside a fence.
+
 ## Examples
 
 ```sh
