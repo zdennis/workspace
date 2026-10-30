@@ -50,7 +50,8 @@ module Workspace
 
     # @param ref [Workspace::StartRef::Ref]
     # @param chdir [String] the checkout, which `gh` uses when the ref names no repository
-    # @return [Hash] `title`, `body` (at most 64 KB) and `url`, each nil when the ticket has none; all nil for a branch
+    # @return [Hash] `title` (folded onto one line), `body` (at most 64 KB) and `url`, each nil when the ticket has none;
+    #   all nil for a branch. A pull request also has `cross_repository`: what `gh` says, or nil when it says no boolean
     # @raise [Workspace::Error] `ticket_not_found` (`details.source`, `details.ref`) or
     #   `ticket_source_unavailable` (`details.source`, `details.reason` of `missing`, `timeout` or `error`, and `detail`)
     def fetch(ref, chdir:)
@@ -121,14 +122,18 @@ module Workspace
     def github(ref, noun, chdir)
       argv = ["gh", noun, "view", ref.parsed[:number] || ref.parsed[:value][/\d+/]]
       argv += ["--repo", ref.parsed[:repo]] if ref.parsed[:repo]
-      doc = read("gh", argv + ["--json", "title,body,url"], ref, chdir)
-      {"title" => doc["title"], "body" => cap(doc["body"]), "url" => doc["url"]}
+      fields = (noun == "pr") ? "title,body,url,isCrossRepository" : "title,body,url"
+      doc = read("gh", argv + ["--json", fields], ref, chdir)
+      ticket = {"title" => line(doc["title"]), "body" => cap(doc["body"]), "url" => doc["url"]}
+      # Only a boolean counts: a missing or odd field is nil, which `workflow start` refuses.
+      ticket["cross_repository"] = [true, false].include?(doc["isCrossRepository"]) ? doc["isCrossRepository"] : nil if noun == "pr"
+      ticket
     end
 
     def jira(ref, chdir)
       doc = read("jira", ["jira", "issue", "view", ref.key, "--raw"], ref, chdir)
       fields = doc["fields"].is_a?(Hash) ? doc["fields"] : {}
-      {"title" => fields["summary"], "body" => cap(text(fields["description"])), "url" => browse_url(doc["self"], ref.key)}
+      {"title" => line(fields["summary"]), "body" => cap(text(fields["description"])), "url" => browse_url(doc["self"], ref.key)}
     end
 
     def read(source, argv, ref, chdir, expect: Hash)

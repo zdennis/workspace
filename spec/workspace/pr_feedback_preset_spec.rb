@@ -12,7 +12,7 @@ RSpec.describe "the shipped workflow presets" do
   it "parses every file in lib/workflows" do
     ids = Dir[File.join(config.builtin_workflows_dir, "*.yml")].map { |path| File.basename(path, ".yml") }
 
-    expect(ids).to include("rpiv", "pr-feedback")
+    expect(ids).to include("rpiv", "pr-feedback", "investigate")
     ids.each { |id| expect(catalog.find(id).source).to eq("builtin") }
   end
 

@@ -22,9 +22,11 @@ module Workspace
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
     TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts steps].freeze
-    STEP_KEYS = %w[title prompt prompt_file include produces status gate uses on_fail context timeout].freeze
-    INPUT_KEYS = %w[description required].freeze
+    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard uses on_fail context timeout].freeze
+    INPUT_PATTERN_LIMIT = 300
+    INPUT_KEYS = %w[description required pattern].freeze
     ON_FAIL_KEYS = %w[goto max context].freeze
+    GUARDS = %w[unchanged config].freeze
     STATUS_KEYS = %w[command run timeout].freeze
 
     # How a step starts: in a new conversation, or in the one the pane has.
@@ -103,7 +105,7 @@ module Workspace
     #   "title", "description", "inputs" (name to "description" and "required"), "include",
     #   "instructions", "max_attempts" and "steps", an ordered list where each step has "id",
     #   "title", "prompt", "include", "produces", "status" (nil, or "command" or "run" with
-    #   "timeout" seconds), "gate", "uses", "on_fail" (nil, or "goto", "max", "context"),
+    #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "uses", "on_fail" (nil, or "goto", "max", "context"),
     #   "context" and "timeout" (seconds or nil)
     def to_h
       @data
@@ -195,7 +197,27 @@ module Workspace
         required = spec.fetch("required", false)
         problem "input #{name}: required must be true or false" unless [true, false].include?(required)
         inputs[name] = {"description" => text_or_nil(spec["description"], "input #{name}: description"), "required" => required == true}
+        pattern = input_pattern(spec["pattern"], name)
+        inputs[name]["pattern"] = pattern if pattern
       end
+    end
+
+    # A pattern is a Ruby regexp source matched against the whole value (WorkflowEngine anchors it); it must compile and stay short.
+    def input_pattern(value, name)
+      return nil if value.nil?
+      unless value.is_a?(String) && !value.empty?
+        problem "input #{name}: pattern must be a non-empty regexp string"
+        return nil
+      end
+      if value.length > INPUT_PATTERN_LIMIT
+        problem "input #{name}: pattern is longer than #{INPUT_PATTERN_LIMIT} characters"
+        return nil
+      end
+      Regexp.new("\\A(?:#{value})\\z")
+      value
+    rescue RegexpError => e
+      problem "input #{name}: pattern does not compile (#{e.message[0, 120]})"
+      nil
     end
 
     def steps_from(raw, inputs)
@@ -225,6 +247,7 @@ module Workspace
         "produces" => produces_from(raw["produces"], where),
         "status" => status_from(raw["status"], where),
         "gate" => gate_from(raw["gate"], where),
+        "guard" => guard_from(raw["guard"], where),
         "uses" => uses_from(raw["uses"], where),
         "on_fail" => on_fail_from(raw["on_fail"], earlier, where),
         "context" => context_from(raw.fetch("context", "fresh"), "#{where}: context"),
@@ -291,6 +314,12 @@ module Workspace
       return nil if value.nil?
       return value if value == "approve"
       problem "#{where}: gate must be approve, got #{value.inspect}"
+    end
+
+    def guard_from(value, where)
+      return nil if value.nil?
+      return value if GUARDS.include?(value)
+      problem "#{where}: guard must be #{GUARDS.join(" or ")}, got #{value.inspect}"
     end
 
     def uses_from(value, where)

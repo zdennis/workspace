@@ -30,6 +30,9 @@ module Workspace
     # Seconds to wait for the workspace's agent daemon before going on without it.
     SNAPSHOT_TIMEOUT = 1.0
 
+    # The guard codes a resume can't get past.
+    FINAL_GUARDS = %w[no_commit head_moved config_changed hooks_changed hidden_changed].freeze
+
     # Seconds after an attempt starts during which an idle pane is not flagged `idle`.
     IDLE_GRACE = 30
 
@@ -73,7 +76,7 @@ module Workspace
     # @return [Hash] "runs", holding the one run as "id", "workflow", "title", "workspace",
     #   "project", "state", "created_at", "started_at", "ended_at", "current" ("step",
     #   "attempt", "state", "reason", "flags"), "steps" ("id", "title", "state", "attempts",
-    #   "gate", "gate_file", "note_changed"), "pane", "task", "inputs", "loops", "artifacts_dir" and "events_path";
+    #   "gate", "gate_file", "note_changed"), "base_sha", "pane", "task", "inputs", "loops", "artifacts_dir" and "events_path";
     #   and "warnings"
     # @raise [Workspace::Error] code `unknown_run`
     def run(id)
@@ -102,7 +105,7 @@ module Workspace
                       "reason" => reason&.merge("actions" => actions(run, reason, pane)),
                       "flags" => finished ? [] : flags(run, state, reason, shown)},
         "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
-        "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
+        "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
         "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
       }
     end
@@ -236,7 +239,13 @@ module Workspace
         else [resume, cancel]
         end
       when "turn_ended_incomplete" then [focus, resume, cancel]
-      when "failed_check" then [resume, action("workflow resume", id, "--from", reason.dig("details", "step").to_s), cancel]
+      when "failed_check"
+        # A moved HEAD or changed config can't pass again, and base_sha is never re-recorded: only a new run goes on.
+        if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))
+          [cancel]
+        else
+          [resume, action("workflow resume", id, "--from", reason.dig("details", "step").to_s), cancel]
+        end
       when "pane_gone" then [action("launch", run["workspace"]), resume, cancel]
       else [cancel]
       end

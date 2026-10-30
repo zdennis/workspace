@@ -53,6 +53,31 @@ RSpec.describe Workspace::Commands::Workflow do
     JSON.parse(output.string)
   end
 
+  describe "a checkout whose path is unsafe in shell commands" do
+    let(:unsafe) { Workspace::Error.new("unsafe", code: "unsafe_checkout_path") }
+
+    before do
+      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(engine).to receive(:preflight).and_raise(unsafe)
+    end
+
+    it "refuses run --dry-run" do
+      allow(panes).to receive(:default_pane).and_return(nil)
+
+      expect { command.run(id: "flow", workspace: "app", worktree: "/x/a'b", dry_run: true) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+      expect(engine).to have_received(:preflight).with(hash_including(worktree: "/x/a'b"))
+    end
+
+    it "refuses run without starting anything" do
+      allow(panes).to receive(:default_pane).and_return(nil)
+      allow(engine).to receive(:start).and_raise(unsafe)
+
+      expect { command.run(id: "flow", workspace: "app", worktree: "/x/a'b") }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+    end
+  end
+
   describe "#show" do
     it "lists the definitions, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([
@@ -522,6 +547,83 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(engine).to have_received(:resume).twice
     end
 
+    describe "a plain resume of a step with a guard or a check" do
+      before do
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+        allow(panes).to receive(:run_on).with("%3").and_return(nil)
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => "unchanged", "status" => nil}]}
+      end
+
+      it "is refused from the bound pane, with the run left alone" do
+        expect { command.resume(run: "wr_1", caller_pane: "%5") }
+          .to raise_error(Workspace::Error, /A guarded or checked step is resumed by a person.*`workflow resume` is refused here/m) { |error| expect(error.code).to eq("bound_pane") }
+        expect(engine).not_to have_received(:resume)
+      end
+
+      it "is refused for a step with only a status check" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => {"run" => "bin/check"}}]}
+
+        expect { command.resume(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
+      end
+
+      it "is allowed from another pane, and from the bound pane with --from" do
+        command.resume(run: "wr_1", caller_pane: "%3")
+        command.resume(run: "wr_1", from: "plan", caller_pane: "%5")
+
+        expect(engine).to have_received(:resume).twice
+      end
+
+      it "is allowed from the bound pane for a step with neither" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil}]}
+
+        command.resume(run: "wr_1", caller_pane: "%5")
+
+        expect(engine).to have_received(:resume)
+      end
+    end
+
+    describe "#advance for a step with a guard or a check" do
+      before do
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+        allow(panes).to receive(:run_on).with("%3").and_return(nil)
+        allow(engine).to receive(:turn_ended)
+        allow(engine).to receive(:tick)
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => "unchanged", "status" => nil}]}
+      end
+
+      it "is refused from the bound pane, with nothing decided" do
+        expect { command.advance(run: "wr_1", turn_ended: true, pane: "%5", caller_pane: "%5") }
+          .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
+        expect { command.advance(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error)
+        expect(engine).not_to have_received(:turn_ended)
+        expect(engine).not_to have_received(:tick)
+      end
+
+      it "is what the daemon's process does: no caller pane, so the turn's end is decided" do
+        command.advance(run: "wr_1", turn_ended: true, pane: "%5", caller_pane: nil)
+        command.advance(run: "wr_1", caller_pane: "%3")
+
+        expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil)
+        expect(engine).to have_received(:tick).with("wr_1")
+      end
+
+      it "is allowed from the bound pane for a step with neither" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil}]}
+
+        command.advance(run: "wr_1", turn_ended: true, pane: "%5", caller_pane: "%5")
+
+        expect(engine).to have_received(:turn_ended)
+      end
+
+      it "leaves a run the store doesn't have to the engine's own refusal" do
+        allow(store).to receive(:find).with("wr_9").and_raise(Workspace::Error.new("no run", code: "unknown_run"))
+
+        command.advance(run: "wr_9", turn_ended: true, caller_pane: "%5")
+
+        expect(engine).to have_received(:turn_ended).with("wr_9", pane: nil, turn_started: nil)
+      end
+    end
+
     it "lets the run's own pane resume from a step when the run is not at a gate" do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
 
@@ -533,6 +635,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
   describe "#advance" do
     it "tells the engine a turn ended in a pane, or takes the timer's look" do
+      allow(store).to receive(:find).with("wr_1").and_return("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]})
       allow(engine).to receive(:turn_ended)
       allow(engine).to receive(:tick)
 
@@ -550,7 +653,7 @@ RSpec.describe Workspace::Commands::Workflow do
   describe "#step_done" do
     it "records the report for the run this pane is bound to and tells the agent to end its turn" do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
-      allow(engine).to receive(:report).with("wr_1", status: "fail", summary: "Two specs red.")
+      allow(engine).to receive(:report).with("wr_1", status: "fail", summary: "Two specs red.", code: nil)
         .and_return("run_id" => "wr_1", "step" => "verify", "attempt" => 2,
           "reported" => {"status" => "fail", "summary" => "Two specs red.", "at" => "2026-10-04T12:00:00Z"})
       allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
@@ -560,6 +663,39 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(row).to eq("workspace" => "app", "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => "wr_1", "step" => "verify",
         "attempt" => 2, "reported" => {"status" => "fail", "summary" => "Two specs red."})
       expect(output.string).to eq("Recorded fail for step verify (attempt 2) of run wr_1. End your turn now; the step is decided when the turn ends.\n")
+    end
+
+    it "stores an agent's code and shows it in the row" do
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(engine).to receive(:report).with("wr_1", status: "fail", summary: nil, code: "not_reproduced")
+        .and_return("run_id" => "wr_1", "step" => "reproduce", "attempt" => 1,
+          "reported" => {"status" => "fail", "summary" => nil, "code" => "not_reproduced", "at" => "t"})
+      allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
+
+      row = command.step_done(pane: "%5", status: "fail", code: "not_reproduced")
+
+      expect(row["reported"]).to eq("status" => "fail", "summary" => nil, "code" => "not_reproduced")
+    end
+
+    ["Bad-Code", "-x", "UPPER", "1abc", "has space", "a" * 41, ""].each do |code|
+      it "refuses the code #{code.inspect}, and records nothing" do
+        expect { command.step_done(pane: "%5", status: "fail", code: code) }.to raise_error(Workspace::UsageError, /--code must be a lowercase word that starts with a letter/)
+        expect(engine).not_to have_received(:report) if engine.respond_to?(:report)
+      end
+    end
+
+    %w[check_failed head_moved reported config_changed].each do |code|
+      it "refuses #{code}, a word the engine sets itself" do
+        expect { command.step_done(pane: "%5", status: "fail", code: code) }.to raise_error(Workspace::UsageError, /is a word the engine sets itself/)
+      end
+    end
+
+    it "accepts a code of 40 characters" do
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(engine).to receive(:report).and_return("run_id" => "wr_1", "step" => "s", "attempt" => 1, "reported" => {"status" => "fail", "summary" => nil})
+      allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
+
+      expect { command.step_done(pane: "%5", status: "fail", code: "a" * 40) }.not_to raise_error
     end
 
     it "refuses a status other than pass or fail" do

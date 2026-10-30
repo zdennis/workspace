@@ -5082,7 +5082,7 @@ module Workspace
         opts.separator "holds, in the same queue as `lock acquire` and `dev up`."
         opts.separator ""
         opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml, then the presets that"
-        opts.separator "ship with workspace (rpiv: research, plan, implement, verify). See docs/README.workflow.md."
+        opts.separator "ship with workspace (rpiv: research, plan, implement, verify; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix). See docs/README.workflow.md."
         opts.separator ""
         opts.separator "  show      list the definitions, or print one (inputs, steps); --source gives the file's text, its sha256 and"
         opts.separator "            its problems even when it is invalid (exit 0), for an editor"
@@ -5106,7 +5106,8 @@ module Workspace
         opts.separator "            the inputs, the project's commands and the pane, and starts nothing"
         opts.separator "  start     make a workspace from a ticket or pull request REF (a JIRA key or URL, PR, issue or"
         opts.separator "            branch) or from --prompt TEXT, wait for its agent, and run ID in it; --dry-run checks"
-        opts.separator "            everything and makes nothing"
+        opts.separator "            everything and makes nothing; a fork's pull request, or a branch tracking another"
+        opts.separator "            repository, is refused with fork_pull_request before anything is made"
         opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
         opts.separator "            is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
         opts.separator "            failed_check or pane_gone, with the commands that resolve it"
@@ -5245,7 +5246,7 @@ module Workspace
       when "status"
         @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])
       when "advance"
-        @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started]))
+        @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started]), caller_pane: ENV["TMUX_PANE"])
       when "run"
         name = options[:name] || @project_detector.detect(@working_dir)
         raise UsageError, "workflow run needs a workspace: pass --name, or run from inside a project." unless name
@@ -5339,7 +5340,7 @@ module Workspace
 
     def step_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace step done [--status pass|fail] [--summary TEXT] [--json]\n" \
+        opts.banner = "Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]\n" \
           "       workspace step status [--json]"
         opts.separator ""
         opts.separator "For the agent working on a workflow step, run from the pane the run is bound to."
@@ -5353,6 +5354,7 @@ module Workspace
         opts.separator ""
         opts.on("--status STATUS", "done: pass (default) or fail") { |v| options[:status] = v }
         opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
+        opts.on("--code WORD", "done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)") { |v| options[:code] = v }
         opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -5360,6 +5362,7 @@ module Workspace
         opts.separator "  workspace step status"
         opts.separator "  workspace step done --summary \"Plan written; three commits.\""
         opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\""
+        opts.separator "  workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\""
       end
     end
 
@@ -5382,7 +5385,7 @@ module Workspace
       if subcommand == "status"
         @workflow_command.step_status(pane: ENV["TMUX_PANE"], json: options[:json])
       else
-        workflow_action("step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], status: options[:status], summary: options[:summary]) }
+        workflow_action("step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], status: options[:status], summary: options[:summary], code: options[:code]) }
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)

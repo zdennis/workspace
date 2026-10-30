@@ -29,6 +29,8 @@ module Workspace
       return nil unless name
       raise unreadable(run, step_id, "#{name} is not a plain file name", name: name) if name.include?("/")
       dir = notes_dir(run, step_id, name)
+      unsafe = ShellSafePath.unsafe_characters(dir)
+      raise unreadable(run, step_id, "the notes directory holds #{unsafe.join(", ")}, which a shell command can't hold safely", name: name) unless unsafe.empty?
       begin
         NotePath.resolve(name, dir)
       rescue NotePath::Refused => e
@@ -38,6 +40,14 @@ module Workspace
       sha = self.class.sha256(path)
       raise unreadable(run, step_id, "#{path} can't be read as a regular file", name: name, path: path) unless sha
       {"name" => name, "path" => path, "sha256" => sha}
+    end
+
+    # @param workspace [String]
+    # @return [String, nil] the workspace's notes directory; nil when it can't be found
+    def notes_dir_of(workspace)
+      @notes.info(name: workspace)["dir"]
+    rescue Workspace::Error, SystemCallError
+      nil
     end
 
     # The error for a gate that names no note, for a caller that needs one.

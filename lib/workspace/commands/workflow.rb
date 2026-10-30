@@ -13,6 +13,9 @@ module Workspace
       # Bumped whenever a `--json` document's shape changes incompatibly.
       JSON_SCHEMA_VERSION = 1
 
+      # What `step done --code` accepts.
+      CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
+
       # What `step done --status` accepts.
       REPORT_STATUSES = %w[pass fail].freeze
 
@@ -280,6 +283,7 @@ module Workspace
         unless WorkflowRunStore::TERMINAL_STATES.include?(stored["state"])
           state = stored["steps"].fetch(stored["current"])
           refuse_bound_pane!(caller_pane, "workflow resume --from") if from && state.dig("gate", "state") == "waiting"
+          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && checked_step?(stored)
           @engine.refuse_resume(stored, from: from)
           pane_id = resume_pane(stored, pane)
           if pane_id.nil? && from.nil? && state["state"] == "running" && stored["reason"].nil? &&
@@ -336,8 +340,21 @@ module Workspace
       # @param turn_ended [Boolean] a turn ended; false is the timer's look
       # @param pane [String, nil] the pane the turn ended in
       # @param turn_started [Time, nil] when the turn that ended began, when the daemon knows
+      # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [void]
-      def advance(run:, turn_ended: false, pane: nil, turn_started: nil)
+      # @raise [Workspace::Error] code `bound_pane` for a step with a guard or a status check, from a pane
+      #   bound to the run or a process under it
+      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, caller_pane: nil)
+        stored = begin
+          @store.find(run)
+        rescue Workspace::Error
+          nil
+        end
+        # The agent daemon runs this as a process of its own. Run from the agent's pane, it would let
+        # the agent decide its own step, with a fake `git` first on PATH for the guard.
+        if stored && checked_step?(stored)
+          refuse_caller!(stored, caller_pane, "workflow advance", "A guarded or checked step is decided by the agent daemon")
+        end
         turn_ended ? @engine.turn_ended(run, pane: pane, turn_started: turn_started) : @engine.tick(run)
         nil
       end
@@ -347,16 +364,21 @@ module Workspace
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
       # @param status [String] "pass" or "fail"
       # @param summary [String, nil]
+      # @param code [String, nil] a word for why, matching {CODE_PATTERN} (`usage` otherwise)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `not_bound` outside a run's pane, `step_not_running`
-      def step_done(pane:, status: "pass", summary: nil)
+      def step_done(pane:, status: "pass", summary: nil, code: nil)
         raise UsageError, "--status must be pass or fail, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
+        raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || CODE_PATTERN.match?(code)
+        if code && Workspace::WorkflowEngine::ENGINE_CODES.include?(code)
+          raise UsageError, "--code #{code} is a word the engine sets itself (#{Workspace::WorkflowEngine::ENGINE_CODES.join(", ")}); choose another."
+        end
         run_id = bound_run!(pane)
-        reported = @engine.report(run_id, status: status, summary: summary)
+        reported = @engine.report(run_id, status: status, summary: summary, code: code)
         @output.puts "Recorded #{status} for step #{reported["step"]} (attempt #{reported["attempt"]}) of run #{run_id}. " \
           "End your turn now; the step is decided when the turn ends."
         {"workspace" => @store.find(run_id)["workspace"], "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => run_id,
-         "step" => reported["step"], "attempt" => reported["attempt"], "reported" => reported["reported"].slice("status", "summary")}
+         "step" => reported["step"], "attempt" => reported["attempt"], "reported" => reported["reported"].slice("status", "summary", "code")}
       end
 
       # Prints the step the calling pane is on (`step status`).
@@ -455,6 +477,13 @@ module Workspace
 
       # The run the step's pane is bound to keeps the pane it has unless that pane is gone:
       # only then is the workspace's Claude pane looked up (which starts its agent daemon).
+      # Whether the run's current step has a `guard:` or a `status:` check. An agent that
+      # re-ran its own check from a shell could put a fake `git` first on PATH.
+      def checked_step?(run)
+        step = Array(run.dig("definition", "steps")).find { |each| each["id"] == run["current"] }
+        !!(step && (step["guard"] || step["status"]))
+      end
+
       def resume_pane(stored, pane)
         return @panes.locate(stored["workspace"], pane) if pane
         gone = stored.dig("reason", "code") == "pane_gone" || (@panes.pane_of(stored["id"]) && !@panes.alive?(stored["id"]))
@@ -463,10 +492,10 @@ module Workspace
 
       # A gate is passed by a person. The check guards against an agent's mistake and is not
       # a boundary: an agent can clear `$TMUX_PANE`.
-      def refuse_bound_pane!(caller_pane, verb)
+      def refuse_bound_pane!(caller_pane, verb, subject = "A gate is passed by a person")
         bound = caller_pane && @panes.run_on(caller_pane)
         return unless bound
-        raise Workspace::Error.new("A gate is passed by a person: this pane (#{caller_pane}) is bound to workflow run #{bound}, " \
+        raise Workspace::Error.new("#{subject}: this pane (#{caller_pane}) is bound to workflow run #{bound}, " \
           "so `#{verb}` is refused here. Run it from another terminal.",
           code: "bound_pane", details: {"pane" => caller_pane, "run_id" => bound})
       end
@@ -474,13 +503,13 @@ module Workspace
       # Both checks guard against an agent's mistake: `$TMUX_PANE` names a bound pane,
       # or this process runs under the run's own pane (with `$TMUX_PANE` unset or another
       # pane's). When tmux or the process table can't be read, only the first runs.
-      def refuse_caller!(run, caller_pane, verb)
-        refuse_bound_pane!(caller_pane, verb)
+      def refuse_caller!(run, caller_pane, verb, subject = "A gate is passed by a person")
+        refuse_bound_pane!(caller_pane, verb, subject)
         pane = @panes.pane_of(run["id"]) || run["pane"]
         pane_pid = pane && pane_pid(run["workspace"], pane)
         return unless pane_pid && under?(pane_pid)
         agent = calling_agent
-        raise Workspace::Error.new("A gate is passed by a person: this process runs under pane #{pane}, which workflow run #{run["id"]} " \
+        raise Workspace::Error.new("#{subject}: this process runs under pane #{pane}, which workflow run #{run["id"]} " \
           "is bound to, so `#{verb}` is refused here. Run it from another terminal.",
           code: "bound_pane", details: {"pane" => pane, "run_id" => run["id"], "agent" => agent})
       end

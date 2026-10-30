@@ -197,6 +197,7 @@ require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
 require_relative "workspace/start_ref"
 require_relative "workspace/timed_process"
+require_relative "workspace/ssh_host_resolver"
 require_relative "workspace/workspace_checkout"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
@@ -207,6 +208,7 @@ require_relative "workspace/project_facts"
 require_relative "workspace/duration"
 require_relative "workspace/terminal_text"
 require_relative "workspace/note_path"
+require_relative "workspace/shell_safe_path"
 require_relative "workspace/byte_size"
 require_relative "workspace/events_config"
 require_relative "workspace/dev_config"
@@ -280,6 +282,7 @@ require_relative "workspace/workflow_files"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
+require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
@@ -557,6 +560,7 @@ module Workspace
       commands_config: commands_config,
       lineage: lineage,
       git: git,
+      guard: WorkflowGuard.new(git_path: Which.path("git") || "git"),
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
@@ -614,7 +618,7 @@ module Workspace
     workflow_start_command = Commands::WorkflowStart.new(
       catalog: workflow_catalog, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
       project_config: project_config, start: start_command, workflow: workflow_command, readiness: agent_readiness, tmux: tmux, agent_commands: agent_commands,
-      excludes: GitExclude.new(git: git), output: output
+      excludes: GitExclude.new(git: git), ssh_hosts: SshHostResolver.new, output: output
     )
     workspace_at = lambda do |path|
       real = CheckoutMove.real_path(path)

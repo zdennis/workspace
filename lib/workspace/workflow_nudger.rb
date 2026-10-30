@@ -74,7 +74,8 @@ module Workspace
     end
 
     def spawn_detached(argv, log)
-      Process.detach(Process.spawn(*argv, in: File::NULL, out: [log, "a"], err: [log, "a"]))
+      # The daemon may have been started from a pane: that pane is not this process's caller.
+      Process.detach(Process.spawn({"TMUX_PANE" => nil}, *argv, in: File::NULL, out: [log, "a"], err: [log, "a"]))
     end
   end
 end

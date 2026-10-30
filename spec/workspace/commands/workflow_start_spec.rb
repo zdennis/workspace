@@ -13,6 +13,17 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   let(:output) { StringIO.new }
   let(:worktrees) { [] }
   let(:branches) { [] }
+  let(:local_branches) { [] }
+  let(:remotes) { {"origin" => "git@github.com:o/r.git"} }
+  let(:expanded) { {} }
+  let(:ssh_runs) { [] }
+  let(:ssh_answer) { [] }
+  let(:ssh_hosts) do
+    Workspace::SshHostResolver.new(runner: ->(argv, **) {
+      ssh_runs << argv
+      ssh_answer.empty? ? ["hostname #{argv.last}\n", "", true] : ssh_answer
+    })
+  end
   let(:ticket) { {"title" => "Fix login", "body" => "Details.", "url" => "https://acme.atlassian.net/browse/PROJ-1"} }
   let(:yaml) do
     <<~YAML
@@ -37,7 +48,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
   def build_command(engine)
     described_class.new(catalog: catalog, engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git, project_config: project_config, start: start,
-      workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, output: output)
+      workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
   end
 
   before do
@@ -46,6 +57,10 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     allow(git).to receive(:worktree_exists?) { |path| worktrees.include?(path) }
     allow(git).to receive(:branch_exists?) { |name| branches.include?(name) }
     allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+    allow(git).to receive(:branch_tracking).and_return({"remote" => nil, "merge" => nil})
+    allow(git).to receive(:remote_config_url) { |_path, remote| remotes[remote] }
+    allow(git).to receive(:remote_effective_url) { |path, remote| expanded.fetch(remote) { git.remote_config_url(path, remote) } }
+    allow(git).to receive(:local_branch_exists?) { |name| local_branches.include?(name) }
     allow(catalog).to receive(:find).with("flow").and_return(definition)
     allow(ticket_source).to receive(:fetch).and_return(ticket)
     allow(engine).to receive(:preflight) do |definition:, inputs:, **|
@@ -92,7 +107,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   it "seeds a declared pr input from a pull request ref's number, never over --input, and not for a branch" do
     definition = Workspace::WorkflowDefinition.parse("inputs:\n  task:\n  pr:\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
     allow(catalog).to receive(:find).with("flow").and_return(definition)
-    pr_ticket = ticket.merge("key" => "o/r#12")
+    pr_ticket = ticket.merge("url" => "https://github.com/o/r/pull/12", "key" => "o/r#12", "cross_repository" => false)
 
     allow(ticket_source).to receive(:fetch).and_return(pr_ticket)
     expect(command.call(id: "flow", ref: "https://github.com/o/r/pull/12", dry_run: true)["inputs"]).to include("pr" => "12")
@@ -108,6 +123,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
     without = Workspace::WorkflowDefinition.parse("inputs:\n  task:\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
     allow(catalog).to receive(:find).with("flow").and_return(without)
+    allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/12", "cross_repository" => false))
     expect(command.call(id: "flow", ref: "https://github.com/o/r/pull/12", dry_run: true)["inputs"]).not_to have_key("pr")
   end
 
@@ -257,10 +273,501 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     expect { command.call(id: "flow", ref: "feature/x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("input_required") }
   end
 
-  it "preflights against the main checkout, with no pane" do
+  it "hands preflight the seeded pr, so its pattern check sees it" do
+    definition = Workspace::WorkflowDefinition.parse("inputs:\n  pr: {pattern: '[0-9]+'}\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+    allow(catalog).to receive(:find).with("flow").and_return(definition)
+    allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/12", "key" => "o/r#12", "cross_repository" => false))
+    allow(engine).to receive(:preflight).and_raise(Workspace::Error.new("bad", code: "invalid_input"))
+
+    expect { command.call(id: "flow", ref: "https://github.com/o/r/pull/12") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_input") }
+    expect(engine).to have_received(:preflight).with(hash_including(inputs: hash_including("pr" => "12")))
+  end
+
+  it "preflights against the main checkout, with no pane, and checks no tree for a checkout it will make" do
     command.call(id: "flow", ref: "PROJ-1", dry_run: true)
 
-    expect(engine).to have_received(:preflight).with(hash_including(workspace: "app", worktree: root, pane: nil))
+    expect(engine).to have_received(:preflight).with(hash_including(workspace: "app", worktree: root, pane: nil, tree: nil))
+  end
+
+  it "checks the tree of a reused or adopted checkout" do
+    worktrees << "/src/app/.worktrees/PROJ-1"
+    command.call(id: "flow", ref: "PROJ-1", dry_run: true)
+    expect(engine).to have_received(:preflight).with(hash_including(tree: "/src/app/.worktrees/PROJ-1"))
+
+    allow(git).to receive(:find_worktree_by_branch).with("mine", repo: root).and_return("/elsewhere/mine")
+    command.call(id: "flow", prompt: "x", branch: "mine", dry_run: true)
+    expect(engine).to have_received(:preflight).with(hash_including(tree: "/elsewhere/mine"))
+  end
+
+  describe "a dirty reused checkout" do
+    let(:repo) { Dir.mktmpdir("wfs-dirty") }
+    let(:guarded) do
+      Workspace::WorkflowDefinition.parse(<<~YAML, id: "flow", source: "global", path: "/defs/flow.yml")
+        inputs:
+          task:
+        steps:
+          look:
+            prompt: Look.
+            guard: unchanged
+      YAML
+    end
+
+    before do
+      git_env = {"GIT_CONFIG_GLOBAL" => "/dev/null", "GIT_CONFIG_NOSYSTEM" => "1"}
+      system(git_env, "git", "-C", repo, "init", "-q", "-b", "main", exception: true)
+      File.write(File.join(repo, "a.txt"), "one\n")
+      system(git_env, "git", "-C", repo, "add", "a.txt", exception: true)
+      system(git_env, "git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init", exception: true)
+      File.write(File.join(repo, "a.txt"), "two\n")
+      allow(git).to receive(:find_worktree_by_branch).with("mine", repo: root).and_return(repo)
+    end
+
+    after { FileUtils.remove_entry(repo) }
+
+    def real_engine
+      Workspace::WorkflowEngine.allocate.tap do |real|
+        real.instance_variable_set(:@guard, Workspace::WorkflowGuard.new)
+        real.instance_variable_set(:@lineage, lineage)
+        real.instance_variable_set(:@panes, nil)
+        real.instance_variable_set(:@gate_note, instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil))
+        real.instance_variable_set(:@commands_config, instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
+        allow(real).to receive(:compose).and_return({"packs" => []})
+      end
+    end
+
+    it "is refused with dirty_worktree, also in a dry run, for a guarded workflow" do
+      allow(catalog).to receive(:find).with("flow").and_return(guarded)
+      expect(start).not_to receive(:payload)
+
+      [true, false].each do |dry_run|
+        expect { build_command(real_engine).call(id: "flow", prompt: "x", branch: "mine", dry_run: dry_run) }.to raise_error(Workspace::Error) do |e|
+          expect(e.code).to eq("dirty_worktree")
+          expect(e.details).to include("path" => repo, "guard" => "tracked_changed", "files" => ["a.txt"])
+        end
+      end
+    end
+
+    it "is not refused for rpiv, which has no guarded step" do
+      rpiv = Workspace::WorkflowDefinition.parse(File.read(File.expand_path("../../../lib/workflows/rpiv.yml", __dir__)), id: "rpiv", source: "preset", path: "rpiv.yml")
+      allow(catalog).to receive(:find).with("rpiv").and_return(rpiv)
+
+      row = build_command(real_engine).call(id: "rpiv", prompt: "x", branch: "mine", dry_run: true)
+
+      expect(row).to include("outcome" => "dry_run", "path" => repo, "would_create" => false)
+    end
+  end
+
+  describe "a pull request from a fork" do
+    let(:pr_ticket) { ticket.merge("url" => "https://github.com/o/r/pull/12", "cross_repository" => true) }
+
+    before { allow(ticket_source).to receive(:fetch).and_return(pr_ticket) }
+
+    it "is refused before any worktree, check or agent, also in a dry run" do
+      expect(start).not_to receive(:payload)
+      expect(git).not_to receive(:find_worktree_by_branch)
+      expect(git).not_to receive(:worktree_exists?)
+
+      [true, false].each do |dry_run|
+        expect { command.call(id: "flow", ref: "#12", prompt: "x", dry_run: dry_run) }.to raise_error(Workspace::Error) do |e|
+          expect(e.code).to eq("fork_pull_request")
+          expect(e.details).to eq("pr" => 12, "url" => "https://github.com/o/r/pull/12", "cross_repository" => true, "reason" => "cross_repository", "next" => ["workspace start '#12'"])
+          expect(e.message).to include("comes from a fork", "workspace start '#12'", "workspace workflow run flow")
+        end
+      end
+      expect(engine).not_to have_received(:preflight)
+    end
+
+    it "is refused when gh can't say whether it is from a fork" do
+      pr_ticket["cross_repository"] = nil
+
+      expect { command.call(id: "flow", ref: "o/r#12", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("fork_pull_request")
+        expect(e.details["cross_repository"]).to be_nil
+        expect(e.message).to include("Could not tell whether the pull request o/r#12 comes from a fork")
+      end
+    end
+
+    it "is refused for every workflow, rpiv too" do
+      allow(catalog).to receive(:find).with("rpiv").and_return(Workspace::WorkflowDefinition.parse("steps:\n  plan:\n    prompt: Go.\n", id: "rpiv", source: "preset", path: "rpiv.yml"))
+
+      expect { command.call(id: "rpiv", ref: "#12", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("fork_pull_request") }
+    end
+
+    %w[ticket_not_found ticket_source_unavailable].each do |code|
+      it "is refused with #{code} when it can't be read, even with --prompt" do
+        allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("no", code: code))
+
+        expect { command.call(id: "flow", ref: "#12", prompt: "x", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq(code) }
+        expect { command.call(id: "flow", ref: "#12", inputs: {"task" => "x"}, dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq(code) }
+      end
+    end
+
+    it "leaves an unreadable issue a warning with --prompt" do
+      allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("no", code: "ticket_not_found"))
+
+      row = command.call(id: "flow", ref: "https://github.com/o/r/issues/5", prompt: "x", dry_run: true)
+
+      expect(row["warnings"].size).to eq(1)
+    end
+  end
+
+  describe "the repository a pull request is read from and checked out from" do
+    let(:dir) { Dir.mktmpdir("wfs-pr") }
+    let(:gh_calls) { [] }
+    let(:real_source) do
+      runner = lambda do |argv, chdir:, timeout:|
+        gh_calls << argv
+        [JSON.generate("title" => "T", "body" => "", "url" => "https://github.com/o/r/pull/12", "isCrossRepository" => false), "", true]
+      end
+      Workspace::TicketSource.new(runner: runner, which: ->(_) { true })
+    end
+
+    before do
+      allow(git).to receive(:root).and_return(dir)
+      allow(start).to receive(:payload) do |input, **|
+        checkouts << input
+        {exit_code: 1, json: {"ok" => false, "error" => "stop here", "code" => "usage"}}
+      end
+    end
+
+    let(:checkouts) { [] }
+
+    after { FileUtils.remove_entry(dir) }
+
+    {"#12" => nil, "o/r#12" => "o/r", "https://github.com/o/r/pull/12" => "o/r"}.each do |ref, viewed_with|
+      it "is the same for #{ref}" do
+        command = described_class.new(catalog: catalog, engine: engine, start_ref: start_ref, ticket_source: real_source, git: git, project_config: project_config,
+          start: start, workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
+
+        expect { command.call(id: "flow", ref: ref) }.to raise_error(Workspace::Error, /stop here/)
+
+        view = gh_calls.first
+        expect(view.include?("--repo") ? view[view.index("--repo") + 1] : nil).to eq(viewed_with)
+        # A bare #12 is viewed in the checkout's repository, which answered o/r; the checkout names it.
+        expect(checkouts.map { |input| start_ref.call(input).pr[:repo] }).to eq(["o/r"])
+      end
+    end
+  end
+
+  describe "a reused or adopted branch that tracks another repository" do
+    before { allow(git).to receive(:find_worktree_by_branch).with("feature", repo: root).and_return("/elsewhere/feature") }
+
+    def refusal
+      command.call(id: "flow", prompt: "x", branch: "feature", dry_run: true)
+      nil
+    rescue Workspace::Error => e
+      e
+    end
+
+    it "is refused when it merges a pull request ref, with nothing made" do
+      allow(git).to receive(:branch_tracking).with("/elsewhere/feature", "feature").and_return({"remote" => "origin", "merge" => "refs/pull/7/head"})
+      expect(start).not_to receive(:payload)
+
+      e = refusal
+      expect(e.code).to eq("fork_pull_request")
+      expect(e.details).to eq("branch" => "feature", "path" => "/elsewhere/feature", "reason" => "pull_ref", "next" => ["workspace start feature"])
+      expect(e.message).to include("workspace start feature")
+      expect(engine).not_to have_received(:preflight)
+    end
+
+    it "is refused when its remote is a URL, or a remote with no URL" do
+      allow(git).to receive(:branch_tracking).and_return({"remote" => "https://github.com/fork/r.git", "merge" => "refs/heads/feature"})
+      expect(refusal.details["reason"]).to eq("url_remote")
+
+      allow(git).to receive(:branch_tracking).and_return({"remote" => "git@github.com:fork/r.git", "merge" => "refs/heads/feature"})
+      expect(refusal.details["reason"]).to eq("url_remote")
+
+      allow(git).to receive(:branch_tracking).and_return({"remote" => "gone", "merge" => "refs/heads/feature"})
+      expect(refusal.details["reason"]).to eq("unknown_remote")
+    end
+
+    it "is refused when its remote is another repository than origin's, and passes for the same one" do
+      allow(git).to receive(:branch_tracking).and_return({"remote" => "upstream", "merge" => "refs/heads/feature"})
+      allow(git).to receive(:remote_config_url).with("/elsewhere/feature", "origin").and_return("git@github.com:O/R.git")
+      allow(git).to receive(:remote_config_url).with("/elsewhere/feature", "upstream").and_return("https://github.com/fork/r")
+      expect(refusal.details["reason"]).to eq("other_repository")
+
+      allow(git).to receive(:remote_config_url).with("/elsewhere/feature", "upstream").and_return("https://github.com/o/r.git/")
+      expect(refusal).to be_nil
+    end
+
+    it "passes for origin, a local upstream or none" do
+      [{"remote" => "origin", "merge" => "refs/heads/feature"}, {"remote" => ".", "merge" => "refs/heads/main"}, {"remote" => nil, "merge" => nil}].each do |tracking|
+        allow(git).to receive(:branch_tracking).and_return(tracking)
+        expect(refusal).to be_nil
+      end
+    end
+  end
+
+  describe "a pull request's base repository" do
+    def pr(url, cross: false) = ticket.merge("url" => url, "cross_repository" => cross)
+
+    def refusal(ref)
+      command.call(id: "flow", ref: ref, dry_run: true)
+      nil
+    rescue Workspace::Error => e
+      e
+    end
+
+    it "is refused when it is not origin's or upstream's, whatever the ref names" do
+      allow(ticket_source).to receive(:fetch).and_return(pr("https://github.com/attacker/evil/pull/1"))
+      expect(start).not_to receive(:payload)
+
+      ["attacker/evil#1", "https://github.com/attacker/evil/pull/1", "#1"].each do |ref|
+        e = refusal(ref)
+        expect(e.code).to eq("fork_pull_request")
+        expect(e.details).to include("reason" => "other_base_repository", "pr" => 1, "cross_repository" => false)
+        expect(e.message).to include("github.com/attacker/evil", "CLAUDE.md")
+      end
+    end
+
+    it "is refused on another host with the same owner/repo, and when the URL is not that pull request's" do
+      allow(ticket_source).to receive(:fetch).and_return(pr("https://ghe.example.com/o/r/pull/12"))
+      expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+
+      allow(ticket_source).to receive(:fetch).and_return(pr("https://github.com/o/r/pull/13"))
+      expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+
+      allow(ticket_source).to receive(:fetch).and_return(pr(nil))
+      expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+    end
+
+    context "when origin is written as a short form or a host alias" do
+      before { allow(ticket_source).to receive(:fetch).and_return(pr("https://github.com/o/r/pull/12")) }
+
+      it "passes when git's insteadOf expands the short form to the same repository" do
+        remotes["origin"] = "gh:o/r"
+        expanded["origin"] = "https://github.com/o/r"
+
+        expect(refusal("#12")).to be_nil
+        expect(ssh_runs).to be_empty
+      end
+
+      it "is refused when the short form is not expanded" do
+        remotes["origin"] = "gh:o/r"
+        ssh_answer.replace(["", "", false])
+
+        expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+      end
+
+      it "passes when an ssh alias resolves to the real host" do
+        remotes["origin"] = "git@github-work:o/r.git"
+        ssh_answer.replace(["hostname github.com\n", "", true])
+
+        expect(refusal("#12")).to be_nil
+        expect(ssh_runs).to eq([["ssh", "-G", "--", "github-work"]])
+      end
+
+      it "is refused when the alias resolves to another host" do
+        remotes["origin"] = "git@github-work:o/r.git"
+        ssh_answer.replace(["hostname ghe.example.com\n", "", true])
+
+        expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+      end
+
+      it "is refused without running ssh when the alias starts with a dash or is not a plain name" do
+        ["ssh://-oProxyCommand=x/o/r.git", "ssh://a b/o/r.git", "ssh://a;b/o/r.git"].each do |url|
+          remotes["origin"] = url
+          expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+        end
+        expect(ssh_runs).to be_empty
+      end
+
+      it "is refused when ssh -G fails or times out" do
+        remotes["origin"] = "git@github-work:o/r.git"
+        ssh_answer.replace(["", "boom", false])
+        expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+
+        hosts = Workspace::SshHostResolver.new(runner: ->(*, **) { raise Timeout::Error })
+        expect(hosts.hostname("github-work")).to be_nil
+      end
+    end
+
+    it "passes for upstream's repository" do
+      remotes.merge!("origin" => "https://github.com/me/r.git", "upstream" => "ssh://git@github.com:22/O/R.git")
+      allow(ticket_source).to receive(:fetch).and_return(pr("https://github.com/o/r/pull/12"))
+
+      expect(refusal("#12")).to be_nil
+    end
+
+    it "names the reason for a fork and for an unknown answer" do
+      allow(ticket_source).to receive(:fetch).and_return(pr("https://github.com/o/r/pull/12", cross: nil))
+      expect(refusal("#12").details["reason"]).to eq("unknown_cross_repository")
+    end
+  end
+
+  describe "a pull request on another host than github.com" do
+    let(:dir) { Dir.mktmpdir("wfs-ghe") }
+
+    before do
+      remotes["origin"] = "git@ghe.example.com:o/r.git"
+      allow(git).to receive(:root).and_return(dir)
+      allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://ghe.example.com/o/r/pull/12", "cross_repository" => false))
+      allow(start).to receive(:payload).and_return({exit_code: 1, json: {"ok" => false, "error" => "stop here", "code" => "usage"}})
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "keeps a bare #N for start, which gh resolves from the same repository config as the read" do
+      expect { command.call(id: "flow", ref: "#12") }.to raise_error(Workspace::Error, /stop here/)
+
+      expect(start).to have_received(:payload).with("#12", anything)
+    end
+  end
+
+  describe "a reused pr-N worktree for a pull request ref" do
+    let(:same) { ticket.merge("url" => "https://github.com/o/r/pull/7", "cross_repository" => false) }
+    let(:fork) { ticket.merge("url" => "https://github.com/o/r/pull/7", "cross_repository" => true) }
+
+    before do
+      worktrees << "/src/app/.worktrees/pr-7"
+      allow(ticket_source).to receive(:fetch).and_return(same)
+    end
+
+    it "passes when start recorded that pull request, without another read" do
+      allow(git).to receive(:branch_tracking).and_return({"remote" => nil, "merge" => nil, "pr" => "O/R#7"})
+
+      expect(command.call(id: "flow", ref: "https://github.com/o/r/pull/7", dry_run: true)).to include("would_create" => false)
+      expect(ticket_source).to have_received(:fetch).once
+    end
+
+    it "is refused when start recorded another pull request" do
+      remotes["upstream"] = "https://github.com/up/r.git"
+      allow(git).to receive(:branch_tracking).and_return({"remote" => nil, "merge" => nil, "pr" => "up/r#7"})
+
+      expect { command.call(id: "flow", ref: "o/r#7", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("fork_pull_request")
+        expect(e.details).to include("reason" => "other_pull_request", "branch" => "pr-7", "path" => "/src/app/.worktrees/pr-7")
+      end
+    end
+
+    it "with no record, looks #N up and refuses a fork's checkout left by an earlier start '#7'" do
+      allow(ticket_source).to receive(:fetch) { |ref, **| (ref.key == "#7") ? fork : same }
+
+      expect { command.call(id: "flow", ref: "https://github.com/o/r/pull/7", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.details).to include("reason" => "cross_repository", "branch" => "pr-7")
+      end
+    end
+
+    it "with no record, refuses when #N is another repository's pull request" do
+      remotes["upstream"] = "https://github.com/up/r.git"
+      allow(ticket_source).to receive(:fetch) { |ref, **| (ref.key == "#7") ? same.merge("url" => "https://github.com/up/r/pull/7") : same }
+
+      expect { command.call(id: "flow", ref: "o/r#7", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.details).to include("reason" => "other_pull_request")
+      end
+    end
+
+    it "with no record, passes when #N is the same pull request" do
+      expect(command.call(id: "flow", ref: "#7", dry_run: true)).to include("would_create" => false)
+      expect(ticket_source).to have_received(:fetch).twice
+    end
+  end
+
+  describe "a local branch with no worktree" do
+    before { allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/7", "cross_repository" => true)) }
+
+    it "is checked, from the project's config, when it is a fork's pr-N left behind" do
+      local_branches << "pr-7"
+      expect(start).not_to receive(:payload)
+
+      expect { command.call(id: "flow", ref: "pr-7", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.details).to include("reason" => "cross_repository", "path" => root) }
+      expect { command.call(id: "flow", prompt: "x", branch: "pr-7") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("fork_pull_request") }
+      expect(git).to have_received(:branch_tracking).with(root, "pr-7").at_least(:once)
+    end
+
+    it "is refused when it tracks another repository" do
+      local_branches << "feature"
+      allow(git).to receive(:branch_tracking).with(root, "feature").and_return({"remote" => "alice", "merge" => "refs/heads/feature"})
+      remotes["alice"] = "https://github.com/alice/r.git"
+
+      expect { command.call(id: "flow", ref: "feature", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.details).to include("reason" => "other_repository") }
+    end
+
+    it "is not checked when there is none" do
+      expect(command.call(id: "flow", ref: "pr-7", dry_run: true)).to include("would_create" => true)
+      expect(git).not_to have_received(:branch_tracking)
+    end
+  end
+
+  describe "remotes the tracking check reads" do
+    before { allow(git).to receive(:find_worktree_by_branch).with("feature", repo: root).and_return("/elsewhere/feature") }
+
+    def reason_for(tracking)
+      allow(git).to receive(:branch_tracking).and_return(tracking)
+      command.call(id: "flow", prompt: "x", branch: "feature", dry_run: true)
+      nil
+    rescue Workspace::Error => e
+      e.details["reason"]
+    end
+
+    it "passes upstream when origin is your fork and upstream the project" do
+      remotes.merge!("origin" => "git@github.com:me/r.git", "upstream" => "git@github.com:o/r.git")
+
+      expect(reason_for({"remote" => "upstream", "merge" => "refs/heads/feature"})).to be_nil
+    end
+
+    it "compares the host, and refuses a relative or local path remote" do
+      remotes["other"] = "git@gitlab.com:o/r.git"
+      expect(reason_for({"remote" => "other", "merge" => "refs/heads/feature"})).to eq("other_repository")
+
+      remotes["other"] = "../r"
+      expect(reason_for({"remote" => "other", "merge" => "refs/heads/feature"})).to eq("other_repository")
+
+      remotes["other"] = "file:///src/r.git"
+      expect(reason_for({"remote" => "other", "merge" => "refs/heads/feature"})).to eq("other_repository")
+
+      remotes["other"] = "https://github.com/o/r"
+      expect(reason_for({"remote" => "other", "merge" => "refs/heads/feature"})).to be_nil
+    end
+
+    it "reads a local pr-N it tracks as that pull request, and refuses a pull ref under the local remote" do
+      allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/7", "cross_repository" => true))
+
+      expect(reason_for({"remote" => ".", "merge" => "refs/heads/pr-7"})).to eq("cross_repository")
+      expect(ticket_source).to have_received(:fetch).with(having_attributes(key: "#7"), chdir: root)
+      expect(reason_for({"remote" => ".", "merge" => "refs/pull/7/head"})).to eq("pull_ref")
+      expect(reason_for({"remote" => ".", "merge" => "refs/heads/main"})).to be_nil
+    end
+  end
+
+  describe "a reused pr-N branch" do
+    before do
+      allow(git).to receive(:find_worktree_by_branch).with("pr-7", repo: root).and_return("/elsewhere/pr-7")
+      allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/7", "cross_repository" => true))
+    end
+
+    it "is read as pull request #N, whose upstream start dropped, and refused when it is from a fork" do
+      expect { command.call(id: "flow", ref: "pr-7", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("fork_pull_request")
+        expect(e.details).to include("pr" => 7, "branch" => "pr-7", "path" => "/elsewhere/pr-7", "cross_repository" => true)
+      end
+      expect(ticket_source).to have_received(:fetch).with(having_attributes(kind: "github_pr", key: "#7"), chdir: root)
+      expect { command.call(id: "flow", prompt: "x", branch: "pr-7", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("fork_pull_request") }
+    end
+
+    it "passes for a pull request from the same repository" do
+      allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/7", "cross_repository" => false))
+
+      expect(command.call(id: "flow", ref: "pr-7", dry_run: true)).to include("would_create" => false)
+    end
+
+    it "is refused with the read's code when the pull request can't be read" do
+      allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("gh failed", code: "ticket_source_unavailable", details: {"source" => "gh"}))
+
+      expect { command.call(id: "flow", prompt: "x", branch: "pr-7", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("ticket_source_unavailable")
+        expect(e.details).to include("source" => "gh", "branch" => "pr-7")
+      end
+    end
+
+    it "is not read when nothing is reused" do
+      allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+
+      command.call(id: "flow", ref: "pr-7", dry_run: true)
+
+      expect(ticket_source).not_to have_received(:fetch)
+    end
   end
 
   it "lets a command set at the project layer pass the check the new worktree would make" do
@@ -286,6 +793,34 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     row = command.call(id: "flow", prompt: "Fix it", dry_run: true)
 
     expect(row).to include("outcome" => "dry_run", "step" => "verify")
+  end
+
+  describe "a new checkout whose path is unsafe in shell commands" do
+    before do
+      allow(engine).to receive(:preflight) do |definition:, inputs:, checkout: nil, **|
+        raise Workspace::Error.new("unsafe", code: "unsafe_checkout_path") if checkout.to_s.include?("'")
+        {"workflow" => "flow", "workspace" => "app", "project" => "app", "step" => "plan", "pane" => nil, "inputs" => inputs, "packs" => []}
+      end
+    end
+
+    it "is refused before start is called" do
+      expect(start).not_to receive(:payload)
+      expect(start).not_to receive(:call)
+
+      expect { command.call(id: "flow", prompt: "x", branch: "x'y") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+      expect(engine).to have_received(:preflight).with(hash_including(checkout: "/src/app/.worktrees/x'y"))
+    end
+
+    it "is refused under --dry-run" do
+      expect { command.call(id: "flow", prompt: "x", branch: "x'y", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+    end
+
+    it "lets a safe new path through" do
+      row = command.call(id: "flow", prompt: "x", branch: "fine", dry_run: true)
+
+      expect(row["outcome"]).to eq("dry_run")
+      expect(engine).to have_received(:preflight).with(hash_including(checkout: "/src/app/.worktrees/fine"))
+    end
   end
 
   describe "the dry run" do
