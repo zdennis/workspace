@@ -634,6 +634,21 @@ module Workspace
       status.success? ? stdout.strip : nil
     end
 
+    # The URL a remote really uses: `remote.<name>.url` with `url.<base>.insteadOf` applied by git, with
+    # no network.
+    #
+    # @param path [String] the checkout
+    # @param name [String] the remote
+    # @return [String, nil] nil when the remote has no URL, or git failed or ran past {QUICK_TIMEOUT}
+    def remote_effective_url(path, name)
+      return nil unless remote_config_url(path, name)
+
+      stdout, _, success = run_git(path, "ls-remote", "--get-url", name, timeout: QUICK_TIMEOUT)
+      success ? stdout.strip : nil
+    rescue Workspace::Error
+      nil
+    end
+
     # Removes a branch's upstream config when git cannot resolve it, as `gh pr checkout
     # --worktree` leaves for fork PRs (a URL remote, or a `refs/pull/N/head` merge ref),
     # along with its `pushRemote`. A resolving upstream is left alone. A failed git call

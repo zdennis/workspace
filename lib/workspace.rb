@@ -197,6 +197,7 @@ require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
 require_relative "workspace/start_ref"
 require_relative "workspace/timed_process"
+require_relative "workspace/ssh_host_resolver"
 require_relative "workspace/workspace_checkout"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
@@ -616,7 +617,7 @@ module Workspace
     workflow_start_command = Commands::WorkflowStart.new(
       catalog: workflow_catalog, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
       project_config: project_config, start: start_command, workflow: workflow_command, readiness: agent_readiness, tmux: tmux, agent_commands: agent_commands,
-      excludes: GitExclude.new(git: git), output: output
+      excludes: GitExclude.new(git: git), ssh_hosts: SshHostResolver.new, output: output
     )
     workspace_at = lambda do |path|
       real = CheckoutMove.real_path(path)

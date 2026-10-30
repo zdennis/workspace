@@ -15,6 +15,15 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   let(:branches) { [] }
   let(:local_branches) { [] }
   let(:remotes) { {"origin" => "git@github.com:o/r.git"} }
+  let(:expanded) { {} }
+  let(:ssh_runs) { [] }
+  let(:ssh_answer) { [] }
+  let(:ssh_hosts) do
+    Workspace::SshHostResolver.new(runner: ->(argv, **) {
+      ssh_runs << argv
+      ssh_answer.empty? ? ["hostname #{argv.last}\n", "", true] : ssh_answer
+    })
+  end
   let(:ticket) { {"title" => "Fix login", "body" => "Details.", "url" => "https://acme.atlassian.net/browse/PROJ-1"} }
   let(:yaml) do
     <<~YAML
@@ -39,7 +48,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
   def build_command(engine)
     described_class.new(catalog: catalog, engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git, project_config: project_config, start: start,
-      workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, output: output)
+      workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
   end
 
   before do
@@ -50,6 +59,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     allow(git).to receive(:find_worktree_by_branch).and_return(nil)
     allow(git).to receive(:branch_tracking).and_return({"remote" => nil, "merge" => nil})
     allow(git).to receive(:remote_config_url) { |_path, remote| remotes[remote] }
+    allow(git).to receive(:remote_effective_url) { |path, remote| expanded.fetch(remote) { git.remote_config_url(path, remote) } }
     allow(git).to receive(:local_branch_exists?) { |name| local_branches.include?(name) }
     allow(catalog).to receive(:find).with("flow").and_return(definition)
     allow(ticket_source).to receive(:fetch).and_return(ticket)
@@ -426,7 +436,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     {"#12" => nil, "o/r#12" => "o/r", "https://github.com/o/r/pull/12" => "o/r"}.each do |ref, viewed_with|
       it "is the same for #{ref}" do
         command = described_class.new(catalog: catalog, engine: engine, start_ref: start_ref, ticket_source: real_source, git: git, project_config: project_config,
-          start: start, workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, output: output)
+          start: start, workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
 
         expect { command.call(id: "flow", ref: ref) }.to raise_error(Workspace::Error, /stop here/)
 
@@ -519,6 +529,57 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       allow(ticket_source).to receive(:fetch).and_return(pr(nil))
       expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+    end
+
+    context "when origin is written as a short form or a host alias" do
+      before { allow(ticket_source).to receive(:fetch).and_return(pr("https://github.com/o/r/pull/12")) }
+
+      it "passes when git's insteadOf expands the short form to the same repository" do
+        remotes["origin"] = "gh:o/r"
+        expanded["origin"] = "https://github.com/o/r"
+
+        expect(refusal("#12")).to be_nil
+        expect(ssh_runs).to be_empty
+      end
+
+      it "is refused when the short form is not expanded" do
+        remotes["origin"] = "gh:o/r"
+        ssh_answer.replace(["", "", false])
+
+        expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+      end
+
+      it "passes when an ssh alias resolves to the real host" do
+        remotes["origin"] = "git@github-work:o/r.git"
+        ssh_answer.replace(["hostname github.com\n", "", true])
+
+        expect(refusal("#12")).to be_nil
+        expect(ssh_runs).to eq([["ssh", "-G", "--", "github-work"]])
+      end
+
+      it "is refused when the alias resolves to another host" do
+        remotes["origin"] = "git@github-work:o/r.git"
+        ssh_answer.replace(["hostname ghe.example.com\n", "", true])
+
+        expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+      end
+
+      it "is refused without running ssh when the alias starts with a dash or is not a plain name" do
+        ["ssh://-oProxyCommand=x/o/r.git", "ssh://a b/o/r.git", "ssh://a;b/o/r.git"].each do |url|
+          remotes["origin"] = url
+          expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+        end
+        expect(ssh_runs).to be_empty
+      end
+
+      it "is refused when ssh -G fails or times out" do
+        remotes["origin"] = "git@github-work:o/r.git"
+        ssh_answer.replace(["", "boom", false])
+        expect(refusal("#12").details["reason"]).to eq("other_base_repository")
+
+        hosts = Workspace::SshHostResolver.new(runner: ->(*, **) { raise Timeout::Error })
+        expect(hosts.hostname("github-work")).to be_nil
+      end
     end
 
     it "passes for upstream's repository" do

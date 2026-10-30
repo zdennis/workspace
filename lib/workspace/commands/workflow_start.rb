@@ -46,8 +46,9 @@ module Workspace
       # @param tmux [Workspace::Tmux] names the workspace's session
       # @param agent_commands [Workspace::AgentCommands] finds the agent in a pane
       # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
+      # @param ssh_hosts [Workspace::SshHostResolver] names the real host behind an ssh remote's host alias
       # @param output [IO]
-      def initialize(catalog:, engine:, start_ref:, ticket_source:, git:, project_config:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, output: $stdout)
+      def initialize(catalog:, engine:, start_ref:, ticket_source:, git:, project_config:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, ssh_hosts:, output: $stdout)
         @catalog = catalog
         @engine = engine
         @start_ref = start_ref
@@ -60,6 +61,7 @@ module Workspace
         @tmux = tmux
         @agent_commands = agent_commands
         @excludes = excludes
+        @ssh_hosts = ssh_hosts
         @output = output
       end
 
@@ -178,7 +180,7 @@ module Workspace
       # The remotes a pull request may belong to: origin's and upstream's repository, as
       # `host/owner/repo`. Read from the project's git config, no network.
       def tracked_repositories(root)
-        %w[origin upstream].filter_map { |remote| repository_id(@git.remote_config_url(root, remote)) }
+        %w[origin upstream].filter_map { |remote| repository_id(@git.remote_effective_url(root, remote)) }
       end
 
       # Passes only a pull request whose base is a repository the project tracks and that `gh`
@@ -250,18 +252,24 @@ module Workspace
         url = @git.remote_config_url(path, remote)
         return remote.match?(%r{://|\A[^/\s]+@[^/\s]+:|\A[/.~]}) ? "url_remote" : "unknown_remote" unless url
 
-        allowed.include?(repository_id(url)) ? nil : "other_repository"
+        allowed.include?(repository_id(@git.remote_effective_url(path, remote))) ? nil : "other_repository"
       end
 
       # `host/owner/repo`, lowercased, from a remote URL (scheme://[user@]host[:port]/owner/repo or
       # scp-like [user@]host:owner/repo, with or without `.git`); nil for a local path or anything else.
+      # The host of an ssh URL other than github.com is what `ssh -G` reports for it (a `Host` alias in
+      # `~/.ssh/config`); when ssh can't say, the host stays as written.
       def repository_id(url)
         text = url.to_s.strip
-        match = text.match(%r{\A[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:]+)(?::\d+)?/(.+)\z}i) || text.match(%r{\A(?:[^@/]+@)?([^/:]+):(?!/)(.+)\z})
-        return nil unless match
+        match = text.match(%r{\A([a-z][a-z0-9+.-]*)://(?:[^@/]*@)?([^/:]+)(?::\d+)?/(.+)\z}i)
+        scheme, host, path = match ? match.captures : [nil, *text.match(%r{\A(?:[^@/]+@)?([^/:]+):(?!/)(.+)\z})&.captures]
+        return nil unless host
 
-        path = match[2].sub(%r{/+\z}, "").sub(/\.git\z/, "")
-        path.match?(%r{\A[\w.-]+/[\w.-]+\z}) ? "#{match[1]}/#{path}".downcase : nil
+        path = path.sub(%r{/+\z}, "").sub(/\.git\z/, "")
+        return nil unless path.match?(%r{\A[\w.-]+/[\w.-]+\z})
+
+        host = @ssh_hosts.hostname(host) || host if (scheme.nil? || scheme.casecmp?("ssh")) && !host.casecmp?("github.com")
+        "#{host}/#{path}".downcase
       end
 
       # `host/owner/repo` of a pull request's base, from its URL; nil unless the URL is that pull request's.

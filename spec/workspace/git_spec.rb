@@ -462,6 +462,26 @@ RSpec.describe Workspace::Git do
       end
     end
 
+    describe "#remote_effective_url" do
+      it "applies url.<base>.insteadOf to the remote's URL" do
+        run!("git", "config", "remote.origin.url", "gh:o/r", chdir: @repo_dir)
+        run!("git", "config", "url.https://github.com/.insteadOf", "gh:", chdir: @repo_dir)
+
+        expect(git.remote_effective_url(@repo_dir, "origin")).to eq("https://github.com/o/r")
+      end
+
+      it "returns the URL unchanged when no insteadOf rule applies" do
+        run!("git", "config", "remote.origin.url", "git@github.com:o/r.git", chdir: @repo_dir)
+        run!("git", "config", "url.https://example.com/.insteadOf", "zz:", chdir: @repo_dir)
+
+        expect(git.remote_effective_url(@repo_dir, "origin")).to eq("git@github.com:o/r.git")
+      end
+
+      it "is nil for a remote with no URL" do
+        expect(git.remote_effective_url(@repo_dir, "gone")).to be_nil
+      end
+    end
+
     describe "#create_worktree" do
       def upstream_of(path)
         stdout, _ = Open3.capture3("git", "-C", path, "rev-parse", "--abbrev-ref", "@{upstream}")
