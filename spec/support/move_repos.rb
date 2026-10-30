@@ -32,7 +32,7 @@ module MoveRepos
     end
     base.let(:remote) { File.join(@dir, "remote.git") }
     base.let(:repo) { File.join(@dir, "api") }
-    base.before { build_repo }
+    base.before { copy_repo }
   end
 
   def sh(*args, dir: repo)
@@ -60,20 +60,27 @@ module MoveRepos
 
   def rev(ref, dir: repo) = sh("rev-parse", ref, dir: dir).strip
 
-  def build_repo
-    sh("init", "-q", "--bare", "-b", "main", remote, dir: @dir)
-    FileUtils.mkdir_p(repo)
-    sh("init", "-q", "-b", "main")
-    sh("config", "user.name", "t")
-    sh("config", "user.email", "t@example.com")
-    write("app.rb", "one\ntwo\nthree\n")
-    write("run.sh", "echo hi\n")
-    write("logo.bin", "\x89PNG\x00\x01\x02\xFF".b)
-    write(".gitignore", "*.log\n")
-    sh("add", ".")
-    sh("commit", "-q", "-m", "init")
-    sh("remote", "add", "origin", remote)
-    sh("push", "-q", "-u", "origin", "main")
+  def build_repo(root)
+    origin = File.join(root, "remote.git")
+    main = File.join(root, "api")
+    sh("init", "-q", "--bare", "-b", "main", origin, dir: root)
+    FileUtils.mkdir_p(main)
+    sh("init", "-q", "-b", "main", dir: main)
+    sh("config", "user.name", "t", dir: main)
+    sh("config", "user.email", "t@example.com", dir: main)
+    write("app.rb", "one\ntwo\nthree\n", dir: main)
+    write("run.sh", "echo hi\n", dir: main)
+    write("logo.bin", "\x89PNG\x00\x01\x02\xFF".b, dir: main)
+    write(".gitignore", "*.log\n", dir: main)
+    sh("add", ".", dir: main)
+    sh("commit", "-q", "-m", "init", dir: main)
+    sh("remote", "add", "origin", origin, dir: main)
+    sh("push", "-q", "-u", "origin", "main", dir: main)
+  end
+
+  # The repositories built once (in `build_repo`) and copied into this example.
+  def copy_repo
+    RepoTemplate.copy(:move, to: @dir) { |root| build_repo(root) }
   end
 
   def install_hook(name, body, dir: repo)

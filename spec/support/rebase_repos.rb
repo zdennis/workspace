@@ -34,7 +34,7 @@ module RebaseRepos
     base.let(:repo) { File.join(@dir, "api") }
     base.let(:wt) { File.join(@dir, "api.worktree-x") }
     base.let(:other) { File.join(@dir, "other") }
-    base.before { build_repos }
+    base.before { copy_repos }
   end
 
   def sh(*args, dir: repo)
@@ -56,17 +56,25 @@ module RebaseRepos
 
   def rev(ref, dir: repo) = sh("rev-parse", ref, dir: dir).strip
 
-  def build_repos
-    sh("init", "-q", "--bare", "-b", "main", remote, dir: @dir)
-    FileUtils.mkdir_p(repo)
-    sh("init", "-q", "-b", "main")
-    sh("config", "user.name", "t")
-    sh("config", "user.email", "t@example.com")
-    commit_file("base.txt", "base\n", "init")
-    sh("remote", "add", "origin", remote)
-    sh("push", "-q", "-u", "origin", "main")
-    sh("worktree", "add", "-q", "-b", "feature/x", wt)
-    commit_file("feature.txt", "feature\n", "feature work", dir: wt)
+  def build_repos(root)
+    origin = File.join(root, "remote.git")
+    main = File.join(root, "api")
+    linked = File.join(root, "api.worktree-x")
+    sh("init", "-q", "--bare", "-b", "main", origin, dir: root)
+    FileUtils.mkdir_p(main)
+    sh("init", "-q", "-b", "main", dir: main)
+    sh("config", "user.name", "t", dir: main)
+    sh("config", "user.email", "t@example.com", dir: main)
+    commit_file("base.txt", "base\n", "init", dir: main)
+    sh("remote", "add", "origin", origin, dir: main)
+    sh("push", "-q", "-u", "origin", "main", dir: main)
+    sh("worktree", "add", "-q", "-b", "feature/x", linked, dir: main)
+    commit_file("feature.txt", "feature\n", "feature work", dir: linked)
+  end
+
+  # The repositories built once (in `build_repos`) and copied into this example.
+  def copy_repos
+    RepoTemplate.copy(:rebase, to: @dir) { |root| build_repos(root) }
   end
 
   # A second clone, to push commits the first one does not have.
