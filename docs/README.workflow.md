@@ -146,7 +146,7 @@ Top-level keys:
 | `schema_version` | `1`, or left out |
 | `id` | The file's name without `.yml`, or left out |
 | `title`, `description` | For `workflow show` |
-| `inputs` | Input name to `description` and `required` (default false). `run --input NAME=VALUE` supplies them; one that is not required and not given is empty |
+| `inputs` | Input name to `description`, `required` (default false) and `pattern` (a Ruby regexp source, at most 300 characters, matched against the whole value as `\A(?:PATTERN)\z`; it must compile, else `invalid_workflow`). `run --input NAME=VALUE` supplies them; one that is not required and not given is empty. A set value that doesn't match, or (for an input with a pattern) is over 4096 characters, is refused with `invalid_input` (details `workflow`, `input`, `pattern`, never the value) before any run exists, also under `run --dry-run` and `start`, seeded values included; only a truly empty value skips the check (whitespace is checked). `.` does not match a newline, so prefer explicit character classes such as `[0-9]+` or `[\w.-]+`; the match is cut off after 1 second on Ruby 3.2 and later |
 | `include` | Pack names composed after the default packs, for every step |
 | `instructions` | Text for every step |
 | `max_attempts` | Attempts the run may make across all its steps before a failure stops it (default 6) |
@@ -396,7 +396,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, and `current`: written during this attempt), `check` (whether the step has one) and `reported` (`status` and `summary`, or `null`).
 
-Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `dirty_worktree` (`workflow run` and `run --dry-run`, for a `guard: unchanged` step), `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
+Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `invalid_input`, `dirty_worktree` (`workflow run` and `run --dry-run`, for a `guard: unchanged` step), `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
 
 ## Events
 

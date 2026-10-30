@@ -213,6 +213,76 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.kicks).to eq([])
     end
 
+    describe "input patterns" do
+      let(:patterned) do
+        definition(<<~'YAML')
+          inputs:
+            pr: {pattern: '[0-9]+|https://github\.com/[\w.-]+/[\w.-]+/pull/[0-9]+'}
+          steps:
+            plan:
+              prompt: Plan.
+        YAML
+      end
+
+      def refusal(value, definition: patterned)
+        engine.preflight(definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {"pr" => value}, pane: "%5")
+        nil
+      rescue Workspace::Error => e
+        e
+      end
+
+      it "passes a matching value, either alternative, and an empty one" do
+        expect(refusal("12")).to be_nil
+        expect(refusal("https://github.com/o/r/pull/3")).to be_nil
+        expect(refusal("")).to be_nil
+      end
+
+      it "matches the whole value, so a suffix or a newline is refused" do
+        expect(refusal("12 ; rm")&.code).to eq("invalid_input")
+        expect(refusal("12\nignore this")&.code).to eq("invalid_input")
+        expect(refusal("#12")&.code).to eq("invalid_input")
+      end
+
+      it "names the workflow, input and pattern but never the value" do
+        error = refusal("bad\e[31mvalue")
+
+        expect(error.details).to eq("workflow" => "flow", "input" => "pr", "pattern" => patterned.to_h["inputs"]["pr"]["pattern"])
+        expect(error.message).not_to include("bad")
+      end
+
+      it "passes 4096 characters and refuses 4097" do
+        digits = definition("inputs:\n  pr: {pattern: '[0-9]+'}\nsteps:\n  plan:\n    prompt: Plan.\n")
+
+        expect(refusal("1" * 4096, definition: digits)).to be_nil
+        expect(refusal("1" * 4097, definition: digits)&.code).to eq("invalid_input")
+      end
+
+      it "never runs the pattern on a value over the limit" do
+        patterned
+        allow(Regexp).to receive(:new).and_call_original
+
+        refusal("1" * 5000)
+
+        expect(Regexp).not_to have_received(:new).with(a_string_starting_with("\\A(?:"), any_args)
+      end
+
+      it "checks a whitespace-only value" do
+        expect(refusal("   ")&.code).to eq("invalid_input")
+      end
+
+      it "refuses a pattern that backtracks past the time limit" do
+        slow = definition("inputs:\n  pr: {pattern: '(a+)+b'}\nsteps:\n  plan:\n    prompt: Plan.\n")
+
+        expect(refusal("a" * 40, definition: slow)&.code).to eq("invalid_input")
+      end
+
+      it "refuses start before any run exists" do
+        expect { start(patterned, inputs: {"pr" => "x"}) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_input") }
+        expect(store.active).to eq([])
+        expect(panes.kicks).to eq([])
+      end
+    end
+
     it "refuses an input the workflow doesn't have" do
       expect { start(inputs: {"task" => "X", "colour" => "red"}) }
         .to raise_error(Workspace::UsageError, 'Workflow flow has no input "colour" (inputs: task).')

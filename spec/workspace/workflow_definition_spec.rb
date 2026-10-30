@@ -16,6 +16,32 @@ RSpec.describe Workspace::WorkflowDefinition do
 
   let(:minimal) { "steps:\n  build:\n    prompt: Build it.\n" }
 
+  describe "input pattern" do
+    def with_pattern(pattern)
+      "inputs:\n  pr: {pattern: #{pattern}}\nsteps:\n  build:\n    prompt: Build it.\n"
+    end
+
+    it "keeps a good pattern on the input" do
+      expect(parse(with_pattern("'[0-9]+'")).to_h["inputs"]["pr"]).to include("pattern" => "[0-9]+")
+    end
+
+    it "leaves the key out when there is none" do
+      expect(parse(minimal.sub("steps:", "inputs:\n  pr:\nsteps:")).to_h["inputs"]["pr"]).not_to have_key("pattern")
+    end
+
+    it "lists a pattern that does not compile" do
+      expect(problems(with_pattern("'(['"))).to contain_exactly(/input pr: pattern does not compile/)
+    end
+
+    it "lists a pattern over 300 characters" do
+      expect(problems(with_pattern("'#{"a" * 301}'"))).to eq(["input pr: pattern is longer than 300 characters"])
+    end
+
+    it "lists a pattern that is not a string" do
+      expect(problems(with_pattern("12"))).to eq(["input pr: pattern must be a non-empty regexp string"])
+    end
+  end
+
   describe "text with no file" do
     it "loads a relative prompt_file from base_dir when path is nil" do
       Dir.mktmpdir do |dir|
@@ -169,7 +195,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
       "input name \"Task\" must be lowercase letters, digits and '_', starting with a letter",
-      "input Task has unknown key extra (known: description, required)",
+      "input Task has unknown key extra (known: description, required, pattern)",
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",

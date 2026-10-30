@@ -23,7 +23,8 @@ module Workspace
 
     TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard uses on_fail context timeout].freeze
-    INPUT_KEYS = %w[description required].freeze
+    INPUT_PATTERN_LIMIT = 300
+    INPUT_KEYS = %w[description required pattern].freeze
     ON_FAIL_KEYS = %w[goto max context].freeze
     GUARDS = %w[unchanged config].freeze
     STATUS_KEYS = %w[command run timeout].freeze
@@ -196,7 +197,27 @@ module Workspace
         required = spec.fetch("required", false)
         problem "input #{name}: required must be true or false" unless [true, false].include?(required)
         inputs[name] = {"description" => text_or_nil(spec["description"], "input #{name}: description"), "required" => required == true}
+        pattern = input_pattern(spec["pattern"], name)
+        inputs[name]["pattern"] = pattern if pattern
       end
+    end
+
+    # A pattern is a Ruby regexp source matched against the whole value (WorkflowEngine anchors it); it must compile and stay short.
+    def input_pattern(value, name)
+      return nil if value.nil?
+      unless value.is_a?(String) && !value.empty?
+        problem "input #{name}: pattern must be a non-empty regexp string"
+        return nil
+      end
+      if value.length > INPUT_PATTERN_LIMIT
+        problem "input #{name}: pattern is longer than #{INPUT_PATTERN_LIMIT} characters"
+        return nil
+      end
+      Regexp.new("\\A(?:#{value})\\z")
+      value
+    rescue RegexpError => e
+      problem "input #{name}: pattern does not compile (#{e.message[0, 120]})"
+      nil
     end
 
     def steps_from(raw, inputs)

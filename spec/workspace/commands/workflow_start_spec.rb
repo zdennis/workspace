@@ -257,6 +257,16 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     expect { command.call(id: "flow", ref: "feature/x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("input_required") }
   end
 
+  it "hands preflight the seeded pr, so its pattern check sees it" do
+    definition = Workspace::WorkflowDefinition.parse("inputs:\n  pr: {pattern: '[0-9]+'}\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+    allow(catalog).to receive(:find).with("flow").and_return(definition)
+    allow(ticket_source).to receive(:fetch).and_return(ticket.merge("key" => "o/r#12"))
+    allow(engine).to receive(:preflight).and_raise(Workspace::Error.new("bad", code: "invalid_input"))
+
+    expect { command.call(id: "flow", ref: "https://github.com/o/r/pull/12") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_input") }
+    expect(engine).to have_received(:preflight).with(hash_including(inputs: hash_including("pr" => "12")))
+  end
+
   it "preflights against the main checkout, with no pane" do
     command.call(id: "flow", ref: "PROJ-1", dry_run: true)
 

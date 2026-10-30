@@ -491,7 +491,31 @@ module Workspace
           code: "input_required",
           details: {"workflow" => data["id"], "inputs" => missing.map { |name, spec| {"name" => name, "description" => spec["description"]} }})
       end
+      check_input_patterns(data, inputs)
       data["inputs"].keys.to_h { |name| [name, inputs[name].to_s] }
+    end
+
+    INPUT_VALUE_LIMIT = 4096
+
+    # Only a truly empty value is unset and passes; whitespace is checked like any other. A value too long, or one the pattern takes too long to judge, is a mismatch. The value is never echoed.
+    def check_input_patterns(data, inputs)
+      data["inputs"].each do |name, spec|
+        pattern = spec["pattern"]
+        value = inputs[name].to_s
+        next if pattern.nil? || value.empty?
+        next if value.length <= INPUT_VALUE_LIMIT && input_matches?(pattern, value)
+        raise Workspace::Error.new("Input #{name} of workflow #{data["id"]} does not match its pattern #{pattern}.",
+          code: "invalid_input", details: {"workflow" => data["id"], "input" => name, "pattern" => pattern})
+      end
+    end
+
+    # Ruby 3.2 and later bound the match by time; older Rubies rely on the length cap alone.
+    def input_matches?(pattern, value)
+      source = "\\A(?:#{pattern})\\z"
+      regexp = Regexp.respond_to?(:timeout) ? Regexp.new(source, timeout: 1) : Regexp.new(source)
+      regexp.match?(value)
+    rescue RegexpError
+      false
     end
 
     def check_commands(data, project)

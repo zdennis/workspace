@@ -320,6 +320,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `use_ask_answer` | `inbox ack` or `inbox snooze` named an `ask:` id; answer the question with `ask answer` (or close it with `ask withdraw`) instead. `details.id`. |
 | `invalid_cursor` | `events --since` was given something that isn't a cursor an `events` line printed. |
 | `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |
+| `invalid_input` | A workflow input's value doesn't match the `pattern:` its definition declares, before any run exists. `details.workflow`, `details.input`, `details.pattern`; never the value. |
 | `workflow_exists` | `workflow add` found a user's file of that id already in `~/.config/workspace/workflows/` (a link counts, even to a file that is gone); nothing was written. A preset of the same id does not count. `details.workflow`, `details.path`. |
 | `stale_workflow` | `workflow update --if-sha256` named a sha256 the user's file no longer has (or the file can't be read); nothing was written. `details.sha256` is the current one (`null` when unreadable), `details.workflow`, `details.path`. |
 | `builtin_workflow` | `workflow update` or `workflow remove` found only a preset of that id and no file of the user's; nothing was changed (save a copy with `workflow add`). `details.workflow`. |
