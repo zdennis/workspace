@@ -45,6 +45,12 @@ workspace wait-until-content [project] "content" [options] [-- command...]
 # Wait for a dev server to boot, then open a browser (project auto-detected)
 workspace wait-until-content "Listening on" -- open http://localhost:3000
 
+# A script keeps the project name apart from the text to match
+workspace wait-until-content --name scooter "Ready to accept connections" -- bin/console
+
+# Match the last 20 lines, poll every 2 seconds
+workspace wait-until-content scooter "READY" --lines 20 --interval 2 -- ./scripts/go.sh
+
 # Explicit project, specific pane, give up after 2 minutes
 workspace wait-until-content scooter "Ready to accept connections" \
   --pane 0 --max-wait-time 120 -- bin/console
@@ -56,6 +62,6 @@ workspace wait-until-content scooter "WORKSPACE_DONE" --pane "Claude Code" -- ir
 workspace wait-until-content scooter "namespace is running" \
   --since-start --max-wait-time 60 -- ./scripts/attach.sh
 
-# Shell-string form (metacharacters work)
+# Run more than one command once it matches
 workspace wait-until-content scooter "READY" -e 'echo matched && osascript -e "display notification \"ready\""'
 ```

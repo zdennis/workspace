@@ -29,3 +29,16 @@ The parent `workspace run --wait` process polls for the `.json` file and reads i
 **UUID format** — the UUID argument must be a standard RFC 4122 UUID (`8-4-4-4-12` hex). Non-UUID values are rejected to prevent path traversal outside `~/.workspace-runs/`.
 
 **Exit code** — must be an integer. Non-integer values are rejected with a usage error.
+
+## Examples
+
+```sh
+# The line the --wait wrapper script runs after the command
+workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 $?
+
+# Record a run that exited 0
+workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 0
+
+# Record a run that failed with status 1; this command still exits 0
+workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 1
+```

@@ -1495,9 +1495,14 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace run 'rake spec'    # bottommost pane, project auto-detected from cwd"
         opts.separator "  workspace run scooter 'rake spec' --pane 1    # explicit project and pane"
-        opts.separator "  workspace run scooter 'tail -f log/development.log' --split    # run in a new pane below"
         opts.separator "  workspace run scooter 'bundle exec rails console' --no-enter    # pre-fill without pressing Enter"
-        opts.separator "  workspace run scooter 'rake spec' --wait    # wait for the command and report its result"
+        opts.separator "  workspace run scooter 'rake spec' --split    # run in a new pane below the bottommost"
+        opts.separator "  workspace run scooter 'bin/dev' --split --vertical    # run in a new pane beside the bottommost"
+        opts.separator "  workspace run scooter 'rake spec' --wait --timeout 60    # a script must block until the suite finishes, then act on its exit status (gives up after 60s)"
+        opts.separator "  workspace run scooter 'rake spec' --split --wait --close    # run in a throwaway pane and close it when done"
+        opts.separator "  workspace run scooter 'grep ERROR log/production.log' --pipe 'sort' --pipe 'uniq -c'    # count the distinct errors in a log, with each stage checked for quoting"
+        opts.separator "  workspace run scooter 'rake spec' --dry-run    # check where the command would go before sending it"
+        opts.separator "  workspace run scooter 'tail -f log/development.log' --split --json    # print an action document naming the new pane"
       end
       parser.parse!(args)
 
@@ -1750,11 +1755,14 @@ module Workspace
         end
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace wait-until-content \"Listening on\" -- open http://localhost:3000"
-        opts.separator "  workspace wait-until-content scooter \"Ready to accept\" --pane 0 -- bin/console"
-        opts.separator "  workspace wait-until-content scooter \"WORKSPACE_DONE\" --pane \"Claude Code\" -- irb"
-        opts.separator "  workspace wait-until-content scooter \"namespace is running\" --since-start --max-wait-time 60 -- ./scripts/attach.sh"
-        opts.separator "  workspace wait-until-content scooter \"READY\" -e 'echo matched'"
+        opts.separator "  workspace wait-until-content \"Listening on\" -- open http://localhost:3000    # open the browser once the dev server is up, project auto-detected"
+        opts.separator "  workspace wait-until-content scooter \"Ready to accept\" -- bin/console    # explicit project, bottommost pane"
+        opts.separator "  workspace wait-until-content --name scooter \"Ready to accept\" -- bin/console    # a script keeps the project name apart from the text to match"
+        opts.separator "  workspace wait-until-content scooter \"Ready to accept\" --pane 0 --max-wait-time 120 -- bin/console    # watch pane 0, give up (exit 1) after 2 minutes"
+        opts.separator "  workspace wait-until-content scooter \"WORKSPACE_DONE\" --pane \"Claude Code\" -- irb    # watch the pane whose title matches"
+        opts.separator "  workspace wait-until-content scooter \"namespace is running\" --since-start --max-wait-time 60 -- ./scripts/attach.sh    # ignore output already in the scrollback"
+        opts.separator "  workspace wait-until-content scooter \"READY\" --lines 20 --interval 2 -- ./scripts/go.sh    # match the last 20 lines, poll every 2 seconds"
+        opts.separator "  workspace wait-until-content scooter \"READY\" -e 'echo matched && open http://localhost:3000'    # run more than one command once it matches"
       end
       parser.parse!(args)
 
@@ -4218,6 +4226,8 @@ module Workspace
         opts.separator "  workspace run-and-report 'echo hello'    # run a command and capture its output"
         opts.separator "  workspace run-and-report 'rake spec'    # check the exit code in a script via $?"
         opts.separator "  workspace run-and-report 'bundle exec rspec' | jq '.status'    # parse the JSON result"
+        opts.separator "  workspace run-and-report 'rake spec' | jq -r '.stderr'    # read only what the command wrote to stderr"
+        opts.separator "  workspace run-and-report 'exit 3'    # a failing command: the JSON says status 3 and workspace exits 3"
       end
       parser.parse!(args)
 
@@ -4239,6 +4249,11 @@ module Workspace
         opts.separator "Internal command called by the --wait shell wrapper."
         opts.separator "Reads <uuid>.stdout and <uuid>.stderr from the run results directory,"
         opts.separator "writes the complete JSON result file, and exits 0."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 $?    # the line the --wait wrapper script runs after the command"
+        opts.separator "  workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 0    # record a run that exited 0"
+        opts.separator "  workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 1    # record a run that failed with status 1; this command still exits 0"
       end
       parser.parse!(args)
 

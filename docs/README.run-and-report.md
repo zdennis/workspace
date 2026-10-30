@@ -45,4 +45,10 @@ echo "Exit: $?"
 
 # Parse the JSON result
 workspace run-and-report 'bundle exec rspec' | jq '.status'
+
+# Read only what the command wrote to stderr
+workspace run-and-report 'rake spec' | jq -r '.stderr'
+
+# A failing command: the JSON says status 3 and workspace exits 3
+workspace run-and-report 'exit 3'
 ```

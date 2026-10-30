@@ -150,10 +150,6 @@ module HelpExamplesSpec
     "workflow update",
     "workflow validate",
 
-    # T8: pane commands
-    "report-run-status",
-    "wait-until-content",
-
     # T9: lookups and the root page
     "",
     "current",
