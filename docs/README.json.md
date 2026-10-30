@@ -190,6 +190,12 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `push_timeout` | `push` or `pr create`: `git push` ran past its 120 second limit. `details.branch`, `details.seconds`, `details.permanent` (`false`), `details.state_unknown` (`true`). No `retry`: origin may already have the push, so check `git ls-remote origin BRANCH` before pushing again. |
 | `ticket_not_found` | `ticket show` (or `workflow start`) asked `gh` or `jira` for a ticket the tool says does not exist. `workflow start` refuses an unreadable pull request even with `--prompt`. `details.source`, `details.ref`; from `workflow start` reading a reused or local `pr-<n>` branch's pull request, also `details.branch`, `details.path`. |
 | `ticket_source_unavailable` | `ticket show` or `workflow start` (refused there for a pull request even with `--prompt`) could not read the ticket (`ticket list` and `start --title-from-ticket` report it as a warning instead): `gh` or `jira` is not installed (`details.reason` `missing`), did not answer in time (`timeout`) or failed (`error`, with `details.detail`). `details.source`; from `workflow start` reading a reused or local `pr-<n>` branch's pull request, also `details.branch`, `details.path`. |
+| `skill_path_exists` | `skills install`: a skill's path in a skills directory holds a real directory with other content, or a file, so nothing is linked in that directory. In a skill row (the document is `ok: false`, exit 1) with `message` and `mv`, the command that moves it aside. |
+| `skill_link_foreign` | `skills install`: a skill's path in a skills directory is a link that is not this tool's; handled like `skill_path_exists`. |
+| `skill_source_worktree` | `skills install` was run from a linked git worktree, whose directory is deleted with it, so links into it would dangle. Run it from the main checkout or a Homebrew install. `details.path`. |
+| `skills_source_missing` | `skills install`: this install lacks `lib/skills/<name>` for a skill. `details.path`, `details.missing`. |
+| `skill_link_failed` | `skills install` or `uninstall`: writing or removing a link failed (permissions, a full disk). In a skill row (`ok: false`, exit 1) with `message`; links made earlier in that directory are undone. |
+| `no_harness_found` | `skills install`: none of `claude`, `codex`, `pi` or `opencode` is on PATH and none has a config directory. |
 
 ### promote codes
 

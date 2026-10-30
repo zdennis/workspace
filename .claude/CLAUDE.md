@@ -50,6 +50,11 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/agent_detector.rb` — `AgentDetector`, one workspace's way to find the coding agent in a pane: `AgentProvider.detect` plus the configured program names as aliases; `AgentCommands#detector` builds it for the session monitor, readiness checks, pane label searches and `restore`
 - `lib/workspace/commands_config.rb` — Reads a project's `commands.test` and `commands.lint`
 - `lib/library/play/` — The built-in instruction packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`, `research`, `report`, `plan-review`, `spine`, `promote`), read through `Library#builtin_store`; the `research` pack ends by adding a `note` inbox item (`inbox add --note`) and printing the note link from `ui open notes --path`; the `plan-review` pack reviews the plan, writes `plan-review.md` and posts an inbox item under `plan-review:WS:blocking` or `plan-review:WS:passed`
+- `lib/workspace/commands/skills.rb` — `skills install [--install-all] [--dry-run] [--json]` and `skills uninstall [--dry-run] [--json]`: links the four `lib/skills/<name>` directories into each chosen harness's skills directory (and `~/.agents/skills` when it exists); one prompt through `Prompt.ask` (EOF means none, unchosen harnesses are recorded as declined); exit 1 when anything is refused; codes `skill_path_exists`, `skill_link_foreign`, `skill_source_worktree`, `skills_source_missing`, `no_harness_found`
+- `lib/workspace/skill_harnesses.rb` — The four harnesses (Claude Code, Codex, Pi, OpenCode) with their skills directories (`CODEX_HOME` honoured); found by program on PATH or config directory; `~/.agents/skills` only when it exists
+- `lib/workspace/skill_source.rb` — Where the links point: the Homebrew `opt` path, else the checkout's realpath; a linked worktree is refused (`skill_source_worktree`, read from `.git` and `commondir` alone, so no HOME, PATH or git call)
+- `lib/workspace/skill_links.rb` — Inspects, plans and writes the four links of one skills directory: all four or none, a temp link renamed into place, an identical real directory moved to `skill-backups`, anything else refused with its `mv`; `#ours?` and `#removal_steps` serve `uninstall`
+- `lib/workspace/skills_state.rb` — `skills.json` (`{"declined": []}`), flock-guarded, temp file and rename; a corrupt file reads as empty
 - `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, notes, plan, pull_request, rebase, push, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions, workflow)
 - `lib/workspace/notes_dir.rb` — The one resolver for a workspace's notes directory: its own `notes.dir`, else the project's `notes.default_dir` rule, else `tmp/workspace-notes` in the checkout; `Commands::Notes#info` returns the answer as a Hash (`dir` prints it) and `#files_inside_worktree` counts the files `kill` and `finish` would delete
 - `lib/workspace/notes_setup.rb` — Fixes a new worktree's notes directory for `start` and `add`: writes the computed path as the worktree's own `notes.dir` (never over an existing value), makes the directory and its `info/exclude` line; every problem comes back as a warning, never an error
@@ -158,7 +163,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, spine, pr, rebase, push, promote, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, skills, spine, pr, rebase, push, promote, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 
