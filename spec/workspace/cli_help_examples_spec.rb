@@ -74,9 +74,6 @@ module HelpExamplesSpec
     "agent-run",
     "event-log compact",
     "handoff",
-    "layout list",
-    "layout restore",
-    "layout save",
 
     # T3 gave these a page of their own; their examples come with the group tasks
     "binding clear",
@@ -152,11 +149,6 @@ module HelpExamplesSpec
     "workflow status",
     "workflow update",
     "workflow validate",
-
-    # T7: windows and panes
-    "tile",
-    "tmux",
-    "tmux show",
 
     # T8: pane commands
     "report-run-status",

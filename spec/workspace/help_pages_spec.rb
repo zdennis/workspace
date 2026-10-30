@@ -227,6 +227,19 @@ RSpec.describe Workspace::HelpPages do
       expect(cli_help_requested(%w[play/x --project --help], page)).to be(true)
     end
 
+    it "is the value of --name on a layout verb, so the verb's page is not shown" do
+      page = pages["layout"]["save"]
+      expect(cli_help_requested(%w[--name --help], page)).to be(false)
+      expect(cli_help_requested(%w[--name x --help], page)).to be(true)
+      with_cli do |cli, out, *|
+        layout = instance_double(Workspace::Commands::Layout)
+        expect(layout).to receive(:save).with("--help", "default")
+        cli.instance_variable_set(:@layout_command, layout)
+        cli.run(%w[layout save --name --help])
+        expect(out.string).not_to include("Usage: workspace layout save")
+      end
+    end
+
     def cli_help_requested(argv, page)
       with_cli { |cli, *| return cli.send(:help_requested?, argv, page) }
     end

@@ -1366,13 +1366,15 @@ module Workspace
         opts.separator "Tile all active windows for a project across the screen."
         opts.separator "Auto-detects the project from the current directory if not specified."
         opts.separator "Matches the base project and all its worktree sessions."
+        opts.separator "Exits 1 when every matching project is headless: it has no window to tile."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--all", "Tile all active workspace projects") { all = true }
         opts.separator ""
-        opts.separator "Example:"
-        opts.separator "  workspace tile window-tool    # tiles window-tool + all window-tool.worktree-* windows"
-        opts.separator "  workspace tile --all          # tiles all active workspace windows"
+        opts.separator "Examples:"
+        opts.separator "  workspace tile    # tile the current directory's project and its worktrees side by side"
+        opts.separator "  workspace tile window-tool    # tile window-tool and all its window-tool.* worktree windows"
+        opts.separator "  workspace tile --all    # tile every active workspace window across the screen"
       end
       parser.parse!(args)
 
@@ -4275,7 +4277,7 @@ module Workspace
 
     def cmd_layout(args)
       subcommand = args.shift
-      return layout_help if help_requested?(args)
+      return if verb_help_shown?(HelpPages::LAYOUT, [subcommand, *args].compact)
       name_opt = take_name_option!(args)
 
       case subcommand
@@ -6157,6 +6159,11 @@ module Workspace
         @output.puts usage
         @output.puts
         @output.puts "  show    A workspace's tmuxinator file as session fields, windows and panes"
+        @output.puts
+        @output.puts "Examples:"
+        @output.puts "  workspace tmux show    # the current directory's workspace: windows and panes as a summary"
+        @output.puts "  workspace tmux show --name myproject    # a named workspace, from anywhere"
+        @output.puts "  workspace tmux show --name myproject --json    # the same as one JSON document, for a script"
       else
         raise UsageError, usage
       end
@@ -6179,8 +6186,9 @@ module Workspace
         opts.on("--json", "Print one document (see docs/README.tmux.md)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace tmux show"
-        opts.separator "  workspace tmux show --name myproject --json"
+        opts.separator "  workspace tmux show    # the current directory's workspace: windows and panes as a summary"
+        opts.separator "  workspace tmux show --name myproject    # a named workspace, from anywhere"
+        opts.separator "  workspace tmux show --name myproject --json    # the same as one JSON document, for a script"
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?

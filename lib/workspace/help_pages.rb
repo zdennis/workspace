@@ -996,12 +996,54 @@ module Workspace
       }
     }.freeze
 
+    LAYOUT_NAME_OPT = ["--name WS", "The project, instead of the current directory's; then give only NAME. One argument is always the layout name"].freeze
+    LAYOUT_OUTSIDE = "Outside a workspace it is a usage error unless you give --name or PROJECT NAME.".freeze
+
+    LAYOUT = {
+      "save" => {
+        usage: ["layout save [--name WS] [NAME]", "layout save PROJECT NAME"],
+        summary: "Save the project's current tmux pane layout under NAME (default: 'default')",
+        about: ["The project's tmux session must be running. A layout saved under an existing name is replaced.", LAYOUT_OUTSIDE],
+        options: [LAYOUT_NAME_OPT],
+        examples: [
+          ["workspace layout save", "save the current directory's project as 'default'"],
+          ["workspace layout save coding", "save the current directory's project as 'coding'"],
+          ["workspace layout save --name myproject", "save a named project as 'default'"],
+          ["workspace layout save myproject coding", "PROJECT NAME: save a named project as 'coding'"]
+        ]
+      },
+      "restore" => {
+        usage: ["layout restore [--name WS] [NAME]", "layout restore PROJECT NAME"],
+        summary: "Apply a saved tmux pane layout to the project's running session (default NAME: 'default')",
+        about: ["`workspace resize` saves the layout it found as '_before_resize'.", LAYOUT_OUTSIDE],
+        options: [LAYOUT_NAME_OPT],
+        examples: [
+          ["workspace layout restore", "restore 'default' for the current directory's project"],
+          ["workspace layout restore coding", "restore 'coding' for the current directory's project"],
+          ["workspace layout restore --name myproject", "restore 'default' for a named project"],
+          ["workspace layout restore --name myproject _before_resize", "undo the last resize"],
+          ["workspace layout restore myproject coding", "PROJECT NAME: restore 'coding' for a named project"]
+        ]
+      },
+      "list" => {
+        usage: ["layout list [--name WS | PROJECT]"],
+        summary: "List the names of the project's saved layouts",
+        about: ["'_before_resize' is listed once a resize has run.", "Outside a workspace it is a usage error unless you give PROJECT or --name."],
+        options: [["--name WS", "The project, instead of PROJECT or the current directory's"]],
+        examples: [
+          ["workspace layout list", "layouts saved for the current directory's project"],
+          ["workspace layout list myproject", "layouts saved for a named project"],
+          ["workspace layout list --name myproject", "the same, named with --name"]
+        ]
+      }
+    }.freeze
+
     # The tables by command; the specs and the routing tests read them.
     COMMANDS = {
       "plan" => PLAN, "daemon" => DAEMON, "workflow" => WORKFLOW, "library" => LIBRARY, "spine" => SPINE,
       "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL,
       "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "projects" => PROJECTS,
-      "projects group" => GROUPS, "config" => CONFIG
+      "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT
     }.freeze
 
     # The page for the leading verb words of +args+, longest match first.
