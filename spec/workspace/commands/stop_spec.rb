@@ -52,7 +52,7 @@ RSpec.describe Workspace::Commands::Stop do
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
         allow(tmux).to receive(:sessions).and_return(["proj1"])
         on_disk_at_kill = :not_killed
-        allow(tmux).to receive(:kill_session).with("proj1", project: "proj1") do
+        allow(tmux).to receive(:kill_session).with("proj1", project: "proj1", socket: nil) do
           reloaded = Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
           reloaded.load
           on_disk_at_kill = reloaded["proj1"]
@@ -83,7 +83,7 @@ RSpec.describe Workspace::Commands::Stop do
 
         result = command.call(["proj1"])
 
-        expect(tmux).to have_received(:kill_session).with("proj1", project: "proj1")
+        expect(tmux).to have_received(:kill_session).with("proj1", project: "proj1", socket: nil)
         expect(result).to eq(["proj1"])
       end
 
@@ -95,8 +95,19 @@ RSpec.describe Workspace::Commands::Stop do
 
         command.call(["proj1"], session_names: {"proj1" => "proj-wt-1"})
 
-        expect(tmux).to have_received(:kill_session).with("proj-wt-1", project: "proj1")
+        expect(tmux).to have_received(:kill_session).with("proj-wt-1", project: "proj1", socket: nil)
         expect(tmux).not_to have_received(:session_name_for)
+      end
+
+      it "kills on the socket given by socket_arguments even when the session is not in the default list" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:sessions).and_return([])
+        allow(tmux).to receive(:custom_socket_option).and_return(nil)
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["proj1"], session_names: {"proj1" => "proj-wt-1"}, socket_arguments: {"proj1" => ["-L", "mysock"]})
+
+        expect(tmux).to have_received(:kill_session).with("proj-wt-1", project: "proj1", socket: ["-L", "mysock"])
       end
 
       it "falls back to the config for a project missing from session_names" do
@@ -107,7 +118,7 @@ RSpec.describe Workspace::Commands::Stop do
 
         command.call(["proj1"], session_names: {"other" => "x"})
 
-        expect(tmux).to have_received(:kill_session).with("from-config", project: "proj1")
+        expect(tmux).to have_received(:kill_session).with("from-config", project: "proj1", socket: nil)
       end
 
       it "resolves tmux session name before killing" do
@@ -118,7 +129,7 @@ RSpec.describe Workspace::Commands::Stop do
 
         command.call(["proj1"])
 
-        expect(tmux).to have_received(:kill_session).with("custom-session", project: "proj1")
+        expect(tmux).to have_received(:kill_session).with("custom-session", project: "proj1", socket: nil)
       end
 
       it "returns killed project names" do
@@ -229,7 +240,7 @@ RSpec.describe Workspace::Commands::Stop do
 
         command.call(["proj1"])
 
-        expect(tmux).to have_received(:kill_session).with("proj1", project: "proj1")
+        expect(tmux).to have_received(:kill_session).with("proj1", project: "proj1", socket: nil)
       end
     end
 
@@ -297,7 +308,7 @@ RSpec.describe Workspace::Commands::Stop do
 
       expect(command.call(["proj"])).to eq(["proj"])
 
-      expect(tmux).to have_received(:kill_session).with("proj", project: "proj")
+      expect(tmux).to have_received(:kill_session).with("proj", project: "proj", socket: nil)
       state.load
       expect(state["proj"]).to be_nil
     end

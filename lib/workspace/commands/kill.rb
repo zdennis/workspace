@@ -200,6 +200,7 @@ module Workspace
         outcome ||= force ? "discarded" : "abandoned"
         # The session name lives in the config's `name:`, so read it before the config is removed.
         session_name = @tmux&.session_name_for(project)
+        socket = @tmux&.socket_arguments(project)
         end_workflow_runs(project, out)
         archive_task(project, outcome, out)
         yield project if block_given?
@@ -210,7 +211,7 @@ module Workspace
         @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => outcome})
 
         out.puts "Killing session..."
-        @stop_command.call([project], quiet: quiet, warn_inactive: warn_inactive, save_position: false, session_names: {project => session_name}.compact)
+        @stop_command.call([project], quiet: quiet, warn_inactive: warn_inactive, save_position: false, session_names: {project => session_name}.compact, socket_arguments: {project => socket}.compact)
         project
       end
 

@@ -18,7 +18,7 @@ Projects can be restarted with `workspace launch`.
 
 iTerm2 gets 5 seconds to answer each question `stop` asks it (which windows exist, and closing one). If it does not answer, `stop` stops waiting and ends that `osascript` call. It still removes the entries from the state file and kills the tmux sessions; the launcher windows are left open, and a warning says so: `iTerm did not answer in 5s; the window for api was left open.` Close the window by hand. If iTerm answers the lookups but then fails or times out closing a window, the warning is `iTerm did not close launcher window <id>; it was left open.`
 
-A project whose tmuxinator config selects a custom tmux socket (`-L` or `-S` in `tmux_options`) has its session killed on that socket.
+A project whose tmuxinator config selects a custom tmux socket (`-L` or `-S` in `tmux_options`) has its session killed on that socket, including through `kill`, `finish` and `prune`, which read the socket before they remove the config.
 
 ## Examples
 
