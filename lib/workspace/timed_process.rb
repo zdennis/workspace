@@ -8,24 +8,45 @@ module Workspace
   module TimedProcess
     NO_PROMPT = {"GH_PROMPT_DISABLED" => "1", "GIT_TERMINAL_PROMPT" => "0"}.freeze
 
+    # Bytes read from stdout at a time.
+    CHUNK_BYTES = 64 * 1024
+
+    # Raised when stdout passed +max_bytes+; the process group has been stopped.
+    class OutputTooLarge < StandardError; end
+
     # @param argv [Array<String>] the command and its arguments
     # @param chdir [String] directory to run in
     # @param timeout [Numeric] seconds
     # @param env [Hash{String=>String}] more environment for the child, over {NO_PROMPT}
     # @return [Array(String, String, Boolean)] stdout, stderr, success
+    # @param max_bytes [Integer, nil] most stdout to read; nil is no cap
     # @raise [Errno::ENOENT] if the command is not installed
     # @raise [Timeout::Error] if it ran past +timeout+
-    def self.run(argv, chdir:, timeout:, env: {})
+    # @raise [OutputTooLarge] if stdout passed +max_bytes+
+    def self.run(argv, chdir:, timeout:, env: {}, max_bytes: nil)
       Open3.popen3(NO_PROMPT.merge(env), *argv, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, waiter|
         stdin.close
-        out = Thread.new { stdout.read }
+        too_large = false
+        out = Thread.new do
+          buffer = String.new(encoding: Encoding::BINARY)
+          while (chunk = stdout.read(CHUNK_BYTES))
+            buffer << chunk
+            next unless max_bytes && buffer.bytesize > max_bytes
+            too_large = true
+            stop_group(waiter)
+            break
+          end
+          buffer.force_encoding(Encoding.default_external)
+        end
         err = Thread.new { stderr.read }
         [out, err].each { |reader| reader.report_on_exception = false }
         unless waiter.join(timeout)
           stop_group(waiter)
           raise Timeout::Error
         end
-        [out.value, err.value, waiter.value.success?]
+        result = [out.value, err.value, waiter.value.success?]
+        raise OutputTooLarge, "output passed #{max_bytes} bytes" if too_large
+        result
       end
     end
 

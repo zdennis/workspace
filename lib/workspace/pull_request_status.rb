@@ -21,6 +21,19 @@ module Workspace
     FAILED_STATES = %w[FAILURE ERROR].freeze
     private_constant :FAILED_CONCLUSIONS, :PASSED_CONCLUSIONS, :FAILED_STATES
 
+    # @param entry [Hash] a check run (`status`, `conclusion`) or a commit status (`state`)
+    # @return [Symbol] `:passing`, `:failing` or `:pending`
+    def self.outcome(entry)
+      if entry.key?("state")
+        return :failing if FAILED_STATES.include?(entry["state"])
+        return :passing if entry["state"] == "SUCCESS"
+        return :pending
+      end
+      return :pending unless entry["status"] == "COMPLETED"
+      return :failing if FAILED_CONCLUSIONS.include?(entry["conclusion"])
+      PASSED_CONCLUSIONS.include?(entry["conclusion"]) ? :passing : :pending
+    end
+
     # @param runner [#call] `(args, chdir:, timeout:)` returning `[stdout, stderr, success]`;
     #   defaults to {TimedProcess}
     # @param timeout [Numeric] seconds `gh` may take
@@ -73,7 +86,7 @@ module Workspace
       failed = []
       passing = pending = 0
       entries.each do |entry|
-        case outcome(entry)
+        case self.class.outcome(entry)
         when :passing then passing += 1
         when :failing then failed << (entry["name"] || entry["context"]).to_s
         else pending += 1
@@ -81,17 +94,6 @@ module Workspace
       end
       {"total" => entries.size, "passing" => passing, "failing" => failed.size, "pending" => pending,
        "failed" => failed.first(MAX_FAILED_CHECKS)}
-    end
-
-    def outcome(entry)
-      if entry.key?("state")
-        return :failing if FAILED_STATES.include?(entry["state"])
-        return :passing if entry["state"] == "SUCCESS"
-        return :pending
-      end
-      return :pending unless entry["status"] == "COMPLETED"
-      return :failing if FAILED_CONCLUSIONS.include?(entry["conclusion"])
-      PASSED_CONCLUSIONS.include?(entry["conclusion"]) ? :passing : :pending
     end
   end
 end

@@ -64,6 +64,8 @@ module Workspace
       "ticket_not_found" => "ticket show: the ticket tool says no ticket has that key, number or URL.",
       "ticket_source_unavailable" => "ticket show: gh or jira is not installed, did not answer in time, or failed; details.source says which. ticket list and start --title-from-ticket report it as a warning instead.",
       "gh_unavailable" => "pr create (or finish --pr): gh is not installed or is not logged in; details.reason says which (missing or not_logged_in).",
+      "no_pull_request" => "pr feedback: the branch has no pull request. details.branch.",
+      "pr_feedback_failed" => "pr feedback: gh could not read the pull request; details.reason is timeout, auth, rate_limit, graphql or other, details.detail the first line gh said.",
       "nothing_to_push" => "pr create: the branch has no commits ahead of its base, so there is nothing to open a pull request for.",
       "dirty_worktree" => "rebase: the workspace has changes to tracked files; commit or stash them first. details.path, details.files.",
       "rebase_in_progress" => "rebase or promote: a rebase is already stopped in the workspace (finish or abort it first), or git ran past its time limit mid-rebase and git rebase --abort failed (details.aborted false). details.path.",

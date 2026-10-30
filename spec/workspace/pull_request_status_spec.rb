@@ -154,4 +154,15 @@ RSpec.describe Workspace::PullRequestStatus do
       end
     end
   end
+
+  describe ".outcome" do
+    it "reads a check run by status and conclusion and a commit status by state" do
+      expect(described_class.outcome({"status" => "COMPLETED", "conclusion" => "FAILURE"})).to eq(:failing)
+      expect(described_class.outcome({"status" => "COMPLETED", "conclusion" => "SKIPPED"})).to eq(:passing)
+      expect(described_class.outcome({"status" => "IN_PROGRESS"})).to eq(:pending)
+      expect(described_class.outcome({"state" => "ERROR"})).to eq(:failing)
+      expect(described_class.outcome({"state" => "SUCCESS"})).to eq(:passing)
+      expect(described_class.outcome({"state" => "PENDING"})).to eq(:pending)
+    end
+  end
 end
