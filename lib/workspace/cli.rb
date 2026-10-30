@@ -2416,6 +2416,9 @@ module Workspace
           --dedupe-key KEY       Add once: an open or snoozed item with this key in the scope is
                                  updated, a resolved one is left alone (A-Z a-z 0-9 . _ : / # @ -, 200 at most)
           --reopen               With --dedupe-key, reopen a resolved item instead of leaving it
+          --note REL             A Markdown note that exists in the workspace's notes directory
+                                 (letters, digits . _ -, at most 4 levels); needs a workspace scope.
+                                 A notes directory inside the checkout is deleted by finish and kill
           --expires DURATION|ISO After this time the item counts as dismissed and leaves the
                                  default list (2h, 2026-10-20T09:00:00Z)
           --link-pane PANE       A tmux pane the item is about
@@ -2495,6 +2498,7 @@ module Workspace
         opts.on("--source-ref REF", "A reference in that source") { |v| options[:source][:ref] = v }
         opts.on("--source-url URL", "An https:// URL") { |v| options[:source][:url] = v }
         opts.on("--expires WHEN", "A duration (2h) or an ISO 8601 time") { |v| options[:expires] = v }
+        opts.on("--note REL", "A note in the workspace's notes directory (.md or .markdown, at most 4 levels; needs a workspace scope)") { |v| options[:note] = v }
         opts.on("--dedupe-key KEY", "Add once per key: update the open item with it, leave a resolved one") { |v| options[:dedupe_key] = v }
         opts.on("--reopen", "With --dedupe-key, reopen a resolved item") { options[:reopen] = true }
         opts.on("--link-pane PANE", "A pane the item concerns") { |v| options[:links][:pane] = v }

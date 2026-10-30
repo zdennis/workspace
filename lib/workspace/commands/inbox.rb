@@ -55,10 +55,13 @@ module Workspace
       # @param derived [Workspace::InboxDerived, nil] works out the rows `list --include-derived` adds;
       #   read only with that flag
       # @param acks [Workspace::InboxAcks, nil] the derived rows acknowledged or snoozed; `list` leaves them out
+      # @param notes [Workspace::Commands::Notes] `#info(name:)` gives a workspace's notes `"dir"` and
+      #   whether it is `"inside_worktree"` (where `finish` and `kill` delete it)
       # @param output [IO]
       # @param error_output [IO]
-      def initialize(config:, project_detector:, store_factory:, project_catalog: nil, session_ledger: nil,
-        env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, derived: nil, acks: nil, output: $stdout, error_output: $stderr)
+      def initialize(config:, project_detector:, store_factory:, notes:, project_catalog: nil, session_ledger: nil,
+        env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, derived: nil, acks: nil,
+        output: $stdout, error_output: $stderr)
         @config = config
         @project_detector = project_detector
         @project_catalog = project_catalog
@@ -72,6 +75,7 @@ module Workspace
         @acks = acks
         @output = output
         @error_output = error_output
+        @notes = notes
       end
 
       # Creates an item, or with +dedupe_key+ adds it once: an item already holding the key in the
@@ -88,6 +92,8 @@ module Workspace
       # @param expires [String, nil] a duration (`2h`) or an ISO 8601 time in the future
       # @param expires_field [String] the field name an expiry error reports (`expires_at` for JSON input)
       # @param links [Hash] `:pane`, `:plan_task`, `:pr`, `:run_id`
+      # @param note [String, nil] a note path relative to the workspace's notes directory (`.md` or
+      #   `.markdown`, checked by {Workspace::NotePath}); needs a workspace scope
       # @param as_user [Boolean] record the item as made by a person, not a script or agent
       # @param target [Hash] `:name`, `:project`, `:global`; none means the workspace of +working_dir+
       # @param working_dir [String] directory to detect the workspace from
@@ -95,7 +101,7 @@ module Workspace
       #   `suppressed` or `reopened`
       # @raise [Workspace::Error] `invalid_inbox_item`, `not_in_workspace`, `inbox_store_unreadable`
       def add(title:, type: "todo", body: nil, body_file: nil, source: {}, expires: nil, links: {}, dedupe_key: nil,
-        reopen: false, as_user: false, target: {}, working_dir: Dir.pwd, expires_field: "expires")
+        reopen: false, as_user: false, target: {}, working_dir: Dir.pwd, expires_field: "expires", note: nil)
         raise UsageError, "Pass --body or --body-file, not both." if body && body_file
         raise UsageError, "--reopen needs --dedupe-key." if reopen && dedupe_key.nil?
         scope = scope_for_write(target, working_dir)
@@ -109,7 +115,8 @@ module Workspace
           "dedupe_key" => checked_dedupe_key(dedupe_key),
           "created_by" => created_by,
           "links" => checked_links(links),
-          "expires_at" => checked_expiry(expires, expires_field)
+          "expires_at" => checked_expiry(expires, expires_field),
+          "note" => checked_note(note, scope)
         }
         store = store_for(scope)
         if dedupe_key
@@ -122,12 +129,13 @@ module Workspace
         end
         record_change(item, outcome) unless outcome == "suppressed"
         @output.puts add_message(outcome, item, scope)
+        warn_note_in_checkout(scope) if note
         {exit_code: 0, results: [{"id" => item["id"], "outcome" => outcome, "scope" => scope.label, "item" => item}]}
       end
 
       # Creates an item from one JSON object holding only the item's writable
       # keys (`type`, `title`, `body`, `source`, `dedupe_key`, `expires_at`,
-      # `links`, `scope`). Every field gets the same checks as {#add}; nothing
+      # `links`, `note`, `scope`). Every field gets the same checks as {#add}; nothing
       # is written when any is refused.
       #
       # @param path [String] a file, or `-` for stdin (64 KB cap)
@@ -145,6 +153,7 @@ module Workspace
           expires: string_field("expires_at", data["expires_at"]),
           expires_field: "expires_at",
           links: json_links(data["links"]),
+          note: json_note(data["note"]),
           target: json_target(data["scope"]),
           working_dir: working_dir)
       end
@@ -467,6 +476,34 @@ module Workspace
         end
       end
 
+      # @return [Hash, nil] `{"path" => rel}` once +rel+ is an existing note of the scope's workspace
+      def checked_note(rel, scope)
+        return nil if rel.nil?
+        raise invalid("note.path", "needs a workspace scope") unless scope.kind == "workspace"
+        dir = @notes.info(name: scope.name)["dir"]
+        {"path" => NotePath.resolve(rel, dir)}
+      rescue NotePath::Refused => e
+        raise invalid("note.path", e.reason)
+      end
+
+      def warn_note_in_checkout(scope)
+        return unless @notes.info(name: scope.name)["inside_worktree"]
+        @error_output.puts "Warning: the notes directory of #{scope.label} is inside its checkout; `finish` or `kill` deletes it, and the note with it."
+      rescue Workspace::Error, SystemCallError
+        nil
+      end
+
+      # The note's absolute path, or nil when the workspace's notes directory can't be resolved.
+      def note_file(item)
+        note = item["note"]
+        return nil unless note.is_a?(Hash) && note["path"].is_a?(String)
+        name = item.dig("scope", "name")
+        return nil if name.to_s.empty?
+        File.join(@notes.info(name: name)["dir"], note["path"])
+      rescue Workspace::Error, SystemCallError
+        nil
+      end
+
       def checked_dedupe_key(key)
         return nil if key.nil?
         unless key.is_a?(String) && key.length <= DEDUPE_MAX && key.match?(DEDUPE_KEY)
@@ -639,11 +676,12 @@ module Workspace
         raise invalid(field, "can't be read from the file")
       end
 
-      JSON_KEYS = %w[type title body source dedupe_key expires_at links scope].freeze
+      JSON_KEYS = %w[type title body source dedupe_key expires_at links note scope].freeze
       JSON_SOURCE_KEYS = %w[kind ref url].freeze
       JSON_LINK_KEYS = %w[pane plan_task pr run_id].freeze
       JSON_SCOPE_KEYS = %w[kind name].freeze
-      private_constant :JSON_KEYS, :JSON_SOURCE_KEYS, :JSON_LINK_KEYS, :JSON_SCOPE_KEYS
+      JSON_NOTE_KEYS = %w[path].freeze
+      private_constant :JSON_KEYS, :JSON_SOURCE_KEYS, :JSON_LINK_KEYS, :JSON_SCOPE_KEYS, :JSON_NOTE_KEYS
 
       def parse_item_json(text)
         raise invalid("json", "must be valid UTF-8") unless text.valid_encoding?
@@ -675,6 +713,13 @@ module Workspace
       def json_source(value)
         json_object("source", value, JSON_SOURCE_KEYS)
           .to_h { |key, v| [key.to_sym, string_field("source.#{key}", v)] }.compact
+      end
+
+      def json_note(value)
+        return nil if value.nil?
+        object = json_object("note", value, JSON_NOTE_KEYS)
+        raise invalid("note.path", "is required") unless object.key?("path")
+        string_field("note.path", object["path"]) || raise(invalid("note.path", "is required"))
       end
 
       def json_links(value)
@@ -869,9 +914,18 @@ module Workspace
         end
         links = item["links"].is_a?(Hash) ? item["links"].compact : {}
         @output.puts "  Links:    #{escape(links.map { |k, v| "#{k}=#{v}" }.join(" "))}" if links.any?
+        print_note(item)
         return unless item["body"]
         @output.puts
         item["body"].to_s.lines.each { |line| @output.puts "  #{escape(line.chomp, keep_tabs: true)}" }
+      end
+
+      def print_note(item)
+        note = item["note"]
+        return unless note.is_a?(Hash) && note["path"].is_a?(String)
+        file = note_file(item)
+        shown = file ? "#{note["path"]} (#{file})" : note["path"]
+        @output.puts "  Note:     #{escape(shown)}"
       end
 
       def snooze_note(item)

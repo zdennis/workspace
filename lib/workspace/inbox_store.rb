@@ -187,7 +187,7 @@ module Workspace
     end
 
     # The fields an upsert refreshes on an item that already holds the key.
-    UPSERT_FIELDS = %w[title body source links expires_at].freeze
+    UPSERT_FIELDS = %w[title body source links expires_at note].freeze
     private_constant :UPSERT_FIELDS
 
     def ensure_room(data)

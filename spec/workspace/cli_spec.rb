@@ -2829,6 +2829,14 @@ RSpec.describe Workspace::CLI do
         "--link-plan-task", "T1", "--link-run", "run1"])
     end
 
+    it "passes --note to add" do
+      expect(inbox_command).to receive(:add).with(
+        title: "T", target: {}, working_dir: anything, type: "note", source: {}, links: {}, note: "findings.md"
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "add", "T", "--type", "note", "--note", "findings.md"])
+    end
+
     it "passes --dedupe-key and --reopen to add" do
       expect(inbox_command).to receive(:add).with(
         title: "T", target: {global: true}, working_dir: anything, type: "todo", source: {}, links: {},
