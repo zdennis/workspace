@@ -10,8 +10,12 @@ RSpec.describe Workspace::Commands::Workflow do
   let(:store) { instance_double(Workspace::WorkflowRunStore) }
   let(:panes) { instance_double(Workspace::WorkflowPanes) }
   let(:output) { StringIO.new }
+  let(:tmux) { instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []) }
+  let(:process_tree) { instance_double(Workspace::ProcessTree) }
+  let(:lock_holder) { instance_double(Workspace::LockHolder) }
   subject(:command) do
     described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+      tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
       clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
   end
 
@@ -398,32 +402,109 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(engine).not_to have_received(:refuse_resume)
     end
 
-    it "cancels and rejects" do
+    # The engine runs the guard under the run's lock, after its own step checks; this one does the same.
+    def guarded(verb)
+      allow(engine).to receive(verb) do |_id, guard:, **|
+        guard.call(stored)
+        {"id" => "wr_1", "workspace" => "app"}
+      end
+    end
+
+    def process(pid, ppid)
+      {pid: pid, ppid: ppid, lstart: "start-#{pid}", command: "proc"}
+    end
+
+    # This process (4242) under a shell (300) under the pane's own shell (200) when +under+; else under 999.
+    def tree(under: true)
+      ancestors = under ? [process(300, 200), process(200, 1)] : [process(999, 1)]
+      snapshot = instance_double(Workspace::ProcessTree::Snapshot)
+      allow(snapshot).to receive(:ancestors).with(4242).and_return(ancestors)
+      allow(process_tree).to receive(:snapshot).and_return(snapshot)
+    end
+
+    before do
+      allow(panes).to receive(:run_on).and_return(nil)
+      allow(tmux).to receive(:pane_details).with("app", window: nil).and_return([{id: "%5", window: 0, index: 1, pid: 200}, {id: "%6", window: 0, index: 2, pid: 210}])
+      tree(under: false)
+    end
+
+    it "cancels and rejects, handing the engine the step and attempt the caller saw" do
       allow(engine).to receive(:cancel).with("wr_1").and_return("id" => "wr_1", "workspace" => "app")
-      allow(engine).to receive(:reject).with("wr_1", note: "Too big.", to: "plan").and_return("id" => "wr_1", "workspace" => "app")
+      allow(engine).to receive(:reject).with("wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2, guard: kind_of(Proc))
+        .and_return("id" => "wr_1", "workspace" => "app")
 
       expect(command.cancel(run: "wr_1")).to include("outcome" => "cancelled")
-      expect(command.reject(run: "wr_1", note: "Too big.", to: "plan")).to include("outcome" => "rejected")
+      expect(command.reject(run: "wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2)).to include("outcome" => "rejected")
     end
 
-    it "approves a gate from a terminal, or from a pane bound to nothing" do
-      allow(engine).to receive(:approve).with("wr_1", note: "Go.").and_return("id" => "wr_1", "workspace" => "app")
-      allow(panes).to receive(:run_on).with("%3").and_return(nil)
+    it "approves a gate from a terminal, or from a pane bound to nothing, handing the engine what the caller saw" do
+      guarded(:approve)
 
       expect(command.approve(run: "wr_1", note: "Go.")).to include("outcome" => "approved")
-      expect(command.approve(run: "wr_1", note: "Go.", caller_pane: "%3")).to include("outcome" => "approved")
+      expect(command.approve(run: "wr_1", note: "Go.", step: "plan", attempt: 1, note_sha256: "a" * 64, caller_pane: "%3")).to include("outcome" => "approved")
+      expect(engine).to have_received(:approve).with("wr_1", note: "Go.", step: "plan", attempt: 1, note_sha256: "a" * 64, guard: kind_of(Proc))
     end
 
-    it "refuses to approve from a pane a run is bound to, so an agent doesn't pass its own gate" do
+    it "refuses to approve or reject from a pane a run is bound to, so an agent doesn't pass its own gate" do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
-      allow(engine).to receive(:approve)
+      guarded(:approve)
+      guarded(:reject)
 
       expect { command.approve(run: "wr_1", caller_pane: "%5") }
         .to raise_error(Workspace::Error, /A gate is passed by a person: this pane \(%5\) is bound to workflow run wr_1, so `workflow approve` is refused here/) { |error|
           expect(error.code).to eq("bound_pane")
           expect(error.details).to eq("pane" => "%5", "run_id" => "wr_1")
         }
-      expect(engine).not_to have_received(:approve)
+      expect { command.reject(run: "wr_1", note: "No.", caller_pane: "%5") }
+        .to raise_error(Workspace::Error, /so `workflow reject` is refused here/) { |error| expect(error.code).to eq("bound_pane") }
+    end
+
+    it "refuses approve and reject from a process under the run's pane, with TMUX_PANE unset or another pane's, naming the agent" do
+      tree(under: true)
+      allow(lock_holder).to receive(:current).and_return(kind: "agent", pid: 300, started: "start-300", pane: nil, worktree: "/src/app")
+      guarded(:approve)
+      guarded(:reject)
+
+      [-> { command.approve(run: "wr_1") }, -> { command.approve(run: "wr_1", caller_pane: "%6") },
+        -> { command.reject(run: "wr_1", note: "No.") }].each do |call|
+        expect(&call).to raise_error(Workspace::Error, /this process runs under pane %5, which workflow run wr_1 is bound to/) { |error|
+          expect(error.code).to eq("bound_pane")
+          expect(error.details).to eq("pane" => "%5", "run_id" => "wr_1", "agent" => {"pid" => 300, "started" => "start-300"})
+        }
+      end
+    end
+
+    it "checks the pane the run is bound to now, else the one it was started in" do
+      allow(panes).to receive(:pane_of).with("wr_1").and_return("%6")
+      tree(under: true)
+      guarded(:approve)
+
+      # The run moved to %6 (pid 210); this process is under %5's shell, not %6's.
+      expect(command.approve(run: "wr_1")).to include("outcome" => "approved")
+
+      allow(panes).to receive(:pane_of).with("wr_1").and_return(nil)
+      allow(lock_holder).to receive(:current).and_return(nil)
+      expect { command.approve(run: "wr_1") }.to raise_error(Workspace::Error) { |error|
+        expect(error.details).to eq("pane" => "%5", "run_id" => "wr_1", "agent" => nil)
+      }
+    end
+
+    it "runs only the TMUX_PANE check when tmux or the process table can't be read" do
+      guarded(:approve)
+      allow(tmux).to receive(:pane_details).and_return([])
+      expect(command.approve(run: "wr_1")).to include("outcome" => "approved")
+
+      allow(tmux).to receive(:pane_details).and_raise(Errno::ENOENT)
+      expect(command.approve(run: "wr_1")).to include("outcome" => "approved")
+
+      allow(tmux).to receive(:pane_details).and_return([{id: "%5", window: 0, index: 1, pid: 200}])
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
+      expect(command.approve(run: "wr_1")).to include("outcome" => "approved")
+
+      allow(process_tree).to receive(:snapshot).and_raise(Errno::ENOENT, "ps")
+      expect(command.approve(run: "wr_1")).to include("outcome" => "approved")
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      expect { command.approve(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
     end
 
     it "refuses `resume --from` at a waiting gate from a pane a run is bound to, and allows it elsewhere" do
@@ -575,7 +656,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, output: output, error_output: error_output)
+      described_class.new(catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, error_output: error_output)
     end
 
     before { FileUtils.mkdir_p([global_dir, builtin_dir]) }
@@ -650,7 +731,7 @@ RSpec.describe Workspace::Commands::Workflow do
       Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: File.join(@root, "archive"), id_generator: -> { "wr_2610250930abcd" })
     end
     let(:files_command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: Workspace::WorkflowRunFiles.new, output: output)
+      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: Workspace::WorkflowRunFiles.new, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
     end
     let(:artifacts) { File.join(@root, "app", ".workflow", "wr_2610250930abcd") }
 
@@ -738,7 +819,7 @@ RSpec.describe Workspace::Commands::Workflow do
         clock: -> { Time.utc(2026, 10, 25, 9, 30, 0) }, id_generator: -> { "wr_2610250930abcd" })
     end
     let(:events_command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, output: output)
+      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
     end
 
     # The run the docs' example (docs/README.workflow.md, "workflow events --json") shows.
@@ -811,7 +892,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }
     subject(:command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, output: output, input: input)
+      described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -924,7 +1005,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     let(:target) { File.join(global_dir, "flow.yml") }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: input)
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -1037,7 +1118,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     let(:target) { File.join(global_dir, "flow.yml") }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: input, error_output: error_output)
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
     end
 
     before do
@@ -1185,7 +1266,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:target) { File.join(global_dir, "flow.yml") }
     let(:body) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: input)
+      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     before do
@@ -1231,7 +1312,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "refuses with confirmation_required under no-input, before touching anything" do
       guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
-      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: guarded)
+      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
       expect { cmd.remove(id: "flow") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("confirmation_required") }
       expect(File.exist?(target)).to be(true)
       expect(File.exist?(File.join(global_dir, ".flow.yml.lock"))).to be(false)
@@ -1248,7 +1329,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "names an unknown id or a lone preset before any prompt, even under no-input" do
       File.write(File.join(builtin_dir, "rpiv.yml"), body)
       guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
-      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, output: output, input: guarded)
+      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
       expect { cmd.remove(id: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
       expect { cmd.remove(id: "rpiv") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("builtin_workflow") }
       expect(output.string).to eq("")

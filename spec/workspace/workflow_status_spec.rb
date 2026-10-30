@@ -19,8 +19,11 @@ RSpec.describe Workspace::WorkflowStatus do
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:asks) { [] }
   let(:ask_store) { instance_double(Workspace::AskStore) }
+  let(:notes_dir) { File.join(@dir, "notes") }
+  let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir}) }
   subject(:status) do
-    described_class.new(store: store, panes: panes, snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store }, clock: -> { now.first })
+    described_class.new(store: store, panes: panes, snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store },
+      gate_note: Workspace::WorkflowGateNote.new(notes: notes), clock: -> { now.first })
   end
 
   before do
@@ -59,8 +62,8 @@ RSpec.describe Workspace::WorkflowStatus do
       "id" => "wr_1", "workflow" => "rpiv", "title" => "RPIV", "workspace" => "app", "project" => "app", "state" => "running",
       "created_at" => "2026-10-04T12:00:00Z", "started_at" => "2026-10-04T12:00:00Z", "ended_at" => nil, "cancelled_by" => nil,
       "current" => {"step" => "plan", "attempt" => 2, "state" => "running", "reason" => nil, "flags" => []},
-      "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil},
-        {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil}],
+      "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_file" => nil, "note_changed" => false},
+        {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil, "gate_file" => nil, "note_changed" => false}],
       "pane" => "%5", "task" => "t1", "inputs" => {"task" => "X-1"}, "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
       "events_path" => File.join(@dir, "runs", "wr_1.events.jsonl")
     }])
@@ -164,9 +167,12 @@ RSpec.describe Workspace::WorkflowStatus do
     create(state: "waiting", step_state: "waiting", reason: lock, bound: false)
     create(state: "waiting", step_state: "failed", reason: failed, bound: false)
 
-    # A gate is rejected with a note: the caller supplies it after `--note`; it is never in `args`.
-    expect(current("wr_1")["reason"]).to eq(gate.merge("actions" => [action("workflow approve", "wr_1"),
-      action("workflow reject", "wr_1", needs: [{"name" => "note", "flag" => "--note"}]), action("workflow cancel", "wr_1")]))
+    # A gate is rejected with a note: the caller supplies it after `--note`; it is never in `args`. Both name the
+    # step and attempt they were offered for, so a stale one can't pass a later gate.
+    at = ["--step", "plan", "--attempt", "2"]
+    expect(current("wr_1")["reason"]).to eq(gate.merge("details" => gate["details"].merge("gate_file" => nil),
+      "actions" => [action("workflow approve", "wr_1", *at),
+        action("workflow reject", "wr_1", *at, needs: [{"name" => "note", "flag" => "--note"}]), action("workflow cancel", "wr_1")]))
     expect(current("wr_2")["reason"]["actions"]).to eq([action("workflow status", "wr_9"), action("workflow cancel", "wr_2")])
     expect(current("wr_3")["reason"]["actions"]).to eq([action("workflow resume", "wr_3"),
       action("workflow resume", "wr_3", "--from", "plan"), action("workflow cancel", "wr_3")])
@@ -413,6 +419,68 @@ RSpec.describe Workspace::WorkflowStatus do
 
     it "adds finished runs with all" do
       expect(status.runs(all: true)["runs"].map { |run| [run["id"], run["state"]] }).to eq([%w[wr_1 running], %w[wr_2 running], %w[wr_3 completed]])
+    end
+  end
+
+  describe "a gate's note" do
+    let(:artifacts) { File.join(@dir, "artifacts") }
+    let(:note_path) { File.join(notes_dir, "2026-10-29-pr-7-feedback.md") }
+    let(:gate) { {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "plan", "artifacts" => [File.join(artifacts, "triage.md")]}} }
+
+    # A run waiting at the plan gate, whose first file is triage.md, written with +first_line+.
+    def gated(first_line, gate_state: {"state" => "waiting"})
+      FileUtils.mkdir_p([artifacts, notes_dir])
+      File.write(File.join(artifacts, "triage.md"), "#{first_line}\nfix 1\n")
+      File.write(note_path, "# Triage\n")
+      run = create(state: "waiting", step_state: "passed", reason: gate, bound: false)
+      store.update(run["id"]) do |stored|
+        stored["artifacts_dir"] = artifacts
+        stored["definition"]["steps"].last["produces"] = ["triage.md", "other.md"]
+        stored["steps"]["plan"]["gate"] = gate_state
+      end
+    end
+
+    it "names the waiting gate's note with its sha256, read now" do
+      gated("note: 2026-10-29-pr-7-feedback.md")
+
+      result = status.run("wr_1")
+
+      expect(result["runs"].first["current"]["reason"]["details"]["gate_file"])
+        .to eq("name" => "2026-10-29-pr-7-feedback.md", "path" => note_path, "sha256" => Digest::SHA256.hexdigest("# Triage\n"))
+      expect(result["warnings"]).to eq([])
+    end
+
+    it "gives gate_file null when the gate's first file has no note: line" do
+      gated("fix 1, answer 2")
+
+      result = status.run("wr_1")
+
+      expect(result["runs"].first["current"]["reason"]["details"]).to include("gate_file" => nil)
+      expect(result["warnings"]).to eq([])
+    end
+
+    it "gives gate_file null with a warning when the note can't be read" do
+      gated("note: 2026-10-29-pr-7-feedback.md")
+      File.delete(note_path)
+
+      result = status.run("wr_1")
+
+      expect(result["runs"].first["current"]["reason"]["details"]).to include("gate_file" => nil)
+      expect(result["warnings"]).to eq(["The gate of step plan in run wr_1 has no note that can be read: 2026-10-29-pr-7-feedback.md no such file in the notes directory."])
+    end
+
+    it "shows the hash approve recorded on the step's row, and note_changed once the note's bytes differ" do
+      gated("note: 2026-10-29-pr-7-feedback.md")
+      recorded = {"path" => note_path, "sha256" => Digest::SHA256.hexdigest("# Triage\n")}
+      store.update("wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved", "file" => recorded} }
+
+      row = -> { status.run("wr_1")["runs"].first["steps"].find { |step| step["id"] == "plan" } }
+
+      expect(row.call).to include("gate" => "approved", "gate_file" => recorded, "note_changed" => false)
+      File.write(note_path, "# Triage\n\nEdited after approval.\n")
+      expect(row.call).to include("gate_file" => recorded, "note_changed" => true)
+      File.delete(note_path)
+      expect(row.call).to include("note_changed" => true)
     end
   end
 

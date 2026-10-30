@@ -94,7 +94,7 @@ module Workspace
       "unknown_stage" => "spine set, spine check, spine verify, spine start, spine show --stage: no stage has that path. details.path, details.stages (the paths there are).",
       "unknown_item" => "spine check: the stage's ## Done when checklist has no item with that number. details.item, details.total, details.file.",
       "invalid_status" => "spine set: --status is not a status or an alias of one (unknown is not settable). details.status, details.allowed.",
-      "stale_revision" => "spine set, spine check, spine verify, spine start or plan task --if-revision: the file changed since that revision. details.revision is the current one (and details.status for a stage file; details.path for a plan).",
+      "stale_revision" => "spine set, spine check, spine verify, spine start or plan task --if-revision: the file changed since that revision. details.revision is the current one (and details.status for a stage file; details.path for a plan). workflow approve --note-sha256: the gate's note changed since the caller read it (details.revision its sha256 now, details.path, details.run_id, details.step, details.attempt).",
       "dev_held_by" => "dev down: another workspace (or a workflow run this pane is not bound to) holds the devenv lock, so its dev environment was not stopped; pass --force to stop it from here. details.workspace, details.worktree, details.branch, details.pane, details.pid, details.run_id (the last four when known); retry is --force.",
       "spine_unwritable" => "spine set, spine check, spine verify, spine goal set or spine init: the stage file cannot be rewritten safely, another spine write did not finish in time, or spine init cannot write the spine (its path is a link, or the notes directory or files cannot be written; details.path). details.reason: link, not_a_file, too_large, not_utf8, no_frontmatter, no_file, missing, lock_unavailable, unreadable_result, io_error, changed_while_writing or lock_busy; details.file.",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code or Codex.",
@@ -228,9 +228,10 @@ module Workspace
       "delivery_unavailable" => "goal warning: the goal is otherwise finished but git could not say whether its branch landed (no such branch, or no default branch to compare with), so delivery, delivered and not_yet read unknown and the goal is not done. workspace.",
       "turn_unavailable" => "goal warning: the workspace runs but its agent daemon gave no panes, so the turn and tool call are null. workspace.",
       "run_not_active" => "The workflow run has finished, so nothing more can happen to it.",
-      "gate_not_waiting" => "workflow approve or reject named a run that isn't waiting at a gate.",
+      "gate_not_waiting" => "workflow approve or reject named a run that isn't waiting at a gate, or, with --step and --attempt, not at that step's gate on that attempt. details.step and details.attempt are the run's, details.expected_step and details.expected_attempt the caller's.",
       "gate_waiting" => "workflow resume named a run that waits at a gate; approve or reject it.",
-      "bound_pane" => "workflow approve, or resume --from at a waiting gate, was run from a pane bound to a workflow run; a gate is passed by a person.",
+      "bound_pane" => "workflow approve or reject, or resume --from at a waiting gate, was run from a pane bound to a workflow run, or (approve, reject) from a process under the run's own pane; a gate is passed by a person.",
+      "gate_note_unreadable" => "workflow approve: the gate's note (named by `note: FILE` on the first line of the gated step's first file) is not a readable regular file in the notes directory, or --note-sha256 was given and the gate names no note. details.run_id, details.step, details.attempt, details.name, details.path.",
       "step_not_running" => "step done was run while the run's step isn't being worked on."
     }.freeze
 

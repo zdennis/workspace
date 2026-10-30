@@ -5069,8 +5069,8 @@ module Workspace
           "       workspace workflow files RUN [--json]\n" \
           "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
           "       workspace workflow cancel RUN [--json]\n" \
-          "       workspace workflow approve RUN [--note TEXT] [--json]\n" \
-          "       workspace workflow reject RUN --note TEXT [--to STEP] [--json]"
+          "       workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]\n" \
+          "       workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]"
         opts.separator ""
         opts.separator "Run a workflow in a workspace: an ordered list of steps, each done by the agent in the"
         opts.separator "workspace's Claude pane. A step gets its instructions in a file under .workflow/ in the"
@@ -5120,8 +5120,15 @@ module Workspace
         opts.separator "            workspace's Claude pane when its own is gone; --from STEP starts again there"
         opts.separator "  cancel    end a run and release what it holds"
         opts.separator "  approve   pass a gate; refused from a pane a run is bound to (as is resume --from at"
-        opts.separator "            a gate), so an agent doesn't pass its own plan by mistake"
-        opts.separator "  reject    turn a gate down: the gated step (or --to an earlier one) runs again with the note"
+        opts.separator "            a gate) and from a process under the run's own pane, so an agent doesn't pass"
+        opts.separator "            its own plan by mistake. When the gated step's first file starts with"
+        opts.separator "            `note: FILE`, the note's sha256 is recorded and given to the next step"
+        opts.separator "  reject    turn a gate down: the gated step (or --to an earlier one) runs again with the note;"
+        opts.separator "            refused where approve is"
+        opts.separator ""
+        opts.separator "approve and reject with --step (and --attempt) are refused with gate_not_waiting unless the run"
+        opts.separator "waits at that step's gate (on that attempt), so a stale button can't pass a later gate. These"
+        opts.separator "checks guard against mistakes; they are not a security boundary (docs/README.workflow.md)."
         opts.separator ""
         opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT]]` is what the agent daemon runs to move a run"
         opts.separator "on when a turn ends; it is not meant to be typed."
@@ -5132,6 +5139,9 @@ module Workspace
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
         opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
+        opts.on("--step STEP", "approve, reject: the gated step you saw (current.step in status --json); refused unless the run waits there") { |v| options[:step] = v }
+        opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
+        opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
         opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
@@ -5169,6 +5179,7 @@ module Workspace
         opts.separator "  workspace workflow events wr_2610041230559x3k --since 40 --json"
         opts.separator "  workspace workflow files wr_2610041230559x3k --json"
         opts.separator "  workspace workflow approve wr_2610041230559x3k --note \"Skip the migration.\""
+        opts.separator "  workspace workflow approve wr_2610041230559x3k --step plan --attempt 2 --note-sha256 HEX --json"
         opts.separator "  workspace workflow reject wr_2610041230559x3k --note \"Too big; split it.\""
         opts.separator "  workspace workflow resume wr_2610041230559x3k --from implement"
       end
@@ -5200,6 +5211,7 @@ module Workspace
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
+      gate_options = workflow_gate_options(subcommand, options)
 
       start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout}
       if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
@@ -5255,14 +5267,32 @@ module Workspace
         workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], caller_pane: ENV["TMUX_PANE"]) }
       when "cancel" then workflow_action("workflow cancel", options) { @workflow_command.cancel(run: subject) }
       when "approve"
-        workflow_action("workflow approve", options) { @workflow_command.approve(run: subject, note: options[:note], caller_pane: ENV["TMUX_PANE"]) }
+        workflow_action("workflow approve", options) do
+          @workflow_command.approve(run: subject, note: options[:note], **gate_options, note_sha256: options[:note_sha256], caller_pane: ENV["TMUX_PANE"])
+        end
       when "reject"
         raise UsageError, "workflow reject needs --note TEXT: the step runs again with it." if options[:note].to_s.strip.empty?
-        workflow_action("workflow reject", options) { @workflow_command.reject(run: subject, note: options[:note], to: options[:to]) }
+        workflow_action("workflow reject", options) do
+          @workflow_command.reject(run: subject, note: options[:note], to: options[:to], **gate_options, caller_pane: ENV["TMUX_PANE"])
+        end
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # The `--step`/`--attempt` pair of approve and reject, checked; `--note-sha256` is approve's.
+    def workflow_gate_options(subcommand, options)
+      gated = %w[approve reject].include?(subcommand)
+      raise UsageError, "--step and --attempt are for `workflow approve` and `workflow reject`." if !gated && (options[:step] || options[:attempt])
+      raise UsageError, "--note-sha256 is for `workflow approve`." if options[:note_sha256] && subcommand != "approve"
+      raise UsageError, "--attempt needs --step: the attempt is of the gated step." if options[:attempt] && !options[:step]
+      if options[:note_sha256] && !options[:note_sha256].match?(/\A[0-9a-f]{64}\z/)
+        raise UsageError, "--note-sha256 must be 64 lowercase hex digits (gate_file.sha256 in `workflow status --json`)."
+      end
+      attempt = options[:attempt]
+      raise UsageError, "--attempt must be a whole number from 1 up, got #{attempt.to_s[0, 20].inspect}." if attempt && !attempt.match?(/\A[1-9]\d{0,8}\z/)
+      gated ? {step: options[:step], attempt: attempt&.to_i} : {}
     end
 
     # Text that is not valid in its encoding can't be parsed as an option or stored in a

@@ -280,6 +280,7 @@ require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_panes"
+require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
 require_relative "workspace/workflow_nudger"
@@ -545,6 +546,7 @@ module Workspace
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command)
+    workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
@@ -555,11 +557,13 @@ module Workspace
       lineage: lineage,
       git: git,
       excludes: GitExclude.new(git: git),
+      gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
       event_log: event_log,
       task_store: task_store
     )
-    workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for)
+    workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
+      gate_note: workflow_gate_note)
     workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
@@ -569,6 +573,9 @@ module Workspace
       status: workflow_status,
       store: workflow_store,
       panes: workflow_panes,
+      tmux: tmux,
+      process_tree: process_tree,
+      lock_holder: lock_holder,
       output: output,
       input: input,
       error_output: error_output

@@ -6400,7 +6400,7 @@ RSpec.describe Workspace::CLI do
         File.write(File.join(dir, "global", "bad.yml"), bad)
         catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: File.join(dir, "global"), builtin_workflows_dir: File.join(dir, "none")))
         out = StringIO.new
-        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, output: out))[0]
+        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: out))[0]
 
         real_cli.run(["workflow", "show", "bad", "--source", "--json"])
         doc = JSON.parse(out.string)
@@ -6487,7 +6487,7 @@ RSpec.describe Workspace::CLI do
         catalog = Workspace::WorkflowCatalog.new(config: config)
         text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
         command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, output: StringIO.new, input: StringIO.new(text))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
 
         real_cli.run(["workflow", "add", "ship", "-", "--json"])
@@ -6527,7 +6527,7 @@ RSpec.describe Workspace::CLI do
         config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, output: StringIO.new, input: StringIO.new(text))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
         old_sha = Digest::SHA256.hexdigest(old_text)
 
@@ -6577,7 +6577,7 @@ RSpec.describe Workspace::CLI do
         config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, output: StringIO.new, input: StringIO.new("n\n"))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new("n\n"))
         real_cli, out = build_test_cli(workflow_command: command)
 
         expect { real_cli.run(["workflow", "remove", "ship"]) }.not_to raise_error
@@ -6721,7 +6721,7 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls).to eq([
         [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", caller_pane: nil}],
         [:cancel, {run: "wr_1"}],
-        [:reject, {run: "wr_1", note: "Too big.", to: "research"}]
+        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, caller_pane: nil}]
       ])
     end
 
@@ -6740,7 +6740,42 @@ RSpec.describe Workspace::CLI do
       stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%5"))
       cli.run(["workflow", "approve", "wr_1"])
 
-      expect(workflow_command.calls.map(&:last)).to eq([{run: "wr_1", note: "Go.", caller_pane: nil}, {run: "wr_1", note: nil, caller_pane: "%5"}])
+      expect(workflow_command.calls.map(&:last)).to eq([{run: "wr_1", note: "Go.", step: nil, attempt: nil, note_sha256: nil, caller_pane: nil},
+        {run: "wr_1", note: nil, step: nil, attempt: nil, note_sha256: nil, caller_pane: "%5"}])
+    end
+
+    it "passes the step, attempt and note hash a client saw to approve and reject, in either form and with the run after --" do
+      sha = "0123456789abcdef" * 4
+      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%5"))
+      cli.run(["workflow", "approve", "--step=triage", "--attempt=2", "--note-sha256=#{sha}", "--json", "--", "wr_1"])
+      cli.run(["workflow", "reject", "wr_1", "--step", "triage", "--attempt", "2", "--note", "Redo F3.", "--to", "triage"])
+      cli.run(["workflow", "approve", "wr_1", "--step", "triage"])
+
+      expect(workflow_command.calls).to eq([
+        [:approve, {run: "wr_1", note: nil, step: "triage", attempt: 2, note_sha256: sha, caller_pane: "%5"}],
+        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, caller_pane: "%5"}],
+        [:approve, {run: "wr_1", note: nil, step: "triage", attempt: nil, note_sha256: nil, caller_pane: "%5"}]
+      ])
+    end
+
+    it "refuses a bad --step, --attempt or --note-sha256 as a usage error, and moves nothing" do
+      {["workflow", "approve", "wr_1", "--attempt", "2"] => /--attempt needs --step/,
+       ["workflow", "approve", "wr_1", "--step", "plan", "--attempt", "0"] => /--attempt must be a whole number from 1 up, got "0"/,
+       ["workflow", "approve", "wr_1", "--step", "plan", "--attempt", "two"] => /--attempt must be a whole number/,
+       ["workflow", "approve", "wr_1", "--note-sha256", "ABC"] => /--note-sha256 must be 64 lowercase hex digits/,
+       ["workflow", "approve", "wr_1", "--note-sha256", "A" * 64] => /--note-sha256 must be 64 lowercase hex digits/,
+       ["workflow", "reject", "wr_1", "--note", "No.", "--note-sha256", "a" * 64] => /--note-sha256 is for `workflow approve`/,
+       ["workflow", "resume", "wr_1", "--step", "plan"] => /--step and --attempt are for `workflow approve` and `workflow reject`/,
+       ["workflow", "cancel", "wr_1", "--attempt", "1"] => /--step and --attempt are for/}.each do |argv, message|
+        cli, _, error_output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+
+        cli, output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage")
+      end
+      expect(workflow_command.calls).to be_empty
     end
 
     it "runs the daemon's advance: a turn that ended in a pane, or the timer's look" do
@@ -6879,6 +6914,7 @@ RSpec.describe Workspace::CLI do
       lock_namespace = instance_double(Workspace::LockNamespace, resolve: {key: "ns", display: "app", dir: File.join(@dir, "locks")})
       Workspace::WorkflowEngine.new(
         store: store, panes: panes, composer: FakeStepComposer.new, git: git, excludes: Workspace::GitExclude.new(git: git),
+        gate_note: Workspace::WorkflowGateNote.new(notes: instance_double(Workspace::Commands::Notes)),
         resources: Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: RunFileLiveness.new(runs_dir)),
         checker: ->(**) { {exit_code: 0, timed_out: false} },
         commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: nil, lint: nil}),
@@ -6887,7 +6923,8 @@ RSpec.describe Workspace::CLI do
     end
     let(:command) do
       Workspace::Commands::Workflow.new(catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
-        status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, files: nil, run_files: nil, output: StringIO.new)
+        status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, files: nil, run_files: nil, tmux: nil, process_tree: nil,
+        lock_holder: nil, output: StringIO.new)
     end
     let(:cli) { build_test_cli(workflow_command: command)[0] }
     # The daemon's nudger, with the process it would start run here instead.

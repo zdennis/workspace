@@ -294,6 +294,15 @@ RSpec.describe Workspace do
         expect(panes.instance_variable_get(:@bindings)).to equal(cli.instance_variable_get(:@binding_command).instance_variable_get(:@bindings))
         expect(panes.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
 
+        # Approve and status name a gate's note through one resolver, over the notes command; the caller checks read tmux and ps.
+        gate_note = engine.instance_variable_get(:@gate_note)
+        expect(gate_note).to be_a(Workspace::WorkflowGateNote)
+        expect(workflow.instance_variable_get(:@status).instance_variable_get(:@gate_note)).to equal(gate_note)
+        expect(gate_note.instance_variable_get(:@notes)).to be_a(Workspace::Commands::Notes)
+        expect(workflow.instance_variable_get(:@tmux)).to be_a(Workspace::Tmux)
+        expect(workflow.instance_variable_get(:@process_tree)).to be_a(Workspace::ProcessTree)
+        expect(workflow.instance_variable_get(:@lock_holder)).to be_a(Workspace::LockHolder)
+
         # The engine's events go to the one shared log, and the environment a run left is stopped through `dev`.
         dev = cli.instance_variable_get(:@dev_command)
         expect(engine.instance_variable_get(:@event_log)).to be_a(Workspace::EventLog)

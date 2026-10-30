@@ -20,6 +20,12 @@ module Workspace
   # entry of `needs` (`name`, `flag`) and appends it after `args`: the flag
   # then the value, or `--` then the value when `flag` is null. No
   # placeholder is ever in `args`.
+  #
+  # A gate whose step's first file names a note (`note: <file>`, see
+  # {WorkflowGateNote}) shows it as `gate_file` in the waiting reason's
+  # details, hashed when status is read; once approved, the step's row
+  # holds the hash approve recorded and `note_changed` when the note's
+  # bytes differ now.
   class WorkflowStatus
     # Seconds to wait for the workspace's agent daemon before going on without it.
     SNAPSHOT_TIMEOUT = 1.0
@@ -31,9 +37,11 @@ module Workspace
     # @param panes [Workspace::WorkflowPanes] says whether a run's pane is still there
     # @param snapshot_client [Workspace::AgentSnapshotClient] reads each pane's state from the daemon
     # @param ask_store_for [#call] returns the {Workspace::AskStore} of a workspace
+    # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param clock [#call] returns the current Time
-    def initialize(store:, panes:, snapshot_client:, ask_store_for:, clock: -> { Time.now })
+    def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now })
       @store = store
+      @gate_note = gate_note
       @panes = panes
       @snapshot_client = snapshot_client
       @ask_store_for = ask_store_for
@@ -65,7 +73,7 @@ module Workspace
     # @return [Hash] "runs", holding the one run as "id", "workflow", "title", "workspace",
     #   "project", "state", "created_at", "started_at", "ended_at", "current" ("step",
     #   "attempt", "state", "reason", "flags"), "steps" ("id", "title", "state", "attempts",
-    #   "gate"), "pane", "task", "inputs", "loops", "artifacts_dir" and "events_path";
+    #   "gate", "gate_file", "note_changed"), "pane", "task", "inputs", "loops", "artifacts_dir" and "events_path";
     #   and "warnings"
     # @raise [Workspace::Error] code `unknown_run`
     def run(id)
@@ -84,6 +92,7 @@ module Workspace
       # What the pane shows matters only while an agent should be working in it.
       shown = (working && @panes.alive?(run["id"])) ? pane_state(run["workspace"], pane, warnings) : nil
       reason = finished ? nil : reason_for(run, working, pane, shown, warnings)
+      reason = with_gate_file(run, reason, warnings) if reason
       {
         "id" => run["id"], "workflow" => run["workflow"], "title" => run["title"], "workspace" => run["workspace"],
         "project" => run["project"], "state" => (reason && run["state"] == "running") ? "waiting" : run["state"],
@@ -92,15 +101,32 @@ module Workspace
         "current" => {"step" => run["current"], "attempt" => state["attempts"].last&.fetch("n", nil), "state" => state["state"],
                       "reason" => reason&.merge("actions" => actions(run, reason, pane)),
                       "flags" => finished ? [] : flags(run, state, reason, shown)},
-        "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"])) },
+        "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
         "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
         "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
       }
     end
 
-    def step_row(step, state)
+    # An approved gate's note, as recorded, and whether its bytes changed since.
+    def step_row(step, state, run)
+      file = state.dig("gate", "file")
       {"id" => step["id"], "title" => step["title"], "state" => state["state"], "attempts" => state["attempts"].size,
-       "gate" => state.dig("gate", "state")}
+       "gate" => state.dig("gate", "state"), "gate_file" => file,
+       "note_changed" => file ? WorkflowGateNote.sha256(file["path"]) != file["sha256"] : false}
+    end
+
+    # A waiting gate's reason names the note to read, hashed now; null when the gate names
+    # none, and null with a warning when the note can't be read.
+    def with_gate_file(run, reason, warnings)
+      return reason unless reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
+      file = begin
+        @gate_note.find(run)
+      rescue Workspace::Error => e
+        raise unless e.code == "gate_note_unreadable"
+        warnings << e.message
+        nil
+      end
+      reason.merge("details" => reason["details"].merge("gate_file" => file))
     end
 
     # Nothing moves a run whose workspace has no agent daemon: no turn's end
@@ -198,7 +224,9 @@ module Workspace
           (action("dev down", "--name", run["workspace"]) if holder["kind"] == "process"), cancel].compact
       when "waiting_you"
         case reason.dig("details", "kind")
-        when "gate" then [action("workflow approve", id), action("workflow reject", id, needs: [need("note", "--note")]), cancel]
+        when "gate"
+          at = ["--step", run["current"], "--attempt", run["steps"].fetch(run["current"])["attempts"].last&.fetch("n", nil).to_s]
+          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")]), cancel]
         when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run["workspace"], needs: [need("answer", nil)]), focus]
         when "prompt" then [focus]
         # Resume decides the step as a turn's end would; --from types the line again.
