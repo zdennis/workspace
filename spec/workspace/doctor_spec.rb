@@ -25,7 +25,9 @@ RSpec.describe Workspace::Doctor do
       project_settings: CLITestHelpers::FakeProjectSettings.new,
       launch_mode: Workspace::LaunchMode.new(project_settings: CLITestHelpers::FakeProjectSettings.new,
         platform: "arm64-darwin", env: {}, which: ->(_exe) { true }),
-      **overrides
+      command_probe: overrides.fetch(:command_probe) { ->(_name, version_flag) { version_flag ? "99.0" : "" } },
+      app_probe: overrides.fetch(:app_probe) { ->(_bundle_id) { true } },
+      **overrides.except(:command_probe, :app_probe)
     )
   end
 
@@ -718,6 +720,123 @@ RSpec.describe Workspace::Doctor do
       end
 
       expect(output.string).to include("edit lock hooks missing in 2 worktree(s): #{worktree_path}, #{other_worktree_path}")
+    end
+  end
+
+  describe "tool probes" do
+    it "checks each tool with the default probes when none are given" do
+      doctor = build_doctor(command_probe: Workspace::Doctor::CommandProbe.new, app_probe: Workspace::Doctor::AppProbe.new)
+      rows = doctor.report(headless: false)[:rows]
+
+      expect(rows.find { |r| r[:id] == "ruby" }).to include(status: "ok")
+      expect(rows.find { |r| r[:id] == "git" }).to include(status: "ok")
+      expect(rows.find { |r| r[:id] == "iterm2" }[:status]).to be_a(String)
+    end
+
+    it "reports a missing command, an outdated one and a missing app from the probes" do
+      outputs = {"tmux" => nil, "git" => "git version 1.9"}
+      probe = ->(name, _flag) { outputs.fetch(name, "9.0") }
+      rows = build_doctor(command_probe: probe, app_probe: ->(_id) { false }).report(headless: false)[:rows]
+
+      expect(rows.find { |r| r[:id] == "tmux" }).to include(status: "fail")
+      expect(rows.find { |r| r[:id] == "git" }).to include(status: "fail")
+      expect(rows.find { |r| r[:id] == "iterm2" }).to include(status: "fail")
+    end
+
+    it "passes the iTerm2 bundle id to the app probe" do
+      ids = []
+      build_doctor(app_probe: ->(id) { ids << id }).report(headless: false)
+
+      expect(ids).to eq(["com.googlecode.iterm2"])
+    end
+
+    it "passes each tool its own version flag to the command probe" do
+      flags = {}
+      probe = lambda do |name, flag|
+        flags[name] = flag
+        "9.0"
+      end
+      build_doctor(command_probe: probe).report(headless: false)
+
+      expect(flags).to include(
+        "ruby" => "--version", "tmux" => "-V", "tmuxinator" => "version", "window-tool" => nil,
+        "git" => "--version", "gh" => "--version", "ascii-banner" => nil
+      )
+    end
+  end
+
+  describe Workspace::Doctor::CommandProbe do
+    def stub_which(stdout, success)
+      allow(Open3).to receive(:capture3).with("which", "tool")
+        .and_return([stdout, "", instance_double(Process::Status, success?: success)])
+    end
+
+    it "is nil when which fails" do
+      stub_which("/usr/bin/tool\n", false)
+
+      expect(described_class.new.call("tool", "--version")).to be_nil
+    end
+
+    it "is nil when which prints nothing" do
+      stub_which("  \n", true)
+
+      expect(described_class.new.call("tool", "--version")).to be_nil
+    end
+
+    it "is empty, without running the command, when there is no version flag" do
+      stub_which("/usr/bin/tool\n", true)
+      expect(Open3).not_to receive(:capture3).with("tool", anything)
+
+      expect(described_class.new.call("tool", nil)).to eq("")
+    end
+
+    it "returns the stdout of the version flag" do
+      stub_which("/usr/bin/tool\n", true)
+      allow(Open3).to receive(:capture3).with("tool", "-V").and_return(["tool 3.4\n", "", instance_double(Process::Status)])
+
+      expect(described_class.new.call("tool", "-V")).to eq("tool 3.4\n")
+    end
+
+    it "runs a real executable found on PATH" do
+      Dir.mktmpdir do |dir|
+        exe = File.join(dir, "doctor-probe-tool")
+        File.write(exe, "#!/bin/sh\necho \"probe 7.1\"\n")
+        File.chmod(0o755, exe)
+        original = ENV["PATH"]
+        ENV["PATH"] = "#{dir}:#{original}"
+        begin
+          expect(described_class.new.call("doctor-probe-tool", "--version")).to eq("probe 7.1\n")
+          expect(described_class.new.call("doctor-probe-missing-tool", "--version")).to be_nil
+        ensure
+          ENV["PATH"] = original
+        end
+      end
+    end
+  end
+
+  describe Workspace::Doctor::AppProbe do
+    def stub_mdfind(stdout, success)
+      allow(Open3).to receive(:capture3)
+        .with("mdfind", "kMDItemCFBundleIdentifier == 'com.example.app'")
+        .and_return([stdout, "", instance_double(Process::Status, success?: success)])
+    end
+
+    it "is true when mdfind finds a path" do
+      stub_mdfind("/Applications/Example.app\n", true)
+
+      expect(described_class.new.call("com.example.app")).to be(true)
+    end
+
+    it "is false when mdfind prints nothing" do
+      stub_mdfind("\n", true)
+
+      expect(described_class.new.call("com.example.app")).to be(false)
+    end
+
+    it "is false when mdfind fails" do
+      stub_mdfind("/Applications/Example.app\n", false)
+
+      expect(described_class.new.call("com.example.app")).to be(false)
     end
   end
 
