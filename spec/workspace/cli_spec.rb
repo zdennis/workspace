@@ -9157,7 +9157,7 @@ RSpec.describe Workspace::CLI do
             define_method(:sessions) { |strict: false| live.dup }
             define_method(:session_name_for) { |workspace| workspace.tr(".", "-") }
             define_method(:session_name_for_pane) { |_pane| own }
-            define_method(:kill_session) { |name, project: nil| live.delete(name) }
+            define_method(:kill_session) { |name, project: nil, socket: nil| live.delete(name) }
             define_method(:custom_socket_option) { |_workspace| nil }
           end.new
         end

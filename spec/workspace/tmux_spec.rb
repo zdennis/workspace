@@ -1271,6 +1271,14 @@ RSpec.describe Workspace::Tmux do
       expect(tmux).to have_received(:system).with("tmux", "-L", "mysocket", "kill-session", "-t", "=proj:")
     end
 
+    it "kills on a socket given by the caller without reading the config" do
+      allow(tmux).to receive(:system)
+
+      tmux.kill_session("proj", project: "proj", socket: ["-L", "early"])
+
+      expect(tmux).to have_received(:system).with("tmux", "-L", "early", "kill-session", "-t", "=proj:")
+    end
+
     it "kills on the default socket for a project without a custom socket" do
       File.write(source, "name: proj\nwindows: []\n")
       allow(tmux).to receive(:system)

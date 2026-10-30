@@ -65,10 +65,12 @@ module Workspace
     # @param project [String, nil] tmuxinator config name; when its
     #   `tmux_options` select a custom socket (-L/-S), the session is killed
     #   on that socket instead of the default one
+    # @param socket [Array<String>, nil] the socket flag and value read while the config
+    #   existed; used instead of reading +project+'s config
     # @return [void]
-    def kill_session(name, project: nil)
+    def kill_session(name, project: nil, socket: nil)
       @logger.debug { "tmux: killing session #{name}" }
-      system("tmux", *(project && socket_arguments(project)), "kill-session", "-t", session_target(name))
+      system("tmux", *(socket || (project && socket_arguments(project))), "kill-session", "-t", session_target(name))
     end
 
     # @param name [String] tmux session name, matched exactly (tmux compares case)
