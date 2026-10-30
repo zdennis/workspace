@@ -1954,7 +1954,7 @@ module Workspace
       when "request" then cmd_agent_status_request(args)
       when "post" then cmd_agent_status_post(args)
       when "help", nil
-        unless verb == "help" || args.include?("--help") || args.include?("-h")
+        unless verb == "help" || help_requested?(args)
           raise UsageError, "Missing agent status verb (request or post).\n\n#{agent_status_help}"
         end
         @output.puts agent_status_help
@@ -2884,6 +2884,11 @@ module Workspace
       @exit_handler.exit(1)
     end
 
+    # Whether +args+ ask for help, so a verb shows its page before it parses or acts.
+    def help_requested?(args)
+      args.include?("--help") || args.include?("-h")
+    end
+
     # Whether --json was requested, even when the parse error happened before
     # OptionParser reached the --json flag (e.g. an unknown option listed
     # first). The JSON error contract must not depend on flag order.
@@ -3231,6 +3236,7 @@ module Workspace
     def cmd_agent_run(args)
       body = nil
       dry_run = false
+      help = false
 
       # Peek for --body / --dry-run before deciding whether to dispatch to a
       # subcommand. OptionParser would consume them anyway; doing it here lets
@@ -3238,8 +3244,11 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.on("--body JSON", "Full message JSON to send directly (workspace read from message)") { |v| body = v }
         opts.on("--dry-run", "Print without sending") { dry_run = true }
+        opts.on("-h", "--help", "Show this help") { help = true }
       end
       parser.order!(args)  # stops at the first non-option so subcommand words survive
+
+      return @output.puts(agent_run_help) if help
 
       if body
         return cmd_agent_run_raw(body, dry_run: dry_run)
@@ -3253,6 +3262,7 @@ module Workspace
       when "send" then cmd_agent_run_send(args)
       when "queue" then cmd_agent_run_queue(args)
       when "examples" then cmd_agent_run_examples
+      when "help" then @output.puts agent_run_help
       else
         raise UsageError, agent_run_help
       end
@@ -3762,8 +3772,8 @@ module Workspace
       original_args = args.dup
       subcommand = args.shift
       case subcommand
-      when "check" then cmd_handoff_check(args)
-      when "new" then cmd_handoff_new(args)
+      when "check", "new" then help_requested?(args) ? @output.puts(handoff_help) : send(:"cmd_handoff_#{subcommand}", args)
+      when "help", "--help", "-h" then @output.puts handoff_help
       else
         raise UsageError, handoff_help
       end
@@ -4244,6 +4254,7 @@ module Workspace
 
     def cmd_layout(args)
       subcommand = args.shift
+      return layout_help if help_requested?(args)
       name_opt = take_name_option!(args)
 
       case subcommand
@@ -7034,36 +7045,42 @@ module Workspace
       when "show"
         cmd_event_log_show(rest)
       when "compact"
+        return @output.puts(event_log_help) if help_requested?(rest)
+
         event_log = @state.event_log
         before_size = event_log.size
         state = event_log.compact
         after_size = event_log.size
         @output.puts "Compacted event log: #{before_size} -> #{after_size} bytes (#{state.size} project(s))"
       when "help", "--help", "-h", nil
-        @output.puts <<~HELP
-          Usage: workspace event-log <subcommand>
-
-          Subcommands:
-            show       Print events, oldest first (--project, --type, --limit, --json)
-            compact    Compact the event log to current state only
-            help       Show this help
-
-          Besides state changes, the log records agent activity: dispatches,
-          stage completions, timeouts and failures, lock waits and takeovers,
-          and each agent pane's working/idle/waiting changes. Compacting drops
-          that history, keeping only each live pane's latest state.
-
-          The event log is at: #{@config.event_log_file}
-
-          Examples:
-            workspace event-log show --project myapp --limit 20    # the last 20 events for one project
-            workspace event-log compact    # compact the event log to current state only
-        HELP
+        @output.puts event_log_help
       else
         message = "Unknown event-log subcommand: #{subcommand}"
         return emit_json_usage_error(EVENT_LOG_JSON_SCHEMA_VERSION, message) if json_requested?(false, args)
         raise UsageError, message
       end
+    end
+
+    def event_log_help
+      <<~HELP
+        Usage: workspace event-log <subcommand>
+
+        Subcommands:
+          show       Print events, oldest first (--project, --type, --limit, --json)
+          compact    Compact the event log to current state only
+          help       Show this help
+
+        Besides state changes, the log records agent activity: dispatches,
+        stage completions, timeouts and failures, lock waits and takeovers,
+        and each agent pane's working/idle/waiting changes. Compacting drops
+        that history, keeping only each live pane's latest state.
+
+        The event log is at: #{@config.event_log_file}
+
+        Examples:
+          workspace event-log show --project myapp --limit 20    # the last 20 events for one project
+          workspace event-log compact    # compact the event log to current state only
+      HELP
     end
 
     def cmd_event_log_show(args)

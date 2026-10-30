@@ -1468,6 +1468,110 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with --help on verbs that once ran or mangled it" do
+    # OptionParser's own --help prints to $stdout and calls Kernel#exit, so both
+    # streams are captured and a clean exit is let through.
+    def run_help(cli, argv, output, error_output)
+      real = [$stdout, $stderr]
+      $stdout = output
+      $stderr = error_output
+      cli.run(argv)
+    rescue SystemExit => e
+      expect(e.status).to eq(0)
+    ensure
+      $stdout, $stderr = real
+    end
+
+    ["--help", "-h"].each do |flag|
+      it "event-log compact #{flag} prints help and does not compact" do
+        state = CLITestHelpers::FakeState.new
+        expect(state.event_log).not_to receive(:compact)
+        cli, output, error_output = build_test_cli(state: state)
+        run_help(cli, ["event-log", "compact", flag], output, error_output)
+        expect(output.string).to start_with("Usage: workspace event-log")
+        expect(error_output.string).to be_empty
+      end
+    end
+
+    it "event-log compact still compacts" do
+      state = CLITestHelpers::FakeState.new
+      expect(state.event_log).to receive(:compact).and_return({})
+      cli, output, = build_test_cli(state: state)
+      cli.run(["event-log", "compact"])
+      expect(output.string).to include("Compacted event log")
+    end
+
+    %w[save restore list].each do |verb|
+      it "layout #{verb} --help prints the layout help and touches nothing" do
+        layout = instance_double(Workspace::Commands::Layout)
+        cli, output, error_output = build_test_cli(layout_command: layout)
+        run_help(cli, ["layout", verb, "--help"], output, error_output)
+        expect(output.string).to start_with("Usage: workspace layout")
+        expect(error_output.string).to be_empty
+      end
+    end
+
+    it "agent-run --help prints the agent-run page" do
+      cli, output, error_output = build_test_cli
+      run_help(cli, ["agent-run", "--help"], output, error_output)
+      expect(output.string).to start_with("Usage: workspace agent-run <subcommand>")
+      expect(error_output.string).to be_empty
+    end
+
+    it "handoff --help prints the handoff page and exits 0" do
+      cli, output, error_output = build_test_cli
+      run_help(cli, ["handoff", "--help"], output, error_output)
+      expect(output.string).to start_with("Usage: workspace handoff check NAME")
+      expect(error_output.string).to be_empty
+    end
+
+    ["check", "new"].each do |verb|
+      ["--help", "-h"].each do |flag|
+        it "handoff #{verb} #{flag} prints the handoff page and exits 0" do
+          cli, output, error_output = build_test_cli
+          run_help(cli, ["handoff", verb, flag], output, error_output)
+          expect(output.string).to start_with("Usage: workspace handoff check NAME")
+          expect(error_output.string).to be_empty
+        end
+      end
+    end
+
+    it "layout --help save prints the layout help" do
+      layout = instance_double(Workspace::Commands::Layout)
+      cli, output, error_output = build_test_cli(layout_command: layout)
+      run_help(cli, ["layout", "--help", "save"], output, error_output)
+      expect(output.string).to start_with("Usage: workspace layout")
+    end
+
+    [%w[agent-run send], %w[agent-run queue list]].each do |argv|
+      it "#{argv.join(" ")} --help prints help and sends nothing" do
+        cli, output, error_output = build_test_cli
+        run_help(cli, [*argv, "--help"], output, error_output)
+        expect(output.string).to start_with("Usage: workspace agent-run")
+        expect(error_output.string).to be_empty
+      end
+    end
+
+    %w[start advance status reset].each do |verb|
+      it "pipeline #{verb} --help keeps the deprecation warning off stdout" do
+        cli, output, error_output = build_test_cli
+        run_help(cli, ["pipeline", verb, "--help"], output, error_output)
+        expect(output.string).to start_with("Usage: workspace pipeline #{verb}")
+        expect(output.string).not_to include("deprecated")
+        expect(error_output.string).to include("deprecated")
+      end
+    end
+
+    [%w[alfred], %w[alfred install], %w[alfred uninstall], %w[alfred info], %w[statusline], %w[report-run-status]].each do |argv|
+      it "#{argv.join(" ")} --help prints its page" do
+        cli, output, error_output = build_test_cli
+        run_help(cli, [*argv, "--help"], output, error_output)
+        expect(output.string).to start_with("Usage: workspace #{argv.join(" ")}")
+        expect(error_output.string).to be_empty
+      end
+    end
+  end
+
   describe "#run agent-run command" do
     it "defaults --work-item to a random UUID, shown in the printed message" do
       cli, output = build_test_cli
