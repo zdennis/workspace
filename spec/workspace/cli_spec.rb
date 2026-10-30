@@ -6651,6 +6651,17 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls.first.last).to include(workspace: "api", worktree: "/work/api", pane: "0.1", dry_run: true)
     end
 
+    it "reports what a dirty checkout refused a dry run with, in the error document" do
+      workflow_command.error = Workspace::Error.new("not clean", code: "dirty_worktree",
+        details: {"path" => "/work/api", "guard" => "tracked_changed", "files" => ["a.rb"]})
+
+      expect { cli.run(["workflow", "run", "investigate", "--name", "api", "--dry-run", "--json"]) }.to raise_error(FakeSystemExit)
+
+      document = JSON.parse(output.string.lines.last)
+      expect(document).to include("ok" => false, "code" => "dirty_worktree")
+      expect(document["details"]).to eq("path" => "/work/api", "guard" => "tracked_changed", "files" => ["a.rb"])
+    end
+
     it "uses the detected workspace's root, not the subdirectory the command was run in" do
       allow(detector).to receive(:detect).and_return("api")
 
@@ -6784,8 +6795,9 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z"])
 
       expect(workflow_command.calls.map(&:last)).to eq([
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil}, {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil},
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000)}
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000), caller_pane: ENV["TMUX_PANE"]}
       ])
       expect(output.string).to eq("")
     end
@@ -6913,7 +6925,7 @@ RSpec.describe Workspace::CLI do
     let(:engine) do
       lock_namespace = instance_double(Workspace::LockNamespace, resolve: {key: "ns", display: "app", dir: File.join(@dir, "locks")})
       Workspace::WorkflowEngine.new(
-        store: store, panes: panes, composer: FakeStepComposer.new, git: git, excludes: Workspace::GitExclude.new(git: git),
+        store: store, panes: panes, composer: FakeStepComposer.new, git: git, guard: Workspace::WorkflowGuard.new, excludes: Workspace::GitExclude.new(git: git),
         gate_note: Workspace::WorkflowGateNote.new(notes: instance_double(Workspace::Commands::Notes)),
         resources: Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: RunFileLiveness.new(runs_dir)),
         checker: ->(**) { {exit_code: 0, timed_out: false} },
@@ -6962,10 +6974,16 @@ RSpec.describe Workspace::CLI do
       cli.run(["step", "done", "--status", "fail", "--summary", "Two specs still fail.", "--json"])
 
       expect(workflow_command.calls).to eq([
-        [:step_done, {pane: "%5", status: "pass", summary: nil}],
-        [:step_done, {pane: "%5", status: "fail", summary: "Two specs still fail."}]
+        [:step_done, {pane: "%5", status: "pass", summary: nil, code: nil}],
+        [:step_done, {pane: "%5", status: "fail", summary: "Two specs still fail.", code: nil}]
       ])
       expect(JSON.parse(output.string)).to include("action" => "step done", "status" => "ok", "results" => [workflow_command.row])
+    end
+
+    it "passes --code to the command" do
+      cli.run(["step", "done", "--status", "fail", "--code", "not_reproduced"])
+
+      expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", status: "fail", summary: nil, code: "not_reproduced"}]])
     end
 
     it "refuses a summary that is not valid text, and records nothing" do
@@ -6996,7 +7014,7 @@ RSpec.describe Workspace::CLI do
       workflow_command.error = Workspace::Error.new("This pane is not bound to a workflow run (not inside tmux).", code: "not_bound")
 
       expect { cli.run(["step", "done", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
-      expect(workflow_command.calls).to eq([[:step_done, {pane: nil, status: "pass", summary: nil}]])
+      expect(workflow_command.calls).to eq([[:step_done, {pane: nil, status: "pass", summary: nil, code: nil}]])
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_bound")
     end
 
@@ -7017,7 +7035,7 @@ RSpec.describe Workspace::CLI do
     it "prints help" do
       cli.run(["step", "--help"])
 
-      expect(output.string).to include("Usage: workspace step done [--status pass|fail] [--summary TEXT] [--json]").and include("end your turn")
+      expect(output.string).to include("Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]").and include("end your turn")
     end
   end
 

@@ -64,7 +64,7 @@ RSpec.describe Workspace::WorkflowStatus do
       "current" => {"step" => "plan", "attempt" => 2, "state" => "running", "reason" => nil, "flags" => []},
       "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_file" => nil, "note_changed" => false},
         {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil, "gate_file" => nil, "note_changed" => false}],
-      "pane" => "%5", "task" => "t1", "inputs" => {"task" => "X-1"}, "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
+      "base_sha" => nil, "pane" => "%5", "task" => "t1", "inputs" => {"task" => "X-1"}, "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
       "events_path" => File.join(@dir, "runs", "wr_1.events.jsonl")
     }])
   end
@@ -486,5 +486,56 @@ RSpec.describe Workspace::WorkflowStatus do
 
   it "raises unknown_run for an id no run has" do
     expect { status.run("wr_9") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
+  end
+
+  describe "a failed step's guard code" do
+    def failed(details)
+      reason = {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan"}.merge(details)}
+      create(state: "waiting", step_state: "failed", reason: reason, bound: false, base_sha: "abc123")
+    end
+
+    %w[no_commit head_moved config_changed hooks_changed hidden_changed].each do |code|
+      it "offers only cancel for #{code}, which a resume can't get past" do
+        failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
+
+        expect(current["reason"]["actions"]).to eq([action("workflow cancel", "wr_1")])
+        expect(current["reason"]["details"]).to include("code" => code, "code_source" => "engine", "guard" => code)
+      end
+    end
+
+    %w[tracked_changed operation_in_progress].each do |code|
+      it "offers resume, resume --from and cancel for #{code}, which the person can clear" do
+        failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
+
+        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])
+      end
+    end
+
+    it "offers resume for a failed check" do
+      failed("cause" => "check", "code" => "check_failed", "code_source" => "engine")
+
+      expect(current["reason"]["actions"].map { |each| each["action"] }).to eq(["workflow resume", "workflow resume", "workflow cancel"])
+    end
+
+    it "shows the run's base_sha in its row" do
+      failed("cause" => "guard", "guard" => "head_moved")
+
+      expect(status.run("wr_1")["runs"].first["base_sha"]).to eq("abc123")
+    end
+
+    it "shows an agent's code with its source" do
+      failed("cause" => "reported", "code" => "not_reproduced", "code_source" => "agent")
+
+      expect(current["reason"]["details"]).to include("code" => "not_reproduced", "code_source" => "agent")
+    end
+  end
+
+  describe "a rejected gate" do
+    it "shows as rejected on the step's row" do
+      run = create(state: "running", step_state: "running")
+      store.update(run["id"]) { |stored| stored["steps"]["plan"]["gate"] = {"state" => "rejected", "attempt" => 1} }
+
+      expect(status.run("wr_1")["runs"].first["steps"].last["gate"]).to eq("rejected")
+    end
   end
 end

@@ -29,6 +29,9 @@ module Workspace
     KICK = "Read %s and follow it."
 
     # Restart errors that mean there is no pane to type into.
+    # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
+    ENGINE_CODES = (WorkflowGuard::CODES + %w[check_failed check_timed_out check_error reported]).freeze
+
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
 
     # Seconds after an attempt starts during which its line may still be on its
@@ -59,6 +62,7 @@ module Workspace
     # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
     # @param lineage [Workspace::WorkspaceLineage] names a checkout's parent project
     # @param git [Workspace::Git] reads the checkout's branch
+    # @param guard [Workspace::WorkflowGuard] records a run's base commit and checks a guarded step against it
     # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
     # @param env_stopper [#call, nil] stops the dev environment a run left running under a lock it
     #   gave up (`run_id:`, `worktree:`), so nobody queues behind an environment no step uses
@@ -66,7 +70,7 @@ module Workspace
     # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
     # @param clock [#call] returns the current Time
-    def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, excludes:, gate_note:,
+    def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
       env_stopper: nil, event_log: nil, task_store: nil, clock: -> { Time.now })
       @store = store
       @resources = resources
@@ -76,6 +80,7 @@ module Workspace
       @commands_config = commands_config
       @lineage = lineage
       @git = git
+      @guard = guard
       @excludes = excludes
       @gate_note = gate_note
       @env_stopper = env_stopper
@@ -109,15 +114,19 @@ module Workspace
     # @param worktree [String] that workspace's checkout
     # @param inputs [Hash{String=>String}] values for the definition's inputs
     # @param pane [String, nil] the pane id the steps would run in, when it is known
+    # @param tree [String, nil] the checkout a `guard: unchanged` step would run in, which must
+    #   be clean (no commit to start from, no git operation stopped, no change to a tracked
+    #   file); nil skips the look
     # @return [Hash{String=>Object}] "workflow", "workspace", "project", "step" (the first
     #   step), "pane", "inputs" and "packs" (the refs the first step's instructions use)
     # @raise [Workspace::Error] code `input_required` for a missing input, `usage` for an
     #   unknown one, `workflow_command_unset` when a step's check names a command the
-    #   project has not set, `pane_has_run` when the pane already runs a workflow, and
+    #   project has not set, `dirty_worktree` when +tree+ is not clean for a guarded step, `pane_has_run` when the pane already runs a workflow, and
     #   the composer's errors for a pack that can't be read
-    def preflight(definition:, workspace:, worktree:, inputs:, pane: nil)
+    def preflight(definition:, workspace:, worktree:, inputs:, pane: nil, tree: worktree)
       data = definition.to_h
       inputs = check_inputs(data, inputs)
+      check_tree(data, tree)
       project = @lineage.resolve(cwd: worktree).name
       check_commands(data, project)
       check_pane(pane)
@@ -142,6 +151,7 @@ module Workspace
       checked = preflight(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane)
       data = definition.to_h
       now = now_iso
+      base = @guard.base(worktree)
       # Stored as waiting to be started: a `workflow run` that is interrupted before its
       # first step is under way leaves a run that says so, and that `resume` can start.
       attributes = {
@@ -149,6 +159,7 @@ module Workspace
         "definition" => data, "definition_source" => definition.source, "definition_path" => definition.path,
         "definition_sha256" => definition.sha256,
         "workspace" => workspace, "project" => checked["project"], "worktree" => worktree,
+        "base_sha" => base["base_sha"], "base_guard" => base["base_guard"],
         "task" => task_id(workspace), "inputs" => checked["inputs"], "note" => note,
         "state" => "waiting", "created_at" => now, "started_at" => now, "ended_at" => nil,
         "current" => data["steps"].first["id"], "pane" => pane, "loops" => {}, "pending_context" => [],
@@ -192,10 +203,11 @@ module Workspace
     # @param run_id [String]
     # @param status [String] "pass" or "fail"
     # @param summary [String, nil] one line about the attempt
+    # @param code [String, nil] a word the agent chose for why (stored; a failed step's `details.code`)
     # @return [Hash{String=>Object}] "run_id", "step", "attempt" and "reported" (the stored
-    #   report: "status", "summary", "at")
+    #   report: "status", "summary", "code", "at")
     # @raise [Workspace::Error] code `step_not_running` when the run's step is not being worked on
-    def report(run_id, status:, summary: nil)
+    def report(run_id, status:, summary: nil, code: nil)
       result = nil
       transition(run_id) do |stored|
         state = step_state(stored)
@@ -204,7 +216,7 @@ module Workspace
             code: "step_not_running", details: {"run_id" => run_id, "step" => stored["current"], "state" => state["state"]})
         end
         attempt = state["attempts"].last
-        attempt["reported"] = {"status" => status, "summary" => summary, "at" => now_iso}
+        attempt["reported"] = {"status" => status, "summary" => summary, "code" => code, "at" => now_iso}.reject { |key, value| key == "code" && value.nil? }
         event(stored, "step_reported", "step" => stored["current"], "attempt" => attempt["n"], "status" => status)
         result = {"run_id" => run_id, "step" => stored["current"], "attempt" => attempt["n"], "reported" => attempt["reported"]}
       end
@@ -263,7 +275,7 @@ module Workspace
         unless ids.first(ids.index(stored["current"]) + 1).include?(target)
           raise UsageError, "--to must be #{stored["current"]} or a step before it (#{ids.first(ids.index(stored["current"]) + 1).join(", ")}), got #{target.to_s[0, 60].inspect}."
         end
-        gate.merge!("state" => "rejected", "at" => now_iso, "note" => note)
+        gate.merge!("state" => "rejected", "at" => now_iso, "note" => note, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil))
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
         stored["current"] = target
@@ -577,7 +589,9 @@ module Workspace
     def dispatch(run, context: nil)
       step = step_def(run)
       state = step_state(run)
-      state.delete("gate")
+      # A rejected gate stays marked for the first run of the step again, and no longer.
+      gate = state["gate"]
+      state.delete("gate") unless gate && gate["state"] == "rejected" && gate["attempt"] == state["attempts"].last&.fetch("n", nil)
       run["artifacts_dir"] ||= artifacts_dir(run["worktree"], run["id"])
       # Before anything is written: a removed checkout must not come back as a directory.
       raise Workspace::Error, "the checkout #{run["worktree"]} is gone" unless File.directory?(run["worktree"])
@@ -766,8 +780,15 @@ module Workspace
       attempt.delete("delivery")
       reported = attempt["reported"]
       if reported && reported["status"] == "fail"
-        fail_step(run, "cause" => "reported", "summary" => reported["summary"])
+        fail_step(run, {"cause" => "reported", "summary" => reported["summary"]}.merge(code_for("reported", reported["code"])))
         return nil
+      end
+      if step["guard"]
+        found = guard_check(run, step)
+        if found
+          fail_step(run, found)
+          return nil
+        end
       end
       files = step["produces"].map { |file| File.join(run["artifacts_dir"], file) }
       missing = files.reject { |file| File.exist?(file) }
@@ -798,7 +819,7 @@ module Workspace
     def finish_check(run_id, check)
       result = if check["command"]
         @checker.call(command: check["command"], cwd: check["cwd"], timeout: check["timeout"], log: check["log"],
-          stop_when: -> { !wanted?(run_id, check) })
+          stop_when: -> { !wanted?(run_id, check) }, env: check_env(run_id))
       else
         {exit_code: nil, timed_out: false, error: "the project's #{check["role"]} command is not set"}
       end
@@ -807,6 +828,31 @@ module Workspace
       # Cancelled while the check ran: there is nothing left to decide.
       raise unless e.code == "run_not_active"
       @store.find(run_id)
+    end
+
+    # What a `status:` check is told about its run. `WORKSPACE_RUN_BASE_SHA` is
+    # empty for a run with no recorded commit (an unborn branch, or a run made before it was kept).
+    # Every inherited `GIT_*` variable is removed, so a caller's `GIT_DIR`, `GIT_INDEX_FILE` or
+    # `GIT_CONFIG_*` can't steer the check.
+    def check_env(run_id)
+      run = @store.find(run_id)
+      ENV.keys.select { |name| name.start_with?("GIT_") }.to_h { |name| [name, nil] }.merge(
+        "WORKSPACE_RUN_ID" => run["id"], "WORKSPACE_RUN_ARTIFACTS" => run["artifacts_dir"].to_s,
+        "WORKSPACE_RUN_BASE_SHA" => run["base_sha"].to_s
+      )
+    end
+
+    # A definition with a `guard: unchanged` step starts from a clean checkout: a commit to
+    # start from, no stopped git operation, no change to a tracked file.
+    def check_tree(data, tree)
+      return unless tree && data["steps"].any? { |step| step["guard"] == "unchanged" }
+      found = @guard.check(tree, @guard.base(tree), "unchanged")
+      return unless found
+      raise Workspace::Error.new(
+        "Workflow #{data["id"]} needs a clean checkout, and #{tree} is not (#{GUARD_TEXT[found["code"]] || "tracked files changed: #{found["paths"].join(", ")}"}). " \
+        "Commit or stash the changes, or finish the git operation, first.",
+        code: "dirty_worktree", details: {"path" => tree, "guard" => found["code"], "files" => found["paths"]}
+      )
     end
 
     # Whether the run still waits for this check: it is still on that step and
@@ -833,8 +879,13 @@ module Workspace
         if result[:exit_code] == 0
           pass_step(stored)
         else
+          code = if result[:timed_out]
+            "check_timed_out"
+          else
+            result[:error] ? "check_error" : "check_failed"
+          end
           fail_step(stored, {"cause" => "check", "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
-                             "error" => result[:error], "log" => check["log"]}.compact)
+                             "error" => result[:error], "log" => check["log"]}.compact.merge(code_for(code, nil)))
         end
       end
     end
@@ -910,8 +961,36 @@ module Workspace
         "Its files are in #{run["artifacts_dir"]}. Fix what it found."
     end
 
+    def guard_check(run, step)
+      found = @guard.check(run["worktree"], run, step["guard"])
+      return nil unless found
+      {"cause" => "guard", "guard" => found["code"], "paths" => found["paths"], "base_sha" => found["base_sha"], "head" => found["head"]}
+        .compact.merge(code_for(found["code"], nil))
+    rescue => e
+      {"cause" => "check", "error" => "the guard could not run (#{e.class})"}.merge(code_for("check_error", nil))
+    end
+
+    # The one code key of a failed step: an agent's word when it gave one, else the engine's.
+    def code_for(engine_code, agent_code)
+      agent_code ? {"code" => agent_code, "code_source" => "agent"} : {"code" => engine_code, "code_source" => "engine"}
+    end
+
+    GUARD_TEXT = {
+      "no_commit" => "the checkout had no commit to start from",
+      "operation_in_progress" => "a git operation (merge, rebase, cherry-pick, revert or bisect) is in progress",
+      "config_changed" => "the repository's config or attributes changed since the run started",
+      "hooks_changed" => "the repository's hooks changed since the run started",
+      "hidden_changed" => "tracked files were hidden from git (assume-unchanged or skip-worktree) since the run started"
+    }.freeze
+
     def failure_text(failure)
-      if failure["cause"] == "reported"
+      if failure["cause"] == "guard"
+        case failure["guard"]
+        when "head_moved" then "HEAD moved from #{failure["base_sha"].to_s[0, 12]} to #{failure["head"].to_s[0, 12]} since the run started"
+        when "tracked_changed" then "tracked files changed since the run started (#{Array(failure["paths"]).join(", ")})"
+        else GUARD_TEXT.fetch(failure["guard"], "the guard failed (#{failure["guard"]})")
+        end
+      elsif failure["cause"] == "reported"
         "its agent reported failure#{": #{failure["summary"]}" if failure["summary"]}"
       elsif failure["timed_out"]
         "its check ran past its time limit (log: #{failure["log"]})"

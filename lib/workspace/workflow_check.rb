@@ -31,11 +31,12 @@ module Workspace
     # @param log [String] the file its stdout and stderr go to
     # @param stop_when [#call, nil] asked every {STOP_POLL} seconds; true stops the check
     #   (its run was cancelled or moved to another step)
+    # @param env [Hash{String=>String}] added to the command's environment
     # @return [Hash] :exit_code (nil when it was stopped or never started),
     #   :timed_out, and :error (why it has no exit code) when there is one
-    def call(command:, cwd:, timeout:, log:, stop_when: nil)
+    def call(command:, cwd:, timeout:, log:, stop_when: nil, env: {})
       FileUtils.mkdir_p(File.dirname(log))
-      pid = Process.spawn("sh", "-c", command, chdir: cwd, pgroup: true, in: File::NULL, out: [log, "w"], err: [:child, :out])
+      pid = Process.spawn(env, "sh", "-c", command, chdir: cwd, pgroup: true, in: File::NULL, out: [log, "w"], err: [:child, :out])
       status = wait(pid, timeout, stop_when)
       return {exit_code: status.exitstatus, timed_out: false} if status.is_a?(Process::Status)
       stop(pid)

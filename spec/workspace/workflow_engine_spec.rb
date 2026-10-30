@@ -37,6 +37,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:commands_config) { instance_double(Workspace::CommandsConfig, for_project: commands) }
   let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")) }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
+  let(:guard) { Workspace::WorkflowGuard.new }
   let(:events) { [] }
   let(:event_log) do
     log = instance_double(Workspace::EventLog)
@@ -50,7 +51,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:gate_note) { Workspace::WorkflowGateNote.new(notes: notes) }
   subject(:engine) do
     described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
-      commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
+      commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       env_stopper: ->(**args) { stopped << args }, event_log: event_log, task_store: task_store, clock: -> { now.first })
   end
 
@@ -103,7 +104,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
   def engine_with(**overrides)
     described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
-      commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
+      commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       clock: -> { now.first }, **overrides)
   end
 
@@ -591,6 +592,22 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.bound["%5"]).to include(step: "build", attempt: 1)
     end
 
+    it "records the checkout's HEAD as base_sha when the run starts" do
+      run = start
+
+      expect(run["base_sha"]).to eq(`git -C #{worktree} rev-parse HEAD`.strip)
+      expect(store.find("wr_1")["base_sha"]).to eq(run["base_sha"])
+    end
+
+    it "gives a check an empty WORKSPACE_RUN_BASE_SHA for a run made before base_sha was kept" do
+      to_verify
+      store.update("wr_1") { |stored| stored.delete("base_sha") }
+
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(check_calls.last[:env]).to include("WORKSPACE_RUN_BASE_SHA" => "")
+    end
+
     it "runs the step's check with the project's command while the step is `checking`, outside the run's lock" do
       to_verify
       events.clear
@@ -598,7 +615,9 @@ RSpec.describe Workspace::WorkflowEngine do
       run = engine.turn_ended("wr_1", pane: "%5")
 
       log = File.join(worktree, ".workflow", "wr_1", "steps", "verify.1.check.log")
-      expect(check_calls).to eq([{command: "bundle exec rspec", cwd: worktree, timeout: 300.0, log: log, state_during: "checking"}])
+      env = ENV.keys.grep(/\AGIT_/).to_h { |name| [name, nil] }.merge("WORKSPACE_RUN_ID" => "wr_1", "WORKSPACE_RUN_ARTIFACTS" => File.join(worktree, ".workflow", "wr_1"),
+        "WORKSPACE_RUN_BASE_SHA" => `git -C #{worktree} rev-parse HEAD`.strip)
+      expect(check_calls).to eq([{command: "bundle exec rspec", cwd: worktree, timeout: 300.0, log: log, env: env, state_during: "checking"}])
       expect(run["steps"]["verify"]["attempts"].last["check"]).to eq("started_at" => "2026-10-04T12:00:00Z", "log" => log,
         "ended_at" => "2026-10-04T12:00:00Z", "exit_code" => 0, "timed_out" => false)
     end
@@ -660,7 +679,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run).to include("state" => "waiting", "current" => "verify")
       expect(run["reason"]["code"]).to eq("failed_check")
       expect(run["reason"]["details"]).to eq("step" => "verify", "attempt" => 3, "loops" => {"verify->build" => 2}, "attempts" => 7,
-        "max_attempts" => 6, "cause" => "check", "exit_code" => 2, "timed_out" => false,
+        "max_attempts" => 6, "cause" => "check", "exit_code" => 2, "timed_out" => false, "code" => "check_failed", "code_source" => "engine",
         "log" => File.join(worktree, ".workflow", "wr_1", "steps", "verify.3.check.log"))
       expect(lock_holder("test-db")).to be_nil
       expect(panes.bound["%5"]).to include(step: "verify", attempt: 3)
@@ -718,7 +737,7 @@ RSpec.describe Workspace::WorkflowEngine do
         {exit_code: 0, timed_out: false}
       end
       slow = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: cancelling,
-        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
+        commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
 
       expect(slow.turn_ended("wr_1", pane: "%5")).to include("state" => "cancelled")
     end
@@ -741,7 +760,7 @@ RSpec.describe Workspace::WorkflowEngine do
         {exit_code: 0, timed_out: false}
       end
       moved = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: slow,
-        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
+        commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
 
       run = moved.turn_ended("wr_1", pane: "%5")
 
@@ -830,7 +849,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "starts the next step all the same when the environment can't be stopped" do
       failing = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
-        commands_config: commands_config, lineage: lineage, git: git, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
+        commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
         env_stopper: ->(**) { raise Workspace::Error, "Could not read the lock store" }, clock: -> { now.first })
       two = definition("steps:\n  a:\n    prompt: P\n    uses: [devenv]\n  b:\n    prompt: P\n")
       failing.start(definition: two, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
@@ -909,7 +928,7 @@ RSpec.describe Workspace::WorkflowEngine do
       run = engine.reject("wr_1", note: "Too big; split it.")
 
       expect(run).to include("state" => "running", "current" => "plan", "reason" => nil)
-      expect(run["steps"]["plan"]).not_to have_key("gate")
+      expect(run["steps"]["plan"]["gate"]).to include("state" => "rejected", "attempt" => 1)
       expect(run["steps"]["plan"]["attempts"].last).to include("n" => 2, "context" => ["The plan step was rejected at its gate: Too big; split it."])
       expect(File.read(run["steps"]["plan"]["attempts"].last["prompt_file"])).to include("The plan step was rejected at its gate: Too big; split it.")
       expect(history_lines.find { |line| line["type"] == "gate_rejected" }).to include("step" => "plan", "to" => "plan", "note" => "Too big; split it.")
@@ -1716,6 +1735,284 @@ RSpec.describe Workspace::WorkflowEngine do
       run = start
 
       expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "no_daemon", "message" => "socket gone")
+    end
+  end
+
+  describe "the guard" do
+    let(:guarded) do
+      definition(<<~YAML)
+        steps:
+          diagnose:
+            prompt: Look.
+            produces: [note.md]
+            guard: unchanged
+          fix:
+            prompt: Fix.
+            guard: config
+      YAML
+    end
+
+    def commit_in_worktree
+      system("git", "-C", worktree, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "agent", exception: true)
+    end
+
+    it "stores the base commit and the snapshot beside it" do
+      run = start(guarded, inputs: {})
+
+      expect(run["base_sha"]).to eq(`git -C #{worktree} rev-parse HEAD`.strip)
+      expect(run["base_guard"].keys).to eq(%w[config_sha256 hooks_sha256 hidden_sha256])
+      expect(store.find("wr_1")["base_guard"]).to eq(run["base_guard"])
+    end
+
+    it "fails a guarded step with the guard's code before it looks for the step's files" do
+      start(guarded, inputs: {})
+      commit_in_worktree
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run).to include("state" => "waiting")
+      expect(run["reason"]["code"]).to eq("failed_check")
+      expect(run["reason"]["details"]).to include("cause" => "guard", "guard" => "head_moved", "code" => "head_moved", "code_source" => "engine", "paths" => [],
+        "base_sha" => run["base_sha"])
+      expect(run["steps"]["diagnose"]["attempts"].last).to include("outcome" => "failed")
+    end
+
+    it "fails with tracked_changed and names the paths" do
+      start(guarded, inputs: {})
+      File.write(File.join(worktree, "README"), "x\n")
+      system("git", "-C", worktree, "add", "README", exception: true)
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["reason"]["details"]).to include("code" => "tracked_changed", "paths" => ["README"])
+    end
+
+    it "words the failure for the next attempt when a step loops back" do
+      looping = definition(<<~YAML)
+        steps:
+          one:
+            prompt: One.
+          two:
+            prompt: Two.
+            guard: unchanged
+            on_fail: {goto: one, max: 1}
+      YAML
+      start(looping, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+      commit_in_worktree
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["current"]).to eq("one")
+      expect(run["steps"]["one"]["attempts"].last["context"].first).to match(/HEAD moved from \h{12} to \h{12} since the run started/)
+    end
+
+    it "passes a guarded step nothing moved in, once its files exist" do
+      start(guarded, inputs: {})
+      artifact("note.md")
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["current"]).to eq("fix")
+    end
+
+    it "skips the guard when the agent reported a failure, with the agent's code" do
+      start(guarded, inputs: {})
+      commit_in_worktree
+      engine.report("wr_1", status: "fail", summary: "No repro.", code: "not_reproduced")
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["reason"]["details"]).to include("cause" => "reported", "summary" => "No repro.", "code" => "not_reproduced", "code_source" => "agent")
+      expect(run["reason"]["details"]).not_to have_key("guard")
+      expect(run["steps"]["diagnose"]["attempts"].last["reported"]).to include("code" => "not_reproduced")
+    end
+
+    it "gives a report with no code the engine's code `reported`" do
+      start(guarded, inputs: {})
+      engine.report("wr_1", status: "fail", summary: "Stuck.")
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["reason"]["details"]).to include("code" => "reported", "code_source" => "engine")
+      expect(run["steps"]["diagnose"]["attempts"].last["reported"]).not_to have_key("code")
+    end
+
+    it "checks only the config scope at a `guard: config` step, so a commit passes" do
+      start(guarded, inputs: {})
+      artifact("note.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      commit_in_worktree
+      File.write(File.join(worktree, ".git", "hooks", "pre-commit"), "#!/bin/sh\n")
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["reason"]["details"]).to include("code" => "hooks_changed")
+    end
+
+    it "fails the step as check_error, rather than leaving the run stuck, when the guard raises" do
+      exploding = instance_double(Workspace::WorkflowGuard, base: {"base_sha" => nil, "base_guard" => {}})
+      allow(exploding).to receive(:check).and_raise(Encoding::CompatibilityError)
+      raising = engine_with(guard: exploding)
+      run = store.create({"workflow" => "flow", "workspace" => "app", "project" => "app", "worktree" => worktree, "state" => "running", "current" => "diagnose",
+                          "definition" => guarded.to_h, "steps" => {"diagnose" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => now.first.iso8601(3)}]},
+                                                                    "fix" => {"state" => "pending", "attempts" => []}},
+                          "inputs" => {}, "loops" => {}, "pending_context" => [], "artifacts_dir" => File.join(worktree, ".workflow", "wr_1")})
+      panes.bind(workspace: "app", pane: "%5", run_id: run["id"])
+
+      result = raising.turn_ended(run["id"], pane: "%5")
+
+      expect(result["state"]).to eq("waiting")
+      expect(result["reason"]["details"]).to include("cause" => "check", "code" => "check_error", "code_source" => "engine")
+      expect(result["reason"]["details"]["error"]).to eq("the guard could not run (Encoding::CompatibilityError)")
+    end
+
+    it "never records a new base_sha when a failed step is resumed" do
+      start(guarded, inputs: {})
+      commit_in_worktree
+      base = engine.turn_ended("wr_1", pane: "%5")["base_sha"]
+
+      engine.resume("wr_1")
+
+      expect(store.find("wr_1")["base_sha"]).to eq(base)
+    end
+
+    describe "#preflight" do
+      def preflight(definition = guarded, **options)
+        engine.preflight(definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, **options)
+      end
+
+      it "passes a clean checkout, and an untracked file" do
+        File.write(File.join(worktree, "untracked.txt"), "x\n")
+
+        expect(preflight["workflow"]).to eq("flow")
+      end
+
+      it "refuses a changed tracked file as dirty_worktree, naming it" do
+        File.write(File.join(worktree, "README"), "x\n")
+        system("git", "-C", worktree, "add", "README", exception: true)
+        system("git", "-C", worktree, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "readme", exception: true)
+        File.write(File.join(worktree, "README"), "changed\n")
+
+        expect { preflight }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq("dirty_worktree")
+          expect(error.details).to eq("path" => worktree, "guard" => "tracked_changed", "files" => ["README"])
+        }
+      end
+
+      it "refuses an unborn branch with guard no_commit" do
+        fresh = File.join(@dir, "fresh")
+        FileUtils.mkdir_p(fresh)
+        system("git", "-C", fresh, "init", "-q", "-b", "main", exception: true)
+        allow(lock_namespace).to receive(:resolve).with(cwd: fresh).and_return(key: "ns", display: "app", dir: lock_dir)
+
+        expect { engine.preflight(definition: guarded, workspace: "app", worktree: fresh, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq("dirty_worktree")
+          expect(error.details).to include("guard" => "no_commit")
+        }
+      end
+
+      it "skips the look with tree: nil" do
+        File.write(File.join(worktree, ".git", "MERGE_HEAD"), "x\n")
+
+        expect(preflight(tree: nil)["workflow"]).to eq("flow")
+      end
+
+      it "looks only at a definition with a `guard: unchanged` step" do
+        File.write(File.join(worktree, ".git", "MERGE_HEAD"), "x\n")
+        config_only = definition("steps:\n  only:\n    prompt: Go.\n    guard: config\n")
+
+        expect(preflight(config_only)["workflow"]).to eq("flow")
+      end
+
+      it "is what `start` refuses through" do
+        File.write(File.join(worktree, ".git", "MERGE_HEAD"), "x\n")
+
+        expect { start(guarded, inputs: {}) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("dirty_worktree") }
+        expect(store.active).to eq([])
+      end
+    end
+  end
+
+  describe "the code of a failed check" do
+    let(:checked) { definition("steps:\n  only:\n    prompt: Go.\n    status: {run: bin/check}\n") }
+
+    {
+      "check_failed" => {exit_code: 2, timed_out: false},
+      "check_timed_out" => {exit_code: nil, timed_out: true},
+      "check_error" => {exit_code: nil, timed_out: false, error: "could not run the check (Errno::ENOENT)"}
+    }.each do |code, result|
+      it "is #{code} when the check ends as #{result}, from the engine" do
+        start(checked, inputs: {})
+        check_results << result
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]["details"]).to include("code" => code, "code_source" => "engine", "cause" => "check")
+      end
+    end
+
+    it "is check_error when the project's command is not set" do
+      unset = definition("steps:\n  only:\n    prompt: Go.\n    status: {command: lint}\n")
+      commands[:lint] = "bin/lint"
+      start(unset, inputs: {})
+      commands[:lint] = nil
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["reason"]["details"]).to include("code" => "check_error", "code_source" => "engine")
+    end
+  end
+
+  describe "a rejected gate's record" do
+    let(:two_steps) do
+      definition(<<~YAML)
+        steps:
+          first:
+            prompt: One.
+          second:
+            prompt: Two.
+            gate: approve
+          third:
+            prompt: Three.
+      YAML
+    end
+
+    def to_second_gate
+      start(two_steps, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    it "stays during the first run again, and is gone after a resume of a failed rerun" do
+      to_second_gate
+      engine.reject("wr_1", note: "No.")
+
+      expect(store.find("wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected", "attempt" => 1)
+      engine.report("wr_1", status: "fail", summary: "x")
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.resume("wr_1")
+
+      expect(store.find("wr_1")["steps"]["second"]).not_to have_key("gate")
+    end
+
+    it "is replaced by a waiting gate when the rerun passes" do
+      to_second_gate
+      engine.reject("wr_1", note: "No.")
+
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(store.find("wr_1")["steps"]["second"]["gate"]).to include("state" => "waiting")
+    end
+
+    it "stays on the gated step after `reject --to` an earlier step, until that step runs again twice" do
+      to_second_gate
+      engine.reject("wr_1", note: "Redo.", to: "first")
+
+      expect(store.find("wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected", "attempt" => 1)
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(store.find("wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected")
+      expect(store.find("wr_1")["steps"]["second"]["attempts"].size).to eq(2)
     end
   end
 end

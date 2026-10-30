@@ -280,6 +280,7 @@ require_relative "workspace/workflow_files"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
+require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
@@ -557,6 +558,7 @@ module Workspace
       commands_config: commands_config,
       lineage: lineage,
       git: git,
+      guard: WorkflowGuard.new(git_path: Which.path("git") || "git"),
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },

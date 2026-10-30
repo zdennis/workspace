@@ -112,7 +112,7 @@ module Workspace
 
         spec_path = spec_file(definition, resolved, ticket, path, inputs)
         seeded = seed(definition, ticket, prompt, inputs, spec_path, resolved)
-        checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil)
+        checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil, tree: nil)
         Plan.new(definition: definition, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
           ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt)
       end

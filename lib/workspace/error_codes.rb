@@ -67,7 +67,7 @@ module Workspace
       "no_pull_request" => "pr feedback: the branch has no pull request. details.branch.",
       "pr_feedback_failed" => "pr feedback: gh could not read the pull request; details.reason is timeout, auth, rate_limit, graphql or other, details.detail the first line gh said.",
       "nothing_to_push" => "pr create: the branch has no commits ahead of its base, so there is nothing to open a pull request for.",
-      "dirty_worktree" => "rebase: the workspace has changes to tracked files; commit or stash them first. details.path, details.files.",
+      "dirty_worktree" => "rebase: the workspace has changes to tracked files; commit or stash them first. workflow run and run --dry-run: the checkout is not clean for a workflow with a `guard: unchanged` step (details.guard is no_commit, operation_in_progress or tracked_changed). details.path, details.files.",
       "rebase_in_progress" => "rebase or promote: a rebase is already stopped in the workspace (finish or abort it first), or git ran past its time limit mid-rebase and git rebase --abort failed (details.aborted false). details.path.",
       "fetch_failed" => "rebase (update, remote, upstream) or push: git fetch from origin failed. details.remote, details.detail.",
       "no_upstream" => "rebase --onto upstream: the branch has no upstream configured. details.branch.",
@@ -230,7 +230,7 @@ module Workspace
       "run_not_active" => "The workflow run has finished, so nothing more can happen to it.",
       "gate_not_waiting" => "workflow approve or reject named a run that isn't waiting at a gate, or, with --step and --attempt, not at that step's gate on that attempt. details.step and details.attempt are the run's, details.expected_step and details.expected_attempt the caller's.",
       "gate_waiting" => "workflow resume named a run that waits at a gate; approve or reject it.",
-      "bound_pane" => "workflow approve or reject, or resume --from at a waiting gate, was run from a pane bound to a workflow run, or (approve, reject) from a process under the run's own pane; a gate is passed by a person.",
+      "bound_pane" => "workflow approve or reject, resume --from at a waiting gate, or a plain resume or advance of a step with a guard or a status check, was run from a pane bound to a workflow run, or (approve, reject, and that resume or advance) from a process under the run's own pane; a gate, and a check that gates a step, are for a person.",
       "gate_note_unreadable" => "workflow approve: the gate's note (named by `note: FILE` on the first line of the gated step's first file) is not a readable regular file in the notes directory, or --note-sha256 was given and the gate names no note. details.run_id, details.step, details.attempt, details.name, details.path.",
       "step_not_running" => "step done was run while the run's step isn't being worked on."
     }.freeze

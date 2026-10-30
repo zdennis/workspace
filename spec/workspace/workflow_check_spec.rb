@@ -33,6 +33,26 @@ RSpec.describe Workspace::WorkflowCheck do
     expect(File.read(log)).to eq("new\n")
   end
 
+  it "gives the command the environment it is passed, and keeps the rest" do
+    result = check.call(command: 'test "$WORKSPACE_RUN_ID" = wr_1 && test -n "$PATH"', cwd: @dir, timeout: 30, log: log,
+      env: {"WORKSPACE_RUN_ID" => "wr_1"})
+
+    expect(result).to eq(exit_code: 0, timed_out: false)
+  end
+  it "removes a variable given as nil, so an inherited GIT_DIR never reaches the command" do
+    saved = ENV["GIT_DIR"]
+    ENV["GIT_DIR"] = "/elsewhere"
+    begin
+      kept = check.call(command: 'test "$GIT_DIR" = /elsewhere', cwd: @dir, timeout: 30, log: log)
+      cleared = check.call(command: 'test -z "${GIT_DIR+set}"', cwd: @dir, timeout: 30, log: log, env: {"GIT_DIR" => nil})
+    ensure
+      ENV["GIT_DIR"] = saved
+    end
+
+    expect(kept).to eq(exit_code: 0, timed_out: false)
+    expect(cleared).to eq(exit_code: 0, timed_out: false)
+  end
+
   it "gives the command no stdin to wait on" do
     expect(check.call(command: "cat", cwd: @dir, timeout: 30, log: log)).to eq(exit_code: 0, timed_out: false)
   end

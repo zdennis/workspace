@@ -55,7 +55,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "id" => "demo", "title" => "demo", "description" => nil, "inputs" => {}, "include" => [], "instructions" => nil,
       "max_attempts" => 6,
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
-                   "gate" => nil, "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil}]
+                   "gate" => nil, "guard" => nil, "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil}]
     )
   end
 
@@ -95,6 +95,23 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(definition.steps.first).to include("title" => "Plan", "produces" => ["plan.md", "notes/risks.md"], "gate" => "approve", "timeout" => 2700.0)
     expect(definition.steps.last).to include("include" => ["commits"], "uses" => %w[devenv test-db], "context" => "continue",
       "status" => {"command" => "test", "timeout" => 600.0}, "on_fail" => {"goto" => "plan", "max" => 3, "context" => "continue"})
+  end
+
+  describe "guard" do
+    %w[unchanged config].each do |value|
+      it "reads guard: #{value}" do
+        step = parse("steps:\n  build:\n    prompt: Build it.\n    guard: #{value}\n").steps.first
+
+        expect(step["guard"]).to eq(value)
+      end
+    end
+
+    it "refuses any other value, naming the step" do
+      ["strict", "true", "[unchanged]", "''"].each do |value|
+        expect(problems("steps:\n  build:\n    prompt: Build it.\n    guard: #{value}\n"))
+          .to include(a_string_starting_with("step build: guard must be unchanged or config, got "))
+      end
+    end
   end
 
   it "takes a status given as a command line, or as run:, with the default time limit" do
@@ -156,7 +173,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, uses, on_fail, context, timeout)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, uses, on_fail, context, timeout)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",

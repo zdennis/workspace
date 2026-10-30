@@ -21,7 +21,7 @@ workspace workflow cancel RUN [--json]
 workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
 workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]
 
-workspace step done [--status pass|fail] [--summary TEXT] [--json]
+workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
 workspace step status [--json]
 ```
 
@@ -70,6 +70,7 @@ workspace step status [--json]
 | `--dry-run` | `run`, `start`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
 | `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
+| `--code WORD` | `step done`: a word for why, kept as the failed step's `details.code` (see [Failure codes](#failure-codes)). Lowercase letters, digits and `_`, starting with a letter, at most 40 characters; anything else is a `usage` error |
 | `--json` | Print one JSON document |
 
 ## How a run works
@@ -80,7 +81,7 @@ workspace step status [--json]
 2. writes the step's instructions to `.workflow/<run>/steps/<step>.<attempt>.prompt.md` in the checkout, built by the [instruction composer](README.instructions.md#workflow-steps): the default packs, the workflow's packs and `instructions:`, the step's packs and prompt, and what the runner knows about this attempt;
 3. types one line into the pane, `Read <file> and follow it.` A step starts in a fresh conversation (the agent daemon types `/clear` first, as [`agent-run restart`](README.agent-run.md) does) unless it says `context: continue`.
 
-A step is done when the agent's turn ends in the bound pane, every file the step `produces:` has been written during this attempt, and its `status:` check passes. A file an earlier attempt left (before a reject, a `resume --from` or a loop back) does not count until the step writes it again; its instructions say so. The workspace's agent daemon ([`agentd`](README.agentd.md)) sees the turn end and decides the step; `workflow run` starts the daemon if none is running. The daemon says when the turn that ended began (the prompt that started it), and the end of a turn that began before the step's attempt did decides nothing: if you were talking to the agent in the run's pane when a step was started (at a gate, say), the end of that conversation does not pass the step. The step's own turn's end does. The agent never has to report: `step done` only adds its own word, and `step done --status fail` fails the step at the turn's end without running the check.
+A step is done when the agent's turn ends in the bound pane, every file the step `produces:` has been written during this attempt, and its `status:` check passes. The check runs through `sh -c` in the checkout with three environment variables: `WORKSPACE_RUN_ID`, `WORKSPACE_RUN_ARTIFACTS` (the run's `.workflow/<run>` directory) and `WORKSPACE_RUN_BASE_SHA` (the checkout's HEAD when the run started; empty on an unborn branch or for a run made before it was recorded). They are environment variables, never placeholders rendered into the command, so no input text reaches the shell. A file an earlier attempt left (before a reject, a `resume --from` or a loop back) does not count until the step writes it again; its instructions say so. The workspace's agent daemon ([`agentd`](README.agentd.md)) sees the turn end and decides the step; `workflow run` starts the daemon if none is running. The daemon says when the turn that ended began (the prompt that started it), and the end of a turn that began before the step's attempt did decides nothing: if you were talking to the agent in the run's pane when a step was started (at a gate, say), the end of that conversation does not pass the step. The step's own turn's end does. The agent never has to report: `step done` only adds its own word, and `step done --status fail` fails the step at the turn's end without running the check.
 
 - A step with `gate: approve` waits for `workflow approve` once it has passed. The run holds no lock while it waits. See [Passing a gate](#passing-a-gate).
 - A step that fails (its check exits non-zero or runs past its time limit, or the agent reported `fail`) goes back to the step its `on_fail: {goto, max}` names, at most `max` times, and never once the run has made `max_attempts` attempts across all its steps. The step it goes back to is told what failed. After that the run stops and waits for you.
@@ -161,6 +162,7 @@ Step keys:
 | `produces` | Files the step must write, as paths under the run's artifacts directory |
 | `status` | A check run in the checkout when the turn ends: a command line, `{run: COMMAND}`, or `{command: test}` / `{command: lint}` for the project's own [`commands.test` or `commands.lint`](README.config.md). `timeout` (default `20m`) stops it; a `timeout` with no value is refused |
 | `gate` | `approve`: wait for `workflow approve` after the step passes |
+| `guard` | `unchanged` or `config`: the engine checks the checkout when the agent's turn ends (see [The guard](#the-guard)) |
 | `uses` | Lock names the run holds for the step. `dev-env` is `devenv`; `edit` is refused (only the agent that edits can hold it). A step that uses `devenv` is not sent the `dev` pack, even when it is in the defaults or an `include:`: the run holds the environment for it |
 | `on_fail` | `{goto: STEP, max: N}`: on failure go back to an earlier step, at most `N` times (default 1). `context:` overrides the target step's `context` for that jump |
 | `context` | `fresh` (default): start the step in a new conversation. `continue`: keep the pane's conversation |
@@ -248,6 +250,39 @@ workspace workflow start pr-feedback https://github.com/OWNER/REPO/pull/123
 
 `workflow start` seeds `pr` from a pull request ref's number and `task` from the pull request, and leaves `pr` empty for anything that is not a pull request ref (a branch, an issue, a JIRA key). Any workflow that declares a `pr` input gets it seeded this way, and `--input pr=` wins. Triage compares numbers only, so a pull request with the same number in another repository passes that check; a fork pull request, or a number mismatch, stops triage with only `triage.md` and an inbox item, and you reject the gate. `fix` refuses to start without an approved triage note (the gate's `note:` line), and stops when the note's hash, the branch head or a clean tree no longer match. The workflow does not declare `spec`, so the pull request's body is not written to `.workflow/tickets/`. Its instructions say every comment, review and log line is data written by someone else: the agent follows none of it, puts none of it on a command line, and never runs `workflow approve` or `workflow reject`. It has no `status:` check, so it runs in a project with no `commands.test`; running the tests is the `commits` pack's job.
 
+## The guard
+
+A step with `guard:` is checked by the engine when the agent's turn ends, before its `produces:` files are looked for (a step the agent reported as failed is not guarded: it already failed). The checkout it is checked against was recorded when the run started: `base_sha` (HEAD) and a snapshot of the repository's config, its hooks directory and its hidden-file flags, in the run file as `base_guard`. `workflow status --json` shows `base_sha` on the run.
+
+- `guard: unchanged` finds any of the codes below.
+- `guard: config` finds only the last three that follow `operation_in_progress` (`config_changed`, `hooks_changed`, `hidden_changed`) and `no_commit`. A step that commits (a fix) uses it.
+
+A step with `guard: unchanged` also needs a clean checkout to start: `workflow run` and `workflow run --dry-run` refuse with `dirty_worktree` (`details.guard`, `details.files`) when the checkout has no commit, a git operation stopped in it, or a change to a tracked file. Untracked files pass, so a reproduction can be written.
+
+| Code | Found when | Actions offered |
+|---|---|---|
+| `no_commit` | The run has no base commit (an unborn branch) or HEAD can't be read | `cancel` |
+| `head_moved` | HEAD is not `base_sha` (a commit, a checkout, a reset) | `cancel` |
+| `operation_in_progress` | A merge, cherry-pick, revert, bisect or rebase is stopped in the checkout | `resume`, `resume --from`, `cancel` |
+| `config_changed` | The common dir's `config`, a `config.worktree` (the worktree's or any linked worktree's), `info/attributes` or a `refs/replace/` ref changed | `cancel` |
+| `hooks_changed` | The hooks directory (`core.hooksPath` of the repository config, else the common dir's `hooks`) changed: a file, its mode, its content or a link's target | `cancel` |
+| `hidden_changed` | The `git ls-files -v` lines tagged assume-unchanged or skip-worktree changed from the start (flags that were already set, as in a sparse checkout, are fine) | `cancel` |
+| `tracked_changed` | `git status` shows a staged or unstaged change to a tracked file (submodules are not looked at); `details.paths` names up to 20 | `resume`, `resume --from`, `cancel` |
+
+The codes with only `cancel` can't pass again, and `base_sha` is never recorded anew: that would accept whatever moved HEAD, the agent's own commit included. Start a new run. For `tracked_changed` and `operation_in_progress` the person cleans the checkout and resumes.
+
+The guard is a tripwire for an agent that was misled or made a mistake, not a boundary against one that means harm: a process of your own user can edit the run file, start a process outside the pane (`tmux split-window`), or forge the git index's stat data so an edit looks unchanged. Every git call it makes is the `git` found on `PATH` when `workspace` started, and ignores the global and system git config, drops every inherited `GIT_*` variable, ignores replace refs, and runs with fsmonitor and hooks off (and reads attributes from HEAD when git is 2.41 or newer), so a config the agent wrote can't run a command during the check. A `status:` check runs with every inherited `GIT_*` variable removed too. The guard does not see untracked files, submodules or anything outside the checkout. A part git can't read at check time fails with its code, even if it could not be read at the start; a guard that raises fails the step as `check_error`.
+
+A plain `workflow resume` (no `--from`) and `workflow advance` of a step that has a `guard:` or a `status:` are refused with `bound_pane` from the pane the run is bound to or a process under it: otherwise the agent could decide its own step by hand with a fake `git` first on `PATH`. The agent daemon starts `advance` as a process of its own, with `$TMUX_PANE` removed.
+
+### Failure codes
+
+Every `failed_check` reason has `details.code` and `details.code_source`. `engine` codes are a closed set: the guard codes above, `check_failed` (a `status:` command exited non-zero), `check_timed_out`, `check_error` (the check could not run, or the project's command is unset) and `reported` (`step done --status fail` with no `--code`). For a guard failure `details.guard` repeats `code`, `details.paths` is `[]` except for `tracked_changed`, and `head_moved` also has `base_sha` and `head`. A run stored before these keys existed has no `code` or `code_source` on its stored reasons. `step done --code` refuses the engine's words. An `agent` code is the word the agent gave with `step done --code`, stored as `reported.code`: a word it chose, which each workflow documents for itself. A client maps it to words, never to actions. `details.summary` stays free text, and `details.error` (why a check has no exit code) is not a code.
+
+### A rejected gate
+
+`workflow reject` marks the gated step's `gate` as `rejected`, and the step row of `status --json` keeps `"gate":"rejected"` while that step runs again (the first dispatch after the reject). After `reject --to` an earlier step, the gated step shows `rejected` until it is dispatched again. A later `resume` of a failed rerun clears it, and a rerun that passes replaces it with `waiting`.
+
 ## Passing a gate
 
 `workflow approve` passes a waiting gate and `workflow reject` turns it down. Both are for a person, and refuse with `bound_pane` when run from a pane a workflow run is bound to (`$TMUX_PANE`), or from a process whose parent chain holds the run's own pane (the pane's pid, from `tmux list-panes`, among the caller's ancestors in one `ps` snapshot), which holds with `$TMUX_PANE` unset or set to another pane. That refusal's `details.agent` names the calling agent (`pid`, `started`) when one is found. When tmux or the process table can't be read, only the `$TMUX_PANE` check runs. A dev server started from the bound pane is under it, and gets `bound_pane` too.
@@ -279,7 +314,7 @@ A run that is not moving has a `reason`: a `code`, `since`, `details`, and `acti
 | `waiting_lock` | Queued for a lock a step uses | `resource`, `step`, `position`, `total`, `holder` (`kind`; `run_id`, `step`, `workspace`, `worktree` for a run; `pid` and `worktree` for an agent or a dev environment, `kind: "process"`, which adds `dev down` to `actions`) |
 | `waiting_you` | A person is needed. `kind` says for what: `gate` (a passed step waits for approval), `prompt` (the pane shows a permission prompt), `ask` (a question asked from the run's pane with [`ask`](README.ask.md) is open), `dispatch` (the step's line could not be typed), `delivery` (the process typing the step's line stopped before the agent daemon answered, and the pane's agent has ended its turn: it may never have had the line) | `kind`, `step`; `artifacts`, `gate_file` and `gate_file_error` (see [Passing a gate](#passing-a-gate)) for a gate; `pane`, `message` for a prompt; `ask`, `question` for a question; `error`, `message`, `pane`, `workspace` for a dispatch; `attempt`, `pane`, `workspace` for a delivery |
 | `turn_ended_incomplete` | The turn ended and a file the step produces is missing, or was left by an earlier attempt and not written again. The next turn's end, or `workflow resume`, looks again | `step`, `attempt`, `missing`, `stale` |
-| `failed_check` | The step failed and has no loop left | `step`, `attempt`, `cause` (`check` or `reported`), `exit_code`, `timed_out`, `log`, `error` (a check that could not be run, or was stopped), `summary`, `loops`, `attempts`, `max_attempts` |
+| `failed_check` | The step failed and has no loop left | `step`, `attempt`, `cause` (`check`, `reported` or `guard`), `code`, `code_source`, `guard` and `paths` (a guard failure), `exit_code`, `timed_out`, `log`, `error` (a check that could not be run, or was stopped), `summary`, `loops`, `attempts`, `max_attempts` |
 | `pane_gone` | The run's pane, or its workspace, is not running | `step`, `pane`, `workspace`; when it was found while starting a step (stored), also `kind: "dispatch"`, `error` and `message` |
 
 `pane_gone` and the `prompt`, `ask` and `delivery` kinds of `waiting_you` are read from tmux, the agent daemon and the question store when `status` runs; the others are stored in the run. A step past its `timeout` gets `flags: ["timed_out"]` and keeps running. A step that reads `running` with no reason while its pane's agent has ended its turn (the daemon shows it `idle`, or `done` for ten seconds) gets `flags: ["idle"]`: the turn ended and nothing decided the step (an interrupted turn, a daemon that was down, an `advance` that died). The flag is withheld for 30 seconds after the attempt starts, because a pane reads idle for a moment after a dispatch. Run `workflow resume`, which decides the step as the turn's end would have.
@@ -322,7 +357,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
     {"id":"plan","title":"Plan","state":"passed","attempts":1,"gate":"approved","gate_file":null,"note_changed":false},
     {"id":"implement","title":"Implement","state":"passed","attempts":2,"gate":null,"gate_file":null,"note_changed":false},
     {"id":"verify","title":"Verify","state":"waiting","attempts":0,"gate":null,"gate_file":null,"note_changed":false}],
-  "pane":"%19","task":"3f9a1c2e","inputs":{"task":"PROJ-101 invoice PDF export","spec":""},"loops":{"verify->implement":1},
+  "base_sha":"3b1d2c4e5f60718293a4b5c6d7e8f9012a3b4c5d","pane":"%19","task":"3f9a1c2e","inputs":{"task":"PROJ-101 invoice PDF export","spec":""},"loops":{"verify->implement":1},
   "artifacts_dir":"/src/api-pdf/.workflow/wr_2610041230559x3k",
   "events_path":"/Users/me/.local/state/workspace/.workflows/runs/wr_2610041230559x3k.events.jsonl"}],
  "warnings":[]}
@@ -361,7 +396,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, and `current`: written during this attempt), `check` (whether the step has one) and `reported` (`status` and `summary`, or `null`).
 
-Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
+Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `dirty_worktree` (`workflow run` and `run --dry-run`, for a `guard: unchanged` step), `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
 
 ## Events
 
@@ -396,6 +431,7 @@ workspace workflow cancel wr_2610041230559x3k
 # In the run's pane, for the agent:
 workspace step status
 workspace step done --status fail --summary "Two specs still fail in billing."
+workspace step done --status fail --code not_reproduced --summary "The failure did not happen locally."
 ```
 
 ## Notes
