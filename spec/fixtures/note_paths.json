@@ -200,6 +200,7 @@
     "valid": false,
     "reason": "percent",
     "layer": "shape",
+    "cli_only": true,
     "reason_match": "letters, digits"
   },
   {
