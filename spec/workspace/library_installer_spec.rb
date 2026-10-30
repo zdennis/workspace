@@ -27,15 +27,19 @@ RSpec.describe Workspace::LibraryInstaller do
   end
 
   before do
-    FileUtils.mkdir_p(main)
-    run_git("-C", main, "init", "--quiet")
-    FileUtils.mkdir_p(File.join(main, ".claude", "agents"))
-    File.write(File.join(main, ".claude", "agents", "tracked.md"), "the repo's own\n")
-    FileUtils.mkdir_p(File.join(main, ".claude", "skills", "shipped"))
-    File.write(File.join(main, ".claude", "skills", "shipped", "SKILL.md"), "the repo's skill\n")
-    run_git("-C", main, "add", ".")
-    run_git("-C", main, "commit", "--quiet", "-m", "init")
-    run_git("-C", main, "worktree", "add", "--quiet", "-b", "feature", worktree)
+    RepoTemplate.copy(:library_installer, to: @dir) do |root|
+      main = File.join(root, "app")
+      worktree = File.join(main, ".worktrees", "feature")
+      FileUtils.mkdir_p(main)
+      run_git("-C", main, "init", "--quiet")
+      FileUtils.mkdir_p(File.join(main, ".claude", "agents"))
+      File.write(File.join(main, ".claude", "agents", "tracked.md"), "the repo's own\n")
+      FileUtils.mkdir_p(File.join(main, ".claude", "skills", "shipped"))
+      File.write(File.join(main, ".claude", "skills", "shipped", "SKILL.md"), "the repo's skill\n")
+      run_git("-C", main, "add", ".")
+      run_git("-C", main, "commit", "--quiet", "-m", "init")
+      run_git("-C", main, "worktree", "add", "--quiet", "-b", "feature", worktree)
+    end
     store.write("agent", "reviewer", "You review.\n")
     skill = File.join(@dir, "skill-src")
     FileUtils.mkdir_p(File.join(skill, "scripts"))
