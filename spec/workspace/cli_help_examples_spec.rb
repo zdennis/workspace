@@ -72,17 +72,12 @@ module HelpExamplesSpec
   KNOWN_GAPS = [
     # T2: verbs that ignore or mangle --help
     "event-log compact",
-    "handoff",
 
     # T3 gave these a page of their own; their examples come with the group tasks
     "binding clear",
     "binding set",
     "binding show",
     "config show",
-    "daemon list",
-    "daemon log",
-    "daemon restart",
-    "daemon status",
     "goal list",
     "goal show",
     "instructions compose",
@@ -147,18 +142,6 @@ module HelpExamplesSpec
     "workflow status",
     "workflow update",
     "workflow validate",
-
-    # T11: agents
-    "agent",
-    "agent executables",
-    "agent run",
-    "agent status",
-    "agent status post",
-    "agent status request",
-    "agentd restart",
-    "daemon",
-    "handoff check",
-    "handoff new",
 
     # T14: shared resources
     "dev",

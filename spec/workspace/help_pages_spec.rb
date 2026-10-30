@@ -58,6 +58,7 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["ask"].keys).to match_array(%w[list answer deliver withdraw])
       expect(pages["inbox"].keys).to match_array(%w[add list show edit done dismiss reopen snooze ack])
       expect(pages["agent-run"].keys).to eq(["command", "inject", "restart", "send", "queue", "queue list", "queue cancel", "examples"])
+      expect(pages["handoff"].keys).to eq(%w[check new])
     end
 
     it "state the agent-run restart limits the code uses" do

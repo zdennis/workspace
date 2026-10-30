@@ -164,7 +164,11 @@ module Workspace
           "its socket, its pid, and its socket and log paths."
         ],
         options: [DAEMON_NAME, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace daemon status", "is the daemon of the project in the current directory answering"],
+          ["workspace daemon status my-app", "the same for a named workspace; not running is an answer (exit 0)"],
+          ["workspace daemon status --name my-app --json", "one JSON document with running, pid, socket and log"]
+        ]
       },
       "restart" => {
         usage: ["daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]", "daemon restart --all [--json]"],
@@ -182,21 +186,34 @@ module Workspace
           ["--wc-socket PATH", "Work-coordinator socket for the new daemon (default: the old daemon's)"],
           ["--all", "Restart every running daemon instead of one workspace"],
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace daemon restart", "SIGTERM this project's daemon, then start a new one in the background (just start one if none runs)"],
+          ["workspace daemon restart my-app --wc-socket /tmp/wc-dev.sock", "the new daemon uses another coordinator socket"],
+          ["workspace daemon restart --all", "SIGTERM each running daemon and start it again, so each runs the installed version"],
+          ["workspace daemon restart my-app --json", "one JSON action document; exits 1 if the restart failed"]
+        ]
       },
       "log" => {
         usage: ["daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]"],
         summary: "Show the last lines of a workspace's agent daemon log",
         about: ["Only a background daemon writes this log; a daemon run in a terminal logs to that terminal instead."],
-        options: [DAEMON_NAME, ["--lines N", "How many trailing lines (default: 40)"], JSON_OPT],
-        examples: []
+        options: [DAEMON_NAME, ["--lines N", "How many trailing lines, 1 to 10000 (default: 40)"], JSON_OPT],
+        examples: [
+          ["workspace daemon log", "the last 40 lines for the project in the current directory"],
+          ["workspace daemon log my-app --lines 100", "more of a named workspace's log"],
+          ["workspace daemon log --name my-app --json", "the lines, the log's path and whether the file exists, as JSON"]
+        ]
       },
       "list" => {
         usage: ["daemon list [--json]"],
         summary: "List every running agent daemon",
         about: ["Shows each daemon's workspace, pid, start time and socket. It takes no workspace."],
         options: [JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace daemon list", "every running daemon; prints a message and exits 0 when none run"],
+          ["workspace daemon list --json", "one JSON document with a row per daemon"],
+          ["workspace daemon list --json | jq -r '.daemons[].workspace'", "the workspaces that have a daemon running"]
+        ]
       }
     }.freeze
 
@@ -1524,13 +1541,90 @@ module Workspace
       }
     }.freeze
 
+    HANDOFF_NAME = name_opt("The workspace, as an option (same as the positional NAME; default: the current directory's)")
+    HANDOFF_PANE = ["--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0; " \
+      "must be a pane of NAME's own tmux session (default: the first Claude Code pane, else the first Codex pane; `workspace sessions NAME` lists panes)"].freeze
+    HANDOFF_PROMPT = ["--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc (not with --handoff-doc)"].freeze
+    HANDOFF_DEFAULT_DOC = [
+      "With neither --handoff-doc nor --handoff-prompt, the doc is the workspace's plan (IMPLEMENTATION_PLAN.md) when its notes",
+      "directory has one, else HANDOFF.md there. Needs the workspace's agent daemon (`workspace agentd --ensure`)."
+    ].freeze
+
+    HANDOFF = {
+      "check" => {
+        usage: ["handoff check [NAME] [--name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]"],
+        summary: "Tell a coding agent to save its state once its context usage crosses a threshold",
+        about: [
+          "Reads one Claude Code or Codex pane's context usage from the agent daemon. Under the threshold it prints the usage and",
+          "does nothing. At or over it, it types a save-state prompt into that pane for real: the agent writes the doc, then runs",
+          "`workspace handoff new` on itself, which clears its conversation and resumes from the doc.",
+          "",
+          "NAME defaults to the workspace detected from the current directory.",
+          *HANDOFF_DEFAULT_DOC,
+          "When the notes directory can't be worked out, the agent picks a path; when it is over the threshold, check makes the",
+          "notes directory first.",
+          "",
+          "Exit codes: 0 under the threshold, 1 at or over it (a save-state prompt was sent) or when the run was refused or failed,",
+          "2 when context usage can't be determined (nothing was sent)."
+        ],
+        options: [HANDOFF_NAME, HANDOFF_PANE,
+          ["--threshold PCT", "Context usage percent that triggers a handoff, 1-100 (default: handoff.threshold, or 11)"],
+          ["--context-pct N", "Skip detection and use this value (0-100); the pane list is still read from the daemon, and the prompt is sent for real when N is at or over the threshold"],
+          ["--handoff-doc PATH", "Doc the agent updates and resumes from (default: the plan, else HANDOFF.md, in the notes directory); a relative PATH is relative to the current directory, not the notes directory"],
+          HANDOFF_PROMPT,
+          ["--json", "Print the result as JSON, with \"next\" (continue, handoff or unknown) and \"doc\""]],
+        examples: [
+          ["workspace handoff check", "this project's agent: a save-state prompt only if it is over the threshold"],
+          ["workspace handoff check myapp --threshold 20", "a named workspace, handing off at 20% instead of the configured threshold"],
+          ["workspace handoff check myapp --pane \"$TMUX_PANE\"", "an agent checking its own pane"],
+          ["workspace handoff check myapp --handoff-doc \"$(workspace notes dir --name myapp)/HANDOFF.md\"", "name the doc the agent saves its state in"],
+          ["workspace handoff check myapp --handoff-prompt \"Continue with the failing specs\"", "resume with this text instead of a doc"],
+          ["workspace handoff check myapp --context-pct 5", "use a reading of 5%: under the default threshold, so nothing is sent and it exits 0"],
+          ["workspace handoff check myapp --json", "for a script: read \"next\", or the exit code (0, 1 or 2)"]
+        ]
+      },
+      "new" => {
+        usage: ["handoff new [NAME] [--name WS] [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]"],
+        summary: "Clear a coding agent's conversation and resume it from a doc",
+        about: [
+          "Clears one Claude Code or Codex pane's conversation and types the resume prompt, the same flow as",
+          "`workspace agent-run restart`. It returns once the restart has started; --wait waits for it to finish.",
+          "Any conversation not saved in the doc is lost.",
+          "",
+          "Without --pane it restarts the first Claude Code pane the daemon lists, else the first Codex pane, which may not be",
+          "yours: to restart your own pane, pass --pane \"$TMUX_PANE\".",
+          "",
+          "Exit codes: 0 the restart started (with --wait, finished), 1 refused or failed. Without --wait, 0 does not mean the",
+          "restart worked: a later failure shows only in the agent daemon's log (`workspace daemon log`).",
+          "",
+          "NAME defaults to the workspace detected from the current directory.",
+          *HANDOFF_DEFAULT_DOC,
+          "The pane is also bound to the implementation-plan play when the plan is the doc. When the notes directory can't be",
+          "worked out, it fails with notes_dir_unresolved: pass --handoff-doc then."
+        ],
+        options: [HANDOFF_NAME, HANDOFF_PANE,
+          ["--handoff-doc PATH", "Doc the agent reads and resumes from (default: the plan, else HANDOFF.md, in the notes directory); a relative PATH is relative to the current directory, not the notes directory, and is passed to the agent as written"],
+          HANDOFF_PROMPT,
+          ["--wait", "Wait for the restart to finish and report how it went (don't use this from the agent being restarted)"],
+          ["--json", "Print the result as JSON"]],
+        examples: [
+          ["workspace handoff new", "restart the first Claude Code pane (else Codex) of this project, which may not be yours"],
+          ["workspace handoff new myapp --pane \"$TMUX_PANE\"", "an agent restarting its own pane"],
+          ["workspace handoff new myapp --pane 0.1 --handoff-doc /tmp/myapp-handoff.md", "one pane as window.pane, resuming from this doc"],
+          ["workspace handoff new myapp --handoff-prompt \"Continue with the failing specs\"", "resume with this text instead of a doc"],
+          ["workspace handoff new myapp --wait", "from outside the pane: wait until the restart has finished"],
+          ["workspace handoff new myapp --json", "for a script: the result as JSON"]
+        ]
+      }
+    }.freeze
+
     # The tables by command; the specs and the routing tests read them.
     COMMANDS = {
       "plan" => PLAN, "daemon" => DAEMON, "workflow" => WORKFLOW, "library" => LIBRARY, "spine" => SPINE,
       "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL,
       "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "projects" => PROJECTS,
       "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT, "ask" => ASK, "inbox" => INBOX,
-      "agent-run" => AGENT_RUN
+      "agent-run" => AGENT_RUN, "handoff" => HANDOFF
     }.freeze
 
     # The page for the leading verb words of +args+, longest match first.

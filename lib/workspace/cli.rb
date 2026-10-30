@@ -1899,9 +1899,10 @@ module Workspace
           --json              Print one JSON document with the agent's reply; text goes to stderr
 
         Examples:
-          workspace agent run "Add OAuth support"
-          workspace agent run --name myapp --work-item WC-42 "Add OAuth support" --dry-run
-          workspace agentd myapp    # start the daemon for myapp
+          workspace agent run "Add OAuth support"    # send a prompt to the pipeline of the project in this directory
+          workspace agent run --name myapp --dry-run "Add OAuth support"    # show the message for a named workspace, send nothing
+          workspace agent status request --pane %19    # ask the agent in one pane for a status line
+          workspace agent executables --kind claude    # which claude program is on PATH and which one runs
       HELP
     end
 
@@ -1927,8 +1928,10 @@ module Workspace
         opts.separator "Errors: unknown_agent_kind (details.kind, details.known), unknown_workspace."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace agent executables"
-        opts.separator "  workspace agent executables --kind claude --name api --json"
+        opts.separator "  workspace agent executables    # every family's programs on PATH, the one each runs marked"
+        opts.separator "  workspace agent executables --kind claude    # only the claude family"
+        opts.separator "  workspace agent executables --name api --kind codex    # the program workspace api's settings pick for codex"
+        opts.separator "  workspace agent executables --json    # one JSON document, for a script"
       end
       parser.parse!(args)
       return @output.puts(parser.help) if help
@@ -1962,9 +1965,10 @@ module Workspace
           submitted: the request stays open, so check the pane before asking again.
 
         Examples:
-          workspace agent status request --name api --pane %19 --json
-          workspace agent status post --summary "Writing specs for the parser" --progress 3/7
-          workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Waiting on CI" --json
+          workspace agent status request --pane %19    # ask the agent in pane %19 for a status line
+          workspace agent status request --name api --pane 0.1 --json    # a named workspace, the pane as window.pane, JSON out
+          workspace agent status post --summary "Writing specs for the parser"    # an agent reports its own status
+          workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Waiting on CI" --progress 3/7    # answer a request
       HELP
     end
 
@@ -1992,7 +1996,8 @@ module Workspace
         opts.separator ""
         opts.separator "Ask the agent in one pane for a status line. The agent daemon types a fixed line"
         opts.separator "carrying a request id; the agent answers with `workspace agent status post --reply-to ID`."
-        opts.separator "Nothing is typed unless the pane can take text safely (see `agent status --help`)."
+        opts.separator "Nothing is typed unless the pane can take text safely (see `agent status --help`); when it can,"
+        opts.separator "the line is typed into that pane for real."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
@@ -2002,8 +2007,9 @@ module Workspace
         opts.separator "Exit codes: 0 typed and submitted; 1 refused or failed; 2 landed but not confirmed submitted."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace agent status request --name api --pane %19"
-        opts.separator "  workspace agent status request --pane=0.1 --json"
+        opts.separator "  workspace agent status request --pane %19    # ask the agent in pane %19 of the project in this directory"
+        opts.separator "  workspace agent status request --name api --pane 0.1    # a named workspace, the pane as window.pane"
+        opts.separator "  workspace agent status request --pane %19 --json    # one JSON document with the request id"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -2026,6 +2032,7 @@ module Workspace
         opts.separator ""
         opts.separator "Post this pane's status as an agent_status event line. Run by an agent in its own"
         opts.separator "tmux pane: the pane is $TMUX_PANE and the workspace is the one whose tmux session it is in."
+        opts.separator "Every post writes a line to the workspace's event log; outside a tmux pane it is refused (no_pane)."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--summary TEXT", "One line on what the agent is doing (required; cut to #{AgentStatusDesk::MAX_SUMMARY} characters)") { |v| summary = v }
@@ -2035,8 +2042,10 @@ module Workspace
         opts.on("--json", "Print one JSON document: the line as logged, plus truncated") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\" --task T3 --progress 3/7"
-        opts.separator "  workspace agent status post --reply-to=sr-0a1b2c3d4e5f --summary \"Waiting on CI\" --json"
+        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\"    # report what this pane is doing"
+        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\" --task T3 --progress 3/7    # with the task and steps done"
+        opts.separator "  workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary \"Waiting on CI\"    # answer a status request"
+        opts.separator "  workspace agent status post --summary \"Waiting on CI\" --json    # one JSON document, the line as logged"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -2133,7 +2142,8 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace agentd restart    # the project detected from the current directory"
-        opts.separator "  workspace agentd restart scooter --json"
+        opts.separator "  workspace agentd restart scooter --wc-socket /tmp/wc-dev.sock    # a named project, the new agent on another coordinator socket"
+        opts.separator "  workspace agentd restart scooter --json    # a named project, one JSON action document"
         opts.separator "  workspace agentd restart --name restart    # a workspace that is itself named restart"
       end
     end
@@ -3407,6 +3417,13 @@ module Workspace
         opts.on("--dry-run", "Print the message without sending it") { dry_run = true }
         opts.on("--json", "Print one JSON document with the agent's reply (see docs/README.json.md) instead of",
           "text; the text goes to stderr. Exit 0 whatever the reply says: read reply.ok") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agent run Add OAuth support    # send the prompt to the project in this directory; no quotes needed"
+        opts.separator "  workspace agent run --name myapp \"Run the linter and report any issues\"    # a named workspace"
+        opts.separator "  workspace agent run --dry-run \"Add OAuth support\"    # print the message, send nothing"
+        opts.separator "  workspace agent run --work-item WC-42 \"Fix the flaky spec\"    # tie the prompt to a work item"
+        opts.separator "  workspace agent run --json \"Add OAuth support\"    # one JSON document with the reply; exits 0 whatever it says"
       end
       parser.parse!(args)
 
@@ -3635,61 +3652,21 @@ module Workspace
 
     def handoff_help
       <<~HELP
-        Usage: workspace handoff check NAME [options]
-               workspace handoff new NAME [--handoff-doc PATH|--handoff-prompt TEXT] [options]
+        #{HelpPages.overview_usage(HelpPages::HANDOFF)}
 
         Watches a coding agent's context-window usage and hands off to a fresh
         conversation before it fills up: `check` tells the agent to save its state
         once usage crosses a threshold, `new` clears the conversation and resumes it
         (the same flow as `workspace agent-run restart`).
 
-        NAME defaults to the workspace detected from the current directory.
-
-        With neither --handoff-doc nor --handoff-prompt, both use the workspace's plan
-        (IMPLEMENTATION_PLAN.md) when its notes directory has one, else HANDOFF.md there
-        (`check` makes the directory first); `new` also binds the pane to the
-        implementation-plan play when the plan is the doc. If the notes
-        directory can't be worked out, `check` lets the agent pick a path and `new`
-        fails with notes_dir_unresolved: pass --handoff-doc then.
-
-        Options (check):
-          --pane PANE            tmux pane id ('%19'; "$TMUX_PANE" inside the pane),
-                                  window.pane (1.0), or a pane index in window 0
-                                  (default: the first Claude Code pane; `workspace
-                                  sessions NAME` lists panes). Must be a pane of
-                                  NAME's own tmux session
-          --threshold PCT        Context usage percent that triggers a handoff, 1-100
-                                  (default: handoff.threshold, or 11)
-          --context-pct N        Skip detection and use this value (0-100)
-          --handoff-doc PATH     Doc the agent updates and resumes from (default: the
-                                  plan, else HANDOFF.md, in the notes directory)
-          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
-          --json                 Print the result as JSON, with "next"
-                                  (continue, handoff or unknown) and "doc"
-
-        Options (new):
-          --pane PANE            tmux pane id ('%19'; "$TMUX_PANE" inside the pane),
-                                  window.pane (1.0), or a pane index in window 0
-                                  (default: the first Claude Code pane; `workspace
-                                  sessions NAME` lists panes). Must be a pane of
-                                  NAME's own tmux session
-          --handoff-doc PATH     Doc the agent reads and resumes from (default: the
-                                  plan, else HANDOFF.md, in the notes directory)
-          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
-          --wait                 Wait for the restart to finish and report how it
-                                  went (don't use this from the agent being restarted)
-          --json                 Print the result as JSON
-
-        Exit codes (check): 0 under the threshold, 1 at/over it (a save-state prompt
-        was sent), 2 when context usage can't be determined (nothing was sent).
+        #{HelpPages.overview_verbs(HelpPages::HANDOFF).join("\n")}
+        Run `workspace handoff VERB --help` for a verb's options.
 
         Examples:
-          workspace handoff check myapp                           # the doc is the plan, else HANDOFF.md
-          workspace handoff check myapp --handoff-doc HANDOFF.md
-          workspace handoff check myapp --pane 2 --threshold 20 --json    # for scripting
-          workspace handoff new myapp --pane 1 --handoff-doc HANDOFF.md    # without going through check
-          workspace handoff check myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md    # an agent, on its own pane
-          workspace handoff new myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md
+          workspace handoff check    # this project's agent: a save-state prompt only if it is over the threshold
+          workspace handoff check myapp --threshold 20 --json    # a named workspace, for a script
+          workspace handoff new    # restart the first Claude Code pane (else Codex) of this project, which may not be yours
+          workspace handoff new myapp --pane "$TMUX_PANE"    # an agent restarting its own pane
       HELP
     end
 
@@ -3699,7 +3676,8 @@ module Workspace
       original_args = args.dup
       subcommand = args.shift
       case subcommand
-      when "check", "new" then help_requested?(args) ? @output.puts(handoff_help) : send(:"cmd_handoff_#{subcommand}", args)
+      when "check", "new"
+        send(:"cmd_handoff_#{subcommand}", args) unless verb_help_shown?(HelpPages::HANDOFF, [subcommand, *args])
       when "help", "--help", "-h" then @output.puts handoff_help
       else
         raise UsageError, handoff_help
@@ -3718,31 +3696,30 @@ module Workspace
       json = false
       name_opt = nil
 
+      page = HelpPages.render(HelpPages::HANDOFF.fetch("check")).join("\n")
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace handoff check [NAME] [options]"
-        opts.on("--name WS", "The workspace, as an option (same as the positional NAME; default: the current directory's)") { |v| name_opt = v }
-        opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
-          "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
-        opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
-        opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
-        opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from (default: the plan, else HANDOFF.md, in the notes directory)") { |v| handoff_doc = v }
-        opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
+        opts.on("--name WS") { |v| name_opt = v }
+        opts.on("--pane PANE") { |v| pane = v }
+        opts.on("--threshold PCT") { |v| threshold = v }
+        opts.on("--context-pct N", Integer) { |v| context_pct = v }
+        opts.on("--handoff-doc PATH") { |v| handoff_doc = v }
+        opts.on("--handoff-prompt TEXT") { |v| handoff_prompt = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
+      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{page}" if handoff_doc && handoff_prompt
       if threshold
         begin
           threshold = HandoffConfig.parse_threshold(threshold)
         rescue ArgumentError => e
-          raise UsageError, "--threshold #{e.message}\n\n#{parser.help}"
+          raise UsageError, "--threshold #{e.message}\n\n#{page}"
         end
       end
 
       name = pick_workspace_name(name_opt, args.shift)
       name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Missing workspace name.\n\n#{page}" if name.nil?
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
       raise Error, "workspace handoff is not available in this build" unless @handoff_command
 
       result = @handoff_command.check(name: name, pane: pane, threshold: threshold, context_pct: context_pct,
@@ -3761,23 +3738,22 @@ module Workspace
       json = false
       name_opt = nil
 
+      page = HelpPages.render(HelpPages::HANDOFF.fetch("new")).join("\n")
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace handoff new [NAME] [options]"
-        opts.on("--name WS", "The workspace, as an option (same as the positional NAME; default: the current directory's)") { |v| name_opt = v }
-        opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
-          "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
-        opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from (default: the plan, else HANDOFF.md, in the notes directory)") { |v| handoff_doc = v }
-        opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
-        opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
+        opts.on("--name WS") { |v| name_opt = v }
+        opts.on("--pane PANE") { |v| pane = v }
+        opts.on("--handoff-doc PATH") { |v| handoff_doc = v }
+        opts.on("--handoff-prompt TEXT") { |v| handoff_prompt = v }
+        opts.on("--wait") { wait = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
+      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{page}" if handoff_doc && handoff_prompt
 
       name = pick_workspace_name(name_opt, args.shift)
       name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Missing workspace name.\n\n#{page}" if name.nil?
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
       raise Error, "workspace handoff is not available in this build" unless @handoff_command
 
       result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, wait: wait, json: json)
@@ -4456,11 +4432,11 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace daemon list"
-        opts.separator "  workspace daemon restart --all    # after installing a new version"
-        opts.separator "  workspace daemon status my-app"
-        opts.separator "  workspace daemon log my-app --lines 100"
-        opts.separator "  workspace daemon restart my-app --json"
+        opts.separator "  workspace daemon list    # every running daemon"
+        opts.separator "  workspace daemon status my-app    # is its daemon answering"
+        opts.separator "  workspace daemon log my-app --lines 100    # the last 100 lines of its log"
+        opts.separator "  workspace daemon restart my-app --json    # one JSON action document"
+        opts.separator "  workspace daemon restart --all    # SIGTERM each running daemon and start it again"
       end
     end
 

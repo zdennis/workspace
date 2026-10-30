@@ -1521,17 +1521,34 @@ RSpec.describe Workspace::CLI do
     it "handoff --help prints the handoff page and exits 0" do
       cli, output, error_output = build_test_cli
       run_help(cli, ["handoff", "--help"], output, error_output)
-      expect(output.string).to start_with("Usage: workspace handoff check NAME")
+      expect(output.string).to start_with("Usage: workspace handoff check [NAME]")
+      expect(output.string).to include("workspace handoff new [NAME]")
       expect(error_output.string).to be_empty
     end
 
     ["check", "new"].each do |verb|
       ["--help", "-h"].each do |flag|
-        it "handoff #{verb} #{flag} prints the handoff page and exits 0" do
-          cli, output, error_output = build_test_cli
+        it "handoff #{verb} #{flag} prints the page of that verb and exits 0" do
+          handoff_command = double("handoff", check: {exit_code: 0}, new: {exit_code: 0})
+          expect(handoff_command).not_to receive(:check)
+          expect(handoff_command).not_to receive(:new)
+          cli, output, error_output = build_test_cli(handoff_command: handoff_command)
           run_help(cli, ["handoff", verb, flag], output, error_output)
-          expect(output.string).to start_with("Usage: workspace handoff check NAME")
+          expect(output.string).to start_with("Usage: workspace handoff #{verb} [NAME]")
+          expect(output.string.scan("Usage: workspace handoff").size).to eq(1)
           expect(error_output.string).to be_empty
+        end
+      end
+
+      it "handoff #{verb} treats --help after --handoff-prompt as the prompt" do
+        handoff_command = double("handoff", check: {exit_code: 0}, new: {exit_code: 0})
+        cli, output, = build_test_cli(handoff_command: handoff_command)
+        cli.run(["handoff", verb, "myapp", "--handoff-prompt", "--help"])
+        expect(output.string).to be_empty
+        if verb == "check"
+          expect(handoff_command).to have_received(:check).with(hash_including(name: "myapp", handoff_prompt: "--help"))
+        else
+          expect(handoff_command).to have_received(:new).with(hash_including(name: "myapp", handoff_prompt: "--help"))
         end
       end
     end
