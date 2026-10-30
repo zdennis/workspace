@@ -1010,6 +1010,14 @@ RSpec.describe Workspace::Doctor do
         expect(rows.first[:fix]).to include("workspace doctor --fix")
       end
 
+      it "reports a fallback half that runs another program" do
+        write_config("myapp", "claude-dev --continue || claude --continue")
+
+        rows = pane_rows(doctor_with.report(headless: true))
+
+        expect(rows.map { |row| row[:message] }).to eq(["myapp: agent pane runs claude, but agent.commands.claude is claude-dev"])
+      end
+
       it "is not an issue and shows in the json document" do
         write_config("myapp", pane)
 
@@ -1070,6 +1078,18 @@ RSpec.describe Workspace::Doctor do
         expect(File.read(backups.first)).to eq(original)
         expect(output.string).to include("--fix: myapp: agent pane now runs claude-dev")
         expect(pane_rows(result).map { |row| row[:status] }).to eq(["ok"])
+      end
+
+      it "rewrites a stale fallback half after backing the file up" do
+        path = write_config("myapp", "claude-dev --continue || claude --continue")
+        original = File.read(path)
+
+        doctor_with.report(headless: true, fix: true)
+
+        expect(File.read(path)).to include("- claude-dev --continue || claude-dev --continue")
+        backups = Dir.glob("#{path}.workspace-backup-*")
+        expect(backups.size).to eq(1)
+        expect(File.read(backups.first)).to eq(original)
       end
 
       it "leaves a matching config and a config without an agent pane alone" do

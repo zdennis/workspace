@@ -295,17 +295,21 @@ module Workspace
 
     private
 
-    # @return [Array<String, nil>] the programs of the one pane line that differs between two contents
+    # @return [Array<String, nil>] the programs of the one pane line that differs between two contents:
+    #   the first `||` half whose program changed, else the first half
     def changed_pane_programs(before, after)
       old_line, new_line = before.lines.zip(after.lines).find { |old, new| old != new }
-      [pane_program(old_line), pane_program(new_line)]
+      pairs = pane_programs(old_line).zip(pane_programs(new_line))
+      first = pairs.first || [nil, nil]
+      return first if first.any?(&:nil?)
+      pairs.find { |old, new| old && new && old != new } || first
     end
 
-    def pane_program(line)
+    def pane_programs(line)
       item = YAML.safe_load(line.to_s.strip)&.first
-      item.is_a?(String) ? AgentCommands.program_for(item.split(" || ").first) : nil
+      item.is_a?(String) ? item.split(" || ").map { |half| AgentCommands.program_for(half) } : [nil]
     rescue Psych::Exception
-      nil
+      [nil]
     end
 
     # @return [Array(String, String), nil] the indent and the text of a YAML list item line, a quoted

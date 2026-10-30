@@ -409,6 +409,33 @@ RSpec.describe Workspace::ProjectConfig do
             content: "panes:\n  - claude-new --dangerously-skip-permissions\n")
         end
 
+        it "is stale when a fallback half runs another program, naming the fallback's program" do
+          File.write(path, "panes:\n  - claude-new --continue || claude --continue\n")
+
+          expect(pc.stale_agent_pane("myapp", "claude")).to include(running: "claude", wanted: "claude-new",
+            content: "panes:\n  - claude-new --continue || claude-new --continue\n")
+        end
+
+        it "is not stale for flag differences or a non-agent fallback" do
+          File.write(path, "panes:\n  - claude-new --continue || claude-new --other\n")
+          expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
+          File.write(path, "panes:\n  - claude-new --continue || echo failed\n")
+          expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
+        end
+
+        it "names the first half's program when several halves are stale" do
+          File.write(path, "panes:\n  - claude --continue || claude\n")
+
+          expect(pc.stale_agent_pane("myapp", "claude")).to include(running: "claude", wanted: "claude-new")
+        end
+
+        it "is not stale for an ordinary claude || claude line with no key set" do
+          settings.clear
+          File.write(path, "panes:\n  - claude --continue || claude\n")
+
+          expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
+        end
+
         it "is nil for a current pane, kind none, a missing pane and an unreadable config" do
           File.write(path, "panes:\n  - claude-new --dangerously-skip-permissions\n")
           expect(pc.stale_agent_pane("myapp", "claude")).to be_nil
