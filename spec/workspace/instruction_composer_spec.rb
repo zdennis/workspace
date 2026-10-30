@@ -649,6 +649,7 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
 
     expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/research", "builtin"]])
     expect(result["text"]).to include("`workspace notes dir --create`").and include("-findings.md").and include("do not commit")
+    expect(result["text"]).to include('workspace inbox add "Research:').and include("--type note --note").and include("--expires 168h").and include("workspace ui open notes --path")
   end
 
   it "composes the notes pack by name, telling the agent to ask workspace for the directory and never to commit it" do
