@@ -1190,10 +1190,11 @@ module Workspace
           "to stderr; a refusal is the error envelope with a retry hint") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace kill    # kill the current worktree project (auto-detected from cwd)"
-        opts.separator "  workspace kill myproject.worktree-PROJ-123    # kill a specific worktree project"
-        opts.separator "  workspace kill --name myproject.worktree-PROJ-123 --json    # the same, scripted"
+        opts.separator "  workspace kill    # after a confirmation, end the worktree workspace you are in: its session and git worktree, and the branch start made if it is merged"
+        opts.separator "  workspace kill myproject.worktree-PROJ-123    # the same for a named worktree workspace, from anywhere"
+        opts.separator "  workspace kill --name myproject.worktree-PROJ-123 --json    # the same, naming it with a flag; one action document (it still asks first)"
         opts.separator "  workspace kill -f myproject.worktree-PROJ-123    # skip confirmation and the unsaved-work check, and force-delete the branch start made"
+        opts.separator "  workspace kill -f --json myproject.worktree-PROJ-123    # scripted: no prompt, and the unsaved-work check is skipped too"
         opts.separator "  workspace kill --delete-remote    # also delete the branch on its remote"
       end
       parser.parse!(args)
@@ -1254,9 +1255,10 @@ module Workspace
         end
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace finish    # finish the current worktree project (auto-detected from cwd)"
-        opts.separator "  workspace finish --pr    # open (or reuse) a PR first"
-        opts.separator "  workspace finish myproject.worktree-PROJ-123 --json    # scripted; JSON on stdout"
+        opts.separator "  workspace finish    # remove the worktree workspace you are in (session, worktree, config), once it is clean and pushed; the branch is kept"
+        opts.separator "  workspace finish --pr    # open (or reuse) a PR for the branch first, then remove the workspace"
+        opts.separator "  workspace finish --name myproject.worktree-PROJ-123    # finish a named worktree workspace, from anywhere"
+        opts.separator "  workspace finish myproject.worktree-PROJ-123 --json    # the same, scripted; JSON on stdout"
       end
       parser.parse!(args)
       target = single_workspace_arg(args, name, "finish")
@@ -6606,8 +6608,9 @@ module Workspace
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace repair    # auto-rebuild state from all live workspace windows"
-        opts.separator "  workspace repair homebrew-bin --window-id 1196    # manually set a project's window ID"
+        opts.separator "  workspace repair    # state is wrong or lost: rewrite each workspace's window id from the live workspace-NAME windows"
+        opts.separator "  workspace repair --json    # the same, one action document with a row per window"
+        opts.separator "  workspace repair homebrew-bin --window-id 1196    # a window has another title: set that project's window id by hand"
       end
       parser.parse!(args)
 
@@ -6654,7 +6657,7 @@ module Workspace
           "could not be listed; a window that could not be read is never called gone)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace cleanup    # list zombie sessions and ask before removing"
+        opts.separator "  workspace cleanup    # list zombie sessions and ask before removing them from state"
         opts.separator "  workspace cleanup --dry-run --json    # report the zombies, change nothing"
         opts.separator "  workspace cleanup --tmux-dead-only --force    # remove only entries with no tmux session"
         opts.separator "  workspace cleanup --force    # remove all zombie sessions immediately"
@@ -6708,11 +6711,11 @@ module Workspace
         opts.on("--json", "Print one action document of per-candidate rows; no confirmation prompt") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace prune --dry-run --json    # the candidates as rows, would_remove"
-        opts.separator "  workspace prune --json --name=feat-a --name=feat-b    # prune two, skip unsaved work"
+        opts.separator "  workspace prune    # remove the worktree workspaces whose pull request is closed or merged, or whose directory is gone, after a confirmation"
         opts.separator "  workspace prune --dry-run    # see what would be pruned without changing anything"
-        opts.separator "  workspace prune    # prune with a confirmation prompt"
-        opts.separator "  workspace prune --force    # prune without prompting, including candidates with unsaved work"
+        opts.separator "  workspace prune --dry-run --json    # the candidates as rows, outcome would_remove"
+        opts.separator "  workspace prune --json --name=feat-a --name=feat-b    # prune two without asking; one with unsaved work is skipped"
+        opts.separator "  workspace prune --force    # prune without asking, removing candidates with unsaved work too"
       end
       parser.parse!(args)
 
@@ -6765,9 +6768,9 @@ module Workspace
           "to stderr; a refusal is the error envelope. --json does not imply --yes: pass --yes in scripts") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace remove --dry-run    # see which files of the workspace you are in would go"
+        opts.separator "  workspace remove myproject    # ask, then delete its tmuxinator config, settings file and state entry (backups kept; the checkout is untouched)"
+        opts.separator "  workspace remove    # the same for the workspace you are in"
         opts.separator "  workspace remove myproject --dry-run    # see which files would go"
-        opts.separator "  workspace remove myproject    # ask, then remove"
         opts.separator "  workspace remove myproject --yes --json    # no prompt, one action document"
       end
       parser.parse!(args)
@@ -8171,9 +8174,11 @@ module Workspace
         opts.separator "Allow 60s without --launch, and --prompt-timeout plus 60s with it."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace promote fix-login --dry-run --json"
-        opts.separator "  workspace promote fix-login --title \"Fix the login bug\" --spine --plan --carry-note research-login.md --json"
-        opts.separator "  workspace promote --name api --launch"
+        opts.separator "  workspace promote    # on a feature branch: move its commits and the checkout's changes into a new worktree workspace"
+        opts.separator "  workspace promote fix-login --dry-run    # on the default branch: say what would move to a new branch fix-login, write nothing"
+        opts.separator "  workspace promote fix-login --dry-run --json    # the same, as one JSON document"
+        opts.separator "  workspace promote fix-login --title \"Fix the login bug\" --spine --plan --carry-note research-login.md --json    # move it, make a spine and plan, copy one note, scripted"
+        opts.separator "  workspace promote --name api --launch    # move the branch the \"api\" checkout is on, from any directory, then launch the new workspace"
       end
     end
 

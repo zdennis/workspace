@@ -25,10 +25,13 @@ With `--window-id`, sets a specific project's window ID without scanning. Useful
 ## Examples
 
 ```sh
-# Auto-rebuild state from all live workspace windows
+# State is wrong or lost: rewrite each workspace's window id from the live workspace-NAME windows
 workspace repair
 
-# Manually set a project's window ID
+# The same, one action document with a row per window
+workspace repair --json
+
+# A window has another title: set that project's window id by hand
 workspace repair homebrew-bin --window-id 1196
 ```
 

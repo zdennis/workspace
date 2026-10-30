@@ -80,12 +80,17 @@ A non-worktree project has nothing to check — `kill` already refuses it for no
 ## Examples
 
 ```sh
-# Kill the current worktree project (auto-detected from cwd)
+# After a confirmation, end the worktree workspace you are in: its session and git worktree, and the branch start made if it is merged
 workspace kill
 
-# Kill a specific worktree project
+# The same for a named worktree workspace, from anywhere
 workspace kill myproject.worktree-PROJ-123
-workspace kill --name myproject.worktree-PROJ-123
+
+# The same, naming it with a flag; one action document (it still asks first)
+workspace kill --name myproject.worktree-PROJ-123 --json
+
+# Scripted: no prompt, and the unsaved-work check is skipped too
+workspace kill -f --json myproject.worktree-PROJ-123
 
 # Force kill without confirmation or the unsaved-work check
 workspace kill -f myproject.worktree-PROJ-123

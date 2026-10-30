@@ -153,10 +153,6 @@ module HelpExamplesSpec
     "workflow update",
     "workflow validate",
 
-    # T6: endings and repair
-    "promote",
-    "repair",
-
     # T7: windows and panes
     "tile",
     "tmux",

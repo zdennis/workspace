@@ -49,13 +49,19 @@ If git can't answer the check for a candidate, it's skipped the same way (report
 ## Examples
 
 ```sh
+# Remove worktree workspaces whose pull request is closed or merged, or whose directory is gone, after a confirmation
+workspace prune
+
 # See what would be pruned without changing anything
 workspace prune --dry-run
 
-# Prune with confirmation prompt
-workspace prune
+# The candidates as rows, outcome would_remove
+workspace prune --dry-run --json
 
-# Prune without prompting, and remove candidates with unsaved work too
+# Prune two without asking; one with unsaved work is skipped
+workspace prune --json --name=feat-a --name=feat-b
+
+# Prune without asking, removing candidates with unsaved work too
 workspace prune --force
 ```
 
