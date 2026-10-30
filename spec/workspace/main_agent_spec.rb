@@ -84,7 +84,17 @@ RSpec.describe Workspace::MainAgent do
   describe "#spawn_command" do
     let(:template_command) { "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions" }
 
-    before { allow(project_config).to receive(:agent_pane_command) { |kind| (kind == "claude") ? template_command : kind } }
+    before do
+      allow(project_config).to receive(:agent_pane_command) { |kind| (kind == "claude") ? template_command : kind }
+      allow(project_config).to receive(:with_configured_program) { |text, *| text }
+    end
+
+    it "passes the fresh part, the kind and the workspace to with_configured_program" do
+      config_with(["claude --flag --continue || claude --flag"])
+      allow(project_config).to receive(:with_configured_program).with("claude --flag", "claude", "app").and_return("swapped --flag")
+
+      expect(main_agent.spawn_command("app", "claude")).to eq("swapped --flag")
+    end
 
     it "takes the workspace's own pane command for the kind, without the part that resumes a conversation" do
       config_with(["echo hi", "claude --dangerously-skip-permissions --model opus --continue || claude --dangerously-skip-permissions --model opus"])
@@ -137,6 +147,10 @@ RSpec.describe Workspace::MainAgent do
       Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps))
     end
     subject(:main_agent) { described_class.new(project_config: project_config, agent_commands: agent_commands) }
+    let(:project_config) do
+      config = double("config", worktree_template_path: File.join(Dir.tmpdir, "no-such-template.yml"))
+      Workspace::ProjectConfig.new(config: config, git: nil, output: StringIO.new, agent_commands: agent_commands)
+    end
 
     it "takes a pane running claude-dev as claude" do
       config_with(["echo hi", "claude-dev --dangerously-skip-permissions --continue || claude-dev"])
@@ -174,6 +188,24 @@ RSpec.describe Workspace::MainAgent do
     describe "#spawn_command" do
       before { allow(project_config).to receive(:agent_pane_command) { |kind, _workspace = nil| "#{kind}-template" } }
 
+      it "swaps the stale fallback half for the configured command" do
+        config_with(["claude-dev --continue || claude"])
+
+        expect(main_agent.spawn_command("app", "claude")).to eq("claude-dev")
+      end
+
+      it "swaps the program of a plain claude pane, keeping its flags" do
+        config_with(["claude --flag --continue || claude --flag"])
+
+        expect(main_agent.spawn_command("app", "claude")).to eq("claude-dev --flag")
+      end
+
+      it "still reads an old config with a plain claude second half as claude" do
+        config_with(["mycl --continue || claude"])
+
+        expect(main_agent.kind("app")).to eq("claude")
+      end
+
       it "recognizes the configured program in the workspace's own pane and drops the resuming part" do
         config_with(["claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions"])
 
@@ -194,6 +226,30 @@ RSpec.describe Workspace::MainAgent do
         expect(main_agent.spawn_command("app", "claude")).to eq("claude-dev")
         expect(main_agent.spawn_command("app", "codex")).to eq("codex")
       end
+    end
+  end
+
+  context "with no agent command set and a real ProjectConfig" do
+    let(:agent_commands) do
+      ps = instance_double(Workspace::ProjectSettings, load_global: {}, load: {})
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: ps))
+    end
+    subject(:main_agent) { described_class.new(project_config: project_config, agent_commands: agent_commands) }
+    let(:project_config) do
+      config = double("config", worktree_template_path: File.join(Dir.tmpdir, "no-such-template.yml"))
+      Workspace::ProjectConfig.new(config: config, git: nil, output: StringIO.new, agent_commands: agent_commands)
+    end
+
+    it "spawns the pane's fresh part with its flags when the program is plain claude" do
+      config_with(["claude --flag --continue || claude --flag"])
+
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude --flag")
+    end
+
+    it "returns a codex pane's fresh part unchanged" do
+      config_with(["FOO=1 codex --yolo"])
+
+      expect(main_agent.spawn_command("app", "codex")).to eq("FOO=1 codex --yolo")
     end
   end
 

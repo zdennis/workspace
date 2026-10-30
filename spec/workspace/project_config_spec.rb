@@ -181,6 +181,34 @@ RSpec.describe Workspace::ProjectConfig do
       end
     end
 
+    describe "#with_configured_program" do
+      let(:settings) { {"agent" => {"commands" => {"claude" => "claude-dev"}}} }
+      let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: settings, load: {}) }
+      let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
+      subject(:pc) { described_class.new(config: config, output: output, git: git, agent_commands: agent_commands) }
+
+      it "swaps the program in each half of the chain, keeping flags and other halves" do
+        expect(pc.with_configured_program("claude --a --continue || claude --a", "claude", "app")).to eq("claude-dev --a --continue || claude-dev --a")
+        expect(pc.with_configured_program("claude-dev --continue || claude", "claude", "app")).to eq("claude-dev --continue || claude-dev")
+        expect(pc.with_configured_program("claude || echo failed", "claude", "app")).to eq("claude-dev || echo failed")
+      end
+
+      it "applies a command with extra words once, however often a line is passed through" do
+        settings.replace("agent" => {"commands" => {"claude" => "mycl --flag"}})
+
+        once = pc.with_configured_program("claude --x", "claude", "app")
+        expect(once).to eq("mycl --flag --x")
+        expect(pc.with_configured_program(once, "claude", "app")).to eq(once)
+        expect(pc.with_configured_program("mycl --flag --x", "claude", "app")).to eq("mycl --flag --x")
+      end
+
+      it "returns the text for another kind and the executable when nothing is configured" do
+        expect(pc.with_configured_program("codex --yolo", "codex", "app")).to eq("codex --yolo")
+        settings.clear
+        expect(pc.with_configured_program("claude --a", "claude", "app")).to eq("claude --a")
+      end
+    end
+
     describe "#check_agent_kind!" do
       it "raises template_outdated for a template with no Claude Code pane" do
         path = File.join(tmpdir, "t.yml")

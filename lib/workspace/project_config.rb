@@ -229,6 +229,28 @@ module Workspace
       line && claude_line(line, command, claude_names(workspace))
     end
 
+    # +text+ with the program of each `||` half that runs a Claude Code program swapped for the configured
+    # command, flags kept: the same half rewrite as {#agent_pane_command} and {#rewrite_agent_pane}. A half
+    # that already starts with the configured command is left as written, so a command with extra words
+    # (`mycl --flag`) is applied once however many times a line is passed through. Only `claude` has a
+    # program to swap; any other kind returns +text+.
+    #
+    # @param text [String] a pane command, or one part of it
+    # @param kind [String] an {AgentProvider} key
+    # @param workspace [String, nil] the workspace whose config layers pick the command
+    # @return [String]
+    def with_configured_program(text, kind, workspace = nil)
+      return text unless kind == "claude"
+      command = configured_command(kind, workspace)
+      return text unless command
+      wanted = command.split
+      names = claude_names(workspace)
+      text.split(" || ").map do |half|
+        words = half.split
+        (words.first(wanted.size) == wanted) ? half : claude_line(half, command, names)
+      end.join(" || ")
+    end
+
     # Points the agent pane line of a tmuxinator config at the configured command for a kind. The line is
     # found whether it runs the template's `claude --dangerously-skip-permissions ...` or a command already
     # written for any kind (a program of {AgentCommands#names_for}). For `claude` a line that already runs a
