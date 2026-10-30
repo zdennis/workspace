@@ -512,6 +512,23 @@ module CLITestHelpers
     end
   end
 
+  # Stands in for Commands::EnsureAgent so a Launch built without one never
+  # spawns a daemon or waits out its 5s socket timeout.
+  class FakeAgentEnsurer
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = Workspace::Commands::EnsureAgent::Result.new(:started)
+    end
+
+    def call(name:, wc_socket: nil)
+      @calls << name
+      @result
+    end
+  end
+
   class FakeLockCommand
     attr_reader :calls, :working_dirs
     attr_accessor :result

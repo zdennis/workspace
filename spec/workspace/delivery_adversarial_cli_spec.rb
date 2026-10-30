@@ -115,7 +115,7 @@ RSpec.describe "delivery adversarial (CLI/UX)" do
       launch = Workspace::Commands::Launch.new(
         state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
         project_config: project_config, window_layout: window_layout, config: config,
-        pipeline_config: pipeline_config, output: StringIO.new, error_output: StringIO.new
+        pipeline_config: pipeline_config, agent_ensurer: CLITestHelpers::FakeAgentEnsurer.new, output: StringIO.new, error_output: StringIO.new
       )
 
       result = launch.call(["proj1"])

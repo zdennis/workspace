@@ -123,6 +123,27 @@ RSpec.describe Workspace::Commands::Launch do
         expect(agent_ensurer.calls).to eq(["proj1"])
       end
 
+      it "builds a real EnsureAgent when none is given, and calls it for the project" do
+        allow(config).to receive(:agent_running?).with("proj1").and_return(true)
+        real = nil
+        allow(Workspace::Commands::EnsureAgent).to receive(:new).and_wrap_original do |original, **kwargs|
+          real = original.call(**kwargs)
+          allow(real).to receive(:call).and_call_original
+          real
+        end
+        default_command = described_class.new(
+          state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+          project_config: project_config, window_layout: window_layout, config: config,
+          pipeline_config: pipeline_config, sleeper: ->(_seconds) {}, output: output, error_output: error_output
+        )
+
+        default_command.call(["proj1"])
+
+        expect(real).to have_received(:call).with(name: "proj1")
+        expect(Process).not_to have_received(:spawn)
+        expect(error_output.string).not_to include("Could not start session monitor")
+      end
+
       it "warns and continues when the daemon can't be started" do
         agent_ensurer.result = Workspace::Commands::EnsureAgent::Result.new(:failed, "No such file or directory - workspace")
 

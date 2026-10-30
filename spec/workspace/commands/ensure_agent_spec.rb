@@ -194,5 +194,16 @@ RSpec.describe Workspace::Commands::EnsureAgent do
         out: [log_path, "a"], err: [log_path, "a"], in: File::NULL)
       expect(Process).to have_received(:detach).with(4242)
     end
+
+    it "leaves out --wc-socket when no socket is given" do
+      ensurer = described_class.new(config: config, pipeline_config: pipeline_config, sleeper: sleeper, clock: -> { now[0] }, error_output: error_output)
+      allow(Process).to receive(:spawn).and_return(4242)
+      allow(Process).to receive(:detach) { daemon_up[0] = true }
+
+      ensurer.call(name: "myapp")
+
+      expect(Process).to have_received(:spawn).with($PROGRAM_NAME, "agentd", "--name", "myapp",
+        out: [log_path, "a"], err: [log_path, "a"], in: File::NULL)
+    end
   end
 end
