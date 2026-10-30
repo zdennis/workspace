@@ -1,0 +1,310 @@
+[
+  {
+    "path": "a.md",
+    "valid": true,
+    "reason": null,
+    "layer": "shape"
+  },
+  {
+    "path": "a/b/c/d.md",
+    "valid": true,
+    "reason": null,
+    "layer": "shape"
+  },
+  {
+    "path": "a-b_c.1.md",
+    "valid": true,
+    "reason": null,
+    "layer": "shape"
+  },
+  {
+    "path": "a./b.md",
+    "valid": true,
+    "reason": null,
+    "layer": "shape"
+  },
+  {
+    "path": "a.markdown",
+    "valid": true,
+    "reason": null,
+    "layer": "shape"
+  },
+  {
+    "path": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md",
+    "valid": true,
+    "reason": null,
+    "layer": "shape"
+  },
+  {
+    "path": "x.node_modules.md",
+    "valid": true,
+    "reason": null,
+    "layer": "shape"
+  },
+  {
+    "path": "Node_Modules/a.md",
+    "valid": true,
+    "reason": null,
+    "layer": "shape"
+  },
+  {
+    "path": "",
+    "valid": false,
+    "reason": "empty",
+    "layer": "shape",
+    "reason_match": "empty"
+  },
+  {
+    "path": "/a.md",
+    "valid": false,
+    "reason": "absolute",
+    "layer": "shape",
+    "reason_match": "relative"
+  },
+  {
+    "path": "a//b.md",
+    "valid": false,
+    "reason": "empty segment",
+    "layer": "shape",
+    "reason_match": "empty segment"
+  },
+  {
+    "path": "a/",
+    "valid": false,
+    "reason": "trailing slash",
+    "layer": "shape",
+    "reason_match": "empty segment"
+  },
+  {
+    "path": ".",
+    "valid": false,
+    "reason": "dot name",
+    "layer": "shape",
+    "reason_match": "dot"
+  },
+  {
+    "path": "..",
+    "valid": false,
+    "reason": "dot name",
+    "layer": "shape",
+    "reason_match": "dot"
+  },
+  {
+    "path": "a/../b.md",
+    "valid": false,
+    "reason": "dot name",
+    "layer": "shape",
+    "reason_match": "dot"
+  },
+  {
+    "path": ".hidden.md",
+    "valid": false,
+    "reason": "dot name",
+    "layer": "shape",
+    "reason_match": "dot"
+  },
+  {
+    "path": "a/.git/x.md",
+    "valid": false,
+    "reason": "dot name",
+    "layer": "shape",
+    "reason_match": "dot"
+  },
+  {
+    "path": "node_modules/a.md",
+    "valid": false,
+    "reason": "node_modules",
+    "layer": "shape",
+    "reason_match": "node_modules"
+  },
+  {
+    "path": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md",
+    "valid": false,
+    "reason": "segment too long",
+    "layer": "shape",
+    "reason_match": "at most 255"
+  },
+  {
+    "path": "a/b/c/d/e.md",
+    "valid": false,
+    "reason": "too many segments",
+    "layer": "shape",
+    "reason_match": "at most 4 segments"
+  },
+  {
+    "path": "a\n.md",
+    "valid": false,
+    "reason": "control character",
+    "layer": "shape",
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a\u0000.md",
+    "valid": false,
+    "reason": "control character",
+    "layer": "shape",
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a\t.md",
+    "valid": false,
+    "reason": "control character",
+    "layer": "shape",
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a​.md",
+    "valid": false,
+    "reason": "format character",
+    "layer": "shape",
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a﻿.md",
+    "valid": false,
+    "reason": "format character",
+    "layer": "shape",
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a .md",
+    "valid": false,
+    "reason": "line separator",
+    "layer": "shape",
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a�.md",
+    "valid": false,
+    "reason": "replacement character",
+    "layer": "shape",
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": {
+      "bytes": [
+        97,
+        255,
+        46,
+        109,
+        100
+      ]
+    },
+    "valid": false,
+    "reason": "invalid UTF-8",
+    "layer": "shape",
+    "reason_match": "UTF-8"
+  },
+  {
+    "path": "a%2Fb.md",
+    "valid": false,
+    "reason": "percent",
+    "layer": "shape",
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a.txt",
+    "valid": false,
+    "reason": "not markdown",
+    "layer": "shape",
+    "reason_match": ".md"
+  },
+  {
+    "path": "a",
+    "valid": false,
+    "reason": "no extension",
+    "layer": "shape",
+    "reason_match": ".md"
+  },
+  {
+    "path": "a.md.",
+    "valid": false,
+    "reason": "trailing dot",
+    "layer": "shape",
+    "reason_match": ".md"
+  },
+  {
+    "path": "café.md",
+    "valid": false,
+    "reason": "non-ASCII",
+    "layer": "shape",
+    "cli_only": true,
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "café.md",
+    "valid": false,
+    "reason": "non-ASCII",
+    "layer": "shape",
+    "cli_only": true,
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a(1).md",
+    "valid": false,
+    "reason": "outside charset",
+    "layer": "shape",
+    "cli_only": true,
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "my note.md",
+    "valid": false,
+    "reason": "space",
+    "layer": "shape",
+    "cli_only": true,
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中.md",
+    "valid": false,
+    "reason": "non-ASCII",
+    "layer": "shape",
+    "cli_only": true,
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "a b.md",
+    "valid": false,
+    "reason": "non-ASCII",
+    "layer": "shape",
+    "cli_only": true,
+    "reason_match": "letters, digits"
+  },
+  {
+    "path": "link.md",
+    "valid": false,
+    "reason": "symlink inside the dir",
+    "layer": "fs",
+    "reason_match": "symlink"
+  },
+  {
+    "path": "Findings.md",
+    "valid": false,
+    "reason": "case mismatch",
+    "layer": "fs",
+    "reason_match": "case|no such file"
+  },
+  {
+    "path": "folder.md",
+    "valid": false,
+    "reason": "directory",
+    "layer": "fs",
+    "reason_match": "not a file"
+  },
+  {
+    "path": "data.txt",
+    "valid": false,
+    "reason": "not markdown",
+    "layer": "fs",
+    "cli_only": true,
+    "reason_match": ".md"
+  },
+  {
+    "path": "missing.md",
+    "valid": false,
+    "reason": "missing file",
+    "layer": "fs",
+    "reason_match": "no such file"
+  }
+]

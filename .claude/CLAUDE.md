@@ -132,6 +132,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/run_result_cleaner.rb` — Removes run files in `~/.workspace-runs` older than 7 days, never an in-progress run or a live session's; swept at most hourly from `RunResultStore#write`
 - `lib/workspace/prompt_input.rb` — `PromptInput` wraps the input stream and refuses prompts under `--no-input`/`WORKSPACE_NO_INPUT`; `Prompt.ask` is how every prompt site reads an answer
 - `lib/workspace/duration.rb` — Parses duration strings (`"20"`, `"5m"`, `"1h"`) shared by dev/lock config and CLI options
+- `lib/workspace/note_path.rb` — `NotePath`: the one checker for a note path inside a notes dir, an ASCII subset of workspace-ui's `noteSegments`; `.segments` checks the shape only, `.resolve` also needs the real path to equal the dir's real path plus the path (no symlinks, no case mismatch, `.md`/`.markdown` file), every `SystemCallError` a `Refused`; advisory, workspace-ui checks again; `.url_path` joins segments. Shared fixture `spec/fixtures/note_paths.json`
 - `lib/templates/workspace.project-template.yml` — Tmuxinator template for standard projects
 - `lib/templates/workspace.project-worktree-template.yml` — Tmuxinator template for git worktree projects
 - State tracked in `~/.workspace-state.json`
