@@ -186,6 +186,15 @@ RSpec.describe Workspace::TmuxinatorReport do
       expect(panes.last["flags"]).to eq(%w[--model])
     end
 
+    it "reports a half-stale line as claude in either order, with the flags of its first half" do
+      write("api", "name: api\nwindows:\n  - w:\n      panes:\n        - claude-dev --continue --model opus || claude --verbose\n        - claude --continue --model opus || claude-dev --verbose\n")
+
+      panes = report.show("api")["windows"].first["panes"]
+
+      expect(panes.map { |p| p["kind"] }).to eq(%w[claude claude])
+      expect(panes.map { |p| p["flags"] }).to eq([%w[--continue --model], %w[--continue --model]])
+    end
+
     it "still reports plain claude" do
       write("api", "name: api\nwindows:\n  - w:\n      panes:\n        - claude --continue\n")
 
