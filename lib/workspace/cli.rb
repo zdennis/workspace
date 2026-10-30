@@ -2183,6 +2183,8 @@ module Workspace
       index = args.each_index.find { |i| !args[i].start_with?("-") && !(i.positive? && args[i - 1] == "--name") }
       subcommand = index && args[index]
       rest = index ? args[0...index] + args[(index + 1)..] : args
+      verb = (subcommand == "resolve") ? "answer" : subcommand
+      return if verb && verb_help_shown?(HelpPages::ASK, [verb, *rest])
 
       case subcommand
       when "list" then cmd_ask_list(rest)
@@ -2248,14 +2250,17 @@ module Workspace
         WORKSPACE_ALERT=question and the question/default in
         WORKSPACE_ALERT_* env vars. Without it, the question is just recorded.
 
+        Run `workspace ask VERB --help` for the page of one subcommand.
+
         Examples:
-          workspace ask "Use pg or sqlite for the cache?" --default "sqlite" --context "lib/cache.rb:12"
-          workspace ask list
-          workspace ask list myapp                  # another workspace's questions
-          workspace ask answer a1b2c3 "Use postgres instead"
-          workspace ask answer myapp a1b2c3 "Use postgres instead"
-          workspace ask withdraw a1b2c3             # the asker no longer needs an answer
-          workspace ask answer --deliver a1b2c3 -- yes    # also types it into the asking pane
+          workspace ask "Use pg or sqlite for the cache?" --default "sqlite"    # record a question and keep going with the default
+          workspace ask "Use pg or sqlite?" --default "sqlite" --context "lib/cache.rb:12"    # point at the code in question
+          workspace ask list    # open questions of this workspace
+          workspace ask list myapp --all    # another workspace's, answered and withdrawn ones too
+          workspace ask answer a1b2c3 "Use postgres instead"    # answer an open question
+          workspace ask answer --deliver a1b2c3 "yes"    # also type the answer into the pane that asked
+          workspace ask deliver a1b2c3    # type the saved answer again after a failed delivery
+          workspace ask withdraw a1b2c3    # the asker no longer needs an answer
       HELP
     end
 
@@ -2387,6 +2392,8 @@ module Workspace
 
     def cmd_inbox(args)
       subcommand = args.shift
+      return if subcommand && verb_help_shown?(HelpPages::INBOX, [subcommand, *args])
+
       case subcommand
       when "add" then cmd_inbox_add(args)
       when "list" then cmd_inbox_list(args)
@@ -2485,23 +2492,19 @@ module Workspace
           --json                 Print the documented JSON (see docs/README.inbox.md)
 
         A title or body with a control character (an escape sequence, NUL) is refused.
+        Run `workspace inbox VERB --help` for the page of one subcommand.
 
         Examples:
-          workspace inbox add "Check the deploy" --type todo
-          workspace inbox add "CI failed" --type alert --source-kind github_check --global --json
-          echo '{"title":"Check the deploy","type":"alert","scope":{"kind":"global"}}' | workspace inbox add --from-json -
-          workspace inbox list --all --state open,snoozed
-          workspace inbox list --all --include-derived --json
-          workspace inbox show a1b2c3d4e5
-          workspace inbox done a1b2c3d4e5 f6a7b8c9d0
-          workspace inbox dismiss a1b2c3d4e5 --json
-          workspace inbox edit a1b2c3d4e5 --title "Check the deploy again" --expires 2h
-          workspace inbox snooze a1b2c3d4e5 --for 2h
-          workspace inbox snooze a1b2c3d4e5 --until 2026-10-20T09:00:00Z --json
-          workspace inbox ack plan:blocked:api.fix
-          workspace inbox snooze 'pane:waiting:api.fix:%5' --for 1h
-          workspace inbox add "CI failed" --type alert --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
-          workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
+          workspace inbox add "Check the deploy"    # a to-do on this workspace's list
+          workspace inbox add "CI failed" --type alert --global    # an alert on the global list
+          workspace inbox add --from-json item.json    # take the whole item from a JSON file (- reads stdin)
+          workspace inbox list    # open items of this workspace, its project and the global list
+          workspace inbox list --all --include-derived --json    # every scope, plus what needs you now, as JSON
+          workspace inbox show a1b2c3d4e5    # one item, in any state
+          workspace inbox edit a1b2c3d4e5 --title "Check the deploy again"    # change an item
+          workspace inbox done a1b2c3d4e5 f6a7b8c9d0    # mark several items done
+          workspace inbox snooze a1b2c3d4e5 --for 2h    # hide an item for two hours
+          workspace inbox ack plan:blocked:api.fix    # hide a derived row until it changes
       HELP
     end
 

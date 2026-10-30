@@ -170,23 +170,6 @@ module HelpExamplesSpec
     "agent-run restart",
     "agent-run send",
 
-    # T13: coordination
-    "ask",
-    "ask answer",
-    "ask deliver",
-    "ask list",
-    "ask withdraw",
-    "inbox",
-    "inbox ack",
-    "inbox add",
-    "inbox dismiss",
-    "inbox done",
-    "inbox edit",
-    "inbox list",
-    "inbox reopen",
-    "inbox show",
-    "inbox snooze",
-
     # T14: shared resources
     "dev",
     "dev __run",

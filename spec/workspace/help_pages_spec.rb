@@ -55,6 +55,8 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["projects"].keys).to eq(["list"])
       expect(pages["projects group"].keys).to match_array(%w[create add list show])
       expect(pages["config"].keys).to eq(["show"])
+      expect(pages["ask"].keys).to match_array(%w[list answer deliver withdraw])
+      expect(pages["inbox"].keys).to match_array(%w[add list show edit done dismiss reopen snooze ack])
     end
 
     it "give each plan verb the flags PLAN_FLAGS and PLAN_TASK_FLAGS allow" do
@@ -237,6 +239,47 @@ RSpec.describe Workspace::HelpPages do
         cli.instance_variable_set(:@layout_command, layout)
         cli.run(%w[layout save --name --help])
         expect(out.string).not_to include("Usage: workspace layout save")
+      end
+    end
+
+    it "stays the question text of an ask that records one, and the answer text after --" do
+      with_cli do |cli, out, *|
+        ask = instance_double(Workspace::Commands::Ask)
+        expect(ask).to receive(:call).with(hash_including(question: "--help", default: "-h")).and_return({exit_code: 0})
+        cli.instance_variable_set(:@ask_command, ask)
+        cli.run(["ask", "--default", "-h", "--", "--help"])
+        expect(out.string).not_to include("Usage: workspace ask")
+      end
+    end
+
+    it "leaves --help after --default to the option parser, which prints usage and exits 0" do
+      with_cli do |cli, out, *|
+        cli.instance_variable_set(:@ask_command, untouchable.new)
+        saved = $stdout
+        $stdout = out
+        begin
+          expect { cli.run(["ask", "q", "--default", "x", "--help"]) }.to raise_error(SystemExit) { |e| expect(e.status).to eq(0) }
+        ensure
+          $stdout = saved
+        end
+        expect(out.string).to include("Usage: workspace ask")
+      end
+    end
+
+    it "takes --help after -- as the title of inbox add" do
+      with_cli do |cli, out, *|
+        inbox = instance_double(Workspace::Commands::Inbox)
+        expect(inbox).to receive(:add).with(hash_including(title: "--help")).and_return({exit_code: 0, results: []})
+        cli.instance_variable_set(:@inbox_command, inbox)
+        cli.run(["inbox", "add", "--", "--help"])
+        expect(out.string).not_to include("Usage: workspace inbox add")
+      end
+    end
+
+    it "shows the page of ask answer for its alias resolve" do
+      with_cli do |cli, out, *|
+        cli.run(%w[ask resolve --help])
+        expect(out.string).to start_with("Usage: workspace ask answer")
       end
     end
 

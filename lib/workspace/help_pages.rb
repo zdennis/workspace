@@ -1043,12 +1043,301 @@ module Workspace
       }
     }.freeze
 
+    ASK_WS = "WS is a workspace name; without it (or --name) the workspace of the current directory is used.".freeze
+    ASK_JSON = ["--json", "Print the documented JSON document instead of a message"].freeze
+
+    ASK = {
+      "list" => {
+        usage: ["ask list [WS] [--all] [--json]"],
+        summary: "Show the open questions of a workspace",
+        about: [ASK_WS, "Without --all only open questions are shown; a workspace with none prints a line saying so."],
+        options: [NAME_OPT, ["--all", "Also list answered and withdrawn questions, with their status"], ASK_JSON],
+        examples: [
+          ["workspace ask list", "open questions of the workspace of the current directory"],
+          ["workspace ask list myapp", "another workspace's open questions"],
+          ["workspace ask list --all", "answered and withdrawn questions too, with a STATUS column"],
+          ["workspace ask list --json", "one JSON document, for a script"]
+        ]
+      },
+      "answer" => {
+        usage: ["ask answer [WS] ID \"ANSWER\" [--deliver] [--json]"],
+        summary: "Answer an open question (alias: resolve)",
+        about: [
+          ASK_WS,
+          "The answer is saved on the question, which then leaves the open list; a question already answered",
+          "or withdrawn is refused (exit 1). End options with -- to give an answer that starts with a dash."
+        ],
+        options: [NAME_OPT,
+          ["--deliver", "Also type the answer and Enter into the pane that asked (it must be a pane of this workspace's tmux session; the question must have been asked from tmux)"],
+          ASK_JSON],
+        examples: [
+          ["workspace ask answer a1b2c3 \"Use postgres instead\"", "answer a question of this workspace"],
+          ["workspace ask answer myapp a1b2c3 \"Use postgres instead\"", "answer a question of another workspace"],
+          ["workspace ask answer --deliver a1b2c3 \"yes\"", "also type the answer into the pane that asked"],
+          ["workspace ask answer a1b2c3 -- \"-1\"", "an answer that starts with a dash"],
+          ["workspace ask answer a1b2c3 \"yes\" --json", "print the answered question as JSON"]
+        ]
+      },
+      "deliver" => {
+        usage: ["ask deliver [WS] ID [--pane PANE] [--json]"],
+        summary: "Type an answered question's answer, then Enter, into its pane again",
+        about: [
+          ASK_WS,
+          "The retry for when `ask answer --deliver` saved the answer but could not type it. Nothing is saved;",
+          "the pane is typed into for real, so check it first: the answer goes in again even if the first try landed.",
+          "A question that is still open or withdrawn has no answer to deliver (exit 1)."
+        ],
+        options: [NAME_OPT,
+          ["--pane PANE", "Type into this pane (an id such as %19, or window.pane) of the workspace's own session instead of the pane that asked"],
+          ASK_JSON],
+        examples: [
+          ["workspace ask deliver a1b2c3", "retype the answer into the pane that asked"],
+          ["workspace ask deliver myapp a1b2c3", "the same for another workspace's question"],
+          ["workspace ask deliver a1b2c3 --pane %19", "type it into another pane of the workspace's session"],
+          ["workspace ask deliver a1b2c3 --json", "print the question and the pane typed into as JSON"]
+        ]
+      },
+      "withdraw" => {
+        usage: ["ask withdraw [WS] ID [--json]"],
+        summary: "Close an open question nobody needs answered any more",
+        about: [
+          ASK_WS,
+          "The question is marked withdrawn: it leaves `ask list` and the inbox and can't be answered. Only an",
+          "open question can be withdrawn (exit 1 otherwise)."
+        ],
+        options: [NAME_OPT, ASK_JSON],
+        examples: [
+          ["workspace ask withdraw a1b2c3", "the asker no longer needs an answer"],
+          ["workspace ask withdraw myapp a1b2c3", "withdraw a question of another workspace"],
+          ["workspace ask withdraw a1b2c3 --json", "print the withdrawn question as JSON"]
+        ]
+      }
+    }.freeze
+
+    INBOX_SCOPE = [
+      ["--name NAME", "The workspace NAME instead of the one detected from the current directory"],
+      ["--project NAME", "The project NAME (or a path in it): the list its worktrees share"],
+      ["--global", "The global list"]
+    ].freeze
+    INBOX_JSON = ["--json", "Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr"].freeze
+    INBOX_WRITES = "It changes the inbox for real.".freeze
+    INBOX_LINKS = [
+      ["--link-pane PANE", "A tmux pane the item is about"],
+      ["--link-plan-task ID", "A plan task id"],
+      ["--link-pr N", "A pull request number"],
+      ["--link-run ID", "A workflow run id"]
+    ].freeze
+
+    INBOX = {
+      "add" => {
+        usage: ["inbox add TITLE [--type TYPE] [--body TEXT | --body-file PATH|-] [options] [--name WS | --project NAME | --global] [--json]",
+          "inbox add --from-json PATH|- [--json]"],
+        summary: "Add an item to the inbox",
+        about: [
+          "Adds a todo unless --type says otherwise, to the workspace of the current directory unless a scope",
+          "flag picks another list; outside any workspace that fails with not_in_workspace. #{INBOX_WRITES}",
+          "Titles and bodies are data, never run; one with a control character is refused.",
+          "",
+          "--from-json takes the whole item from one JSON object (64 KB at most) and nothing else but --json."
+        ],
+        options: INBOX_SCOPE + [
+          ["--type TYPE", "todo (default), alert, note or review_request"],
+          ["--body TEXT", "Longer text, up to 8192 characters"],
+          ["--body-file PATH", "Read the body from PATH, or - for stdin (64 KB at most)"],
+          ["--source-kind KIND", "jira, github_pr, github_check, session, agent, cli or user"],
+          ["--source-ref REF", "A reference in that source (200 characters at most)"],
+          ["--source-url URL", "An https:// URL"],
+          ["--dedupe-key KEY", "Add once per key and scope: an open or snoozed item with it is updated, a resolved one is left alone"],
+          ["--reopen", "With --dedupe-key, reopen a resolved item instead of leaving it"],
+          ["--note REL", "A Markdown note that exists in the workspace's notes directory (needs a workspace scope)"],
+          ["--expires WHEN", "A duration (2h) or an ISO 8601 time; after it the item counts as dismissed"],
+          *INBOX_LINKS,
+          ["--as-user", "Record the item as made by a person"],
+          ["--from-json PATH", "Read the whole item from a JSON object in PATH, or - for stdin"],
+          INBOX_JSON
+        ],
+        examples: [
+          ["workspace inbox add \"Check the deploy\"", "a to-do on this workspace's list"],
+          ["workspace inbox add \"CI failed\" --type alert --global", "an alert on the global list"],
+          ["workspace inbox add \"Upgrade Rails\" --project api", "on a project's list, shared by its worktrees"],
+          ["workspace inbox add \"Check the deploy\" --body \"Roll back if p95 stays above 2s\" --expires 2h", "with longer text, gone after two hours"],
+          ["workspace inbox add \"CI failed\" --type alert --source-kind github_check --source-url https://github.com/org/api/actions/runs/1 --global", "record where it came from"],
+          ["workspace inbox add \"Deploy notes ready\" --type note --note deploy.md", "point at a note that exists in the notes directory"],
+          ["workspace inbox add \"Review the fix\" --link-pr 412 --link-pane %5", "tie it to a pull request and a pane"],
+          ["workspace inbox add \"CI failed\" --dedupe-key github_check:org/api:rspec:9f3c2e1 --global", "add once; a repeat updates the open item"],
+          ["workspace inbox add --from-json item.json", "take the whole item from a JSON file (- reads stdin)"],
+          ["workspace inbox add \"Check the deploy\" --json", "read the new item's id in a script"]
+        ]
+      },
+      "list" => {
+        usage: ["inbox list [--state S[,S]] [--type TYPE] [--all] [--include-derived] [--name WS | --project NAME | --global] [--json]"],
+        summary: "List the items of the inbox",
+        about: [
+          "Without a scope flag: the open items of this workspace, its project and the global list (outside a",
+          "workspace, the global list). --all reads every scope that has items, or with --name that workspace, its",
+          "project and the global list; --all with --project or --global is refused."
+        ],
+        options: INBOX_SCOPE + [
+          ["--state S[,S]", "open (default), snoozed, done or dismissed; comma-separated"],
+          ["--type TYPE", "Only items of this type"],
+          ["--all", "Every scope that has items"],
+          ["--include-derived", "Add what needs you now, worked out from workspace state and never stored: open questions, waiting agent panes, blocked or stalled plans, workflow gates, stuck locks"],
+          ["--json", "Print one JSON document (see docs/README.inbox.md) instead of a table"]
+        ],
+        examples: [
+          ["workspace inbox list", "open items of this workspace, its project and the global list"],
+          ["workspace inbox list --state open,snoozed", "snoozed items too"],
+          ["workspace inbox list --state done", "items already done"],
+          ["workspace inbox list --type alert", "only alerts"],
+          ["workspace inbox list --all", "every scope that has items"],
+          ["workspace inbox list --all --name api", "workspace api, its project and the global list"],
+          ["workspace inbox list --project api", "one project's list alone"],
+          ["workspace inbox list --include-derived", "plus what needs you now"],
+          ["workspace inbox list --all --include-derived --json", "everything, as one JSON document"]
+        ]
+      },
+      "show" => {
+        usage: ["inbox show ID [--name WS | --project NAME | --global] [--json]"],
+        summary: "Show one item, in any state",
+        about: ["Without a scope flag every scope is searched; an id found in more than one is refused as ambiguous, so pass a scope flag."],
+        options: INBOX_SCOPE + [["--json", "Print one JSON document (see docs/README.inbox.md) instead of text"]],
+        examples: [
+          ["workspace inbox show a1b2c3d4e5", "search every scope for the id"],
+          ["workspace inbox show a1b2c3d4e5 --global", "look only in the global list"],
+          ["workspace inbox show a1b2c3d4e5 --name api", "look only in workspace api"],
+          ["workspace inbox show a1b2c3d4e5 --json", "one JSON document"]
+        ]
+      },
+      "edit" => {
+        usage: ["inbox edit ID [--title TEXT] [--body TEXT | --body-file PATH|-] [--expires WHEN | --no-expires] [--link-* VALUE] [--json]"],
+        summary: "Change an item's title, body, expiry or links",
+        about: [
+          "Works on an item in any state and leaves its state as it is. Pass at least one change; values the item",
+          "already holds are reported unchanged. An empty value clears a body or a link. #{INBOX_WRITES}"
+        ],
+        options: INBOX_SCOPE + [
+          ["--title TEXT", "A new title"],
+          ["--body TEXT", "A new body; an empty one clears it"],
+          ["--body-file PATH", "Read the body from PATH, or - for stdin (64 KB at most)"],
+          ["--expires WHEN", "A new expiry: a duration (2h) or an ISO 8601 time"],
+          ["--no-expires", "Drop the expiry"],
+          ["--link-pane PANE", "A tmux pane the item is about; an empty one clears it"],
+          ["--link-plan-task ID", "A plan task id; an empty one clears it"],
+          ["--link-pr N", "A pull request number; an empty one clears it"],
+          ["--link-run ID", "A workflow run id; an empty one clears it"],
+          INBOX_JSON
+        ],
+        examples: [
+          ["workspace inbox edit a1b2c3d4e5 --title \"Check the deploy again\"", "rename an item"],
+          ["workspace inbox edit a1b2c3d4e5 --body \"Roll back if p95 stays above 2s\"", "replace its body"],
+          ["workspace inbox edit a1b2c3d4e5 --body \"\"", "clear the body"],
+          ["workspace inbox edit a1b2c3d4e5 --body-file notes.txt --global", "take the body from a file, in the global list"],
+          ["workspace inbox edit a1b2c3d4e5 --expires 2h", "expire it in two hours"],
+          ["workspace inbox edit a1b2c3d4e5 --no-expires", "keep it until someone resolves it"],
+          ["workspace inbox edit a1b2c3d4e5 --link-pr 412", "tie it to a pull request"],
+          ["workspace inbox edit a1b2c3d4e5 --link-pr \"\"", "clear that link"],
+          ["workspace inbox edit a1b2c3d4e5 --title \"Done soon\" --json", "read the result in a script"]
+        ]
+      },
+      "done" => {
+        usage: ["inbox done ID... [--name WS | --project NAME | --global] [--json]", "inbox done --dedupe-key KEY [--name WS | --project NAME | --global] [--json]"],
+        summary: "Mark items done",
+        about: [
+          "One already done is reported unchanged. Each id is searched in every scope unless a scope flag is given;",
+          "exits 0 when every id worked, 3 when some failed, 1 when all did. #{INBOX_WRITES}"
+        ],
+        options: INBOX_SCOPE + [
+          ["--dedupe-key KEY", "Resolve the item holding KEY in the scope (the one `add` uses) instead of ids; none is unchanged"],
+          INBOX_JSON
+        ],
+        examples: [
+          ["workspace inbox done a1b2c3d4e5", "mark one item done"],
+          ["workspace inbox done a1b2c3d4e5 f6a7b8c9d0", "mark several done"],
+          ["workspace inbox done a1b2c3d4e5 --name api", "look for the id only in workspace api"],
+          ["workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global", "clear the alert a poster added with that key"],
+          ["workspace inbox done a1b2c3d4e5 --json", "check in a script which ids worked"]
+        ]
+      },
+      "dismiss" => {
+        usage: ["inbox dismiss ID... [--name WS | --project NAME | --global] [--json]", "inbox dismiss --dedupe-key KEY [--name WS | --project NAME | --global] [--json]"],
+        summary: "Mark items dismissed (nobody will act on them)",
+        about: [
+          "One already dismissed is reported unchanged. Each id is searched in every scope unless a scope flag is",
+          "given; exits 0 when every id worked, 3 when some failed, 1 when all did. #{INBOX_WRITES}"
+        ],
+        options: INBOX_SCOPE + [
+          ["--dedupe-key KEY", "Resolve the item holding KEY in the scope (the one `add` uses) instead of ids; none is unchanged"],
+          INBOX_JSON
+        ],
+        examples: [
+          ["workspace inbox dismiss a1b2c3d4e5", "dismiss one item"],
+          ["workspace inbox dismiss a1b2c3d4e5 f6a7b8c9d0", "dismiss several"],
+          ["workspace inbox dismiss a1b2c3d4e5 --global", "look for the id only in the global list"],
+          ["workspace inbox dismiss --dedupe-key github_check:org/api:rspec:9f3c2e1 --global", "dismiss the alert added with that key"],
+          ["workspace inbox dismiss a1b2c3d4e5 --json", "check in a script which ids worked"]
+        ]
+      },
+      "reopen" => {
+        usage: ["inbox reopen ID... [--name WS | --project NAME | --global] [--json]"],
+        summary: "Move done, dismissed or snoozed items back to open",
+        about: [
+          "An item already open is reported unchanged. Each id is searched in every scope unless a scope flag is",
+          "given; exits 0 when every id worked, 3 when some failed, 1 when all did. #{INBOX_WRITES}"
+        ],
+        options: INBOX_SCOPE + [INBOX_JSON],
+        examples: [
+          ["workspace inbox reopen a1b2c3d4e5", "reopen one item"],
+          ["workspace inbox reopen a1b2c3d4e5 f6a7b8c9d0", "reopen several"],
+          ["workspace inbox reopen a1b2c3d4e5 --name api", "look for the id only in workspace api"],
+          ["workspace inbox reopen a1b2c3d4e5 --json", "check in a script which ids worked"]
+        ]
+      },
+      "snooze" => {
+        usage: ["inbox snooze ID... (--until ISO | --for DURATION) [--name WS | --project NAME | --global] [--json]"],
+        summary: "Hide open items until a time",
+        about: [
+          "They read open again after it. A done or dismissed item is refused (reopen it first). A derived id (from",
+          "`inbox list --include-derived`) is hidden until then, or until it changes; without a scope flag every",
+          "workspace and project is read to find it. #{INBOX_WRITES}"
+        ],
+        options: INBOX_SCOPE + [
+          ["--until ISO", "Wake at this ISO 8601 time; it must be in the future"],
+          ["--for DURATION", "Wake after this long from now (30m, 2h)"],
+          INBOX_JSON
+        ],
+        examples: [
+          ["workspace inbox snooze a1b2c3d4e5 --for 2h", "hide an item for two hours"],
+          ["workspace inbox snooze a1b2c3d4e5 f6a7b8c9d0 --for 30m", "hide several"],
+          ["workspace inbox snooze a1b2c3d4e5 --until 2099-01-01T09:00:00Z", "wake at a set time (it must be in the future)"],
+          ["workspace inbox snooze 'pane:waiting:api.fix:%5' --for 1h", "hide a derived row until then or until it changes"],
+          ["workspace inbox snooze a1b2c3d4e5 --for 2h --json", "check in a script which ids worked"]
+        ]
+      },
+      "ack" => {
+        usage: ["inbox ack DERIVED_ID... [--name WS | --project NAME | --global] [--json]"],
+        summary: "Hide derived rows until they change",
+        about: [
+          "Derived rows are the ones `inbox list --include-derived` adds; take their ids from there. An acked row",
+          "shows again when it changes (a new wait, plan state or lock holder) or after 30 days. A question is",
+          "answered, not acked. Without a scope flag every workspace and project is read to find the row.",
+          INBOX_WRITES
+        ],
+        options: INBOX_SCOPE + [INBOX_JSON],
+        examples: [
+          ["workspace inbox ack plan:blocked:api.fix", "hide one derived row"],
+          ["workspace inbox ack plan:blocked:api.fix 'pane:waiting:api.fix:%5'", "hide several"],
+          ["workspace inbox ack plan:blocked:api.fix --name api", "read only workspace api to find the row"],
+          ["workspace inbox ack plan:blocked:api.fix --json", "check in a script which rows were hidden"]
+        ]
+      }
+    }.freeze
+
     # The tables by command; the specs and the routing tests read them.
     COMMANDS = {
       "plan" => PLAN, "daemon" => DAEMON, "workflow" => WORKFLOW, "library" => LIBRARY, "spine" => SPINE,
       "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL,
       "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "projects" => PROJECTS,
-      "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT
+      "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT, "ask" => ASK, "inbox" => INBOX
     }.freeze
 
     # The page for the leading verb words of +args+, longest match first.

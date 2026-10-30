@@ -12,6 +12,8 @@ workspace ask deliver [WS] <id> [--pane P] [--json]
 workspace ask withdraw [WS] <id> [--json]
 ```
 
+`workspace ask VERB --help` (list, answer, deliver, withdraw) prints the page of one subcommand, with its options and examples. A call with `--default` records a question, so a `--help` among its words is question text, not a request for help.
+
 ## Options (recording a question)
 
 | Option | Description |
