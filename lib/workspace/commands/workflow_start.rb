@@ -8,6 +8,11 @@ module Workspace
     # inputs and runs every check `workflow run` would make against the project's main
     # checkout, so a refusal leaves nothing behind. `dry_run` stops there. The creating
     # half is {#start_workspace}.
+    #
+    # An agent that starts in a checkout loads that checkout's CLAUDE.md and hooks, so a
+    # fork's code is refused (`fork_pull_request`) before anything is made: a pull request
+    # unless `gh` says it is not from another repository, and a reused or adopted branch that
+    # tracks another repository or is a `pr-N` checkout of a fork's pull request.
     class WorkflowStart
       # Where a ticket's body goes in the new checkout, under the checkout.
       TICKET_DIR = File.join(".workflow", "tickets").freeze
@@ -26,7 +31,8 @@ module Workspace
       # @!attribute checked [Hash] {Workspace::WorkflowEngine#preflight}'s answer
       # @!attribute warnings [Array<String>]
       # @!attribute prompt [String, nil] the --prompt text
-      Plan = Struct.new(:definition, :ref, :branch, :project, :path, :would_create, :inputs, :ticket, :spec_path, :checked, :warnings, :prompt, keyword_init: true)
+      # @!attribute checkout [String, nil] the ref `start` is given; a bare `#N` names the repository `gh pr view` read
+      Plan = Struct.new(:definition, :ref, :branch, :project, :path, :would_create, :inputs, :ticket, :spec_path, :checked, :warnings, :prompt, :checkout, keyword_init: true)
 
       # @param catalog [Workspace::WorkflowCatalog]
       # @param engine [Workspace::WorkflowEngine] checks the run would pass, through #preflight
@@ -72,8 +78,9 @@ module Workspace
       # @return [Hash{String=>Object}] the action row: outcome "dry_run" with "workflow", "step", "project",
       #   "branch", "path", "would_create", "inputs", "packs", "warnings" and, "ticket" (nil when none was read)
       # @raise [Workspace::UsageError] no ref and no prompt, both a ref and a branch, an empty slug, or an invalid branch name
-      # @raise [Workspace::Error] code `unknown_workflow`, `ticket_not_found`, `ticket_source_unavailable`,
-      #   `branch_exists`, or {Workspace::WorkflowEngine#preflight}'s (`input_required`, `workflow_command_unset`)
+      # @raise [Workspace::Error] code `unknown_workflow`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
+      #   request), `fork_pull_request`, `branch_exists`, or {Workspace::WorkflowEngine#preflight}'s (`input_required`,
+      #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout)
       def call(id:, ref: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
         agent_kind: nil, prompt_timeout: nil, dry_run: false)
         definition = @catalog.find(id)
@@ -98,6 +105,8 @@ module Workspace
         warnings = []
         resolved = ref && @start_ref.call(ref)
         ticket = read_ticket(resolved, root, definition, inputs: inputs, prompt: prompt, slug: slug, warnings: warnings)
+        allowed = tracked_repositories(root)
+        checked = check_pull_request!(definition, resolved, ticket, allowed, "'#{resolved.key}'") if resolved&.kind == "github_pr"
         name = branch_for(resolved, ticket, root, prompt: prompt, branch: branch, slug: slug)
         path = File.join(project.root, ".worktrees", @git.sanitize_for_filesystem(name))
         derived = resolved.nil? && branch.nil?
@@ -109,23 +118,33 @@ module Workspace
         exists ||= !adopted.nil?
         # A reused or adopted worktree can have an agent kind of its own.
         require_claude!(@agent_commands.kind(@project_config.worktree_config_name(project_workspace, File.basename(path)))) if exists && !agent_kind
+        # A local branch with no worktree is the one `start` would check out.
+        if exists || @git.local_branch_exists?(name)
+          refuse_foreign_branch!(definition, name, exists ? path : root, root, checked, allowed)
+        end
 
         spec_path = spec_file(definition, resolved, ticket, path, inputs)
         seeded = seed(definition, ticket, prompt, inputs, spec_path, resolved)
-        checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil, tree: nil)
+        # A checkout that is already there is the one the agent starts in, so its tree is checked; a new one starts clean.
+        checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil, tree: exists ? path : nil)
         Plan.new(definition: definition, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
-          ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt)
+          ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt, checkout: checkout_ref(resolved, ticket))
       end
 
-      # The ticket's fields, nil for a prompt or a plain branch. A failed read is refused when
-      # the ticket was the only source of the declared +task+, else it is a warning.
+      # The ticket's fields, nil for a prompt or a plain branch; a pull request's also has
+      # +cross_repository+. A failed read is refused for a pull request, which can't be checked
+      # for a fork without it, and when the ticket was the only source of the declared +task+;
+      # else it is a warning.
       def read_ticket(resolved, root, definition, inputs:, prompt:, slug:, warnings:)
         return nil unless resolved && %w[jira github_pr github_issue].include?(resolved.kind)
 
         fetched = @ticket_source.fetch(resolved, chdir: root)
-        {"key" => resolved.key, "title" => fetched["title"], "url" => fetched["url"], "body" => fetched["body"]}
+        ticket = {"key" => resolved.key, "title" => fetched["title"], "url" => fetched["url"], "body" => fetched["body"]}
+        ticket["cross_repository"] = fetched["cross_repository"] if resolved.kind == "github_pr"
+        ticket
       rescue Workspace::Error => e
         raise unless %w[ticket_not_found ticket_source_unavailable].include?(e.code)
+        raise if resolved.kind == "github_pr"
         raise if declared?(definition, "task") && !inputs.key?("task") && prompt.nil?
 
         warnings << "Could not read #{resolved.key}: #{e.message}"
@@ -154,6 +173,121 @@ module Workspace
         raise Workspace::Error.new("workflow start needs Claude Code as the workspace's agent, and the agent kind is #{kind}. " \
           "Use --agent-kind claude, or run the workflow in a workspace with `workflow run`.",
           code: "workflow_needs_claude", details: {"agent_kind" => kind})
+      end
+
+      # The remotes a pull request may belong to: origin's and upstream's repository, as
+      # `host/owner/repo`. Read from the project's git config, no network.
+      def tracked_repositories(root)
+        %w[origin upstream].filter_map { |remote| repository_id(@git.remote_config_url(root, remote)) }
+      end
+
+      # Passes only a pull request whose base is a repository the project tracks and that `gh`
+      # says is not from another repository (nil, a missing or odd field, is refused too).
+      #
+      # @return [String] the pull request as `host/owner/repo#N`
+      def check_pull_request!(definition, ref, ticket, allowed, start_arg, details = {})
+        number = ref.pr[:number].to_i
+        base = pull_request_base(ticket["url"], number)
+        reason, what =
+          if ticket["cross_repository"].nil?
+            ["unknown_cross_repository", "Could not tell whether the pull request #{ref.key} comes from a fork"]
+          elsif ticket["cross_repository"]
+            ["cross_repository", "The pull request #{ref.key} comes from a fork"]
+          elsif !base || !allowed.include?(base)
+            ["other_base_repository", "The pull request #{ref.key} belongs to #{base || "a repository it can't name"}, not this project's origin or upstream"]
+          end
+        return "#{base}##{number}" unless reason
+
+        refuse_fork("#{what}; workflow start does not check out its code or start an agent in it.", definition, start_arg,
+          {"pr" => number, "url" => ticket["url"], "cross_repository" => ticket["cross_repository"], "reason" => reason}.merge(details))
+      end
+
+      # A reused or adopted checkout, or a local branch `start` would check out, runs another
+      # repository's code when it tracks a pull request ref, a URL, or a remote of a repository
+      # the project doesn't track (git config, no network; a proxy, not proof of what the branch
+      # holds). A `pr-N` branch, or one tracking a local `pr-N`, must hold the pull request being
+      # started, by the `workspace-pr` that `start` recorded; with none it is looked up as pull
+      # request #N (`start '#N'` drops a fork's upstream, so git config can't tell), as `push` does.
+      def refuse_foreign_branch!(definition, name, path, root, checked, allowed)
+        tracking = @git.branch_tracking(path, name)
+        details = {"branch" => name, "path" => path}
+        reason = foreign_tracking(path, tracking, allowed)
+        if reason
+          refuse_fork("The branch #{name} at #{path} tracks another repository (#{reason.tr("_", " ")}); workflow start does not start an agent in another repository's code.",
+            definition, Shellwords.escape(name), details.merge("reason" => reason))
+        end
+
+        local = tracking["merge"].to_s[%r{\Arefs/heads/(pr-\d+)\z}, 1] if tracking["remote"] == "."
+        number = (Push::PR_BRANCH.match(name) || (local && Push::PR_BRANCH.match(local)))&.[](1)
+        return unless number
+
+        recorded = tracking["pr"] if tracking["pr"].to_s.match?(/\A[\w.-]+\/[\w.-]+##{number}\z/)
+        if checked && recorded
+          return if checked.split("/", 2).last.casecmp?(recorded)
+          refuse_other_pull_request(definition, name, recorded, checked, details)
+        end
+        pr_ref = @start_ref.call(recorded || "##{number}")
+        begin
+          fetched = @ticket_source.fetch(pr_ref, chdir: root)
+        rescue Workspace::Error => e
+          raise Workspace::Error.new("Could not read pull request #{pr_ref.key} for the branch #{name}, so workflow start can't tell whether it comes from a fork: #{e.message}",
+            code: e.code, details: e.details.merge(details))
+        end
+        found = check_pull_request!(definition, pr_ref, fetched, allowed, Shellwords.escape(name), details)
+        refuse_other_pull_request(definition, name, found, checked, details) if checked && found != checked
+      end
+
+      def refuse_other_pull_request(definition, name, held, checked, details)
+        refuse_fork("The branch #{name} holds pull request #{held}, not #{checked}; workflow start does not start an agent in it.",
+          definition, Shellwords.escape(name), details.merge("reason" => "other_pull_request"))
+      end
+
+      def foreign_tracking(path, tracking, allowed)
+        remote, merge = tracking.values_at("remote", "merge")
+        return "pull_ref" if merge.to_s.start_with?("refs/pull/")
+        return nil if remote.nil? || remote == "." || remote == "origin"
+
+        url = @git.remote_config_url(path, remote)
+        return remote.match?(%r{://|\A[^/\s]+@[^/\s]+:|\A[/.~]}) ? "url_remote" : "unknown_remote" unless url
+
+        allowed.include?(repository_id(url)) ? nil : "other_repository"
+      end
+
+      # `host/owner/repo`, lowercased, from a remote URL (scheme://[user@]host[:port]/owner/repo or
+      # scp-like [user@]host:owner/repo, with or without `.git`); nil for a local path or anything else.
+      def repository_id(url)
+        text = url.to_s.strip
+        match = text.match(%r{\A[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:]+)(?::\d+)?/(.+)\z}i) || text.match(%r{\A(?:[^@/]+@)?([^/:]+):(?!/)(.+)\z})
+        return nil unless match
+
+        path = match[2].sub(%r{/+\z}, "").sub(/\.git\z/, "")
+        path.match?(%r{\A[\w.-]+/[\w.-]+\z}) ? "#{match[1]}/#{path}".downcase : nil
+      end
+
+      # `host/owner/repo` of a pull request's base, from its URL; nil unless the URL is that pull request's.
+      def pull_request_base(url, number)
+        match = url.to_s.match(%r{\Ahttps://([^/\s]+)/([\w.-]+/[\w.-]+)/pull/(\d+)\z})
+        (match && match[3].to_i == number) ? "#{match[1]}/#{match[2]}".downcase : nil
+      end
+
+      def refuse_fork(message, definition, start_arg, details)
+        start = "workspace start #{start_arg}"
+        raise Workspace::Error.new("#{message} If you trust the code, run `#{start}`, then `workspace workflow run #{definition.to_h["id"]}` in that workspace; " \
+          "its agent starts in that code and loads its CLAUDE.md and .claude/settings.json hooks.",
+          code: "fork_pull_request", details: details.merge("next" => [start]))
+      end
+
+      # A bare `#N` is checked out from the repository whose pull request `gh pr view` read, so
+      # the checkout can't resolve to another remote's pull request than the one checked for a
+      # fork. `start` reads only github.com repositories, so another host keeps `#N`, which `gh`
+      # resolves from the same repository config as the read.
+      def checkout_ref(resolved, ticket)
+        return nil unless resolved
+        return resolved.input unless resolved.kind == "github_pr" && resolved.pr[:repo].nil?
+
+        number = resolved.pr[:number]
+        repo = ticket["url"].to_s[%r{\Ahttps://github\.com/([\w.-]+/[\w.-]+)/pull/#{number}\z}, 1]
+        repo ? "#{repo}##{number}" : resolved.input
       end
 
       def refuse_existing(name, path, worktree)
@@ -207,9 +341,9 @@ module Workspace
         options[:slug] = true if slug && plan.ticket
         title = plan.ticket&.fetch("title") || plan.prompt&.lines&.first&.strip
         options[:title] = title if title
-        # The ref as given, not the branch: `start` resolves it again to check out a pull request or an issue.
+        # The ref, not the branch: `start` resolves it again to check out a pull request or an issue.
         begin
-          result = @start.payload(plan.ref ? plan.ref.input : plan.branch, **options)
+          result = @start.payload(plan.checkout || plan.branch, **options)
         rescue => e
           raise unless plan.would_create && @git.worktree_exists?(plan.path)
           raise with_next(e, plan, plan.spec_path ? plan.inputs.except("spec") : plan.inputs, note, nil, plan.path, plan.warnings)

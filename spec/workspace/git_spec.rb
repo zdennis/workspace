@@ -306,6 +306,17 @@ RSpec.describe Workspace::Git do
       expect(File.read(argv_log).lines.first.strip).to eq("pr checkout 835 --repo acme/api --worktree #{worktree_path} --branch pr-835")
     end
 
+    it "records owner/repo#N in the branch config when the ref names a repository, and nothing without one" do
+      install_fake_gh
+      system("git", "init", "-q", repo_dir, exception: true)
+
+      git.checkout_pr_worktree(worktree_path, number: "835", repo: "acme/api", branch: "pr-835", chdir: repo_dir, quiet: true)
+      expect(git.branch_tracking(repo_dir, "pr-835")["pr"]).to eq("acme/api#835")
+
+      git.checkout_pr_worktree(worktree_path, number: "836", repo: nil, branch: "pr-836", chdir: repo_dir, quiet: true)
+      expect(git.branch_tracking(repo_dir, "pr-836")["pr"]).to be_nil
+    end
+
     it "echoes the command it runs unless quiet" do
       install_fake_gh
 
@@ -432,6 +443,22 @@ RSpec.describe Workspace::Git do
 
         expect(git.drop_unresolved_upstream(@repo_dir, "fix-bug")).to be(true)
         expect_cleared
+      end
+    end
+
+    describe "#branch_tracking and #remote_config_url" do
+      it "reads a branch's remote and merge each on its own, nil when unset" do
+        run!("git", "config", "branch.fix-bug.merge", "refs/pull/7/head", chdir: @repo_dir)
+
+        expect(git.branch_tracking(@repo_dir, "fix-bug")).to eq("remote" => nil, "merge" => "refs/pull/7/head", "pr" => nil)
+        expect(git.branch_tracking(@repo_dir, "none")).to eq("remote" => nil, "merge" => nil, "pr" => nil)
+      end
+
+      it "reads a remote's URL as configured, nil for a remote with none" do
+        run!("git", "config", "remote.upstream.url", "git@github.com:o/r.git", chdir: @repo_dir)
+
+        expect(git.remote_config_url(@repo_dir, "upstream")).to eq("git@github.com:o/r.git")
+        expect(git.remote_config_url(@repo_dir, "gone")).to be_nil
       end
     end
 

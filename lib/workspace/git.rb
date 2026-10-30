@@ -444,7 +444,8 @@ module Workspace
 
     # Checks a pull request out into a new worktree with `gh pr checkout`, which
     # fetches the PR's own head, so it works for PRs from forks as well as
-    # same-repo branches.
+    # same-repo branches. With a +repo+, the branch's `workspace-pr` config records
+    # `owner/repo#N`, which `workflow start` compares when it reuses the branch.
     #
     # @param path [String] directory for the new worktree
     # @param number [String] pull request number
@@ -467,7 +468,10 @@ module Workspace
         raise Workspace::Error, "`gh` is not installed, but is required to check out a PR. " \
           "Install it, or pass the branch name directly instead of the PR."
       end
-      return if status.success?
+      if status.success?
+        record_pull_request(chdir, branch, "#{repo}##{number}") if repo
+        return
+      end
 
       if stderr.include?("unknown flag: --worktree")
         raise Workspace::Error, "Your `gh` is too old: it has no `gh pr checkout --worktree`. " \
@@ -605,6 +609,29 @@ module Workspace
       return nil unless remote_status.success? && merge_status.success?
 
       [remote.strip, merge.strip]
+    end
+
+    # A branch's `remote`, `merge` and `workspace-pr` config, each read on its own, with no network.
+    #
+    # @param path [String] the checkout, or the repository the branch is in
+    # @param branch [String]
+    # @return [Hash{String=>String, nil}] `"remote"`, `"merge"` and `"pr"` (the `owner/repo#N` that
+    #   {#checkout_pr_worktree} recorded), each nil when unset
+    def branch_tracking(path, branch)
+      {"remote" => "remote", "merge" => "merge", "pr" => "workspace-pr"}.transform_values do |key|
+        stdout, _, status = capture_git("-C", path, "config", "--get", "branch.#{branch}.#{key}")
+        status.success? ? stdout.strip : nil
+      end
+    end
+
+    # The URL configured for a remote (`remote.<name>.url`), as written, with no network.
+    #
+    # @param path [String] the checkout
+    # @param name [String] the remote
+    # @return [String, nil] nil when the remote has no URL
+    def remote_config_url(path, name)
+      stdout, _, status = capture_git("-C", path, "config", "--get", "remote.#{name}.url")
+      status.success? ? stdout.strip : nil
     end
 
     # Removes a branch's upstream config when git cannot resolve it, as `gh pr checkout
@@ -1142,6 +1169,14 @@ module Workspace
         entries[:unstaged] << file unless xy[1] == "."
         entries[:deleted] << file if xy.include?("D")
       end
+    end
+
+    # Records which pull request +branch+ holds; a failure is only logged.
+    def record_pull_request(path, branch, pr)
+      _, stderr, status = capture_git("-C", path, "config", "branch.#{branch}.workspace-pr", pr)
+      @logger.debug { "git: could not record the pull request of #{branch}: #{stderr.to_s.strip}" } unless status.success?
+    rescue SystemCallError => e
+      @logger.debug { "git: could not record the pull request of #{branch}: #{e.message}" }
     end
 
     # Records that workspace created +branch+; a failure is only logged.

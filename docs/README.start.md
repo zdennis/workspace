@@ -39,14 +39,14 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 |-------|---------|----------|
 | JIRA issue key | `PROJ-123` | Used as branch name |
 | JIRA URL | `https://mycompany.atlassian.net/browse/PROJ-123` | Extracts issue key |
-| GitHub PR URL | `https://github.com/owner/repo/pull/471` | Checks the PR out with `gh pr checkout --worktree` as branch `pr-471` in `.worktrees/pr-471`; works for PRs from forks |
+| GitHub PR URL | `https://github.com/owner/repo/pull/471` | Checks the PR out with `gh pr checkout --worktree` as branch `pr-471` in `.worktrees/pr-471`; works for PRs from forks, and the agent then starts in the fork's code |
 | GitHub PR ref | `#471` or `owner/repo#471` | Same as the PR URL; `#471` means a PR of the current repo. Quote `#n` (`'#471'`), or your shell treats it as a comment. Run it from a checkout of the repo the PR belongs to |
 | GitHub issue URL | `https://github.com/owner/repo/issues/123` | Creates branch `issue-123` |
 | Branch name | `user/PROJ-123` | Used as-is |
 
 ## Details
 
-A pull request is always checked out by `gh pr checkout <n> --worktree <path> --branch pr-<n>`, never by its head branch name, so a PR from a fork can't be mistaken for a branch of your repo. The local branch is `pr-<n>`; `--base` is ignored (with a note). Re-running `start` for the same PR reuses its worktree. Needs a `gh` recent enough to have `--worktree` (the error says so if not).
+A pull request is always checked out by `gh pr checkout <n> --worktree <path> --branch pr-<n>`, never by its head branch name, so a PR from a fork can't be mistaken for a branch of your repo. A fork's pull request is checked out like any other: the workspace's agent starts in the fork's code and loads its `CLAUDE.md` and `.claude/settings.json` hooks, so start one only for code you trust (`workflow start` refuses it, see [README.workflow.md](README.workflow.md#starting-from-a-ticket-or-a-prompt)). When the ref names the repository (`owner/repo#n` or a URL), the branch's config records it as `branch.pr-<n>.workspace-pr`, which `workflow start` compares before it reuses the branch. The local branch is `pr-<n>`; `--base` is ignored (with a note). Re-running `start` for the same PR reuses its worktree. Needs a `gh` recent enough to have `--worktree` (the error says so if not).
 
 A PR checkout keeps the upstream `gh` sets only when git can resolve it: a same-repo PR keeps `origin/<head>`. A fork PR (its branch is not on `origin`), or any upstream git can't resolve, is left with no upstream or push remote; the first `workspace push` or `workspace pr create` pushes to `origin/pr-<n>` and sets it.
 

@@ -28,7 +28,7 @@ The command reads and writes nothing in the repository: no worktree, branch, con
 
 | Kind | Tool | Command |
 |------|------|---------|
-| `github_pr` | `gh` | `gh pr view N [--repo OWNER/REPO] --json title,body,url` |
+| `github_pr` | `gh` | `gh pr view N [--repo OWNER/REPO] --json title,body,url,isCrossRepository` (`isCrossRepository` is read only for `workflow start`'s fork check; `ticket show --json` does not print it) |
 | `github_issue` | `gh` | `gh issue view N [--repo OWNER/REPO] --json title,body,url` |
 | `jira` | `jira` ([jira-cli](https://github.com/ankitpokhrel/jira-cli)) | `jira issue view KEY --raw` |
 | `branch` | none | Nothing runs; `title`, `body` and `url` are `null` |
@@ -60,7 +60,7 @@ Exit 0, or 1 with an error (the [`--json` error envelope](README.json.md) under 
 | `ref` | The argument as given |
 | `kind` | `jira`, `github_issue`, `github_pr` or `branch` |
 | `key` | The ticket's own name: the JIRA key, `owner/repo#41` (`#41` when the ref names no repository), or the branch |
-| `title`, `body`, `url` | From the tool; `null` for a branch, and when the tool has none. `body` is at most 64 KB |
+| `title`, `body`, `url` | From the tool; `null` for a branch, and when the tool has none. `title` is folded onto one line. `body` is at most 64 KB |
 | `branch` | The branch `start` works on |
 | `workspace` | The workspace that already exists for `branch`, or `null` |
 
