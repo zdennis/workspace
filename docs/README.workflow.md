@@ -235,12 +235,22 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 ### The `rpiv` preset
 
-`rpiv` is a workflow that ships (with [`pr-feedback`](#the-pr-feedback-preset) and [`investigate`](#the-investigate-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`pr-feedback`](#the-pr-feedback-preset) and [`investigate`](#the-investigate-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 ```sh
 workspace config set commands.test "bundle exec rspec"
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export" --dry-run
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export"
+```
+
+### The `rpiv-auto-approve` preset
+
+`rpiv-auto-approve` is `rpiv` with no gate, for a run no person watches. A `plan_review` step takes the gate's place: the agent starts two reviewer sub-agents, one supportive and one skeptical, and writes `plan-approval.md` with the plan's revision and each verdict. Its check passes only when both approved and the revision is still the plan's. A rejection goes back to `plan` with the objections, at most twice; a third stops the run as `failed_check`, and the plan is never implemented. The run stops where `rpiv` does, on a verified branch, and pushes nothing.
+
+The check reads what the step's agent wrote; it can't prove the reviewers ran, so this is a review, not a security boundary. The reviewers need a harness with sub-agents, and a permission prompt in the pane still stops the run as `waiting_you`.
+
+```sh
+workspace workflow start rpiv-auto-approve --prompt "add a retry to the uploader"
 ```
 
 ### The `pr-feedback` preset

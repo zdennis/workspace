@@ -12,8 +12,38 @@ RSpec.describe "the shipped workflow presets" do
   it "parses every file in lib/workflows" do
     ids = Dir[File.join(config.builtin_workflows_dir, "*.yml")].map { |path| File.basename(path, ".yml") }
 
-    expect(ids).to include("rpiv", "pr-feedback", "investigate")
+    expect(ids).to include("rpiv", "rpiv-auto-approve", "pr-feedback", "investigate")
     ids.each { |id| expect(catalog.find(id).source).to eq("builtin") }
+  end
+
+  describe "rpiv-auto-approve" do
+    let(:steps) { catalog.find("rpiv-auto-approve").to_h["steps"] }
+    let(:review) { steps.find { |step| step["id"] == "plan_review" } }
+    let(:bin) { File.join(dir, "bin") }
+
+    def check(approval, revision: "abc123")
+      FileUtils.mkdir_p(bin)
+      File.write(File.join(dir, "plan-approval.md"), approval)
+      File.write(File.join(bin, "workspace"), "#!/bin/sh\necho '#{JSON.generate("plans" => [{"revision" => revision}])}'\n")
+      File.chmod(0o755, File.join(bin, "workspace"))
+      env = {"PATH" => "#{bin}:#{ENV["PATH"]}", "WORKSPACE_RUN_ARTIFACTS" => dir}
+      Open3.capture2e(env, "sh", "-c", review["status"]["run"]).last.success?
+    end
+
+    it "runs rpiv's steps with a reviewed plan and no gate" do
+      expect(steps.map { |step| step["id"] }).to eq(%w[research plan plan_review implement verify])
+      expect(steps.map { |step| step["gate"] }.compact).to be_empty
+      expect(review["on_fail"]).to include("goto" => "plan", "max" => 2)
+    end
+
+    it "passes only when both reviewers approved the current plan" do
+      approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\n"
+
+      expect(check(approved)).to be(true)
+      expect(check(approved.sub("skeptical: approve", "skeptical: reject"))).to be(false)
+      expect(check(approved.sub("supportive: approve", "supportive: reject"))).to be(false)
+      expect(check(approved, revision: "def456")).to be(false)
+    end
   end
 
   describe "pr-feedback" do
