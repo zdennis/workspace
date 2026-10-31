@@ -217,7 +217,8 @@ module Workspace
       reply["context_after"] = after[:pct]
 
       typed_at = nil
-      sent = deliver_prompt(pane_id, prompt, force: force, run_id: run_id) do
+      reply_by = waiting ? started_at + @reply_timeout - REPLY_MARGIN : nil
+      sent = deliver_prompt(pane_id, prompt, force: force, run_id: run_id, reply_by: reply_by) do
         typed_at = @wall_clock.call
       end
       return reply.merge(sent) if sent.key?("error")
@@ -354,10 +355,11 @@ module Workspace
     # Types the prompt after the clear. A Claude Code pane's screen is checked
     # under the lock first, so a draft typed since the clear is not joined. A
     # refusal is retried for {PROMPT_SETTLE}, since the screen may still be
-    # redrawing after the clear; then the pane stays cleared and the prompt
-    # untyped.
-    def deliver_prompt(pane_id, prompt, force:, run_id:, &on_typing)
-      settle_until = @clock.call + @prompt_settle
+    # redrawing after the clear, and no later than +reply_by+, so a caller gets
+    # the refusal before it stops listening and tries again; then the pane
+    # stays cleared and the prompt untyped.
+    def deliver_prompt(pane_id, prompt, force:, run_id:, reply_by:, &on_typing)
+      settle_until = [@clock.call + @prompt_settle, reply_by].compact.min
       loop do
         sent = deliver(pane_id, prompt, check_pipeline: !force,
           before_typing: -> { prompt_refusal(pane_id, run_id) }, &on_typing)

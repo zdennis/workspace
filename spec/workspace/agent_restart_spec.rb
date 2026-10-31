@@ -472,6 +472,20 @@ RSpec.describe Workspace::AgentRestart do
         expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
       end
 
+      it "stops retrying once a waiting caller is about to stop listening" do
+        checks = 0
+        refuse = after_clear do
+          checks += 1
+          draft
+        end
+        restart = proven(screen_ready: refuse, reply_timeout: 1)
+
+        result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md", waiting: true)
+
+        expect(result).to include("error" => "pane_busy", "reason" => "input_not_empty")
+        expect(checks).to eq(1)
+      end
+
       it "types the prompt when the refusal clears inside the window" do
         restart = proven(screen_ready: after_clear { (now[0] < 2) ? {reason: "turn_started", message: "a spinner"} : nil })
         @on_tick = nil
