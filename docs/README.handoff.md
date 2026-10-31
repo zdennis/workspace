@@ -190,7 +190,7 @@ An agent can read the save-state prompt and never run `handoff new`: it answers,
 | `reason` | What happened |
 |----------|---------------|
 | `carried_out` | A `/clear` started a new conversation in the pane. This is any `/clear`, so a person's own `/clear` or an `agent-run restart` reads the same as a handoff |
-| `other_prompt` | A prompt arrived that is neither the save-state prompt nor a follow-up, from a person or from `agent-run send` or a status request: something else is driving the pane. A pasted-text placeholder or a prompt with no text can't be told from ours and does not count |
+| `other_prompt` | A prompt arrived that is neither the save-state prompt nor a follow-up, from a person or from `agent-run send` or a status request: something else is driving the pane. Claude Code reports a multi-line paste inside `pasted_content` tags, and the tags are removed before the comparison, so a person's own paste counts. A pasted-text placeholder or a prompt with no text can't be told from ours and does not count |
 | `session_changed` | The pane's conversation changed without a `/clear`, for example a compaction, which starts a new session, or a resume. A lost SessionStart ends the watch this way too, so a follow-up can't land in a new conversation |
 | `session_ended` | The agent's session ended other than by `/clear` |
 | `pane_gone` | The pane closed or was replaced, or its agent process changed and stayed changed for 30 seconds |
