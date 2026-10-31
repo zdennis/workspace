@@ -55,7 +55,7 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["ui"].keys).to eq(["open"])
       expect(pages["projects"].keys).to eq(["list"])
       expect(pages["projects group"].keys).to match_array(%w[create add list show])
-      expect(pages["config"].keys).to eq(["show"])
+      expect(pages["config"].keys).to eq(%w[show set get unset edit keys validate])
       expect(pages["ask"].keys).to match_array(%w[list answer deliver withdraw])
       expect(pages["inbox"].keys).to match_array(%w[add list show edit done dismiss reopen snooze ack])
       expect(pages["agent-run"].keys).to eq(["command", "inject", "restart", "send", "queue", "queue list", "queue cancel", "examples"])

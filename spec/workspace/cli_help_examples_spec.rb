@@ -74,7 +74,6 @@ module HelpExamplesSpec
     "event-log compact",
 
     # T3 gave these a page of their own; their examples come with the group tasks
-    "config show",
     "pr create",
     "pr feedback",
     "projects group",
@@ -93,15 +92,6 @@ module HelpExamplesSpec
     "ui open inbox",
     "ui open notes",
     "ui open task",
-
-    # T18: configuration
-    "config",
-    "config edit",
-    "config get",
-    "config keys",
-    "config set",
-    "config unset",
-    "config validate",
 
     # T19: repositories
     "pr",

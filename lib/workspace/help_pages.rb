@@ -1371,25 +1371,220 @@ module Workspace
       }
     }.freeze
 
-    CONFIG = {
+    # The overview's verb list, one line per verb. Defined here, not with the other readers below, because
+    # the bare `config` page (the `show` page) lists its own table's verbs while that table is built.
+    #
+    # @param table [Hash]
+    # @return [Array<String>]
+    def self.overview_verbs(table)
+      shown = table.reject { |_, page| page[:hidden] }
+      width = shown.keys.map(&:length).max
+      shown.map { |key, page| "  #{key.ljust(width)}  #{page[:summary]}" }
+    end
+
+    CONFIG_PAGES = {
       "show" => {
         usage: ["config show [--scope SCOPE | --global] [--name NAME] [--json] [KEY]"],
         summary: "Show project or global workspace configuration",
         about: [
-          "With a key, prints that key's effective value (layering and defaults included, unlike 'workspace",
-          "config get', which reads one file).",
+          "Read-only. `workspace config` alone is the same as `config show`. With no key, text mode prints the",
+          "config file of the workspace (its path, then its YAML); --json gives every key with its effective value,",
+          "source layer and files.",
+          "",
+          "With a key, prints that key's effective value (layering and defaults included, unlike `workspace",
+          "config get`, which reads one file). A key with no value prints a note on stderr and exits 1. A sensitive",
+          "key (dev.up, dev.ready, alerts.notify, ...) prints only whether it is set, never its value.",
           "",
           "With --scope, shows one layer: the file of that scope (text) or, in --json, each row's",
           "value/source_file/line/column from that file alone, with effective, source and layers covering global",
-          "up to that scope (project: global < project). `workspace config` alone is the same as show."
+          "up to that scope (project: global < project).",
+          "",
+          "Config files: global is ~/.config/workspace/config.yml, project is ~/.config/workspace/projects/<name>.yml.",
+          "Layers, highest wins: workspace (a worktree's own file) > project (the main checkout's file) > global >",
+          "the built-in default. `workspace config keys` describes each key; docs/README.config.md has the table.",
+          "Hooks and layouts are edited by hand (`config edit`).",
+          "",
+          "Verbs (`workspace config VERB --help` for each):",
+          :verbs,
+          "",
+          "The verb names are reserved as the first argument, so a key or workspace named like one is reached with",
+          "--name."
         ],
         options: [["--scope SCOPE", "Show one layer: global, project or workspace (worktree is the same). In a main checkout workspace is the project's file"],
           ["--global", "Same as --scope global"],
           name_opt("Workspace to show instead of the one inferred from cwd"),
           ["--json", "Print the show document as JSON: every key with its effective value, source layer and files, or with a key just that key's row (see docs/README.config.md)"]],
-        examples: []
+        examples: [
+          ["workspace config show", "print the config file of the workspace you are in, to see what it sets (`workspace config` is the same)"],
+          ["workspace config show dev.ready_timeout", "see how long `dev up` really waits, from whichever layer sets it or the default"],
+          ["workspace config show notes.dir", "find where this workspace's notes go"],
+          ["workspace config show --global", "print the machine-wide config file"],
+          ["workspace config show --name myproject", "look at another workspace's file from any directory"],
+          ["workspace config show --scope project --name myapp.worktree-fix", "see the project file a worktree inherits, not the worktree's own"],
+          ["workspace config show --json", "read every key with its value and source layer in a script"],
+          ["workspace config show handoff.auto --json", "read one key's row of the show document"],
+          ["workspace config show --scope project --json dev.ready_timeout", "see what the project file has for a key and what resolves up to it"]
+        ]
+      },
+      "set" => {
+        usage: ["config set [--scope SCOPE] [--name WS] [--json] [WS] KEY [--] VALUE"],
+        summary: "Set a config key in one layer's file",
+        about: [
+          "Writes for real. With no --scope the highest layer the key allows at or below the workspace is written:",
+          "the workspace's own file for a key a worktree may override (dev.ready_timeout, notes.dir), else the",
+          "project's file, and the global file for a global-only key. The workspace is inferred from cwd; WS or",
+          "--name picks it from anywhere. Outside any workspace a project or workspace write fails with",
+          "not_in_workspace (a global key still works). `workspace config show --json` lists the layers each key",
+          "allows (overridable_in).",
+          "",
+          "Allowed keys are the ones `workspace config keys --settable` lists; any other key fails with",
+          "unknown_config_key, and a bad value is refused before anything is written.",
+          "",
+          "This rewrites the whole YAML file, so comments already in it are not kept. The old file is copied to a",
+          ".workspace-backup-* file first; when it had a comment, a note on stderr names the backup and the --json",
+          "row has comments_preserved: false. A file that isn't valid YAML is left untouched and the command fails.",
+          "",
+          "Precedence: workspace > project > global > default. Global is the machine-wide file, project is the main",
+          "checkout's file and workspace is the workspace's own file; in a main checkout workspace writes the",
+          "project file. The --json row reports scope, layer (global, project or worktree), file and the key's",
+          "effective value after the write. statusline.command, context.source, context.pattern and",
+          "launch.headless are global (one per machine), not per project.",
+          "",
+          "A value that starts with a dash goes after --:  workspace config set dev.up -- -x"
+        ],
+        options: [["--name NAME, --project NAME", "Workspace to configure instead of the one inferred from cwd (--name is the same)"],
+          ["--scope SCOPE", "Layer to write: global, project or workspace (worktree is the same). A key that doesn't allow it fails with code scope_not_allowed"],
+          ["--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr"]],
+        examples: [
+          ["workspace config set dev.up \"./start-dev\"", "tell the workspace you are in how to start its dev environment"],
+          ["workspace config set --scope project handoff.auto true", "turn on automatic handoff for the whole project, worktrees included"],
+          ["workspace config set --scope workspace dev.ready_timeout 90s", "give this worktree its own wait for the dev readiness check"],
+          ["workspace config set dev.stop_timeout 20s", "let a stopping dev environment have 20 seconds before it is force-stopped"],
+          ["workspace config set locks.idle_grace 10m", "let an idle agent keep a lock for 10 minutes before a waiter takes it over"],
+          ["workspace config set alerts.notify 'say \"$WORKSPACE_ALERT_TEXT\"'", "speak an alert when an agent pane starts waiting or sits idle"],
+          ["workspace config set notes.dir /Users/me/notes/myapp-fix --name myapp.worktree-fix", "keep one worktree's notes outside its repository"],
+          ["workspace config set myapp dev.up \"bin/dev\"", "configure a workspace from any directory by naming it first"],
+          ["workspace config set --scope global launch.headless true", "run launch, start and doctor headless on this machine"],
+          ["workspace config set --json handoff.auto false", "change a key from a script and read the layer, file and effective value as JSON"]
+        ]
+      },
+      "get" => {
+        usage: ["config get [--scope SCOPE] [--name WS] [WS] KEY"],
+        summary: "Read a config key from one layer's file",
+        about: [
+          "Reads one layer's file, not the layered result (`workspace config KEY` gives that). With no --scope it",
+          "reads the file `config set` would write: the workspace's own for a key a worktree may override, else the",
+          "project's, else the global file. The workspace is WS or --name, else the one cwd is in; outside any",
+          "workspace a project or workspace file read fails with not_in_workspace. When the key is unset there but",
+          "another layer sets it, a note on stderr says what the layered result resolves to, or where a sensitive",
+          "key is set.",
+          "",
+          "Prints the value on stdout and exits 0. If the key has no value, prints nothing on stdout, a note on",
+          "stderr, and exits 1. Read-only."
+        ],
+        options: [["--name NAME, --project NAME", "Workspace to read instead of the one inferred from cwd (--name is the same)"],
+          ["--scope SCOPE", "Layer whose file to read: global, project or workspace (worktree is the same); scope_not_allowed when the key can't live there"]],
+        examples: [
+          ["workspace config get dev.up", "read the command this workspace's file stores for starting its dev environment"],
+          ["workspace config get --scope project handoff.auto --name myapp.worktree-fix", "read what the project file says for a worktree, ignoring the worktree's own file"],
+          ["workspace config get myapp dev.up", "read from any directory by naming the workspace first"],
+          ["workspace config get --scope project locks.idle_grace", "check whether the project file sets it: no output and exit 1 when it does not"]
+        ]
+      },
+      "unset" => {
+        usage: ["config unset [--scope SCOPE] [--name WS] [--json] [WS] KEY"],
+        summary: "Remove a config key from one layer's file",
+        about: [
+          "Writes for real. Removes a key from one layer's file (the one `config set` would write, unless --scope",
+          "names another). The layers below it then apply again. Like `set`, it rewrites the file, keeps a",
+          ".workspace-backup-* copy and drops comments. A key that was not set there changes nothing (outcome",
+          "noop in --json). The workspace is WS or --name, else the one cwd is in (not_in_workspace outside any)."
+        ],
+        options: [["--name NAME, --project NAME", "Workspace to configure instead of the one inferred from cwd (--name is the same)"],
+          ["--scope SCOPE", "Layer to remove it from: global, project or workspace (worktree is the same); scope_not_allowed when the key can't live there"],
+          ["--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr"]],
+        examples: [
+          ["workspace config unset dev.ready", "drop the readiness probe from the file `config set` would write"],
+          ["workspace config unset --scope workspace dev.ready_timeout --name myapp.worktree-fix --json", "give a worktree back the project's wait, and read the outcome as JSON"],
+          ["workspace config unset myapp dev.ready", "unset from any directory by naming the workspace first"],
+          ["workspace config unset --scope global launch.headless", "let launch, start and doctor choose headless by themselves again"]
+        ]
+      },
+      "edit" => {
+        usage: ["config edit [--scope SCOPE] [--name WS] [--json] [WS]"],
+        summary: "Open one layer's config file in your editor",
+        about: [
+          "Opens one layer's config file in $VISUAL or $EDITOR (run without a shell, so the command is split into",
+          "words and the path is passed as its last argument). A file that doesn't exist yet is created first with a",
+          "comment header. With no --scope the workspace's own file is opened (the project's file in a main",
+          "checkout). The workspace is WS or --name, else the one cwd is in; outside any workspace only --scope",
+          "global works (not_in_workspace otherwise).",
+          "",
+          "Unlike `config set`, editing by hand keeps comments, but nothing checks the keys or values; run",
+          "`workspace config validate` afterwards.",
+          "",
+          "An editor path containing spaces must be quoted in $EDITOR. With no $VISUAL or $EDITOR set (or blank),",
+          "under --no-input, or when stdin or stdout is not a terminal, the path is printed, nothing is opened and",
+          "the exit is 0. With --json nothing is opened either: one action document gives the path. Every form,",
+          "--json and the printed path included, first creates a missing file (`created: true` in the JSON)."
+        ],
+        options: [["--name NAME, --project NAME", "Workspace to edit instead of the one inferred from cwd (--name is the same)"],
+          ["--scope SCOPE", "File to edit: global, project or workspace (worktree is the same)"],
+          ["--json", "Print one action document (see docs/README.json.md); open no editor"]],
+        examples: [
+          ["workspace config edit", "hand-edit the workspace's own config file, keeping its comments"],
+          ["workspace config edit --scope global", "hand-edit the machine-wide file, for hooks or layouts that `config set` cannot write"],
+          ["workspace config edit --scope project --name myapp.worktree-fix --json", "get the path of a worktree's project file as JSON, for a script (no editor opens; a missing file is created)"],
+          ["workspace config edit myapp.worktree-fix", "edit another workspace's file by naming it first"],
+          ["EDITOR=cat workspace config edit --scope global", "on a terminal, show the global file with cat instead of opening an editor (VISUAL wins if set; off a terminal only the path prints)"]
+        ]
+      },
+      "keys" => {
+        usage: ["config keys [QUERY] [--settable] [--json]"],
+        summary: "Describe the config keys",
+        about: [
+          "Describes the config keys: type, default, the layers that may hold each, whether `config set` accepts it,",
+          "when a change applies, and example values. Reads no config file and prints no stored value (see",
+          "`workspace config` for those).",
+          "",
+          "With no QUERY, lists every key on one line. A QUERY equal to a key name prints that key in full. Any",
+          "other QUERY keeps the keys whose name or description text contains it as a substring, ignoring case;",
+          "with no match it fails with unknown_config_key."
+        ],
+        options: [["--settable", "Only the keys `config set` accepts"],
+          ["--json", "Print one document with a `keys` array (see docs/README.config.md)"]],
+        examples: [
+          ["workspace config keys", "list every key, one line each"],
+          ["workspace config keys timeout", "find the keys whose name or description mentions timeout"],
+          ["workspace config keys dev.up", "read one key in full, with example values"],
+          ["workspace config keys --settable --json", "list the keys `config set` accepts as JSON, for a script or completion"]
+        ]
+      },
+      "validate" => {
+        usage: ["config validate [--name WS] [--json]"],
+        summary: "Check the config files a workspace reads",
+        about: [
+          "Read-only. Checks the config files a workspace reads (its own, its parent project's when it is a",
+          "worktree, and the global one): YAML syntax, key types and values, and keys nothing reads. A file that",
+          "can't be parsed is reported with its line and column rather than failing the command. Exits 0 when there",
+          "are no errors, 1 otherwise; warnings and notes don't change the exit status."
+        ],
+        options: [["--name NAME, --project NAME", "Workspace to check instead of the one inferred from cwd"],
+          ["--json", "Print one document with a `valid` flag and the problems (see docs/README.config.md)"]],
+        examples: [
+          ["workspace config validate", "check the workspace you are in after a hand edit; exits 1 when a file has an error"],
+          ["workspace config validate --name myproject", "check another workspace's files from any directory"],
+          ["workspace config validate --name myproject.worktree-PROJ-123 --json", "read the problems of a worktree, with line and column, as JSON"]
+        ]
       }
     }.freeze
+
+    # CONFIG_PAGES with the :verbs marker in the bare page's about replaced by the verb list.
+    CONFIG = CONFIG_PAGES.merge(
+      "show" => CONFIG_PAGES.fetch("show").merge(
+        about: CONFIG_PAGES.fetch("show")[:about].flat_map { |line| (line == :verbs) ? overview_verbs(CONFIG_PAGES) : [line] }.freeze
+      ).freeze
+    ).freeze
 
     LAYOUT_NAME_OPT = ["--name WS", "The project, instead of the current directory's; then give only NAME. One argument is always the layout name"].freeze
     LAYOUT_OUTSIDE = "Outside a workspace it is a usage error unless you give --name or PROJECT NAME.".freeze
@@ -2318,16 +2513,6 @@ module Workspace
     # @return [String]
     def self.overview_usage(table)
       usage_lines(table.values.reject { |page| page[:hidden] }.flat_map { |page| page[:usage] }).join("\n")
-    end
-
-    # The overview's verb list, one line per verb.
-    #
-    # @param table [Hash]
-    # @return [Array<String>]
-    def self.overview_verbs(table)
-      shown = table.reject { |_, page| page[:hidden] }
-      width = shown.keys.map(&:length).max
-      shown.map { |key, page| "  #{key.ljust(width)}  #{page[:summary]}" }
     end
 
     def self.usage_lines(usage)

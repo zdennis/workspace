@@ -3255,6 +3255,30 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to eq("No problems found in the config for 'api'.\n")
     end
+
+    it "validate with an extra argument exits 1 with its page" do
+      cli, _, error_output = build_test_cli(config_report: report.new)
+
+      expect { cli.run(["config", "validate", "extra"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Usage: workspace config validate")
+    end
+
+    it "validate outside a workspace says so and shows its page" do
+      cli, _, error_output = build_test_cli(config_report: report.new)
+
+      expect { cli.run(["config", "validate"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Not in a workspace. Pass --name <workspace>.", "Usage: workspace config validate")
+    end
+
+    it "show outside a workspace says so and shows its page" do
+      cli, _, error_output = build_test_cli(config_report: report.new)
+
+      expect { cli.run(["config", "show"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Not in a workspace. Pass --name <workspace>.", "Usage: workspace config show")
+    end
   end
 
   describe "#run with tmux show" do
@@ -3378,6 +3402,22 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace config unset")
+    end
+
+    it "exits 1 with the edit page when edit is given extra arguments" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "edit", "one", "two"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config edit")
+    end
+
+    it "prints the set page for config set --help, naming config keys --settable" do
+      cli, output, _ = build_test_cli
+
+      cli.run(["config", "set", "--help"])
+
+      expect(output.string).to include("Usage: workspace config set", "workspace config keys --settable", "Examples:")
     end
 
     describe "--scope" do
