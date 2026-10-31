@@ -380,6 +380,18 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1})
     end
 
+    it "leaves a step running, deciding nothing, on a failed idle pane, and decides it once the flag clears" do
+      shown_pane = {"pane_id" => "%5", "kind" => "claude", "state" => "idle", "turn_failed" => true}
+      allow(panes).to receive(:idle?) { Workspace::WorkflowPanes.turn_over?(shown_pane, Time.now) }
+
+      command.resume(run: "wr_1")
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil)
+
+      shown_pane["turn_failed"] = false
+      command.resume(run: "wr_1")
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1})
+    end
+
     it "asks about the pane the run is bound to now, wherever `restore` moved it, and the pane it was started in when it is bound to none" do
       allow(panes).to receive(:pane_of).with("wr_1").and_return("%7")
       command.resume(run: "wr_1")

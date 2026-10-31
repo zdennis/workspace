@@ -917,6 +917,74 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "a failed turn (turn_failed)" do
+    def event(name, extra = {})
+      monitor.record({"event" => name, "pane_id" => "%2", "session_id" => "s1"}.merge(extra))
+    end
+
+    before { monitor.scan }
+
+    it "ends the turn: a late idle notification opens no wait, and the pane reads idle past a minute" do
+      event("user_prompt")
+      event("turn_failed")
+      event("notification", "notification_type" => "idle_prompt", "message" => "Claude is waiting for your input")
+      allow(clock).to receive(:now).and_return(now + 90)
+
+      expect(pane("%2")).to include("state" => "idle", "waiting_message" => nil, "turn_failed" => true)
+      expect(monitor.restart_state("%2")).to eq("idle")
+    end
+
+    it "leaves :done unset and a running sub-agent running" do
+      event("subagent_start", "agent" => {"name" => "x"})
+      event("turn_failed")
+
+      expect(monitor.running_subagents("%2")).to eq(1)
+      expect(pane("%2")["state"]).not_to eq("done")
+      expect(pane("%2")["stop_reason"]).to be_nil
+    end
+
+    it "counts running sub-agents, and answers nil for a pane not scanned" do
+      expect(monitor.running_subagents("%2")).to eq(0)
+      expect(monitor.running_subagents("%9")).to be_nil
+    end
+
+    it "is false until a turn fails" do
+      event("user_prompt")
+
+      expect(pane("%2")["turn_failed"]).to be false
+    end
+
+    it "survives session_end, a same-id session_start and a rescan with no agent" do
+      event("turn_failed")
+      event("session_end")
+      event("session_start", "source" => "resume")
+      expect(pane("%2")["turn_failed"]).to be true
+
+      allow(snapshot).to receive(:find_descendant).with(200, ["claude"], anything).and_return(nil)
+      monitor.scan
+      expect(pane("%2")["turn_failed"]).to be true
+    end
+
+    it "clears on user_prompt, stop and a session_start with another session id" do
+      [["user_prompt", {}], ["stop", {}], ["session_start", {"session_id" => "s2"}]].each do |name, extra|
+        event("turn_failed")
+        expect(pane("%2")["turn_failed"]).to be true
+        event(name, extra)
+        expect(pane("%2")["turn_failed"]).to be(false), "#{name} should clear it"
+      end
+    end
+
+    it "#mark_turn_failed sets it and ends the turn, and ignores an unknown pane" do
+      event("user_prompt")
+      monitor.mark_turn_failed("%2")
+      monitor.mark_turn_failed("%9")
+
+      expect(pane("%2")["turn_failed"]).to be true
+      expect(monitor.restart_state("%2")).to eq("idle")
+      expect(monitor.pane_state("%9")).to be_nil
+    end
+  end
+
   describe "#restart_state" do
     def event(name)
       monitor.record("pane_id" => "%2", "event" => name)
