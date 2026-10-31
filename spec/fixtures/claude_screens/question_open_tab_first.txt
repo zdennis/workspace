@@ -1,0 +1,40 @@
+claude --model haiku --dangerously-skip-permissions
+nvm is not compatible with the npm config "prefix" option: currently set to "/opt/homebrew"
+Run `npm config delete prefix` or `nvm use --delete-prefix v24.4.1 --silent` to unset it.
+[1m[31m➜  [36mproj[0m claude --model haiku --dangerously-skip-permissions
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude[0m [1mCode[0m [38;5;246mv2.1.316[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mHaiku[39m [38;5;246m5.5[39m [38;5;246m·[39m [38;5;246mClaude[39m [38;5;246mUltra[39m
+[38;5;174m ▝▝[39m   [38;5;174m▝▝[39m   [38;5;246m/private/tmp/claude-501/t19h/proj[39m
+
+[38;5;220m⚠[39m [38;5;220mYour[39m [38;5;220mlogin[39m [38;5;220mexpires[39m [38;5;220min[39m [38;5;220m3[39m [38;5;220mdays[38;5;246m ·[39m [38;5;246mrun[39m [38;5;246m/login[39m [38;5;246mto[39m [38;5;246mrenew[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mUse the AskUserQuestion tool now to ask me one question: "Which color?" with options Red, Green, [39m
+  [38;5;231mBlue. Do nothing else.[39m
+
+[38;5;246m[49m⏺ [39mUser declined to answer questions
+[38;5;246m  ⎿  · Which color? (Red / Green / Blue)[39m
+
+[38;5;246m✻[39m [38;5;246mBaked for 2s · done 2:11 PM[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mCall AskUserQuestion once with two questions in the same call: header "Size" question "What [39m
+  [38;5;231msize?" options Small and Large; header "Taste" question "What taste?" multiSelect true options [39m
+  [38;5;231mSweet and Sour and Salty. Do nothing else.[39m
+[38;5;246m[49m────────────────────────────────────────────────────────────────────────────────────────────────────
+← [38;5;16m[48;5;153m ☐ Size [39m[49m ☐ Taste  ✔ Submit  →
+
+[1m[38;5;231mWhat size?[0m
+
+[38;5;153m❯[39m [38;5;246m1.[39m [38;5;153mSmall[39m
+     [38;5;246mSmall size[39m
+  [38;5;246m2.[39m Large
+     [38;5;246mLarge size[39m
+  [38;5;246m3. Type something.[39m
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  4. Chat about this
+
+[38;5;246mEnter[39m [38;5;246mto[39m [38;5;246mselect[39m [38;5;246m·[39m [38;5;246mTab/Arrow[39m [38;5;246mkeys[39m [38;5;246mto[39m [38;5;246mnavigate[39m [38;5;246m·[39m [38;5;246mEsc[39m [38;5;246mto[39m [38;5;246mcancel[39m
+
+
+
+
+

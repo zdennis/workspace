@@ -108,11 +108,13 @@ module Workspace
     # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
     #   monitors scan at once, machine-wide; a scan that can't take a slot is
     #   skipped rather than waited out. nil scans without a limit.
+    # @param question_check [Workspace::QuestionClosedCheck] reads whether a
+    #   question dialog is gone from a pane's screen
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, detector: AgentDetector.new, poll_interval: DEFAULT_POLL_INTERVAL, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
-      context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil)
+      context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil, question_check: QuestionClosedCheck.new)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -134,6 +136,7 @@ module Workspace
       @label_reader = label_reader
       @task_reader = task_reader
       @scan_slots = scan_slots
+      @question_check = question_check
       @panes = {}
       @failed_scans = 0
       @last_scan_at = nil
@@ -199,8 +202,9 @@ module Workspace
     # Re-reads one pane now instead of waiting for the next {#scan}, so a
     # caller about to refuse on a stale reading (a shell seen just before an
     # agent started in the pane) can decide on a fresh one. Updates the pane's
-    # cached kind and activity, and ends a permission wait whose dialog is
-    # gone; alerts and logged changes are left to the next scan. Reads once; a failed tmux or process listing leaves the cache
+    # cached kind and activity, ends a permission wait whose dialog is gone, and
+    # closes a question whose dialog the screen proves gone (the same hold
+    # applies); alerts and logged changes are left to the next scan. Reads once; a failed tmux or process listing leaves the cache
     # as it was. Takes no scan slot, which a busy scan thread or another
     # daemon would hold, so the rescan can answer under load. A scan that read
     # the process table before the agent started may still overwrite the fresh
@@ -746,6 +750,12 @@ module Workspace
       nil
     end
 
+    def log_question_closed(pane)
+      @error_output.puts "workspace agent: question closed in #{pane[:pane_id]} of #{@session_name}: its dialog is gone from the screen"
+    rescue
+      nil
+    end
+
     def log_alert_failure(error)
       @logger.debug { "session monitor: alert failed (#{error.class}: #{error.message})" }
     rescue
@@ -799,6 +809,7 @@ module Workspace
       screen = refresh_activity(pane, now)
       refresh_screen_wait(pane, agent && agent[:provider], screen, now)
       end_answered_permission_waits(pane, agent && agent[:provider], screen)
+      refresh_question(pane, now)
     end
 
     # The shortest permission dialog is 12 lines, so a tail this long can't reach above its top rule.
@@ -825,6 +836,52 @@ module Workspace
         requests = pane[:permission_requests]
         requests.delete(agent_id) if requests[agent_id] == wait.slice(:tool, :input)
       end
+    end
+
+    # Esc on a question sends no hook, so a question tool stays open and the
+    # wait its Notification opened stays too, for good. One screen reading of
+    # {QuestionClosedCheck} held for {QuestionClosedCheck::HOLD} seconds, with no
+    # hook event since, closes both. The capture is made only for a pane with a
+    # question tool open. Anything else starts the wait over, a tool that opened
+    # since included, and nothing is closed.
+    def refresh_question(pane, now)
+      tools = pane[:open_tools].to_h.select { |_, tool| TypingSafety::QUESTION_TOOLS.include?(tool[:tool]) }.keys
+      return pane.delete(:question_screen) if tools.empty?
+
+      reading = @question_check.reading(pane[:kind], question_capture(pane))
+      held = pane[:question_screen]
+      if question_reading_held?(pane, held, tools, reading)
+        close_question(pane, tools) if now - held[:since] >= QuestionClosedCheck::HOLD
+      else
+        pane[:question_screen] = reading && {tools: tools, reading: reading, since: now}
+      end
+    end
+
+    # A failed capture proves nothing, so it reads as no screen.
+    def question_capture(pane)
+      @tmux.capture_screen_styled(pane[:pane_id])
+    rescue => e
+      @logger.debug { "session monitor: question capture failed in #{pane[:pane_id]} (#{e.class}: #{e.message})" }
+      nil
+    end
+
+    def question_reading_held?(pane, held, tools, reading)
+      return false unless reading && held
+      return false if pane[:last_event_at] && pane[:last_event_at] > held[:since]
+
+      held[:tools] == tools && held[:reading] == reading
+    end
+
+    # The turn ended with the Esc: as after a Stop, the idle notification that
+    # comes later opens no wait. Only the main agent's wait goes; a sub-agent's
+    # is its own.
+    def close_question(pane, tools)
+      tools.each { |id| pane[:open_tools].delete(id) }
+      pane[:waits].delete(nil)
+      pane[:alerted_waits]&.delete(nil)
+      pane[:turn_ended] = true
+      pane.delete(:question_screen)
+      log_question_closed(pane)
     end
 
     # The key of the wait a matched screen opens in the pane's waits. Hooks

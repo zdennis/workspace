@@ -87,7 +87,7 @@ Nothing is typed unless the pane can take text safely. The test is run when the 
 
 1. A known coding agent whose input prompt workspace can recognize runs in the pane: today that is Claude Code. A shell is `not_an_agent`; a pane the daemon hasn't scanned or identified yet is `pane_not_ready` with `reason` `unknown`; another agent (Codex, for one) is `reason` `unsupported_agent`, since an open dialog can't be ruled out from its screen.
 2. No wait is open: the daemon's state for the pane is `idle` or `working`, not `waiting` (a permission prompt or a question raised by the main agent or a sub-agent). Otherwise `reason` `waiting`.
-3. The main agent isn't running `AskUserQuestion` or `ExitPlanMode`, whose menu a typed Enter would answer. Otherwise `reason` `question_open`.
+3. The main agent isn't running `AskUserQuestion` or `ExitPlanMode`, whose menu a typed Enter would answer. Otherwise `reason` `question_open`. Esc on one sends no hook, so the daemon closes the tool when the screen shows the empty input box unchanged for 8 seconds; see [`workflow`](README.workflow.md).
 4. The pane's screen shows the agent's input prompt (Claude Code: a rule line with `❯` under it, as `launch --prompt` waits for). A dialog replaces Claude Code's input box, so this also catches a permission prompt the daemon hasn't heard about yet. Otherwise `reason` `no_input_prompt`.
 5. The input line (after the last prompt on screen) is empty or shows only the placeholder, so the line isn't added to a person's draft. Otherwise `reason` `input_not_empty`. For the check after pasting, the line must instead start with the request: a menu row or a draft there means Enter would answer or send something else (`reason` `input_changed`).
 

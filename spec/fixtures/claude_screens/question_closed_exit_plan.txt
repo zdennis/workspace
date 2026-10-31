@@ -1,0 +1,40 @@
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude[0m [1mCode[0m [38;5;246mv2.1.316[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mHaiku[39m [38;5;246m5.5[39m [38;5;246m·[39m [38;5;246mClaude[39m [38;5;246mUltra[39m
+[38;5;174m ▝▝[39m   [38;5;174m▝▝[39m   [38;5;246m/private/tmp/claude-501/t19h/proj[39m
+
+[38;5;220m⚠[39m [38;5;220mYour[39m [38;5;220mlogin[39m [38;5;220mexpires[39m [38;5;220min[39m [38;5;220m3[39m [38;5;220mdays[38;5;246m ·[39m [38;5;246mrun[39m [38;5;246m/login[39m [38;5;246mto[39m [38;5;246mrenew[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mUse AskUserQuestion to ask "Pick?" with options One and Two. Do nothing else.[39m
+
+[38;5;246m[49m⏺ [39mUser declined to answer questions
+[38;5;246m  ⎿  · Pick? (One / Two)[39m
+
+[38;5;246m✻[39m [38;5;246mSautéed for 13s · done 2:13 PM[39m
+
+[38;5;246m⏺[39m [38;5;246mSession was started with bypass permissions, so plan mode won't ask before most edits or [39m
+  [38;5;246mcommands. Start a new session without bypass permissions for prompts in plan mode.[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mMake a one-line plan to add a file a.txt, then call ExitPlanMode right away. Do not ask [39m
+  [38;5;231mquestions.[39m
+[49m
+[38;5;114m⏺[39m [1mUpdated plan[0m
+[38;5;246m  ⎿  /plan to preview[39m
+[38;5;246m  ⎿  [38;5;239mUser rejected Claude's plan:[39m
+     [38;5;73m╭────────────────────────────────────────────────────────────────────────────────╮[39m
+     [38;5;73m│[39m Create an empty [38;5;153ma.txt[39m in the project root (/private/tmp/claude-501/t19h/proj). [38;5;73m│[39m
+     [38;5;73m╰────────────────────────────────────────────────────────────────────────────────╯[39m
+
+[38;5;246m✻[39m [38;5;246mBaked for 4s · done 2:14 PM[39m
+
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ 
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [36m[Sonnet 5.5][38;5;246m 📁 proj[39m [38;5;246m|[39m [38;5;246m🌿 main[39m                                                [38;5;246m◐ medium · /effort[39m
+  [32m░░░░░░░░░░[38;5;246m 4% ctx | [33m$0.10[38;5;246m | ⏱️ 2m 11s[39m
+  [38;5;73m⏸ plan mode on[38;5;246m (shift+tab to cycle)[39m
+
+
+
+
+
+

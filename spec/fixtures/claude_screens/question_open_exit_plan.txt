@@ -1,0 +1,40 @@
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude[0m [1mCode[0m [38;5;246mv2.1.316[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mHaiku[39m [38;5;246m5.5[39m [38;5;246m·[39m [38;5;246mClaude[39m [38;5;246mUltra[39m
+[38;5;174m ▝▝[39m   [38;5;174m▝▝[39m   [38;5;246m/private/tmp/claude-501/t19h/proj[39m
+
+[38;5;220m⚠[39m [38;5;220mYour[39m [38;5;220mlogin[39m [38;5;220mexpires[39m [38;5;220min[39m [38;5;220m3[39m [38;5;220mdays[38;5;246m ·[39m [38;5;246mrun[39m [38;5;246m/login[39m [38;5;246mto[39m [38;5;246mrenew[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mUse AskUserQuestion to ask "Pick?" with options One and Two. Do nothing else.[39m
+
+[38;5;246m[49m⏺ [39mUser declined to answer questions
+[38;5;246m  ⎿  · Pick? (One / Two)[39m
+
+[38;5;246m✻[39m [38;5;246mSautéed for 13s · done 2:13 PM[39m
+
+[38;5;246m⏺[39m [38;5;246mSession was started with bypass permissions, so plan mode won't ask before most edits or [39m
+  [38;5;246mcommands. Start a new session without bypass permissions for prompts in plan mode.[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mMake a one-line plan to add a file a.txt, then call ExitPlanMode right away. Do not ask [39m
+  [38;5;231mquestions.[39m
+[49m
+[38;5;114m⏺[39m [1mUpdated plan[0m
+[38;5;246m  ⎿  /plan to preview[39m
+
+[38;5;73m────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m [1m[38;5;153mReady to code?[0m
+
+ Here is Claude's plan:
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m Create an empty [38;5;153ma.txt[39m in the project root (/private/tmp/claude-501/t19h/proj).
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m
+[38;5;73m────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m [38;5;246mClaude[39m [38;5;246mhas[39m [38;5;246mwritten[39m [38;5;246mup[39m [38;5;246ma[39m [38;5;246mplan[39m [38;5;246mand[39m [38;5;246mis[39m [38;5;246mready[39m [38;5;246mto[39m [38;5;246mexecute.[39m [38;5;246mWould[39m [38;5;246myou[39m [38;5;246mlike[39m [38;5;246mto[39m [38;5;246mproceed?[39m
+
+ [38;5;153m❯[39m [38;5;246m1.[39m [38;5;153mYes,[39m [38;5;153mand[39m [38;5;153mswitch[39m [38;5;153mto[39m [1m[38;5;153mBYPASS[0m [1m[38;5;153mPERMISSIONS[0m [1m[38;5;153m(no[0m [1m[38;5;153mfurther[0m [1m[38;5;153mprompts)[0m[38;5;153m for[39m [38;5;153mthis[39m [38;5;153msession[39m
+   [38;5;246m2.[39m Yes, manually approve edits
+   [38;5;246m3.[39m [38;5;246mTell[39m [38;5;246mClaude[39m [38;5;246mwhat[39m [38;5;246mto[39m [38;5;246mchange[39m
+      [38;5;246mshift+tab[39m [38;5;246mto[39m [38;5;246mapprove[39m [38;5;246mwith[39m [38;5;246mthis[39m [38;5;246mfeedback[39m
+
+ [38;5;246mctrl+g[39m [38;5;246mto[39m [38;5;246medit[39m [38;5;246min[39m [38;5;246mVS[39m [38;5;246mCode[39m [38;5;246m·[39m [38;5;246m~/.claude/plans/make-a-one-line-plan-nifty-pine.md[39m
+

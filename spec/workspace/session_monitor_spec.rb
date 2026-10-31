@@ -31,6 +31,215 @@ RSpec.describe Workspace::SessionMonitor do
     monitor.snapshot["panes"].find { |p| p["pane_id"] == id }
   end
 
+  describe "closing a question from the screen" do
+    let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
+    let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
+    let(:ask) { {"pane_id" => "%2", "session_id" => "s1"} }
+    let(:err) { StringIO.new }
+
+    subject(:monitor) do
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, error_output: err)
+    end
+
+    def fixture(name)
+      File.read(File.expand_path("../fixtures/claude_screens/#{name}.txt", __dir__))
+    end
+
+    def show(name)
+      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(fixture(name))
+    end
+
+    def open_question(tool = "AskUserQuestion", id = "t1")
+      monitor.record(ask.merge("event" => "tool_start", "tool" => tool, "tool_use_id" => id))
+    end
+
+    def scans(count, seconds: 10)
+      count.times do
+        times[0] += seconds
+        monitor.scan
+      end
+    end
+
+    def open_tools = monitor.typing_facts("%2")[:open_tools]
+
+    # What `WorkflowPanes#screen_refusal` builds in the `advance` process.
+    def advance_facts
+      row = pane("%2")
+      {kind: row["kind"], state: row["activity_state"], open_tools: row["open_tools"]}
+    end
+
+    before do
+      show("question_open_single")
+      monitor.scan
+      open_question
+    end
+
+    it "keeps the tool open for as long as a dialog shows, and types nothing into it" do
+      scans(30)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), Workspace::StyledScreen.parse(fixture("question_open_single"))))
+        .to include(reason: "question_open")
+    end
+
+    it "keeps the tool open through a slow PreToolUse hook, the box empty with a spinner over it" do
+      show("question_about_to_draw")
+      scans(30)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+    end
+
+    it "closes the tool only after one reading held, for the daemon's facts and for the snapshot" do
+      show("question_closed_single")
+      scans(1)
+      expect(open_tools).to eq(["AskUserQuestion"])
+
+      scans(1)
+      expect(open_tools).to eq([])
+      expect(advance_facts[:open_tools]).to eq([])
+      screen = Workspace::StyledScreen.parse(fixture("question_closed_single"))
+      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), screen)).to be_nil
+      expect(Workspace::TypingSafety.new.check(advance_facts, screen)).to be_nil
+    end
+
+    it "keeps the question open when the capture raises or comes back empty" do
+      allow(tmux).to receive(:capture_screen_styled).with("%2").and_raise(Workspace::Error, "no server")
+      scans(3)
+      expect(open_tools).to eq(["AskUserQuestion"])
+
+      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(nil)
+      scans(3)
+      expect(open_tools).to eq(["AskUserQuestion"])
+    end
+
+    it "keeps the question open when the capture is not valid UTF-8" do
+      allow(tmux).to receive(:capture_screen_styled).with("%2")
+        .and_return((+"────\n❯ \n────\ncaf\xE9\n").force_encoding("UTF-8"))
+      scans(3)
+      expect(open_tools).to eq(["AskUserQuestion"])
+    end
+
+    it "reports the close on the daemon's error stream" do
+      show("question_closed_single")
+      scans(1)
+      expect(err.string).to be_empty
+      scans(1)
+      expect(open_tools).to eq([])
+      expect(err.string).to match(/question closed in %2/)
+    end
+
+    it "waits out the hold when scans come faster" do
+      show("question_closed_single")
+      scans(8, seconds: 1)
+      expect(open_tools).to eq(["AskUserQuestion"])
+
+      scans(1, seconds: 1)
+      expect(open_tools).to eq([])
+    end
+
+    it "does not close on an empty box that a dialog then replaces" do
+      show("question_closed_single")
+      scans(1)
+      show("question_open_single")
+      scans(1)
+      show("question_closed_single")
+      scans(1)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+    end
+
+    it "starts over when the rows above the box change" do
+      show("question_closed_single")
+      scans(1)
+      show("question_closed_tabs")
+      scans(1)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+      scans(1)
+      expect(open_tools).to eq([])
+    end
+
+    it "starts over on a hook event" do
+      show("question_closed_single")
+      scans(1)
+      times[0] += 1
+      monitor.record(ask.merge("event" => "notification", "message" => "Claude needs your input"))
+      scans(1)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+      scans(1)
+      expect(open_tools).to eq([])
+    end
+
+    it "starts over for a question opened since" do
+      show("question_closed_single")
+      scans(1)
+      times[0] += 1
+      open_question("ExitPlanMode", "t2")
+      scans(1)
+
+      expect(open_tools).to eq(%w[AskUserQuestion ExitPlanMode])
+      scans(1)
+      expect(open_tools).to eq([])
+    end
+
+    it "leaves a draft alone: the tool stays open and the pane refused" do
+      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return("────────\n❯ half a thought\n────────\n")
+      scans(5)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), "────────\n❯ half a thought\n────────\n"))
+        .to include(reason: "question_open")
+    end
+
+    it "keeps other tools open, closes ExitPlanMode too" do
+      monitor.record(ask.merge("event" => "tool_start", "tool" => "Bash", "tool_use_id" => "t2"))
+      open_question("ExitPlanMode", "t3")
+      show("question_closed_exit_plan")
+      scans(2)
+
+      expect(open_tools).to eq(["Bash"])
+    end
+
+    it "ends the wait the question's Notification opened, once the screen proves it" do
+      monitor.record(ask.merge("event" => "notification", "message" => "Claude needs your input"))
+      expect(monitor.restart_state("%2")).to eq("waiting")
+      show("question_closed_single")
+      scans(1)
+      expect(monitor.restart_state("%2")).to eq("waiting")
+
+      scans(1)
+      expect(monitor.restart_state("%2")).to eq("idle")
+      expect(pane("%2")["activity_state"]).not_to eq("waiting")
+    end
+
+    it "leaves a sub-agent's wait alone" do
+      monitor.record(ask.merge("event" => "notification", "agent_id" => "sub1", "message" => "permission"))
+      show("question_closed_single")
+      scans(2)
+
+      expect(open_tools).to eq([])
+      expect(monitor.restart_state("%2")).to eq("waiting")
+    end
+
+    it "opens no wait for the idle notification that comes after" do
+      show("question_closed_single")
+      scans(2)
+      monitor.record(ask.merge("event" => "notification", "notification_type" => "idle_prompt", "message" => "Claude is waiting for your input"))
+
+      expect(monitor.restart_state("%2")).to eq("idle")
+    end
+
+    it "reads the styled screen only while a question tool is open" do
+      show("question_closed_single")
+      scans(2)
+      expect(tmux).not_to receive(:capture_screen_styled)
+
+      scans(3)
+    end
+  end
+
   describe "#main_turn_over_since" do
     let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
     let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }

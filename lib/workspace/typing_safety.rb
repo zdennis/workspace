@@ -9,7 +9,9 @@ module Workspace
   # 2. No wait is open: the monitor's restart state is `idle` or `working`,
   #    not `waiting` (a permission prompt or a question Notification).
   # 3. The main agent has no question tool running (`AskUserQuestion`,
-  #    `ExitPlanMode`), whose menu a typed Enter would answer.
+  #    `ExitPlanMode`), whose menu a typed Enter would answer. Esc on one sends
+  #    no hook; {SessionMonitor} closes the tool only on {QuestionClosedCheck}'s
+  #    reading of the screen, so `open_tools` here stays the one test.
   # 4. The current screen shows the agent's input prompt (the pattern
   #    {AgentReadiness} waits for). A dialog replaces Claude Code's input box,
   #    so this also catches a permission prompt whose Notification hook
