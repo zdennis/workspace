@@ -255,6 +255,16 @@ If step 3 times out, the prompt is not typed. Without `wait`, the reply comes at
 | `error: "clear_not_confirmed"` | (`wait`) `/clear` was typed but neither a new conversation's reading nor a SessionStart hook event with source `clear` arrived in time; the prompt was not typed |
 | `error: "not_delivered"` | (`wait`) `/clear` or the prompt never reached the pane |
 
+### Handoff watch
+
+A `handoff_watch` message opens a follow-up watch on a pane. `workspace handoff check` sends it after its save-state prompt landed (see [handoff](README.handoff.md#follow-ups)); the watch thread starts on the first one.
+
+```json
+{"type": "handoff_watch", "workspace": "myapp", "pane_id": "%18", "sent_at": "2026-10-30T12:00:00.000Z", "interval": 30, "max": 10, "text": "...", "sent_text": "..."}
+```
+
+`pane_id` is a tmux pane id, `sent_at` an ISO 8601 time, `interval` and `max` positive numbers (`max` an integer), and `text` (the follow-up) and `sent_text` (the save-state prompt as typed) 1 to 4,000 characters. The reply is `{"ok": true, "watching": true, "reason": null}`, or `"watching": false` with `reason` `not_scanned` (the pane is not in window 0, or not yet scanned), `not_claude`, `no_hooks` or `invalid`. A bad field is `{"ok": false, "error": "usage"}`, a pane running a pipeline stage `error: "pipeline_stage"` with `work_item_ref`, and anything unexpected `error: "internal_error"`. An older daemon answers `unknown_type`.
+
 ### Version
 
 `{"type": "version", "workspace": "myapp"}` asks which workspace version the agent is running (the one loaded when it started). `workspace daemon list` sends it. The reply is `{"ok": true, "version": "0.37.1"}`; an agent from before this message answers `unknown_type`.

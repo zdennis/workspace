@@ -123,7 +123,7 @@ With `--json`, the reason and fix go in the JSON object instead of stderr:
 
 `--context-pct N` skips detection for that call, so you can run a handoff even while detection is broken.
 
-The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`.
+The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`. When the prompt landed, `handoff_sent` also carries [`followup`](#follow-ups).
 
 Every `check --json` document (the three above) also carries `next`, the exit code spelled out so a reader need not keep the table: `"continue"` (exit 0), `"handoff"` (exit 1, for `handoff_sent` and `handoff_send_failed` alike) or `"unknown"` (exit 2); and `doc`, the absolute path of the doc the agent writes and resumes from (`--handoff-doc` expanded, else the default doc), or `null` for `--handoff-prompt` or when the default cannot be worked out. `--json` without `--handoff-doc` reads the notes directory but makes nothing.
 
@@ -156,9 +156,14 @@ workspace config set handoff.threshold 11              # default 11
 workspace config set handoff.check_prompt "..."         # overrides the built-in save-state prompt (doc flow)
 workspace config set handoff.resume_prompt "..."        # overrides the built-in resume prompt (doc flow)
 workspace config set handoff.auto true                  # start/launch send the handoff pack (default false)
+workspace config set handoff.followup_interval 30s      # quiet time before a follow-up (default 30)
+workspace config set handoff.followup_max 10            # follow-ups per handoff; 0 turns them off (default 10)
+workspace config set handoff.followup_prompt "..."      # overrides the built-in follow-up prompt
 ```
 
 `handoff.check_prompt` and `handoff.resume_prompt` only override the flow used when a doc is named (by `--handoff-doc` or the default doc); `--handoff-prompt` always sends its text as-is. They may use `%{usage}`/`%{doc}`/`%{new_cmd}` and `%{doc}` respectively. Their built-in text is the schema default: `workspace config show --json` reports it as `default` (and as `effective` while unset), so a reader need not keep its own copy.
+
+The three `handoff.followup_*` keys are described under [Follow-ups](#follow-ups). `handoff.followup_prompt` has one placeholder, `%{new_cmd}`, the `handoff new` command the save-state prompt named, and it must not be blank. A template that uses another placeholder prints a warning and the built-in text is sent instead.
 
 ## Automatic handoff
 
@@ -169,6 +174,54 @@ It is off by default. Turn it on for a project with `workspace config set handof
 The pack needs Claude Code or Codex. `workspace` reads the project's tmuxinator config for the first pane that runs a known coding agent. It sees through `exec`, `env`, `bundle exec`, `VAR=value` prefixes and paths, but not a wrapper script or an ERB-built command, which count as no agent. For a worktree it reads the parent project's config, not the worktree's own. With `handoff.auto` on and any other agent (OpenCode, Pi, or none), the pack is skipped with a warning and the run goes on: the `packs` row reads `delivered: false, pane: null, reason: "handoff_unsupported_agent"` and `warnings` says why. With `--handoff` the same case is an error, `handoff_unsupported_agent` (`details.kind` is the agent found, or `none`), raised before any worktree, config or window is created.
 
 Run with an explicit `--handoff-doc`, `check` and `new` send and exit exactly as before.
+
+## Follow-ups
+
+An agent can read the save-state prompt and never run `handoff new`: it answers, or goes quiet, and the pane sits at a context limit with no handoff. When `check` lands its prompt, it asks the pane's agent daemon to watch the pane. While the pane stays quiet, the agent daemon (not a person) types a short follow-up into it that opens with "Are you handing off to a fresh conversation?" and asks whether the agent is handing off, gives the `handoff new` command to run once its state is saved, and says to do nothing if it already ran it, or to say why and stop if it was refused.
+
+**What a watch needs.** Only a Claude Code pane in hook mode is watched, because the follow-up is typed through Claude Code's ready prompt and the daemon needs the prompt text that only Claude Code's hooks forward. Only panes in window 0 can be watched, since that is the only window the daemon scans. A pane bound to a run or review gets none: [`binding.md`](README.binding.md) tells those agents not to run `handoff new` unless their instructions say so. A pane bound to a play is watched, including one other than the plan play, so a play pane that was told not to hand off can still get follow-ups, up to the cap. A pane with a pipeline stage running on it is refused. One watch is open per pane; running `check` again in a watched pane adds to it and does not reset its tries or its hour.
+
+**When a follow-up is typed.** The pane must be quiet for `handoff.followup_interval` (default 30 seconds): no tool call or sub-agent running, no screen change, and no earlier follow-up, restart or save-state prompt within that time. The daemon looks every 5 seconds, so a follow-up can come up to 5 seconds late. Activity does not end the watch; it pushes the next follow-up back, and follow-ups start again if the pane goes quiet with no handoff. A try is a follow-up submitted or refused; a pane found gone ends the watch (`pane_gone`) and is not a try. After `handoff.followup_max` tries (default 10, about five minutes at the default interval) the next quiet interval ends the watch `stalled`. `0` turns follow-ups off.
+
+**Stopping follow-ups.** To end the open watch, type any prompt of your own in the pane (`other_prompt`), run `/clear` (`carried_out`), or pause the plan (`plan_paused`). To stop them for future handoffs, run `workspace config set handoff.followup_max 0`; that does not close a watch already open.
+
+**How it ends.** A watch records `handoff_watch_ended` with one of these `reason` values:
+
+| `reason` | What happened |
+|----------|---------------|
+| `carried_out` | A `/clear` started a new conversation in the pane. This is any `/clear`, so a person's own `/clear` or an `agent-run restart` reads the same as a handoff |
+| `other_prompt` | A prompt arrived that is neither the save-state prompt nor a follow-up, from a person or from `agent-run send` or a status request: something else is driving the pane. A pasted-text placeholder or a prompt with no text can't be told from ours and does not count |
+| `session_changed` | The pane's conversation changed without a `/clear`, for example a compaction, which starts a new session, or a resume. A lost SessionStart ends the watch this way too, so a follow-up can't land in a new conversation |
+| `session_ended` | The agent's session ended other than by `/clear` |
+| `pane_gone` | The pane closed or was replaced, or its agent process changed and stayed changed for 30 seconds |
+| `plan_paused` | The workspace's `IMPLEMENTATION_PLAN.md` says `status: paused`, checked at every look. It applies to any plan, even when the handoff doc is not the plan, and to one paused before the watch started |
+| `not_submitted` | A follow-up was pasted but Enter was not confirmed, so the text may be stuck in the input line. This also sends the stall alert |
+| `stalled` | The tries reached `handoff.followup_max` and the pane went quiet again. Sends the stall alert |
+| `expired` | An hour passed since the watch's first arm. Sends the stall alert |
+
+**Events and the alert.** The daemon writes `handoff_watch_started`, one `handoff_followup` per try and `handoff_watch_ended` to the [event log](README.events.md#handoff-follow-up-lines). `handoff_followup` has `attempt` (from 1) and `outcome`: `submitted`, `not_submitted`, `refused` (the pane could not take text, for example a prompt waiting for the person), `not_landed` or `failed` (the paste never reached the pane), or `raised` (the typing itself raised an error). A follow-up that is held back at the last moment because the pane became busy is not a try and writes nothing. A `stalled`, `expired` or `not_submitted` ending also runs `alerts.notify` with `WORKSPACE_ALERT` set to `handoff_stalled` (see [sessions](README.sessions.md#alerts)). Without `alerts.notify` the `handoff_watch_ended` event is the only record.
+
+**In `check --json`.** `handoff_sent` documents carry `followup`: `{"watching": true, "reason": null}` when the watch is open, else `{"watching": false, "reason": ...}`. The text output adds a line when it is open. A failure here never changes the exit code or the other fields. `reason` is one of these, from `check`:
+
+| `reason` | Meaning |
+|----------|---------|
+| `disabled` | `handoff.followup_max` is `0` |
+| `bound_pane` | The pane is bound to a run or review |
+| `text_too_long` | The follow-up or save-state text is over 4,000 characters |
+| `no_daemon` | No agent daemon answered on its socket (a warning is printed) |
+| `no_reply` | The daemon gave no reply within 2 seconds (a warning is printed) |
+| `bad_reply` | The reply was not a JSON object |
+| `unsupported_daemon` | The daemon is older and does not know `handoff_watch`; `workspace agentd restart NAME` replaces it |
+| `error` | `check` hit an error making the request (a warning is printed) |
+
+or passed through from the daemon: `not_scanned` (not in window 0, or not scanned yet), `not_claude`, `no_hooks`, `invalid` (a setting the daemon refused), `usage`, `pipeline_stage`, `internal_error` (the daemon refused the request), `refused` (a refusal with no code), or `unknown` (an answer with no reason).
+
+**Limits.**
+
+- `check` waits at most 2 seconds for the daemon's reply, since it runs inside the agent's turn. When it times out it reports `watching: false` with `no_reply`, but the daemon may still have started the watch.
+- Watches live in the daemon's memory. A daemon restart drops them, and that handoff gets no more follow-ups.
+- If `agentd.poll_interval` is near or above `handoff.followup_interval`, the daemon sees activity late, and a follow-up can land on a pane that is already working.
+- A status line with a clock or other timer that redraws counts as activity. The pane then never looks quiet, no follow-up is typed, and the watch ends `expired` after the hour.
 
 ## Examples
 
