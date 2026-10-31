@@ -35,7 +35,7 @@ RSpec.describe Workspace::AgentStatusDesk do
 
       def deliver(session, target, text, enter: true)
         @delivered << [session, target, text, enter]
-        @screens = [enter ? @screen : "────────────────────\n❯ #{text}\n"] unless @scripted
+        @screens = [enter ? @screen : "────────────────────\n❯ #{text}\n────────────────────\n"] unless @scripted
         status = @statuses.shift || (enter ? :submitted : :pasted)
         Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
       end

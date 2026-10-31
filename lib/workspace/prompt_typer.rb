@@ -6,10 +6,10 @@ module Workspace
   # draft go through it: {AgentStatusDesk}'s status requests and
   # {PromptQueueDesk}'s queued prompts.
   #
-  # After the paste, an input line showing Claude Code's
-  # `[Pasted text #N +M lines]` ({Tmux::PASTE_PLACEHOLDER}) counts as the
-  # pasted text, since a long or multi-line paste never shows its own first
-  # characters there.
+  # After the paste, the whole input box, whitespace removed, must equal the
+  # paste, whitespace removed, or be exactly one Claude Code paste placeholder
+  # (`[Pasted text #N +M lines]`), which a long or multi-line paste shows in
+  # place of its own text.
   #
   # Each check makes one styled capture, so the plain text and the styling
   # come from the same instant; {TypingSafety} reads a fully faint input as

@@ -63,16 +63,93 @@ RSpec.describe Workspace::TypingSafety do
   it "wants the pasted text in the input line once it is pasted, not a menu row or another draft" do
     pasted = Workspace::AgentStatusDesk.prompt_for("sr-1")
 
-    expect(safety.check(facts, "────────\n❯ #{pasted[0, 60]}\n#{pasted[60..]}\n", pasted: pasted)).to be_nil
+    expect(safety.check(facts, "────────\n❯ #{pasted[0, 60]}\n#{pasted[60..]}\n────────\n", pasted: pasted)).to be_nil
     expect(safety.check(facts, dialog_screen, pasted: pasted)).to include(reason: "no_input_prompt")
-    expect(safety.check(facts, "────────\n❯ 1. Yes\n", pasted: pasted)).to include(reason: "input_changed")
-    expect(safety.check(facts, "────────\n❯ hello #{pasted}\n", pasted: pasted)).to include(reason: "input_changed")
+    expect(safety.check(facts, "────────\n❯ 1. Yes\n────────\n", pasted: pasted)).to include(reason: "input_changed")
+    expect(safety.check(facts, "────────\n❯ hello #{pasted}\n────────\n", pasted: pasted)).to include(reason: "input_changed")
+  end
+
+  describe "a paste checked against the whole input box" do
+    def box(width, *rows)
+      rule = "─" * width
+      ([rule, "❯ #{rows.first}"] + rows.drop(1) + [rule]).join("\n") + "\n"
+    end
+
+    it "passes a word-wrapped paste at 14 columns" do
+      pasted = "run the specs for the module now"
+      expect(safety.check(facts, box(14, "run the", "specs for", "the module", "now"), pasted: pasted)).to be_nil
+    end
+
+    it "passes a long word split across rows at 14 columns" do
+      pasted = "deployment-pipeline-config-review-now"
+      expect(safety.check(facts, box(14, "deployment", "-pipeline-", "config-rev", "iew-now"), pasted: pasted)).to be_nil
+    end
+
+    it "refuses a draft ahead of the paste at 20 columns" do
+      pasted = "run the specs for the module now"
+      screen = box(20, "run the specs", "against prodrun", "the specs for", "the module now")
+      expect(safety.check(facts, screen, pasted: pasted)).to include(reason: "input_changed")
+    end
+
+    it "refuses a draft ahead of the paste at 14 columns" do
+      pasted = "deployment-pipeline-config-review-now"
+      screen = box(14, "deployment", "deployment", "-pipeline-", "config-rev", "iew-now")
+      expect(safety.check(facts, screen, pasted: pasted)).to include(reason: "input_changed")
+    end
+
+    it "refuses when the paste is missing" do
+      expect(safety.check(facts, box(14, "run the specs"), pasted: "run the specs for the module now")).to include(reason: "input_changed")
+    end
+
+    it "does not pass a blank paste against an empty box" do
+      expect(safety.check(facts, box(40, ""), pasted: " ")).to include(reason: "input_changed")
+    end
+
+    it "passes a lone paste placeholder" do
+      expect(safety.check(facts, box(40, "[Pasted text #1 +1 line]"), pasted: "line one\nline two")).to be_nil
+    end
+
+    it "passes a short paste and refuses a different draft" do
+      expect(safety.check(facts, box(40, "run it"), pasted: "run it")).to be_nil
+      expect(safety.check(facts, box(40, "walk it"), pasted: "run it")).to include(reason: "input_changed")
+    end
+
+    it "passes on a wide pane, one row" do
+      expect(safety.check(facts, box(80, "run the specs for the module now"), pasted: "run the specs for the module now")).to be_nil
+    end
+
+    it "passes a multi-line paste" do
+      expect(safety.check(facts, box(40, "line one", "line two"), pasted: "line one\nline two")).to be_nil
+    end
+
+    it "refuses a draft that begins with the same words as the paste" do
+      expect(safety.check(facts, box(80, "continue but skip the db testscontinue"), pasted: "continue")).to include(reason: "input_changed")
+      expect(safety.check(facts, box(80, "yes please do it"), pasted: "yes")).to include(reason: "input_changed")
+      expect(safety.check(facts, box(80, "run the specs please"), pasted: "run the specs")).to include(reason: "input_changed")
+    end
+
+    it "refuses an identical draft with the text doubled" do
+      expect(safety.check(facts, box(80, "run the specsrun the specs"), pasted: "run the specs")).to include(reason: "input_changed")
+    end
+
+    it "passes a long paste at 20 and 80 columns" do
+      pasted = "run the specs for the module now and report"
+      expect(safety.check(facts, box(20, "run the specs for", "the module now and", "report"), pasted: pasted)).to be_nil
+      expect(safety.check(facts, box(80, pasted), pasted: pasted)).to be_nil
+    end
+
+    it "refuses when the closing rule isn't on screen" do
+      expect(safety.check(facts, "────\n❯ run it\n", pasted: "run it")).to include(reason: "input_changed")
+    end
   end
 
   it "takes Claude Code's paste placeholder as the pasted text, but not before a paste" do
     pasted = "line one\nline two\n" * 40
 
-    expect(safety.check(facts, "────────\n❯ [Pasted text #1 +80 lines]\n", pasted: pasted)).to be_nil
+    expect(safety.check(facts, "────────\n❯ [Pasted text #1 +80 lines]\n────────\n", pasted: pasted)).to be_nil
+    expect(safety.check(facts, "────────\n❯ [Pasted text #1]\n────────\n", pasted: pasted)).to be_nil
+    expect(safety.check(facts, "────────\n❯ [Pasted text #3 +39 lines] [Pasted text #4 +2 lines]\n────────\n", pasted: pasted)).to include(reason: "input_changed")
+    expect(safety.check(facts, "────────\n❯ [Pasted text #1 +80 lines] and more\n────────\n", pasted: pasted)).to include(reason: "input_changed")
     expect(safety.check(facts, "────────\n❯ [Pasted text #1 +80 lines]\n")).to include(reason: "input_not_empty")
     expect(safety.check(facts, "────────\n❯ my draft [Pasted text #1 +80 lines]\n", pasted: pasted)).to include(reason: "input_changed")
   end
@@ -135,13 +212,13 @@ RSpec.describe Workspace::TypingSafety do
       expect(safety.check(facts, styled(input))).to include(reason: "input_not_empty")
     end
 
-    it "keeps pasted: and exact: on the plain text, so a dim tail only refuses" do
+    it "keeps pasted: and exact: on the plain text, so dim text in the box refuses" do
       suggestion = styled("\e[39m❯ \e[2msend %45 the reply\e[0m")
       expect(safety.check(facts, suggestion, pasted: "run the specs")).to include(reason: "input_changed")
       expect(safety.check(facts, suggestion, exact: "run the specs")).to include(reason: "input_changed")
       pasted = "run the specs"
       typed = styled("\e[39m❯ #{pasted}\e[2m and more\e[0m")
-      expect(safety.check(facts, typed, pasted: pasted)).to be_nil
+      expect(safety.check(facts, typed, pasted: pasted)).to include(reason: "input_changed")
       expect(safety.check(facts, typed, exact: pasted)).to include(reason: "input_changed")
     end
   end

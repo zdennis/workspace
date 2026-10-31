@@ -18,15 +18,15 @@ module Workspace
   #    hasn't arrived yet. `no_input_prompt` otherwise.
   # 5. The input line is empty, or shows only the agent's placeholder, so the
   #    text isn't appended to a person's draft (`input_not_empty`). For the
-  #    check made after the text is pasted, the line must instead start with
-  #    that text, or show Claude Code's `[Pasted text #N` placeholder for a
-  #    long or multi-line paste (`input_changed` otherwise): a menu row or a
-  #    draft there means Enter would answer or send something else.
+  #    check made after the text is pasted, the whole input box must instead
+  #    equal that text, or be exactly one Claude Code `[Pasted text #N]`
+  #    placeholder for a long or multi-line paste (`input_changed` otherwise):
+  #    a menu row or a draft there means Enter would answer or send something else.
   #    Given a {StyledScreen}, text drawn entirely faint (SGR 2) on every
   #    line of the input, with every one of those lines proven, is Claude
   #    Code's suggestion and counts as empty. Only the empty check reads
-  #    styling; `pasted:` and `exact:` use the plain text, so a faint tail
-  #    can only refuse.
+  #    styling; `pasted:` and `exact:` use the plain text, so faint text
+  #    in the box counts as text and can only refuse.
   #
   # A `working` pane passes: Claude Code queues text typed during a turn.
   #
@@ -40,8 +40,9 @@ module Workspace
     # What Claude Code shows in an empty input line.
     PLACEHOLDER = /\ATry "/
 
-    # How much of the pasted text the input line must start with; the rest may wrap.
-    PASTED_PREFIX = 24
+    # Deliberately separate from Tmux::PASTE_PLACEHOLDER, which counts occurrences on a screen and is unanchored.
+    # One paste placeholder, whitespace removed: `[Pasted text #N]` or `[Pasted text #N +M lines]`.
+    PASTE_PLACEHOLDER_ONLY = /\A\[Pastedtext#\d+(\+\d+lines?)?\]\z/
 
     # @param providers [Array<Workspace::AgentProvider>] the known agents
     def initialize(providers: AgentProvider.all)
@@ -52,7 +53,7 @@ module Workspace
     # @param screen [String, StyledScreen, nil] the pane's current screen; a
     #   plain String carries no styling, so a suggestion on it reads as a draft
     # @param pasted [String, nil] the text already pasted, which the input
-    #   line must then start with instead of being empty
+    #   box must then equal instead of being empty
     # @param exact [String, nil] text the whole input, however it wraps, must
     #   equal: no placeholder and no prefix count, so a person's draft can't
     #   read as this text. `input_changed` otherwise
@@ -82,8 +83,8 @@ module Workspace
           return refusal("input_changed", "#{provider.label}'s input isn't exactly the given text")
         end
       elsif pasted
-        unless input.start_with?(pasted[0, PASTED_PREFIX]) || input.match?(/\A#{Tmux::PASTE_PLACEHOLDER.source}/)
-          return refusal("input_changed", "#{provider.label}'s input line doesn't start with the pasted text")
+        unless pasted_shown?(pattern, screen, pasted)
+          return refusal("input_changed", "#{provider.label}'s input box doesn't hold exactly the pasted text")
         end
       elsif !(input.empty? || input.match?(PLACEHOLDER) || suggestion?(pattern, styled))
         return refusal("input_not_empty", "#{provider.label}'s input line already holds text (a draft)")
@@ -92,6 +93,20 @@ module Workspace
     end
 
     private
+
+    # Whether the whole input box holds the pasted text and nothing else, or
+    # exactly one paste placeholder and nothing else (whitespace ignored, since
+    # a wrapped line gains spaces). A draft before or after the paste, or a
+    # placeholder the person typed ahead of a paste, makes the box differ and
+    # refuses. Also refuses when the box's closing rule isn't on screen.
+    def pasted_shown?(pattern, screen, pasted)
+      last = screen.to_enum(:scan, pattern).map { Regexp.last_match }.last
+      return false unless last.post_match.lines.any? { |line| closing_rule?(line) }
+
+      box = squeeze(whole_input(pattern, screen))
+      wanted = squeeze(pasted)
+      !wanted.empty? && (box == wanted || box.match?(PASTE_PLACEHOLDER_ONLY))
+    end
 
     # The text after the last input prompt on screen, stripped, or nil when
     # there is no prompt.
@@ -119,7 +134,7 @@ module Workspace
       seen = false
       index = line
       while index < lines.size
-        break if index > line && lines[index].match?(/\A\s*─{3,}\s*\z/)
+        break if index > line && closing_rule?(lines[index])
         return false unless styled.proven?(index)
 
         lines[index].each_char.with_index do |char, position|
@@ -137,7 +152,11 @@ module Workspace
     # Everything from the last input prompt down to the rule that closes the box.
     def whole_input(pattern, screen)
       last = screen.to_enum(:scan, pattern).map { Regexp.last_match }.last
-      last.post_match.lines.take_while { |line| !line.match?(/\A\s*─{3,}\s*\z/) }.join
+      last.post_match.lines.take_while { |line| !closing_rule?(line) }.join
+    end
+
+    def closing_rule?(line)
+      line.match?(/\A\s*─{3,}\s*\z/)
     end
 
     # A wrapped line gains spaces, so spaces can't take part in the comparison.

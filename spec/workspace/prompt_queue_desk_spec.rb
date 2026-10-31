@@ -45,7 +45,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       def deliver(session, target, text, enter: true)
         log << [:deliver, text, enter]
         @delivered << [session, target, text, enter]
-        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n")
+        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n────────\n")
         status = @statuses.shift || (enter ? :submitted : :pasted)
         Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
       end
@@ -152,7 +152,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
     it "types into a pane that shows only Claude Code's suggestion" do
       suggestion = "────────\n\e[39m❯ \e[2msend %45 the reply when it's done\e[0m\n────────\n"
-      tmux.scripted = -> { typed.empty? ? suggestion : "────────\n❯ run the specs\n" }
+      tmux.scripted = -> { typed.empty? ? suggestion : "────────\n❯ run the specs\n────────\n" }
 
       reply = send_prompt
 
@@ -527,7 +527,7 @@ RSpec.describe Workspace::PromptQueueDesk do
     turn_ends!(t0 + 30)
     allow(tmux).to receive(:deliver).and_wrap_original do |original, session, target, body, enter: true|
       result = original.call(session, target, body, enter: enter)
-      tmux.screen = "────────\n❯ [Pasted text #1 +40 lines]\n" unless enter
+      tmux.screen = "────────\n❯ [Pasted text #1 +40 lines]\n────────\n" unless enter
       result
     end
 
