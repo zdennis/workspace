@@ -1618,13 +1618,274 @@ module Workspace
       }
     }.freeze
 
+    LOCK_NAME_OPT = name_opt("Act on this workspace's repository instead of the one detected from the current directory")
+    LOCK_JSON_ACTION = ["--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr"].freeze
+    LOCK_JSON_REPORT = ["--json", "Print the documented JSON (see docs/README.lock.md) instead of text"].freeze
+
+    LOCK = {
+      "acquire" => {
+        usage: ["lock acquire NAME [--name WS] [--task TEXT] [--wait] [--poll DURATION] [--max-wait DURATION]"],
+        summary: "Take a lock, or wait in line for it",
+        about: [
+          "Takes lock NAME for the calling coding agent, for real. NAME is any label you choose; `edit` is the one",
+          "the edit-guard hook enforces, denying other agents' Edit and Write calls while it is held. The hold",
+          "lasts until `lock release`, the agent's SessionEnd or the agent process dying. Run it inside an agent's session, which names the holder: from a",
+          "plain shell it exits 1 with an error. Locks are shared by every worktree of a repository.",
+          "",
+          "Without --wait a busy lock exits 1 with an error. With --wait (or --max-wait) it queues and polls until it",
+          "is promoted, which can take a long time: run it in the background and read its exit code, not its text.",
+          "--max-wait is when to stop polling, not a hard deadline: a promotion at that instant still exits 0.",
+          "A holder idle for locks.idle_grace (default 5m) is taken over by the first waiter.",
+          "",
+          "Exit codes:",
+          "  0   acquired",
+          "  1   held by someone else (no --wait), or the agent could not be identified",
+          "  4   cleared by someone else while waiting",
+          "  5   this agent already holds or waits for a different lock (release it first)",
+          "  75  gave up after --max-wait; no longer queued, run it again to queue",
+          "  130 interrupted by SIGINT while waiting; the wait is withdrawn",
+          "  143 interrupted by SIGTERM while waiting; the wait is withdrawn"
+        ],
+        options: [LOCK_NAME_OPT,
+          ["--task TEXT", "Free-text description shown to other waiters"],
+          ["--wait", "Queue and poll instead of exiting 1 when busy"],
+          ["--poll DURATION", "Time between polls while waiting, e.g. \"5s\" (a plain number is seconds; default: 5)"],
+          ["--max-wait DURATION", "Stop waiting after DURATION, e.g. \"9m\" (a plain number is seconds); exits 75; implies --wait"]],
+        examples: [
+          ["workspace lock acquire edit", "take the edit lock, or exit 1 with an error if another agent holds it"],
+          ["workspace lock acquire edit --wait --task \"PROJ-12 fix login\"", "queue behind the holder and show the task to waiters; blocks, so run it in the background"],
+          ["workspace lock acquire edit --max-wait 9m", "queue, but give up after 9 minutes with exit 75 (no longer queued; run it again to queue)"],
+          ["workspace lock acquire edit --wait --poll 10s", "check the queue every 10 seconds instead of every 5"],
+          ["workspace lock acquire edit --name api-fix", "take the lock of the repository that workspace api-fix belongs to"]
+        ]
+      },
+      "release" => {
+        usage: ["lock release [NAME | --all] [--name WS] [--json]"],
+        summary: "Release a lock this agent holds",
+        about: [
+          "Gives the lock back, for real, so the first waiter is promoted. Like acquire it runs inside an agent's",
+          "session. A lock this agent does not hold is a message and exit 0; release exits 3 when it reports that",
+          "this agent's hold was taken over while it was idle. Give NAME or --all, not both."
+        ],
+        options: [LOCK_NAME_OPT,
+          ["--all", "Release every lock this agent holds"],
+          LOCK_JSON_ACTION],
+        examples: [
+          ["workspace lock release edit", "give the edit lock back when the edits are done"],
+          ["workspace lock release --all", "give back every lock this agent holds"],
+          ["workspace lock release edit --name api-fix", "release in the repository that workspace api-fix belongs to"],
+          ["workspace lock release edit --json", "one action document on stdout, for a script"]
+        ]
+      },
+      "status" => {
+        usage: ["lock status [NAME] [--name WS] [--json]"],
+        summary: "Show who holds each lock and who is queued",
+        about: [
+          "Read-only: it changes nothing and needs no agent session. A holder whose process is gone is marked",
+          "STALE, an idle one IDLE. Every lock of the repository is listed without NAME. Locks are also logged in",
+          "locks.jsonl next to locks.json (see docs/README.lock.md)."
+        ],
+        options: [LOCK_NAME_OPT, LOCK_JSON_REPORT],
+        examples: [
+          ["workspace lock status", "every lock of this repository, with its holder and queue"],
+          ["workspace lock status edit", "only the edit lock; \"edit lock is free\" when no one holds it"],
+          ["workspace lock status --json", "holders and queues as JSON, for a script"],
+          ["workspace lock status edit --name api-fix", "the edit lock of the repository that workspace api-fix belongs to"]
+        ]
+      },
+      "clear" => {
+        usage: ["lock clear [NAME | --all] [--name WS] [--json]"],
+        summary: "Force-remove a lock's holder and queue",
+        about: [
+          "Meant for the person: it removes the holder and every waiter for real, so an agent that holds the lock",
+          "loses it. Agents release their own lock instead.",
+          "",
+          "For devenv it also stops the dev environment's process group (SIGTERM, then SIGKILL after",
+          "dev.stop_timeout) and keeps the lock until that group is stopped. Ordinary waiters are removed once the",
+          "lock is cleared, but stay queued if a kept devenv holder cannot be stopped; a queued `dev up --force` is",
+          "kept either way.",
+          "",
+          "Exits 0 even when nothing was held. Exits 1 when it keeps the devenv lock because the process group",
+          "could not be stopped (owned by another user, or still running after SIGKILL) or because another",
+          "`lock clear` is already stopping it; check with `workspace lock status NAME`."
+        ],
+        options: [LOCK_NAME_OPT,
+          ["--all", "Clear every lock in this repository"],
+          LOCK_JSON_REPORT],
+        examples: [
+          ["workspace lock clear edit", "free the edit lock after its holder was lost; its waiters are removed"],
+          ["workspace lock clear devenv", "stop the dev environment's processes and free the devenv lock (`dev down` is the normal way)"],
+          ["workspace lock clear --all", "reset every lock in this repository"],
+          ["workspace lock clear edit --json", "the result of the clear as JSON, for a script"]
+        ]
+      },
+      "instructions" => {
+        usage: ["lock instructions [NAME]"],
+        summary: "Print the prompt block that tells a coding agent how to use a lock",
+        about: [
+          "Prints text and nothing else, for pasting into an agent's instructions. NAME defaults to edit. The block",
+          "tells the agent to acquire the lock in the background with --wait, wait for \"Acquired\", and release it",
+          "when its edits are done."
+        ],
+        options: [],
+        examples: [
+          ["workspace lock instructions", "the block for the edit lock, to paste into an agent's instructions"],
+          ["workspace lock instructions edit | pbcopy", "copy the edit lock's block to the clipboard"],
+          ["workspace lock instructions migrations", "the same block for a lock named migrations"]
+        ]
+      }
+    }.freeze
+
+    DEV_NAME_OPT = name_opt("Same as the WS argument (default: the workspace of the current directory)")
+    DEV_JSON_ACTION = LOCK_JSON_ACTION
+    DEV_WS = "WS defaults to the current directory's workspace (not_in_workspace outside one)."
+
+    DEV = {
+      "up" => {
+        usage: ["dev up [WS] [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]"],
+        summary: "Start this worktree's dev environment in a devenv tmux window",
+        about: [
+          "Starts the project's dev.up command for real, in a `devenv` window of the workspace's tmux session, then",
+          "waits until it runs and dev.ready passes. It needs dev.up set (`workspace config set dev.up \"...\"`) and",
+          "a tmux session. One dev environment runs per repository, held by the devenv lock; `up` from the worktree",
+          "that already holds it does nothing (exit 0). " + DEV_WS,
+          "",
+          "When another worktree holds it, plain `up` exits 1. --wait queues behind it and blocks until its turn:",
+          "run it in the background, or use --queue and then `dev wait`. --force stops the other worktree's dev",
+          "environment for real (SIGTERM, then SIGKILL after dev.stop_timeout) and starts this one.",
+          "While a workflow run holds the lock, only the pane bound to that run can start it; --force never takes",
+          "the lock from a run.",
+          "",
+          "Exit codes:",
+          "  0   running (or already running for this worktree), or in line with --queue",
+          "  1   running for another worktree (without --wait/--force), failed to start, or a --force whose target",
+          "      is already being stopped by another `lock clear`, `dev down` or `dev up --force`",
+          "  4   the devenv lock was cleared while waiting",
+          "  6   the ready check failed (the environment is stopped; the lock is released, or stays with its run)",
+          "  75  gave up after --max-wait; the queued wrapper was stopped, so this worktree is no longer in line"
+        ],
+        options: [DEV_NAME_OPT,
+          ["--wait", "Queue behind another worktree's dev environment"],
+          ["--queue", "Like --wait but return at once (exit 0) once running or in line; follow with `dev wait`. Not with --force or --max-wait"],
+          ["--force, --takeover", "Stop another worktree's dev environment, then start this one (unrelated to `down --force`)"],
+          ["--no-ready", "Do not wait for the dev.ready check"],
+          ["--max-wait DURATION", "Give up after DURATION, e.g. \"9m\" (a plain number is seconds); exits 75; implies --wait. With --force it limits the wait to get ahead in line"],
+          DEV_JSON_ACTION],
+        examples: [
+          ["workspace dev up", "start this worktree's dev environment and wait until it is ready"],
+          ["workspace dev up --queue", "start it, or get in line behind another worktree's, and return at once"],
+          ["workspace dev up --max-wait 10m", "wait in line for another worktree's environment, giving up after 10 minutes with exit 75 (the queued wrapper is stopped, so you are no longer in line)"],
+          ["workspace dev up --force", "stop another worktree's environment and start this one"],
+          ["workspace dev up --no-ready", "return once the process runs, without waiting for dev.ready"],
+          ["workspace dev up api-fix --json", "start the environment of workspace api-fix and print one action document"]
+        ]
+      },
+      "down" => {
+        usage: ["dev down [WS] [--force] [--json]"],
+        summary: "Stop this worktree's dev environment",
+        about: [
+          "Stops the running dev environment for real: SIGTERM to its process group, SIGKILL after",
+          "dev.stop_timeout, and the lock is released. With nothing running it says so and exits 0. " + DEV_WS,
+          "",
+          "When another worktree holds the lock, `down` refuses with the error code dev_held_by (exit 1) unless",
+          "--force is given. A dev environment a workflow run started is stopped too, and the lock stays with the run.",
+          "Exits 1 when the process group could not be stopped or another `lock clear`, `dev down` or",
+          "`dev up --force` is already stopping it."
+        ],
+        options: [DEV_NAME_OPT,
+          ["--force", "Stop a dev environment another worktree holds, and kill a process group left behind by a dead wrapper"],
+          DEV_JSON_ACTION],
+        examples: [
+          ["workspace dev down", "stop this worktree's dev environment"],
+          ["workspace dev down api-fix", "stop the dev environment of workspace api-fix"],
+          ["workspace dev down --force", "stop another worktree's environment, or the processes a dead wrapper left behind"],
+          ["workspace dev down --json", "stop it and print one action document, for a script"]
+        ]
+      },
+      "status" => {
+        usage: ["dev status [WS] [--json]"],
+        summary: "Show the dev environment's holder, uptime, pane, readiness and queue",
+        about: [
+          "Changes nothing, but while the environment runs it runs the dev.ready check to report readiness. " + DEV_WS,
+          "It describes the repository's one dev environment, so any workspace of the repository shows the same",
+          "holder and queue. The --json document is described in docs/README.dev.md."
+        ],
+        options: [DEV_NAME_OPT,
+          ["--json", "Print the documented JSON (see docs/README.dev.md) instead of text"]],
+        examples: [
+          ["workspace dev status", "who holds the dev environment, for how long, and who is queued"],
+          ["workspace dev status api-fix", "the same, asked for workspace api-fix"],
+          ["workspace dev status --json", "holder, readiness and queue as JSON, for a script"]
+        ]
+      },
+      "wait" => {
+        usage: ["dev wait [WS] [--no-ready] [--max-wait DURATION] [--json]"],
+        summary: "Block until this worktree holds the dev environment and it is ready",
+        about: [
+          "Follows up `dev up --queue`: this worktree must already hold the devenv lock or be in line for it, or",
+          "it exits 4 with a message. Blocks until its turn comes, so run it in the background or give --max-wait.",
+          "A --max-wait that passes leaves the worktree queued until `dev leave`. " + DEV_WS,
+          "",
+          "Exit codes:",
+          "  0   this worktree holds the dev environment and it is ready",
+          "  1   the queued wrapper exited",
+          "  4   the lock was cleared while waiting, or this worktree is not queued",
+          "  6   the ready check failed",
+          "  75  still queued after --max-wait"
+        ],
+        options: [DEV_NAME_OPT,
+          ["--no-ready", "Do not wait for the dev.ready check"],
+          ["--max-wait DURATION", "Give up after DURATION, e.g. \"9m\" (a plain number is seconds); exits 75 and stays queued"],
+          DEV_JSON_ACTION],
+        examples: [
+          ["workspace dev wait", "after `dev up --queue`, block until this worktree runs the environment and it is ready; it blocks, so run it in the background"],
+          ["workspace dev wait --max-wait 10m", "give up after 10 minutes with exit 75; the worktree stays in line"],
+          ["workspace dev wait --no-ready", "return as soon as this worktree holds the lock"],
+          ["workspace dev wait api-fix --json", "wait for workspace api-fix and print one action document"]
+        ]
+      },
+      "leave" => {
+        usage: ["dev leave [WS] [--json]"],
+        summary: "Take this worktree out of the line for the dev environment",
+        about: [
+          "Stops this worktree's queued wrapper and closes its tmux window, for real. A worktree that is not in line",
+          "is left as it is (exit 0): one that already runs the environment is stopped with `dev down`, not this. " + DEV_WS
+        ],
+        options: [DEV_NAME_OPT, DEV_JSON_ACTION],
+        examples: [
+          ["workspace dev leave", "stop waiting after `dev up --queue` or `dev up --wait` and give up the place in line"],
+          ["workspace dev leave api-fix", "take workspace api-fix out of the line"],
+          ["workspace dev leave --json", "leave and print one action document (left or not_queued)"]
+        ]
+      },
+      "__run" => {
+        usage: ["dev __run [--wait]"],
+        summary: "Run the dev command under the devenv lock (internal: what `dev up` starts)",
+        about: [
+          "Internal. `dev up` runs this in the devenv tmux window. Running it yourself starts dev.up for real in this",
+          "terminal; without dev.up set it exits 1 with an error. It holds the devenv lock for exactly as long as",
+          "the project's dev.up command runs in the foreground of this terminal, then releases it. It must lead its",
+          "own process group (start it from `dev up` or an interactive shell). Without --wait, a lock held by",
+          "someone else exits 1 with an error. The environment WORKSPACE_DEV_TAKEOVER=1 queues it ahead of everyone",
+          "(what `dev up --force` sets). Its exit status is the dev command's."
+        ],
+        hidden: true,
+        options: [["--wait", "Queue for the devenv lock instead of failing when it is held"]],
+        examples: [
+          ["workspace dev __run", "run the dev command in this terminal, failing if the lock is held"],
+          ["workspace dev __run --wait", "queue for the lock, then run (what `dev up --wait` opens)"],
+          ["WORKSPACE_DEV_TAKEOVER=1 workspace dev __run --wait", "queue ahead of everyone (what `dev up --force` opens)"]
+        ]
+      }
+    }.freeze
+
     # The tables by command; the specs and the routing tests read them.
     COMMANDS = {
       "plan" => PLAN, "daemon" => DAEMON, "workflow" => WORKFLOW, "library" => LIBRARY, "spine" => SPINE,
       "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL,
       "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "projects" => PROJECTS,
       "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT, "ask" => ASK, "inbox" => INBOX,
-      "agent-run" => AGENT_RUN, "handoff" => HANDOFF
+      "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV
     }.freeze
 
     # The page for the leading verb words of +args+, longest match first.

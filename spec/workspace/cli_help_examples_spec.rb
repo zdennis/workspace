@@ -143,21 +143,6 @@ module HelpExamplesSpec
     "workflow update",
     "workflow validate",
 
-    # T14: shared resources
-    "dev",
-    "dev __run",
-    "dev down",
-    "dev leave",
-    "dev status",
-    "dev up",
-    "dev wait",
-    "lock",
-    "lock acquire",
-    "lock clear",
-    "lock instructions",
-    "lock release",
-    "lock status",
-
     # T15: plans and stages
     "goal",
     "plan",

@@ -61,6 +61,17 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["handoff"].keys).to eq(%w[check new])
     end
 
+    it "name the verbs of lock and dev, the hidden dev __run apart" do
+      expect(pages["lock"].keys).to eq(%w[acquire release status clear instructions])
+      expect(pages["dev"].keys).to eq(%w[up down status wait leave __run])
+      expect(pages["dev"].select { |_, page| page[:hidden] }.keys).to eq(["__run"])
+    end
+
+    it "state the default poll the lock wait uses" do
+      poll = pages["lock"]["acquire"][:options].to_h.fetch("--poll DURATION")
+      expect(poll).to include("default: #{Workspace::Commands::Lock::DEFAULT_POLL_SECONDS})")
+    end
+
     it "state the agent-run restart limits the code uses" do
       restart = pages["agent-run"]["restart"]
       expect(restart[:about].join(" ")).to include("up to #{Workspace::AgentRestart::QUIET_TIMEOUT}s")

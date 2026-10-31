@@ -2688,6 +2688,8 @@ module Workspace
     end
 
     def cmd_lock(args)
+      return if verb_help_shown?(HelpPages::LOCK, args)
+
       case args.shift
       when "acquire" then cmd_lock_acquire(args)
       when "release" then cmd_lock_release(args)
@@ -2709,18 +2711,11 @@ module Workspace
         repository, keyed by its git common directory.
 
         Subcommands:
-          acquire <name> [options]   Acquire a lock, or wait for it
-          release [<name>|--all]     Release a lock this agent holds
-          status  [<name>]           Show holders and queues
-          clear   [<name>|--all]     Force-remove a lock's holder and queue
-                                     (devenv: also stops the dev env's process group).
-                                     Ordinary waiters are removed once the lock is
-                                     actually cleared, but stay queued if a kept
-                                     devenv holder can't be stopped; a queued
-                                     `dev up --force` is kept either way, not
-                                     removed.
-          instructions [<name>]      Print the prompt block that tells a coding
-                                     agent how to use the lock (default: edit)
+        #{HelpPages.overview_verbs(HelpPages::LOCK).join("\n")}
+
+        Run `workspace lock VERB --help` for a verb's options and examples.
+        `lock clear` removes a holder and its waiters for real; for devenv it also
+        stops the dev env's process group.
 
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
@@ -2779,25 +2774,22 @@ module Workspace
         automatically on SessionEnd and on a `/clear`'d SessionStart.
 
         Examples:
-          workspace lock acquire edit --wait --task "PROJ-12 fix login"
-          workspace lock release edit
-          workspace lock status
-          workspace lock clear edit
-          workspace lock instructions edit
+          workspace lock acquire edit    # take the edit lock, or exit 1 with an error if another agent holds it
+          workspace lock acquire edit --wait --task "PROJ-12 fix login"    # queue for the edit lock; blocks, so run it in the background
+          workspace lock acquire edit --max-wait 9m    # queue, but give up after 9 minutes with exit 75
+          workspace lock release edit   # give the edit lock back when the edits are done
+          workspace lock status    # every lock of this repository, with its holder and queue
+          workspace lock status edit --json    # the edit lock as JSON, for a script
+          workspace lock clear edit    # person only: remove a lost holder and its waiters for real
+          workspace lock instructions edit    # the prompt block to paste into an agent's instructions
       HELP
     end
 
     def cmd_lock_instructions(args)
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock instructions [<name>]"
-        opts.separator ""
-        opts.separator "Prints the prompt block that tells a coding agent how to use"
-        opts.separator "lock <name> (default: edit), for pasting into its instructions."
-      end
-      parser.parse!(args)
+      OptionParser.new.parse!(args)
 
       name = args.shift || "edit"
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::LOCK.fetch("instructions")).join("\n") if args.any?
 
       @lock_command.instructions(name)
     end
@@ -2809,17 +2801,16 @@ module Workspace
       poll = Commands::Lock::DEFAULT_POLL_SECONDS
       max_wait = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock acquire <name> [options]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
-        opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
-        opts.on("--poll DURATION", "Time between polls while waiting (e.g. \"5s\", or a plain number of seconds)") { |v| poll = parse_duration_option("--poll", v) }
-        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--task TEXT") { |v| task = v }
+        opts.on("--wait") { wait = true }
+        opts.on("--poll DURATION") { |v| poll = parse_duration_option("--poll", v) }
+        opts.on("--max-wait DURATION") { |v| max_wait = parse_duration_option("--max-wait", v) }
       end
       parser.parse!(args)
 
       name = args.shift
-      raise UsageError, parser.help if name.nil? || args.any?
+      raise UsageError, HelpPages.render(HelpPages::LOCK.fetch("acquire")).join("\n") if name.nil? || args.any?
 
       result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: working_dir_for(workspace))
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -2963,15 +2954,14 @@ module Workspace
       all = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock release [<name>|--all] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--all", "Release every lock this agent holds") { all = true }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--all") { all = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
 
       name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
+      raise UsageError, HelpPages.render(HelpPages::LOCK.fetch("release")).join("\n") if (!all && name.nil?) || (all && name) || args.any?
 
       run_action("lock release", json: json) do
         result = @lock_command.release(name, all: all, working_dir: working_dir_for(workspace))
@@ -2991,16 +2981,13 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock status [<name>] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.lock.md)") { json = true }
-        opts.separator ""
-        opts.separator "Audit trail: locks.jsonl next to locks.json; see docs/README.lock.md."
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
 
       name = args.shift
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::LOCK.fetch("status")).join("\n") if args.any?
 
       result = @lock_command.status(name, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -3014,16 +3001,16 @@ module Workspace
       all = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock clear [<name>|--all] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--all", "Clear every lock in this namespace") { all = true }
-        opts.on("--json", "Emit the documented JSON schema instead of text (see docs/README.lock.md)") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--all") { all = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
 
+      page = HelpPages.render(HelpPages::LOCK.fetch("clear")).join("\n")
       name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name)
-      raise UsageError, "workspace lock clear: too many arguments.\n\n#{parser.help}" if args.any?
+      raise UsageError, page if (!all && name.nil?) || (all && name)
+      raise UsageError, "workspace lock clear: too many arguments.\n\n#{page}" if args.any?
 
       result = @lock_command.clear(name, all: all, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -3033,6 +3020,8 @@ module Workspace
     end
 
     def cmd_dev(args)
+      return if verb_help_shown?(HelpPages::DEV, args)
+
       case args.shift
       when "up" then cmd_dev_up(args)
       when "down" then cmd_dev_down(args)
@@ -3060,11 +3049,11 @@ module Workspace
           workspace config set dev.ready_timeout 2m      (default: 120s)
 
         Subcommands:
-          up [WS] [options]      Start this worktree's dev env in a devenv tmux window
-          down [WS] [--force]    Stop this worktree's dev env (--force: another worktree's)
-          status [WS]            Show holder, branch, uptime, pane, readiness, and queue
-          wait [WS] [options]    Block until this worktree holds the dev env and it is ready
-          leave [WS]             Take this worktree out of the line for the dev env
+        #{HelpPages.overview_verbs(HelpPages::DEV).join("\n")}
+
+        Run `workspace dev VERB --help` for a verb's options and examples.
+        `up` starts the dev command for real; `down` and `up --force` stop a running dev
+        env for real (SIGTERM to its process group, SIGKILL after dev.stop_timeout).
 
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
@@ -3126,14 +3115,14 @@ module Workspace
               another `lock clear`/`dev down`/`dev up --force`
 
         Examples:
-          workspace dev up
-          workspace dev up --wait --max-wait 10m
-          workspace dev up --queue && workspace dev wait --max-wait 10m
-          workspace dev leave
-          workspace dev up --force
-          workspace dev status
-          workspace dev status myapp.worktree-fix
-          workspace dev down
+          workspace dev up    # start this worktree's dev env and wait until it is ready
+          workspace dev up --wait --max-wait 10m    # wait in line for another worktree's env, up to 10 minutes (exit 75)
+          workspace dev up --queue && workspace dev wait --max-wait 10m    # get in line at once, then block until ready (blocks: run it in the background)
+          workspace dev leave    # give up this worktree's place in the line
+          workspace dev up --force    # stop another worktree's env and start this one
+          workspace dev status    # who holds the dev env, for how long, and who is queued
+          workspace dev status api-fix    # the same, asked for a named workspace
+          workspace dev down    # stop this worktree's dev env
       HELP
     end
 
@@ -3146,18 +3135,17 @@ module Workspace
       queue = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev up [WS] [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
-        opts.on("--queue", "Queue like --wait but return at once; follow with `dev wait`") { queue = true }
-        opts.on("--force", "--takeover", "Stop another worktree's dev env, then start this one") { force = true }
-        opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
-        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--wait") { wait = true }
+        opts.on("--queue") { queue = true }
+        opts.on("--force", "--takeover") { force = true }
+        opts.on("--[no-]ready") { |v| ready = v }
+        opts.on("--max-wait DURATION") { |v| max_wait = parse_duration_option("--max-wait", v) }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("up")).join("\n") if args.any?
 
       run_action("dev up", json: json) do
         options = {wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: dev_working_dir(workspace)}
@@ -3183,15 +3171,14 @@ module Workspace
       max_wait = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev wait [WS] [--no-ready] [--max-wait DURATION] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
-        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75 and stays queued") { |v| max_wait = parse_duration_option("--max-wait", v) }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--[no-]ready") { |v| ready = v }
+        opts.on("--max-wait DURATION") { |v| max_wait = parse_duration_option("--max-wait", v) }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("wait")).join("\n") if args.any?
 
       run_action("dev wait", json: json) do
         result = @dev_command.wait(ready: ready, max_wait: max_wait, working_dir: dev_working_dir(workspace))
@@ -3205,13 +3192,12 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev leave [WS] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("leave")).join("\n") if args.any?
 
       run_action("dev leave", json: json) do
         result = @dev_command.leave(working_dir: dev_working_dir(workspace))
@@ -3225,14 +3211,13 @@ module Workspace
       force = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev down [WS] [--force] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--force", "Stop a dev env another worktree holds, and kill a process group left behind by a dead wrapper") { force = true }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--force") { force = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("down")).join("\n") if args.any?
 
       run_action("dev down", json: json) do
         result = @dev_command.down(force: force, working_dir: dev_working_dir(workspace))
@@ -3245,13 +3230,12 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev status [WS] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.dev.md)") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("status")).join("\n") if args.any?
 
       result = @dev_command.status(working_dir: dev_working_dir(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -3264,11 +3248,10 @@ module Workspace
     def cmd_dev_run(args)
       wait = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev __run [--wait]"
-        opts.on("--wait", "Queue for the devenv lock") { wait = true }
+        opts.on("--wait") { wait = true }
       end
       parser.parse!(args)
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("__run")).join("\n") if args.any?
 
       result = @dev_command.run(wait: wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?

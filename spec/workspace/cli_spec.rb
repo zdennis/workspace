@@ -4575,7 +4575,26 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["lock", "status", "extra", "args"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-      expect(error_output.string).to include("Audit trail: locks.jsonl next to locks.json")
+      expect(error_output.string).to include("locks.jsonl next to locks.json")
+    end
+
+    it "prints the verb's own Usage line for a stray argument to lock and dev verbs" do
+      verbs = {
+        %w[lock acquire] => %w[edit extra], %w[lock release] => %w[edit extra], %w[lock clear] => %w[edit extra],
+        %w[lock instructions] => %w[a b], %w[dev up] => %w[a b], %w[dev down] => %w[a b], %w[dev wait] => %w[a b],
+        %w[dev leave] => %w[a b], %w[dev status] => %w[a b], %w[dev __run] => %w[extra]
+      }
+      verbs.each do |(command, verb), stray|
+        cli, _, error_output = build_test_cli(
+          lock_command: CLITestHelpers::FakeLockCommand.new,
+          dev_command: CLITestHelpers::FakeDevCommand.new
+        )
+
+        expect { cli.run([command, verb, *stray]) }.to raise_error(FakeSystemExit)
+
+        usage = Workspace::HelpPages::COMMANDS.fetch(command).fetch(verb)[:usage].first
+        expect(error_output.string).to include("Usage: workspace #{usage}")
+      end
     end
 
     it "lists instructions and idle takeover in lock help" do
@@ -4583,7 +4602,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["lock", "help"])
 
-      expect(output.string).to include("instructions [<name>]", "locks.idle_grace", "3   this agent's hold was taken over")
+      expect(output.string).to include("Print the prompt block", "locks.idle_grace", "3   this agent's hold was taken over")
     end
 
     describe "dev" do
@@ -4776,7 +4795,7 @@ RSpec.describe Workspace::CLI do
 
         cli.run(["dev"])
 
-        expect(output.string).to include("wait [WS] [options]", "leave [WS]", "--queue")
+        expect(output.string).to include("Block until", "Take this worktree out", "--queue")
       end
 
       it "dispatches down with --force, status, and the hidden __run" do
