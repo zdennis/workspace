@@ -192,9 +192,11 @@ module Workspace
       # @param pane [String, nil] the pane to run in (a pane id or `window.pane`); nil for the workspace's Claude pane
       # @param note [String, nil] added to every step's instructions
       # @param dry_run [Boolean] check everything and start nothing
-      # @return [Hash{String=>Object}] the action row
+      # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`); a run for that pane is
+      #   created and parked, so nothing is typed into the caller
+      # @return [Hash{String=>Object}] the action row; `outcome` is "parked" for a run parked from its own pane
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
-      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false)
+      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil)
         definition = @catalog.find(id)
         if dry_run
           pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace, start_daemon: false)
@@ -205,6 +207,10 @@ module Workspace
                   "step" => checked["step"], "pane" => pane_id, "inputs" => checked["inputs"], "packs" => checked["packs"]}
         end
         pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace)
+        if caller_in_pane?(workspace, caller_pane, pane_id) && @panes.parkable?(workspace, pane_id)
+          created = @engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane_id, note: note, dispatch: false)
+          return park_resume(created, from: nil, note: nil, pane: nil, target: pane_id, turn_over: nil)
+        end
         row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane_id, note: note), "started")
       end
 

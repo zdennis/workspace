@@ -222,9 +222,10 @@ module Workspace
     # @param inputs [Hash{String=>String}]
     # @param pane [String] the pane id the steps run in
     # @param note [String, nil] added to every step's instructions
-    # @return [Hash{String=>Object}] the run after its first transition
+    # @param dispatch [Boolean] false stores the run waiting with `not_started` and types nothing
+    # @return [Hash{String=>Object}] the run after its first transition, or as created
     # @raise [Workspace::Error] see {#preflight}
-    def start(definition:, workspace:, worktree:, inputs:, pane:, note: nil)
+    def start(definition:, workspace:, worktree:, inputs:, pane:, note: nil, dispatch: true)
       checked = preflight(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane)
       data = definition.to_h
       now = now_iso
@@ -246,6 +247,7 @@ module Workspace
       }
       run = @store.create(attributes) { |created| created["artifacts_dir"] = artifacts_dir(worktree, created["id"]) }
       event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
+      return run unless dispatch
       transition(run["id"]) { |stored| dispatch(stored) }
     end
 

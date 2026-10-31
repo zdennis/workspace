@@ -31,6 +31,8 @@ class FakeWorkflowPanes
 
   def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)
 
+  def locate(_workspace, pane) = pane
+
   def parkable?(_workspace, _pane) = true
 
   def pane_gone?(pane) = @gone.include?(pane)
