@@ -266,6 +266,15 @@ RSpec.describe Workspace::Commands::SessionEvent do
       )
     end
 
+    it "counts the Agent tool Claude Code 2.1.314 reports as a sub-agent start" do
+      event = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Agent", "tool_use_id" => "toolu_415751845",
+        "tool_input" => {"description" => "bg", "prompt" => "T11SUB do it", "subagent_type" => "general-purpose"})
+
+      expect(event).to include("event" => "subagent_start", "tool" => "Agent", "tool_use_id" => "toolu_415751845",
+        "description" => "bg", "subagent_type" => "general-purpose", "agent" => {"name" => "general-purpose"})
+      expect(JSON.generate(event)).not_to include("T11SUB")
+    end
+
     it "falls back to the task description when no subagent type is given" do
       event = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Task",
         "tool_input" => {"description" => "review the diff"})

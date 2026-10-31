@@ -25,7 +25,7 @@ module Workspace
         # The turn ended on an API error; `error` says which kind.
         "StopFailure" => "turn_failed",
         "SubagentStop" => "subagent_stop",
-        # A PreToolUse for the Task tool is "subagent_start" instead; see {#translate}.
+        # A PreToolUse for the Agent (earlier Task) tool is "subagent_start" instead; see {#translate}.
         "PreToolUse" => "tool_start",
         "Notification" => "notification",
         "PostToolUse" => "tool_use"
@@ -75,8 +75,9 @@ module Workspace
       # Longest stop reason forwarded to the daemon.
       MAX_STOP_REASON_LENGTH = 64
 
-      # The tool whose PreToolUse starts a sub-agent.
-      SUBAGENT_TOOL = "Task"
+      # The tools whose PreToolUse starts a sub-agent: "Agent" since Claude Code
+      # 2.1.314, "Task" before.
+      SUBAGENT_TOOLS = %w[Agent Task].freeze
 
       # Tools that work on one file, named by `file_path` or `notebook_path`
       # in their input. Only these forward a path, made relative to the checkout.
@@ -299,7 +300,7 @@ module Workspace
 
         return nil if name == "turn_failed" && agent_id_for(payload)
 
-        name = "subagent_start" if claude? && hook == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL
+        name = "subagent_start" if claude? && hook == "PreToolUse" && SUBAGENT_TOOLS.include?(payload["tool_name"])
 
         {
           "type" => "session_event",
@@ -368,7 +369,7 @@ module Workspace
           duration = payload["duration_ms"]
           fields["duration_ms"] = duration.round if duration.is_a?(Numeric) && duration >= 0
         end
-        if claude? && fields["tool"] == SUBAGENT_TOOL && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
+        if claude? && SUBAGENT_TOOLS.include?(fields["tool"]) && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
           fields["description"] = clean(payload["tool_input"]["description"], MAX_DESCRIPTION_LENGTH)
           fields["subagent_type"] = clean(payload["tool_input"]["subagent_type"], MAX_NAME_LENGTH)
         end
@@ -486,7 +487,7 @@ module Workspace
         end
 
         input = payload["tool_input"]
-        return nil unless payload["hook_event_name"] == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL && input.is_a?(Hash)
+        return nil unless payload["hook_event_name"] == "PreToolUse" && SUBAGENT_TOOLS.include?(payload["tool_name"]) && input.is_a?(Hash)
 
         name = input["subagent_type"] || input["description"]
         name ? {"name" => name} : nil

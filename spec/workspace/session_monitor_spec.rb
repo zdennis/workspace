@@ -441,7 +441,7 @@ RSpec.describe Workspace::SessionMonitor do
         "waiting_message" => "Claude is waiting for your input")
     end
 
-    %w[user_prompt tool_use subagent_start stop session_start session_end].each do |event|
+    %w[user_prompt tool_use stop session_start session_end].each do |event|
       it "clears waiting on a #{event} event" do
         notify
 
@@ -456,6 +456,14 @@ RSpec.describe Workspace::SessionMonitor do
       notify
 
       monitor.record("event" => "tool_start", "pane_id" => "%2", "tool" => "Read")
+
+      expect(pane("%2")).to include("state" => "waiting", "waiting_since" => now.iso8601)
+    end
+
+    it "keeps waiting when a sub-agent is started by the Agent tool" do
+      notify
+
+      monitor.record("event" => "subagent_start", "pane_id" => "%2", "tool" => "Agent", "tool_use_id" => "toolu_415751845")
 
       expect(pane("%2")).to include("state" => "waiting", "waiting_since" => now.iso8601)
     end

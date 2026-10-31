@@ -792,7 +792,8 @@ module Workspace
         clear_waiting(pane)
         pane[:turn_ended] = (event["event"] != "user_prompt")
         update_turn_failed(pane, event)
-      else
+      elsif event["event"] != "subagent_start"
+        # Like a tool start, a sub-agent start (the Agent tool) leaves a wait alone.
         pane[:waits].delete(event_agent_id(event))
         pane[:alerted_waits]&.delete(event_agent_id(event))
       end
@@ -844,8 +845,8 @@ module Workspace
     # Keeps what `sessions` says about tools: the main agent's tools still
     # running (by tool_use_id, so tools run side by side finish one by one),
     # and the id of each sub-agent. Only the tool's name is kept, never its
-    # input. A sub-agent is not ended by its Task call's PostToolUse, since a
-    # background Task returns at once while the sub-agent keeps running.
+    # input. A sub-agent is not ended by its Agent call's PostToolUse, since a
+    # background Agent call returns at once while the sub-agent keeps running.
     def track_tools(pane, event)
       open = (pane[:open_tools] ||= {})
       main = event["agent_id"].nil?
@@ -854,8 +855,8 @@ module Workspace
       case event["event"]
       when "tool_start", "subagent_start"
         # A sub-agent the agent names itself (Codex's SubagentStart) has no
-        # tool call to wait on; Claude Code's comes from its Task call.
-        name = event["tool"] || ((event["event"] == "subagent_start" && !event["subagent_id"]) ? "Task" : nil)
+        # tool call to wait on; Claude Code's comes from its Agent (earlier Task) call.
+        name = event["tool"] || ((event["event"] == "subagent_start" && !event["subagent_id"]) ? "Agent" : nil)
         if main && name
           open.delete(id || :anonymous)
           open[id || :anonymous] = {tool: self.class.clean_message(name)&.slice(0, 64), since: @clock.now}
