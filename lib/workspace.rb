@@ -206,6 +206,7 @@ require_relative "workspace/ssh_host_resolver"
 require_relative "workspace/workspace_checkout"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
+require_relative "workspace/status_scope"
 require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/project_agents"
@@ -613,6 +614,7 @@ module Workspace
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, pull_request: pull_request_command, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
+    status_scope = StatusScope.new(project_detector: project_detector, catalog: project_catalog)
     hooks_command = Commands::Hooks.new(hook_installer: hook_installer, checkout: workspace_checkout, catalog: project_catalog)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
@@ -787,6 +789,7 @@ module Workspace
       project_settings: project_settings,
       hook_runner: hook_runner,
       project_detector: project_detector,
+      status_scope: status_scope,
       lineage: lineage,
       workspace_name: workspace_name,
       launch_command: launch_command,

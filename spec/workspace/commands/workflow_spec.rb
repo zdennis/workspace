@@ -215,6 +215,8 @@ RSpec.describe Workspace::Commands::Workflow do
   end
 
   describe "#status" do
+    def workspace_scope(name) = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: name)
+
     let(:gate) do
       shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "passed", "flags" => ["timed_out"],
                                                 "reason" => reason("waiting_you", {"kind" => "gate", "step" => "plan", "artifacts" => ["/src/app/.workflow/wr_1/plan.md"]},
@@ -226,7 +228,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "prints each run with its step, and why it is not moving with the commands that resolve it" do
       allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [gate], "warnings" => ["The daemon did not answer."])
 
-      command.status(workspace: "app")
+      command.status(scope: workspace_scope("app"))
 
       expect(output.string).to eq(<<~TEXT)
         wr_1  flow  app  waiting  step plan (attempt 1), passed
@@ -288,21 +290,139 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to eq("wr_1  flow  app  completed\n")
     end
 
-    it "says when no run is going, in a workspace or at all" do
+    it "says when no run is going, in a workspace, a named workspace, a project or at all" do
       allow(status).to receive(:runs).and_return("runs" => [], "warnings" => [])
+      allow(status).to receive(:in_project).and_return("runs" => [], "warnings" => [])
 
-      command.status(workspace: "app")
-      command.status(all: true)
+      command.status(scope: workspace_scope("app"))
+      command.status(scope: workspace_scope("app"), hint: false)
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :project, project: Struct.new(:name).new("my-app")))
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all))
 
-      expect(output.string).to eq("No workflow runs in app still going.\nNo workflow runs.\n")
+      expect(output.string).to eq(<<~TEXT)
+        No workflow runs in app still going.
+        Finished runs show with --project or --all.
+        No workflow runs in app still going.
+        No workflow runs in project my-app.
+        No workflow runs.
+      TEXT
+    end
+
+    it "reads a workspace's runs still going, a project's runs, or every run, by scope" do
+      project = Struct.new(:name).new("my-app")
+      allow(status).to receive(:runs).and_return("runs" => [], "warnings" => [])
+      allow(status).to receive(:in_project).and_return("runs" => [], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"), json: true)
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :project, project: project), json: true)
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), json: true)
+
+      expect(status).to have_received(:runs).with(workspace: "app", all: false)
+      expect(status).to have_received(:in_project).with(project)
+      expect(status).to have_received(:runs).with(workspace: nil, all: true)
     end
 
     it "prints one document with the time it was made" do
       allow(status).to receive(:runs).with(workspace: nil, all: true).and_return("runs" => [gate], "warnings" => [])
 
-      command.status(all: true, json: true)
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), json: true)
 
       expect(json).to eq("schema_version" => 1, "ok" => true, "generated_at" => "2026-10-04T13:00:00Z", "runs" => [gate], "warnings" => [])
+    end
+  end
+
+  describe "#status over real runs on disk" do
+    around do |example|
+      Dir.mktmpdir("wf-status-scope") do |dir|
+        @dir = dir
+        example.run
+      end
+    end
+
+    let(:now) { Time.utc(2026, 10, 4, 13, 0, 0) }
+    let(:ids) { %w[wr_1 wr_2 wr_3] }
+    let(:store) do
+      Workspace::WorkflowRunStore.new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, id_generator: -> { ids.shift })
+    end
+    let(:status) do
+      Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes, pane_of: "%5", alive?: true, daemon_running?: true),
+        snapshot_client: instance_double(Workspace::AgentSnapshotClient, fetch: {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]}),
+        ask_store_for: ->(_workspace) { instance_double(Workspace::AskStore, list: []) },
+        gate_note: instance_double(Workspace::WorkflowGateNote), clock: -> { now })
+    end
+    let(:project) { Struct.new(:name, :members).new("app", [Struct.new(:workspace).new("app")]) }
+
+    def create(created_at, workspace: "app")
+      store.create({
+        "workflow" => "flow", "title" => "Flow", "workspace" => workspace, "project" => "app", "worktree" => "/src/app", "task" => "t",
+        "inputs" => {}, "state" => "running", "created_at" => created_at, "started_at" => created_at, "ended_at" => nil,
+        "current" => "plan", "pane" => "%5", "loops" => {}, "reason" => nil, "artifacts_dir" => "/src/app/.workflow/wr",
+        "definition" => {"steps" => [{"id" => "plan", "title" => "Plan", "timeout" => nil}]},
+        "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => created_at}]}}
+      })
+    end
+
+    def finish(id)
+      store.update(id) do |run|
+        run["state"] = "completed"
+        run["ended_at"] = "2026-10-04T12:59:00Z"
+      end
+    end
+
+    def workspace_scope(name) = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: name)
+
+    def run_ids = json["runs"].map { |run| run["id"] }
+
+    it "writes runs: [] for a workspace with no runs" do
+      command.status(scope: workspace_scope("app"), json: true)
+
+      expect(json).to include("ok" => true, "runs" => [], "warnings" => [])
+    end
+
+    context "with only a finished run" do
+      before do
+        create("2026-10-04T12:00:00Z")
+        finish("wr_1")
+      end
+
+      it "writes runs: [] in JSON" do
+        command.status(scope: workspace_scope("app"), json: true)
+
+        expect(json["runs"]).to eq([])
+      end
+
+      it "prints the empty wording, with the hint" do
+        command.status(scope: workspace_scope("app"))
+
+        expect(output.string).to eq("No workflow runs in app still going.\nFinished runs show with --project or --all.\n")
+      end
+    end
+
+    context "with one run going and one finished" do
+      before do
+        create("2026-10-04T12:00:00Z")
+        finish("wr_1")
+        create("2026-10-04T12:10:00Z")
+        create("2026-10-04T12:05:00Z")
+      end
+
+      it "lists only the going runs, oldest first, for a named workspace" do
+        command.status(scope: workspace_scope("app"), json: true, hint: false)
+
+        expect(run_ids).to eq(%w[wr_3 wr_2])
+      end
+
+      it "includes the finished run, after the going ones, for :project" do
+        command.status(scope: Workspace::StatusScope::Scope.new(kind: :project, project: project), json: true)
+
+        expect(run_ids).to eq(%w[wr_3 wr_2 wr_1])
+      end
+
+      it "includes the finished run, after the going ones, for :all" do
+        command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), json: true)
+
+        expect(run_ids).to eq(%w[wr_3 wr_2 wr_1])
+      end
     end
   end
 

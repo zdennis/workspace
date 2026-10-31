@@ -743,6 +743,11 @@ RSpec.describe Workspace::ProjectConfig do
       File.write(File.join(tmpdir, "workspace.bad.yml"), ": :\n  - {\n")
       expect(pc.project_root_for("bad")).to be_nil
     end
+
+    it "returns nil when config holds a disallowed YAML class" do
+      File.write(File.join(tmpdir, "workspace.odd.yml"), "root: !ruby/object:Object {}\n")
+      expect(pc.project_root_for("odd")).to be_nil
+    end
   end
 
   describe "#available_projects" do

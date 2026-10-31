@@ -59,20 +59,28 @@ module Workspace
     # @return [Hash] "runs" (see {#run}) and "warnings" (strings): a run file that can't
     #   be read or shown is left out of "runs" and named in a warning
     def runs(workspace: nil, all: false)
-      warnings = @store.unreadable.map do |path|
-        "The run file #{path} can't be read, so its run is not shown. What it held stays held: " \
-          "free a lock with `workspace lock clear NAME`, or delete the file."
-      end
       stored = @store.active + (all ? @store.archived : [])
       stored = stored.select { |run| run["workspace"] == workspace } if workspace
-      shown = stored.filter_map do |run|
-        present(run, warnings)
-      rescue KeyError, NoMethodError, TypeError, ArgumentError
-        warnings << "Workflow run #{run["id"]} can't be shown: its run file is malformed. What it holds stays held: " \
-          "free a lock with `workspace lock clear NAME`, or delete the file."
-        nil
+      present_all(stored)
+    end
+
+    # The runs of one project, active ones first, then finished ones. A run
+    # belongs, active or finished, when its workspace is one of the project's
+    # members, when its stored "project" is the project's name, or when its
+    # workspace name has the project's name as its worktree prefix. The last
+    # two keep the finished runs of a killed worktree and cover a project whose
+    # name differs in case from its workspace names. Two projects with the same
+    # name share the runs those two rules match.
+    #
+    # @param project [#name, #members] a {Workspace::ProjectCatalog::Project}
+    # @return [Hash] "runs" and "warnings", as {#runs}
+    def in_project(project)
+      names = project.members.filter_map(&:workspace)
+      stored = (@store.active + @store.archived).select do |run|
+        names.include?(run["workspace"]) || run["project"] == project.name ||
+          WorkspaceLineage.split_worktree_name(run["workspace"])&.first == project.name
       end
-      {"runs" => shown, "warnings" => warnings.uniq}
+      present_all(stored)
     end
 
     # @param id [String] a run id
@@ -88,6 +96,22 @@ module Workspace
     end
 
     private
+
+    # Warns of unreadable run files, then shows each stored run; a malformed one is a warning.
+    def present_all(stored)
+      warnings = @store.unreadable.map do |path|
+        "The run file #{path} can't be read, so its run is not shown. What it held stays held: " \
+          "free a lock with `workspace lock clear NAME`, or delete the file."
+      end
+      shown = stored.filter_map do |run|
+        present(run, warnings)
+      rescue KeyError, NoMethodError, TypeError, ArgumentError
+        warnings << "Workflow run #{run["id"]} can't be shown: its run file is malformed. What it holds stays held: " \
+          "free a lock with `workspace lock clear NAME`, or delete the file."
+        nil
+      end
+      {"runs" => shown, "warnings" => warnings.uniq}
+    end
 
     def present(run, warnings)
       state = run["steps"].fetch(run["current"])

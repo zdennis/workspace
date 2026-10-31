@@ -55,6 +55,8 @@ module Workspace
     #   `agentd --ensure` command
     # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
     #   to lowercase before `launch` starts it; nil renames nothing
+    # @param status_scope [Workspace::StatusScope, nil] resolves --name, --project and --all
+    #   for the status commands; optional so test builders need not wire it
     # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
     #   `agent-run restart` command; optional so test builders need not wire it
     # @param agent_status_command [Workspace::Commands::AgentStatus, nil] pre-built
@@ -125,7 +127,7 @@ module Workspace
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
     # @param sleeper [#call] sleeps the given seconds, injected for fast tests
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -135,6 +137,7 @@ module Workspace
       @project_settings = project_settings
       @hook_runner = hook_runner
       @project_detector = project_detector
+      @status_scope = status_scope
       @lineage = lineage
       @workspace_name = workspace_name
       @sessions_command = sessions_command
@@ -5071,7 +5074,7 @@ module Workspace
           "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
           "       workspace workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]\n" \
           "                                [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]\n" \
-          "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
+          "       workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--json]\n" \
           "       workspace workflow events RUN [--since N] [--json]\n" \
           "       workspace workflow files RUN [--json]\n" \
           "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
@@ -5115,8 +5118,10 @@ module Workspace
         opts.separator "            branch) or from --prompt TEXT, wait for its agent, and run ID in it; --dry-run checks"
         opts.separator "            everything and makes nothing; a fork's pull request, or a branch tracking another"
         opts.separator "            repository, is refused with fork_pull_request before anything is made"
-        opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
-        opts.separator "            is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
+        opts.separator "  status    the runs still going in this workspace (or --name WORKSPACE's), or one RUN,"
+        opts.separator "            or --project [NAME]'s: the main checkout and its worktrees, finished runs too,"
+        opts.separator "            or --all: every workspace, finished runs too. Each run shows its step and, when"
+        opts.separator "            it is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
         opts.separator "            failed_check or pane_gone, with the commands that resolve it"
         opts.separator "  events    a run's history (going or finished), one line per event: n (its line number), ts,"
         opts.separator "            type and the rest; oldest first, at most 1000 after --since N (default 0); --json"
@@ -5141,7 +5146,7 @@ module Workspace
         opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...]` is what the agent daemon runs to move a run"
         opts.separator "on when a turn ends; it is not meant to be typed."
         opts.separator ""
-        opts.on("--name WORKSPACE", "run: the workspace to run in; status: only this workspace's runs") { |v| options[:name] = v }
+        opts.on("--name WORKSPACE", "run: the workspace to run in; status: that workspace's runs still going (default: the current workspace)") { |v| options[:name] = v }
         opts.on("--input KEY=VALUE", "run, start: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
         opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
@@ -5153,7 +5158,8 @@ module Workspace
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
         opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
-        opts.on("--all", "status: finished runs too") { options[:all] = true }
+        opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
+        opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
         opts.on("--dry-run", "run, start: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
         opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
@@ -5185,6 +5191,7 @@ module Workspace
         opts.separator "  workspace workflow start rpiv PROJ-101 --dry-run --json"
         opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\""
         opts.separator "  workspace workflow status --json"
+        opts.separator "  workspace workflow status --project --json"
         opts.separator "  workspace workflow events wr_2610041230559x3k --since 40 --json"
         opts.separator "  workspace workflow files wr_2610041230559x3k --json"
         opts.separator "  workspace workflow approve wr_2610041230559x3k --note \"Skip the migration.\""
@@ -5218,6 +5225,7 @@ module Workspace
 
       raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
+      raise UsageError, "--project is for `workflow status`." if options[:project] && subcommand != "status"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
       gate_options = workflow_gate_options(subcommand, options)
@@ -5252,7 +5260,11 @@ module Workspace
       when "events"
         @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])
       when "status"
-        @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])
+        if subject && (options[:name] || options[:project] || options[:all])
+          raise UsageError, "workflow status RUN takes no --name, --project or --all: the run names its own workspace."
+        end
+        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir) unless subject
+        @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name])
       when "advance"
         @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started]), background: options[:background], caller_pane: ENV["TMUX_PANE"])
       when "run"
@@ -8352,7 +8364,7 @@ module Workspace
     end
 
     PLAN_FLAGS = {
-      "status" => %i[name all file group json],
+      "status" => %i[name project all file group json],
       "path" => %i[name json],
       "show" => %i[name],
       "init" => %i[name title from force json],
@@ -8372,7 +8384,7 @@ module Workspace
 
     def plan_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --all | --file PATH | --group GROUP] [--json]\n" \
+        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]\n" \
           "       workspace plan path [--name WORKSPACE] [--json]\n" \
           "       workspace plan show [--name WORKSPACE]\n" \
           "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]\n" \
@@ -8404,6 +8416,7 @@ module Workspace
         opts.separator "           with stale_revision. States: #{PlanFile::TASK_STATES.join(", ")}; blocked and skipped need --reason"
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
+        opts.on("--project [NAME]", "status: every workspace of a project (NAME, or the project of the current workspace)") { |v| take_plan_flag(options, :project, v || true) }
         opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
         opts.on("--group GROUP", "status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)") { |v| take_plan_flag(options, :group, v) }
         opts.on("--file PATH", "status: read any file, with no workspace and a state from the file alone") { |v| take_plan_flag(options, :file, v) }
@@ -8471,8 +8484,8 @@ module Workspace
         end
         plan_task_usage(verb, options)
       end
-      if subcommand == "status" && options[:given].count { |key| %i[name all file group].include?(key) } > 1
-        raise UsageError, "Give only one of --name, --all, --file and --group."
+      if subcommand == "status" && options[:given].count { |key| %i[name project all file group].include?(key) } > 1
+        raise UsageError, "Give only one of --name, --project, --all, --file and --group."
       end
       raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
       raise UsageError, "--pane and --spawn need --task. Run 'workspace plan --help'." if (options[:pane] || options[:spawn]) && !options[:task]
@@ -8482,14 +8495,21 @@ module Workspace
       raise Error, "plan is not available: no plan command was wired" unless @plan_command && @plan_dispatch_command && @plan_task_command
 
       return @plan_command.status_group(group: options[:group], json: options[:json]) if options[:group]
-      return @plan_command.status(all: true, json: options[:json]) if options[:all]
       return @plan_command.status(file: options[:file], json: options[:json]) if options[:file]
+
+      if subcommand == "status"
+        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
+        case scope.kind
+        when :all then return @plan_command.status(all: true, json: options[:json])
+        when :project then return @plan_command.status(project: scope.project, json: options[:json])
+        else return @plan_command.status(names: [scope.workspace], json: options[:json])
+        end
+      end
 
       name = options[:name] || @project_detector.detect(@working_dir)
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
       case subcommand
-      when "status" then @plan_command.status(names: [name], json: options[:json])
       when "path" then @plan_command.path(name: name, json: options[:json])
       when "show" then @plan_command.show(name: name)
       when "init"

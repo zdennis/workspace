@@ -206,18 +206,27 @@ module Workspace
         row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane_id, note: note), "started")
       end
 
-      # Prints where runs stand: one run, or the runs still going.
+      # Prints where runs stand: one run, or the runs of a scope.
       #
       # @param run [String, nil] a run id
-      # @param workspace [String, nil] only this workspace's runs
-      # @param all [Boolean] finished runs too
+      # @param scope [Workspace::StatusScope::Scope, nil] `:workspace` lists that workspace's
+      #   runs still going, `:project` all of a project's runs, `:all` every run; nil is `:all`
       # @param json [Boolean]
+      # @param hint [Boolean] when a workspace has no run going, say where finished runs are
       # @return [void]
       # @raise [Workspace::Error] code `unknown_run`
-      def status(run: nil, workspace: nil, all: false, json: false)
-        result = run ? @status.run(run) : @status.runs(workspace: workspace, all: all)
+      def status(run: nil, scope: nil, json: false, hint: true)
+        result = if run
+          @status.run(run)
+        elsif scope&.kind == :workspace
+          @status.runs(workspace: scope.workspace, all: false)
+        elsif scope&.kind == :project
+          @status.in_project(scope.project)
+        else
+          @status.runs(workspace: nil, all: true)
+        end
         return document("generated_at" => @clock.call.utc.iso8601, "runs" => result["runs"], "warnings" => result["warnings"]) if json
-        @output.puts "No workflow runs#{" in #{workspace}" if workspace}#{" still going" unless all}." if result["runs"].empty?
+        @output.puts status_empty_text(scope, hint) if result["runs"].empty? && !run
         result["runs"].each { |each| describe(each) }
         result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
       end
@@ -418,6 +427,16 @@ module Workspace
       end
 
       private
+
+      def status_empty_text(scope, hint)
+        case scope&.kind
+        when :workspace
+          text = "No workflow runs in #{scope.workspace} still going."
+          hint ? "#{text}\nFinished runs show with --project or --all." : text
+        when :project then "No workflow runs in project #{scope.project.name}."
+        else "No workflow runs."
+        end
+      end
 
       # The id a text with no --id is checked as when it names none.
       STDIN_ID = "stdin"

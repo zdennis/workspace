@@ -60,15 +60,17 @@ module Workspace
       #
       # @param names [Array<String>] workspaces to read; ignored with +all+ or +file+
       # @param all [Boolean] every configured workspace whose checkout exists
+      # @param project [ProjectCatalog::Project, nil] the project's configured workspaces whose checkout exists, in member order; ignored with +all+
       # @param file [String, nil] a file to read on its own, with no workspace and a state from the file alone
       # @param json [Boolean] print one JSON document instead of lines
       # @return [Array<Hash>] the rows
       # @raise [Workspace::Error] as {Workspace::Commands::Notes#info} for a named workspace
-      def status(names: [], all: false, file: nil, json: false)
-        rows = file ? [file_row(file)] : rows(names: names, all: all)
+      def status(names: [], all: false, project: nil, file: nil, json: false)
+        rows = file ? [file_row(file)] : rows(names: names, all: all, project: project)
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "plans" => rows})
         else
+          @output.puts "No plans in project #{project.name}." if project && !all && rows.empty?
           rows.each { |row| print_row(row) }
         end
         rows
@@ -108,12 +110,19 @@ module Workspace
       #
       # @param names [Array<String>] workspaces to read; ignored with +all+
       # @param all [Boolean] every configured workspace whose checkout exists
+      # @param project [ProjectCatalog::Project, nil] the project's configured workspaces whose checkout exists, in member order; ignored with +all+
       # @return [Array<Hash>] one row per workspace (see {PlanState#row}); with +all+, a workspace whose
       #   notes directory can't be worked out is a row with a null `path` and a warning carrying the error's code
-      def rows(names: [], all: false)
+      def rows(names: [], all: false, project: nil)
         memo = {}
-        return names.map { |name| row_for(name, memo) } unless all
-        all_workspaces.map do |name|
+        listed = if all
+          all_workspaces
+        elsif project
+          project_workspaces(project)
+        else
+          return names.map { |name| row_for(name, memo) }
+        end
+        listed.map do |name|
           row_for(name, memo)
         rescue Workspace::Error => e
           broken_row(name, e)
@@ -283,6 +292,10 @@ module Workspace
         rescue Workspace::Error => e
           broken_row(name, e)
         end.map { |row| row.merge("repository" => repository.id) }
+      end
+
+      def project_workspaces(project)
+        project.members.select { |member| member.configured && member.exists }.map(&:workspace).uniq
       end
 
       def all_workspaces

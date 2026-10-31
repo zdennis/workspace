@@ -327,6 +327,50 @@ RSpec.describe Workspace::Commands::Plan do
         expect(document["plans"].map { |r| [r["workspace"], r["exists"], r["state"]] }).to eq([["api", false, "empty"], ["api.worktree-x", true, "done"]])
       end
 
+      it "reads a project's configured members whose checkout exists, in member order, an empty plan as its own row" do
+        write_plan("api.worktree-x", "## Tasks\n- [x] T1 a\n")
+
+        command.status(project: catalog.all.first, json: true)
+
+        expect(document["plans"].map { |r| [r["workspace"], r["exists"], r["state"]] }).to eq([["api", false, "empty"], ["api.worktree-x", true, "done"]])
+      end
+
+      it "prints a text row for each of a project's members" do
+        write_plan("api.worktree-x", "## Tasks\n- [x] T1 a\n")
+
+        command.status(project: catalog.all.first)
+
+        expect(output.string.lines.map { |line| line.split.first }).to eq(["api", "api.worktree-x"])
+      end
+
+      it "turns a project member whose notes directory can't be worked out into a broken row" do
+        allow(notes).to receive(:info).with(name: "api").and_raise(Workspace::Error.new("Can't work out the notes directory", code: "notes_dir_unresolved"))
+        write_plan("api.worktree-x", "## Tasks\n- [ ] T1 a\n")
+
+        command.status(project: catalog.all.first, json: true)
+
+        broken, fine = document["plans"]
+        expect(broken).to include("workspace" => "api", "path" => nil)
+        expect(broken["warnings"].first).to include("code" => "notes_dir_unresolved")
+        expect(fine["exists"]).to be true
+      end
+
+      it "says so when the project has no workspace to read" do
+        empty = Workspace::ProjectCatalog::Project.new(name: "none", id: "x", path: "/r", vcs: "git", members: [members[2], members[3]])
+
+        command.status(project: empty)
+
+        expect(output.string).to eq("No plans in project none.\n")
+      end
+
+      it "answers an empty list as JSON when the project has no workspace to read" do
+        empty = Workspace::ProjectCatalog::Project.new(name: "none", id: "x", path: "/r", vcs: "git", members: [members[2], members[3]])
+
+        command.status(project: empty, json: true)
+
+        expect(JSON.parse(output.string)).to include("ok" => true, "plans" => [])
+      end
+
       it "asks tmux once" do
         write_plan("api", "## Tasks\n- [ ] T1 a\n")
         write_plan("api.worktree-x", "## Tasks\n- [ ] T1 a\n")
