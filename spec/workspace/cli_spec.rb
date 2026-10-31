@@ -6432,6 +6432,13 @@ RSpec.describe Workspace::CLI do
         expect(start_command.calls.first).to include(id: "rpiv", ref: nil, prompt: "add a script", slug: false, headless: false, dry_run: false)
       end
 
+      it "refuses --project after --prompt TEXT as a flag of another subcommand" do
+        expect { cli.run(["workflow", "start", "rpiv", "--prompt", "add a script", "--project"]) }.to raise_error(FakeSystemExit)
+
+        expect(error_output.string).to include("--project is for `workflow status`.")
+        expect(start_command.calls).to be_empty
+      end
+
       it "needs a REF or --prompt" do
         expect { cli.run(["workflow", "start", "rpiv"]) }.to raise_error(FakeSystemExit)
         expect(error_output.string).to match(/needs a REF.*--prompt/)
@@ -6716,16 +6723,69 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls).to be_empty
     end
 
-    it "shows where runs stand: all still going, one workspace's, finished ones too, or one run" do
+    it "shows where runs stand: this workspace's going runs, a named workspace's, every run, or one run" do
       cli.run(["workflow", "status"])
-      cli.run(["workflow", "status", "--name", "api", "--all", "--json"])
+      cli.run(["workflow", "status", "--name", "api", "--json"])
+      cli.run(["workflow", "status", "--all", "--json"])
       cli.run(["workflow", "status", "wr_1"])
 
-      expect(workflow_command.calls.map(&:last)).to eq([
-        {run: nil, workspace: nil, all: false, json: false},
-        {run: nil, workspace: "api", all: true, json: true},
-        {run: "wr_1", workspace: nil, all: false, json: false}
+      expect(workflow_command.calls.map(&:last).map { |kw| kw.merge(scope: kw[:scope]&.to_h) }).to eq([
+        {run: nil, scope: {kind: :workspace, workspace: "detected-ws", project: nil}, json: false, hint: true},
+        {run: nil, scope: {kind: :workspace, workspace: "api", project: nil}, json: true, hint: false},
+        {run: nil, scope: {kind: :all, workspace: nil, project: nil}, json: true, hint: true},
+        {run: "wr_1", scope: nil, json: false, hint: true}
       ])
+    end
+
+    it "shows a project's runs for --project, bare or by name" do
+      project = Struct.new(:name, :members).new("my-app", [Struct.new(:workspace).new("detected-ws")])
+      catalog = instance_double(Workspace::ProjectCatalog, all: [project], find: project)
+      cli, = build_test_cli(workflow_command: workflow_command, project_config: project_config, project_detector: detector, working_dir: "/some/dir", project_catalog: catalog)
+
+      cli.run(["workflow", "status", "--project", "--json"])
+      cli.run(["workflow", "status", "--project", "my-app", "--json"])
+
+      expect(workflow_command.calls.map { |_, kw| kw[:scope].project }).to eq([project, project])
+      expect(workflow_command.calls.map { |_, kw| kw[:scope].kind }).to eq([:project, :project])
+    end
+
+    it "refuses two scopes, and a RUN with any scope" do
+      [%w[--name api --all], %w[--name api --project], %w[--project --all]].each do |flags|
+        expect { cli.run(["workflow", "status", *flags]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Give only one of --name, --project and --all.")
+      end
+      %w[--name=api --project --all].each do |flag|
+        expect { cli.run(["workflow", "status", "wr_1", flag]) }.to raise_error(FakeSystemExit)
+      end
+      expect(error_output.string).to include("workflow status RUN takes no --name, --project or --all")
+      expect(workflow_command.calls).to be_empty
+    end
+
+    it "refuses --project on the other subcommands, and lists it in the help beside --prompt" do
+      expect { cli.run(["workflow", "show", "rpiv", "--project"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--project is for `workflow status`.")
+
+      cli.run(["workflow", "--help"])
+      expect(output.string).to include("--project [NAME]").and include("--prompt TEXT")
+    end
+
+    it "reads --project followed by another flag as a bare project, not as its NAME" do
+      project = Struct.new(:name, :members).new("my-app", [Struct.new(:workspace).new("detected-ws")])
+      catalog = instance_double(Workspace::ProjectCatalog, all: [project], find: project)
+      cli, = build_test_cli(workflow_command: workflow_command, project_config: project_config, project_detector: detector, working_dir: "/some/dir", project_catalog: catalog)
+
+      cli.run(["workflow", "status", "--project", "--json"])
+
+      expect(catalog).not_to have_received(:find).with("--json")
+      expect(workflow_command.calls.map(&:last)).to contain_exactly(a_hash_including(json: true, scope: have_attributes(kind: :project, project: project)))
+    end
+
+    it "answers not_in_workspace outside a workspace, in JSON too, and exits 1" do
+      allow(detector).to receive(:detect).and_return(nil)
+
+      expect { cli.run(["workflow", "status", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+      expect(workflow_command.calls).to be_empty
     end
 
     it "resumes, cancels and rejects a run by id" do

@@ -5074,7 +5074,7 @@ module Workspace
           "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
           "       workspace workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]\n" \
           "                                [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]\n" \
-          "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
+          "       workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--json]\n" \
           "       workspace workflow events RUN [--since N] [--json]\n" \
           "       workspace workflow files RUN [--json]\n" \
           "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
@@ -5118,8 +5118,10 @@ module Workspace
         opts.separator "            branch) or from --prompt TEXT, wait for its agent, and run ID in it; --dry-run checks"
         opts.separator "            everything and makes nothing; a fork's pull request, or a branch tracking another"
         opts.separator "            repository, is refused with fork_pull_request before anything is made"
-        opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
-        opts.separator "            is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
+        opts.separator "  status    the runs still going in this workspace (or --name WORKSPACE's), or one RUN,"
+        opts.separator "            or --project [NAME]'s: the main checkout and its worktrees, finished runs too,"
+        opts.separator "            or --all: every workspace, finished runs too. Each run shows its step and, when"
+        opts.separator "            it is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
         opts.separator "            failed_check or pane_gone, with the commands that resolve it"
         opts.separator "  events    a run's history (going or finished), one line per event: n (its line number), ts,"
         opts.separator "            type and the rest; oldest first, at most 1000 after --since N (default 0); --json"
@@ -5144,7 +5146,7 @@ module Workspace
         opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...]` is what the agent daemon runs to move a run"
         opts.separator "on when a turn ends; it is not meant to be typed."
         opts.separator ""
-        opts.on("--name WORKSPACE", "run: the workspace to run in; status: only this workspace's runs") { |v| options[:name] = v }
+        opts.on("--name WORKSPACE", "run: the workspace to run in; status: that workspace's runs still going (default: the current workspace)") { |v| options[:name] = v }
         opts.on("--input KEY=VALUE", "run, start: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
         opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
@@ -5156,7 +5158,8 @@ module Workspace
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
         opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
-        opts.on("--all", "status: finished runs too") { options[:all] = true }
+        opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
+        opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
         opts.on("--dry-run", "run, start: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
         opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
@@ -5188,6 +5191,7 @@ module Workspace
         opts.separator "  workspace workflow start rpiv PROJ-101 --dry-run --json"
         opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\""
         opts.separator "  workspace workflow status --json"
+        opts.separator "  workspace workflow status --project --json"
         opts.separator "  workspace workflow events wr_2610041230559x3k --since 40 --json"
         opts.separator "  workspace workflow files wr_2610041230559x3k --json"
         opts.separator "  workspace workflow approve wr_2610041230559x3k --note \"Skip the migration.\""
@@ -5221,6 +5225,7 @@ module Workspace
 
       raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
+      raise UsageError, "--project is for `workflow status`." if options[:project] && subcommand != "status"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
       gate_options = workflow_gate_options(subcommand, options)
@@ -5255,7 +5260,11 @@ module Workspace
       when "events"
         @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])
       when "status"
-        @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])
+        if subject && (options[:name] || options[:project] || options[:all])
+          raise UsageError, "workflow status RUN takes no --name, --project or --all: the run names its own workspace."
+        end
+        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir) unless subject
+        @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name])
       when "advance"
         @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started]), background: options[:background], caller_pane: ENV["TMUX_PANE"])
       when "run"
