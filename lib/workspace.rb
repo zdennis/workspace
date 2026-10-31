@@ -573,7 +573,7 @@ module Workspace
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
-      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command)
+      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,

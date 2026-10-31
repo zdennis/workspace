@@ -40,6 +40,10 @@ module Workspace
     # signal; changing output is.
     DEFAULT_IDLE_AFTER = 30
 
+    # What this daemon can do that an older one can't, listed in {#snapshot}:
+    # `parked_resume` is the fields {WorkflowPanes} proves a turn's end from.
+    FEATURES = ["parked_resume"].freeze
+
     # Seconds between scans when no `agentd.poll_interval` says otherwise.
     # Each scan is one `tmux list-panes`, one `ps` snapshot and a
     # `capture-pane` per pane, so a short interval is real recurring CPU.
@@ -248,6 +252,7 @@ module Workspace
       {
         "workspace" => @session_name,
         "updated_at" => now.utc.iso8601,
+        "features" => FEATURES,
         "task" => present_task(task, panes),
         "panes" => panes.sort_by { |p| p["index"] || 0 }
       }
@@ -1164,6 +1169,10 @@ module Workspace
         "cwd" => pane[:cwd],
         "state" => state,
         "state_since" => state_since&.utc&.iso8601,
+        "activity_state" => state_of(pane, idle_for),
+        "main_turn_over_since" => main_turn_missing(pane) ? nil : pane[:main_stopped_at].utc.iso8601(3),
+        "transcript_path" => pane[:transcript_path],
+        "open_tools" => pane[:open_tools].to_h.values.map { |tool| tool[:tool] },
         "idle_seconds" => idle_for.round,
         "waiting_since" => waiting_since&.utc&.iso8601,
         "waiting_seconds" => waiting_since && (now - waiting_since).round,

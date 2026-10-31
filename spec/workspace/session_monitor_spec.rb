@@ -117,6 +117,76 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "what a parked resume reads from the snapshot" do
+    let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
+    let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
+
+    before { monitor.scan }
+
+    def hook(name, extra = {})
+      times[0] += 1
+      monitor.record({"event" => name, "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t.jsonl"}.merge(extra))
+    end
+
+    it "lists the feature" do
+      expect(monitor.snapshot["features"]).to eq(["parked_resume"])
+    end
+
+    it "gives a main Stop's time to the millisecond, with the transcript" do
+      times[0] += 0.25
+      hook("stop")
+
+      expect(pane("%2")).to include("main_turn_over_since" => "2026-10-31T12:00:01.250Z", "transcript_path" => "/t.jsonl")
+    end
+
+    it "keeps the time through a sub-agent's tool use" do
+      hook("stop")
+      hook("tool_use", "agent_id" => "a1", "tool" => "Bash", "tool_use_id" => "t1")
+
+      expect(pane("%2")["main_turn_over_since"]).to eq("2026-10-31T12:00:01.000Z")
+    end
+
+    it "drops the time on a wake-up's main tool_start, with the done mark still set" do
+      hook("stop")
+      hook("tool_start", "tool" => "Bash", "tool_use_id" => "t1")
+
+      expect(pane("%2")).to include("state" => "done", "main_turn_over_since" => nil, "open_tools" => ["Bash"])
+    end
+
+    it "has no time for a pane with no Stop heard, a monitor that lost it, and a failed turn" do
+      expect(pane("%2")["main_turn_over_since"]).to be_nil
+
+      hook("stop")
+      monitor.mark_turn_failed("%2")
+      expect(pane("%2")).to include("main_turn_over_since" => nil, "turn_failed" => true)
+    end
+
+    it "gives the working state a done mark hides, and a waiting one" do
+      hook("stop")
+      expect(pane("%2")).to include("state" => "done", "activity_state" => "working")
+
+      times[0] += 31
+      expect(pane("%2")).to include("state" => "done", "activity_state" => "idle")
+
+      hook("notification", "message" => "Allow Bash?", "notification_type" => "permission_prompt")
+      expect(pane("%2")["activity_state"]).to eq("waiting")
+    end
+
+    it "closes a tool by id on a failed tool's event, which counts as main activity" do
+      hook("stop")
+      hook("tool_start", "tool" => "AskUserQuestion", "tool_use_id" => "t1")
+      hook("tool_start", "tool" => "Bash", "tool_use_id" => "t2")
+      hook("tool_use", "tool" => "AskUserQuestion", "tool_use_id" => "t1", "ok" => false)
+
+      expect(pane("%2")["open_tools"]).to eq(["Bash"])
+      expect(monitor.main_turn_evidence("%2")[:missing]).to eq("main_tool_after_stop")
+    end
+
+    it "gives a shell pane an empty tool list" do
+      expect(pane("%1")).to include("open_tools" => [], "transcript_path" => nil, "main_turn_over_since" => nil)
+    end
+  end
+
   describe "the default poll interval" do
     it "matches the agentd.poll_interval default the config schema declares" do
       expect(monitor.instance_variable_get(:@poll_interval)).to eq(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL)

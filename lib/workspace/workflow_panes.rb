@@ -24,6 +24,21 @@ module Workspace
     # long before.
     DONE_GRACE = 10
 
+    # Seconds `type` gives a refused screen to clear: a Stop's `advance` can read
+    # the pane before Claude Code has redrawn it.
+    SCREEN_SETTLE = 5
+
+    # Seconds between looks at a refused screen.
+    SCREEN_POLL = 0.5
+
+    # Seconds a pane must have shown a shell before its agent counts as gone: a
+    # recovery retyping the agent's command leaves a shell for a moment.
+    AGENT_GONE_AFTER = 30
+
+    # What a daemon's snapshot must list before a resume is parked on it or its
+    # rows are read for the new fields.
+    PARKED_RESUME = "parked_resume"
+
     # Whether the agent in a pane, as the daemon's snapshot shows it, has
     # ended its turn with nothing going on to handle that: it is idle (no
     # turn's end was seen), or done (one was seen) for {DONE_GRACE} seconds.
@@ -50,8 +65,12 @@ module Workspace
     # @param connector [#call] opens the daemon's socket for a path
     # @param reply_timeout [Numeric] see {REPLY_TIMEOUT}
     # @param clock [#call] returns the current Time
+    # @param idle_check [Workspace::IdlePromptCheck] reads a pane's input box
+    # @param transcript [Workspace::TranscriptSummary] says whether the main agent wrote anything after a time
+    # @param sleeper [#call] waits a number of seconds
     def initialize(config:, bindings:, tmux:, locator:, binder:, snapshot_client:, agent_ensurer:, connector: ->(path) { UNIXSocket.open(path) },
-      reply_timeout: REPLY_TIMEOUT, clock: -> { Time.now })
+      reply_timeout: REPLY_TIMEOUT, clock: -> { Time.now }, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new,
+      sleeper: ->(seconds) { sleep(seconds) })
       @reply_timeout = reply_timeout
       @clock = clock
       @config = config
@@ -62,6 +81,9 @@ module Workspace
       @snapshot_client = snapshot_client
       @agent_ensurer = agent_ensurer
       @connector = connector
+      @idle_check = idle_check
+      @transcript = transcript
+      @sleeper = sleeper
     end
 
     # The pane a run uses when the caller names none: the workspace's first
@@ -131,12 +153,71 @@ module Workspace
     def idle?(workspace, pane)
       return false unless daemon_running?(workspace)
       snapshot = @snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT)
-      self.class.turn_over?(Array(snapshot["panes"]).find { |each| each["pane_id"] == pane }, @clock.call)
+      self.class.turn_over?(row_of(snapshot, pane), @clock.call)
     rescue Workspace::Error
       false
     end
 
-    # Binds the pane to a step of a run, replacing its earlier binding. The
+    # Whether the turn of the Claude Code agent in a pane is proven over, so a
+    # parked resume may start. Anything unproven is false, no daemon included.
+    #
+    # The input box must be empty with no busy row, which is also how a person
+    # holds a release back with a draft. Then, with a main Stop to go by, the
+    # transcript must show no main activity since it. With none, the pane must be
+    # idle with no hook event for {SessionMonitor::DEFAULT_IDLE_AFTER} seconds: an
+    # Esc, a pane with no hooks, or a daemon restarted since the Stop.
+    #
+    # @param workspace [String]
+    # @param pane [String] a pane id
+    # @return [Boolean]
+    def main_turn_over?(workspace, pane)
+      return false unless daemon_running?(workspace)
+      row = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+      return false unless row && row["kind"] == "claude"
+      return false if row["turn_failed"] || row["state"] == "waiting"
+      return false if screen_refusal(pane, row)
+      turn_proven_over?(row)
+    rescue Workspace::Error, ArgumentError
+      false
+    end
+
+    # Whether a resume from the pane itself can be parked: starts the daemon,
+    # which must be one that can release a park, and the pane must run Claude
+    # Code. A pane the daemon has no row for yet counts only in window 0, the one
+    # it scans; a pane elsewhere would never get a row.
+    #
+    # @param workspace [String]
+    # @param pane [String] a pane id
+    # @return [Boolean]
+    def parkable?(workspace, pane)
+      ensure_daemon!(workspace)
+      snapshot = @snapshot_client.fetch(workspace)
+      return false unless parks?(snapshot)
+      row = row_of(snapshot, pane)
+      return row["kind"] == "claude" if row
+      @tmux.pane_details(@tmux.session_name_for(workspace)).any? { |detail| detail[:id] == pane }
+    rescue Workspace::Error
+      false
+    end
+
+    # @param workspace [String]
+    # @param pane [String] a pane id
+    # @return [Boolean] whether the pane has shown a shell for {AGENT_GONE_AFTER}
+    #   seconds; false when the daemon does not answer
+    def agent_gone?(workspace, pane)
+      row = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+      !row.nil? && row["kind"] == "shell" && row["idle_seconds"].to_i >= AGENT_GONE_AFTER
+    rescue Workspace::Error
+      false
+    end
+
+    # @param pane [String] a pane id
+    # @return [Boolean] whether tmux no longer has the pane
+    def pane_gone?(pane)
+      @tmux.session_name_for_pane(pane).nil?
+    end
+
+    # Binds the pane to a step of a run, replacing  its earlier binding. The
     # paths are left out when they are longer than a binding field may be.
     #
     # @param workspace [String]
@@ -195,10 +276,61 @@ module Workspace
         "A workflow needs it to see when a turn ends.", code: "no_daemon", details: {"workspace" => workspace})
     end
 
-    # Whether the daemon shows the pane's agent working or waiting at a prompt, or a
+    def row_of(snapshot, pane)
+      Array(snapshot["panes"]).find { |each| each["pane_id"] == pane }
+    end
+
+    def parks?(snapshot)
+      Array(snapshot["features"]).include?(PARKED_RESUME)
+    end
+
+    # The facts are built here because {SessionMonitor#typing_facts} lives in the
+    # daemon. `activity_state` tells waiting from idle and working, and unlike
+    # `state` isn't masked by `done`.
+    def screen_refusal(pane, row)
+      facts = {kind: row["kind"], state: row["activity_state"], open_tools: Array(row["open_tools"])}
+      @idle_check.refusal(facts, @tmux.capture_screen_styled(pane))
+    end
+
+    # With a Stop to go by, the transcript alone decides: a woken turn that has
+    # fired no hook yet must not pass on the rule for a pane with no Stop.
+    def turn_proven_over?(row)
+      since = row["main_turn_over_since"]
+      return @transcript.main_activity_after?(row["transcript_path"], Time.iso8601(since)).nil? if since
+
+      last_event = row["last_event_at"]
+      row["activity_state"] == "idle" &&
+        (last_event.nil? || @clock.call - Time.iso8601(last_event) >= SessionMonitor::DEFAULT_IDLE_AFTER)
+    end
+
+    # The refusal still standing after {SCREEN_SETTLE} seconds, reading the
+    # daemon again each time; nil when the line can be typed.
+    def settled_refusal(workspace, pane)
+      refused = typing_refusal(workspace, pane, nil)
+      deadline = @clock.call + SCREEN_SETTLE
+      while refused && @clock.call < deadline
+        @sleeper.call(SCREEN_POLL)
+        refused = typing_refusal(workspace, pane, refused)
+      end
+      refused
+    end
+
+    # A pane the daemon can't speak for gets +unknown+: nil on the first read, so
+    # it types as today, and the standing refusal after that. A row from a daemon
+    # before this code has no `activity_state` and is not read.
+    def typing_refusal(workspace, pane, unknown)
+      snapshot = @snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT)
+      row = row_of(snapshot, pane)
+      return unknown unless row && row["kind"] == "claude" && parks?(snapshot)
+      screen_refusal(pane, row)
+    rescue Workspace::Error
+      unknown
+    end
+
+    # Whether the daemon shows the pane's agent working or waiting at a prompt , or a
     # shell where an agent's turn failed (nothing to type a step's line to); false when it can't say.
     def busy?(workspace, pane)
-      shown = Array(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT)["panes"]).find { |each| each["pane_id"] == pane }
+      shown = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
       return true if shown && shown["turn_failed"] && shown["kind"] == "shell"
       %w[working waiting].include?(shown && shown["state"])
     rescue Workspace::Error
@@ -212,6 +344,10 @@ module Workspace
       # then be taken for an earlier one's; so is one typed at a permission prompt.
       if busy?(workspace, pane)
         return {ok: false, code: "pane_busy", message: "the agent in pane #{pane} is in the middle of a turn; resume the run when it is done"}
+      end
+      refused = settled_refusal(workspace, pane)
+      if refused
+        return {ok: false, code: "pane_busy", reason: refused[:reason], message: "pane #{pane} can't take the step's line: #{refused[:message]}"}
       end
       delivery = @tmux.deliver(session, pane, text)
       return {ok: true} if delivery.landed?
