@@ -1325,16 +1325,139 @@ module Workspace
           "                     (PANE is a tmux pane id such as %19; WORKSPACE may be left out as for the others)",
           "  inbox              workspace-ui://inbox",
           "",
+          "Without --print this opens the link for the person, so the UI app comes to the front on that view.",
           "A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)",
           "defaults to the project detected from the current directory. Opening needs the UI app installed,",
           "since it registers the scheme; without it `open` fails, the exit status is 1, and --print still",
-          "shows the link."
+          "shows the link.",
+          "",
+          "Run `workspace ui open VIEW --help` for the task, notes and inbox views."
         ],
         options: [name_opt("Workspace name (every view but inbox)"),
           ["--path REL", "Note to open, relative to the notes directory (notes view only)"],
           ["--print", "Print the link and open nothing"],
           ["--json", "Print one JSON action document (see docs/README.ui.md)"]],
-        examples: []
+        examples: [
+          ["workspace ui open task my-app", "send the person to my-app's task view (opens the UI app)"],
+          ["workspace ui open review my-app.worktree-fix-login", "point the person at the review of one worktree's change"],
+          ["workspace ui open plan --print", "learn the plan link of the workspace you are in, and open nothing"],
+          ["workspace ui open pane my-app %19", "show the person the pane an agent is stuck in"],
+          ["workspace ui open task my-app --json", "open from a script; on failure exits 1 with reason open_failed or open_unavailable"]
+        ]
+      },
+      "open task" => {
+        usage: ["ui open task [WORKSPACE] [--print] [--json]"],
+        summary: "Open a workspace's task view in the workspace UI",
+        about: [
+          "Opens workspace-ui://task/WORKSPACE for the person: the UI app comes to the front on that workspace's",
+          "task. Nothing else happens; the link never starts an agent or runs a command. WORKSPACE (or --name)",
+          "defaults to the project detected from the current directory; from anywhere else a usage error asks for",
+          "one. The workspace is not checked to exist: the UI validates the link it receives. Without the UI app",
+          "installed `open` fails and the exit status is 1; --print still shows the link."
+        ],
+        hidden: true,
+        options: [name_opt("Workspace name"),
+          ["--print", "Print the link and open nothing"],
+          ["--json", "Print one JSON action document (see docs/README.ui.md)"]],
+        examples: [
+          ["workspace ui open task my-app", "send the person to my-app's task view (opens the UI app)"],
+          ["workspace ui open task", "from inside a project, open the task view of the workspace you are in"],
+          ["workspace ui open task my-app --print", "put the link in a message or a note, and open nothing"],
+          ["workspace ui open task --name my-app.worktree-fix-login", "open a worktree's task from outside its checkout"],
+          ["workspace ui open task my-app --json", "open from a script; on failure exits 1 with reason open_failed or open_unavailable"]
+        ]
+      },
+      "open notes" => {
+        usage: ["ui open notes [WORKSPACE] [--path REL] [--print] [--json]"],
+        summary: "Open a workspace's notes in the workspace UI, or one note",
+        about: [
+          "Opens workspace-ui://notes/WORKSPACE for the person, or .../REL with --path REL: the UI app comes to",
+          "the front on the Notes view or on that note. WORKSPACE (or --name) defaults to the project detected",
+          "from the current directory.",
+          "",
+          "REL is the note's path inside the workspace's notes directory (`workspace notes dir` prints it):",
+          "an existing .md or .markdown file of at most 4 path segments, with no symlink on the way. Each segment",
+          "uses only the characters A-Z a-z 0-9 . _ - (no space), does not start with a dot and is not node_modules,",
+          "so `My Note.md` cannot be linked until it is renamed. The file is checked first; a path that fails the",
+          "check is refused as invalid_note_path, exits 1 with an error, and nothing opens. With --path the",
+          "workspace must exist: an unknown one is refused as unknown_workspace before the path is looked at.",
+          "Without the UI app installed `open` fails and the exit status is 1; --print still shows the link."
+        ],
+        hidden: true,
+        options: [name_opt("Workspace name"),
+          ["--path REL", "Note to open, relative to the notes directory"],
+          ["--print", "Print the link and open nothing"],
+          ["--json", "Print one JSON action document (see docs/README.ui.md)"]],
+        examples: [
+          ["workspace ui open notes my-app", "send the person to the notes of my-app (opens the UI app)"],
+          ["workspace ui open notes my-app --path payment-retries.md", "show the person the one note you just wrote"],
+          ["workspace ui open notes --path research/findings.md --print", "in the workspace of the current directory, print the link to a note in a folder, to quote in a reply"],
+          ["workspace ui open notes my-app --path payment-retries.md --json", "open from a script; for a known workspace, a missing note is invalid_note_path in the error document"]
+        ]
+      },
+      "open inbox" => {
+        usage: ["ui open inbox [--print] [--json]"],
+        summary: "Open the inbox in the workspace UI",
+        about: [
+          "Opens workspace-ui://inbox for the person: the UI app comes to the front on the inbox. The inbox is",
+          "not tied to a workspace, so a workspace or --name is a usage error. Without the UI app installed",
+          "`open` fails and the exit status is 1; --print still shows the link."
+        ],
+        hidden: true,
+        options: [["--print", "Print the link and open nothing"],
+          ["--json", "Print one JSON action document (see docs/README.ui.md)"]],
+        examples: [
+          ["workspace ui open inbox", "tell the person something waits for them (opens the UI app)"],
+          ["workspace ui open inbox --print", "learn the inbox link and open nothing"],
+          ["workspace ui open inbox --json", "open from a script; on failure exits 1 with reason open_failed or open_unavailable"]
+        ]
+      }
+    }.freeze
+
+    EVENT_LOG = {
+      "show" => {
+        usage: ["event-log show [--project NAME] [--type TYPE]... [--limit N] [--json]"],
+        summary: "Print event log entries, oldest first",
+        about: [
+          "Reads the event log only; nothing is changed. Each line is `timestamp  project  type  key=value ...`;",
+          "a value with a space or `=` is quoted, and control characters are replaced by spaces. Scripts should",
+          "use --json rather than parse the lines. --project matches an event's project or, for a lock event",
+          "from a worktree, that worktree's workspace name. A --type no event has is not an error: a warning on",
+          "stderr lists the types the log does have. The filters apply first and --limit then keeps the last N",
+          "of what matched. Hook-rate activity (tool calls, sessions) is not in this log: see `workspace events`.",
+          "A usage error exits 1; with --json it is an error document on stdout."
+        ],
+        options: [["--project NAME", "Only events for this project"],
+          ["--type TYPE", "Only events of this type (repeatable, or comma-separated)"],
+          ["--limit N", "Only the last N matching events (N above 0)"],
+          ["--json", "Print {schema_version, ok, events} instead of lines"]],
+        examples: [
+          ["workspace event-log show", "read the whole log, oldest first"],
+          ["workspace event-log show --project myapp --limit 20", "what happened lately to one project"],
+          ["workspace event-log show --type stage_failed,stage_timed_out", "why a pipeline stage stopped"],
+          ["workspace event-log show --type lock_wait_started,lock_takeover --project myapp", "who waited for a lock, and who took one over"],
+          ["workspace event-log show --json --limit 1", "the newest event as JSON, for a script"]
+        ]
+      },
+      "compact" => {
+        usage: ["event-log compact"],
+        summary: "Rewrite the event log with the current state only",
+        about: [
+          "Rewrites the event log in place. It keeps one `compacted` event per active project and the latest",
+          "state of each agent pane that still has an agent, and drops the rest of the history (dispatches, stage",
+          "results, lock waits and takeovers, earlier pane states). A pane whose last change is older than 7 days,",
+          "or whose project is gone, is dropped too. The idle and waiting alerts of the panes kept stay. The",
+          "dropped history cannot be brought back.",
+          "Workspace suggests it when the log passes 1MB, and rotates the log by itself past 10MB.",
+          "Prints `Compacted event log: BEFORE -> AFTER bytes (N project(s))`.",
+          "There is no dry run. Any extra flag or word is ignored, and the log is still compacted."
+        ],
+        options: [],
+        examples: [
+          ["workspace event-log compact", "the log has grown past 1MB and the history in it is no longer needed"],
+          ["workspace event-log compact && workspace event-log show --type compacted", "check what was kept: one compacted event per active project"],
+          ["workspace event-log compact && workspace event-log show --type agent_state --limit 10", "check that each pane with an agent kept its latest state"]
+        ]
       }
     }.freeze
 
@@ -2612,7 +2735,7 @@ module Workspace
     COMMANDS = {
       "plan" => PLAN, "daemon" => DAEMON, "workflow" => WORKFLOW, "library" => LIBRARY, "spine" => SPINE,
       "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL,
-      "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "projects" => PROJECTS,
+      "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "event-log" => EVENT_LOG, "projects" => PROJECTS,
       "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT, "ask" => ASK, "inbox" => INBOX,
       "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV, "pipeline" => PIPELINE
     }.freeze

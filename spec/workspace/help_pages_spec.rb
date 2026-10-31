@@ -52,7 +52,8 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["pipeline"].keys).to match_array(%w[start advance status reset])
       expect(pages["notes"].keys).to eq(["dir"])
       expect(pages["instructions"].keys).to eq(["compose"])
-      expect(pages["ui"].keys).to eq(["open"])
+      expect(pages["ui"].keys).to eq(["open", "open task", "open notes", "open inbox"])
+      expect(pages["event-log"].keys).to eq(%w[show compact])
       expect(pages["projects"].keys).to eq(%w[list show members stop kill])
       expect(pages["projects group"].keys).to match_array(%w[create add list show])
       expect(pages["config"].keys).to eq(%w[show set get unset edit keys validate])
@@ -117,7 +118,7 @@ RSpec.describe Workspace::HelpPages do
       "plan" => :plan_parser, "daemon" => :daemon_parser, "workflow" => :workflow_parser, "library" => :library_parser,
       "spine" => :spine_parser, "binding" => :binding_parser, "step" => :step_parser, "review" => :review_parser,
       "pr" => :pr_parser, "ticket" => :ticket_parser, "goal" => :goal_parser, "notes" => :notes_parser,
-      "instructions" => :instructions_parser, "ui" => :ui_parser,
+      "instructions" => :instructions_parser, "ui" => :ui_parser, "event-log" => :event_log_show_parser,
       # `projects list` parses inline, so it has no factory to check.
       "projects" => {"show" => :projects_show_parser, "members" => :projects_members_parser,
                      "stop" => :projects_stop_parser, "kill" => :projects_kill_parser}
@@ -350,6 +351,48 @@ RSpec.describe Workspace::HelpPages do
 
     def cli_help_requested(argv, page)
       with_cli { |cli, *| return cli.send(:help_requested?, argv, page) }
+    end
+  end
+
+  describe "ui and event-log pages" do
+    it "keeps the hidden ui open pages out of the ui overview, and prints each on its own" do
+      with_cli do |cli, out, *|
+        cli.run(%w[ui --help])
+        overview = out.string
+        %w[task notes inbox].each do |view|
+          page = described_class::UI.fetch("open #{view}")
+          expect(page[:hidden]).to be(true)
+          expect(overview).not_to include(page[:summary])
+        end
+        expect(overview.lines.grep(/\A(Usage: | {7})workspace ui open /).size).to eq(described_class::UI.fetch("open")[:usage].size)
+        expect(overview).to include("Run `workspace ui open VIEW --help` for the task, notes and inbox views.")
+
+        out.truncate(0)
+        out.rewind
+        cli.run(%w[ui open task --help])
+        expect(out.string).to eq(described_class.render(described_class::UI.fetch("open task")).join("\n") + "\n")
+      end
+    end
+
+    it "builds the bare event-log examples from the verb pages" do
+      with_cli do |cli, out, *|
+        cli.run(%w[event-log --help])
+        examples = described_class::EVENT_LOG.values.flat_map { |page| page[:examples] }
+        shown = out.string.lines.grep(/\A  workspace event-log/)
+        expect(shown).not_to be_empty
+        shown.each do |line|
+          command, scenario = line.strip.split(described_class::EXAMPLE_SEPARATOR, 2)
+          expect(examples).to include([command, scenario])
+        end
+      end
+    end
+
+    it "prints the event-log show page after a bad option, not the whole command's" do
+      with_cli do |cli, _out, err, _home|
+        expect { cli.run(%w[event-log show --bogus]) }.to raise_error(SystemExit)
+        expect(err.string).to include("invalid option: --bogus")
+        expect(err.string).to include(described_class.render(described_class::EVENT_LOG.fetch("show")).join("\n"))
+      end
     end
   end
 end

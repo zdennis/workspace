@@ -53,15 +53,29 @@ The link is passed to the system `open` as a single argument (no shell). The wor
 
 `action` is `ui open`, like `dev up` and `lock release`. `reason` is the stable machine field; `message` is for people and its text may change. `outcome` is `opened`, `printed` or `failed`. `reason` on a failure is `open_failed` (`open` exited non-zero; `message` is its first line of stderr, with a reminder to use `--print` appended) or `open_unavailable` (`open` could not be run). `workspace` is `null` for `inbox`. A `pane` row also carries `pane`, and a row opened with `--path` carries `path`. These are `usage` errors: an unknown view, a missing workspace, a workspace given to `inbox`, a pane given to any view but `pane`, and a missing or malformed pane id (exit 1; with `--json` the error envelope).
 
+Run `workspace ui open VIEW --help` for the task, notes and inbox views, each with its own page and examples.
+
 ## Examples
 
 ```sh
+# Send the person to my-app's task view (opens the UI app)
 workspace ui open task my-app
+
+# Point the person at the review of one worktree's change
 workspace ui open review my-app.worktree-fix-login
+
+# Show the person the notes of my-app, or the one note you just wrote
 workspace ui open notes my-app
-workspace ui open notes my-app --path payment-retries.md --print
-workspace ui open plan my-app
-workspace ui open pane my-app %19 --print
+workspace ui open notes my-app --path payment-retries.md
+
+# Learn the plan link of the workspace you are in, and open nothing
+workspace ui open plan --print
+
+# Show the person the pane an agent is stuck in
+workspace ui open pane my-app %19
 workspace ui open pane %19 --print   # workspace from the current directory
+
+# Tell the person something waits for them, or only learn the inbox link
+workspace ui open inbox
 workspace ui open inbox --print
 ```

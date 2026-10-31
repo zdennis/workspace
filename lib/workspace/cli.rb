@@ -4508,6 +4508,7 @@ module Workspace
         opts.separator ""
         HelpPages::UI["open"][:about].each { |line| opts.separator line }
         opts.separator ""
+        opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (every view but inbox)") { |v| options[:name] = v }
         opts.on("--path REL", "Note to open, relative to the notes directory (notes view only)") { |v| options[:path] = v }
         opts.on("--print", "Print the link and open nothing") { options[:print] = true }
@@ -4515,13 +4516,7 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace ui open task my-app"
-        opts.separator "  workspace ui open review my-app.worktree-fix-login"
-        opts.separator "  workspace ui open notes my-app"
-        opts.separator "  workspace ui open notes my-app --path payment-retries.md --print"
-        opts.separator "  workspace ui open plan my-app"
-        opts.separator "  workspace ui open pane my-app %19"
-        opts.separator "  workspace ui open inbox --print"
+        HelpPages::UI["open"][:examples].each { |command, scenario| opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}" }
       end
     end
 
@@ -6630,10 +6625,11 @@ module Workspace
         opts.separator "what is kept: the current event log and each daemon's file and its rotated copy."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace events --follow --json"
-        opts.separator "  workspace events --follow --json --types tool_started,tool_finished --since \"$CURSOR\""
-        opts.separator "  workspace events --types session_started,session_ended"
-        opts.separator "  workspace events --follow --json --name myapp --types tool_finished"
+        opts.separator "  workspace events    # read everything kept so far, as text, oldest first"
+        opts.separator "  workspace events --types session_started,session_ended    # which sessions started and ended"
+        opts.separator "  workspace events --follow --json    # watch every workspace live from a program, one JSON line per event; runs until stopped"
+        opts.separator "  workspace events --follow --json --since \"$LAST_CURSOR\"    # pick a follower up after a restart; LAST_CURSOR is the cursor of the last line it printed (every line has one); runs until stopped"
+        opts.separator "  workspace events --follow --json --name myapp --types tool_finished    # follow the tool calls of one workspace; runs until stopped"
       end
       parser.parse!(args)
       return @output.puts(parser.help) if help
@@ -6650,13 +6646,12 @@ module Workspace
       index = args.index { |a| !a.start_with?("-") }
       subcommand = index && args[index]
       rest = index ? args[0...index] + args[(index + 1)..] : args
+      return if subcommand && verb_help_shown?(HelpPages::EVENT_LOG, [subcommand, *rest])
 
       case subcommand
       when "show"
         cmd_event_log_show(rest)
       when "compact"
-        return @output.puts(event_log_help) if help_requested?(rest)
-
         event_log = @state.event_log
         before_size = event_log.size
         state = event_log.compact
@@ -6676,51 +6671,57 @@ module Workspace
         Usage: workspace event-log <subcommand>
 
         Subcommands:
-          show       Print events, oldest first (--project, --type, --limit, --json)
-          compact    Compact the event log to current state only
-          help       Show this help
+        #{HelpPages.overview_verbs(HelpPages::EVENT_LOG).join("\n")}
+          help     Show this help
+
+        Run `workspace event-log VERB --help` for a verb's options.
 
         Besides state changes, the log records agent activity: dispatches,
         stage completions, timeouts and failures, lock waits and takeovers,
         and each agent pane's working/idle/waiting changes. Compacting drops
-        that history, keeping only each live pane's latest state.
+        that history, keeping only the latest state of each pane that has an agent.
 
         The event log is at: #{@config.event_log_file}
 
         Examples:
-          workspace event-log show --project myapp --limit 20    # the last 20 events for one project
-          workspace event-log compact    # compact the event log to current state only
+        #{event_log_examples}
       HELP
     end
 
-    def cmd_event_log_show(args)
-      json = false
-      project = nil
-      types = []
-      limit = nil
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace event-log show [options]"
-        opts.separator ""
-        opts.separator "Print event log entries, oldest first."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--project NAME", "Only events for this project") { |value| project = value }
-        opts.on("--type TYPE", "Only events of this type (repeatable, or comma-separated)") do |value|
-          types.concat(value.split(",").map(&:strip).reject(&:empty?))
+    # The bare page's examples, taken from the verb pages so they cannot drift.
+    def event_log_examples
+      show = HelpPages::EVENT_LOG.fetch("show")[:examples]
+      compact = HelpPages::EVENT_LOG.fetch("compact")[:examples]
+      [show[1], show[2], show[4], compact[0]].map do |command, scenario|
+        "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}"
+      end.join("\n")
+    end
+
+    def event_log_show_parser(options)
+      OptionParser.new do |opts|
+        opts.on("--project NAME") { |value| options[:project] = value }
+        opts.on("--type TYPE") do |value|
+          (options[:types] ||= []).concat(value.split(",").map(&:strip).reject(&:empty?))
         end
-        opts.on("--limit N", Integer, "Only the last N matching events") { |value| limit = value }
-        opts.on("--json", "Emit {schema_version, ok, events} instead of lines") { json = true }
+        opts.on("--limit N", Integer) { |value| options[:limit] = value }
+        opts.on("--json") { options[:json] = true }
       end
+    end
+
+    def cmd_event_log_show(args)
+      options = {types: []}
+      parser = event_log_show_parser(options)
       raw_args = args.dup
       begin
         parser.parse!(args)
-        raise UsageError, "--limit must be greater than 0." if limit && limit <= 0
+        raise UsageError, "--limit must be greater than 0." if options[:limit] && options[:limit] <= 0
         raise UsageError, "Unexpected argument: #{args.first}" unless args.empty?
       rescue OptionParser::ParseError, UsageError => e
-        return emit_json_error(EVENT_LOG_JSON_SCHEMA_VERSION, e) if json_requested?(json, raw_args)
-        raise UsageError, (e.is_a?(UsageError) ? e.message : "#{e.message}\n\n#{parser.help}")
+        return emit_json_error(EVENT_LOG_JSON_SCHEMA_VERSION, e) if json_requested?(options[:json], raw_args)
+        raise UsageError, (e.is_a?(UsageError) ? e.message : "#{e.message}\n\n#{HelpPages.render(HelpPages::EVENT_LOG.fetch("show")).join("\n")}")
       end
 
+      json, project, types, limit = options.values_at(:json, :project, :types, :limit)
       events = @state.event_log.events
       warn_unseen_event_types(types, events)
       events = events.select { |event| event["project"] == project || event.dig("data", "workspace") == project } if project

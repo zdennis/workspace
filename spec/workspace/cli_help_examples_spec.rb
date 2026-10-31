@@ -69,22 +69,7 @@ module HelpExamplesSpec
 
   # Pages that fail today, grouped by the plan task that fixes them: a task
   # deletes its block. Each must still fail, so a fixed page cannot stay here.
-  KNOWN_GAPS = [
-    # T2: verbs that ignore or mangle --help
-    "event-log compact",
-
-    # T3 gave these a page of their own; their examples come with the group tasks
-    "ui open",
-    "ui open inbox",
-    "ui open notes",
-    "ui open task",
-
-    # T20: events and links
-    "event-log",
-    "event-log show",
-    "events",
-    "ui"
-  ].freeze
+  KNOWN_GAPS = [].freeze
 end
 
 RSpec.describe "help pages end with examples" do
