@@ -124,7 +124,8 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    # @param sleeper [#call] sleeps the given seconds, injected for fast tests
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -219,6 +220,7 @@ module Workspace
       @input = input
       @working_dir = working_dir
       @clock = clock
+      @sleeper = sleeper
       @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
       @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
       @liveness = liveness || ->(names) { names.to_h { |name| [name, nil] } }
@@ -5643,7 +5645,7 @@ module Workspace
 
       cmd_stop(["--all"])
 
-      sleep 2
+      @sleeper.call(2)
 
       # Each project comes back the way it was launched: headless ones stay
       # headless. Both batches are attempted even if the windowed batch

@@ -11,11 +11,39 @@ module Workspace
   class Doctor
     SYMBOLS = {"ok" => "✓", "warn" => "⚠", "fail" => "✗", "skipped" => "⊘"}.freeze
 
+    # Looks a command up on PATH with `which` and reads its version output.
+    class CommandProbe
+      # @param name [String] the command
+      # @param version_flag [String, nil] the flag that prints its version; nil runs nothing
+      # @return [String, nil] nil when the command is not on PATH, else its stdout ("" without a flag)
+      def call(name, version_flag)
+        stdout, _, status = Open3.capture3("which", name)
+        return nil if !status.success? || stdout.strip.empty?
+        return "" unless version_flag
+
+        Open3.capture3(name, version_flag).first
+      end
+    end
+
+    # Looks an application up by bundle id with a Spotlight query (`mdfind`).
+    class AppProbe
+      # @param bundle_id [String] the application's bundle identifier
+      # @return [Boolean] true when Spotlight finds an application with it
+      def call(bundle_id)
+        stdout, _, status = Open3.capture3("mdfind", "kMDItemCFBundleIdentifier == '#{bundle_id}'")
+        status.success? && !stdout.strip.empty?
+      end
+    end
+
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence for health checks
     # @param hook_installer [Workspace::HookInstaller] checks agent hook installation
     # @param project_detector [Workspace::ProjectDetector] detects the current project
-    # @param which [#call] returns true when an executable is on PATH
+    # @param which [#call] returns true when an executable is on PATH; serves `LaunchMode` and the agent checks
+    # @param command_probe [#call] serves the tool checks (not the agent checks, which use `which:`): given a command
+    #   name and version flag (nil for none), returns nil when the command is not on PATH, else the text its
+    #   version flag prints (empty without a flag)
+    # @param app_probe [#call] given a bundle id, returns true when an application with it is installed
     # @param git [Workspace::Git, nil] lists worktrees to check for lock hooks; nil skips that check
     # @param pipeline_config [Workspace::PipelineConfig, nil] validates the current project's pipeline config
     # @param hooks_config [Workspace::HooksConfig, nil] reads `codex.hooks.install`; nil reads it as on
@@ -38,7 +66,7 @@ module Workspace
     # @param skills [Workspace::Commands::Skills, nil] reads and repairs the skill links of each harness found; nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
-    def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
+    def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
       pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
@@ -47,6 +75,8 @@ module Workspace
       @hooks_config = hooks_config
       @project_detector = project_detector
       @which = which || Workspace::Which
+      @command_probe = command_probe
+      @app_probe = app_probe
       @git = git
       @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
       @project_settings = project_settings || ProjectSettings.new(config: config)
@@ -646,16 +676,13 @@ module Workspace
     end
 
     def check_command(name, version_flag: "--version", version_pattern: /(\d+)/, min_major: nil, install_hint: nil, install_command: nil)
-      stdout, _, status = Open3.capture3("which", name)
-      if !status.success? || stdout.strip.empty?
-        return {found: false, install_hint: install_hint, install_command: install_command}
-      end
+      output = @command_probe.call(name, version_flag)
+      return {found: false, install_hint: install_hint, install_command: install_command} if output.nil?
 
       version_str = nil
       major = nil
       if version_flag
-        stdout, _ = Open3.capture3(name, version_flag)
-        match = stdout.strip.match(version_pattern)
+        match = output.strip.match(version_pattern)
         if match
           major = match[1].to_i
           version_str = "#{major}+"
@@ -670,11 +697,10 @@ module Workspace
     end
 
     def check_app(name, bundle_id:, install_hint:)
-      stdout, _, status = Open3.capture3("mdfind", "kMDItemCFBundleIdentifier == '#{bundle_id}'")
-      if !status.success? || stdout.strip.empty?
-        {found: false, install_hint: install_hint}
-      else
+      if @app_probe.call(bundle_id)
         {found: true}
+      else
+        {found: false, install_hint: install_hint}
       end
     end
   end

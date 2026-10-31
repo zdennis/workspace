@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+# Runs the suite in parallel with parallel_tests. Serial `bundle exec rspec`
+# stays the default and the pre-commit gate.
+#
+#   script/parallel-spec [ARGS...]   ARGS go to parallel_rspec (e.g. spec/workspace/a_spec.rb)
+#
+# Only a whole-suite run (no ARGS) uses and refreshes tmp/parallel_runtime_rspec.log; with ARGS, files group by size.
+
+require "etc"
+require "fileutils"
+
+Dir.chdir(File.expand_path("..", __dir__))
+
+def process_count
+  count = `sysctl -n hw.perflevel0.physicalcpu 2>/dev/null`.to_i
+  (count > 0) ? count : Etc.nprocessors
+rescue SystemCallError
+  Etc.nprocessors
+end
+
+# Each process writes coverage/.last_run.json as it ends, so the file would hold
+# whichever finished last. Start from no results and collate once at the end.
+FileUtils.rm_f(Dir["coverage/.resultset.json*"])
+
+log = "tmp/parallel_runtime_rspec.log"
+FileUtils.mkdir_p("tmp")
+
+cmd = ["bundle", "exec", "parallel_rspec", "-n", process_count.to_s]
+if ARGV.empty?
+  cmd += File.exist?(log) ? ["--group-by", "runtime", "--runtime-log", log] : ["--group-by", "filesize"]
+  cmd += ["-o", "--format progress --format ParallelTests::RSpec::RuntimeLogger --out #{log}"]
+else
+  cmd += ["--group-by", "filesize", "-o", "--format progress"]
+  cmd += ARGV
+end
+
+status = system(*cmd) ? 0 : ($?.exitstatus || 1)
+
+if !ENV["SKIP_SIMPLECOV"] && Dir.exist?("coverage")
+  collate = 'require "simplecov"; SimpleCov.collate ["coverage/.resultset.json"]'
+  warn "parallel-spec: coverage collate failed" unless system("bundle", "exec", "ruby", "-e", collate, out: File::NULL)
+end
+
+exit(status)

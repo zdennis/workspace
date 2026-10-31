@@ -1,6 +1,7 @@
 source "https://rubygems.org"
 
 group :development do
+  gem "parallel_tests", "~> 5.8"
   gem "rspec", "~> 3.13"
   gem "simplecov", "~> 0.22"
   gem "simplecov_json_formatter", "~> 0.1"

@@ -76,7 +76,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       launch = Workspace::Commands::Launch.new(
         state: state, iterm: CLITestHelpers::FakeITerm.new, window_manager: CLITestHelpers::FakeWindowManager.new,
         tmux: tmux, project_config: CLITestHelpers::FakeProjectConfig.new, window_layout: CLITestHelpers::FakeWindowLayout.new,
-        config: Workspace::Config.new(workspace_dir: Dir.mktmpdir), output: StringIO.new, error_output: StringIO.new,
+        config: Workspace::Config.new(workspace_dir: Dir.mktmpdir), agent_ensurer: CLITestHelpers::FakeAgentEnsurer.new, output: StringIO.new, error_output: StringIO.new,
         sleeper: ->(_) {}
       )
 
@@ -148,7 +148,8 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
 
     launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(
       state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config,
-      window_layout: window_layout, config: config, output: output, error_output: error_output
+      window_layout: window_layout, config: config, agent_ensurer: CLITestHelpers::FakeAgentEnsurer.new, output: output, error_output: error_output,
+      sleeper: ->(_) {}
     )
     stop_command = Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
@@ -214,6 +215,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       input: input,
       working_dir: Dir.tmpdir,
       clock: -> { Time.now },
+      sleeper: ->(_) {},
       launch_mode: CLITestHelpers.launch_mode(headless: false)
     )
     [cli, output, error_output, hook_runner]

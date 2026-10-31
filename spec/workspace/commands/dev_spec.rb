@@ -172,11 +172,20 @@ RSpec.describe Workspace::Commands::Dev do
     it "exits 75 and withdraws the queued wrapper when --max-wait passes" do
       dev.up(working_dir: login)
 
-      # Generous deadline: the wrapper is a real subprocess whose Ruby boot must
-      # register it in the lock queue before the deadline, or the wait reads as
-      # a failure (exit 1) instead of still-queued (exit 75). 0.5s flaked under
-      # suite load.
-      result = dev.up(wait: true, max_wait: 3, working_dir: main)
+      # The wrapper is a real subprocess whose Ruby boot must register it in the lock
+      # queue before the deadline, or the wait reads as a failure (exit 1) instead of
+      # still-queued (exit 75). So the deadline clock stands still until a waiter is
+      # queued, then runs for a short real max_wait.
+      queued = -> { Workspace::LockStore.new(dir: lock_dir, liveness: Workspace::LockHolder.new).status("devenv").dig("devenv", "queue").to_a.any? }
+      real = Workspace::Commands::Lock::MonotonicClock
+      frozen = real.now
+      queued_at = nil
+      clock = Object.new
+      clock.define_singleton_method(:now) do
+        queued_at ||= real.now if queued.call
+        queued_at ? frozen + (real.now - queued_at) : frozen
+      end
+      result = dev(clock: clock).up(wait: true, max_wait: 0.5, working_dir: main)
 
       expect(result).to eq(exit_code: 75)
       wait_until { !alive?(spawned.last) }

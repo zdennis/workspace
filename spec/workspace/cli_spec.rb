@@ -22,7 +22,7 @@ RSpec.describe Workspace::CLI do
     project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
 
     stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
-    launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
+    launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, agent_ensurer: CLITestHelpers::FakeAgentEnsurer.new, output: output, error_output: error_output, sleeper: ->(_) {})
     start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = overrides[:finish_command] || Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
@@ -147,6 +147,7 @@ RSpec.describe Workspace::CLI do
       input: input,
       working_dir: working_dir,
       clock: overrides[:clock] || -> { Time.now },
+      sleeper: overrides[:sleeper] || ->(_) {},
       launch_mode: overrides[:launch_mode] || CLITestHelpers.launch_mode(headless: false),
       liveness: overrides[:liveness] || ->(names) { names.to_h { |name| [name, true] } },
       window_liveness: overrides[:window_liveness],
@@ -2250,7 +2251,6 @@ RSpec.describe Workspace::CLI do
       window_manager = CLITestHelpers::FakeWindowManager.new
       allow(window_manager).to receive(:iterm_windows).and_return({123 => "workspace-proj1"})
       cli, = build_test_cli(state: state, tmux: tmux, iterm: CLITestHelpers::FakeITerm.new, window_manager: window_manager, instruction_composer: composer)
-      allow(cli).to receive(:sleep)
 
       cli.run(["relaunch"])
 
@@ -3702,11 +3702,12 @@ RSpec.describe Workspace::CLI do
       window_manager = CLITestHelpers::FakeWindowManager.new
       allow(window_manager).to receive(:iterm_windows).and_return({123 => "workspace-proj1", 124 => "workspace-proj2"})
 
-      cli, output, _ = build_test_cli(state: state, tmux: tmux, iterm: iterm, window_manager: window_manager)
-      allow(cli).to receive(:sleep)
+      slept = []
+      cli, output, _ = build_test_cli(state: state, tmux: tmux, iterm: iterm, window_manager: window_manager, sleeper: ->(seconds) { slept << seconds })
 
       cli.run(["relaunch"])
 
+      expect(slept).to eq([2])
       expect(output.string).to include("Will relaunch: proj1, proj2")
       expect(output.string).to include("Stopped 2 project(s): proj1, proj2")
     end
@@ -10292,7 +10293,6 @@ RSpec.describe Workspace::CLI do
       state["proj1"] = {"unique_id" => "uid1"}
       state["proj2"] = {"headless" => true}
       cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: [], warnings: []))
-      allow(cli).to receive(:sleep)
 
       cli.run(["relaunch"])
 
@@ -10313,7 +10313,6 @@ RSpec.describe Workspace::CLI do
       end
 
       cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: [], warnings: []))
-      allow(cli).to receive(:sleep)
 
       expect { cli.run(["relaunch"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
@@ -11553,7 +11552,6 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         state["api"] = {"iterm_window_id" => 1}
         cli, raw, err = action_cli(state: state, &launching(state))
-        allow(cli).to receive(:sleep)
 
         cli.run(["relaunch", "--json"])
 

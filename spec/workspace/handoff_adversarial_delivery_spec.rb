@@ -101,10 +101,12 @@ RSpec.describe Workspace::Commands::Handoff do
 
   it "HD4: rejects an out-of-range --threshold instead of silently treating a negative threshold as always-over" do
     allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
-    under_pane = claude_pane.merge("context_pct" => 0)
 
+    # The threshold is refused before the daemon is asked, so no socket server is
+    # started: with_raw_reply would wait out its 2s join for a connection that never comes.
     expect {
-      with_raw_reply({"panes" => [under_pane]}.to_json) { command.check(name: "myapp", threshold: -10) }
+      command.check(name: "myapp", threshold: -10)
     }.to raise_error(Workspace::UsageError, /threshold/)
+    expect(tmux).not_to have_received(:deliver)
   end
 end

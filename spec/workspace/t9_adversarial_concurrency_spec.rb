@@ -127,6 +127,20 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
     File.join(dir, "#{project}.lock")
   end
 
+  # Returns once +thread+ finishes or sits in Launch's flock on a lock someone
+  # else holds, which it can't leave until the caller goes on. The lock is
+  # probed before the frame is read: a thread seen in flock after the lock was
+  # found taken did not take it itself, so an uncontended flock can't end this
+  # early. Stays a bounded join if the flock moves out of commands/launch.rb.
+  def join_unless_blocked_on_start_lock(thread, lock_path, within: 2)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + within
+    until thread.join(0.01) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      taken = File.open(lock_path, File::RDWR | File::CREAT, 0o600) { |f| !f.flock(File::LOCK_EX | File::LOCK_NB) }
+      frame = thread.backtrace_locations(0, 1)&.first
+      return if taken && frame&.label&.end_with?("flock") && frame.path.end_with?("commands/launch.rb")
+    end
+  end
+
   it "TC1: a windowed launch waits for a headless start holding the project's start lock instead of running tmuxinator alongside it" do
     tmux = T9Tmux.new
     iterm = T9ITerm.new(tmux: tmux, uid: "uid-w")
@@ -200,7 +214,7 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
       # The windowed launch runs after the headless one loaded state but
       # before it records the project; it may wait on the start lock.
       threads << Thread.new { windowed.call(["proj"]) }
-      threads.last.join(2)
+      join_unless_blocked_on_start_lock(threads.last, start_lock_path("proj"))
       result
     end
 

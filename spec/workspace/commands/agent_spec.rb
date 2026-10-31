@@ -1274,12 +1274,15 @@ RSpec.describe Workspace::Commands::Agent do
     it "re-registers with pipeline: true when the workspace has a pipeline" do
       coordinator.start
       write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1]
 
       run_agent do
         coordinator.reply = {"ok" => true, "epoch" => "wc-epoch-2"}
         agent.report_progress("WC-42", "still working")
 
         wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.size).to eq(2)
         expect(coordinator.registrations.last).to include("pipeline" => true)
       end
     end
@@ -1287,12 +1290,15 @@ RSpec.describe Workspace::Commands::Agent do
     it "re-registers with pipeline: false when the workspace has no pipeline" do
       coordinator.start
       # no pipeline config written
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1]
 
       run_agent do
         coordinator.reply = {"ok" => true, "epoch" => "wc-epoch-2"}
         agent.report_progress("WC-42", "still working")
 
         wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.size).to eq(2)
         expect(coordinator.registrations.last).to include("pipeline" => false)
       end
     end

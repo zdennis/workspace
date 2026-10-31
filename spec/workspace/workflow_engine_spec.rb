@@ -37,7 +37,9 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:commands_config) { instance_double(Workspace::CommandsConfig, for_project: commands) }
   let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")) }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  let(:guard) { Workspace::WorkflowGuard.new }
+  # Recording a base takes about a dozen git calls, which only the examples about the guard and
+  # base_sha need; the rest get a base that does not look at the checkout.
+  let(:guard) { instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}) }
   let(:events) { [] }
   let(:event_log) do
     log = instance_double(Workspace::EventLog)
@@ -57,8 +59,10 @@ RSpec.describe Workspace::WorkflowEngine do
 
   before do
     FileUtils.mkdir_p(worktree)
-    system("git", "-C", worktree, "init", "-q", "-b", "feature/x", exception: true)
-    system("git", "-C", worktree, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-q", "--allow-empty", "-m", "start", exception: true)
+    RepoTemplate.copy(:workflow_engine_app, to: worktree) do |root|
+      system("git", "-C", root, "init", "-q", "-b", "feature/x", exception: true)
+      system("git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-q", "--allow-empty", "-m", "start", exception: true)
+    end
     allow(lock_namespace).to receive(:resolve).with(cwd: worktree).and_return(key: "ns", display: "app", dir: lock_dir)
   end
 
@@ -733,11 +737,29 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.bound["%5"]).to include(step: "build", attempt: 1)
     end
 
-    it "records the checkout's HEAD as base_sha when the run starts" do
-      run = start
+    context "with the real guard" do
+      let(:guard) { Workspace::WorkflowGuard.new }
 
-      expect(run["base_sha"]).to eq(`git -C #{worktree} rev-parse HEAD`.strip)
-      expect(store.find("wr_1")["base_sha"]).to eq(run["base_sha"])
+      it "records the checkout's HEAD as base_sha when the run starts" do
+        run = start
+
+        expect(run["base_sha"]).to eq(`git -C #{worktree} rev-parse HEAD`.strip)
+        expect(store.find("wr_1")["base_sha"]).to eq(run["base_sha"])
+      end
+
+      it "runs the step's check with the project's command while the step is `checking`, outside the run's lock" do
+        to_verify
+        events.clear
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        log = File.join(worktree, ".workflow", "wr_1", "steps", "verify.1.check.log")
+        env = ENV.keys.grep(/\AGIT_/).to_h { |name| [name, nil] }.merge("WORKSPACE_RUN_ID" => "wr_1", "WORKSPACE_RUN_ARTIFACTS" => File.join(worktree, ".workflow", "wr_1"),
+          "WORKSPACE_RUN_BASE_SHA" => `git -C #{worktree} rev-parse HEAD`.strip)
+        expect(check_calls).to eq([{command: "bundle exec rspec", cwd: worktree, timeout: 300.0, log: log, env: env, state_during: "checking"}])
+        expect(run["steps"]["verify"]["attempts"].last["check"]).to eq("started_at" => "2026-10-04T12:00:00Z", "log" => log,
+          "ended_at" => "2026-10-04T12:00:00Z", "exit_code" => 0, "timed_out" => false)
+      end
     end
 
     it "gives a check an empty WORKSPACE_RUN_BASE_SHA for a run made before base_sha was kept" do
@@ -747,20 +769,6 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.turn_ended("wr_1", pane: "%5")
 
       expect(check_calls.last[:env]).to include("WORKSPACE_RUN_BASE_SHA" => "")
-    end
-
-    it "runs the step's check with the project's command while the step is `checking`, outside the run's lock" do
-      to_verify
-      events.clear
-
-      run = engine.turn_ended("wr_1", pane: "%5")
-
-      log = File.join(worktree, ".workflow", "wr_1", "steps", "verify.1.check.log")
-      env = ENV.keys.grep(/\AGIT_/).to_h { |name| [name, nil] }.merge("WORKSPACE_RUN_ID" => "wr_1", "WORKSPACE_RUN_ARTIFACTS" => File.join(worktree, ".workflow", "wr_1"),
-        "WORKSPACE_RUN_BASE_SHA" => `git -C #{worktree} rev-parse HEAD`.strip)
-      expect(check_calls).to eq([{command: "bundle exec rspec", cwd: worktree, timeout: 300.0, log: log, env: env, state_during: "checking"}])
-      expect(run["steps"]["verify"]["attempts"].last["check"]).to eq("started_at" => "2026-10-04T12:00:00Z", "log" => log,
-        "ended_at" => "2026-10-04T12:00:00Z", "exit_code" => 0, "timed_out" => false)
     end
 
     it "completes the run when its last step passes: locks released, pane freed, run archived" do
@@ -1880,6 +1888,8 @@ RSpec.describe Workspace::WorkflowEngine do
   end
 
   describe "the guard" do
+    let(:guard) { Workspace::WorkflowGuard.new }
+
     let(:guarded) do
       definition(<<~YAML)
         steps:
