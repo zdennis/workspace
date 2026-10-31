@@ -32,6 +32,8 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
 
+      def capture_screen_styled(pane_id) = capture_screen(pane_id)
+
       def deliver(session, pane, text, enter: true)
         @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n")
         sent_keys << {session: session, pane: pane, text: text, enter: enter}
@@ -1666,6 +1668,13 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     it "accepts our own text wrapped over two lines" do
       due_entry(draft_text: "An API error stopped your last turn")
       tmux.screen = "────────\n❯ An API error stopped\n  your last turn\n────────\n  status\n"
+
+      expect(answer).to eq(:go)
+    end
+
+    it "goes ahead on a suggestion: the stored draft does not match it, then the plain check passes" do
+      due_entry(draft_text: "An API error stopped your last turn")
+      tmux.screen = "────────\n\e[39m❯ \e[2msend %45 the reply when it's done\e[0m\n────────\n"
 
       expect(answer).to eq(:go)
     end

@@ -20,8 +20,17 @@ module Workspace
   #    that text, or show Claude Code's `[Pasted text #N` placeholder for a
   #    long or multi-line paste (`input_changed` otherwise): a menu row or a
   #    draft there means Enter would answer or send something else.
+  #    Given a {StyledScreen}, text drawn entirely faint (SGR 2) on every
+  #    line of the input, with every one of those lines proven, is Claude
+  #    Code's suggestion and counts as empty. Only the empty check reads
+  #    styling; `pasted:` and `exact:` use the plain text, so a faint tail
+  #    can only refuse.
   #
   # A `working` pane passes: Claude Code queues text typed during a turn.
+  #
+  # Every daemon delivery that reads the input line gets this through
+  # {PromptTyper#check}. {Tmux#deliver}, {AgentRestart} and {PaneDispatch}
+  # never read the input line.
   class TypingSafety
     # Tools that draw a menu the typed text would answer.
     QUESTION_TOOLS = %w[AskUserQuestion ExitPlanMode].freeze
@@ -38,7 +47,8 @@ module Workspace
     end
 
     # @param facts [Hash, nil] {Workspace::SessionMonitor#typing_facts}
-    # @param screen [String, nil] the pane's current screen
+    # @param screen [String, StyledScreen, nil] the pane's current screen; a
+    #   plain String carries no styling, so a suggestion on it reads as a draft
     # @param pasted [String, nil] the text already pasted, which the input
     #   line must then start with instead of being empty
     # @param exact [String, nil] text the whole input, however it wraps, must
@@ -61,6 +71,8 @@ module Workspace
       question = (facts[:open_tools] & QUESTION_TOOLS).first
       return refusal("question_open", "#{provider.label} is showing #{question}, which typed text would answer") if question
 
+      styled = screen if screen.is_a?(StyledScreen)
+      screen = styled.text if styled
       input = input_line(pattern, screen)
       return refusal("no_input_prompt", "#{provider.label}'s input prompt isn't on screen (a dialog may be open)") unless input
       if exact
@@ -71,7 +83,7 @@ module Workspace
         unless input.start_with?(pasted[0, PASTED_PREFIX]) || input.match?(/\A#{Tmux::PASTE_PLACEHOLDER.source}/)
           return refusal("input_changed", "#{provider.label}'s input line doesn't start with the pasted text")
         end
-      elsif !(input.empty? || input.match?(PLACEHOLDER))
+      elsif !(input.empty? || input.match?(PLACEHOLDER) || suggestion?(pattern, styled))
         return refusal("input_not_empty", "#{provider.label}'s input line already holds text (a draft)")
       end
       nil
@@ -86,6 +98,38 @@ module Workspace
       matches = screen.scan(/(?:#{pattern.source})([^\n]*)/)
       return nil if matches.empty?
       matches.last.first.gsub(/[[:space:] ]+/, " ").strip
+    end
+
+    # Whether the input is Claude Code's suggestion: at least one visible
+    # character, all of them faint, on the prompt line and on any line down
+    # to the closing rule, and every one of those lines proven.
+    def suggestion?(pattern, styled)
+      return false unless styled
+
+      text = styled.text
+      last = text.to_enum(:scan, pattern).map { Regexp.last_match }.last
+      return false unless last
+
+      line = text[0...last.end(0)].count("\n")
+      newline = text.rindex("\n", last.end(0) - 1)
+      column = last.end(0) - (newline ? newline + 1 : 0)
+      lines = text.split("\n", -1)
+      seen = false
+      index = line
+      while index < lines.size
+        break if index > line && lines[index].match?(/\A\s*─{3,}\s*\z/)
+        return false unless styled.proven?(index)
+
+        lines[index].each_char.with_index do |char, position|
+          next if index == line && position < column
+          next if char.match?(/[[:space:]]/)
+          return false unless styled.faint?(index, position)
+
+          seen = true
+        end
+        index += 1
+      end
+      seen
     end
 
     # Everything from the last input prompt down to the rule that closes the box.

@@ -77,6 +77,75 @@ RSpec.describe Workspace::TypingSafety do
     expect(safety.check(facts, "────────\n❯ my draft [Pasted text #1 +80 lines]\n", pasted: pasted)).to include(reason: "input_changed")
   end
 
+  describe "with a styled screen" do
+    let(:rule) { "\e[38;5;244m────────\e[39m\n" }
+    let(:status) { "  \e[36m[Model]\e[39m status\n" }
+
+    def fixture(name)
+      Workspace::StyledScreen.parse(File.read(File.expand_path("../fixtures/claude_screens/#{name}.txt", __dir__)))
+    end
+
+    def styled(input, tail: rule)
+      Workspace::StyledScreen.parse("#{rule}#{input}\n#{tail}#{status}")
+    end
+
+    it "reads both live suggestions as empty" do
+      expect(safety.check(facts, fixture("suggestion_export"))).to be_nil
+      expect(safety.check(facts, fixture("suggestion_send"))).to be_nil
+      expect(safety.check(facts, fixture("empty_input"))).to be_nil
+    end
+
+    it "reads a suggestion with a link elsewhere on screen as empty" do
+      expect(safety.check(facts, fixture("suggestion_with_link"))).to be_nil
+    end
+
+    it "refuses a plain draft, typed text with a dim tail, and a partly dim line" do
+      expect(safety.check(facts, styled("\e[39m❯ half a thought"))).to include(reason: "input_not_empty")
+      expect(safety.check(facts, styled("\e[39m❯ typed\e[2m dim tail\e[0m"))).to include(reason: "input_not_empty")
+      expect(safety.check(facts, styled("\e[39m❯ \e[2mdim\e[0m more"))).to include(reason: "input_not_empty")
+    end
+
+    it "refuses a grey foreground, which is not faint" do
+      expect(safety.check(facts, styled("\e[39m❯ \e[38;5;244mgrey text\e[0m"))).to include(reason: "input_not_empty")
+    end
+
+    it "refuses a dialog row" do
+      expect(safety.check(facts, styled("\e[39m❯ 1. Yes"))).to include(reason: "input_not_empty")
+    end
+
+    it "still passes the placeholder" do
+      expect(safety.check(facts, styled("\e[39m❯ Try \"write a test\""))).to be_nil
+    end
+
+    it "reads a wrapped suggestion as empty only when every line is faint" do
+      faint = "\e[39m❯ \e[2mfirst half of a long suggestion\n  second half\e[0m"
+      expect(safety.check(facts, styled(faint))).to be_nil
+      undimmed = "\e[39m❯ \e[2mfirst half of a long suggestion\e[0m\n  second half"
+      expect(safety.check(facts, styled(undimmed))).to include(reason: "input_not_empty")
+    end
+
+    it "refuses a plain screen and an unprovable line, as today" do
+      expect(safety.check(facts, "────────\n❯ send %45 the reply\n")).to include(reason: "input_not_empty")
+      expect(safety.check(facts, styled("\e[39m❯ \e[2msend\e[?25l the reply\e[0m"))).to include(reason: "input_not_empty")
+      expect(safety.check(facts, styled("\e[39m❯ \e[7m\e[2msend\e[0m\e[7m the reply\e[0m"))).to include(reason: "input_not_empty")
+    end
+
+    it "refuses an unknown escape on a continuation line" do
+      input = "\e[39m❯ \e[2mfirst half\e[0m\n  \e[2m\e[?25lsecond\e[0m"
+      expect(safety.check(facts, styled(input))).to include(reason: "input_not_empty")
+    end
+
+    it "keeps pasted: and exact: on the plain text, so a dim tail only refuses" do
+      suggestion = styled("\e[39m❯ \e[2msend %45 the reply\e[0m")
+      expect(safety.check(facts, suggestion, pasted: "run the specs")).to include(reason: "input_changed")
+      expect(safety.check(facts, suggestion, exact: "run the specs")).to include(reason: "input_changed")
+      pasted = "run the specs"
+      typed = styled("\e[39m❯ #{pasted}\e[2m and more\e[0m")
+      expect(safety.check(facts, typed, pasted: pasted)).to be_nil
+      expect(safety.check(facts, typed, exact: pasted)).to include(reason: "input_changed")
+    end
+  end
+
   describe "with exact:" do
     let(:text) { "An API error stopped your last turn. Continue where you left off." }
 

@@ -29,6 +29,8 @@ RSpec.describe Workspace::PromptQueueDesk do
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
 
+      def capture_screen_styled(pane_id) = capture_screen(pane_id)
+
       def log = (@log ||= [])
 
       def key_ok = @key_ok != false
@@ -146,6 +148,16 @@ RSpec.describe Workspace::PromptQueueDesk do
       expect(reply).to include("ok" => false, "error" => "not_submitted", "delivered" => true, "submitted" => false)
       expect(store.entries).to eq([])
       expect(events).to eq([])
+    end
+
+    it "types into a pane that shows only Claude Code's suggestion" do
+      suggestion = "────────\n\e[39m❯ \e[2msend %45 the reply when it's done\e[0m\n────────\n"
+      tmux.scripted = -> { typed.empty? ? suggestion : "────────\n❯ run the specs\n" }
+
+      reply = send_prompt
+
+      expect(reply).to include("ok" => true)
+      expect(typed).to eq(["run the specs"])
     end
 
     it "queues instead of typing over a draft in the input line" do

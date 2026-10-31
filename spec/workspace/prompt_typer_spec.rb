@@ -16,6 +16,8 @@ RSpec.describe Workspace::PromptTyper do
 
       def capture_screen(_pane_id) = (@screens.size > 1) ? @screens.shift : @screens.first
 
+      def capture_screen_styled(pane_id) = capture_screen(pane_id)
+
       def deliver(session, target, text, enter: true)
         @delivered << [session, target, text, enter]
         status = @statuses.shift || (enter ? :submitted : :pasted)
@@ -42,6 +44,18 @@ RSpec.describe Workspace::PromptTyper do
     expect(result.delivery.status).to eq(:submitted)
     expect(result).to be_landed
     expect(tmux.delivered).to eq([["api", "0.1", "run the specs", false], ["api", "0.1", "", true]])
+  end
+
+  it "reads one styled capture, so a suggestion reads as an empty input and a draft does not" do
+    suggestion = "────────\n\e[39m❯ \e[2msend %45 the reply\e[0m\n"
+    tmux.screens = [suggestion]
+    expect(typer.check("%5")).to be_nil
+
+    tmux.screens = ["────────\n\e[39m❯ half a thought\n"]
+    expect(typer.check("%5")).to include(reason: "input_not_empty")
+
+    tmux.screens = [nil]
+    expect(typer.check("%5")).to include(reason: "no_input_prompt")
   end
 
   it "takes the paste placeholder for a long paste as the text being there" do

@@ -11,6 +11,10 @@ module Workspace
   # pasted text, since a long or multi-line paste never shows its own first
   # characters there.
   #
+  # Each check makes one styled capture, so the plain text and the styling
+  # come from the same instant; {TypingSafety} reads a fully faint input as
+  # Claude Code's suggestion.
+  #
   # The caller holds the daemon's delivery lock around {#type}, so no other
   # delivery types into the pane between the checks and Enter.
   class PromptTyper
@@ -49,7 +53,8 @@ module Workspace
     # @param exact [String, nil] text the whole input must equal; see {TypingSafety#check}
     # @return [Hash, nil] nil when the pane can take text, else the {TypingSafety#check} refusal
     def check(pane_id, pasted: nil, exact: nil)
-      @safety.check(@session_monitor&.typing_facts(pane_id), @tmux.capture_screen(pane_id), pasted: pasted, exact: exact)
+      screen = StyledScreen.parse(@tmux.capture_screen_styled(pane_id))
+      @safety.check(@session_monitor&.typing_facts(pane_id), screen, pasted: pasted, exact: exact)
     end
 
     # Checks, pastes, checks again, presses Enter.
