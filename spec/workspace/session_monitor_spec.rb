@@ -1684,6 +1684,101 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#followup_facts" do
+    before { monitor.scan }
+
+    it "is nil for a pane that hasn't been scanned" do
+      expect(monitor.followup_facts("%9")).to be_nil
+    end
+
+    it "gives identity, activity, open tool and running sub-agent counts" do
+      monitor.record("pane_id" => "%2", "event" => "user_prompt", "session_id" => "s1")
+
+      facts = monitor.followup_facts("%2")
+
+      expect(facts).to include(kind: "claude", pane_pid: 200, agent_pid: 250, session_id: "s1", hooks: true,
+        open_tools: 0, agents_running: 0)
+      expect(facts).to have_key(:last_activity_at)
+      expect(facts).not_to have_key(:last_user_prompt_at)
+    end
+
+    it "counts open tools" do
+      monitor.record("pane_id" => "%2", "event" => "tool_start", "tool" => "Bash", "tool_use_id" => "t1")
+      monitor.record("pane_id" => "%2", "event" => "tool_start", "tool" => "Read", "tool_use_id" => "t2")
+
+      expect(monitor.followup_facts("%2")[:open_tools]).to eq(2)
+    end
+
+    it "counts running sub-agents, and not one a Stop closed" do
+      monitor.record("pane_id" => "%2", "event" => "subagent_start", "agent" => {"name" => "a"})
+      monitor.record("pane_id" => "%2", "event" => "subagent_start", "agent" => {"name" => "b"})
+      expect(monitor.followup_facts("%2")[:agents_running]).to eq(2)
+
+      monitor.record("pane_id" => "%2", "event" => "stop")
+
+      expect(monitor.followup_facts("%2")[:agents_running]).to eq(0)
+    end
+  end
+
+  describe "#alert_handoff_stalled" do
+    let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
+
+    subject(:monitor) do
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, notifier: notifier)
+    end
+
+    before { monitor.scan }
+
+    it "sends one alert with its own kind and text, and no event line" do
+      expect(monitor.alert_handoff_stalled("%2", seconds: 600, followups: 3)).to be(true)
+
+      expect(notifier).to have_received(:notify).once.with(include(
+        "WORKSPACE_ALERT" => "handoff_stalled",
+        "WORKSPACE_ALERT_PANE_ID" => "%2",
+        "WORKSPACE_ALERT_SECONDS" => "600",
+        "WORKSPACE_ALERT_TEXT" => "proj pane 0.1 (Claude Code) has not handed off after 3 follow-ups"
+      ))
+    end
+
+    it "writes no agent_alert event and leaves the pane's alert state alone" do
+      dir = Dir.mktmpdir
+      log_config = Workspace::Config.new(workspace_dir: dir)
+      allow(log_config).to receive(:event_log_file).and_return(File.join(dir, "events.jsonl"))
+      event_log = Workspace::EventLog.new(config: log_config, error_output: StringIO.new, clock: clock)
+      logging = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
+      logging.scan
+      state = -> { logging.instance_variable_get(:@panes)["%2"].slice(:alerted_idle_since, :alerted_waits, :waits) }
+      before_state = state.call
+
+      logging.alert_handoff_stalled("%2", seconds: 600, followups: 3)
+
+      expect(event_log.events.select { |e| e["type"] == "agent_alert" }).to be_empty
+      expect(state.call).to eq(before_state)
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    it "returns false for a pane that hasn't been scanned" do
+      expect(monitor.alert_handoff_stalled("%9", seconds: 1, followups: 1)).to be(false)
+      expect(notifier).not_to have_received(:notify)
+    end
+
+    it "returns false with no notifier" do
+      bare = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj", clock: clock)
+      bare.scan
+
+      expect(bare.alert_handoff_stalled("%2", seconds: 1, followups: 1)).to be(false)
+    end
+
+    it "returns false instead of raising when the notifier raises" do
+      allow(notifier).to receive(:notify).and_raise(ThreadError, "no threads")
+
+      expect(monitor.alert_handoff_stalled("%2", seconds: 1, followups: 1)).to be(false)
+    end
+  end
+
   describe "#on_scan" do
     it "is called after each scan, and what it raises doesn't end the scan thread" do
       calls = Queue.new
