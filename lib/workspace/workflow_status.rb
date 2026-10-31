@@ -85,7 +85,7 @@ module Workspace
 
     # @param id [String] a run id
     # @return [Hash] "runs", holding the one run as "id", "workflow", "title", "workspace",
-    #   "project", "state", "created_at", "started_at", "ended_at", "current" ("step",
+    #   "project", "worktree", "state", "created_at", "started_at", "ended_at", "current" ("step",
     #   "attempt", "state", "reason", "flags"), "steps" ("id", "title", "state", "attempts",
     #   "gate", "gate_file", "note_changed"), "base_sha", "pane", "task", "inputs", "loops", "artifacts_dir" and "events_path";
     #   and "warnings"
@@ -125,7 +125,7 @@ module Workspace
       reason = with_gate_file(run, reason, warnings) if reason
       {
         "id" => run["id"], "workflow" => run["workflow"], "title" => run["title"], "workspace" => run["workspace"],
-        "project" => run["project"], "state" => shown_state(run, reason, shown),
+        "project" => run["project"], "worktree" => run["worktree"], "state" => shown_state(run, reason, shown),
         "created_at" => run["created_at"], "started_at" => run["started_at"], "ended_at" => run["ended_at"],
         "cancelled_by" => run["cancelled_by"],
         "current" => {"step" => run["current"], "attempt" => state["attempts"].last&.fetch("n", nil), "state" => state["state"],

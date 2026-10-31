@@ -6910,10 +6910,10 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "status", "wr_1"])
 
       expect(workflow_command.calls.map(&:last).map { |kw| kw.merge(scope: kw[:scope]&.to_h) }).to eq([
-        {run: nil, scope: {kind: :workspace, workspace: "detected-ws", project: nil}, json: false, hint: true},
-        {run: nil, scope: {kind: :workspace, workspace: "api", project: nil}, json: true, hint: false},
-        {run: nil, scope: {kind: :all, workspace: nil, project: nil}, json: true, hint: true},
-        {run: "wr_1", scope: nil, json: false, hint: true}
+        {run: nil, scope: {kind: :workspace, workspace: "detected-ws", project: nil}, json: false, hint: true, table: false},
+        {run: nil, scope: {kind: :workspace, workspace: "api", project: nil}, json: true, hint: false, table: false},
+        {run: nil, scope: {kind: :all, workspace: nil, project: nil}, json: true, hint: true, table: false},
+        {run: "wr_1", scope: nil, json: false, hint: true, table: false}
       ])
     end
 
@@ -6947,6 +6947,26 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["workflow", "--help"])
       expect(output.string).to include("--project [NAME]").and include("--prompt TEXT")
+    end
+
+    it "passes --table through, at every scope and for a RUN, and lists it in the help after the scope group" do
+      cli.run(["workflow", "status", "--table"])
+      cli.run(["workflow", "status", "--all", "--table", "--json"])
+      cli.run(["workflow", "status", "wr_1", "--table"])
+
+      expect(workflow_command.calls.map(&:last).map { |kw| kw.values_at(:table, :json) }).to eq([[true, false], [true, true], [true, false]])
+
+      cli.run(["workflow", "status", "--help"])
+      expect(output.string).to include("--project [NAME] | --all] [--table] [--json]").and include("--table")
+    end
+
+    it "refuses --table on the other subcommands, and with a RUN and a scope flag" do
+      expect { cli.run(["workflow", "show", "rpiv", "--table"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--table is for `workflow status`.")
+
+      expect { cli.run(["workflow", "status", "wr_1", "--table", "--name", "X"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("workflow status RUN takes no --name, --project or --all")
+      expect(workflow_command.calls).to be_empty
     end
 
     it "reads --project followed by another flag as a bare project, not as its NAME" do

@@ -4968,6 +4968,7 @@ module Workspace
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
         opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
+        opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
         opts.on("--dry-run", "run, start: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
         opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
@@ -5027,6 +5028,7 @@ module Workspace
       raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
       raise UsageError, "--project is for `workflow status`." if options[:project] && subcommand != "status"
+      raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
       gate_options = workflow_gate_options(subcommand, options)
@@ -5065,7 +5067,7 @@ module Workspace
           raise UsageError, "workflow status RUN takes no --name, --project or --all: the run names its own workspace."
         end
         scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir) unless subject
-        @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name])
+        @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name], table: options[:table] || false)
       when "advance"
         @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started]), background: options[:background], caller_pane: ENV["TMUX_PANE"])
       when "run"

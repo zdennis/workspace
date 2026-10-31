@@ -13,7 +13,7 @@ workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]
                          [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]
-workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--json]
+workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]
 workspace workflow events RUN [--since N] [--json]
 workspace workflow files RUN [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
@@ -34,7 +34,7 @@ workspace step status [--json]
 | `workflow remove` | Delete your `ID.yml` (a link itself, never its target). Asks first unless `--yes` or `--dry-run`; refused with `confirmation_required` under `--no-input`. A preset of the same id is in effect again. See [Removing a definition](#removing-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing |
 | `workflow start` | Make a workspace from a ticket, pull request, issue or branch `REF`, or from `--prompt TEXT`, wait for its coding agent and run the workflow in it. `--dry-run` checks everything and makes nothing. See [Starting from a ticket or a prompt](#starting-from-a-ticket-or-a-prompt) |
-| `workflow status` | The runs still going in this workspace, another's (`--name`), a project's (`--project`) or every workspace's (`--all`), or one run (`RUN`). Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck). See [Which runs `status` shows](#which-runs-status-shows) |
+| `workflow status` | The runs still going in this workspace, another's (`--name`), a project's (`--project`) or every workspace's (`--all`), or one run (`RUN`). Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck). See [Which runs `status` shows](#which-runs-status-shows). `--table` prints one row per run beside its workspace: [the status table](#the-status-table) |
 | `workflow events` | A run's history (going or finished), one line per event, oldest first. `--since N` gives only the events after line N; at most 1000 at a time. See [Reading a run's events](#reading-a-runs-events) |
 | `workflow files` | The files a run keeps: each attempt's prompt and check log and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to |
@@ -67,6 +67,7 @@ workspace step status [--json]
 | `--id ID` | `validate`: check the text as this workflow id |
 | `--project [NAME]` | `status`: every run of a project, going or finished. With no NAME, the project of the current workspace; the optional NAME takes the next bare word, so `status --project wr_x` looks for a project called `wr_x` |
 | `--all` | `status`: every workspace's runs, going and finished |
+| `--table` | `status`: one row per run, finished ones too at every scope, with its workspace's status and what still exists (see [the status table](#the-status-table)) |
 | `--if-sha256 SHA` | `update`: the sha256 of the file's raw bytes, from `show ID --source --json` or `show --json` (the list); required |
 | `--dry-run` | `run`, `start`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
 | `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
@@ -125,6 +126,37 @@ workspace workflow status --all --json | jq '.runs[] | select(.workspace == "WS"
 ```
 
 An agent that needs a run's inputs reads them with `workflow status RUN --json`: a bare read can return two runs.
+
+### The status table
+
+`workflow status --table` prints one row per run instead of the full description, and shows finished runs at every scope, not only with `--project` and `--all`. It answers "which of these runs still has a workspace to go back to?".
+
+```
+Run                  State               Workspace         Status               Config  tmux session  Worktree  State dir
+wr_2610041230559x3k  running (implement) api.worktree-pdf  Live, agent working  yes     yes           yes       yes
+wr_2610031100aa11bb  completed           api.worktree-tax  Stopped              yes     no            yes       yes
+wr_2610021000cc22dd  cancelled           api.worktree-old  Gone                 no      no            no        yes
+```
+
+`kill` leaves the state dir behind, so State dir `yes` on a `Gone` row is normal.
+
+The State column shows the step in parentheses while a run is going. `--json` prints a `rows` document instead (see [Workflow status rows](README.json.md#workflow-status-rows)).
+
+The workspace columns describe the workspace as it is now, not as it was when the run ran. If a workspace was deleted and made again under the same name, an old run reads `Live`. Run files outlive their workspace, so a name with no runs is not an error: it prints `No workflow runs in NAME.` and exits 0.
+
+| Status | Meaning |
+|--------|---------|
+| `Live, agent working` | The tmux session exists and an agent pane is working. This beats `waiting`: with several agent panes, one blocked on you still reads `working` if another is working |
+| `Live, agent waiting` | The session exists and an agent pane waits on you, with none working |
+| `Live, agent idle` | The session exists and its agent panes are idle |
+| `Live, agent unknown` | The session exists, but the agent daemon did not answer in time or answered with no agent panes, so what the agent is doing is not known |
+| `Stopped` | The workspace has a config but no tmux session. `workspace launch` can bring it back when the worktree is still there (Worktree `yes`) |
+| `Gone` | No tmux session and no config: the workspace was removed |
+| `Unknown` | tmux could not say whether the session exists and the agent daemon did not answer, the session is gone but the config could not be read, or the run's workspace name is unusable |
+
+The other columns say whether each piece exists: `yes`, `no`, or `?` when it could not be read (tmux gave no answer, for example). Worktree is the checkout path stored with the run. A `no` in State dir can also mean nothing was ever written there.
+
+`--project NAME` for a project with no members left is refused with `unknown_workspace`; use `--all` to see its runs. Rows are not cut to the terminal width: use `less -S`, or `--json`.
 
 ## Starting from a ticket or a prompt
 
@@ -425,7 +457,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 ## JSON output
 
-`workflow run`, `start`, `resume`, `cancel`, `approve`, `reject` and `step done` print one [action document](README.json.md#actions). Its one result row has `workspace`, `outcome`, `reason` (the reason code, or `null`), `message`, and `run`, the run as `status` shows it:
+`workflow run`, `start`, `resume`, `cancel`, `approve`, `reject` and `step done` print one [action document](README.json.md#actions). Its one result row has `workspace`, `outcome`, `reason` (the reason code, or `null`), `message`, and `run`, the run as `status` shows it (including `worktree`, the stored checkout path or `null`):
 
 ```json
 {"schema_version":1,"ok":true,"action":"workflow run","status":"ok",
@@ -436,7 +468,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `outcome` is `started`, `resumed`, `unchanged` (a `resume` that did nothing: an agent is working on the step, its line is still on its way, or its check is still running; `message` says which, exit 0), `cancelled`, `approved`, `rejected` or `recorded` (`step done`). A run that waits (for a lock, at a gate) still has that outcome, with the reason code in `reason`. When a step's line could not be typed the outcome is `failed`, `status` is `failed` and the exit code is 1; the run exists, `message` says why, and `workflow resume` tries again. `workflow start` prints the same action document; its row is the `run` row merged with `branch`, `path`, `created`, `task`, `ticket` (`key`, `title`, `url`; `null` when none was read) and `warnings`. `start --dry-run` prints `status: "dry_run"` with a row of `workflow`, `step`, `project`, `branch`, `path`, `would_create` (`false` when an existing workspace would be reused), `inputs`, `packs`, `warnings` and `ticket`. `run --dry-run` prints `status: "dry_run"` with a row of `workflow`, `step`, `pane` (`null` when the agent daemon is not running yet), `inputs` and `packs`. `step done`'s row has `run_id`, `step`, `attempt` and `reported` (`status`, `pass` or `fail`, and `summary`, as `step status` gives it) in place of `run`. `run_id` is always a run's id, in rows, events and error `details`; `run` is only the run object in an action row.
 
-`workflow status --json`:
+`workflow status --json` (each run also carries `worktree`, the stored checkout path or `null`; the example leaves it out):
 
 ```json
 {"schema_version":1,"ok":true,"generated_at":"2026-10-04T21:14:03Z","runs":[

@@ -59,7 +59,7 @@ RSpec.describe Workspace::WorkflowStatus do
 
     expect(result["warnings"]).to eq([])
     expect(result["runs"]).to eq([{
-      "id" => "wr_1", "workflow" => "rpiv", "title" => "RPIV", "workspace" => "app", "project" => "app", "state" => "running",
+      "id" => "wr_1", "workflow" => "rpiv", "title" => "RPIV", "workspace" => "app", "project" => "app", "worktree" => "/src/app", "state" => "running",
       "created_at" => "2026-10-04T12:00:00Z", "started_at" => "2026-10-04T12:00:00Z", "ended_at" => nil, "cancelled_by" => nil,
       "current" => {"step" => "plan", "attempt" => 2, "state" => "running", "reason" => nil, "flags" => []},
       "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_file" => nil, "note_changed" => false},
@@ -486,6 +486,17 @@ RSpec.describe Workspace::WorkflowStatus do
 
     expect(run).to include("state" => "cancelled", "cancelled_by" => "kill", "pane" => nil, "events_path" => File.join(@dir, "archive", "wr_1.events.jsonl"))
     expect(run["current"]).to include("reason" => nil, "flags" => [])
+  end
+
+  it "shows the run's worktree, running or archived, and null when the run file has none" do
+    create
+    expect(status.run("wr_1")["runs"].first["worktree"]).to eq("/src/app")
+
+    store.update("wr_1") { |run| run.merge!("state" => "cancelled", "ended_at" => "2026-10-04T12:59:00Z", "reason" => nil) }
+    expect(status.run("wr_1")["runs"].first["worktree"]).to eq("/src/app")
+
+    create.tap { |r| store.update(r["id"]) { |run| run.delete("worktree") } }
+    expect(status.run("wr_2")["runs"].first["worktree"]).to be_nil
   end
 
   describe "#runs" do
