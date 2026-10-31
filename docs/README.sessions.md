@@ -184,14 +184,16 @@ The command runs through `/bin/sh -c`, in its own process group, with stdin and 
 
 | Variable | Value |
 |----------|-------|
-| `WORKSPACE_ALERT` | `waiting` or `idle` |
+| `WORKSPACE_ALERT` | `waiting`, `idle` or `handoff_stalled` |
 | `WORKSPACE_ALERT_WORKSPACE` | The workspace (tmux session) name |
 | `WORKSPACE_ALERT_PANE` | Pane as shown in the PANE column, e.g. `0.1` |
 | `WORKSPACE_ALERT_PANE_ID` | tmux pane id, e.g. `%12` |
 | `WORKSPACE_ALERT_KIND` | Agent kind, e.g. `claude` |
-| `WORKSPACE_ALERT_SECONDS` | Seconds the pane has been waiting or idle |
+| `WORKSPACE_ALERT_SECONDS` | Seconds the pane has been waiting or idle (for `handoff_stalled`, since the handoff watch began) |
 | `WORKSPACE_ALERT_MESSAGE` | The agent's notification message (empty for `idle`) |
 | `WORKSPACE_ALERT_TEXT` | One-line summary, e.g. `myapp pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash` |
+
+`handoff_stalled` is sent when a [handoff follow-up](README.handoff.md#follow-ups) watch ends `stalled`, `expired` or `not_submitted`: the pane was asked to hand off and did not. `WORKSPACE_ALERT_MESSAGE` is empty, and `WORKSPACE_ALERT_TEXT` reads like `myapp pane 0.1 (Claude Code) has not handed off after 10 follow-ups`. It writes no `agent_alert` event; the `handoff_watch_ended` event is the record.
 
 The daemon never waits on the command. One still running after 10 seconds gets SIGTERM, then SIGKILL 2 seconds later, sent to its process group; a command that exits non-zero, can't start, or is stopped is reported in the daemon's log. At most 4 runs go at once; an alert raised while 4 are still running isn't lost, it goes out on a later scan once one of those finishes, and the daemon logs "skipped notify command for … (N earlier runs still going)" each time. Stopping the agent daemon stops any notify command still running the same way (SIGTERM, then SIGKILL after 2s).
 

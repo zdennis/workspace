@@ -377,6 +377,46 @@ module Workspace
       end
     end
 
+    # What a follow-up watch checks a pane against: the identity fields of
+    # {#delivery_facts} plus how busy the pane is. `:agents_running` counts
+    # sub-agents in state "running"; a main-thread Stop marks all of them done,
+    # so a background sub-agent is not counted after one.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [Hash, nil] `:kind`, `:pane_pid`, `:agent_pid`, `:session_id`,
+    #   `:hooks`, `:last_activity_at`, `:open_tools` (how many tool calls are
+    #   open) and `:agents_running`; nil when the pane hasn't been scanned yet
+    def followup_facts(pane_id)
+      @lock.synchronize do
+        pane = @panes[pane_id]
+        next unless pane && pane[:pid]
+        {kind: pane[:kind], pane_pid: pane[:pid], agent_pid: pane[:agent_pid], session_id: pane[:session_id],
+         hooks: pane[:hook_kind] == pane[:kind], last_activity_at: pane[:last_activity_at],
+         open_tools: (pane[:open_tools] || {}).size,
+         agents_running: pane[:agents].count { |agent| agent[:state] == "running" }}
+      end
+    end
+
+    # Sends one `handoff_stalled` alert for a pane that has not handed off
+    # after its follow-ups. Writes no `AGENT_ALERT` event, since restored
+    # alert state reads only the waiting and idle kinds. Never raises.
+    #
+    # @param pane_id [String] tmux pane id
+    # @param seconds [Numeric] how long the pane has been waited on
+    # @param followups [Integer] how many follow-ups were sent
+    # @return [Boolean] whether the notifier accepted the alert; false with
+    #   no notifier, an unscanned pane, or a notifier that raised
+    def alert_handoff_stalled(pane_id, seconds:, followups:)
+      return false unless @notifier
+      pane = @lock.synchronize { @panes[pane_id]&.dup }
+      return false unless pane
+      env = alert_env(pane, "handoff_stalled", seconds, nil, followups: followups)
+      !!@notifier.notify(env)
+    rescue => e
+      log_alert_failure(e)
+      false
+    end
+
     # Reaps stale lock holds in the namespaces the panes are working in, when
     # the reaper is due. Runs on the scan thread, never the agent's accept
     # loop, so a slow `git` only delays the next scan. A lock store another
@@ -670,10 +710,12 @@ module Workspace
       nil
     end
 
-    def alert_env(pane, alert, seconds, message)
+    def alert_env(pane, alert, seconds, message, followups: nil)
       where = "#{@session_name} pane 0.#{pane[:index]} (#{pane[:label]})"
       text = if alert == "waiting"
         "#{where} is waiting#{": #{message}" if message}"
+      elsif alert == "handoff_stalled"
+        "#{where} has not handed off after #{followups} follow-ups"
       else
         "#{where} has been idle for #{Duration.humanize(seconds)}"
       end

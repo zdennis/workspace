@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto commands.test commands.lint notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
     expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position workflows.defaults.include events.rotate_size codex.hooks.install])
   end
 
@@ -145,7 +145,7 @@ RSpec.describe Workspace::ConfigSchema do
     end
 
     it "gives every key a type" do
-      expect(described_class.all.map(&:type).uniq - %i[command duration percent text path enum regex boolean mapping size]).to eq([])
+      expect(described_class.all.map(&:type).uniq - %i[command duration percent integer text path enum regex boolean mapping size]).to eq([])
       expect(described_class.key("dev.stop_timeout").type).to eq(:duration)
     end
   end

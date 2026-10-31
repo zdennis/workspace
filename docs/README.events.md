@@ -44,6 +44,18 @@ Every printed line also carries `cursor`. Lines from different sources come out 
 
 `reason` is `pane_gone` (the pane closed or was replaced, or tmux restarted), `session_ended` (the agent exited or was restarted, or its session ended other than by `/clear`), `conversation_changed` (the pane started another conversation; a `--clear-first` prompt, and the prompts queued behind it once its own clear is confirmed, are kept), `not_submitted` (pasted, but Enter couldn't be confirmed; the text stays in the pane), `interrupted` (a delivery was cut off after its paste or its clear started), `clear_unconfirmed` (`--clear-first`: the clear was typed but no SessionStart with source `clear` came from the pane within 15s, or a prompt was submitted in between; the text was not typed) or `not_delivered` (`--clear-first`: the clear was confirmed but the text couldn't be typed; it is not tried again, so the pane is never cleared twice for one prompt). A prompt for a pane that is waiting on a person is kept, not dropped.
 
+### Handoff follow-up lines
+
+When [`handoff check`](README.handoff.md#follow-ups) lands its save-state prompt, the workspace's agent daemon watches the pane and types a follow-up while it sits quiet with no handoff. These three event-log lines record the watch. The text of a follow-up is never in them.
+
+| `type` | `data` |
+|---|---|
+| `handoff_watch_started` | `pane_id` |
+| `handoff_followup` | `pane_id`, `attempt` (from 1), `outcome`: `submitted`, `not_submitted` (the text may be in the pane and Enter was not confirmed), `refused` (the pane could not take text), `not_landed` or `failed` (the paste never reached the pane), `raised` (the typing raised an error) |
+| `handoff_watch_ended` | `pane_id`, `tries` (the follow-ups that counted), `reason`: `carried_out`, `other_prompt`, `session_changed`, `session_ended`, `pane_gone`, `plan_paused`, `not_submitted`, `stalled`, `expired` |
+
+`carried_out` is any `/clear` in the pane, so a person's `/clear` or an `agent-run restart` reads the same as the agent's own `handoff new`. See [handoff](README.handoff.md#follow-ups) for what each `reason` means.
+
 ### Hook event lines
 
 Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name the daemon serves), `pane_id` (the tmux pane), `boot_id` and `seq`.

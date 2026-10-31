@@ -1,5 +1,6 @@
 require "socket"
 require "json"
+require "time"
 require "shellwords"
 
 module Workspace
@@ -118,15 +119,22 @@ module Workspace
         end
 
         prepare_default_doc(name) if doc && handoff_doc.nil?
-        body = check_body(name: name, pane: pane_info, pct: pct, threshold: threshold,
+        plan_is_doc = handoff_doc.nil? && plan_doc?(doc)
+        new_cmd = new_command(name: name, pane: pane_info, handoff_doc: handoff_doc || doc,
+          handoff_prompt: handoff_prompt, plan_is_doc: plan_is_doc)
+        body = check_body(pct: pct, threshold: threshold, new_cmd: new_cmd,
           handoff_doc: handoff_doc || doc, handoff_prompt: handoff_prompt, defaults: defaults,
-          plan_is_doc: handoff_doc.nil? && plan_doc?(doc))
+          plan_is_doc: plan_is_doc)
+        sent_at = Time.now
         delivery = begin
           @tmux.deliver(detail[:session], detail[:id], body)
         rescue Workspace::Error, SystemCallError => e
           Workspace::Tmux::Delivery.new(status: :failed, message: e.message)
         end
-        over_threshold(json, pct: pct, threshold: threshold, pane: pane_info, delivery: delivery, doc: doc)
+        # In the path-picking mode the prompt shows the command with PATH left for the agent to fill in.
+        followup_cmd = (handoff_prompt || handoff_doc || doc) ? new_cmd : "#{new_cmd} --handoff-doc PATH"
+        followup = start_followups(name, detail[:id], defaults, followup_cmd, body, sent_at) if delivery.landed?
+        over_threshold(json, pct: pct, threshold: threshold, pane: pane_info, delivery: delivery, doc: doc, followup: followup)
       end
 
       # @param name [String] workspace name
@@ -181,6 +189,14 @@ module Workspace
         %{new_cmd} --handoff-doc PATH
       PROMPT
 
+      DEFAULT_FOLLOWUP_PROMPT = ConfigSchema.default("handoff.followup_prompt")
+
+      # The daemon refuses a follow-up or save-state text longer than this; a cut text could carry a broken command.
+      FOLLOWUP_TEXT_LIMIT = 4000
+
+      # Seconds `check` waits for the daemon's reply to `handoff_watch`.
+      FOLLOWUP_REPLY_WAIT = 2
+
       PAUSED_PLAN_NOTE = "If the plan's status: is paused, write the doc and end your turn without running that command."
 
       # The ref of the built-in play `new` binds the pane to when the plan is the doc.
@@ -230,21 +246,29 @@ module Workspace
       # The command it tells the agent to run names the pane by its id, which
       # stays with the pane however its window is split or renumbered. The id
       # is quoted because `%` is special in some shells.
-      def check_body(name:, pane:, pct:, threshold:, handoff_doc:, handoff_prompt:, defaults:, plan_is_doc: false)
-        usage = "Context usage is at #{pct}%, #{(pct > threshold) ? "over" : "at"} the #{threshold}% threshold."
-        new_cmd_base = "workspace handoff new #{[name].shelljoin} --pane '#{pane["pane_id"]}'"
-
+      def new_command(name:, pane:, handoff_doc:, handoff_prompt:, plan_is_doc:)
+        base = "workspace handoff new #{[name].shelljoin} --pane '#{pane["pane_id"]}'"
         if handoff_prompt
-          new_cmd = "#{new_cmd_base} #{["--handoff-prompt", handoff_prompt].shelljoin}"
-          safe_format(DEFAULT_CHECK_PROMPT_PROMPT, DEFAULT_CHECK_PROMPT_PROMPT, usage: usage, new_cmd: new_cmd)
+          "#{base} #{["--handoff-prompt", handoff_prompt].shelljoin}"
         elsif handoff_doc
           # With the plan as the doc, `new` is left to find it, so it also binds the pane to the plan play.
-          new_cmd = plan_is_doc ? new_cmd_base : "#{new_cmd_base} #{["--handoff-doc", handoff_doc].shelljoin}"
+          plan_is_doc ? base : "#{base} #{["--handoff-doc", handoff_doc].shelljoin}"
+        else
+          base
+        end
+      end
+
+      def check_body(pct:, threshold:, new_cmd:, handoff_doc:, handoff_prompt:, defaults:, plan_is_doc: false)
+        usage = "Context usage is at #{pct}%, #{(pct > threshold) ? "over" : "at"} the #{threshold}% threshold."
+
+        if handoff_prompt
+          safe_format(DEFAULT_CHECK_PROMPT_PROMPT, DEFAULT_CHECK_PROMPT_PROMPT, usage: usage, new_cmd: new_cmd)
+        elsif handoff_doc
           template = defaults[:check_prompt] || DEFAULT_CHECK_PROMPT_DOC
           body = safe_format(template, DEFAULT_CHECK_PROMPT_DOC, usage: usage, doc: handoff_doc, new_cmd: new_cmd)
           plan_is_doc ? "#{body} #{PAUSED_PLAN_NOTE}" : body
         else
-          safe_format(DEFAULT_CHECK_PROMPT_PICK, DEFAULT_CHECK_PROMPT_PICK, usage: usage, new_cmd: new_cmd_base)
+          safe_format(DEFAULT_CHECK_PROMPT_PICK, DEFAULT_CHECK_PROMPT_PICK, usage: usage, new_cmd: new_cmd)
         end
       end
 
@@ -258,6 +282,82 @@ module Workspace
       rescue KeyError, ArgumentError, TypeError => e
         @error_output.puts "Warning: invalid prompt template (#{e.message}); using the built-in default."
         format(fallback, **placeholders)
+      end
+
+      # Asks the agent daemon to watch the pane after the save-state prompt landed. The prompt is
+      # already in the pane, so nothing here changes `check`'s exit code.
+      #
+      # @return [Hash{String=>Object}] "watching" and "reason" (nil when watching)
+      def start_followups(name, pane_id, defaults, new_cmd, sent_text, sent_at)
+        max = defaults[:followup_max].to_i
+        return {"watching" => false, "reason" => "disabled"} if max <= 0
+        return {"watching" => false, "reason" => "bound_pane"} if %w[run review].include?(@binder.live(pane: pane_id)&.fetch("kind", nil))
+
+        text = safe_format(defaults[:followup_prompt] || DEFAULT_FOLLOWUP_PROMPT, DEFAULT_FOLLOWUP_PROMPT, new_cmd: new_cmd)
+        if text.length > FOLLOWUP_TEXT_LIMIT || sent_text.length > FOLLOWUP_TEXT_LIMIT
+          return {"watching" => false, "reason" => "text_too_long"}
+        end
+
+        reply = request_watch("type" => "handoff_watch", "workspace" => name, "pane_id" => pane_id,
+          "sent_at" => sent_at.iso8601(3), "interval" => defaults[:followup_interval], "max" => max,
+          "text" => text, "sent_text" => sent_text)
+        parsed = reply[:parsed]
+        return {"watching" => false, "reason" => reply[:reason]} unless parsed
+        if parsed["ok"] == true && parsed["watching"] == true
+          {"watching" => true, "reason" => nil}
+        elsif parsed["ok"] == true
+          {"watching" => false, "reason" => parsed["reason"].to_s.empty? ? "unknown" : parsed["reason"].to_s}
+        else
+          {"watching" => false, "reason" => (parsed["error"] || parsed["code"] || "refused").to_s}
+        end
+      rescue Workspace::Error, SystemCallError => e
+        @error_output.puts "Warning: could not start handoff follow-ups (#{e.message}); the save-state prompt was sent."
+        {"watching" => false, "reason" => "error"}
+      end
+
+      # One request to the daemon with a short wait for the reply, since `check` runs inside the agent's turn.
+      # An old daemon (`unknown_type`), no reply or a bad reply is a skip reason; a connection failure warns.
+      #
+      # @return [Hash] :parsed (the reply Hash) or :reason
+      def request_watch(message)
+        path = @config.agent_socket_path(message["workspace"])
+        UNIXSocket.open(path) do |socket|
+          socket.puts(JSON.generate(message))
+          line = read_line_within(socket, FOLLOWUP_REPLY_WAIT)
+          unless line
+            @error_output.puts "Warning: the agent daemon did not answer the handoff follow-up request in #{FOLLOWUP_REPLY_WAIT}s; the save-state prompt was sent."
+            return {reason: "no_reply"}
+          end
+          parsed = begin
+            JSON.parse(line)
+          rescue JSON::ParserError
+            nil
+          end
+          return {reason: "bad_reply"} unless parsed.is_a?(Hash)
+          return {reason: "unsupported_daemon"} if parsed["error"] == "unknown_type" || parsed["code"] == "unknown_type"
+          {parsed: parsed}
+        end
+      rescue SystemCallError, IOError => e
+        @error_output.puts "Warning: could not reach the agent daemon to start handoff follow-ups (#{e.class}); the save-state prompt was sent."
+        {reason: "no_daemon"}
+      end
+
+      # Reads up to the first newline, giving up when the whole read has taken +limit+ seconds, so a
+      # daemon that writes half a line can not hold `check` up.
+      #
+      # @return [String, nil] the line, or nil on timeout or when the daemon closes without a word
+      def read_line_within(socket, limit)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + limit
+        buffer = +""
+        until buffer.include?("\n")
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          return nil unless remaining.positive? && socket.wait_readable(remaining)
+          chunk = socket.read_nonblock(4096, exception: false)
+          next if chunk == :wait_readable
+          break if chunk.nil?
+          buffer << chunk
+        end
+        buffer.empty? ? nil : buffer[/\A[^\n]*/]
       end
 
       def fetch_sessions(name)
@@ -354,15 +454,18 @@ module Workspace
       # "unconfirmed". A caller scripting on `--json` can check "landed"
       # without parsing the status string; the status still travels for
       # anyone who wants the detail.
-      def over_threshold(json, pct:, threshold:, pane:, delivery:, doc: nil)
+      def over_threshold(json, pct:, threshold:, pane:, delivery:, doc: nil, followup: nil)
         status = delivery.landed? ? "handoff_sent" : "handoff_send_failed"
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => status,
-                                        "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"],
-                                        "delivery" => delivery.status.to_s, "landed" => delivery.landed?,
-                                        "next" => "handoff", "doc" => doc})
+          document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => status,
+                      "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"],
+                      "delivery" => delivery.status.to_s, "landed" => delivery.landed?,
+                      "next" => "handoff", "doc" => doc}
+          document["followup"] = followup if followup
+          @output.puts JSON.generate(document)
         elsif delivery.landed?
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; sent save-state prompt to pane #{pane["index"]} (#{delivery.status})."
+          @output.puts "The agent daemon will follow up in pane #{pane["index"]} if no handoff happens." if followup && followup["watching"]
         else
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; failed to deliver the save-state prompt to pane #{pane["index"]} (#{delivery.status})."
           @error_output.puts "Warning: the save-state prompt did not reach the pane (#{delivery.status})."

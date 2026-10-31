@@ -46,14 +46,18 @@ module Workspace
     end
 
     # @param workspace [String] the calling workspace's name
-    # @return [Hash] :threshold [Integer], :check_prompt [String], :resume_prompt [String]
+    # @return [Hash] :threshold [Integer], :check_prompt [String], :resume_prompt [String],
+    #   :followup_interval [Integer seconds], :followup_max [Integer], :followup_prompt [String]
     #   (unset keys give the schema default, which for the two prompts is the built-in text)
     def for_workspace(workspace)
       handoff = load_handoff(workspace)
       {
         threshold: setting(handoff, workspace, "threshold"),
         check_prompt: setting(handoff, workspace, "check_prompt"),
-        resume_prompt: setting(handoff, workspace, "resume_prompt")
+        resume_prompt: setting(handoff, workspace, "resume_prompt"),
+        followup_interval: setting(handoff, workspace, "followup_interval"),
+        followup_max: setting(handoff, workspace, "followup_max"),
+        followup_prompt: setting(handoff, workspace, "followup_prompt")
       }
     end
 
@@ -72,7 +76,7 @@ module Workspace
     # Every stored `handoff.*` value, or {} when a config file can't be parsed.
     def load_handoff(workspace)
       view = view_for(workspace)
-      %w[threshold check_prompt resume_prompt auto].to_h { |key| [key, view.raw("handoff.#{key}")] }
+      %w[threshold check_prompt resume_prompt auto followup_interval followup_max followup_prompt].to_h { |key| [key, view.raw("handoff.#{key}")] }
     rescue Workspace::ConfigParseError => e
       @error_output.puts "Warning: #{e.message} Using handoff defaults."
       {}

@@ -629,6 +629,95 @@
       ]
     },
     {
+      "key": "handoff.followup_interval",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 30,
+      "effective": null,
+      "source": "unreadable",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "How long a Claude Code pane must stay quiet after [`workspace handoff check`](README.handoff.md) before it sends a follow-up asking whether the agent is handing off, in seconds or with an `s`, `m` or `h` suffix (default `30`)",
+      "problems": [],
+      "unit": "seconds"
+    },
+    {
+      "key": "handoff.followup_max",
+      "scope": "project",
+      "type": "integer",
+      "value": null,
+      "masked": false,
+      "default": 10,
+      "effective": null,
+      "source": "unreadable",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Most follow-ups [`workspace handoff check`](README.handoff.md) sends one pane, an integer of 0 or more; `0` turns follow-ups off (default `10`)",
+      "problems": [],
+      "min": 0
+    },
+    {
+      "key": "handoff.followup_prompt",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": "Are you handing off to a fresh conversation? If so, once your state is saved, run this\nexact command: %{new_cmd}\nIf you have already run it, do nothing. If it was refused or you can't do it, say why\nand stop.",
+      "effective": null,
+      "source": "unreadable",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Overrides the built-in follow-up prompt, whose only placeholder is `%{new_cmd}`, the handoff command (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))",
+      "problems": []
+    },
+    {
       "key": "commands.test",
       "scope": "project",
       "type": "command",

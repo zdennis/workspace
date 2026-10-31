@@ -2457,6 +2457,210 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    context "with a handoff watcher" do
+      let(:watcher) do
+        Class.new do
+          attr_reader :armed, :seen, :started, :stopped
+          attr_accessor :answer, :raise_on_event
+
+          def initialize(recorded)
+            @recorded = recorded
+            @armed = []
+            @seen = []
+            @answer = {watching: true, reason: nil}
+          end
+
+          def start = @started = true
+
+          def stop = @stopped = true
+
+          def arm(**args) = (@armed << args) && @answer
+
+          def session_event(message)
+            raise "boom" if raise_on_event
+            @seen << [message["event"], @recorded.call.dup]
+          end
+        end.new(-> { recorded_events })
+      end
+      let(:built) { [] }
+
+      subject(:agent) do
+        described_class.new(
+          config: config, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          handoff_watcher_factory: ->(**args) {
+            built << args
+            watcher
+          },
+          output: output, error_output: error_output
+        )
+      end
+
+      def send_message(message)
+        UNIXSocket.open(agent_socket_path) do |socket|
+          socket.puts({"type" => "handoff_watch", "workspace" => "myapp", "pane_id" => "%5", "sent_at" => "2026-09-27T11:59:00.123Z",
+                       "interval" => 30, "max" => 10, "text" => "are you handing off?", "sent_text" => "save state"}.merge(message).to_json)
+          JSON.parse(socket.gets)
+        end
+      end
+
+      before do
+        allow(tmux).to receive(:pane_details).and_return([{id: "%5", window: 0, index: 0, pid: 1}, {id: "%7", window: 1, index: 0, pid: 2}])
+      end
+
+      it "builds the watcher with the workspace, the monitor, the delivery lock and a restart check, and stops it on shutdown" do
+        run_agent do
+          expect(built.first).to include(workspace: "myapp", session_monitor: monitor)
+          expect(built.first[:delivery_lock]).to be_a(Mutex)
+          agent.instance_variable_get(:@restarts)["%5"] = :starting
+          expect(built.first[:restarting].call("%5")).to be(true)
+          expect(watcher.stopped).to be_falsey
+        end
+
+        expect(watcher.stopped).to be(true)
+      end
+
+      it "holds a follow-up back while an API-error recovery holds the pane" do
+        run_agent do
+          agent.instance_variable_set(:@agent_recovery_desk, double(holding?: true, scan: nil, session_event: nil))
+          expect(built.first[:restarting].call("%5")).to be(true)
+          agent.instance_variable_set(:@agent_recovery_desk, double(holding?: false, scan: nil, session_event: nil))
+          expect(built.first[:restarting].call("%5")).to be(false)
+        end
+      end
+
+      it "arms the watch with the sent time as a Time and answers what the watcher said" do
+        run_agent do
+          expect(watcher.started).to be_falsey
+          expect(send_message({})).to eq("ok" => true, "watching" => true, "reason" => nil)
+
+          expect(watcher.armed).to eq([{pane_id: "%5", sent_at: Time.iso8601("2026-09-27T11:59:00.123Z"), interval: 30, max: 10,
+                                        text: "are you handing off?", sent_text: "save state"}])
+          expect(watcher.armed.first[:sent_at]).to be_a(Time)
+          expect(watcher.started).to be(true)
+        end
+      end
+
+      it "passes a refusal through, including invalid" do
+        run_agent do
+          watcher.answer = {watching: false, reason: "invalid"}
+          expect(send_message({})).to eq("ok" => true, "watching" => false, "reason" => "invalid")
+          watcher.answer = {watching: false, reason: "not_claude"}
+          expect(send_message({})).to eq("ok" => true, "watching" => false, "reason" => "not_claude")
+        end
+      end
+
+      it "takes a text of exactly 4,000 characters whole and refuses one longer, cutting nothing" do
+        run_agent do
+          expect(send_message("text" => "a" * 4_000)).to include("ok" => true)
+          expect(watcher.armed.last[:text].length).to eq(4_000)
+
+          %w[text sent_text].each do |key|
+            expect(send_message(key => "a" * 4_001)).to include("ok" => false, "error" => "usage")
+          end
+          expect(watcher.armed.size).to eq(1)
+        end
+      end
+
+      [
+        {"pane_id" => nil}, {"pane_id" => "five"}, {"sent_at" => "yesterday"}, {"sent_at" => 5}, {"sent_at" => nil},
+        {"interval" => 0}, {"interval" => "30"}, {"interval" => nil}, {"max" => 0}, {"max" => 1.5}, {"max" => "3"},
+        {"text" => ""}, {"text" => "  "}, {"text" => nil}, {"text" => 7}, {"sent_text" => ""}, {"sent_text" => nil}
+      ].each do |bad|
+        it "refuses #{bad.inspect} as usage and keeps serving" do
+          run_agent do
+            expect(send_message(bad)).to include("ok" => false, "error" => "usage")
+            expect(watcher.armed).to be_empty
+            expect(File.socket?(agent_socket_path)).to be(true)
+            expect(send_event("stop")).to eq("ok" => true)
+          end
+        end
+      end
+
+      it "refuses a pane that runs a pipeline stage and hands any other pane to the watcher, whatever its window" do
+        pipeline_state.start(work_item_ref: "WC-1", workspace_name: "myapp", dispatch_id: "d-1", sentinel_token: "tok", deadline: nil)
+
+        run_agent do
+          expect(send_message({})).to include("ok" => false, "error" => "pipeline_stage", "work_item_ref" => "WC-1")
+          expect(send_message("pane_id" => "%7")).to include("ok" => true, "watching" => true)
+          expect(watcher.armed.map { |a| a[:pane_id] }).to eq(["%7"])
+        end
+      end
+
+      context "with a real session monitor and watcher" do
+        let(:real_monitor) do
+          Workspace::SessionMonitor.new(tmux: tmux, process_tree: nil, session_name: "workspace-myapp").tap do |m|
+            m.define_singleton_method(:start) {}
+            m.define_singleton_method(:stop) {}
+          end
+        end
+
+        subject(:agent) do
+          described_class.new(
+            config: config, tmux: tmux, work_coordinator_client: client,
+            pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+            epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+            sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+            clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { real_monitor },
+            handoff_watcher_factory: ->(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:) {
+              Workspace::HandoffWatcher.new(tmux: tmux, session_name: session_name, workspace: workspace, session_monitor: session_monitor,
+                typer: nil, delivery_lock: delivery_lock, restarting: restarting)
+            },
+            output: output, error_output: error_output
+          )
+        end
+
+        it "answers not_scanned for a pane the monitor has not scanned, as every pane outside window 0 is" do
+          run_agent do
+            expect(send_message("pane_id" => "%7")).to eq("ok" => true, "watching" => false, "reason" => "not_scanned")
+          end
+        end
+      end
+
+      it "answers a pane tmux does not list through the watcher, which refuses it" do
+        run_agent do
+          watcher.answer = {watching: false, reason: "not_scanned"}
+          expect(send_message("pane_id" => "%99")).to eq("ok" => true, "watching" => false, "reason" => "not_scanned")
+        end
+      end
+
+      it "answers an unknown or stale message without ending the daemon" do
+        run_agent do |thread|
+          UNIXSocket.open(agent_socket_path) do |socket|
+            socket.puts({"type" => "handoff_unwatch", "workspace" => "myapp"}.to_json)
+            expect(JSON.parse(socket.gets)).to include("ok" => false, "error" => "unknown_type")
+          end
+          UNIXSocket.open(agent_socket_path) do |socket|
+            socket.puts({"type" => "handoff_watch", "workspace" => "gone"}.to_json)
+            expect(JSON.parse(socket.gets)).to include("ok" => false, "error" => "wrong_workspace")
+          end
+          expect(thread).to be_alive
+          expect(File.socket?(agent_socket_path)).to be(true)
+        end
+      end
+
+      it "shows a session event to the watcher before the monitor records it, and the reply stays {ok: true}" do
+        run_agent do
+          expect(send_event("session_start", source: "clear")).to eq("ok" => true)
+
+          expect(watcher.seen).to eq([["session_start", []]])
+          expect(recorded_events).to eq(["session_start"])
+        end
+      end
+
+      it "still records the event and answers when the watcher raises" do
+        watcher.raise_on_event = true
+
+        run_agent do
+          expect(send_event("stop")).to eq("ok" => true)
+          expect(recorded_events).to eq(["stop"])
+        end
+      end
+    end
+
     context "with an agent status desk" do
       let(:built) { [] }
       let(:release) { Queue.new }
@@ -2712,6 +2916,21 @@ RSpec.describe Workspace::Commands::Agent do
 
         expect(instances).to all(be_a(Workspace::AgentCommands))
         expect(instances.map(&:object_id).uniq.size).to eq(1)
+      end
+    end
+
+    it "builds a handoff watcher with a PlanPaused" do
+      Dir.mktmpdir("ws-handoff-watcher-wiring") do |state|
+        allow(ENV).to receive(:fetch).and_call_original
+        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
+
+        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+        factory = cli.instance_variable_get(:@agent_command).instance_variable_get(:@handoff_watcher_factory)
+        watcher = factory.call(workspace: "ws", session_name: "ws", session_monitor: instance_double(Workspace::SessionMonitor),
+          delivery_lock: Mutex.new, restarting: ->(_pane_id) { false }, event_log: nil)
+
+        expect(watcher).to be_a(Workspace::HandoffWatcher)
+        expect(watcher.instance_variable_get(:@plan_paused)).to be_a(Workspace::PlanPaused)
       end
     end
   end

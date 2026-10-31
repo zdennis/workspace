@@ -109,4 +109,20 @@ RSpec.describe Workspace::Commands::Handoff do
     }.to raise_error(Workspace::UsageError, /threshold/)
     expect(tmux).not_to have_received(:deliver)
   end
+
+  it "HD5: guards handoff.followup_prompt like check_prompt, so a stray % in it neither crashes check nor changes its exit code" do
+    stub_const("Workspace::Commands::Handoff::FOLLOWUP_REPLY_WAIT", 0.1)
+    allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
+    allow(handoff_config).to receive(:for_workspace).and_return(
+      defaults.merge(followup_interval: 30, followup_max: 10, followup_prompt: "100% sure, run %{oops}")
+    )
+
+    result = nil
+    expect {
+      with_raw_reply({"panes" => [claude_pane]}.to_json) { result = command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
+    }.not_to raise_error
+
+    expect(result).to eq(exit_code: 1)
+    expect(error_output.string).to match(/invalid prompt template/i)
+  end
 end

@@ -42,9 +42,24 @@ RSpec.describe Workspace::HandoffConfig do
   end
 
   describe "#for_workspace" do
+    it "reads the follow-up keys, and accepts 0 for followup_max" do
+      project_settings.save("app", {"handoff" => {"followup_interval" => "2m", "followup_max" => "0", "followup_prompt" => "Run %{new_cmd}"}})
+
+      expect(handoff_config.for_workspace("app")).to include(followup_interval: 120, followup_max: 0, followup_prompt: "Run %{new_cmd}")
+    end
+
+    it "warns and falls back when followup_max is not a non-negative integer" do
+      project_settings.save("app", {"handoff" => {"followup_max" => "-1"}})
+
+      expect(handoff_config.for_workspace("app")).to include(followup_max: 10)
+      expect(error_output.string).to include("invalid handoff.followup_max for 'app'")
+    end
+
     it "uses the default threshold and the built-in prompts when unset" do
       expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: Workspace::ConfigSchema.default("handoff.check_prompt"),
-        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"))
+        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"),
+        followup_interval: 30, followup_max: 10,
+        followup_prompt: Workspace::ConfigSchema.default("handoff.followup_prompt"))
     end
 
     it "reads handoff.threshold, handoff.check_prompt, and handoff.resume_prompt" do
@@ -52,14 +67,17 @@ RSpec.describe Workspace::HandoffConfig do
                                                   "resume_prompt" => "Resume %{doc}"}})
 
       expect(handoff_config.for_workspace("app")).to eq(threshold: 20, check_prompt: "Save %{usage}",
-        resume_prompt: "Resume %{doc}")
+        resume_prompt: "Resume %{doc}", followup_interval: 30, followup_max: 10,
+        followup_prompt: Workspace::ConfigSchema.default("handoff.followup_prompt"))
     end
 
     it "warns and falls back when a hand-edited value is invalid" do
       project_settings.save("app", {"handoff" => {"threshold" => "0", "check_prompt" => "  "}})
 
       expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: Workspace::ConfigSchema.default("handoff.check_prompt"),
-        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"))
+        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"),
+        followup_interval: 30, followup_max: 10,
+        followup_prompt: Workspace::ConfigSchema.default("handoff.followup_prompt"))
       expect(error_output.string).to include("invalid handoff.threshold for 'app'")
       expect(error_output.string).to include("invalid handoff.check_prompt for 'app'")
     end
@@ -68,7 +86,9 @@ RSpec.describe Workspace::HandoffConfig do
       project_settings.save("app", {"handoff" => "later"})
 
       expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: Workspace::ConfigSchema.default("handoff.check_prompt"),
-        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"))
+        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"),
+        followup_interval: 30, followup_max: 10,
+        followup_prompt: Workspace::ConfigSchema.default("handoff.followup_prompt"))
     end
 
     context "for a worktree workspace" do
@@ -139,7 +159,7 @@ RSpec.describe Workspace::HandoffConfig do
     it "leaves the hash #for_workspace returns as it was" do
       project_settings.save("app", {"handoff" => {"auto" => "true"}})
 
-      expect(handoff_config.for_workspace("app").keys).to eq(%i[threshold check_prompt resume_prompt])
+      expect(handoff_config.for_workspace("app").keys).to eq(%i[threshold check_prompt resume_prompt followup_interval followup_max followup_prompt])
     end
   end
 
