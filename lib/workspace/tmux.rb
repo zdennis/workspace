@@ -304,6 +304,17 @@ module Workspace
       status.success? ? stdout : nil
     end
 
+    # Reads a pane like #capture_screen but keeps the styling (`-e`), so a
+    # faint suggestion can be told from typed text.
+    #
+    # @param target [String] any tmux target: "session:0.1", a pane id ("%23")
+    # @return [String, nil] the screen with escape sequences, or nil if tmux
+    #   reported failure
+    def capture_screen_styled(target)
+      stdout, _, status = Open3.capture3("tmux", "capture-pane", "-e", "-p", "-t", target)
+      status.success? ? stdout : nil
+    end
+
     private
 
     # Names a session, or a window or pane of it, as a tmux target that only
