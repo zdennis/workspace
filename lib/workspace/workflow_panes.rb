@@ -177,7 +177,7 @@ module Workspace
       return false if row["turn_failed"] || row["state"] == "waiting"
       return false if screen_refusal(pane, row)
       turn_proven_over?(row)
-    rescue Workspace::Error, ArgumentError
+    rescue Workspace::Error, ArgumentError, SystemCallError
       false
     end
 
@@ -212,9 +212,11 @@ module Workspace
     end
 
     # @param pane [String] a pane id
-    # @return [Boolean] whether tmux no longer has the pane
+    # @return [Boolean] whether tmux no longer has the pane; false when tmux can't be read
     def pane_gone?(pane)
       @tmux.session_name_for_pane(pane).nil?
+    rescue SystemCallError
+      false
     end
 
     # Binds the pane to a step of a run, replacing  its earlier binding. The

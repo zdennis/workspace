@@ -347,18 +347,21 @@ module Workspace
       end
 
       # What the agent daemon runs when a turn ends in a bound pane, and on
-      # its timer for a run nothing else would wake. Prints nothing.
+      # its timer for a run nothing else would wake. A parked resume is looked at
+      # here, by either: it is carried out once the turn in its pane is proven over,
+      # and ended when the pane or its agent is gone or its time is up. Prints nothing.
       #
       # @param run [String] a run id
       # @param turn_ended [Boolean] a turn ended; false is the timer's look
       # @param pane [String, nil] the pane the turn ended in
       # @param turn_started [Time, nil] when the turn that ended began, when the daemon knows
+      # @param stopped_at [Time, nil] when the daemon saw the turn end
       # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [void]
       # @raise [Workspace::Error] code `bound_pane` for a step with a guard or a status check, from a pane
       #   bound to the run or a process under it
-      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, background: nil, caller_pane: nil)
+      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, caller_pane: nil)
         stored = begin
           @store.find(run)
         rescue Workspace::Error
@@ -369,7 +372,8 @@ module Workspace
         if stored && checked_step?(stored)
           refuse_caller!(stored, caller_pane, "workflow advance", "A guarded or checked step is decided by the agent daemon")
         end
-        turn_ended ? @engine.turn_ended(run, pane: pane, turn_started: turn_started, background: background || []) : @engine.tick(run)
+        return release_parked(stored, caller_pane) if stored && stored["parked"]
+        turn_ended ? @engine.turn_ended(run, pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || []) : @engine.tick(run)
         nil
       end
 
@@ -511,6 +515,9 @@ module Workspace
       STDIN_ID = "stdin"
       FILE_ID = "file"
 
+      # A run that has ended: its park is gone with it, and there is nothing to record.
+      RUN_ENDED_CODES = %w[run_not_active unknown_run].freeze
+
       def read_text(path, stdin)
         (stdin ? @input.read : File.binread(path)).to_s.dup.force_encoding(Encoding::UTF_8)
       rescue SystemCallError => e
@@ -592,15 +599,78 @@ module Workspace
       # Both checks guard against an agent's mistake: `$TMUX_PANE` names a bound pane,
       # or this process runs under the run's own pane (with `$TMUX_PANE` unset or another
       # pane's). When tmux or the process table can't be read, only the first runs.
+      # `$TMUX_PANE` is not compared with the run's pane: a stored id can name another
+      # session's pane after tmux restarts, which is what the binding check tells apart.
       def refuse_caller!(run, caller_pane, verb, subject = "A gate is passed by a person")
         refuse_bound_pane!(caller_pane, verb, subject)
         pane = @panes.pane_of(run["id"]) || run["pane"]
-        pane_pid = pane && pane_pid(run["workspace"], pane)
-        return unless pane_pid && under?(pane_pid)
+        return unless caller_in_pane?(run["workspace"], nil, pane)
         agent = calling_agent
         raise Workspace::Error.new("#{subject}: this process runs under pane #{pane}, which workflow run #{run["id"]} " \
           "is bound to, so `#{verb}` is refused here. Run it from another terminal.",
           code: "bound_pane", details: {"pane" => pane, "run_id" => run["id"], "agent" => agent})
+      end
+
+      # Whether this process is in the pane: `$TMUX_PANE` names it, or the process
+      # runs under the pane's own process. Takes the workspace because a caller can
+      # ask before any run exists.
+      def caller_in_pane?(workspace, caller_pane, target)
+        return false unless target
+        return true if caller_pane == target
+        pid = pane_pid(workspace, target)
+        !pid.nil? && under?(pid)
+      end
+
+      # Proof comes before expiry, so a turn that ended just past the limit still runs.
+      # From inside the target pane only the expiry is looked at: a turn there can't be
+      # over, and its own process must not start what follows it. Everything here is read
+      # outside the run's lock; the park's id settles two processes that both saw the proof.
+      def release_parked(run, caller_pane)
+        workspace = run["workspace"]
+        target = run["parked"]["pane"] || @panes.pane_of(run["id"]) || run["pane"]
+        unless caller_in_pane?(workspace, caller_pane, target)
+          return release_park(run) if @panes.main_turn_over?(workspace, target)
+          return end_park(run, "pane_gone", "pane #{target} of '#{workspace}' is gone, so nothing was typed") if @panes.pane_gone?(target)
+          return end_park(run, "not_an_agent", "the agent in pane #{target} has exited, so nothing was typed") if @panes.agent_gone?(workspace, target)
+        end
+        return unless WorkflowEngine.parked(run, @clock.call) == :expired
+        checking = run.dig("steps", run["current"], "state") == "checking"
+        end_park(run, "parked_timeout", WorkflowEngine.park_timeout_message(target, checking: checking))
+      end
+
+      # A release that raised would raise again on every tick, and with proof ahead of
+      # expiry would never reach the limit, so any failure ends the park.
+      def release_park(run)
+        released = @engine.release_park(run["id"], run["parked"]["id"])
+        unchanged = released && released["unchanged"]
+        @error_output.puts "workflow: the parked resume of run #{run["id"]} did nothing: #{unchanged}" if unchanged
+        nil
+      rescue Workspace::Error => e
+        unless RUN_ENDED_CODES.include?(e.code)
+          @error_output.puts "workflow: the parked resume of run #{run["id"]} failed: #{first_line(e)}"
+          end_park(run, e.code.to_s, first_line(e))
+        end
+      rescue => e
+        @error_output.puts "workflow: the parked resume of run #{run["id"]} failed: #{first_line(e)}"
+        end_park(run, "error", first_line(e))
+      end
+
+      def end_park(run, code, message)
+        @engine.park_failed(run["id"], run["parked"]["id"], code: code, message: message)
+        nil
+      rescue Workspace::Error => e
+        park_not_ended(run, e) unless RUN_ENDED_CODES.include?(e.code)
+      rescue => e
+        park_not_ended(run, e)
+      end
+
+      def park_not_ended(run, error)
+        @error_output.puts "workflow: could not end the parked resume of run #{run["id"]}: #{first_line(error)}"
+        nil
+      end
+
+      def first_line(error)
+        error.message.lines.first.to_s.scrub.strip
       end
 
       def pane_pid(workspace, pane)

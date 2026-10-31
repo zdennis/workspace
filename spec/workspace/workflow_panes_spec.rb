@@ -398,6 +398,11 @@ RSpec.describe Workspace::WorkflowPanes do
       allow(tmux).to receive(:capture_screen_styled).with("%5") { screen.first }
     end
 
+    it "is false when tmux can't be run" do
+      allow(tmux).to receive(:capture_screen_styled).and_raise(Errno::ENOENT)
+      expect(over?).to be(false)
+    end
+
     context "after a Stop" do
       it "is true with housekeeping alone after the Stop and a quiet box" do
         expect(over?).to be(true)
@@ -706,6 +711,11 @@ RSpec.describe Workspace::WorkflowPanes do
 
       allow(tmux).to receive(:session_name_for_pane).with("%5").and_return(nil)
       expect(panes.pane_gone?("%5")).to be(true)
+    end
+
+    it "is false when tmux can't be run" do
+      allow(tmux).to receive(:session_name_for_pane).and_raise(Errno::ENOENT)
+      expect(panes.pane_gone?("%5")).to be(false)
     end
   end
 end

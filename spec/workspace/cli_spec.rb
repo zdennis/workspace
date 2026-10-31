@@ -7056,12 +7056,13 @@ RSpec.describe Workspace::CLI do
     it "runs the daemon's advance: a turn that ended in a pane, or the timer's look" do
       cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5"])
       cli.run(["workflow", "advance", "wr_1"])
-      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z"])
+      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z", "--stopped-at", "2026-10-04T12:30:00.500Z"])
 
       expect(workflow_command.calls.map(&:last)).to eq([
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000), background: [], caller_pane: ENV["TMUX_PANE"]}
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, stopped_at: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000),
+         stopped_at: Time.utc(2026, 10, 4, 12, 30, 0, 500_000), background: [], caller_pane: ENV["TMUX_PANE"]}
       ])
       expect(output.string).to eq("")
     end
@@ -7085,6 +7086,13 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--turn-started", "soon"]) }.to raise_error(FakeSystemExit)
 
       expect(error_output.string).to include('--turn-started takes an ISO 8601 time, got "soon".')
+      expect(workflow_command.calls).to be_empty
+    end
+
+    it "refuses a --stopped-at that is not a time" do
+      expect { cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--stopped-at", "soon"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).to include('--stopped-at takes an ISO 8601 time, got "soon".')
       expect(workflow_command.calls).to be_empty
     end
 
@@ -7218,14 +7226,69 @@ RSpec.describe Workspace::CLI do
     end
     let(:command) do
       Workspace::Commands::Workflow.new(catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
-        status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, files: nil, run_files: nil, tmux: nil, process_tree: nil,
-        lock_holder: nil, output: StringIO.new)
+        status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, files: nil, run_files: nil,
+        tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: StringIO.new)
     end
     let(:cli) { build_test_cli(workflow_command: command)[0] }
     # The daemon's nudger, with the process it would start run here instead.
     let(:nudger) do
       Workspace::WorkflowNudger.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(_) { File::NULL },
         spawner: ->(argv, _log) { cli.run(argv.drop(2)) })
+    end
+
+    describe "a parked resume" do
+      let(:definition) { Workspace::WorkflowDefinition.parse("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n", id: "flow", source: "global", path: "/defs/flow.yml") }
+      let(:dispatched) { store.events(run["id"])["events"].select { |entry| entry["type"] == "step_dispatched" } }
+      let(:run) { engine.start(definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5") }
+
+      before do
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with("TMUX_PANE").and_return(nil)
+        # The agent's own resume of its step, parked from inside the turn.
+        engine.park(run["id"], from: "a", note: "Again.")
+      end
+
+      it "goes from the park through a Stop to the step's line being typed" do
+        expect(nudger.turn_ended("app", "%5")).to eq(run["id"])
+        expect(panes.kicks.size).to eq(1)
+        expect(store.find(run["id"])).to include("parked" => anything)
+
+        panes.turn_over << "%5"
+        nudger.turn_ended("app", "%5")
+
+        stored = store.find(run["id"])
+        expect(stored).not_to include("parked")
+        expect(stored["steps"]["a"]["attempts"].size).to eq(2)
+        expect(stored["steps"]["a"]["attempts"].last["context"]).to eq(["Note from the person who resumed the run: Again."])
+        expect(panes.kicks.size).to eq(2)
+        expect(dispatched.size).to eq(2)
+      end
+
+      it "dispatches once when two processes both saw the proof" do
+        seen = store.find(run["id"])
+        allow(store).to receive(:find).and_call_original
+        allow(store).to receive(:find).with(run["id"]).and_return(seen)
+        panes.turn_over << "%5"
+
+        2.times { nudger.turn_ended("app", "%5") }
+
+        expect(panes.kicks.size).to eq(2)
+        expect(dispatched.size).to eq(2)
+      end
+
+      it "goes from the park to the step's line being typed on ticks alone, for a pane that saw no Stop" do
+        expect(nudger.turn_ended("app", "%9")).to be_nil
+        3.times { nudger.tick("app") }
+        expect(store.find(run["id"])["steps"]["a"]["attempts"].size).to eq(1)
+
+        panes.turn_over << "%5"
+        expect(nudger.tick("app")).to eq([run["id"]])
+
+        expect(store.find(run["id"])).not_to include("parked")
+        expect(panes.kicks.size).to eq(2)
+        expect(dispatched.size).to eq(2)
+        expect(nudger.tick("app")).to eq([])
+      end
     end
 
     it "moves the run to its next step when the turn ends in its pane, and not for a turn in another pane" do

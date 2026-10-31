@@ -3,7 +3,7 @@
 # a binding that goes stale when its pane is no longer where it was bound
 # (`stale`), and a kick that types nothing when it reports a failure.
 class FakeWorkflowPanes
-  attr_reader :kicks, :bound, :stale, :idle
+  attr_reader :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone
   attr_accessor :kick_result, :bind_error, :daemon
 
   def initialize
@@ -12,6 +12,9 @@ class FakeWorkflowPanes
     @kick_result = {ok: true}
     @stale = []
     @idle = []
+    @turn_over = []
+    @gone = []
+    @agents_gone = []
     @daemon = true
   end
 
@@ -25,6 +28,12 @@ class FakeWorkflowPanes
   def alive?(run_id) = !pane_of(run_id).nil? && !@stale.include?(run_id)
 
   def idle?(_workspace, pane) = @idle.include?(pane)
+
+  def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)
+
+  def pane_gone?(pane) = @gone.include?(pane)
+
+  def agent_gone?(_workspace, pane) = @agents_gone.include?(pane)
 
   def daemon_running?(_workspace) = @daemon
 

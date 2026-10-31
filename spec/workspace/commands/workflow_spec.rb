@@ -893,6 +893,239 @@ RSpec.describe Workspace::Commands::Workflow do
       end
     end
 
+    describe "#advance with a parked resume" do
+      let(:error_output) { StringIO.new }
+      let(:now) { Time.utc(2026, 10, 4, 13, 0, 0) }
+      subject(:command) do
+        described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+          tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output, error_output: error_output)
+      end
+
+      before do
+        stored["parked"] = {"id" => "p1", "pane" => nil, "expires_at" => "2026-10-04T13:30:00Z"}
+        allow(engine).to receive(:turn_ended)
+        allow(engine).to receive(:tick)
+        allow(engine).to receive(:release_park).and_return("id" => "wr_1")
+        allow(engine).to receive(:park_failed)
+        allow(panes).to receive(:pane_of).with("wr_1").and_return("%5")
+        allow(panes).to receive(:main_turn_over?).and_return(false)
+        allow(panes).to receive(:pane_gone?).and_return(false)
+        allow(panes).to receive(:agent_gone?).and_return(false)
+      end
+
+      def expired!
+        stored["parked"]["expires_at"] = "2026-10-04T12:59:59Z"
+      end
+
+      it "releases on proof, for a Stop's advance and a tick's, and never decides the step" do
+        allow(panes).to receive(:main_turn_over?).with("app", "%5").and_return(true)
+
+        command.advance(run: "wr_1", turn_ended: true, pane: "%5", stopped_at: now)
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:release_park).with("wr_1", "p1").twice
+        expect(engine).not_to have_received(:turn_ended)
+        expect(engine).not_to have_received(:tick)
+      end
+
+      it "looks at the pane the resume named before the bound one, and the stored one last" do
+        stored["parked"]["pane"] = "%6"
+        command.advance(run: "wr_1")
+        expect(panes).to have_received(:main_turn_over?).with("app", "%6")
+
+        stored["parked"]["pane"] = nil
+        allow(panes).to receive(:pane_of).with("wr_1").and_return(nil)
+        command.advance(run: "wr_1")
+        expect(panes).to have_received(:main_turn_over?).with("app", "%5")
+      end
+
+      it "leaves the park for the next tick with no proof" do
+        command.advance(run: "wr_1")
+
+        expect(engine).not_to have_received(:release_park)
+        expect(engine).not_to have_received(:park_failed)
+        expect(engine).not_to have_received(:tick)
+      end
+
+      it "ends the park as parked_timeout past its limit" do
+        expired!
+
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:park_failed).with("wr_1", "p1", code: "parked_timeout", message: Workspace::WorkflowEngine.park_timeout_message("%5"))
+      end
+
+      it "says why when the release raises after the park is gone" do
+        allow(engine).to receive(:release_park).and_raise(TypeError, "bad run file")
+        allow(panes).to receive(:main_turn_over?).and_return(true)
+
+        command.advance(run: "wr_1")
+
+        expect(error_output.string).to include("the parked resume of run wr_1 failed: bad run file")
+      end
+
+      it "names the thrown-away check in the timeout of a step that reads checking" do
+        expired!
+        stored["steps"]["plan"]["state"] = "checking"
+
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:park_failed).with("wr_1", "p1", code: "parked_timeout",
+          message: Workspace::WorkflowEngine.park_timeout_message("%5", checking: true))
+      end
+
+      it "releases past the limit when the turn is proven over" do
+        expired!
+        allow(panes).to receive(:main_turn_over?).and_return(true)
+
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:release_park)
+        expect(engine).not_to have_received(:park_failed)
+      end
+
+      it "ends the park when the pane is gone" do
+        allow(panes).to receive(:pane_gone?).with("%5").and_return(true)
+
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:park_failed).with("wr_1", "p1", code: "pane_gone", message: /pane %5 of 'app' is gone/)
+      end
+
+      it "ends the park when the pane shows a shell" do
+        allow(panes).to receive(:agent_gone?).with("app", "%5").and_return(true)
+
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:park_failed).with("wr_1", "p1", code: "not_an_agent", message: "the agent in pane %5 has exited, so nothing was typed")
+      end
+
+      it "does not end the park over a daemon that does not answer: agent_gone? is false and the next tick looks again" do
+        command.advance(run: "wr_1")
+
+        expect(panes).to have_received(:agent_gone?)
+        expect(engine).not_to have_received(:park_failed)
+      end
+
+      it "turns a refused release into the end of the park" do
+        %w[gate_waiting pane_has_run].each do |code|
+          allow(engine).to receive(:release_park).and_raise(Workspace::Error.new("Refused.\nMore.", code: code))
+          allow(panes).to receive(:main_turn_over?).and_return(true)
+
+          command.advance(run: "wr_1")
+
+          expect(engine).to have_received(:park_failed).with("wr_1", "p1", code: code, message: "Refused.")
+        end
+      end
+
+      it "records nothing when the run ended under the release" do
+        %w[run_not_active unknown_run].each do |code|
+          allow(engine).to receive(:release_park).and_raise(Workspace::Error.new("gone", code: code))
+          allow(panes).to receive(:main_turn_over?).and_return(true)
+
+          expect(command.advance(run: "wr_1")).to be_nil
+        end
+        expect(engine).not_to have_received(:park_failed)
+      end
+
+      it "turns any other failure of the release into code error" do
+        allow(engine).to receive(:release_park).and_raise(TypeError, "bad run file")
+        allow(panes).to receive(:main_turn_over?).and_return(true)
+
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:park_failed).with("wr_1", "p1", code: "error", message: "bad run file")
+      end
+
+      it "logs a park_failed that raises, and returns" do
+        expired!
+        allow(engine).to receive(:park_failed).and_raise(Workspace::Error.new("disk full", code: "error"))
+        expect(command.advance(run: "wr_1")).to be_nil
+
+        allow(engine).to receive(:park_failed).and_raise(TypeError, "bad run file")
+        expect(command.advance(run: "wr_1")).to be_nil
+
+        expect(error_output.string).to include("could not end the parked resume of run wr_1: disk full", "could not end the parked resume of run wr_1: bad run file")
+      end
+
+      it "stays quiet about a park_failed the run's end got ahead of" do
+        expired!
+        allow(engine).to receive(:park_failed).and_raise(Workspace::Error.new("gone", code: "run_not_active"))
+
+        expect(command.advance(run: "wr_1")).to be_nil
+        expect(error_output.string).to eq("")
+      end
+
+      it "logs a release that did nothing, without ending the park" do
+        allow(panes).to receive(:main_turn_over?).and_return(true)
+        allow(engine).to receive(:release_park).and_return("id" => "wr_1", "unchanged" => "an agent is working on step plan")
+
+        command.advance(run: "wr_1")
+
+        expect(error_output.string).to include("the parked resume of run wr_1 did nothing: an agent is working on step plan")
+        expect(engine).not_to have_received(:park_failed)
+      end
+
+      describe "from inside the target pane" do
+        before do
+          allow(tmux).to receive(:pane_details).with("app", window: nil).and_return([{id: "%5", window: 0, index: 1, pid: 200}])
+          allow(panes).to receive(:main_turn_over?).and_return(true)
+          allow(panes).to receive(:pane_gone?).and_return(true)
+          allow(panes).to receive(:agent_gone?).and_return(true)
+        end
+
+        def under_pane(under)
+          snapshot = instance_double(Workspace::ProcessTree::Snapshot)
+          ancestors = [{pid: 300, ppid: under ? 200 : 1}, {pid: under ? 200 : 999, ppid: 1}]
+          allow(snapshot).to receive(:ancestors).with(4242).and_return(ancestors)
+          allow(process_tree).to receive(:snapshot).and_return(snapshot)
+        end
+
+        it "does nothing through $TMUX_PANE, with no look at the process table" do
+          command.advance(run: "wr_1", caller_pane: "%5")
+
+          expect(engine).not_to have_received(:release_park)
+          expect(engine).not_to have_received(:park_failed)
+        end
+
+        it "does nothing through the process table, with $TMUX_PANE unset or another pane's" do
+          under_pane(true)
+
+          command.advance(run: "wr_1")
+          command.advance(run: "wr_1", caller_pane: "%6")
+
+          expect(engine).not_to have_received(:release_park)
+          expect(engine).not_to have_received(:park_failed)
+        end
+
+        it "still records parked_timeout past the limit, and releases nothing" do
+          under_pane(true)
+          expired!
+
+          command.advance(run: "wr_1")
+
+          expect(engine).not_to have_received(:release_park)
+          expect(engine).to have_received(:park_failed).with("wr_1", "p1", code: "parked_timeout", message: /did not end within 1 hour/)
+        end
+
+        it "releases from a process under another pane" do
+          under_pane(false)
+
+          command.advance(run: "wr_1")
+
+          expect(engine).to have_received(:release_park)
+        end
+      end
+
+      it "keeps the checked-step refusal ahead of the park" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => "unchanged", "status" => nil}]}
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+
+        expect { command.advance(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
+        expect(engine).not_to have_received(:release_park)
+      end
+    end
+
     describe "#advance for a step with a guard or a check" do
       before do
         allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
@@ -914,7 +1147,7 @@ RSpec.describe Workspace::Commands::Workflow do
         command.advance(run: "wr_1", turn_ended: true, pane: "%5", caller_pane: nil)
         command.advance(run: "wr_1", caller_pane: "%3")
 
-        expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
         expect(engine).to have_received(:tick).with("wr_1")
       end
 
@@ -931,7 +1164,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         command.advance(run: "wr_9", turn_ended: true, caller_pane: "%5")
 
-        expect(engine).to have_received(:turn_ended).with("wr_9", pane: nil, turn_started: nil, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_9", pane: nil, turn_started: nil, stopped_at: nil, background: [])
       end
     end
 
@@ -954,8 +1187,8 @@ RSpec.describe Workspace::Commands::Workflow do
       command.advance(run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12))
       command.advance(run: "wr_1")
 
-      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, background: [])
-      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12), background: [])
+      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12), stopped_at: nil, background: [])
       expect(engine).to have_received(:tick).with("wr_1")
       expect(output.string).to eq("")
     end
@@ -968,8 +1201,8 @@ RSpec.describe Workspace::Commands::Workflow do
       command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: tasks)
       command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: nil)
 
-      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, background: tasks)
-      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, background: [])
+      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, stopped_at: nil, background: tasks)
+      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
     end
   end
 

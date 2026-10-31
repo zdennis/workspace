@@ -41,15 +41,15 @@ module Workspace
       return nil unless run_id
       started = turn_started ? ["--turn-started", turn_started.utc.iso8601(3)] : []
       tasks = Array(background).flat_map { |task| ["--background-task", "#{task["type"]}:#{task["id"]}"] }
-      advance(workspace, run_id, "--turn-ended", "--pane", pane_id, *started, *tasks)
+      advance(workspace, run_id, "--turn-ended", "--pane", pane_id, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks)
       run_id
     rescue => e
       @logger.debug { "workflow: could not wake the run on #{pane_id} (#{e.class}: #{e.message})" }
       nil
     end
 
-    # Wakes each of the workspace's runs that waits for a lock, or whose
-    # check never reported back.
+    # Wakes each of the workspace's runs that has a parked resume, waits for
+    # a lock, or whose check never reported back.
     #
     # @param workspace [String] the daemon's workspace
     # @return [Array<String>] the runs that were woken
