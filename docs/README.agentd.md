@@ -65,7 +65,9 @@ To check on or read the log of a running agent without holding a terminal, use [
 
 `--force` turns that refusal into a handover: the agent finds the process holding the socket with `lsof`, sends it `SIGTERM`, and waits up to 5 seconds for it to exit before binding the socket itself. In-flight state is already on disk, so the replacement picks the pipeline back up as it would after any other restart.
 
-**Workflow runs** — when the main agent's turn ends in a pane bound to a [workflow run](README.workflow.md) (a `Stop` hook event with no sub-agent id), the daemon starts `workspace workflow advance RUN --turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...` as its own process, which decides the run's step. Each `--background-task` is a task the Stop input listed as still going (Claude Code 2.1.145 and later); the flag is internal, passed only by the daemon. `AT` is when the pane's last prompt was submitted, when this daemon saw it; the run ignores the end of a turn that began before its step did. Every 15 seconds it starts `workspace workflow advance RUN` for each of the workspace's runs that waits for a lock, whose check never reported back, or whose background hold ran out. Those processes write to the daemon's log. A workflow needs the daemon: without one, a run only moves on `workflow resume`.
+**Workflow runs** — when the main agent's turn ends in a pane bound to a [workflow run](README.workflow.md) (a `Stop` hook event with no sub-agent id), the daemon starts `workspace workflow advance RUN --turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...` as its own process, which decides the run's step. Each `--background-task` is a task the Stop input listed as still going (Claude Code 2.1.145 and later); the flag is internal, passed only by the daemon. `AT` is when the pane's last prompt was submitted, when this daemon saw it; the run ignores the end of a turn that began before its step did. The `Stop` also passes `--stopped-at AT`, when this daemon saw the turn end. Every 15 seconds it starts `workspace workflow advance RUN` for each of the workspace's runs that waits for a lock, whose check never reported back, whose background hold ran out, or that has a [parked resume](README.workflow.md#resuming-from-the-runs-own-pane); a parked run is released from either, once the turn in its pane is proven over, in a process outside the pane. A `workflow run` parked in a pane with no binding yet waits for that timer and can take up to 15 seconds to start. The daemon scans window 0 of the session only, so a pane in another window can't be parked. Those processes write to the daemon's log. A workflow needs the daemon: without one, a run only moves on `workflow resume`.
+
+**Parking needs a daemon with this code.** A daemon lists what it can do in the `features` array of its `sessions` snapshot (`["parked_resume"]` for releasing a parked resume; see [`sessions`](README.sessions.md#turn-end-fields)). A daemon started before an upgrade has no `features` key, and `workflow resume` and `workflow run` then take the path they took before: they type into the pane and fail as they did. Run `workspace daemon restart` once after upgrading.
 
 **Hook events** — each hook event [`session-event`](README.session-event.md) forwards is also written, as typed lines (`tool_started`, `tool_finished`, `subagent_started`, `subagent_stopped`, `session_started`, `session_ended`, `prompt_submitted`), to the daemon's own file `~/.local/state/workspace/.events/<name>.jsonl`, with the daemon's `boot_id` and a `seq` that starts at 1 for each boot. The file rotates to `<name>.jsonl.1` past 5MB. [`workspace events`](README.events.md) reads every daemon's file together with the event log; the event log itself never gets these lines.
 
@@ -229,14 +231,16 @@ A `restart_agent` message gives the coding agent in one pane a fresh conversatio
 {"type": "restart_agent", "workspace": "myapp", "pane": "%18", "prompt": "Read HANDOFF.md and follow it.", "force": false, "wait": false, "timeout": 30}
 ```
 
+`run_id` (optional) is sent by a workflow run: once the pane is no longer bound to that run, the worker types nothing more and ends with `run_unbound`.
+
 `pane` is required and is never guessed: a pane id (`%18`), `window.pane` (`0.1`), `session:window.pane`, or a pane index in window 0. The session may be the tmux session name or the workspace name.
 
 Before replying, the agent checks that the pane exists and isn't running a shell, that no pipeline stage is running on it (unless `force`), that a `/clear` on it could be confirmed from its status-line readings, and that no other restart is running on it. Then a worker thread:
 
-1. waits (up to 120s) for the pane's screen to stop changing and for the agent to stop waiting on a person,
-2. types `/clear`,
+1. waits (up to 120s) for the pane's screen to stop changing and for the agent to stop waiting on a person. A screen that keeps moving is accepted once the main agent's `Stop`, its transcript and the screen (empty input box, no running turn) have shown the turn is over for 5 seconds; the reply then carries a `warning` that background work may be lost,
+2. checks a Claude Code pane again under the delivery lock and types `/clear` only if the input box is empty (a suggestion counts as empty, a draft does not) and no turn has started,
 3. waits (up to `timeout` seconds, default 30, at most 600) for a status-line reading recorded after the moment `/clear` was typed that comes from a new Claude session (a different `session_id`); a reading with no session id must instead show no usage yet, or less than before,
-4. types the prompt, unless a pipeline stage started on the pane meanwhile (skipped with `force`).
+4. types the prompt, unless a pipeline stage started on the pane meanwhile (skipped with `force`). After a moving screen was accepted it then waits up to 15s for the agent to report the prompt, since nothing else proves Enter took.
 
 If step 3 times out, the prompt is not typed. Without `wait`, the reply comes at once and a failure later is printed on the agent's stderr. With `wait`, the reply comes when the worker finishes; if the agent shuts down first, the connection closes with no reply.
 
@@ -251,9 +255,10 @@ If step 3 times out, the prompt is not typed. Without `wait`, the reply comes at
 | `error: "context_unknown"`, `reason`, `fix` | No reading could confirm the `/clear` (scrape mode with no matching pattern, or no reading at all on a pane the monitor hasn't identified as Claude Code); nothing was typed |
 | `error: "restart_in_progress"` | Another restart is running on this pane |
 | `error: "missing_prompt"` / `"bad_timeout"` | The prompt was empty, or `timeout` wasn't 1–600 seconds |
-| `error: "pane_busy"` / `"pane_gone"` | (`wait`) The pane never went quiet, or closed; see `message` for what was typed |
+| `error: "pane_busy"` / `"pane_gone"` | (`wait`) The pane never went quiet, or closed; see `message` for what was typed. `pane_busy` carries `reason`: `working`, `waiting`, `background_activity` (idle but the screen kept changing), `unknown_state`, `turn_started` (a turn began just before `/clear`), or a draft in the input box, `input_not_empty`. `details.proof_missing` names what kept a moving screen from being accepted. Without `wait` the refusal is printed on the agent's stderr only |
+| `error: "run_unbound"` | The pane stopped being bound to the `run_id` (the run was cancelled while the restart waited); nothing more was typed |
 | `error: "clear_not_confirmed"` | (`wait`) `/clear` was typed but neither a new conversation's reading nor a SessionStart hook event with source `clear` arrived in time; the prompt was not typed |
-| `error: "not_delivered"` | (`wait`) `/clear` or the prompt never reached the pane |
+| `error: "not_delivered"` | (`wait`) `/clear` or the prompt never reached the pane. With `reason: "prompt_unconfirmed"` the prompt was typed on a moving screen and the agent never reported it, so it may still be in the input box |
 
 ### Handoff watch
 

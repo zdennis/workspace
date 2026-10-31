@@ -26,7 +26,9 @@ The file is backed up first (`hooks.json.workspace-backup-<timestamp>`, see [`in
 
 `workspace init`, `start` and `doctor --fix` install the hooks again when Codex is on `PATH`; run `init --no-install-hooks` to skip that step. To stop `start` from touching the file, run `workspace config set codex.hooks.install false` (see [`start`](README.start.md)); `init` and `doctor --fix` are explicit and still install.
 
-The hooks workspace installs for Claude Code cover `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`, `SubagentStop`, `Notification` and `PermissionRequest` (`workspace init --install-hooks` lists them). `StopFailure` is the one that tells the agent daemon a turn ended on an API error, so it can [recover the agent](README.agentd.md#recovering-from-an-api-error). `PermissionRequest` names the tool a permission dialog asks about, for [`waiting_tool` and `waiting_input`](README.sessions.md#waiting-detail). `hooks uninstall` removes both with the rest.
+The hooks workspace installs for Claude Code cover `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SubagentStop`, `Notification` and `PermissionRequest` (`workspace init --install-hooks` lists them). `StopFailure` is the one that tells the agent daemon a turn ended on an API error, so it can [recover the agent](README.agentd.md#recovering-from-an-api-error). `PermissionRequest` names the tool a permission dialog asks about, for [`waiting_tool` and `waiting_input`](README.sessions.md#waiting-detail). `PostToolUseFailure` fires in place of `PostToolUse` when a tool fails or is interrupted (an Esc during a tool, say), so the daemon can close that tool instead of leaving it open. `hooks uninstall` removes them with the rest.
+
+Hooks installed before `PostToolUseFailure` was added read as out of date: `workspace doctor` reports the project's hooks as not installed, and an interrupted tool stays open in `sessions --json` (`open_tools`). Run `workspace init` again to add it.
 
 ### Other checkouts (`--name`, `--project`)
 
