@@ -232,6 +232,21 @@ RSpec.describe Workspace::Commands::Config do
                                                                "resume_prompt" => "Resume %{doc}"}})
     end
 
+    it "accepts handoff.followup_max 0, refuses a bad value, and takes the other follow-up keys" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("handoff.followup_max", "0", cwd: project_dir)
+      command.set("handoff.followup_interval", "1m", cwd: project_dir)
+      command.set("handoff.followup_prompt", "Run %{new_cmd}", cwd: project_dir)
+      ["-1", "abc", "1.5", "1_0", ""].each do |bad|
+        expect { command.set("handoff.followup_max", bad, cwd: project_dir) }.to raise_error(Workspace::UsageError, /followup_max.*integer of 0 or more/)
+      end
+
+      expect(project_settings.load(name)["handoff"]).to include("followup_max" => "0", "followup_interval" => "1m", "followup_prompt" => "Run %{new_cmd}")
+    end
+
     it "accepts commands.test and commands.lint, reads them back, and refuses a blank one" do
       output = StringIO.new
       command, project_settings = build_command(output: output)

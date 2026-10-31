@@ -61,7 +61,7 @@ module Workspace
     # @!attribute applies [Symbol] when a change takes effect: :next_call, :next_event or :daemon_restart.
     #   Defaults to :daemon_restart for a restart key, else :next_call.
     # @!attribute sensitive [Boolean] true when the value is a command or other text `config show --json` must not print
-    # @!attribute type [Symbol] :command, :duration, :percent, :text, :path, :enum, :regex, :boolean or :mapping.
+    # @!attribute type [Symbol] :command, :duration, :percent, :integer, :text, :path, :enum, :regex, :boolean or :mapping.
     #   A :path value is a file system location a person may have typed with shell escapes, which `config validate` checks for.
     # @!attribute overridable_in [Array<Symbol>] the layers (:global, :project, :worktree) that may hold the key, lowest
     #   precedence first. Defaults from `resolve` to what the readers consult today: :global is [:global], :parent is
@@ -192,6 +192,15 @@ module Workspace
       yourself.
     PROMPT
 
+    # The follow-up `handoff check` sends when the agent has not acted on the save-state prompt.
+    # `%{new_cmd}` is the command that starts the fresh conversation.
+    HANDOFF_FOLLOWUP_PROMPT = <<~PROMPT.strip.freeze
+      Are you handing off to a fresh conversation? If so, once your state is saved, run this
+      exact command: %{new_cmd}
+      If you have already run it, do nothing. If it was refused or you can't do it, say why
+      and stop.
+    PROMPT
+
     ABSOLUTE_PATH = lambda do |value|
       path = value.to_s
       raise ArgumentError, "must not be blank" if path.strip.empty?
@@ -268,6 +277,17 @@ module Workspace
       raise ArgumentError, "must be an integer between 1 and 100"
     end
     private_constant :PERCENT
+
+    NON_NEGATIVE_INTEGER = lambda do |value|
+      text = value.to_s.strip
+      raise ArgumentError, "must be an integer of 0 or more" unless text.match?(/\A[0-9]+\z/)
+      number = Integer(text, 10)
+      raise ArgumentError, "must be an integer of 0 or more" if number.negative?
+      number
+    rescue ArgumentError, TypeError
+      raise ArgumentError, "must be an integer of 0 or more"
+    end
+    private_constant :NON_NEGATIVE_INTEGER
 
     AGENT_KIND = lambda do |value|
       choices = AgentProvider.all.map(&:key)
@@ -364,6 +384,12 @@ module Workspace
         doc: "Overrides the built-in resume prompt `handoff new` sends (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))"),
       Key.new(name: "handoff.auto", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: false, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send a Claude Code agent the built-in `handoff` pack, which makes it run [`workspace handoff check`](README.handoff.md) after every task and hand off to a fresh conversation itself (default `false`); `--handoff` and `--no-handoff` override it for one run"),
+      Key.new(name: "handoff.followup_interval", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["30s", "1m"], default: 30, parser: POSITIVE_DURATION,
+        doc: "How long a Claude Code pane must stay quiet after [`workspace handoff check`](README.handoff.md) before it sends a follow-up asking whether the agent is handing off, in seconds or with an `s`, `m` or `h` suffix (default `30`)"),
+      Key.new(name: "handoff.followup_max", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :integer, settable: true, examples: ["0", "10"], default: 10, min: 0, parser: NON_NEGATIVE_INTEGER,
+        doc: "Most follow-ups [`workspace handoff check`](README.handoff.md) sends one pane, an integer of 0 or more; `0` turns follow-ups off (default `10`)"),
+      Key.new(name: "handoff.followup_prompt", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], settable: true, default: HANDOFF_FOLLOWUP_PROMPT, parser: PROMPT,
+        doc: "Overrides the built-in follow-up prompt, whose only placeholder is `%{new_cmd}`, the handoff command (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))"),
       # commands.* are repo-specific (no global value makes sense); a branch may change the command.
       Key.new(name: "commands.test", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, examples: ["bundle exec rspec"], parser: COMMAND,
         doc: "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack"),
