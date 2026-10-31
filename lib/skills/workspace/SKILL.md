@@ -76,7 +76,7 @@ Nothing prompts you in an agent pane: panes run with permissions bypassed, so th
 
 ## Calling pattern
 
-1. Add `--json --no-input --name WS` where `--help` lists `--json`. Put them before any bare `--`. Leave `--name` out of `workflow status RUN`, which takes no scope flag (the run names its workspace; `usage` otherwise), and out of a status command given `--project` or `--all`: give one of the three. With none, a status command reports this workspace (the one of the working directory). `not_in_workspace` from one is answered with `--name WS`, `--project NAME` or `--all`.
+1. Add `--json --no-input --name WS` where `--help` lists `--json`. Put them before any bare `--`. Leave `--name` out of `workflow status RUN`, which takes no scope flag (the run names its workspace; `usage` otherwise), and out of a status command given `--project` or `--all`: give one of the three. With none, a status command reports this workspace (the one of the working directory). `not_in_workspace` from one is answered with `--name WS`, `--project NAME` or `--all`. To see runs beside whether each one's workspace is still there, use `workflow status --all --table`.
 2. Read stdout as one JSON value. Stderr is progress text for people.
 3. Look at `ok`. If it is false, branch on `code`, not on `error` text.
 4. If `ok` is true on an action document, still read `status`, each row's `outcome`, and the exit code.
