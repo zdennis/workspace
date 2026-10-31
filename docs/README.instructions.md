@@ -107,6 +107,8 @@ Errors use the [envelope](README.json.md): `unknown_library_entry` for a pack no
 workspace instructions compose
 workspace instructions compose --pack orchestrator
 workspace instructions compose --pack commits --pack review --name my-app --json
+workspace instructions compose --pane %5                # the default packs with pane %5's binding after the binding pack
 workspace instructions compose --start --name my-app    # what start and launch would send
+workspace instructions compose --pack nonesuch --json   # a pack in no library: exits 1 with unknown_library_entry
 workspace start feature/x --prompt "$(workspace instructions compose --pack orchestrator)"
 ```

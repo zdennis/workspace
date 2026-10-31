@@ -102,9 +102,12 @@ Usage errors (exit 1, a `usage` code under `--json`): `--limit` outside 1 to 100
 ## Examples
 
 ```sh
-workspace ticket show PROJ-123
-workspace ticket show https://github.com/acme/api/pull/41 --json
-workspace ticket show feature/login --name api
-workspace ticket list --json
-workspace ticket list --recent --source=gh --limit=10
+workspace ticket show PROJ-123                                      # a JIRA ticket's title and body, and whether a worktree exists
+workspace ticket show https://github.com/acme/api/pull/41 --json   # a pull request, as one JSON document
+workspace ticket show '#41'                                         # a number in this repository (quote the #)
+workspace ticket show feature/login --name api                      # a branch: only whether a workspace exists
+workspace ticket list                                               # what is assigned to you, newest change first
+workspace ticket list --recent                                      # what changed lately, whoever it is assigned to
+workspace ticket list --source gh --limit 10                        # only GitHub, at most 10 rows
+workspace ticket list --json                                        # for a script: refs and warnings
 ```

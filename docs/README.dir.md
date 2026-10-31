@@ -23,11 +23,15 @@ Paths are expanded (tilde `~` is resolved to the user's home directory).
 $ workspace dir
 
 # Get the root directory of a project
-$ workspace dir work-notes
-/Users/zdennis/Documents/Obsidian-LocalOnly/Zendesk
+$ workspace dir api
+/Users/z/src/api
 
-$ workspace dir growth-engine
-/Users/zdennis/Code/zendesk/growth-engine
+# Put the path on the clipboard
+$ workspace dir api | pbcopy
+
+# The checkout of one worktree workspace
+$ workspace dir --name api.worktree-login
+/Users/z/src/api/.worktrees/api-login
 
 # Use the output in a script
 $ cd $(workspace dir myproject)

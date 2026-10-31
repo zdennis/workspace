@@ -25,12 +25,30 @@ Requires Alfred to be installed with the workflows directory at its default loca
 ## Examples
 
 ```sh
-# Install the workflow
+# Add the 'wf' workflow to Alfred, or update it after upgrading workspace
 workspace alfred install
 
-# Check installation status
+# Install, then confirm where it went
+workspace alfred install && workspace alfred info
+
+# Print the line saying where it was installed
+workspace alfred install | grep Installed
+
+# See whether the workflow is installed, and where
 workspace alfred info
 
-# Remove the workflow
+# Find the workflow's folder to edit it by hand
+workspace alfred info | grep Location
+
+# Install it only when missing
+workspace alfred info | grep -q 'is installed' || workspace alfred install
+
+# Remove the workflow from Alfred, after confirming
 workspace alfred uninstall
+
+# Answer nothing: it cancels and removes nothing
+workspace alfred uninstall </dev/null
+
+# In an unattended script with the workflow installed: exits 1 with an error instead of waiting
+WORKSPACE_NO_INPUT=1 workspace alfred uninstall
 ```

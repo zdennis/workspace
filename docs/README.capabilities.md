@@ -26,7 +26,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":2,
    "ui_open":4,"pane_bindings":3,"library":5,"library_play":3,"library_recipes":1,"library_copy":4,"library_installed":1,"instructions":1,"restore":1,
    "workflow":9,"window_state":1,"window_position":1,"cleanup_dry_run":1,"notes":2,"start_packs":2,"start_agent":1,"agent_commands":1,"ahead_of_base":1,"agent_executables":1,"start_plan":1,
-   "handoff_auto":2,"handoff_codex":1,"handoff_wait":1,"dev_queue":2,"dev_down_holder":1,"plan":6,"inbox":6,"ask_withdraw":1,"ask_deliver":1,"review":1,"review_patch":1,"add_json":1,"plan_progress":1,"spine_events":2,"spine_eval":3,"spine_verify":1,"spine_start":2,"spine_fanout":1,"spine_check":1,"spine_goal":1,"agent_status":1,"agent_queue":1,"agent_send_interrupt":1,"plan_tasks":3,"agent_hooks":1,"codex_waiting":1,"projects_multi":1,"json_envelope":1,"remove":1,"lifecycle_current":1,"promote":1,"split_cwd":1,"launch_prompt_status":1,"kill_branches":1}, "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
+   "handoff_auto":2,"handoff_codex":1,"handoff_wait":1,"dev_queue":2,"dev_down_holder":1,"plan":6,"inbox":6,"ask_withdraw":1,"ask_deliver":1,"review":1,"review_patch":1,"add_json":1,"plan_progress":1,"spine_events":2,"spine_eval":3,"spine_verify":1,"spine_start":2,"spine_fanout":1,"spine_check":1,"spine_goal":1,"agent_status":1,"agent_queue":1,"agent_send_interrupt":1,"plan_tasks":3,"agent_hooks":1,"codex_waiting":1,"projects_multi":1,"json_envelope":1,"remove":1,"lifecycle_current":1,"promote":1,"split_cwd":1,"launch_prompt_status":1,"kill_branches":1,"help_json":1}, "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","hook_events":"/Users/me/.local/state/workspace/.events",
    "run_dir":"/Users/me/.local/workspace/run",
    "library":"/Users/me/.config/workspace/library"},
@@ -138,12 +138,13 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `agent_pane_refresh` | `launch` rewrites a stale agent pane in the project's tmuxinator config before it starts the session, and writes `agent_pane_refreshed` to the event log whenever it (or `doctor --fix`) does, even when its own output is quiet or `--json` (see [`launch`](README.launch.md#agent-pane-refresh) and the [event log](README.event-log.md)) |
 | `start_plan` | `start --plan[=TITLE]` runs `plan init` in the new worktree and sends the `implementation-plan` play with the first prompt, so the agent drafts the tasks (`--prompt` becomes the goal); `start --json` reports `plan` beside `play`. Cannot be combined with `--play`. Pairs with `plan` 5, where `plan start` on a plan with no tasks gives outcome `drafting` (see [`start`](README.start.md#plan)) |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)). Level 2: `prune` writes `worktree_finished` with outcome `pruned` for each workspace it removes, and writes at most one `state_removed` per removed workspace, not two |
+| `help_json` | `--help --json` (either order) on any subcommand or verb prints its help page as one JSON document (`usage`, `description`, `options`, `examples`, and `sections` for other headed parts) instead of text (see [`--json` output](README.json.md#help-pages)) |
 | `bookkeeping_excluded` | Workspace's own bookkeeping files stay out of `git status` and review diffs: backups (`*.workspace-backup-*`) and a settings file workspace created are listed in the repository's `info/exclude` (see [`init`](README.init.md#agent-session-hooks)). A tracked file is never listed |
 
 ## Examples
 
 ```sh
-workspace capabilities
-workspace capabilities --json | jq '.features.no_input'
-workspace capabilities --json | jq -r '.dependencies.window_tool.path'
+workspace capabilities    # a readable summary
+workspace capabilities --json | jq '.features.no_input'    # 1 when --no-input is supported
+workspace capabilities --json | jq -r '.dependencies.window_tool.path'    # where window-tool was found, for a script that needs it
 ```

@@ -22,7 +22,7 @@ workspace inbox snooze ID... (--until ISO | --for DURATION) [scope] [--json]
 workspace inbox ack DERIVED_ID... [scope] [--json]
 ```
 
-Scope: at most one of `--name WORKSPACE`, `--project NAME|PATH`, `--global`. Every flag accepts the `--flag=value` form.
+Scope: at most one of `--name WORKSPACE`, `--project NAME|PATH`, `--global`. Every flag accepts the `--flag=value` form. `workspace inbox VERB --help` prints the page of one subcommand, with its options and examples.
 
 ## Examples
 

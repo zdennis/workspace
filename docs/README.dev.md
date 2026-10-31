@@ -8,7 +8,7 @@ Run one dev environment per repository, guarded by the repo-wide `devenv` lock. 
 workspace dev up     [WS] [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]
 workspace dev wait   [WS] [--no-ready] [--max-wait DURATION] [--json]
 workspace dev leave  [WS] [--json]
-workspace dev down   [WS] [--force]
+workspace dev down   [WS] [--force] [--json]
 workspace dev status [WS] [--json]
 ```
 

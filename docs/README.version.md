@@ -10,9 +10,17 @@ workspace --version
 workspace -v
 ```
 
-## Example
+## Examples
 
 ```sh
+# Which release is installed
 $ workspace --version
-workspace 0.1.1
+workspace X.Y.Z
+
+# Only the number, to compare in a script
+$ workspace version | cut -d' ' -f2
+X.Y.Z
+
+# Add the version to a bug report
+$ workspace version >> bug-report.txt
 ```

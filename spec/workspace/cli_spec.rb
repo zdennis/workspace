@@ -1468,6 +1468,127 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with --help on verbs that once ran or mangled it" do
+    # OptionParser's own --help prints to $stdout and calls Kernel#exit, so both
+    # streams are captured and a clean exit is let through.
+    def run_help(cli, argv, output, error_output)
+      real = [$stdout, $stderr]
+      $stdout = output
+      $stderr = error_output
+      cli.run(argv)
+    rescue SystemExit => e
+      expect(e.status).to eq(0)
+    ensure
+      $stdout, $stderr = real
+    end
+
+    ["--help", "-h"].each do |flag|
+      it "event-log compact #{flag} prints help and does not compact" do
+        state = CLITestHelpers::FakeState.new
+        expect(state.event_log).not_to receive(:compact)
+        cli, output, error_output = build_test_cli(state: state)
+        run_help(cli, ["event-log", "compact", flag], output, error_output)
+        expect(output.string).to start_with("Usage: workspace event-log")
+        expect(error_output.string).to be_empty
+      end
+    end
+
+    it "event-log compact still compacts" do
+      state = CLITestHelpers::FakeState.new
+      expect(state.event_log).to receive(:compact).and_return({})
+      cli, output, = build_test_cli(state: state)
+      cli.run(["event-log", "compact"])
+      expect(output.string).to include("Compacted event log")
+    end
+
+    %w[save restore list].each do |verb|
+      it "layout #{verb} --help prints the layout help and touches nothing" do
+        layout = instance_double(Workspace::Commands::Layout)
+        cli, output, error_output = build_test_cli(layout_command: layout)
+        run_help(cli, ["layout", verb, "--help"], output, error_output)
+        expect(output.string).to start_with("Usage: workspace layout")
+        expect(error_output.string).to be_empty
+      end
+    end
+
+    it "agent-run --help prints the agent-run page" do
+      cli, output, error_output = build_test_cli
+      run_help(cli, ["agent-run", "--help"], output, error_output)
+      expect(output.string).to start_with("Usage: workspace agent-run <subcommand>")
+      expect(error_output.string).to be_empty
+    end
+
+    it "handoff --help prints the handoff page and exits 0" do
+      cli, output, error_output = build_test_cli
+      run_help(cli, ["handoff", "--help"], output, error_output)
+      expect(output.string).to start_with("Usage: workspace handoff check [NAME]")
+      expect(output.string).to include("workspace handoff new [NAME]")
+      expect(error_output.string).to be_empty
+    end
+
+    ["check", "new"].each do |verb|
+      ["--help", "-h"].each do |flag|
+        it "handoff #{verb} #{flag} prints the page of that verb and exits 0" do
+          handoff_command = double("handoff", check: {exit_code: 0}, new: {exit_code: 0})
+          expect(handoff_command).not_to receive(:check)
+          expect(handoff_command).not_to receive(:new)
+          cli, output, error_output = build_test_cli(handoff_command: handoff_command)
+          run_help(cli, ["handoff", verb, flag], output, error_output)
+          expect(output.string).to start_with("Usage: workspace handoff #{verb} [NAME]")
+          expect(output.string.scan("Usage: workspace handoff").size).to eq(1)
+          expect(error_output.string).to be_empty
+        end
+      end
+
+      it "handoff #{verb} treats --help after --handoff-prompt as the prompt" do
+        handoff_command = double("handoff", check: {exit_code: 0}, new: {exit_code: 0})
+        cli, output, = build_test_cli(handoff_command: handoff_command)
+        cli.run(["handoff", verb, "myapp", "--handoff-prompt", "--help"])
+        expect(output.string).to be_empty
+        if verb == "check"
+          expect(handoff_command).to have_received(:check).with(hash_including(name: "myapp", handoff_prompt: "--help"))
+        else
+          expect(handoff_command).to have_received(:new).with(hash_including(name: "myapp", handoff_prompt: "--help"))
+        end
+      end
+    end
+
+    it "layout --help save prints the layout help" do
+      layout = instance_double(Workspace::Commands::Layout)
+      cli, output, error_output = build_test_cli(layout_command: layout)
+      run_help(cli, ["layout", "--help", "save"], output, error_output)
+      expect(output.string).to start_with("Usage: workspace layout")
+    end
+
+    [%w[agent-run send], %w[agent-run queue list]].each do |argv|
+      it "#{argv.join(" ")} --help prints help and sends nothing" do
+        cli, output, error_output = build_test_cli
+        run_help(cli, [*argv, "--help"], output, error_output)
+        expect(output.string).to start_with("Usage: workspace agent-run")
+        expect(error_output.string).to be_empty
+      end
+    end
+
+    %w[start advance status reset].each do |verb|
+      it "pipeline #{verb} --help keeps the deprecation warning off stdout" do
+        cli, output, error_output = build_test_cli
+        run_help(cli, ["pipeline", verb, "--help"], output, error_output)
+        expect(output.string).to start_with("Usage: workspace pipeline #{verb}")
+        expect(output.string).not_to include("deprecated")
+        expect(error_output.string).to include("deprecated")
+      end
+    end
+
+    [%w[alfred], %w[alfred install], %w[alfred uninstall], %w[alfred info], %w[statusline], %w[report-run-status]].each do |argv|
+      it "#{argv.join(" ")} --help prints its page" do
+        cli, output, error_output = build_test_cli
+        run_help(cli, [*argv, "--help"], output, error_output)
+        expect(output.string).to start_with("Usage: workspace #{argv.join(" ")}")
+        expect(error_output.string).to be_empty
+      end
+    end
+  end
+
   describe "#run agent-run command" do
     it "defaults --work-item to a random UUID, shown in the printed message" do
       cli, output = build_test_cli
@@ -1545,7 +1666,7 @@ RSpec.describe Workspace::CLI do
       cli, _, error_output = build_test_cli
 
       expect { cli.run(["agent-run"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("restart    Clear the coding agent in one pane")
+      expect(error_output.string).to include("restart   Clear the coding agent in one pane")
     end
   end
 
@@ -1998,7 +2119,7 @@ RSpec.describe Workspace::CLI do
       cli, _, error_output = build_test_cli
 
       expect { cli.run(["agent-run"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("send       Type text or tmux keys into one named pane")
+      expect(error_output.string).to include("send      Type text or tmux keys into one pane")
     end
   end
 
@@ -3134,6 +3255,30 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to eq("No problems found in the config for 'api'.\n")
     end
+
+    it "validate with an extra argument exits 1 with its page" do
+      cli, _, error_output = build_test_cli(config_report: report.new)
+
+      expect { cli.run(["config", "validate", "extra"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Usage: workspace config validate")
+    end
+
+    it "validate outside a workspace says so and shows its page" do
+      cli, _, error_output = build_test_cli(config_report: report.new)
+
+      expect { cli.run(["config", "validate"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Not in a workspace. Pass --name <workspace>.", "Usage: workspace config validate")
+    end
+
+    it "show outside a workspace says so and shows its page" do
+      cli, _, error_output = build_test_cli(config_report: report.new)
+
+      expect { cli.run(["config", "show"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Not in a workspace. Pass --name <workspace>.", "Usage: workspace config show")
+    end
   end
 
   describe "#run with tmux show" do
@@ -3257,6 +3402,22 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace config unset")
+    end
+
+    it "exits 1 with the edit page when edit is given extra arguments" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "edit", "one", "two"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config edit")
+    end
+
+    it "prints the set page for config set --help, naming config keys --settable" do
+      cli, output, _ = build_test_cli
+
+      cli.run(["config", "set", "--help"])
+
+      expect(output.string).to include("Usage: workspace config set", "workspace config keys --settable", "Examples:")
     end
 
     describe "--scope" do
@@ -4454,7 +4615,26 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["lock", "status", "extra", "args"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-      expect(error_output.string).to include("Audit trail: locks.jsonl next to locks.json")
+      expect(error_output.string).to include("locks.jsonl next to locks.json")
+    end
+
+    it "prints the verb's own Usage line for a stray argument to lock and dev verbs" do
+      verbs = {
+        %w[lock acquire] => %w[edit extra], %w[lock release] => %w[edit extra], %w[lock clear] => %w[edit extra],
+        %w[lock status] => %w[a b], %w[lock instructions] => %w[a b], %w[dev up] => %w[a b], %w[dev down] => %w[a b], %w[dev wait] => %w[a b],
+        %w[dev leave] => %w[a b], %w[dev status] => %w[a b], %w[dev __run] => %w[extra]
+      }
+      verbs.each do |(command, verb), stray|
+        cli, _, error_output = build_test_cli(
+          lock_command: CLITestHelpers::FakeLockCommand.new,
+          dev_command: CLITestHelpers::FakeDevCommand.new
+        )
+
+        expect { cli.run([command, verb, *stray]) }.to raise_error(FakeSystemExit)
+
+        usage = Workspace::HelpPages::COMMANDS.fetch(command).fetch(verb)[:usage].first
+        expect(error_output.string).to include("Usage: workspace #{usage}")
+      end
     end
 
     it "lists instructions and idle takeover in lock help" do
@@ -4462,7 +4642,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["lock", "help"])
 
-      expect(output.string).to include("instructions [<name>]", "locks.idle_grace", "3   this agent's hold was taken over")
+      expect(output.string).to include("Print the prompt block", "locks.idle_grace", "3   this agent's hold was taken over")
     end
 
     describe "dev" do
@@ -4655,7 +4835,7 @@ RSpec.describe Workspace::CLI do
 
         cli.run(["dev"])
 
-        expect(output.string).to include("wait [WS] [options]", "leave [WS]", "--queue")
+        expect(output.string).to include("Block until", "Take this worktree out", "--queue")
       end
 
       it "dispatches down with --force, status, and the hidden __run" do
@@ -6980,7 +7160,11 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE").and include("waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow show [ID] [--source] [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE")
+      output.truncate(0)
+      output.rewind
+      cli.run(["workflow", "status", "--help"])
+      expect(output.string).to include("Usage: workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all]", "waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)
@@ -7547,6 +7731,19 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["skills", "nope"]) }.to raise_error(FakeSystemExit)
       expect { cli.run(["skills", "install", "extra"]) }.to raise_error(FakeSystemExit)
       expect(skills_command).not_to have_received(:install)
+    end
+
+    %w[install uninstall].each do |verb|
+      it "prints the #{verb} page for skills #{verb} --help and calls nothing" do
+        cli.run(["skills", verb, "--help"])
+
+        other = (verb == "install") ? "uninstall" : "install"
+        expect(built[1].string).to include("Usage: workspace skills #{verb}")
+        expect(built[1].string).to include(Workspace::HelpPages::SKILLS.fetch(verb)[:summary])
+        expect(built[1].string).not_to include("workspace skills #{other}")
+        expect(skills_command).not_to have_received(:install)
+        expect(skills_command).not_to have_received(:uninstall)
+      end
     end
 
     it "lists skills in the main help" do
@@ -8177,6 +8374,40 @@ RSpec.describe Workspace::CLI do
       expect(rebase_command).to have_received(:call).with(name: "api", onto: "update", json: true, working_dir: an_instance_of(String))
     end
 
+    [%w[rebase --onto bogus --help], %w[rebase --name x --help], %w[push --help]].each do |argv|
+      it "prints the page and runs nothing for 'workspace #{argv.join(" ")}'" do
+        cli.run(argv)
+
+        expect(output.string).to start_with("Usage: workspace #{argv.first}")
+        expect(rebase_command).not_to have_received(:call)
+        expect(push_command).not_to have_received(:call)
+      end
+    end
+
+    %w[--json --help].permutation.each do |flags|
+      it "prints the page as one document and runs nothing for 'workspace push #{flags.join(" ")}'" do
+        cli.run(["push", *flags])
+
+        expect(JSON.parse(output.string)["usage"].first).to start_with("workspace push")
+        expect(rebase_command).not_to have_received(:call)
+        expect(push_command).not_to have_received(:call)
+      end
+    end
+
+    it "keeps the status of a failed help run under an injected exit handler and prints one error document" do
+      expect { cli.run(%w[nosuch --help --json]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => "Unknown subcommand: nosuch")
+      expect(error_output.string).to eq("")
+    end
+
+    it "runs nothing and prints text for 'workspace rebase --name --help --json', where --help is the name" do
+      expect { cli.run(%w[rebase --name --help --json]) }.to raise_error(FakeSystemExit)
+
+      expect(output.string).not_to include('"examples"')
+      expect(rebase_command).not_to have_received(:call)
+    end
+
     it "requires --onto for rebase" do
       expect { cli.run(["rebase", "--json"]) }.to raise_error(FakeSystemExit)
 
@@ -8266,6 +8497,15 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to include("workspace pr create").and include("--draft")
       expect(pull_request_command).not_to have_received(:create)
+    end
+
+    ["--help", "-h"].each do |flag|
+      it "prints the page of pr create for #{flag} and creates nothing" do
+        cli.run(["pr", "create", flag])
+
+        expect(output.string).to start_with("Usage: workspace pr create")
+        expect(pull_request_command).not_to have_received(:create)
+      end
     end
 
     it "rejects a missing subcommand, an unknown one and extra arguments as usage errors" do
@@ -8844,7 +9084,7 @@ RSpec.describe Workspace::CLI do
     it "prints its help without running anything" do
       cli.run(["review", "--help"])
 
-      expect(output.string).to include("Usage: workspace review [show] [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]", "review show list", "--max-bytes N")
+      expect(output.string).to include("Usage: workspace review show [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]", "review list [PROJECT]", "--max-bytes N")
       expect(review_command.calls).to eq([])
     end
 
@@ -9010,6 +9250,13 @@ RSpec.describe Workspace::CLI do
       cli.run(["projects", "--git", "--json"])
 
       expect(projects_command.calls).to eq([{running_only: false, json: false, git: true}, {running_only: false, json: true, git: true}])
+    end
+
+    it "rejects an unknown option to list as a usage error and lists nothing" do
+      expect { cli.run(["projects", "list", "--bogus"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("--bogus")
+      expect(projects_command.calls).to be_empty
     end
 
     it "documents --git and --no-git in the projects help" do
@@ -9219,6 +9466,22 @@ RSpec.describe Workspace::CLI do
         expect(output.string).to include("--timeout DURATION", "default 5s")
       end
 
+      [%w[--help], %w[-h], %w[--yes --help], %w[app --yes -h]].each do |argv|
+        it "prints its page and removes nothing for 'projects kill #{argv.join(" ")}'" do
+          cli.run(["projects", "kill", *argv])
+
+          expect(output.string).to start_with("Usage: workspace projects kill")
+          expect(actions_command.calls).to be_empty
+        end
+      end
+
+      it "rejects an unknown option as a usage error and removes nothing" do
+        expect { cli.run(["projects", "kill", "app", "--bogus"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(error_output.string).to include("--bogus")
+        expect(actions_command.calls).to be_empty
+      end
+
       it "rejects a second argument" do
         expect { cli.run(["projects", "kill", "a", "b"]) }.to raise_error(FakeSystemExit)
 
@@ -9425,10 +9688,11 @@ RSpec.describe Workspace::CLI do
       expect(projects_command.calls).to be_empty
     end
 
-    it "prints the same help for `projects list --help`" do
+    it "prints the page of `projects list` for `projects list --help`" do
       cli.run(["projects", "list", "--help"])
 
-      expect(output.string).to include("A project is a repository's main checkout plus its linked git worktrees.")
+      expect(output.string).to include("Usage: workspace projects list [--running] [--git] [--json]", "--running")
+      expect(output.string).not_to include("Subcommands:")
       expect(projects_command.calls).to be_empty
     end
 
@@ -9819,6 +10083,27 @@ RSpec.describe Workspace::CLI do
         cli, _, error_output = build_test_cli(config: config)
         expect { cli.run(["pipeline", "status"]) }.to raise_error(FakeSystemExit)
         expect(error_output.string).to include("Usage: workspace pipeline status")
+      end
+
+      it "prints the reset page when reset has no project" do
+        cli, _, error_output = build_test_cli(config: config)
+        expect { cli.run(["pipeline", "reset"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Usage: workspace pipeline reset PROJECT")
+        expect(error_output.string).to include("Examples:")
+      end
+
+      it "prints the reset page when reset has extra arguments" do
+        cli, _, error_output = build_test_cli(config: config)
+        expect { cli.run(["pipeline", "reset", "myapp", "extra"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Usage: workspace pipeline reset PROJECT")
+        expect(error_output.string).to include("Examples:")
+      end
+
+      it "prints the advance page when advance has no --work-item" do
+        cli, _, error_output = build_test_cli(config: config)
+        expect { cli.run(["pipeline", "advance", "myapp"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Usage: workspace pipeline advance PROJECT")
+        expect(error_output.string).to include("Examples:")
       end
 
       it "shows a stage's deadline in local time plus how long remains" do
@@ -10224,13 +10509,13 @@ RSpec.describe Workspace::CLI do
     it "prints help for an unknown subcommand" do
       cli, _, error_output = build_test_cli(config: config)
       expect { cli.run(["pipeline", "nonsense"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("workspace pipeline <subcommand>")
+      expect(error_output.string).to include("Usage: workspace pipeline start PROJECT")
     end
 
     it "prints help with no subcommand" do
       cli, output, = build_test_cli(config: config)
       cli.run(["pipeline"])
-      expect(output.string).to include("workspace pipeline <subcommand>")
+      expect(output.string).to include("Usage: workspace pipeline start PROJECT")
     end
   end
 

@@ -8,7 +8,7 @@ Read a workspace's stages (`workspace spine`), set a stage's status, and start a
 
 ```sh
 workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]
-workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone) [--if-revision REV] [--json]
+workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone) [--if-revision REV] [--by LABEL] [--json]
 workspace spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--by LABEL] [--if-revision REV] [--json]
 ```
 

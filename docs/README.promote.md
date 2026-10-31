@@ -163,13 +163,19 @@ Promote moves files and the branch; the session that ran it knows the rest. The 
 ## Examples
 
 ```sh
-# See what would move, without writing anything
+# On a feature branch: move its commits and the checkout's changes into a new worktree workspace
+workspace promote
+
+# On the default branch: say what would move to a new branch fix-login, write nothing
+workspace promote fix-login --dry-run
+
+# The same, as one JSON document
 workspace promote fix-login --dry-run --json
 
-# Move the work, make a spine and plan, carry a note
+# Move it, make a spine and plan, copy one note, scripted
 workspace promote fix-login --title "Fix the login bug" --spine --plan --carry-note research-login.md --json
 
-# Move the current branch of the project "api" from any directory, then launch it
+# Move the branch the "api" checkout is on, from any directory, then launch the new workspace
 workspace promote --name api --launch
 
 # Print the seeding steps

@@ -91,8 +91,17 @@ workspace run 'rake spec'
 # Explicit project and pane
 workspace run scooter 'rake spec' --pane 1
 
-# Split a new pane and tail a log
-workspace run scooter 'tail -f log/development.log' --split
+# Run in a new pane below the bottommost
+workspace run scooter 'rake spec' --split
+
+# Run in a new pane beside the bottommost
+workspace run scooter 'bin/dev' --split --vertical
+
+# Check where the command would go before sending it
+workspace run scooter 'rake spec' --dry-run
+
+# Split a new pane, tail a log, and print an action document naming the pane
+workspace run scooter 'tail -f log/development.log' --split --json
 
 # Pre-fill a command without pressing Enter
 workspace run scooter 'bundle exec rails console' --no-enter
@@ -100,7 +109,7 @@ workspace run scooter 'bundle exec rails console' --no-enter
 # Run and wait for the result
 workspace run scooter 'rake spec' --wait
 
-# Wait with a shorter timeout
+# A script must block until the suite finishes, then act on its exit status (gives up after 60s)
 workspace run scooter 'rake spec' --wait --timeout 60
 
 # Run a command in a split pane and close the pane when done
@@ -114,7 +123,7 @@ workspace run scooter "claude -p 'find recent Slack @-mentions'" \
   --pipe "claude -p 'summarize and notify me'" \
   --split --wait --close
 
-# Multi-stage pipeline
+# Count the distinct errors in a log, with each stage checked for quoting
 workspace run scooter 'grep ERROR log/production.log' --pipe 'sort' --pipe 'uniq -c'
 ```
 

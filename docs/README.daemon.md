@@ -5,11 +5,11 @@ Inspect and control agent daemons from outside them: which are running, whether 
 ## Usage
 
 ```sh
-workspace daemon status [WORKSPACE] [--json]
-workspace daemon restart [WORKSPACE] [--wc-socket PATH] [--json]
+workspace daemon status [WORKSPACE] [--name NAME] [--json]
+workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]
 workspace daemon restart --all [--json]
 workspace daemon list [--json]
-workspace daemon log [WORKSPACE] [--lines N] [--json]
+workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]
 ```
 
 `list` and `restart --all` cover every running daemon and take no workspace. For the others, `WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. A workspace with no tmuxinator config is an `unknown_workspace` error (exit 1) for every subcommand.

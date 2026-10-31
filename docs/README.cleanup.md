@@ -35,7 +35,7 @@ If iTerm's windows cannot be listed (`window-tool` missing, failing, or printing
 ## Examples
 
 ```sh
-# List zombie sessions and ask for confirmation before removing
+# List zombie sessions and ask for confirmation before removing them from state
 workspace cleanup
 
 # Remove all zombie sessions immediately without confirmation

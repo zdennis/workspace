@@ -226,6 +226,9 @@ workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md" --json
 # Answer a permission prompt in pane %19 with a key, then confirm with Enter
 workspace agent-run send --name myapp --pane %19 --keys "y Enter"
 
+# Leave a draft in pane %19 without submitting it
+workspace agent-run send --name myapp --pane %19 --body "Fix the typo in" --no-enter
+
 # Interrupt whatever pane %19 is doing, as JSON
 workspace agent-run send --name myapp --pane %19 --keys Escape --json
 

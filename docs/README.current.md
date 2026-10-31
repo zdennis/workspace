@@ -21,7 +21,9 @@ Exits with an error if the current directory is not inside a workspace project.
 $ workspace current
 myproject
 
-# Use in scripts
-PROJECT=$(workspace current)
-workspace focus "$PROJECT"
+# Bring this workspace's window to the front from a script
+$ workspace current | xargs workspace focus
+
+# The root directory of the workspace you are in
+$ workspace current | xargs workspace dir
 ```

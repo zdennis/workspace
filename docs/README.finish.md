@@ -84,13 +84,16 @@ Error (nothing was removed):
 ## Examples
 
 ```sh
-# Finish the current worktree project (auto-detected from cwd)
+# Remove the worktree workspace you are in (session, worktree, config), once it is clean and pushed; the branch is kept
 workspace finish
 
-# Finish and open a PR first
+# Open (or reuse) a PR for the branch first, then remove the workspace
 workspace finish --pr
 
-# Finish a specific project, scripted
+# Finish a named worktree workspace, from anywhere
+workspace finish --name myproject.worktree-PROJ-123
+
+# The same, scripted
 workspace finish myproject.worktree-PROJ-123 --json
 ```
 

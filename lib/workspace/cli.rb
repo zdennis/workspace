@@ -241,6 +241,9 @@ module Workspace
       @logger.enable! if args.delete("--debug")
       @input.no_input! if take_no_input_flag!(args) && @input.respond_to?(:no_input!)
       settle_name_flags!(args)
+      plain = HelpJson.strip(args)
+      return run_help_json(plain) if plain
+
       subcommand = args.shift
       @logger.debug { "subcommand=#{subcommand} args=#{args.inspect}" }
 
@@ -398,8 +401,13 @@ module Workspace
 
             Print the workspace version.
 
-            Example:
-              workspace version
+            Prints "workspace" and the version number, for example "workspace X.Y.Z".
+            --version and -v print the same.
+
+            Examples:
+              workspace version    # which release is installed
+              workspace version | cut -d' ' -f2    # only the number, to compare in a script
+              workspace version >> bug-report.txt    # add the version to a bug report
           HELP
         else
           @output.puts "workspace #{Workspace::VERSION}"
@@ -432,6 +440,50 @@ module Workspace
     end
 
     private
+
+    # `--help --json`: runs the command without `--json`, so it prints its own help page, keeps
+    # that text (what it writes through the output and to `$stdout`, as OptionParser does) and
+    # prints it as one {HelpJson} document. A run that does not end in success (an unknown
+    # subcommand, say) keeps its status and prints its first line of text as one error document.
+    #
+    # @param args [Array<String>] the arguments without `--json`
+    def run_help_json(args)
+      buffer = StringIO.new
+      errors = StringIO.new
+      status = 0
+      saved = [$stdout, @error_output, @exit_handler]
+      begin
+        $stdout = buffer
+        @error_output = errors
+        @exit_handler = HelpJson::ExitRecorder
+        capture_output(buffer) { run(args) }
+      rescue HelpJson::Exit, SystemExit => e
+        status = e.status
+      ensure
+        $stdout, @error_output, @exit_handler = saved
+      end
+      if status.zero?
+        @output.puts JSON.generate(HelpJson.document(buffer.string))
+      else
+        message = (errors.string + buffer.string).lines.map(&:strip).find { |line| !line.empty? } || "help failed"
+        @output.puts JSON.generate(JsonEnvelope.error(JsonEnvelope::SCHEMA_VERSION, message, code: "usage"))
+        @exit_handler.exit(status)
+      end
+    end
+
+    # Points what the CLI and its collaborators print at +buffer+ while the block runs, through
+    # {OutputGate#divert_to}; a plain stream (a test double) is put behind a gate for the while.
+    def capture_output(buffer, &block)
+      return @output.divert_to(buffer, &block) if @output.respond_to?(:divert_to)
+
+      original = @output
+      @output = OutputGate.new(original)
+      begin
+        @output.divert_to(buffer, &block)
+      ensure
+        @output = original
+      end
+    end
 
     # The rescue funnel's output: with `--json` among the arguments, the
     # failure goes to stdout as one {JsonEnvelope} error document and stderr
@@ -663,6 +715,15 @@ module Workspace
         Environment variables:
           WORKSPACE_DEBUG   Enable debug output (same as --debug)
           WORKSPACE_NO_INPUT  Fail prompts instead of asking (same as --no-input; empty, 0 and false mean off)
+
+        Examples:
+          workspace doctor    # first run on a new machine: check the dependencies are installed
+          workspace list --all    # see which projects you can launch
+          workspace launch my-project    # open one project in an iTerm window
+          workspace start PROJ-123    # begin work on a ticket in its own worktree
+          workspace status    # which launched projects are still alive
+          workspace stop    # end the workspace you are standing in
+          workspace plan --help    # read the page of one subcommand
       HELP
     end
 
@@ -904,7 +965,7 @@ module Workspace
       title_from_ticket = false
       slug = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|branch>"
+        opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>"
         opts.separator ""
         opts.separator "Create a git worktree and launch it as a workspace project."
         opts.separator ""
@@ -1027,17 +1088,11 @@ module Workspace
         opts.separator "  workspace start '#471'    # check out PR 471 of the current repo, fork or not"
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
         opts.separator "  workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"    # point the agent at a library play"
-        opts.separator "  workspace start PROJ-123 --play kickoff,review    # two plays; --play kickoff --play review does the same"
         opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
-        opts.separator "  workspace start PROJ-123 --agent-kind codex    # the main agent pane runs Codex"
-        opts.separator "  workspace start PROJ-123 --recipe review-pass --agent-kind codex    # a saved start; the flag wins over the recipe"
+        opts.separator "  workspace start PROJ-123 --slug    # give the branch a readable name from the ticket title"
         opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
-        opts.separator "  workspace start PROJ-123 --spine=team    # also make the stages from the 'team' template"
         opts.separator "  workspace start PROJ-123 --plan --prompt \"Add SSO login\"    # the agent drafts a plan for that goal first"
-        opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
-        opts.separator "  workspace start PROJ-123 --slug    # branch and task title from the ticket: PROJ-123-fix-the-login-bug"
-        opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
-        opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"
+        opts.separator "  workspace start PROJ-123 --base main --headless --yes --json    # non-interactive, e.g. from CI, branching from main"
       end
       parser.parse!(args)
 
@@ -1196,10 +1251,11 @@ module Workspace
           "to stderr; a refusal is the error envelope with a retry hint") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace kill    # kill the current worktree project (auto-detected from cwd)"
-        opts.separator "  workspace kill myproject.worktree-PROJ-123    # kill a specific worktree project"
-        opts.separator "  workspace kill --name myproject.worktree-PROJ-123 --json    # the same, scripted"
+        opts.separator "  workspace kill    # after a confirmation, end the worktree workspace you are in: its session and git worktree, and the branch start made if it is merged"
+        opts.separator "  workspace kill myproject.worktree-PROJ-123    # the same for a named worktree workspace, from anywhere"
+        opts.separator "  workspace kill --name myproject.worktree-PROJ-123 --json    # the same, naming it with a flag; one action document (it still asks first)"
         opts.separator "  workspace kill -f myproject.worktree-PROJ-123    # skip confirmation and the unsaved-work check, and force-delete the branch start made"
+        opts.separator "  workspace kill -f --json myproject.worktree-PROJ-123    # scripted: no prompt, and the unsaved-work check is skipped too"
         opts.separator "  workspace kill --delete-remote    # also delete the branch on its remote"
       end
       parser.parse!(args)
@@ -1260,9 +1316,10 @@ module Workspace
         end
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace finish    # finish the current worktree project (auto-detected from cwd)"
-        opts.separator "  workspace finish --pr    # open (or reuse) a PR first"
-        opts.separator "  workspace finish myproject.worktree-PROJ-123 --json    # scripted; JSON on stdout"
+        opts.separator "  workspace finish    # remove the worktree workspace you are in (session, worktree, config), once it is clean and pushed; the branch is kept"
+        opts.separator "  workspace finish --pr    # open (or reuse) a PR for the branch first, then remove the workspace"
+        opts.separator "  workspace finish --name myproject.worktree-PROJ-123    # finish a named worktree workspace, from anywhere"
+        opts.separator "  workspace finish myproject.worktree-PROJ-123 --json    # the same, scripted; JSON on stdout"
       end
       parser.parse!(args)
       target = single_workspace_arg(args, name, "finish")
@@ -1370,13 +1427,15 @@ module Workspace
         opts.separator "Tile all active windows for a project across the screen."
         opts.separator "Auto-detects the project from the current directory if not specified."
         opts.separator "Matches the base project and all its worktree sessions."
+        opts.separator "Exits 1 when every matching project is headless: it has no window to tile."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--all", "Tile all active workspace projects") { all = true }
         opts.separator ""
-        opts.separator "Example:"
-        opts.separator "  workspace tile window-tool    # tiles window-tool + all window-tool.worktree-* windows"
-        opts.separator "  workspace tile --all          # tiles all active workspace windows"
+        opts.separator "Examples:"
+        opts.separator "  workspace tile    # tile the current directory's project and its worktrees side by side"
+        opts.separator "  workspace tile window-tool    # tile window-tool and all its window-tool.* worktree windows"
+        opts.separator "  workspace tile --all    # tile every active workspace window across the screen"
       end
       parser.parse!(args)
 
@@ -1497,9 +1556,14 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace run 'rake spec'    # bottommost pane, project auto-detected from cwd"
         opts.separator "  workspace run scooter 'rake spec' --pane 1    # explicit project and pane"
-        opts.separator "  workspace run scooter 'tail -f log/development.log' --split    # run in a new pane below"
         opts.separator "  workspace run scooter 'bundle exec rails console' --no-enter    # pre-fill without pressing Enter"
-        opts.separator "  workspace run scooter 'rake spec' --wait    # wait for the command and report its result"
+        opts.separator "  workspace run scooter 'rake spec' --split    # run in a new pane below the bottommost"
+        opts.separator "  workspace run scooter 'bin/dev' --split --vertical    # run in a new pane beside the bottommost"
+        opts.separator "  workspace run scooter 'rake spec' --wait --timeout 60    # a script must block until the suite finishes, then act on its exit status (gives up after 60s)"
+        opts.separator "  workspace run scooter 'rake spec' --split --wait --close    # run in a throwaway pane and close it when done"
+        opts.separator "  workspace run scooter 'grep ERROR log/production.log' --pipe 'sort' --pipe 'uniq -c'    # count the distinct errors in a log, with each stage checked for quoting"
+        opts.separator "  workspace run scooter 'rake spec' --dry-run    # check where the command would go before sending it"
+        opts.separator "  workspace run scooter 'tail -f log/development.log' --split --json    # print an action document naming the new pane"
       end
       parser.parse!(args)
 
@@ -1752,11 +1816,14 @@ module Workspace
         end
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace wait-until-content \"Listening on\" -- open http://localhost:3000"
-        opts.separator "  workspace wait-until-content scooter \"Ready to accept\" --pane 0 -- bin/console"
-        opts.separator "  workspace wait-until-content scooter \"WORKSPACE_DONE\" --pane \"Claude Code\" -- irb"
-        opts.separator "  workspace wait-until-content scooter \"namespace is running\" --since-start --max-wait-time 60 -- ./scripts/attach.sh"
-        opts.separator "  workspace wait-until-content scooter \"READY\" -e 'echo matched'"
+        opts.separator "  workspace wait-until-content \"Listening on\" -- open http://localhost:3000    # open the browser once the dev server is up, project auto-detected"
+        opts.separator "  workspace wait-until-content scooter \"Ready to accept\" -- bin/console    # explicit project, bottommost pane"
+        opts.separator "  workspace wait-until-content --name scooter \"Ready to accept\" -- bin/console    # a script keeps the project name apart from the text to match"
+        opts.separator "  workspace wait-until-content scooter \"Ready to accept\" --pane 0 --max-wait-time 120 -- bin/console    # watch pane 0, give up (exit 1) after 2 minutes"
+        opts.separator "  workspace wait-until-content scooter \"WORKSPACE_DONE\" --pane \"Claude Code\" -- irb    # watch the pane whose title matches"
+        opts.separator "  workspace wait-until-content scooter \"namespace is running\" --since-start --max-wait-time 60 -- ./scripts/attach.sh    # ignore output already in the scrollback"
+        opts.separator "  workspace wait-until-content scooter \"READY\" --lines 20 --interval 2 -- ./scripts/go.sh    # match the last 20 lines, poll every 2 seconds"
+        opts.separator "  workspace wait-until-content scooter \"READY\" -e 'echo matched && open http://localhost:3000'    # run more than one command once it matches"
       end
       parser.parse!(args)
 
@@ -1879,9 +1946,10 @@ module Workspace
           --json              Print one JSON document with the agent's reply; text goes to stderr
 
         Examples:
-          workspace agent run "Add OAuth support"
-          workspace agent run --name myapp --work-item WC-42 "Add OAuth support" --dry-run
-          workspace agentd myapp    # start the daemon for myapp
+          workspace agent run "Add OAuth support"    # send a prompt to the pipeline of the project in this directory
+          workspace agent run --name myapp --dry-run "Add OAuth support"    # show the message for a named workspace, send nothing
+          workspace agent status request --pane %19    # ask the agent in one pane for a status line
+          workspace agent executables --kind claude    # which claude program is on PATH and which one runs
       HELP
     end
 
@@ -1907,8 +1975,10 @@ module Workspace
         opts.separator "Errors: unknown_agent_kind (details.kind, details.known), unknown_workspace."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace agent executables"
-        opts.separator "  workspace agent executables --kind claude --name api --json"
+        opts.separator "  workspace agent executables    # every family's programs on PATH, the one each runs marked"
+        opts.separator "  workspace agent executables --kind claude    # only the claude family"
+        opts.separator "  workspace agent executables --name api --kind codex    # the program workspace api's settings pick for codex"
+        opts.separator "  workspace agent executables --json    # one JSON document, for a script"
       end
       parser.parse!(args)
       return @output.puts(parser.help) if help
@@ -1942,9 +2012,10 @@ module Workspace
           submitted: the request stays open, so check the pane before asking again.
 
         Examples:
-          workspace agent status request --name api --pane %19 --json
-          workspace agent status post --summary "Writing specs for the parser" --progress 3/7
-          workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Waiting on CI" --json
+          workspace agent status request --pane %19    # ask the agent in pane %19 for a status line
+          workspace agent status request --name api --pane 0.1 --json    # a named workspace, the pane as window.pane, JSON out
+          workspace agent status post --summary "Writing specs for the parser"    # an agent reports its own status
+          workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Waiting on CI" --progress 3/7    # answer a request
       HELP
     end
 
@@ -1954,7 +2025,7 @@ module Workspace
       when "request" then cmd_agent_status_request(args)
       when "post" then cmd_agent_status_post(args)
       when "help", nil
-        unless verb == "help" || args.include?("--help") || args.include?("-h")
+        unless verb == "help" || help_requested?(args)
           raise UsageError, "Missing agent status verb (request or post).\n\n#{agent_status_help}"
         end
         @output.puts agent_status_help
@@ -1972,7 +2043,8 @@ module Workspace
         opts.separator ""
         opts.separator "Ask the agent in one pane for a status line. The agent daemon types a fixed line"
         opts.separator "carrying a request id; the agent answers with `workspace agent status post --reply-to ID`."
-        opts.separator "Nothing is typed unless the pane can take text safely (see `agent status --help`)."
+        opts.separator "Nothing is typed unless the pane can take text safely (see `agent status --help`); when it can,"
+        opts.separator "the line is typed into that pane for real."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
@@ -1982,8 +2054,9 @@ module Workspace
         opts.separator "Exit codes: 0 typed and submitted; 1 refused or failed; 2 landed but not confirmed submitted."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace agent status request --name api --pane %19"
-        opts.separator "  workspace agent status request --pane=0.1 --json"
+        opts.separator "  workspace agent status request --pane %19    # ask the agent in pane %19 of the project in this directory"
+        opts.separator "  workspace agent status request --name api --pane 0.1    # a named workspace, the pane as window.pane"
+        opts.separator "  workspace agent status request --pane %19 --json    # one JSON document with the request id"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -2006,6 +2079,7 @@ module Workspace
         opts.separator ""
         opts.separator "Post this pane's status as an agent_status event line. Run by an agent in its own"
         opts.separator "tmux pane: the pane is $TMUX_PANE and the workspace is the one whose tmux session it is in."
+        opts.separator "Every post writes a line to the workspace's event log; outside a tmux pane it is refused (no_pane)."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--summary TEXT", "One line on what the agent is doing (required; cut to #{AgentStatusDesk::MAX_SUMMARY} characters)") { |v| summary = v }
@@ -2015,8 +2089,10 @@ module Workspace
         opts.on("--json", "Print one JSON document: the line as logged, plus truncated") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\" --task T3 --progress 3/7"
-        opts.separator "  workspace agent status post --reply-to=sr-0a1b2c3d4e5f --summary \"Waiting on CI\" --json"
+        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\"    # report what this pane is doing"
+        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\" --task T3 --progress 3/7    # with the task and steps done"
+        opts.separator "  workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary \"Waiting on CI\"    # answer a status request"
+        opts.separator "  workspace agent status post --summary \"Waiting on CI\" --json    # one JSON document, the line as logged"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -2113,7 +2189,8 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace agentd restart    # the project detected from the current directory"
-        opts.separator "  workspace agentd restart scooter --json"
+        opts.separator "  workspace agentd restart scooter --wc-socket /tmp/wc-dev.sock    # a named project, the new agent on another coordinator socket"
+        opts.separator "  workspace agentd restart scooter --json    # a named project, one JSON action document"
         opts.separator "  workspace agentd restart --name restart    # a workspace that is itself named restart"
       end
     end
@@ -2163,6 +2240,8 @@ module Workspace
       index = args.each_index.find { |i| !args[i].start_with?("-") && !(i.positive? && args[i - 1] == "--name") }
       subcommand = index && args[index]
       rest = index ? args[0...index] + args[(index + 1)..] : args
+      verb = (subcommand == "resolve") ? "answer" : subcommand
+      return if verb && verb_help_shown?(HelpPages::ASK, [verb, *rest])
 
       case subcommand
       when "list" then cmd_ask_list(rest)
@@ -2228,14 +2307,17 @@ module Workspace
         WORKSPACE_ALERT=question and the question/default in
         WORKSPACE_ALERT_* env vars. Without it, the question is just recorded.
 
+        Run `workspace ask VERB --help` for the page of one subcommand.
+
         Examples:
-          workspace ask "Use pg or sqlite for the cache?" --default "sqlite" --context "lib/cache.rb:12"
-          workspace ask list
-          workspace ask list myapp                  # another workspace's questions
-          workspace ask answer a1b2c3 "Use postgres instead"
-          workspace ask answer myapp a1b2c3 "Use postgres instead"
-          workspace ask withdraw a1b2c3             # the asker no longer needs an answer
-          workspace ask answer --deliver a1b2c3 -- yes    # also types it into the asking pane
+          workspace ask "Use pg or sqlite for the cache?" --default "sqlite"    # record a question and keep going with the default
+          workspace ask "Use pg or sqlite?" --default "sqlite" --context "lib/cache.rb:12"    # point at the code in question
+          workspace ask list    # open questions of this workspace
+          workspace ask list myapp --all    # another workspace's, answered and withdrawn ones too
+          workspace ask answer a1b2c3 "Use postgres instead"    # answer an open question
+          workspace ask answer --deliver a1b2c3 "yes"    # also type the answer into the pane that asked
+          workspace ask deliver a1b2c3    # type the saved answer again after a failed delivery
+          workspace ask withdraw a1b2c3    # the asker no longer needs an answer
       HELP
     end
 
@@ -2367,6 +2449,8 @@ module Workspace
 
     def cmd_inbox(args)
       subcommand = args.shift
+      return if subcommand && verb_help_shown?(HelpPages::INBOX, [subcommand, *args])
+
       case subcommand
       when "add" then cmd_inbox_add(args)
       when "list" then cmd_inbox_list(args)
@@ -2465,23 +2549,19 @@ module Workspace
           --json                 Print the documented JSON (see docs/README.inbox.md)
 
         A title or body with a control character (an escape sequence, NUL) is refused.
+        Run `workspace inbox VERB --help` for the page of one subcommand.
 
         Examples:
-          workspace inbox add "Check the deploy" --type todo
-          workspace inbox add "CI failed" --type alert --source-kind github_check --global --json
-          echo '{"title":"Check the deploy","type":"alert","scope":{"kind":"global"}}' | workspace inbox add --from-json -
-          workspace inbox list --all --state open,snoozed
-          workspace inbox list --all --include-derived --json
-          workspace inbox show a1b2c3d4e5
-          workspace inbox done a1b2c3d4e5 f6a7b8c9d0
-          workspace inbox dismiss a1b2c3d4e5 --json
-          workspace inbox edit a1b2c3d4e5 --title "Check the deploy again" --expires 2h
-          workspace inbox snooze a1b2c3d4e5 --for 2h
-          workspace inbox snooze a1b2c3d4e5 --until 2026-10-20T09:00:00Z --json
-          workspace inbox ack plan:blocked:api.fix
-          workspace inbox snooze 'pane:waiting:api.fix:%5' --for 1h
-          workspace inbox add "CI failed" --type alert --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
-          workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
+          workspace inbox add "Check the deploy"    # a to-do on this workspace's list
+          workspace inbox add "CI failed" --type alert --global    # an alert on the global list
+          workspace inbox add --from-json item.json    # take the whole item from a JSON file (- reads stdin)
+          workspace inbox list    # open items of this workspace, its project and the global list
+          workspace inbox list --all --include-derived --json    # every scope, plus what needs you now, as JSON
+          workspace inbox show a1b2c3d4e5    # one item, in any state
+          workspace inbox edit a1b2c3d4e5 --title "Check the deploy again"    # change an item
+          workspace inbox done a1b2c3d4e5 f6a7b8c9d0    # mark several items done
+          workspace inbox snooze a1b2c3d4e5 --for 2h    # hide an item for two hours
+          workspace inbox ack plan:blocked:api.fix    # hide a derived row until it changes
       HELP
     end
 
@@ -2655,6 +2735,8 @@ module Workspace
     end
 
     def cmd_lock(args)
+      return if verb_help_shown?(HelpPages::LOCK, args)
+
       case args.shift
       when "acquire" then cmd_lock_acquire(args)
       when "release" then cmd_lock_release(args)
@@ -2676,18 +2758,11 @@ module Workspace
         repository, keyed by its git common directory.
 
         Subcommands:
-          acquire <name> [options]   Acquire a lock, or wait for it
-          release [<name>|--all]     Release a lock this agent holds
-          status  [<name>]           Show holders and queues
-          clear   [<name>|--all]     Force-remove a lock's holder and queue
-                                     (devenv: also stops the dev env's process group).
-                                     Ordinary waiters are removed once the lock is
-                                     actually cleared, but stay queued if a kept
-                                     devenv holder can't be stopped; a queued
-                                     `dev up --force` is kept either way, not
-                                     removed.
-          instructions [<name>]      Print the prompt block that tells a coding
-                                     agent how to use the lock (default: edit)
+        #{HelpPages.overview_verbs(HelpPages::LOCK).join("\n")}
+
+        Run `workspace lock VERB --help` for a verb's options and examples.
+        `lock clear` removes a holder and its waiters for real; for devenv it also
+        stops the dev env's process group.
 
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
@@ -2746,25 +2821,22 @@ module Workspace
         automatically on SessionEnd and on a `/clear`'d SessionStart.
 
         Examples:
-          workspace lock acquire edit --wait --task "PROJ-12 fix login"
-          workspace lock release edit
-          workspace lock status
-          workspace lock clear edit
-          workspace lock instructions edit
+          workspace lock acquire edit    # take the edit lock, or exit 1 with an error if another agent holds it
+          workspace lock acquire edit --wait --task "PROJ-12 fix login"    # queue for the edit lock; blocks, so run it in the background
+          workspace lock acquire edit --max-wait 9m    # queue, but give up after 9 minutes with exit 75
+          workspace lock release edit   # give the edit lock back when the edits are done
+          workspace lock status    # every lock of this repository, with its holder and queue
+          workspace lock status edit --json    # the edit lock as JSON, for a script
+          workspace lock clear edit    # person only: remove a lost holder and its waiters for real
+          workspace lock instructions edit    # the prompt block to paste into an agent's instructions
       HELP
     end
 
     def cmd_lock_instructions(args)
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock instructions [<name>]"
-        opts.separator ""
-        opts.separator "Prints the prompt block that tells a coding agent how to use"
-        opts.separator "lock <name> (default: edit), for pasting into its instructions."
-      end
-      parser.parse!(args)
+      OptionParser.new.parse!(args)
 
       name = args.shift || "edit"
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::LOCK.fetch("instructions")).join("\n") if args.any?
 
       @lock_command.instructions(name)
     end
@@ -2776,17 +2848,16 @@ module Workspace
       poll = Commands::Lock::DEFAULT_POLL_SECONDS
       max_wait = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock acquire <name> [options]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
-        opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
-        opts.on("--poll DURATION", "Time between polls while waiting (e.g. \"5s\", or a plain number of seconds)") { |v| poll = parse_duration_option("--poll", v) }
-        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--task TEXT") { |v| task = v }
+        opts.on("--wait") { wait = true }
+        opts.on("--poll DURATION") { |v| poll = parse_duration_option("--poll", v) }
+        opts.on("--max-wait DURATION") { |v| max_wait = parse_duration_option("--max-wait", v) }
       end
       parser.parse!(args)
 
       name = args.shift
-      raise UsageError, parser.help if name.nil? || args.any?
+      raise UsageError, HelpPages.render(HelpPages::LOCK.fetch("acquire")).join("\n") if name.nil? || args.any?
 
       result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: working_dir_for(workspace))
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -2884,6 +2955,36 @@ module Workspace
       @exit_handler.exit(1)
     end
 
+    # Whether +args+ ask for help, so a verb shows its page before it parses or acts.
+    # Only the words before a `--` count, and with a +page+ the word after a flag
+    # that takes a value is that value, so `--note --help` stays literal.
+    def help_requested?(args, page = nil)
+      value_flags = page ? HelpPages.value_flags(page) : []
+      skip = false
+      args.each do |arg|
+        break if arg == "--"
+        if skip
+          skip = false
+        elsif ["--help", "-h"].include?(arg)
+          return true
+        else
+          skip = value_flags.include?(arg)
+        end
+      end
+      false
+    end
+
+    # Prints the page of the verb that leads +args+ when help is asked for, before
+    # anything is parsed or acted on. False when there is no verb or no request,
+    # so the bare command keeps its overview.
+    def verb_help_shown?(table, args)
+      _key, page = HelpPages.lookup(table, args)
+      return false unless page && help_requested?(args, page)
+
+      @output.puts HelpPages.render(page)
+      true
+    end
+
     # Whether --json was requested, even when the parse error happened before
     # OptionParser reached the --json flag (e.g. an unknown option listed
     # first). The JSON error contract must not depend on flag order.
@@ -2900,15 +3001,14 @@ module Workspace
       all = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock release [<name>|--all] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--all", "Release every lock this agent holds") { all = true }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--all") { all = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
 
       name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
+      raise UsageError, HelpPages.render(HelpPages::LOCK.fetch("release")).join("\n") if (!all && name.nil?) || (all && name) || args.any?
 
       run_action("lock release", json: json) do
         result = @lock_command.release(name, all: all, working_dir: working_dir_for(workspace))
@@ -2928,16 +3028,13 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock status [<name>] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.lock.md)") { json = true }
-        opts.separator ""
-        opts.separator "Audit trail: locks.jsonl next to locks.json; see docs/README.lock.md."
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
 
       name = args.shift
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::LOCK.fetch("status")).join("\n") if args.any?
 
       result = @lock_command.status(name, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -2951,16 +3048,16 @@ module Workspace
       all = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock clear [<name>|--all] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--all", "Clear every lock in this namespace") { all = true }
-        opts.on("--json", "Emit the documented JSON schema instead of text (see docs/README.lock.md)") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--all") { all = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
 
+      page = HelpPages.render(HelpPages::LOCK.fetch("clear")).join("\n")
       name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name)
-      raise UsageError, "workspace lock clear: too many arguments.\n\n#{parser.help}" if args.any?
+      raise UsageError, page if (!all && name.nil?) || (all && name)
+      raise UsageError, "workspace lock clear: too many arguments.\n\n#{page}" if args.any?
 
       result = @lock_command.clear(name, all: all, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -2970,6 +3067,8 @@ module Workspace
     end
 
     def cmd_dev(args)
+      return if verb_help_shown?(HelpPages::DEV, args)
+
       case args.shift
       when "up" then cmd_dev_up(args)
       when "down" then cmd_dev_down(args)
@@ -2997,11 +3096,11 @@ module Workspace
           workspace config set dev.ready_timeout 2m      (default: 120s)
 
         Subcommands:
-          up [WS] [options]      Start this worktree's dev env in a devenv tmux window
-          down [WS] [--force]    Stop this worktree's dev env (--force: another worktree's)
-          status [WS]            Show holder, branch, uptime, pane, readiness, and queue
-          wait [WS] [options]    Block until this worktree holds the dev env and it is ready
-          leave [WS]             Take this worktree out of the line for the dev env
+        #{HelpPages.overview_verbs(HelpPages::DEV).join("\n")}
+
+        Run `workspace dev VERB --help` for a verb's options and examples.
+        `up` starts the dev command for real; `down` and `up --force` stop a running dev
+        env for real (SIGTERM to its process group, SIGKILL after dev.stop_timeout).
 
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
@@ -3063,14 +3162,14 @@ module Workspace
               another `lock clear`/`dev down`/`dev up --force`
 
         Examples:
-          workspace dev up
-          workspace dev up --wait --max-wait 10m
-          workspace dev up --queue && workspace dev wait --max-wait 10m
-          workspace dev leave
-          workspace dev up --force
-          workspace dev status
-          workspace dev status myapp.worktree-fix
-          workspace dev down
+          workspace dev up    # start this worktree's dev env and wait until it is ready
+          workspace dev up --wait --max-wait 10m    # wait in line for another worktree's env, up to 10 minutes (exit 75)
+          workspace dev up --queue && workspace dev wait --max-wait 10m    # get in line at once, then block until ready (blocks: run it in the background)
+          workspace dev leave    # give up this worktree's place in the line
+          workspace dev up --force    # stop another worktree's env and start this one
+          workspace dev status    # who holds the dev env, for how long, and who is queued
+          workspace dev status api-fix    # the same, asked for a named workspace
+          workspace dev down    # stop this worktree's dev env
       HELP
     end
 
@@ -3083,18 +3182,17 @@ module Workspace
       queue = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev up [WS] [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
-        opts.on("--queue", "Queue like --wait but return at once; follow with `dev wait`") { queue = true }
-        opts.on("--force", "--takeover", "Stop another worktree's dev env, then start this one") { force = true }
-        opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
-        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--wait") { wait = true }
+        opts.on("--queue") { queue = true }
+        opts.on("--force", "--takeover") { force = true }
+        opts.on("--[no-]ready") { |v| ready = v }
+        opts.on("--max-wait DURATION") { |v| max_wait = parse_duration_option("--max-wait", v) }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("up")).join("\n") if args.any?
 
       run_action("dev up", json: json) do
         options = {wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: dev_working_dir(workspace)}
@@ -3120,15 +3218,14 @@ module Workspace
       max_wait = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev wait [WS] [--no-ready] [--max-wait DURATION] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
-        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75 and stays queued") { |v| max_wait = parse_duration_option("--max-wait", v) }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--[no-]ready") { |v| ready = v }
+        opts.on("--max-wait DURATION") { |v| max_wait = parse_duration_option("--max-wait", v) }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("wait")).join("\n") if args.any?
 
       run_action("dev wait", json: json) do
         result = @dev_command.wait(ready: ready, max_wait: max_wait, working_dir: dev_working_dir(workspace))
@@ -3142,13 +3239,12 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev leave [WS] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("leave")).join("\n") if args.any?
 
       run_action("dev leave", json: json) do
         result = @dev_command.leave(working_dir: dev_working_dir(workspace))
@@ -3162,14 +3258,13 @@ module Workspace
       force = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev down [WS] [--force] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--force", "Stop a dev env another worktree holds, and kill a process group left behind by a dead wrapper") { force = true }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--force") { force = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("down")).join("\n") if args.any?
 
       run_action("dev down", json: json) do
         result = @dev_command.down(force: force, working_dir: dev_working_dir(workspace))
@@ -3182,13 +3277,12 @@ module Workspace
       workspace = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev status [WS] [--json]"
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
-        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.dev.md)") { json = true }
+        opts.on("--name NAME") { |v| workspace = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       workspace = settle_name(args.shift) if args.size == 1 && workspace.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("status")).join("\n") if args.any?
 
       result = @dev_command.status(working_dir: dev_working_dir(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -3201,11 +3295,10 @@ module Workspace
     def cmd_dev_run(args)
       wait = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev __run [--wait]"
-        opts.on("--wait", "Queue for the devenv lock") { wait = true }
+        opts.on("--wait") { wait = true }
       end
       parser.parse!(args)
-      raise UsageError, parser.help if args.any?
+      raise UsageError, HelpPages.render(HelpPages::DEV.fetch("__run")).join("\n") if args.any?
 
       result = @dev_command.run(wait: wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -3231,6 +3324,7 @@ module Workspace
     def cmd_agent_run(args)
       body = nil
       dry_run = false
+      help = false
 
       # Peek for --body / --dry-run before deciding whether to dispatch to a
       # subcommand. OptionParser would consume them anyway; doing it here lets
@@ -3238,8 +3332,12 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.on("--body JSON", "Full message JSON to send directly (workspace read from message)") { |v| body = v }
         opts.on("--dry-run", "Print without sending") { dry_run = true }
+        opts.on("-h", "--help", "Show this help") { help = true }
       end
       parser.order!(args)  # stops at the first non-option so subcommand words survive
+
+      return @output.puts(agent_run_help) if help
+      return if verb_help_shown?(HelpPages::AGENT_RUN, args)
 
       if body
         return cmd_agent_run_raw(body, dry_run: dry_run)
@@ -3253,6 +3351,7 @@ module Workspace
       when "send" then cmd_agent_run_send(args)
       when "queue" then cmd_agent_run_queue(args)
       when "examples" then cmd_agent_run_examples
+      when "help" then @output.puts agent_run_help
       else
         raise UsageError, agent_run_help
       end
@@ -3283,66 +3382,24 @@ module Workspace
         Always prints the message being sent before sending it.
 
         Subcommands:
-          command    Send a "command" message (delivers work to the first pipeline stage)
-          inject     Send an "inject" message (steers a running work item)
-          restart    Clear the coding agent in one pane and type a fresh prompt into it
-          send       Type text or tmux keys into one named pane (straight through tmux; no daemon)
-          queue      List or cancel the prompts `send --when-idle` has queued (queue list, queue cancel; no daemon)
-          examples   Print all stock example messages without sending anything
+        #{HelpPages.overview_verbs(HelpPages::AGENT_RUN).join("\n")}
 
         Raw mode (paste a full message directly):
           --body JSON         Complete message JSON; workspace is read from the message
           --dry-run           Print without sending
 
-        Options (command):
-          --name NAME         Workspace name (default: detected from cwd)
-          --work-item REF     Work item reference, e.g. WC-42  (default: random UUID)
-          --body TEXT         Text to type into the first pipeline pane
-                              (default: "Begin work.")
-          --dry-run           Print the message without sending it
-
-        Options (inject):
-          --name NAME         Workspace name (default: detected from cwd)
-          --work-item REF     Work item reference  (required)
-          --body TEXT         Text to inject into the pane  (required)
-          --interrupt         Interrupt the running stage first (sends Ctrl-C)
-          --dry-run           Print the message without sending it
-
-        Options (restart; see `workspace agent-run restart --help`):
-          --name NAME         Workspace name (default: detected from cwd)
-          --pane PANE         Pane to restart: %12, 0.1, session:0.1, or a pane index  (required)
-          --prompt TEXT       Text typed once /clear is confirmed  (required)
-          --force             Restart even when a pipeline stage is running on the pane
-          --wait              Wait for the restart to finish and report how it went
-          --timeout DURATION  Longest wait for context usage to drop after /clear
-                              (e.g. "45s", or seconds); default 30s, at most 600s
-          --json              Print the result as JSON; errors as {"schema_version":1,"ok":false,"error":...}
-
-        Options (send; see `workspace agent-run send --help`):
-          --name NAME         Workspace name (default: detected from cwd)
-          --pane PANE         Pane to type into: a pane id (%19) or window.pane (0.1)  (required)
-          --body TEXT         Literal text to paste, then Enter  (one of --body/--keys)
-          --keys KEYS         Space-separated tmux key names: Escape, Enter, Up, C-c, y  (one of --body/--keys)
-          --no-enter          With --body, don't press Enter
-          --json              Print the result as JSON
-
-        Options (queue; see `workspace agent-run queue --help`):
-          queue list          [--name NAME] [--pane PANE] [--json]  What is queued, per pane
-          queue cancel        --id ID [--name NAME] [--json]  Take a queued prompt back; answers its text
+        Run `workspace agent-run VERB --help` for a verb's options.
 
         Examples:
-          workspace agent-run command --body "Add OAuth support"
-          workspace agent-run command --work-item WC-42 --body "Add OAuth support"
-          workspace agent-run command --name myapp --work-item WC-42 --body "Add OAuth support" --dry-run
-          workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"
-          workspace agent-run inject --work-item WC-42 --body "Stop and pivot to the auth approach" --interrupt
-          workspace agent-run restart --name myapp --pane 0.1 --prompt "Read HANDOFF.md and follow it." --wait
-          workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md" --json
-          workspace agent-run send --pane %19 --body "yes"
-          workspace agent-run send --pane %19 --keys Escape --json
-          workspace agent-run queue list --pane %19 --json
-          workspace agent-run queue cancel --id 3f9a2c41d07b5e88
-          workspace agent-run examples
+          workspace agent-run command --body "Add OAuth support"    # send a task to the current directory's workspace
+          workspace agent-run command --name myapp --dry-run    # see the message for a named workspace, send nothing
+          workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"    # steer a running work item
+          workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md"    # clear a pane's agent and give it a prompt
+          workspace agent-run send --pane %19 --body "yes"    # type into a pane and press Enter
+          workspace agent-run queue list    # what `send --when-idle` has queued
+          workspace agent-run queue cancel --id 3f9a2c41d07b5e88    # take a queued prompt back
+          workspace agent-run --body '{"type":"command","workspace":"myapp","work_item_ref":"WC-42","dispatch_id":"debug-1","body":"go"}' --dry-run    # a full message you wrote
+          workspace agent-run examples    # stock messages to copy, nothing sent
       HELP
     end
 
@@ -3390,6 +3447,13 @@ module Workspace
         opts.on("--dry-run", "Print the message without sending it") { dry_run = true }
         opts.on("--json", "Print one JSON document with the agent's reply (see docs/README.json.md) instead of",
           "text; the text goes to stderr. Exit 0 whatever the reply says: read reply.ok") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agent run Add OAuth support    # send the prompt to the project in this directory; no quotes needed"
+        opts.separator "  workspace agent run --name myapp \"Run the linter and report any issues\"    # a named workspace"
+        opts.separator "  workspace agent run --dry-run \"Add OAuth support\"    # print the message, send nothing"
+        opts.separator "  workspace agent run --work-item WC-42 \"Fix the flaky spec\"    # tie the prompt to a work item"
+        opts.separator "  workspace agent run --json \"Add OAuth support\"    # one JSON document with the reply; exits 0 whatever it says"
       end
       parser.parse!(args)
 
@@ -3476,42 +3540,22 @@ module Workspace
       json = false
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run restart --pane PANE --prompt TEXT [options]"
-        opts.separator ""
-        opts.separator "Clear the coding agent in one pane and give it a fresh prompt. The agent daemon"
-        opts.separator "first waits up to #{AgentRestart::QUIET_TIMEOUT}s (fixed, not bounded by --timeout) for the pane to go"
-        opts.separator "quiet, types /clear, then waits until the new session's first status-line render"
-        opts.separator "confirms the clear, then types the prompt. --timeout only bounds that confirm step."
-        opts.separator "If the clear can't be confirmed, the prompt is not typed. An agent can run this on"
-        opts.separator "its own pane and end its turn: the daemon types from outside the pane. Only Claude"
-        opts.separator "panes are accepted (other agents fail with code unsupported_agent). Needs context"
-        opts.separator "readings, so `workspace statusline` must be installed as Claude's statusLine."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--pane PANE", "Pane to restart: a pane id (%12), window.pane (0.1),",
-          "session:window.pane, or a pane index in window 0 (required)") { |v| pane = v }
-        opts.on("--prompt TEXT", "Text typed once /clear is confirmed (required)") { |v| prompt = v }
-        opts.on("--force", "Restart even when a pipeline stage is running on the pane") { force = true }
-        opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
-        opts.on("--timeout DURATION", "Longest wait for context usage to drop after /clear",
-          "(e.g. \"45s\", or seconds); default #{AgentRestart::CONFIRM_TIMEOUT}s, at most " \
-          "#{Commands::Agent::MAX_RESTART_TIMEOUT}s") do |v|
-          timeout = parse_duration_option("--timeout", v, positive: true)
-        end
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent-run restart --name myapp --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait"
-        opts.separator "  workspace agent-run restart --pane %18 --prompt \"Resume from HANDOFF.md\" --json"
+        opts.on("--name NAME") { |v| name = v }
+        opts.on("--pane PANE") { |v| pane = v }
+        opts.on("--prompt TEXT") { |v| prompt = v }
+        opts.on("--force") { force = true }
+        opts.on("--wait") { wait = true }
+        opts.on("--timeout DURATION") { |v| timeout = parse_duration_option("--timeout", v, positive: true) }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      page = HelpPages.render(HelpPages::AGENT_RUN.fetch("restart")).join("\n")
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
 
       name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{parser.help}" if pane.nil? || pane.strip.empty?
-      raise UsageError, "Missing --prompt.\n\n#{parser.help}" if prompt.nil? || prompt.strip.empty?
+      raise UsageError, "Missing workspace name (pass --name).\n\n#{page}" if name.nil?
+      raise UsageError, "Missing --pane.\n\n#{page}" if pane.nil? || pane.strip.empty?
+      raise UsageError, "Missing --prompt.\n\n#{page}" if prompt.nil? || prompt.strip.empty?
       if timeout && timeout > Commands::Agent::MAX_RESTART_TIMEOUT
         raise UsageError, "--timeout: at most #{Commands::Agent::MAX_RESTART_TIMEOUT}s"
       end
@@ -3540,77 +3584,36 @@ module Workspace
       json = false
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run send --pane PANE (--body TEXT | --keys KEYS) [options]"
-        opts.separator ""
-        opts.separator "Type into one pane of a workspace's tmux session, straight through tmux (no agent daemon)."
-        opts.separator "The pane is always named: a pane id (%19, from `workspace sessions --json`) or window.pane"
-        opts.separator "(0.1). It is checked against the workspace's own tmux session first, so a wrong or stale"
-        opts.separator "pane is an error, never a different pane."
-        opts.separator ""
-        opts.separator "  --body TEXT  pastes TEXT literally (no key names are interpreted), then presses Enter."
-        opts.separator "  --keys KEYS  sends tmux key names, never text and never an implicit Enter: add Enter"
-        opts.separator "               yourself (\"Escape\", \"Up Up Enter\", \"C-c\", \"y\"). Anything that isn't a key"
-        opts.separator "               name is refused before the first key is sent."
-        opts.separator ""
-        opts.separator "  --when-idle  hands --body to the workspace's agent daemon instead: typed now if the agent's"
-        opts.separator "               turn has ended, else queued and typed (paste, then Enter) when it ends, one"
-        opts.separator "               prompt per turn end, in order. Claude Code panes only; a pane waiting on a"
-        opts.separator "               person is refused (pane_waiting), and so is a 9th queued prompt (queue_full)."
-        opts.separator "  --clear-first  types the agent's clear (/clear) first and waits up to 15s for its hooks to report"
-        opts.separator "               the new conversation (SessionStart, source clear), then the text. Claude Code panes"
-        opts.separator "               with hooks only (else clear_unsupported). With --when-idle it waits for the turn to"
-        opts.separator "               end; without, a pane mid-turn, with a draft or with prompts queued is refused"
-        opts.separator "               (pane_busy). Not confirmed: nothing more"
-        opts.separator "               is typed (clear_unconfirmed, exit 75, details.clear_typed)."
-        opts.separator "  --interrupt  with --body, in one call: presses the agent's interrupt key (Escape), waits up to 15s"
-        opts.separator "               for its prompt to come back, then types the text. The agent daemon does all three"
-        opts.separator "               under its delivery lock, so no other writer types in between. Claude Code panes"
-        opts.separator "               only (unsupported_agent, no_interrupt_key); prompt not back in time: not_ready,"
-        opts.separator "               nothing typed. Not with --keys, --no-enter, --when-idle or --clear-first."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--pane PANE", "Pane id (%19) or window.pane (0.1)  (required)") { |v| pane = v }
-        opts.on("--body TEXT", "Literal text to paste, then Enter") { |v| body = v }
-        opts.on("--keys KEYS", "Space-separated tmux key names") { |v| keys = v }
-        opts.on("--no-enter", "With --body, paste the text without pressing Enter") { no_enter = true }
-        opts.on("--when-idle", "With --body, type it once the agent's turn ends (queued by the agent daemon)") { when_idle = true }
-        opts.on("--clear-first", "With --body, clear the conversation and confirm it before typing (agent daemon)") { clear_first = true }
-        opts.on("--interrupt", "With --body, interrupt the agent, wait for its prompt, then type (agent daemon)") { interrupt = true }
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
-        opts.separator ""
-        opts.separator "Exit codes: 0 delivered (or, with --when-idle, queued); 1 not delivered (safe to resend), refused or"
-        opts.separator "  bad input, except --when-idle's connection_failed with details.maybe_delivered (check first);"
-        opts.separator "  2 text landed but wasn't confirmed submitted (check the pane before resending);"
-        opts.separator "  75 --clear-first typed the clear but it wasn't confirmed, so the text wasn't typed (check, then retry)."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent-run send --name api --pane %19 --body \"yes\""
-        opts.separator "  workspace agent-run send --name api --pane %19 --keys Escape --json"
-        opts.separator "  workspace agent-run send --pane 0.1 --keys \"Up Enter\""
-        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Now run the specs\" --when-idle --json"
-        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Start on the docs\" --when-idle --clear-first --json"
-        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Stop; do this instead\" --interrupt --json"
+        opts.on("--name NAME") { |v| name = v }
+        opts.on("--pane PANE") { |v| pane = v }
+        opts.on("--body TEXT") { |v| body = v }
+        opts.on("--keys KEYS") { |v| keys = v }
+        opts.on("--no-enter") { no_enter = true }
+        opts.on("--when-idle") { when_idle = true }
+        opts.on("--clear-first") { clear_first = true }
+        opts.on("--interrupt") { interrupt = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      page = HelpPages.render(HelpPages::AGENT_RUN.fetch("send")).join("\n")
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
 
       name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{parser.help}" if pane.nil? || pane.strip.empty?
-      raise UsageError, "Pass --body or --keys, not both.\n\n#{parser.help}" if body && keys
-      raise UsageError, "Missing --body or --keys.\n\n#{parser.help}" if body.nil? && keys.nil?
-      raise UsageError, "--body can't be empty.\n\n#{parser.help}" if body && body.empty?
-      raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{parser.help}" if no_enter && keys
+      raise UsageError, "Missing workspace name (pass --name).\n\n#{page}" if name.nil?
+      raise UsageError, "Missing --pane.\n\n#{page}" if pane.nil? || pane.strip.empty?
+      raise UsageError, "Pass --body or --keys, not both.\n\n#{page}" if body && keys
+      raise UsageError, "Missing --body or --keys.\n\n#{page}" if body.nil? && keys.nil?
+      raise UsageError, "--body can't be empty.\n\n#{page}" if body && body.empty?
+      raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{page}" if no_enter && keys
       [["--when-idle", when_idle], ["--clear-first", clear_first]].each do |flag, given|
-        raise UsageError, "#{flag} takes --body, not --keys.\n\n#{parser.help}" if given && keys
-        raise UsageError, "#{flag} always presses Enter; drop --no-enter.\n\n#{parser.help}" if given && no_enter
+        raise UsageError, "#{flag} takes --body, not --keys.\n\n#{page}" if given && keys
+        raise UsageError, "#{flag} always presses Enter; drop --no-enter.\n\n#{page}" if given && no_enter
       end
       if interrupt
-        raise UsageError, "--interrupt takes --body, not --keys.\n\n#{parser.help}" if keys
-        raise UsageError, "--interrupt always presses Enter; drop --no-enter.\n\n#{parser.help}" if no_enter
+        raise UsageError, "--interrupt takes --body, not --keys.\n\n#{page}" if keys
+        raise UsageError, "--interrupt always presses Enter; drop --no-enter.\n\n#{page}" if no_enter
         if when_idle || clear_first
-          raise UsageError, "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first.\n\n#{parser.help}"
+          raise UsageError, "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first.\n\n#{page}"
         end
       end
       raise Error, "workspace agent-run send is not available in this build" unless @send_command
@@ -3625,26 +3628,7 @@ module Workspace
     end
 
     def agent_run_queue_help
-      <<~HELP
-        Usage: workspace agent-run queue list [--name NAME] [--pane PANE] [--json]
-               workspace agent-run queue cancel --id ID [--name NAME] [--json]
-
-        What `agent-run send --when-idle` has queued, and taking an entry back. Both read the
-        queue file directly, so they work with no agent daemon running.
-
-        list    One row per queued prompt: pane_id, position (from 1, within the pane), state
-                (queued or delivering), queued_at, clear_first, a 200-character preview and the
-                full length. Rows come grouped by pane, the pane with the oldest entry first.
-                --pane takes a pane id (%19, matched as given, no tmux call) or window.pane (0.1).
-        cancel  Removes a queued prompt and answers its full text. A prompt the daemon has claimed
-                but not started to paste is stopped before anything is typed. One already being
-                typed, already typed, or unknown is unknown_id (details.state "delivering" when it
-                is being typed). Without --name every workspace's queue is searched.
-
-        Examples:
-          workspace agent-run queue list --name api --json
-          workspace agent-run queue cancel --id 3f9a2c41d07b5e88 --json
-      HELP
+      HelpPages.render(HelpPages::AGENT_RUN.fetch("queue")).join("\n") + "\n"
     end
 
     def cmd_agent_run_queue(args)
@@ -3698,61 +3682,21 @@ module Workspace
 
     def handoff_help
       <<~HELP
-        Usage: workspace handoff check NAME [options]
-               workspace handoff new NAME [--handoff-doc PATH|--handoff-prompt TEXT] [options]
+        #{HelpPages.overview_usage(HelpPages::HANDOFF)}
 
         Watches a coding agent's context-window usage and hands off to a fresh
         conversation before it fills up: `check` tells the agent to save its state
         once usage crosses a threshold, `new` clears the conversation and resumes it
         (the same flow as `workspace agent-run restart`).
 
-        NAME defaults to the workspace detected from the current directory.
-
-        With neither --handoff-doc nor --handoff-prompt, both use the workspace's plan
-        (IMPLEMENTATION_PLAN.md) when its notes directory has one, else HANDOFF.md there
-        (`check` makes the directory first); `new` also binds the pane to the
-        implementation-plan play when the plan is the doc. If the notes
-        directory can't be worked out, `check` lets the agent pick a path and `new`
-        fails with notes_dir_unresolved: pass --handoff-doc then.
-
-        Options (check):
-          --pane PANE            tmux pane id ('%19'; "$TMUX_PANE" inside the pane),
-                                  window.pane (1.0), or a pane index in window 0
-                                  (default: the first Claude Code pane; `workspace
-                                  sessions NAME` lists panes). Must be a pane of
-                                  NAME's own tmux session
-          --threshold PCT        Context usage percent that triggers a handoff, 1-100
-                                  (default: handoff.threshold, or 11)
-          --context-pct N        Skip detection and use this value (0-100)
-          --handoff-doc PATH     Doc the agent updates and resumes from (default: the
-                                  plan, else HANDOFF.md, in the notes directory)
-          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
-          --json                 Print the result as JSON, with "next"
-                                  (continue, handoff or unknown) and "doc"
-
-        Options (new):
-          --pane PANE            tmux pane id ('%19'; "$TMUX_PANE" inside the pane),
-                                  window.pane (1.0), or a pane index in window 0
-                                  (default: the first Claude Code pane; `workspace
-                                  sessions NAME` lists panes). Must be a pane of
-                                  NAME's own tmux session
-          --handoff-doc PATH     Doc the agent reads and resumes from (default: the
-                                  plan, else HANDOFF.md, in the notes directory)
-          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
-          --wait                 Wait for the restart to finish and report how it
-                                  went (don't use this from the agent being restarted)
-          --json                 Print the result as JSON
-
-        Exit codes (check): 0 under the threshold, 1 at/over it (a save-state prompt
-        was sent), 2 when context usage can't be determined (nothing was sent).
+        #{HelpPages.overview_verbs(HelpPages::HANDOFF).join("\n")}
+        Run `workspace handoff VERB --help` for a verb's options.
 
         Examples:
-          workspace handoff check myapp                           # the doc is the plan, else HANDOFF.md
-          workspace handoff check myapp --handoff-doc HANDOFF.md
-          workspace handoff check myapp --pane 2 --threshold 20 --json    # for scripting
-          workspace handoff new myapp --pane 1 --handoff-doc HANDOFF.md    # without going through check
-          workspace handoff check myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md    # an agent, on its own pane
-          workspace handoff new myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md
+          workspace handoff check    # this project's agent: a save-state prompt only if it is over the threshold
+          workspace handoff check myapp --threshold 20 --json    # a named workspace, for a script
+          workspace handoff new    # restart the first Claude Code pane (else Codex) of this project, which may not be yours
+          workspace handoff new myapp --pane "$TMUX_PANE"    # an agent restarting its own pane
       HELP
     end
 
@@ -3762,8 +3706,9 @@ module Workspace
       original_args = args.dup
       subcommand = args.shift
       case subcommand
-      when "check" then cmd_handoff_check(args)
-      when "new" then cmd_handoff_new(args)
+      when "check", "new"
+        send(:"cmd_handoff_#{subcommand}", args) unless verb_help_shown?(HelpPages::HANDOFF, [subcommand, *args])
+      when "help", "--help", "-h" then @output.puts handoff_help
       else
         raise UsageError, handoff_help
       end
@@ -3781,31 +3726,30 @@ module Workspace
       json = false
       name_opt = nil
 
+      page = HelpPages.render(HelpPages::HANDOFF.fetch("check")).join("\n")
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace handoff check [NAME] [options]"
-        opts.on("--name WS", "The workspace, as an option (same as the positional NAME; default: the current directory's)") { |v| name_opt = v }
-        opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
-          "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
-        opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
-        opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
-        opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from (default: the plan, else HANDOFF.md, in the notes directory)") { |v| handoff_doc = v }
-        opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
+        opts.on("--name WS") { |v| name_opt = v }
+        opts.on("--pane PANE") { |v| pane = v }
+        opts.on("--threshold PCT") { |v| threshold = v }
+        opts.on("--context-pct N", Integer) { |v| context_pct = v }
+        opts.on("--handoff-doc PATH") { |v| handoff_doc = v }
+        opts.on("--handoff-prompt TEXT") { |v| handoff_prompt = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
+      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{page}" if handoff_doc && handoff_prompt
       if threshold
         begin
           threshold = HandoffConfig.parse_threshold(threshold)
         rescue ArgumentError => e
-          raise UsageError, "--threshold #{e.message}\n\n#{parser.help}"
+          raise UsageError, "--threshold #{e.message}\n\n#{page}"
         end
       end
 
       name = pick_workspace_name(name_opt, args.shift)
       name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Missing workspace name.\n\n#{page}" if name.nil?
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
       raise Error, "workspace handoff is not available in this build" unless @handoff_command
 
       result = @handoff_command.check(name: name, pane: pane, threshold: threshold, context_pct: context_pct,
@@ -3824,23 +3768,22 @@ module Workspace
       json = false
       name_opt = nil
 
+      page = HelpPages.render(HelpPages::HANDOFF.fetch("new")).join("\n")
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace handoff new [NAME] [options]"
-        opts.on("--name WS", "The workspace, as an option (same as the positional NAME; default: the current directory's)") { |v| name_opt = v }
-        opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
-          "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
-        opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from (default: the plan, else HANDOFF.md, in the notes directory)") { |v| handoff_doc = v }
-        opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
-        opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
+        opts.on("--name WS") { |v| name_opt = v }
+        opts.on("--pane PANE") { |v| pane = v }
+        opts.on("--handoff-doc PATH") { |v| handoff_doc = v }
+        opts.on("--handoff-prompt TEXT") { |v| handoff_prompt = v }
+        opts.on("--wait") { wait = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
+      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{page}" if handoff_doc && handoff_prompt
 
       name = pick_workspace_name(name_opt, args.shift)
       name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Missing workspace name.\n\n#{page}" if name.nil?
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
       raise Error, "workspace handoff is not available in this build" unless @handoff_command
 
       result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, wait: wait, json: json)
@@ -3968,6 +3911,8 @@ module Workspace
 
       # With --json the notice is in an action document's `warnings` instead, and stderr stays empty.
       @error_output.puts "Warning: #{PIPELINE_DEPRECATION}" if %w[start advance status reset].include?(subcommand) && !rest.include?("--json")
+      return if subcommand && verb_help_shown?(HelpPages::PIPELINE, [subcommand, *rest])
+
       case subcommand
       when "start" then cmd_pipeline_start(rest)
       when "advance" then cmd_pipeline_advance(rest)
@@ -3985,36 +3930,22 @@ module Workspace
 
     def pipeline_help
       <<~HELP
-        Usage: workspace pipeline <subcommand> [options]
+        #{HelpPages.overview_usage(HelpPages::PIPELINE)}
 
         Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
         and shows where a run is stuck. `pipeline` will be removed in a later release.
 
-        Subcommands:
-          start <project> --work-item REF    Send a work item into the project's pipeline
-          advance <project> --work-item REF  Mark the running stage complete and move on
-          status <project>                   Show what the project has in flight
-          reset <project>                    Clear a stopped project's pipeline state
-
-        Options:
-          --work-item REF   Work item reference (e.g. WC-42)
-          --body TEXT       Message body to send (start/advance)
-          --json            Print JSON: the status (status), or an action document (start, advance, reset)
-
-        'advance' marks the running stage complete even if it has not finished.
+        #{HelpPages.overview_verbs(HelpPages::PIPELINE).join("\n")}
 
         Examples:
-          workspace pipeline status myapp    # what is myapp working on?
-          workspace pipeline status myapp --json    # same, for a script
-          workspace pipeline start myapp --work-item WC-42 --body "/build add OAuth support"
-          workspace pipeline advance myapp --work-item WC-42    # push a work item through by hand
-          workspace pipeline reset myapp    # clear leftover state after stopping the agent
+        #{HelpPages.overview_examples(HelpPages::PIPELINE).join("\n")}
+          workspace pipeline start --help    # read the page of one subcommand
       HELP
     end
 
     def cmd_pipeline_start(args)
       project, work_item, body, json = parse_pipeline_args(args, "start")
-      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
+      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_page("start")}" if project.nil? || work_item.nil?
 
       run_action("pipeline start", json: json) do
         reply = send_to_agent(project,
@@ -4035,7 +3966,7 @@ module Workspace
     # token and the new stage ignores it, rather than being ended unasked.
     def cmd_pipeline_advance(args)
       project, work_item, body, json = parse_pipeline_args(args, "advance")
-      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
+      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_page("advance")}" if project.nil? || work_item.nil?
 
       run_action("pipeline advance", json: json) do
         token = read_pipeline_state(project).dig(work_item, "sentinel_token")
@@ -4059,12 +3990,11 @@ module Workspace
     def cmd_pipeline_status(args)
       as_json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pipeline status <project>"
-        opts.on("--json", "Print JSON ({schema_version, ok, entries}; failures print {schema_version, ok: false, error, code}) instead of a table") { as_json = true }
+        opts.on("--json") { as_json = true }
       end
       parser.parse!(args)
       project = args.shift
-      raise UsageError, parser.help if project.nil?
+      raise UsageError, pipeline_page("status") if project.nil?
 
       entries = read_pipeline_state(project)
       return @output.puts JSON.generate({"schema_version" => PIPELINE_JSON_SCHEMA_VERSION, "ok" => true, "entries" => entries.values}) if as_json
@@ -4113,12 +4043,11 @@ module Workspace
     def cmd_pipeline_reset(args)
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pipeline reset <project> [--json]"
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text") { json = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       project = args.shift
-      raise UsageError, "Usage: workspace pipeline reset <project> [--json]" if project.nil? || args.any?
+      raise UsageError, pipeline_page("reset") if project.nil? || args.any?
 
       run_action("pipeline reset", json: json) do
         if agent_running?(project)
@@ -4133,20 +4062,24 @@ module Workspace
       end
     end
 
-    def parse_pipeline_args(args, subcommand)
+    def parse_pipeline_args(args, verb)
       work_item = nil
       body = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pipeline #{subcommand} <project> --work-item REF [--json]"
-        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
-        opts.on("--body TEXT", "Message body") { |v| body = v }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text") { json = true }
+        opts.on("--work-item REF") { |v| work_item = v }
+        opts.on("--body TEXT") { |v| body = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       project = args.shift
-      raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{pipeline_page(verb)}" if args.any?
       [project, work_item, body, json]
+    end
+
+    # The page of one pipeline verb, as text.
+    def pipeline_page(verb)
+      HelpPages.render(HelpPages::PIPELINE.fetch(verb)).join("\n")
     end
 
     def send_to_agent(project, message)
@@ -4185,6 +4118,8 @@ module Workspace
         opts.separator "  workspace run-and-report 'echo hello'    # run a command and capture its output"
         opts.separator "  workspace run-and-report 'rake spec'    # check the exit code in a script via $?"
         opts.separator "  workspace run-and-report 'bundle exec rspec' | jq '.status'    # parse the JSON result"
+        opts.separator "  workspace run-and-report 'rake spec' | jq -r '.stderr'    # read only what the command wrote to stderr"
+        opts.separator "  workspace run-and-report 'exit 3'    # a failing command: the JSON says status 3 and workspace exits 3"
       end
       parser.parse!(args)
 
@@ -4206,6 +4141,11 @@ module Workspace
         opts.separator "Internal command called by the --wait shell wrapper."
         opts.separator "Reads <uuid>.stdout and <uuid>.stderr from the run results directory,"
         opts.separator "writes the complete JSON result file, and exits 0."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 $?    # the line the --wait wrapper script runs after the command"
+        opts.separator "  workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 0    # record a run that exited 0"
+        opts.separator "  workspace report-run-status 6ba7b810-9dad-11d1-80b4-00c04fd430c8 1    # record a run that failed with status 1; this command still exits 0"
       end
       parser.parse!(args)
 
@@ -4244,6 +4184,7 @@ module Workspace
 
     def cmd_layout(args)
       subcommand = args.shift
+      return if verb_help_shown?(HelpPages::LAYOUT, [subcommand, *args].compact)
       name_opt = take_name_option!(args)
 
       case subcommand
@@ -4431,22 +4372,15 @@ module Workspace
 
     def review_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace review [show] [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]\n       workspace review list [PROJECT] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::REVIEW)
         opts.separator ""
         opts.separator "Collect what you need to review a coding agent's finished work. A workspace is ready"
         opts.separator "when its agent is done (the Stop hook fired and no pane is working or waiting) and its"
         opts.separator "branch has commits its base branch (origin's default branch) lacks. A stopped workspace"
         opts.separator "is judged by its agent's last recorded state (agent_state_source \"recorded\" in --json)."
         opts.separator ""
-        opts.separator "  show [WORKSPACE]  One workspace's packet: agent state, task, diffstat and commits against the"
-        opts.separator "                    base, the pull request and its checks (read with `gh pr view`), open"
-        opts.separator "                    questions, session count and the agent's last message. WORKSPACE"
-        opts.separator "                    defaults to the one for the current directory. A workspace named"
-        opts.separator "                    \"list\" is reviewed with `review show list`."
-        opts.separator "                    --patch adds the unified patch of the same range as the diffstat."
-        opts.separator "  list [PROJECT]    The project's workspaces that are ready. PROJECT is a project name, a"
-        opts.separator "                    member workspace name or a path; it defaults to the current directory's."
-        opts.separator "                    Runs git only for workspaces whose agent is done, and never calls gh."
+        HelpPages.overview_verbs(HelpPages::REVIEW).each { |line| opts.separator line }
+        opts.separator "Run `workspace review VERB --help` for a verb's options."
         opts.separator ""
         opts.separator "Reads only; nothing is written. A source that can't answer (no agent daemon, git or gh"
         opts.separator "failing or too slow) is reported as unavailable, never as clean."
@@ -4458,14 +4392,16 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace review list    # what is ready in this project"
-        opts.separator "  workspace review --patch --max-bytes 50000 --json    # the packet with the patch cut at 50000 bytes"
-        opts.separator "  workspace review my-app.worktree-fix-login --json"
         opts.separator "  workspace review    # the packet for the workspace in the current directory"
+        opts.separator "  workspace review list    # what is ready in this project"
+        opts.separator "  workspace review my-app.worktree-fix-login --json    # the packet for one workspace by name, as JSON"
+        opts.separator "  workspace review --patch --max-bytes 50000 --json    # the packet with the patch cut at 50000 bytes"
       end
     end
 
     def cmd_review(args)
+      return if verb_help_shown?(HelpPages::REVIEW, args)
+
       options = {json: false}
       given = args.dup
       parser = review_parser(options)
@@ -4502,22 +4438,11 @@ module Workspace
 
     def daemon_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace daemon status [WORKSPACE] [--json]\n" \
-          "       workspace daemon restart [WORKSPACE] [--wc-socket PATH] [--json]\n" \
-          "       workspace daemon restart --all [--json]\n" \
-          "       workspace daemon list [--json]\n" \
-          "       workspace daemon log [WORKSPACE] [--lines N] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::DAEMON)
         opts.separator ""
         opts.separator "Inspect or control a workspace's agent daemon (see `workspace agentd`)."
-        opts.separator "  status    whether the daemon answers on its socket, its pid, and its socket and log paths"
-        opts.separator "  restart   stop the daemon holding the socket (SIGTERM, even a hung one) and start a new one in the"
-        opts.separator "            background; a daemon run in a terminal is replaced by a detached one. With none"
-        opts.separator "            running, just start one"
-        opts.separator "            --all restarts every running daemon, one after another, so each runs the code that is"
-        opts.separator "            installed now; one that fails does not stop the rest, and the exit status is non-zero if any failed"
-        opts.separator "  list      every running daemon: its workspace, pid, start time and socket"
-        opts.separator "  log       the last lines of the log a background daemon writes; a daemon run in a"
-        opts.separator "            terminal logs to that terminal instead"
+        HelpPages.overview_verbs(HelpPages::DAEMON).each { |line| opts.separator line }
+        opts.separator "Run `workspace daemon VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--name NAME", "Workspace name (defaults to WORKSPACE or the project detected from the current directory)") { |v| options[:name] = v }
         opts.on("--lines N", Integer, "log: how many trailing lines (default #{Commands::Daemon::DEFAULT_LINES})") { |v| options[:lines] = v }
@@ -4527,15 +4452,17 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace daemon list"
-        opts.separator "  workspace daemon restart --all    # after installing a new version"
-        opts.separator "  workspace daemon status my-app"
-        opts.separator "  workspace daemon log my-app --lines 100"
-        opts.separator "  workspace daemon restart my-app --json"
+        opts.separator "  workspace daemon list    # every running daemon"
+        opts.separator "  workspace daemon status my-app    # is its daemon answering"
+        opts.separator "  workspace daemon log my-app --lines 100    # the last 100 lines of its log"
+        opts.separator "  workspace daemon restart my-app --json    # one JSON action document"
+        opts.separator "  workspace daemon restart --all    # SIGTERM each running daemon and start it again"
       end
     end
 
     def cmd_daemon(args)
+      return if verb_help_shown?(HelpPages::DAEMON, args)
+
       options = {json: false}
       given = args.dup
       parser = daemon_parser(options)
@@ -4620,25 +4547,11 @@ module Workspace
 
     def ui_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ui open task|review|plan [WORKSPACE] [--print] [--json]\n" \
-          "       workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]\n" \
-          "       workspace ui open pane [WORKSPACE] PANE [--print] [--json]\n" \
-          "       workspace ui open inbox [--print] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::UI)
         opts.separator ""
-        opts.separator "Open a view of the workspace UI through its workspace-ui:// link:"
-        opts.separator "  task WORKSPACE     workspace-ui://task/WORKSPACE"
-        opts.separator "  review WORKSPACE   workspace-ui://review/WORKSPACE"
-        opts.separator "  notes WORKSPACE    workspace-ui://notes/WORKSPACE, or .../REL when --path REL is given (an existing .md note in the notes directory)"
-        opts.separator "  plan WORKSPACE     workspace-ui://plan/WORKSPACE"
-        opts.separator "  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE"
-        opts.separator "                     (PANE is a tmux pane id such as %19; WORKSPACE may be left out as for the others)"
-        opts.separator "  inbox              workspace-ui://inbox"
+        HelpPages::UI["open"][:about].each { |line| opts.separator line }
         opts.separator ""
-        opts.separator "A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)"
-        opts.separator "defaults to the project detected from the current directory. Opening needs the UI app"
-        opts.separator "installed, since it registers the scheme; without it `open` fails, the exit status is 1, and"
-        opts.separator "--print still shows the link."
-        opts.separator ""
+        opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (every view but inbox)") { |v| options[:name] = v }
         opts.on("--path REL", "Note to open, relative to the notes directory (notes view only)") { |v| options[:path] = v }
         opts.on("--print", "Print the link and open nothing") { options[:print] = true }
@@ -4646,17 +4559,13 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace ui open task my-app"
-        opts.separator "  workspace ui open review my-app.worktree-fix-login"
-        opts.separator "  workspace ui open notes my-app"
-        opts.separator "  workspace ui open notes my-app --path payment-retries.md --print"
-        opts.separator "  workspace ui open plan my-app"
-        opts.separator "  workspace ui open pane my-app %19"
-        opts.separator "  workspace ui open inbox --print"
+        HelpPages::UI["open"][:examples].each { |command, scenario| opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}" }
       end
     end
 
     def cmd_ui(args)
+      return if verb_help_shown?(HelpPages::UI, args)
+
       options = {json: false, print: false}
       given = args.dup
       parser = ui_parser(options)
@@ -4702,9 +4611,7 @@ module Workspace
 
     def binding_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--pack NAME]... [options]\n" \
-          "       workspace binding show [--pane %ID] [--json]\n" \
-          "       workspace binding clear [--pane %ID] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::BINDING)
         opts.separator ""
         opts.separator "Bind a tmux pane to a workflow run, a PR review or a library play. When the agent"
         opts.separator "in a bound pane starts a session (startup, /clear, resume or compact), session-event"
@@ -4737,9 +4644,10 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace binding set my-app --pane %5 --kind run --id wr_01 --step implement --attempt 2"
-        opts.separator "  workspace binding show"
-        opts.separator "  workspace binding clear --pane %5"
+        HelpPages::BINDING.each_value do |page|
+          command, scenario = page[:examples].first
+          opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}"
+        end
       end
     end
 
@@ -4753,6 +4661,8 @@ module Workspace
     end
 
     def cmd_binding(args)
+      return if verb_help_shown?(HelpPages::BINDING, args)
+
       options = {json: false}
       given = args.dup
       parser = binding_parser(options)
@@ -4802,15 +4712,7 @@ module Workspace
 
     def library_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace library list [--kind KIND] [--global | --builtin | --project [NAME]] [--json]\n" \
-          "       workspace library show REF [--global | --builtin | --project [NAME]] [--json]\n" \
-          "       workspace library info REF [--global | --builtin | --project [NAME]] [--json]\n" \
-          "       workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]\n" \
-          "       workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]\n" \
-          "       workspace library installed [--name WS | --user] [--kind skill|agent] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::LIBRARY)
         opts.separator ""
         opts.separator "A store of named plays, prompts, recipes, agents and skills under #{@config.library_dir}."
         opts.separator "A play is a document an agent reads and follows; a prompt is short text sent as typed;"
@@ -4825,26 +4727,8 @@ module Workspace
         opts.separator "show search them last, so a project or global play of the same name comes first there;"
         opts.separator "`instructions compose --pack` always uses the built-in one."
         opts.separator ""
-        opts.separator "  list      every entry visible from here, sorted by kind then name"
-        opts.separator "  show      print the body, so --prompt \"$(workspace library show prompt/kickoff)\" works"
-        opts.separator "  info      kind, name, scope, path, link target, description, modified time, effective"
-        opts.separator "  add       copy PATH in (or link it with --link, or read - from stdin with --as NAME);"
-        opts.separator "            the name defaults to the file name in kebab case; identical content is a no-op,"
-        opts.separator "            different content under the same name needs --force"
-        opts.separator "  update    replace an existing entry's content, or repoint its link"
-        opts.separator "  remove    delete the entry or its link from the store; the source file is never touched"
-        opts.separator "  install   copy a library skill or agent into an existing workspace's checkout"
-        opts.separator "            (.claude/skills/NAME/ or .claude/agents/NAME.md unless library.install.skills_dir or"
-        opts.separator "            agents_dir says otherwise), as start --skill/--agent does for a new one: identical"
-        opts.separator "            content is unchanged, different content needs --force, a path the repo tracks is"
-        opts.separator "            never overwritten; the copy is listed in info/exclude. --user copies to your home-level"
-        opts.separator "            directory instead (library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default)."
-        opts.separator "            --from global|project copies that store's entry, not the project's over the global one"
-        opts.separator "  uninstall delete that copy from the checkout, or with --user from the home-level directory; a copy that"
-        opts.separator "            differs from the library entry needs --force; the library entry and the info/exclude line stay"
-        opts.separator "  installed list the copies install made in a workspace's checkout (--name WS, default: the current"
-        opts.separator "            directory's) or at user level (--user); read-only. A copy counts when its name is a library"
-        opts.separator "            entry's or the repo's info/exclude lists it; modified = differs from that entry"
+        HelpPages.overview_verbs(HelpPages::LIBRARY).each { |line| opts.separator line }
+        opts.separator "Run `workspace library VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--kind KIND", "agent, play, prompt, recipe, skill or spine (add: required; list: a filter);",
           "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt (for 'start --recipe');",
@@ -4864,19 +4748,16 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace library add --kind play --link ~/Notes/Agent\\ Orchestration\\ Playbook.md"
-        opts.separator "  workspace library add kickoff.md --kind prompt --project"
-        opts.separator "  workspace library list --kind play --json"
-        opts.separator "  workspace library add ~/Notes/spine-template --kind spine --as team --link"
-        opts.separator "  workspace start feature/x --prompt \"$(workspace library show prompt/kickoff)\""
-        opts.separator "  workspace library remove play/agent-orchestration-playbook --yes"
-        opts.separator "  workspace library install skill/write-tests --name my-app --json"
-        opts.separator "  workspace library uninstall skill/write-tests --name my-app"
-        opts.separator "  workspace library installed --name my-app --kind skill --json"
+        HelpPages::LIBRARY.each_value do |page|
+          command, scenario = page[:examples].first
+          opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}"
+        end
       end
     end
 
     def cmd_library(args)
+      return if verb_help_shown?(HelpPages::LIBRARY, args)
+
       options = {json: false, link: false, force: false, yes: false, dry_run: false, user: false}
       given = args.dup
       parser = library_parser(options)
@@ -4993,29 +4874,9 @@ module Workspace
 
     def instructions_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]\n       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::INSTRUCTIONS)
         opts.separator ""
-        opts.separator "Print the instructions an agent is given, built from library packs. A pack is a"
-        opts.separator "library play; workspace ships eight: binding (how to work in a bound pane),"
-        opts.separator "orchestrator (delegate to sub-agents), commits (how to commit), review (review a"
-        opts.separator "diff with reviewer sub-agents), notes (where working notes go), handoff (run"
-        opts.separator "'workspace handoff check' after every task), dev (queue for the shared dev"
-        opts.separator "environment before testing, release it when done) and implementation-plan"
-        opts.separator "(keep the counted task list in IMPLEMENTATION_PLAN.md). With no"
-        opts.separator "--pack, binding, orchestrator and commits are composed, in that order. Each"
-        opts.separator "pack is printed under a heading that names where it came from."
-        opts.separator ""
-        opts.separator "Any other library play can be named as a pack too: the project's library is searched,"
-        opts.separator "then global. A play named like a built-in pack never takes its place here; give your"
-        opts.separator "own another name. `workspace library list --builtin` lists the built-in packs and"
-        opts.separator "`workspace library show NAME --builtin` prints one."
-        opts.separator ""
-        opts.separator "Two packs get lines for the caller. binding is followed by the binding of --pane"
-        opts.separator "when that pane is bound, and commits by the project's commands.test and"
-        opts.separator "commands.lint when they are set (workspace config set commands.test ...)."
-        opts.separator "--pane defaults to $TMUX_PANE, the pane the command runs in, unless --name is given."
-        opts.separator "Text composed for another pane, as in start --prompt \"$(...)\", would carry this"
-        opts.separator "pane's binding: name the packs and leave binding out, or bind that pane first."
+        HelpPages::INSTRUCTIONS["compose"][:about].each { |line| opts.separator line }
         opts.separator ""
         opts.on("--pack NAME", "A pack to compose (repeatable, composed in the order given)") { |v| options[:packs] << v }
         opts.on("--pane PANE", "Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)") { |v| options[:pane] = v }
@@ -5027,15 +4888,15 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace instructions compose"
-        opts.separator "  workspace instructions compose --pack orchestrator"
-        opts.separator "  workspace instructions compose --pack commits --pack review --name my-app --json"
-        opts.separator "  workspace instructions compose --start --name my-app    # what start and launch send"
-        opts.separator "  workspace start feature/x --prompt \"$(workspace instructions compose --pack orchestrator)\""
+        HelpPages::INSTRUCTIONS["compose"][:examples].each do |command, scenario|
+          opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}"
+        end
       end
     end
 
     def cmd_instructions(args)
+      return if verb_help_shown?(HelpPages::INSTRUCTIONS, args)
+
       options = {json: false, packs: [], start: false, no_packs: false}
       given = args.dup
       parser = instructions_parser(options)
@@ -5066,21 +4927,7 @@ module Workspace
 
     def workflow_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace workflow show [ID] [--source] [--json]\n" \
-          "       workspace workflow validate PATH|- [--id ID] [--json]\n" \
-          "       workspace workflow add ID PATH|- [--dry-run] [--json]\n" \
-          "       workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]\n" \
-          "       workspace workflow remove ID [--yes] [--dry-run] [--json]\n" \
-          "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
-          "       workspace workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]\n" \
-          "                                [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]\n" \
-          "       workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--json]\n" \
-          "       workspace workflow events RUN [--since N] [--json]\n" \
-          "       workspace workflow files RUN [--json]\n" \
-          "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
-          "       workspace workflow cancel RUN [--json]\n" \
-          "       workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]\n" \
-          "       workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::WORKFLOW)
         opts.separator ""
         opts.separator "Run a workflow in a workspace: an ordered list of steps, each done by the agent in the"
         opts.separator "workspace's Claude pane. A step gets its instructions in a file under .workflow/ in the"
@@ -5094,50 +4941,8 @@ module Workspace
         opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml, then the presets that"
         opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix). See docs/README.workflow.md."
         opts.separator ""
-        opts.separator "  show      list the definitions, or print one (inputs, steps); --source gives the file's text, its sha256 and"
-        opts.separator "            its problems even when it is invalid (exit 0), for an editor"
-        opts.separator "  validate  check a definition's text (a file, or - for stdin) with the checks a definition on"
-        opts.separator "            disk gets, listing every problem at once; writes nothing. The id is --id, else"
-        opts.separator "            its id: key, else the file's name (stdin: \"stdin\"); a relative prompt_file: is"
-        opts.separator "            read from the file's directory (stdin: the current directory)"
-        opts.separator "  add       save a definition (a file, or - for stdin) as ID.yml in the directory above, after"
-        opts.separator "            the checks validate runs; refused with workflow_exists when that file is there."
-        opts.separator "            A preset of the same id is left alone and the copy shadows it. A relative"
-        opts.separator "            prompt_file: is read from that directory; --dry-run checks and writes no definition"
-        opts.separator "  update    replace your ID.yml (a file, or - for stdin) after the checks add runs, only if the"
-        opts.separator "            file's raw bytes still hash to --if-sha256 (from `show ID --source`; a broken"
-        opts.separator "            file can be replaced); refused with stale_workflow when it changed, builtin_workflow"
-        opts.separator "            for a preset with no file of yours; --dry-run checks and writes no definition"
-        opts.separator "  remove    delete your ID.yml (a link itself, never its target); asks first unless --yes or"
-        opts.separator "            --dry-run, and refuses with confirmation_required under --no-input; a preset of the"
-        opts.separator "            same id is then in effect again; unknown_workflow when you have no file,"
-        opts.separator "            builtin_workflow for a preset alone; --dry-run checks and deletes nothing"
-        opts.separator "  run       start a run in a workspace (the current one, or --name); --dry-run checks"
-        opts.separator "            the inputs, the project's commands and the pane, and starts nothing"
-        opts.separator "  start     make a workspace from a ticket or pull request REF (a JIRA key or URL, PR, issue or"
-        opts.separator "            branch) or from --prompt TEXT, wait for its agent, and run ID in it; --dry-run checks"
-        opts.separator "            everything and makes nothing; a fork's pull request, or a branch tracking another"
-        opts.separator "            repository, is refused with fork_pull_request before anything is made"
-        opts.separator "  status    the runs still going in this workspace (or --name WORKSPACE's), or one RUN,"
-        opts.separator "            or --project [NAME]'s: the main checkout and its worktrees, finished runs too,"
-        opts.separator "            or --all: every workspace, finished runs too. Each run shows its step and, when"
-        opts.separator "            it is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
-        opts.separator "            failed_check or pane_gone, with the commands that resolve it"
-        opts.separator "  events    a run's history (going or finished), one line per event: n (its line number), ts,"
-        opts.separator "            type and the rest; oldest first, at most 1000 after --since N (default 0); --json"
-        opts.separator "            adds truncated and next_since to continue from"
-        opts.separator "  files     the files a run keeps: each attempt's prompt and check log, each step's produces"
-        opts.separator "            entries, with whether each exists and its size (a link is reported, never followed)"
-        opts.separator "  resume    get a run going again: ask for its lock again, run a failed or undelivered"
-        opts.separator "            step again, look again at a step whose files were missing, or move it to the"
-        opts.separator "            workspace's Claude pane when its own is gone; --from STEP starts again there"
-        opts.separator "  cancel    end a run and release what it holds"
-        opts.separator "  approve   pass a gate; refused from a pane a run is bound to (as is resume --from at"
-        opts.separator "            a gate) and from a process under the run's own pane, so an agent doesn't pass"
-        opts.separator "            its own plan by mistake. When the gated step's first file starts with"
-        opts.separator "            `note: FILE`, the note's sha256 is recorded and given to the next step"
-        opts.separator "  reject    turn a gate down: the gated step (or --to an earlier one) runs again with the note;"
-        opts.separator "            refused where approve is"
+        HelpPages.overview_verbs(HelpPages::WORKFLOW).each { |line| opts.separator line }
+        opts.separator "Run `workspace workflow VERB --help` for a verb's options."
         opts.separator ""
         opts.separator "approve and reject with --step (and --attempt) are refused with gate_not_waiting unless the run"
         opts.separator "waits at that step's gate (on that attempt), so a stale button can't pass a later gate. These"
@@ -5145,6 +4950,9 @@ module Workspace
         opts.separator ""
         opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...]` is what the agent daemon runs to move a run"
         opts.separator "on when a turn ends; it is not meant to be typed."
+        opts.separator ""
+        opts.separator "`run` and `start` really start a run (start also makes a worktree); --dry-run checks and starts nothing."
+        opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
         opts.separator ""
         opts.on("--name WORKSPACE", "run: the workspace to run in; status: that workspace's runs still going (default: the current workspace)") { |v| options[:name] = v }
         opts.on("--input KEY=VALUE", "run, start: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
@@ -5179,29 +4987,22 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace workflow show rpiv"
-        opts.separator "  workspace workflow show rpiv --source --json"
-        opts.separator "  workspace workflow validate lib/workflows/rpiv.yml --json"
-        opts.separator "  cat draft.yml | workspace workflow validate - --id ship --json"
-        opts.separator "  workspace workflow add ship draft.yml --dry-run --json"
-        opts.separator "  workspace workflow update ship draft.yml --if-sha256 SHA --json"
-        opts.separator "  workspace workflow remove ship --yes --json"
-        opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
-        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\""
-        opts.separator "  workspace workflow start rpiv PROJ-101 --dry-run --json"
-        opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\""
-        opts.separator "  workspace workflow status --json"
-        opts.separator "  workspace workflow status --project --json"
-        opts.separator "  workspace workflow events wr_2610041230559x3k --since 40 --json"
-        opts.separator "  workspace workflow files wr_2610041230559x3k --json"
-        opts.separator "  workspace workflow approve wr_2610041230559x3k --note \"Skip the migration.\""
-        opts.separator "  workspace workflow approve wr_2610041230559x3k --step plan --attempt 2 --note-sha256 HEX --json"
-        opts.separator "  workspace workflow reject wr_2610041230559x3k --note \"Too big; split it.\""
-        opts.separator "  workspace workflow resume wr_2610041230559x3k --from implement"
+        opts.separator "  workspace workflow show    # list the workflows you can run"
+        opts.separator "  workspace workflow show rpiv    # see the inputs and steps of one before running it"
+        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --dry-run    # check a run in this workspace and start nothing"
+        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\"    # start it for real: step one is typed into the Claude pane"
+        opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\"    # make a worktree workspace from a sentence and run rpiv in it"
+        opts.separator "  workspace workflow status    # which runs are going, and why one is stuck"
+        opts.separator "  workspace workflow approve RUN --note \"Skip the migration.\"    # pass the gate a run waits at"
+        opts.separator "  workspace workflow reject RUN --note \"Too big; split it.\"    # send the gated step back with a reason"
+        opts.separator "  workspace workflow resume RUN --from implement    # start a stuck run again at one step"
+        opts.separator "  workspace workflow cancel RUN    # end a run and release its locks"
       end
     end
 
     def cmd_workflow(args)
+      return if verb_help_shown?(HelpPages::WORKFLOW, args)
+
       options = {json: false, inputs: [], background: [], all: false, dry_run: false, turn_ended: false, source: false}
       given = args.dup
       parser = workflow_parser(options)
@@ -5368,17 +5169,14 @@ module Workspace
 
     def step_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]\n" \
-          "       workspace step status [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::STEP)
         opts.separator ""
         opts.separator "For the agent working on a workflow step, run from the pane the run is bound to."
         opts.separator "Neither is required: a step is decided when the agent's turn ends, from the files it"
         opts.separator "was told to leave and the step's check (see `workspace workflow --help`)."
         opts.separator ""
-        opts.separator "  done      record what you say about the step, then end your turn. --status fail fails"
-        opts.separator "            the step at the turn's end without running its check"
-        opts.separator "  status    which run, step and attempt this pane is on, where its instructions are,"
-        opts.separator "            and whether the files the step must leave exist"
+        HelpPages.overview_verbs(HelpPages::STEP).each { |line| opts.separator line }
+        opts.separator "Run `workspace step VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--status STATUS", "done: pass (default) or fail") { |v| options[:status] = v }
         opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
@@ -5387,14 +5185,16 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace step status"
-        opts.separator "  workspace step done --summary \"Plan written; three commits.\""
-        opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\""
-        opts.separator "  workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\""
+        opts.separator "  workspace step status    # which run, step and attempt this pane is on"
+        opts.separator "  workspace step done --summary \"Plan written; three commits.\"    # record a pass, then end your turn"
+        opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\"    # fail the step at the turn's end"
+        opts.separator "  workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"    # fail it with a word for why"
       end
     end
 
     def cmd_step(args)
+      return if verb_help_shown?(HelpPages::STEP, args)
+
       options = {json: false, status: "pass"}
       given = args.dup
       parser = step_parser(options)
@@ -5438,8 +5238,11 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace snapshot --json"
-        opts.separator "  workspace snapshot --json --name my-app.worktree-fix-login --pr"
+        opts.separator "  workspace snapshot --json    # one document with every project and workspace, for a UI or script to poll"
+        opts.separator "  workspace snapshot --json --name my-app    # only one workspace, when a script watches a single project"
+        opts.separator "  workspace snapshot --json --name my-app --name my-app.worktree-fix-login    # two workspaces in one read"
+        opts.separator "  workspace snapshot --json --pr    # also read each branch's pull request, when you need review state"
+        opts.separator "  workspace snapshot --json | jq -r '.projects[].members[] | select(.running) | .workspace'    # list the running workspaces"
       end
     end
 
@@ -5480,8 +5283,9 @@ module Workspace
           uninstall   Remove workspace's hooks for one agent, keeping your own
 
         Examples:
-          workspace hooks uninstall --agent codex --dry-run
-          workspace hooks uninstall --agent=codex --json
+          workspace hooks uninstall --agent codex --dry-run    # see what would go from Codex's hooks.json
+          workspace hooks uninstall --agent codex    # remove workspace's Codex hooks, keeping your own
+          workspace hooks uninstall --agent claude --project --dry-run    # preview a clean-up of every checkout of this project
       HELP
     end
 
@@ -5511,10 +5315,11 @@ module Workspace
         opts.on("--json", "Print one action document (exit 3 when some checkouts failed)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace hooks uninstall --agent claude --project --dry-run"
-        opts.separator "  workspace hooks uninstall --agent claude --name my-feature"
-        opts.separator "  workspace hooks uninstall --agent codex --dry-run"
-        opts.separator "  workspace hooks uninstall --agent=codex --json"
+        opts.separator "  workspace hooks uninstall --agent codex --dry-run    # see what would go from Codex's hooks.json first"
+        opts.separator "  workspace hooks uninstall --agent codex    # stop Codex reporting to workspace, keeping your own hooks"
+        opts.separator "  workspace hooks uninstall --agent claude --name my-feature    # clean up one workspace's checkout"
+        opts.separator "  workspace hooks uninstall --agent claude --project --dry-run    # preview every checkout of this project"
+        opts.separator "  workspace hooks uninstall --agent=codex --json    # a script removing the hooks and reading the outcome"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -5584,11 +5389,15 @@ module Workspace
           agent = value
         end
         opts.separator ""
+        opts.separator "These show what hooks send. Running one records it as a real event: a"
+        opts.separator "session start writes a ledger row, and in a tmux pane the event reaches"
+        opts.separator "the daemon."
+        opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  echo '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"abc\"}' | workspace session-event"
-        opts.separator "  echo '{\"hook_event_name\":\"Stop\"}' | workspace session-event --workspace my-project"
-        opts.separator "  echo '{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\"}' | workspace session-event --workspace my-project"
-        opts.separator "  echo '{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\"}' | workspace session-event --agent=codex"
+        opts.separator "  workspace session-event <<< '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"abc\"}'    # as a Claude Code hook calls it, from the agent's pane"
+        opts.separator "  workspace session-event --workspace my-project <<< '{\"hook_event_name\":\"Stop\"}'    # from a tmux pane, send to my-project instead of the pane's own session"
+        opts.separator "  workspace session-event <<< '{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\",\"cwd\":\"/src/api\"}'    # in a repo where another agent holds the edit lock: exits 2, deny message on stderr"
+        opts.separator "  workspace session-event --agent=codex <<< '{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\"}'    # a Codex approval prompt, as Codex's hook sends it"
       end
       parser.parse!(args)
 
@@ -5610,8 +5419,9 @@ module Workspace
           "default follows the same rule as 'workspace launch'") do |v|
           headless = v
         end
-        opts.on("--fix", "Route Claude's statusLine through 'workspace statusline' (backs up",
-          "settings.json first); the only fix this performs today") do
+        opts.on("--fix", "Link the workspace skills that are missing or dangling, route Claude's statusLine",
+          "through 'workspace statusline' (backs up settings.json first), install Codex's hooks,",
+          "and rewrite stale agent panes; everything else it reports is fixed by hand") do
           fix = true
         end
         opts.on("--json", "Print one JSON document with a row per check (see docs/README.doctor.md);",
@@ -5620,7 +5430,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace doctor    # check the current machine's setup"
         opts.separator "  workspace doctor --json    # the same checks as one document"
-        opts.separator "  workspace doctor --fix    # also route Claude's statusLine through workspace statusline"
+        opts.separator "  workspace doctor --fix    # also fix what can be fixed: link the missing skills, set up Claude's status line and Codex's hooks, and update stale agent panes"
         opts.separator "  workspace doctor --headless    # check for a headless setup (skips iTerm2 and window-tool)"
       end
       parser.parse!(args)
@@ -5642,8 +5452,10 @@ module Workspace
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") { json = true }
         opts.separator ""
-        opts.separator "Example:"
+        opts.separator "Examples:"
         opts.separator "  workspace relaunch    # stop every active project and relaunch it (headless ones stay headless)"
+        opts.separator "  workspace relaunch --json    # a script relaunching everything and checking the result"
+        opts.separator "  workspace relaunch --json 2>/dev/null    # keep the progress text out of the way when piping the document"
       end
       parser.parse!(args)
 
@@ -5709,10 +5521,10 @@ module Workspace
         opts.separator "A recorded pane that could not be matched is reported, not a failure."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace restore --dry-run    # what would come back here, and what can't"
         opts.separator "  workspace restore    # restore the workspace you are in"
+        opts.separator "  workspace restore --dry-run    # what would come back here, and what can't"
         opts.separator "  workspace restore --all    # restore every active workspace"
-        opts.separator "  workspace restore my-app --json"
+        opts.separator "  workspace restore my-app --json    # bring back my-app only; a script reads the result"
       end
       parser.parse!(args)
       raise Error, "restore is not available: no restore command was wired" unless @restore_command
@@ -5786,7 +5598,7 @@ module Workspace
           "others are added. Exit 0 if no row failed, 3 if some did, 1 if all did") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace add ~/Code/my-project   # add a project by path"
+        opts.separator "  workspace add ~/Code/my-project    # add a project by path"
         opts.separator "  workspace add .    # add the current directory"
         opts.separator "  workspace add ~/Code/project-a ~/Code/project-b    # add multiple projects"
         opts.separator "  workspace add --json ~/Code/my-project    # created or exists, as JSON"
@@ -5881,8 +5693,18 @@ module Workspace
         opts.separator "config set') delegates rendering to another command; a slow or hung"
         opts.separator "delegate falls back to the built-in line."
         opts.separator ""
-        opts.separator "Example (installed in ~/.claude/settings.json):"
+        opts.separator "Install it by adding this to ~/.claude/settings.json (or run"
+        opts.separator "'workspace doctor --fix'):"
         opts.separator "  { \"statusLine\": { \"type\": \"command\", \"command\": \"workspace statusline\" } }"
+        opts.separator ""
+        opts.separator "Each run records its reading against $TMUX_PANE (or $CLAUDE_PID), which"
+        opts.separator "'workspace sessions --json' then reports. Run these examples outside an"
+        opts.separator "agent's pane so they don't overwrite its real reading."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace statusline <<< '{\"context_window\":{\"used_percentage\":42}}'    # see the line Claude Code would show for 42% context used"
+        opts.separator "  workspace statusline <<< '{}'    # empty input still prints a line and exits 0"
+        opts.separator "  workspace statusline < payload.json    # replay a saved Claude Code payload while debugging a delegate command"
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
@@ -5891,6 +5713,8 @@ module Workspace
     end
 
     def cmd_config(args)
+      return if verb_help_shown?(HelpPages::CONFIG, args)
+
       case args.first
       when "set"
         args.shift
@@ -5923,59 +5747,9 @@ module Workspace
       scope = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config set [options] [WS] <key> [--] <value>"
-        opts.separator ""
-        opts.separator "Sets a config key in one layer's file. With no --scope the highest layer the"
-        opts.separator "key allows at or below the workspace is written: the workspace's own file for a"
-        opts.separator "key a worktree may override (dev.ready_timeout, notes.dir), else the project's"
-        opts.separator "file, and the global file for a key that is global-only. The workspace is"
-        opts.separator "inferred from cwd; WS or --name picks it from anywhere. Outside any workspace a"
-        opts.separator "project or workspace write fails with not_in_workspace (a global key still works)."
-        opts.separator "`workspace config show --json` lists the layers each key allows (overridable_in)."
-        opts.separator ""
-        opts.separator "Allowed keys: #{ConfigSchema.settable_names.join(", ")}"
-        opts.separator ""
-        opts.separator "Note: this rewrites the whole YAML file, so comments already in it"
-        opts.separator "are not kept. The old file is always copied to a .workspace-backup-*"
-        opts.separator "file first; when it had a comment, a note on stderr names the backup"
-        opts.separator "and the --json row has comments_preserved: false. A file that isn't"
-        opts.separator "valid YAML is left untouched and the command fails; fix or remove it first."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--project NAME", "--name NAME", "Workspace to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
-        opts.on("--scope SCOPE", "Layer to write: global, project or workspace (worktree is the same). A key that doesn't allow it fails with code scope_not_allowed") { |v| scope = v }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
-        opts.separator ""
-        opts.separator "Precedence: workspace > project > global > default (`workspace config --help`, docs/README.config.md \"Scopes\")."
-        opts.separator ""
-        opts.separator "Scopes: global is the machine-wide file, project is the main checkout's file and"
-        opts.separator "workspace is the workspace's own file. In a main checkout there is no file of its"
-        opts.separator "own besides the project's, so workspace writes the project file. The --json row"
-        opts.separator "reports scope, layer (global, project or worktree), file and the key's effective"
-        opts.separator "value after the write."
-        opts.separator ""
-        opts.separator "A value that starts with a dash goes after --:  workspace config set dev.up -- -x"
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace config set --scope project handoff.auto true"
-        opts.separator "  workspace config set --scope workspace dev.ready_timeout 90s"
-        opts.separator "  workspace config set --scope project workflows.defaults.include commits"
-        opts.separator "  workspace config set dev.up \"./start-dev\""
-        opts.separator "  workspace config set dev.stop_timeout 20s"
-        opts.separator "  workspace config set locks.idle_grace 10m"
-        opts.separator "  workspace config set alerts.notify 'say \"$WORKSPACE_ALERT_TEXT\"'"
-        opts.separator "  workspace config set alerts.idle_after 15m"
-        opts.separator "  workspace config set notes.dir /Users/me/notes/myapp"
-        opts.separator "  workspace config set notes.dir /Users/me/notes/myapp-fix --name myapp.worktree-fix"
-        opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
-        opts.separator "  workspace config set myapp dev.up \"bin/dev\""
-        opts.separator "  workspace config set statusline.command \"~/bin/my-statusline\""
-        opts.separator "  workspace config set context.source scrape"
-        opts.separator "  workspace config set context.pattern '(\\d+)% ctx'"
-        opts.separator "  workspace config set launch.headless true"
-        opts.separator ""
-        opts.separator "statusline.command, context.source, context.pattern, and launch.headless are"
-        opts.separator "global (one per machine), not per project."
+        opts.on("--project NAME", "--name NAME") { |v| project = v }
+        opts.on("--scope SCOPE") { |v| scope = v }
+        opts.on("--json") { json = true }
       end
       begin
         parser.parse!(args)
@@ -5985,7 +5759,7 @@ module Workspace
       project = take_known_workspace!(args) if args.size == 3 && project.nil?
       key = args.shift
       value = args.shift
-      raise UsageError, parser.help if key.nil? || value.nil? || args.any?
+      raise UsageError, config_page("set") if key.nil? || value.nil? || args.any?
 
       run_action("config set", json: json) do
         result = @config_command.set(key, value, project: project, scope: config_scope(scope), cwd: @working_dir)
@@ -6026,29 +5800,12 @@ module Workspace
       settable = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config keys [QUERY] [--settable] [--json]"
-        opts.separator ""
-        opts.separator "Describes the config keys: type, default, the layers that may hold each, whether"
-        opts.separator "'config set' accepts it, when a change applies, and example values. Reads no config"
-        opts.separator "file and prints no stored value (see 'workspace config' for those)."
-        opts.separator ""
-        opts.separator "With no QUERY, lists every key on one line. A QUERY equal to a key name prints that"
-        opts.separator "key in full. Any other QUERY keeps the keys whose name or description text contains"
-        opts.separator "it as a substring, ignoring case; with no match it fails with unknown_config_key."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--settable", "Only the keys 'config set' accepts") { settable = true }
-        opts.on("--json", "Print one document with a `keys` array (see docs/README.config.md)") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace config keys"
-        opts.separator "  workspace config keys timeout     # keys whose name or description mentions timeout"
-        opts.separator "  workspace config keys dev.up      # one key in full, with example values"
-        opts.separator "  workspace config keys --settable --json"
+        opts.on("--settable") { settable = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       query = args.shift
-      raise UsageError, parser.help if args.any?
+      raise UsageError, config_page("keys") if args.any?
 
       @config_command.keys(query: query, settable: settable, json: json)
     end
@@ -6057,32 +5814,13 @@ module Workspace
       project = nil
       scope = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config get [WS] <key> [options]"
-        opts.separator ""
-        opts.separator "Reads one layer's file, not the layered result (`workspace config <key>`"
-        opts.separator "gives that). With no --scope it reads the file `config set` would write: the"
-        opts.separator "workspace's own for a key a worktree may override, else the project's, else the"
-        opts.separator "global file. The workspace is WS or --name, else the one cwd is in; outside any"
-        opts.separator "workspace a project or workspace file read fails with not_in_workspace. When the"
-        opts.separator "key is unset there but another layer sets it, a note on stderr says what the"
-        opts.separator "layered result resolves to, or where a sensitive key is set."
-        opts.separator ""
-        opts.separator "Prints the value on stdout and exits 0. If the key has no value,"
-        opts.separator "prints nothing on stdout, a note on stderr, and exits 1."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--project NAME", "--name NAME", "Workspace to read instead of the one inferred from cwd (--name is the same)") { |v| project = v }
-        opts.on("--scope SCOPE", "Layer whose file to read: global, project or workspace (worktree is the same); scope_not_allowed when the key can't live there") { |v| scope = v }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace config get dev.up"
-        opts.separator "  workspace config get --scope project handoff.auto --name myapp.worktree-fix"
-        opts.separator "  workspace config get myapp dev.up"
+        opts.on("--project NAME", "--name NAME") { |v| project = v }
+        opts.on("--scope SCOPE") { |v| scope = v }
       end
       parser.parse!(args)
       project = take_known_workspace!(args) if args.size == 2 && project.nil?
       key = args.shift
-      raise UsageError, parser.help if key.nil? || args.any?
+      raise UsageError, config_page("get") if key.nil? || args.any?
 
       found = @config_command.get(key, project: project, scope: config_scope(scope), cwd: @working_dir)
       @exit_handler.exit(1) unless found
@@ -6093,27 +5831,14 @@ module Workspace
       scope = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config unset [WS] <key> [options]"
-        opts.separator ""
-        opts.separator "Removes a key from one layer's file (the one `config set` would write, unless"
-        opts.separator "--scope names another). The layers below it then apply again. Like `set`, it"
-        opts.separator "rewrites the file, keeps a .workspace-backup-* copy and drops comments. The"
-        opts.separator "workspace is WS or --name, else the one cwd is in (not_in_workspace outside any)."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--project NAME", "--name NAME", "Workspace to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
-        opts.on("--scope SCOPE", "Layer to remove it from: global, project or workspace (worktree is the same); scope_not_allowed when the key can't live there") { |v| scope = v }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace config unset dev.ready"
-        opts.separator "  workspace config unset --scope workspace dev.ready_timeout --name myapp.worktree-fix --json"
-        opts.separator "  workspace config unset myapp dev.ready"
+        opts.on("--project NAME", "--name NAME") { |v| project = v }
+        opts.on("--scope SCOPE") { |v| scope = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       project = take_known_workspace!(args) if args.size == 2 && project.nil?
       key = args.shift
-      raise UsageError, parser.help if key.nil? || args.any?
+      raise UsageError, config_page("unset") if key.nil? || args.any?
 
       run_action("config unset", json: json) do
         result = @config_command.unset(key, project: project, scope: config_scope(scope), cwd: @working_dir)
@@ -6126,37 +5851,13 @@ module Workspace
       scope = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config edit [WS] [options]"
-        opts.separator ""
-        opts.separator "Opens one layer's config file in $VISUAL or $EDITOR (run without a shell, so"
-        opts.separator "the command is split into words and the path is passed as its last argument)."
-        opts.separator "A file that doesn't exist yet is created first with a comment header. With no"
-        opts.separator "--scope the workspace's own file is opened (the project's file in a main checkout)."
-        opts.separator "The workspace is WS or --name, else the one cwd is in; outside any workspace only"
-        opts.separator "--scope global works (not_in_workspace otherwise)."
-        opts.separator ""
-        opts.separator "Unlike 'config set', editing by hand keeps comments, but nothing checks the"
-        opts.separator "keys or values; run 'workspace config validate' afterwards."
-        opts.separator ""
-        opts.separator "An editor path containing spaces must be quoted in $EDITOR."
-        opts.separator "With no $VISUAL or $EDITOR set (or blank), under --no-input, or when stdin or"
-        opts.separator "stdout is not a terminal, the path is printed, nothing is opened and the exit is 0."
-        opts.separator "With --json nothing is opened either: one action document gives the path."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--project NAME", "--name NAME", "Workspace to edit instead of the one inferred from cwd (--name is the same)") { |v| project = v }
-        opts.on("--scope SCOPE", "File to edit: global, project or workspace (worktree is the same)") { |v| scope = v }
-        opts.on("--json", "Print one action document (see docs/README.json.md); open no editor") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace config edit"
-        opts.separator "  workspace config edit --scope global"
-        opts.separator "  workspace config edit --scope project --name myapp.worktree-fix --json"
-        opts.separator "  workspace config edit myapp.worktree-fix"
+        opts.on("--project NAME", "--name NAME") { |v| project = v }
+        opts.on("--scope SCOPE") { |v| scope = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       project = take_known_workspace!(args) if args.size == 1 && project.nil?
-      raise UsageError, parser.help if args.any?
+      raise UsageError, config_page("edit") if args.any?
 
       run_action("config edit", json: json) do
         result = @config_command.edit(project: project, scope: config_scope(scope), cwd: @working_dir)
@@ -6193,26 +5894,14 @@ module Workspace
       json = false
       name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config validate [--name NAME] [--json]"
-        opts.separator ""
-        opts.separator "Check the config files a workspace reads (its own, its parent project's when it is"
-        opts.separator "a worktree, and the global one): YAML syntax, key types and values, and keys"
-        opts.separator "nothing reads. A file that can't be parsed is reported with its line and column"
-        opts.separator "rather than failing the command. Exits 0 when there are no errors, 1 otherwise;"
-        opts.separator "warnings and notes don't change the exit status."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "--project NAME", "Workspace to check instead of the one inferred from cwd") { |v| name = v }
-        opts.on("--json", "Print one document with a `valid` flag and the problems (see docs/README.config.md)") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace config validate"
-        opts.separator "  workspace config validate --name myproject.worktree-PROJ-123 --json"
+        opts.on("--name NAME", "--project NAME") { |v| name = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, parser.help if args.any?
+      page = config_page("validate")
+      raise UsageError, page if args.any?
 
-      doc = config_report.validate(config_workspace(name, parser))
+      doc = config_report.validate(config_workspace(name, page))
       if json
         @output.puts JSON.generate(doc)
       elsif doc["problems"].empty?
@@ -6231,8 +5920,13 @@ module Workspace
     end
 
     # The workspace `config show/validate` act on: the named one, else the one detected from cwd.
-    def config_workspace(name, parser)
-      name || @project_detector.detect(@working_dir) || raise(UsageError, "Not in a workspace. Pass --name <workspace>.\n\n#{parser.help}")
+    def config_workspace(name, help)
+      name || @project_detector.detect(@working_dir) || raise(UsageError, "Not in a workspace. Pass --name <workspace>.\n\n#{help}")
+    end
+
+    # The help page of one `config` verb, for a usage error.
+    def config_page(verb)
+      HelpPages.render(HelpPages::CONFIG.fetch(verb)).join("\n")
     end
 
     def cmd_tmux(args)
@@ -6245,6 +5939,11 @@ module Workspace
         @output.puts usage
         @output.puts
         @output.puts "  show    A workspace's tmuxinator file as session fields, windows and panes"
+        @output.puts
+        @output.puts "Examples:"
+        @output.puts "  workspace tmux show    # the current directory's workspace: windows and panes as a summary"
+        @output.puts "  workspace tmux show --name myproject    # a named workspace, from anywhere"
+        @output.puts "  workspace tmux show --name myproject --json    # the same as one JSON document, for a script"
       else
         raise UsageError, usage
       end
@@ -6267,14 +5966,15 @@ module Workspace
         opts.on("--json", "Print one document (see docs/README.tmux.md)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace tmux show"
-        opts.separator "  workspace tmux show --name myproject --json"
+        opts.separator "  workspace tmux show    # the current directory's workspace: windows and panes as a summary"
+        opts.separator "  workspace tmux show --name myproject    # a named workspace, from anywhere"
+        opts.separator "  workspace tmux show --name myproject --json    # the same as one JSON document, for a script"
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
       raise Error, "tmux show is not available: no tmuxinator report was wired" unless @tmuxinator_report
 
-      doc = @tmuxinator_report.show(config_workspace(name, parser))
+      doc = @tmuxinator_report.show(config_workspace(name, parser.help))
       return @output.puts(JSON.generate(doc)) if json
 
       print_tmux_show(doc)
@@ -6302,65 +6002,23 @@ module Workspace
       json = false
       name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config [show] [options] [key]"
-        opts.separator ""
-        opts.separator "Show project or global workspace configuration. With a key, print"
-        opts.separator "that key's effective value (layering and defaults included, unlike"
-        opts.separator "'workspace config get', which reads one file)."
-        opts.separator ""
-        opts.separator "With --scope, show one layer: the file of that scope (text) or, in --json, each"
-        opts.separator "row's value/source_file/line/column from that file alone, with effective, source"
-        opts.separator "and layers covering global up to that scope (project: global < project)."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--scope SCOPE", "Show one layer: global, project or workspace (worktree is the same). In a main checkout workspace is the project's file") { |v| scope = config_scope(v) }
-        opts.on("--global", "Same as --scope global") do
+        opts.on("--scope SCOPE") { |v| scope = config_scope(v) }
+        opts.on("--global") do
           raise UsageError, "--global and --scope #{scope} disagree: pass one" if scope && scope != "global"
           scope = "global"
         end
-        opts.on("--name NAME", "Workspace to show instead of the one inferred from cwd") { |v| name = v }
-        opts.on("--json", "Print the show document as JSON: every key with its effective value, source layer and files, or with a key just that key's row (see docs/README.config.md)") { json = true }
-        opts.separator ""
-        opts.separator "Config files:"
-        opts.separator "  Global:  #{@project_settings.global_config_path}"
-        opts.separator "  Project: #{@config.workspace_config_dir}/projects/<name>.yml"
-        opts.separator ""
-        opts.separator "Keys: 'workspace config' lists every key with its value and layer; docs/README.config.md"
-        opts.separator "has the table of doc text, defaults and the layers each key may be set in"
-        opts.separator "(overridable_in), and 'workspace config --json' gives the same as data."
-        opts.separator "hooks and layouts are edited by hand ('config edit')."
-        opts.separator ""
-        opts.separator "Layers (highest wins): workspace (a worktree's own file) > project (the main"
-        opts.separator "checkout's file) > global > the built-in default. Each key lists the layers it"
-        opts.separator "allows (overridable_in); see docs/README.config.md. Choose the file with"
-        opts.separator "--scope S on config set/get/unset/edit."
-        opts.separator ""
-        opts.separator "Note: 'show', 'validate', 'set', 'get', 'unset', 'edit' and 'keys' are reserved as the first"
-        opts.separator "argument here and are always treated as subcommands. A key named one of"
-        opts.separator "them, or a workspace named one of them, is reached with --name."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace config               # show config for project in current dir"
-        opts.separator "  workspace config --name myproject    # show another workspace's config"
-        opts.separator "  workspace config dev.up         # that key's effective value"
-        opts.separator "  workspace config notes.dir      # where this workspace's notes go"
-        opts.separator "  workspace config --global      # show global config"
-        opts.separator "  workspace config --scope project --name myapp.worktree-fix    # the project's file"
-        opts.separator "  workspace config --scope project --json dev.up    # dev.up as the project's file has it, and effective up to project"
-        opts.separator "  workspace config dev.up --json    # that key's row in the show document"
-        opts.separator "  workspace config validate --name myproject --json    # problems, with line and column"
-        opts.separator "  workspace config set dev.up \"./start-dev\""
-        opts.separator "  workspace config get dev.up"
-        opts.separator "  workspace config unset dev.ready"
-        opts.separator "  workspace config edit --scope global    # hand-edit a file, keeping its comments"
-        opts.separator "  workspace config keys [QUERY]    # what each key is, its default and example values"
+        opts.on("--name NAME") { |v| name = v }
+        opts.on("--json") { json = true }
       end
+      page = config_page("show")
+      return @output.puts(page) if help_requested?(args, HelpPages::CONFIG.fetch("show"))
+
       parser.parse!(args)
       key = args.shift
-      raise UsageError, parser.help if args.any?
+      raise UsageError, page if args.any?
       if key
         raise UsageError, "Unknown config key '#{key}'. Keys: #{ConfigSchema.all.map(&:name).join(", ")}" if ConfigSchema.key(key).nil?
-        doc = config_report.show(config_workspace(name, parser), key: key, **config_show_scope(scope))
+        doc = config_report.show(config_workspace(name, page), key: key, **config_show_scope(scope))
         if json
           @output.puts JSON.generate(doc)
         else
@@ -6371,7 +6029,7 @@ module Workspace
       end
 
       if json
-        @output.puts JSON.generate(config_report.show(config_workspace(name, parser), **config_show_scope(scope)))
+        @output.puts JSON.generate(config_report.show(config_workspace(name, page), **config_show_scope(scope)))
         return
       end
 
@@ -6385,7 +6043,7 @@ module Workspace
           @output.puts YAML.dump(data)
         end
       else
-        project = config_workspace(name, parser)
+        project = config_workspace(name, page)
         config_report.show(project, scope: scope) if scope == "workspace"
         project = WorkspaceLineage.split_worktree_name(project)&.first || project if scope == "project"
         data = @project_settings.load(project)
@@ -6464,7 +6122,6 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace list    # list active (launched) projects"
         opts.separator "  workspace list --all    # list all available projects"
-        opts.separator "  workspace list-projects    # alias for 'list --all'"
         opts.separator "  workspace list --show-urls    # each active project with its git origin URL"
         opts.separator "  workspace list --json    # active projects as JSON"
         opts.separator "  workspace list --json-envelope    # {\"schema_version\":1,\"ok\":true,\"workspaces\":[...],\"warnings\":[]}"
@@ -6647,6 +6304,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace capabilities    # a readable summary"
         opts.separator "  workspace capabilities --json | jq '.features.no_input'    # 1 when --no-input is supported"
+        opts.separator "  workspace capabilities --json | jq -r '.dependencies.window_tool.path'    # where window-tool was found, for a script that needs it"
       end
       parser.parse!(args)
       return @output.puts(parser.help) if help
@@ -6666,8 +6324,9 @@ module Workspace
         opts.separator "then falls back to matching active project roots."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace current    # print the current directory's project name"
-        opts.separator "  PROJECT=$(workspace current) && workspace focus \"$PROJECT\"    # use in scripts"
+        opts.separator "  workspace current    # which workspace am I in"
+        opts.separator "  workspace current | xargs workspace focus    # bring this workspace's window to the front from a script"
+        opts.separator "  workspace current | xargs workspace dir    # the root directory of the workspace I am in"
       end
       parser.parse!(args)
 
@@ -6696,8 +6355,9 @@ module Workspace
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace repair    # auto-rebuild state from all live workspace windows"
-        opts.separator "  workspace repair homebrew-bin --window-id 1196    # manually set a project's window ID"
+        opts.separator "  workspace repair    # state is wrong or lost: rewrite each workspace's window id from the live workspace-NAME windows"
+        opts.separator "  workspace repair --json    # the same, one action document with a row per window"
+        opts.separator "  workspace repair homebrew-bin --window-id 1196    # a window has another title: set that project's window id by hand"
       end
       parser.parse!(args)
 
@@ -6744,7 +6404,7 @@ module Workspace
           "could not be listed; a window that could not be read is never called gone)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace cleanup    # list zombie sessions and ask before removing"
+        opts.separator "  workspace cleanup    # list zombie sessions and ask before removing them from state"
         opts.separator "  workspace cleanup --dry-run --json    # report the zombies, change nothing"
         opts.separator "  workspace cleanup --tmux-dead-only --force    # remove only entries with no tmux session"
         opts.separator "  workspace cleanup --force    # remove all zombie sessions immediately"
@@ -6798,11 +6458,11 @@ module Workspace
         opts.on("--json", "Print one action document of per-candidate rows; no confirmation prompt") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace prune --dry-run --json    # the candidates as rows, would_remove"
-        opts.separator "  workspace prune --json --name=feat-a --name=feat-b    # prune two, skip unsaved work"
+        opts.separator "  workspace prune    # remove the worktree workspaces whose pull request is closed or merged, or whose directory is gone, after a confirmation"
         opts.separator "  workspace prune --dry-run    # see what would be pruned without changing anything"
-        opts.separator "  workspace prune    # prune with a confirmation prompt"
-        opts.separator "  workspace prune --force    # prune without prompting, including candidates with unsaved work"
+        opts.separator "  workspace prune --dry-run --json    # the candidates as rows, outcome would_remove"
+        opts.separator "  workspace prune --json --name=feat-a --name=feat-b    # prune two without asking; one with unsaved work is skipped"
+        opts.separator "  workspace prune --force    # prune without asking, removing candidates with unsaved work too"
       end
       parser.parse!(args)
 
@@ -6855,9 +6515,9 @@ module Workspace
           "to stderr; a refusal is the error envelope. --json does not imply --yes: pass --yes in scripts") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace remove --dry-run    # see which files of the workspace you are in would go"
+        opts.separator "  workspace remove myproject    # ask, then delete its tmuxinator config, settings file and state entry (backups kept; the checkout is untouched)"
+        opts.separator "  workspace remove    # the same for the workspace you are in"
         opts.separator "  workspace remove myproject --dry-run    # see which files would go"
-        opts.separator "  workspace remove myproject    # ask, then remove"
         opts.separator "  workspace remove myproject --yes --json    # no prompt, one action document"
       end
       parser.parse!(args)
@@ -7009,10 +6669,11 @@ module Workspace
         opts.separator "what is kept: the current event log and each daemon's file and its rotated copy."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace events --follow --json"
-        opts.separator "  workspace events --follow --json --types tool_started,tool_finished --since \"$CURSOR\""
-        opts.separator "  workspace events --types session_started,session_ended"
-        opts.separator "  workspace events --follow --json --name myapp --types tool_finished"
+        opts.separator "  workspace events    # read everything kept so far, as text, oldest first"
+        opts.separator "  workspace events --types session_started,session_ended    # which sessions started and ended"
+        opts.separator "  workspace events --follow --json    # watch every workspace live from a program, one JSON line per event; runs until stopped"
+        opts.separator "  workspace events --follow --json --since \"$LAST_CURSOR\"    # pick a follower up after a restart; LAST_CURSOR is the cursor of the last line it printed (every line has one); runs until stopped"
+        opts.separator "  workspace events --follow --json --name myapp --types tool_finished    # follow the tool calls of one workspace; runs until stopped"
       end
       parser.parse!(args)
       return @output.puts(parser.help) if help
@@ -7029,6 +6690,7 @@ module Workspace
       index = args.index { |a| !a.start_with?("-") }
       subcommand = index && args[index]
       rest = index ? args[0...index] + args[(index + 1)..] : args
+      return if subcommand && verb_help_shown?(HelpPages::EVENT_LOG, [subcommand, *rest])
 
       case subcommand
       when "show"
@@ -7040,25 +6702,7 @@ module Workspace
         after_size = event_log.size
         @output.puts "Compacted event log: #{before_size} -> #{after_size} bytes (#{state.size} project(s))"
       when "help", "--help", "-h", nil
-        @output.puts <<~HELP
-          Usage: workspace event-log <subcommand>
-
-          Subcommands:
-            show       Print events, oldest first (--project, --type, --limit, --json)
-            compact    Compact the event log to current state only
-            help       Show this help
-
-          Besides state changes, the log records agent activity: dispatches,
-          stage completions, timeouts and failures, lock waits and takeovers,
-          and each agent pane's working/idle/waiting changes. Compacting drops
-          that history, keeping only each live pane's latest state.
-
-          The event log is at: #{@config.event_log_file}
-
-          Examples:
-            workspace event-log show --project myapp --limit 20    # the last 20 events for one project
-            workspace event-log compact    # compact the event log to current state only
-        HELP
+        @output.puts event_log_help
       else
         message = "Unknown event-log subcommand: #{subcommand}"
         return emit_json_usage_error(EVENT_LOG_JSON_SCHEMA_VERSION, message) if json_requested?(false, args)
@@ -7066,34 +6710,62 @@ module Workspace
       end
     end
 
-    def cmd_event_log_show(args)
-      json = false
-      project = nil
-      types = []
-      limit = nil
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace event-log show [options]"
-        opts.separator ""
-        opts.separator "Print event log entries, oldest first."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--project NAME", "Only events for this project") { |value| project = value }
-        opts.on("--type TYPE", "Only events of this type (repeatable, or comma-separated)") do |value|
-          types.concat(value.split(",").map(&:strip).reject(&:empty?))
+    def event_log_help
+      <<~HELP
+        Usage: workspace event-log <subcommand>
+
+        Subcommands:
+        #{HelpPages.overview_verbs(HelpPages::EVENT_LOG).join("\n")}
+          help     Show this help
+
+        Run `workspace event-log VERB --help` for a verb's options.
+
+        Besides state changes, the log records agent activity: dispatches,
+        stage completions, timeouts and failures, lock waits and takeovers,
+        and each agent pane's working/idle/waiting changes. Compacting drops
+        that history, keeping only the latest state of each pane that has an agent.
+
+        The event log is at: #{@config.event_log_file}
+
+        Examples:
+        #{event_log_examples}
+      HELP
+    end
+
+    # The bare page's examples, taken from the verb pages so they cannot drift.
+    def event_log_examples
+      show = HelpPages::EVENT_LOG.fetch("show")[:examples]
+      compact = HelpPages::EVENT_LOG.fetch("compact")[:examples]
+      [show[1], show[2], show[4], compact[0]].map do |command, scenario|
+        "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}"
+      end.join("\n")
+    end
+
+    def event_log_show_parser(options)
+      OptionParser.new do |opts|
+        opts.on("--project NAME") { |value| options[:project] = value }
+        opts.on("--type TYPE") do |value|
+          (options[:types] ||= []).concat(value.split(",").map(&:strip).reject(&:empty?))
         end
-        opts.on("--limit N", Integer, "Only the last N matching events") { |value| limit = value }
-        opts.on("--json", "Emit {schema_version, ok, events} instead of lines") { json = true }
+        opts.on("--limit N", Integer) { |value| options[:limit] = value }
+        opts.on("--json") { options[:json] = true }
       end
+    end
+
+    def cmd_event_log_show(args)
+      options = {types: []}
+      parser = event_log_show_parser(options)
       raw_args = args.dup
       begin
         parser.parse!(args)
-        raise UsageError, "--limit must be greater than 0." if limit && limit <= 0
+        raise UsageError, "--limit must be greater than 0." if options[:limit] && options[:limit] <= 0
         raise UsageError, "Unexpected argument: #{args.first}" unless args.empty?
       rescue OptionParser::ParseError, UsageError => e
-        return emit_json_error(EVENT_LOG_JSON_SCHEMA_VERSION, e) if json_requested?(json, raw_args)
-        raise UsageError, (e.is_a?(UsageError) ? e.message : "#{e.message}\n\n#{parser.help}")
+        return emit_json_error(EVENT_LOG_JSON_SCHEMA_VERSION, e) if json_requested?(options[:json], raw_args)
+        raise UsageError, (e.is_a?(UsageError) ? e.message : "#{e.message}\n\n#{HelpPages.render(HelpPages::EVENT_LOG.fetch("show")).join("\n")}")
       end
 
+      json, project, types, limit = options.values_at(:json, :project, :types, :limit)
       events = @state.event_log.events
       warn_unseen_event_types(types, events)
       events = events.select { |event| event["project"] == project || event.dig("data", "workspace") == project } if project
@@ -7140,8 +6812,10 @@ module Workspace
         opts.separator ""
         opts.separator "Print the workspace installation directory."
         opts.separator ""
-        opts.separator "Example:"
-        opts.separator "  workspace whereis    # print the directory workspace is installed in"
+        opts.separator "Examples:"
+        opts.separator "  workspace whereis    # find out where a symlinked install really lives"
+        opts.separator "  workspace whereis | xargs -I{} ls {}/lib/templates    # look at the project templates it ships"
+        opts.separator "  workspace whereis | xargs -I{} git -C {} log -1 --oneline    # which commit this install runs"
       end
       parser.parse!(args)
 
@@ -7162,10 +6836,10 @@ module Workspace
         opts.separator "Returns the workspace project name if found, or exits with status 1 if not found."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace lookup ~/Code/zendesk/growth-engine/.worktrees/growth-engine-kick-test    # by worktree path"
-        opts.separator "  workspace lookup PUFFINS-1876-use-lock-version    # by branch name"
-        opts.separator "  workspace lookup growth-engine    # by project name"
-        opts.separator "  workspace lookup ~/Documents/Obsidian-LocalOnly/Zendesk    # by project root directory"
+        opts.separator "  workspace lookup ~/src/api    # which workspace has this directory as its root"
+        opts.separator "  workspace lookup ~/src/api/lib    # a directory inside a project's root resolves to that project"
+        opts.separator "  workspace lookup PROJ-1876-use-lock-version    # which workspace is on this branch"
+        opts.separator "  workspace lookup api    # does a project by this name exist (exit status 1 if not)"
       end
       parser.parse!(args)
 
@@ -7190,35 +6864,21 @@ module Workspace
 
       case subcommand
       when "list", nil
-        if rest.include?("--help") || rest.include?("-h")
+        if subcommand && verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
+          nil
+        elsif help_requested?(rest)
           @output.puts projects_help
         else
           cmd_projects_list(rest)
         end
       when "show"
-        if rest.include?("--help") || rest.include?("-h")
-          @output.puts projects_show_parser({}).help
-        else
-          cmd_projects_show(rest)
-        end
+        cmd_projects_show(rest) unless verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
       when "members"
-        if rest.include?("--help") || rest.include?("-h")
-          @output.puts projects_members_parser({}).help
-        else
-          cmd_projects_members(rest)
-        end
+        cmd_projects_members(rest) unless verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
       when "stop"
-        if rest.include?("--help") || rest.include?("-h")
-          @output.puts projects_stop_parser({}).help
-        else
-          cmd_projects_stop(rest)
-        end
+        cmd_projects_stop(rest) unless verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
       when "kill"
-        if rest.include?("--help") || rest.include?("-h")
-          @output.puts projects_kill_parser({}).help
-        else
-          cmd_projects_kill(rest)
-        end
+        cmd_projects_kill(rest) unless verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
       when "group"
         cmd_projects_group(rest)
       when "help" then @output.puts projects_help
@@ -7292,42 +6952,17 @@ module Workspace
         project with no git repo, a missing checkout, or a name shared with another project.
 
         Examples:
-          workspace projects                # same as 'workspace projects list'
-          workspace projects --running      # projects with something running
-          workspace projects --json         # for a script
-          workspace projects show           # the project for the current directory
-          workspace projects show app --json
-          workspace projects members        # one workspace per line
-          workspace projects stop app --dry-run
-          workspace projects kill app --dry-run
+        #{HelpPages.overview_examples(HelpPages::PROJECTS).join("\n")}
+        #{HelpPages.overview_examples(HelpPages::GROUPS.slice("create", "list")).join("\n")}
       HELP
     end
 
     def projects_show_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]"
-        opts.separator ""
-        opts.separator "Show one project: its workspaces (running, headless, agent states, open asks, pipeline entries,"
-        opts.separator "branch and unsaved work), worktrees with no workspace config, the repo-wide locks and the"
-        opts.separator "dev environment. NAME is a project name, a member"
-        opts.separator "workspace name or a path (use a path when two projects share a name); it defaults"
-        opts.separator "to the project containing the current directory."
-        opts.separator ""
-        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
-        opts.on("--no-agents", "Don't ask the agent daemons for agent states") { options[:agents] = false }
-        opts.on("--no-git", "Don't run git (no branch or unsaved work, no unconfigured worktrees)") { options[:git] = false }
-        opts.on("--timeout SECONDS", Float, "Seconds to wait for each running workspace's agent daemon (default 1) and for all the git reads (default 5)") { |seconds| options[:timeout] = seconds }
-        opts.separator ""
-        opts.separator "A daemon that is down or doesn't answer in time shows as unavailable, and a checkout git can't answer for"
-        opts.separator "shows as unknown (treated as unsaved); the command still exits 0."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects show"
-        opts.separator "  workspace projects show app --json"
-        opts.separator "  workspace projects show ~/src/app"
-        opts.separator "  workspace projects show --no-agents    # skip the agent daemons"
-        opts.separator "  workspace projects show --no-git       # skip git (fastest)"
-        opts.separator "  workspace projects show --timeout 0.5"
+        opts.on("--json") { options[:json] = true }
+        opts.on("--no-agents") { options[:agents] = false }
+        opts.on("--no-git") { options[:git] = false }
+        opts.on("--timeout SECONDS", Float) { |seconds| options[:timeout] = seconds }
       end
     end
 
@@ -7349,29 +6984,10 @@ module Workspace
 
     def projects_members_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]"
-        opts.separator ""
-        opts.separator "List a project's member workspaces, one per line, main checkout first. NAME is a project"
-        opts.separator "name, a member workspace name or a path (use a path when two projects share a name);"
-        opts.separator "it defaults to the project containing the current directory."
-        opts.separator ""
-        opts.on("--path", "Print each checkout's path instead of its workspace name (not with --json)") { options[:path] = true }
-        opts.on("--all", "Also list worktrees that have no workspace config, shown only with --path or --json (runs git)") { options[:all] = true }
-        opts.on("--timeout SECONDS", Float, "Seconds to wait for the worktree listing under --all (default 5)") { |seconds| options[:timeout] = seconds }
-        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
-        opts.separator ""
-        opts.separator "Without --all no git runs. Members whose checkout is gone are still listed. Names only: with --all"
-        opts.separator "the unconfigured worktrees are omitted (a note goes to stderr) unless --path or --json is given."
-        opts.separator "An empty result prints a note to stderr and nothing to stdout, so loop over the output"
-        opts.separator "(for/while read -r) rather than pass it unquoted to a command that acts on every workspace"
-        opts.separator "when given no argument."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects members"
-        opts.separator "  for ws in $(workspace projects members app); do workspace stop \"$ws\"; done"
-        opts.separator "  workspace projects members app | while read -r ws; do workspace stop \"$ws\"; done"
-        opts.separator "  workspace projects members --path"
-        opts.separator "  workspace projects members --all --json"
+        opts.on("--path") { options[:path] = true }
+        opts.on("--all") { options[:all] = true }
+        opts.on("--timeout SECONDS", Float) { |seconds| options[:timeout] = seconds }
+        opts.on("--json") { options[:json] = true }
       end
     end
 
@@ -7389,24 +7005,8 @@ module Workspace
 
     def projects_stop_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects stop [NAME|PATH] [--dry-run] [--json]"
-        opts.separator ""
-        opts.separator "Stop every running workspace of a project (its main checkout and worktrees) and their tmux"
-        opts.separator "sessions in one step. NAME is a project name, a member workspace name or a path (use a path"
-        opts.separator "when two projects share a name); it defaults to the project containing the current directory."
-        opts.separator ""
-        opts.on("--dry-run", "List the workspaces that would be stopped and stop nothing") { options[:dry_run] = true }
-        opts.on("--json", "Print one schema-versioned result object (see docs/README.projects.md)") { options[:json] = true }
-        opts.separator ""
-        opts.separator "There is no prompt and no unsaved-work check, like 'workspace stop'. If you run this from inside"
-        opts.separator "one of the project's sessions, that session is stopped last, after the result is printed."
-        opts.separator "Exit status: 0 stopped or nothing running, 3 some stopped and some failed, 1 nothing stopped or"
-        opts.separator "a usage error."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects stop                # the project for the current directory"
-        opts.separator "  workspace projects stop app --dry-run"
-        opts.separator "  workspace projects stop ~/src/app --json"
+        opts.on("--dry-run") { options[:dry_run] = true }
+        opts.on("--json") { options[:json] = true }
       end
     end
 
@@ -7422,37 +7022,12 @@ module Workspace
 
     def projects_kill_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]"
-        opts.separator ""
-        opts.separator "Remove every worktree workspace of a project in one step, each the way 'workspace kill' does"
-        opts.separator "(tmux session, git worktree, tmuxinator config, project settings, state entry). The main"
-        opts.separator "checkout is never removed, and worktrees with no workspace config are not touched. NAME is"
-        opts.separator "required: a project name, a member workspace name or a path."
-        opts.separator ""
-        opts.on("--dry-run", "Run the checks and show what would be removed; remove nothing") { options[:dry_run] = true }
-        opts.on("--yes", "Don't ask for confirmation (every check still runs)") { options[:yes] = true }
-        opts.on("--force", "Let worktrees whose checkout is gone or that git can't check past preflight (kill still re-checks for unsaved work, so an unknown one can fail)") { options[:force] = true }
-        opts.on("--discard-unsaved", "Also remove worktrees that have unsaved work, losing it") { options[:discard_unsaved] = true }
-        opts.on("--timeout DURATION", "Time all the unsaved-work checks may take together, e.g. 10 or 30s (default 5s);",
-          "a worktree not checked in time can't be checked") { |value| options[:timeout] = parse_duration_option("--timeout", value, positive: true) }
-        opts.on("--json", "Print one schema-versioned result object (see docs/README.projects.md); needs --yes or --dry-run") { options[:json] = true }
-        opts.separator ""
-        opts.separator "Every worktree is checked before anything is removed. If any has unsaved work (uncommitted"
-        opts.separator "changes to tracked files or unpushed commits), can't be checked, has a checkout that is gone,"
-        opts.separator "or is running the dev environment, nothing is removed and each problem is listed. --force"
-        opts.separator "overrides only a gone checkout or a failed check; unsaved work needs --discard-unsaved. A"
-        opts.separator "running dev environment is never overridden: run 'workspace dev down' first."
-        opts.separator ""
-        opts.separator "--force does not skip the prompt; --yes does. Without a terminal, or with --json, pass --yes"
-        opts.separator "(or --dry-run). If you run this from one of the worktrees, it is removed last."
-        opts.separator "Exit status: 0 removed, nothing to remove, cancelled or a dry run that would proceed;"
-        opts.separator "1 refused, nothing removed, or a usage error; 3 some removed and some failed."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects kill app --dry-run"
-        opts.separator "  workspace projects kill app"
-        opts.separator "  workspace projects kill app --yes --json"
-        opts.separator "  workspace projects kill ~/src/app --force --yes"
+        opts.on("--dry-run") { options[:dry_run] = true }
+        opts.on("--yes") { options[:yes] = true }
+        opts.on("--force") { options[:force] = true }
+        opts.on("--discard-unsaved") { options[:discard_unsaved] = true }
+        opts.on("--timeout DURATION") { |value| options[:timeout] = parse_duration_option("--timeout", value, positive: true) }
+        opts.on("--json") { options[:json] = true }
       end
     end
 
@@ -7476,39 +7051,20 @@ module Workspace
     end
 
     def projects_group_help
-      <<~HELP
-        Usage: workspace projects group create NAME [--json]
-               workspace projects group add GROUP PATH [--json]
-               workspace projects group list [--json]
-               workspace projects group show GROUP [--json] [--no-agents] [--no-git] [--timeout SECONDS]
-
-        A group names several repositories that belong together. Its id is group:<slug>
-        (the slug is NAME in lowercase with dashes). Each repository is kept by the
-        realpath of its git common dir, so a moved checkout stays in its group. The group
-        is a file at ~/.config/workspace/groups/<slug>.yml that you may edit by hand.
-
-        Subcommands:
-          create NAME       Make an empty group
-          add GROUP PATH    Add the repository containing PATH (a main checkout or a worktree).
-                            GROUP is an id, a slug or a name. A repository in another group is
-                            refused; adding it again to the same group does nothing.
-          list              Every group with its repositories (exists: false when one is gone).
-                            A group file that can't be read is named in "warnings" (--json) or on stderr.
-          show GROUP        Each repository as 'projects show' shows it
-
-        Options:
-          --json            Print schema-versioned JSON (see docs/README.projects.md)
-          --no-agents, --no-git, --timeout SECONDS
-                            For show: the same as 'projects show'
-
-        Examples:
-          workspace projects group create Billing
-          workspace projects group add billing ~/src/api
-          workspace projects group list --json
-      HELP
+      [HelpPages.overview_usage(HelpPages::GROUPS), "",
+        "A group names several repositories that belong together. Its id is group:<slug>",
+        "(the slug is NAME in lowercase with dashes). Each repository is kept by the",
+        "realpath of its git common dir, so a moved checkout stays in its group. The group",
+        "is a file at ~/.config/workspace/groups/<slug>.yml that you may edit by hand.", "",
+        "Subcommands:", *HelpPages.overview_verbs(HelpPages::GROUPS),
+        "Run `workspace projects group VERB --help` for a verb's options.", "",
+        "Examples:",
+        *HelpPages.overview_examples(HelpPages::GROUPS)].join("\n")
     end
 
     def cmd_projects_group(args)
+      return if verb_help_shown?(HelpPages::GROUPS, args)
+
       sub = args.index { |a| !a.start_with?("-") }
       action = sub && args[sub]
       rest = sub ? args[0...sub] + args[(sub + 1)..] : args.dup
@@ -7556,18 +7112,9 @@ module Workspace
       json = false
       git = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects [list] [--running] [--git] [--json]"
-        opts.separator ""
-        opts.separator "List projects (a repository's main checkout plus its worktrees) and their workspaces."
-        opts.separator ""
-        opts.on("--running", "Only projects with at least one running workspace") { running = true }
-        opts.on("--git", "Add an UNSAVED column (runs git in every checkout, and counts worktrees with no workspace config)") { git = true }
-        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects list"
-        opts.separator "  workspace projects list --running --json"
-        opts.separator "  workspace projects list --git    # which projects have unsaved work"
+        opts.on("--running") { running = true }
+        opts.on("--git") { git = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace projects --help'." if args.any?
@@ -7596,7 +7143,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace parent    # the parent of the current directory's workspace"
         opts.separator "  workspace parent app.worktree-login    # the parent of a named workspace"
-        opts.separator "  workspace parent --name app.worktree-login    # the same"
+        opts.separator "  workspace parent --name app.worktree-login    # in a script, where the flag reads clearer than a bare name"
         opts.separator "  workspace parent --path    # the parent's root directory"
         opts.separator "  workspace parent --json    # name, path, git_common_dir, is_worktree, worktree"
       end
@@ -7608,18 +7155,9 @@ module Workspace
 
     def notes_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace notes dir [--name WORKSPACE] [--create] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::NOTES)
         opts.separator ""
-        opts.separator "Notes are the working files an agent or a person keeps for a workspace (plans,"
-        opts.separator "findings, handoffs), outside the source tree."
-        opts.separator ""
-        opts.separator "Print where a workspace's notes are kept: the absolute path alone, so"
-        opts.separator "\"$(workspace notes dir)\" works. The workspace is the one detected from the"
-        opts.separator "current directory unless --name picks another."
-        opts.separator ""
-        opts.separator "The path is the workspace's own notes.dir (a worktree's own, or the project's for"
-        opts.separator "a main checkout), else the project's notes.default_dir rule, else"
-        opts.separator "tmp/workspace-notes in the checkout. Nothing is written to config."
+        HelpPages::NOTES["dir"][:about].each { |line| opts.separator line }
         opts.separator ""
         opts.on("--name NAME", "Workspace to answer for instead of the one detected from the current directory") { |v| options[:name] = v }
         opts.on("--create", "Make the directory; inside the checkout, also keep it out of git (info/exclude)") { options[:create] = true }
@@ -7627,13 +7165,13 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace notes dir    # /src/api/.worktrees/x/tmp/workspace-notes"
-        opts.separator "  cd \"$(workspace notes dir --create)\"    # make it, then go there"
-        opts.separator "  workspace notes dir --name api.worktree-x --json"
+        HelpPages::NOTES["dir"][:examples].each { |command, scenario| opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}" }
       end
     end
 
     def cmd_notes(args)
+      return if verb_help_shown?(HelpPages::NOTES, args)
+
       options = {json: false, create: false}
       parser = notes_parser(options)
       subcommand = args.shift if args.first == "dir"
@@ -7655,43 +7193,29 @@ module Workspace
 
     def skills_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace skills install [--install-all] [--dry-run] [--json] [--no-input]\n       workspace skills uninstall [--dry-run] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::SKILLS)
         opts.separator ""
-        opts.separator "install: link the four workspace skills (workspace, workspace-agent-run, workspace-inbox,"
-        opts.separator "workspace-lifecycle), each as a link to its whole directory, into the skills directory of the"
-        opts.separator "coding agents found on this machine (Claude Code ~/.claude/skills, Codex ~/.codex/skills,"
-        opts.separator "Pi ~/.pi/agent/skills, OpenCode ~/.config/opencode/skills) and into ~/.agents/skills when it"
-        opts.separator "exists. It asks once which of the harnesses found to install for; the ones left out are"
-        opts.separator "remembered and not asked again (end of input means none). All four skills are linked in a"
-        opts.separator "directory, or none: a path already there that is not our link (a real directory with other"
-        opts.separator "content, a file, someone else's link) is never replaced, it is refused and the mv to clear it"
-        opts.separator "is printed. A real directory identical to ours is moved to the state directory's"
-        opts.separator "skill-backups and linked. A re-run refreshes links and says what changed. From a linked git"
-        opts.separator "worktree it refuses (skill_source_worktree): run it from the main checkout or a Homebrew install."
+        opts.separator "Link the four workspace skills that ship with this tool into the skills directory of each"
+        opts.separator "coding agent on your machine, or remove those links. The skills teach an agent to use the"
+        opts.separator "`workspace` CLI."
         opts.separator ""
-        opts.separator "uninstall: remove our links (one of the four names, pointing at a lib/skills/<name> of this"
-        opts.separator "tool, dangling ones too) from every known skills directory. Real directories and other links"
-        opts.separator "stay and are reported. It records no decline."
-        opts.separator ""
-        opts.separator "Exit status: 0 done or already current; 1 something was refused or failed, no harness found,"
-        opts.separator "or the install has no skills; 2 usage."
+        opts.separator "Subcommands:"
+        HelpPages.overview_verbs(HelpPages::SKILLS).each { |line| opts.separator line }
+        opts.separator "Run `workspace skills VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--install-all", "install: every harness found, no question; clears recorded declines") { options[:install_all] = true }
         opts.on("--dry-run", "Print what would happen; write nothing") { options[:dry_run] = true }
-        opts.on("--json", "Print one JSON document (see docs/README.json.md); questions go to stderr") { options[:json] = true }
+        opts.on("--json", "Print one JSON document (see docs/README.skills.md); questions go to stderr") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
-        opts.separator "Without --install-all, install fails with confirmation_required under --no-input (or"
-        opts.separator "WORKSPACE_NO_INPUT) when it would have to ask; a re-run with nothing to ask is fine."
-        opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace skills install"
-        opts.separator "  workspace skills install --install-all --no-input --json"
-        opts.separator "  workspace skills uninstall --dry-run"
+        HelpPages.overview_examples(HelpPages::SKILLS, per_verb: 2).each { |line| opts.separator line }
       end
     end
 
     def cmd_skills(args)
+      return if verb_help_shown?(HelpPages::SKILLS, args)
+
       options = {json: false, dry_run: false, install_all: false}
       parser = skills_parser(options)
       parser.parse!(args)
@@ -7714,7 +7238,7 @@ module Workspace
 
     def ticket_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ticket show REF [--name WORKSPACE] [--json]\n       workspace ticket list [--assigned|--recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::TICKET)
         opts.separator ""
         opts.separator "show: read a ticket the way 'workspace start' reads its argument, and say whether a worktree for"
         opts.separator "it already exists. REF is a JIRA key or URL, a pull request URL or #n, a GitHub issue URL,"
@@ -7740,15 +7264,13 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace ticket show PROJ-123"
-        opts.separator "  workspace ticket show https://github.com/acme/api/pull/41 --json"
-        opts.separator "  workspace ticket show feature/login --name api"
-        opts.separator "  workspace ticket list --json    # what is assigned to me"
-        opts.separator "  workspace ticket list --recent --source=gh --limit=10"
+        HelpPages.overview_examples(HelpPages::TICKET, per_verb: 2).each { |line| opts.separator line }
       end
     end
 
     def cmd_ticket(args)
+      return if verb_help_shown?(HelpPages::TICKET, args)
+
       options = {json: false, name: nil}
       parser = ticket_parser(options)
       parser.parse!(args)
@@ -7782,6 +7304,8 @@ module Workspace
     end
 
     def cmd_goal(args)
+      return if verb_help_shown?(HelpPages::GOAL, args)
+
       options = {json: false, all: false}
       parser = goal_parser(options)
       parser.parse!(args)
@@ -7805,7 +7329,7 @@ module Workspace
 
     def goal_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace goal show [REF] [--json]\n       workspace goal list [--all] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::GOAL)
         opts.separator ""
         opts.separator "show: where a goal is at each level (the goal, its journey stage, its workflow step, the agent's"
         opts.separator "turn, the tool call), what it waits for and on whom, and the next expected event. A goal is a"
@@ -7819,67 +7343,22 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace goal show                  # the workspace you are in"
-        opts.separator "  workspace goal show LAB-1 --json"
-        opts.separator "  workspace goal list"
+        opts.separator "  workspace goal show    # the goal of the workspace you are in"
+        opts.separator "  workspace goal show LAB-1 --json    # the goal for a ticket key, as JSON"
+        opts.separator "  workspace goal list    # one line per goal"
       end
     end
 
     def spine_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]\n" \
-                      "       workspace spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE]\n" \
-                      "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]\n" \
-                      "       workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone)\n" \
-                      "                             [--if-revision REV] [--by LABEL] [--json]\n" \
-                      "       workspace spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--by LABEL]\n" \
-                      "                              [--if-revision REV] [--json]\n" \
-                      "       workspace spine goal set [WORKSPACE] TEXT [--if-revision REV] [--by LABEL] [--json]\n" \
-                      "       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF]\n" \
-                      "                             [--if-revision REV] [--json]\n" \
-                      "       workspace spine start [WORKSPACE] STAGE-PATH --fan-out [--spawn KIND] [--max N] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::SPINE)
         opts.separator ""
-        opts.separator "show reads a workspace's stages: the stage files in spine/ of its notes directory, one"
-        opts.separator "Markdown file per stage (10-research.md, 20-plan.md, ...), and sub-stages in a folder named"
-        opts.separator "like a stage file without .md. Statuses are read as one of not_started, in_progress,"
-        opts.separator "blocked, completed, skipped or unknown. A bad file is a warning in the answer, never an"
-        opts.separator "error, and nothing is written, created or followed through a link."
+        opts.separator "A spine is the stage files in spine/ of a workspace's notes directory, one Markdown file"
+        opts.separator "per stage. Writers of a workspace take turns."
         opts.separator ""
-        opts.separator "set changes one stage's status, note or owner (give at least one). STAGE-PATH is the ids"
-        opts.separator "joined with /, as show reports `path`, such as verify or implement/api. It rewrites only the"
-        opts.separator "status, note, owner, updated and updated_by lines of the stage file and writes a spine_changed"
-        opts.separator "event. Writers of a workspace take turns."
-        opts.separator ""
-        opts.separator "check ticks (--done) or unticks (--undone) items of a stage's '## Done when' checklist; N is the"
-        opts.separator "item's 1-based position, as show lists them. Only the [ ] or [x] on that item's line changes, not"
-        opts.separator "the frontmatter. An item already in the asked state is left alone. It writes a spine_changed event"
-        opts.separator "with change done_when. Refuses an item that is not there (unknown_item)."
-        opts.separator ""
-        opts.separator "verify records a separate check of a completed stage: check (passed with --pass, failed with --fail),"
-        opts.separator "checked_by, checked_at and check_note, and no other line. A stage opts in with a check: line in its file"
-        opts.separator "(check: required); 'set --status completed' then makes it check: pending, and any other status resets it"
-        opts.separator "to required. Refuses a stage that has not opted in (check_not_required) and one that is not completed"
-        opts.separator "(stage_not_completed). It writes a spine_changed event with change check."
-        opts.separator ""
-        opts.separator "goal set writes title: in spine/goal.md (one line, at most 120 characters), keeping the rest of an"
-        opts.separator "existing file, and makes the file (spine: 1, title, a '# TEXT' heading) when it is missing. Refuses"
-        opts.separator "a workspace with no spine/ (no_spine). It writes a spine_changed event with change goal."
-        opts.separator ""
-        opts.separator "start gets an agent working on one stage: the pane named, a new one (--spawn), the stage's"
-        opts.separator "owner when it is a live agent pane, else the main Claude Code or Codex pane; a workspace with"
-        opts.separator "no session is launched. It first sets the stage in_progress with that pane as its owner, then"
-        opts.separator "types the brief (the play, the spine pack, and the stage's path and file), then binds the pane."
-        opts.separator "Refuses a stage that is completed or skipped (stage_done; not one whose check failed, which it reopens) or whose depends_on stages are not"
-        opts.separator "(stage_waiting), and a pane that is busy (pane_busy)."
-        opts.separator ""
-        opts.separator "start --fan-out starts every sub-stage of STAGE-PATH (the folder named like its file) that is not"
-        opts.separator "started and has no unmet depends_on, each in its own new pane (--spawn, default the main agent's"
-        opts.separator "kind), at most --max (default 3); the rest are skipped. One result per sub-stage: spawned, refused"
-        opts.separator "(with the code start would give, such as stage_waiting or stage_owned) or skipped. Exit status 1"
-        opts.separator "only when nothing was spawned and something was refused. A stopped workspace (no_session), no"
-        opts.separator "daemon (no_daemon) or a stage without sub-stages (no_substages) refuses the whole fan-out."
-        opts.separator ""
-        opts.separator "Other verb: init (create the folder from a template; run 'workspace spine init --help')."
+        opts.separator "Verbs:"
+        HelpPages.overview_verbs(HelpPages::SPINE).each { |line| opts.separator line }
+        opts.separator "Run `workspace spine VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
         opts.on("--stage STAGE-PATH", "show: only that stage (with its sub-stages); unknown_stage when there is none") { |v| options[:stage] = v }
@@ -7905,24 +7384,16 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace spine show    # the spine of the workspace you are in"
-        opts.separator "  workspace spine show api.worktree-login --json"
-        opts.separator "  workspace spine show --name=api.worktree-login --json"
-        opts.separator "  workspace spine show --stage implement/api --body --json"
-        opts.separator "  workspace spine show --evaluate --json    # state (incl. checking, check_failed), gate_results, disputes, checker and current for every stage"
-        opts.separator "  workspace spine set verify --status in_progress"
-        opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\""
-        opts.separator "  workspace spine set api.worktree-login review --status=completed --note=\"2 nits, fixed\" --json"
-        opts.separator "  workspace spine set api.worktree-login implement --status completed --recursive --if-revision 9f8e7d6c"
-        opts.separator "  workspace spine check verify --item 2 --done"
-        opts.separator "  workspace spine check api.worktree-login implement/api --item 1 --item 3 --undone --if-revision 9f8e7d6c --json"
-        opts.separator "  workspace spine verify relationships --pass --note \"74 commands classed, no gaps\""
-        opts.separator "  workspace spine verify api.worktree-login verify --fail --note \"item 2 is not in the diff\" --by=\"claude %27\" --json"
-        opts.separator "  workspace spine goal set \"Fix the OAuth refresh race\""
-        opts.separator "  workspace spine start verify    # the stage's owner pane, else the main agent pane"
-        opts.separator "  workspace spine start api.worktree-login implement/api --spawn codex --json"
-        opts.separator "  workspace spine start research --pane %21 --play team-research"
-        opts.separator "  workspace spine start implement --fan-out --max=2 --json    # one new agent per ready sub-stage"
+        opts.separator "  workspace spine show    # the stages of the workspace you are in"
+        opts.separator "  workspace spine show --evaluate --json    # judge every stage against the plan, git, the pull request and the panes (up to about 5s)"
+        opts.separator "  workspace spine init --dry-run    # preview the spine/ files; nothing is written"
+        opts.separator "  workspace spine set verify --status in_progress    # mark a stage started"
+        opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\"    # record who works it and a note"
+        opts.separator "  workspace spine check verify --item 2 --done    # tick item 2 of the stage's Done when list"
+        opts.separator "  workspace spine verify implement --pass --note \"CI green, all 4 items met\"    # a checker records a pass (not the agent that did the stage)"
+        opts.separator "  workspace spine goal set \"Fix the OAuth refresh race\"    # write the goal's title"
+        opts.separator "  workspace spine start verify    # type the stage's brief into its owner pane, else the main agent pane"
+        opts.separator "  workspace spine start implement --fan-out --max 2    # one new agent pane per ready sub-stage, at most two"
       end
     end
 
@@ -7987,6 +7458,8 @@ module Workspace
     end
 
     def cmd_spine(args)
+      return if verb_help_shown?(HelpPages::SPINE, args)
+
       index = spine_verb_index(args)
       if index && args[index] == "init"
         args.delete_at(index)
@@ -8156,12 +7629,12 @@ module Workspace
 
     def pr_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]\n" \
-          "       workspace pr feedback [--name WORKSPACE] [--all] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::PR)
         opts.separator ""
         opts.separator "Open a pull request for a workspace's branch and leave the workspace alone. When the"
         opts.separator "branch already has a pull request, it is returned and nothing else happens. Otherwise the"
-        opts.separator "branch is pushed to origin if it has no upstream, and 'gh pr create --fill' runs. Refuses a"
+        opts.separator "branch is pushed to origin if it has no upstream, and 'gh pr create --fill' runs, opening a"
+        opts.separator "real pull request. A branch that already has an upstream is not pushed. Refuses a"
         opts.separator "branch with no commits ahead of its base. Needs 'gh', logged in."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
@@ -8177,14 +7650,13 @@ module Workspace
         opts.separator "Needs 'gh', logged in."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace pr feedback --json"
-        opts.separator "  workspace pr create"
-        opts.separator "  workspace pr create --draft --json"
-        opts.separator "  workspace pr create --name api.worktree-PROJ-123"
+        HelpPages.overview_examples(HelpPages::PR, per_verb: 2).each { |line| opts.separator line }
       end
     end
 
     def cmd_pr(args)
+      return if verb_help_shown?(HelpPages::PR, args)
+
       options = {json: false, name: nil, draft: false, all: false}
       parser = pr_parser(options)
       parser.parse!(args)
@@ -8216,8 +7688,11 @@ module Workspace
         opts.separator "  remote   fetch origin, rebase onto origin/<default>"
         opts.separator "  upstream fetch the branch's own upstream and rebase onto it; works on the default"
         opts.separator "           branch too (refused: no_upstream, upstream_gone)"
-        opts.separator "Refuses a workspace with changes to tracked files and never stashes them. A rebase that"
-        opts.separator "stops on a conflict is aborted, so the workspace is left as it was."
+        opts.separator "A successful rebase rewrites the branch's commits. Refuses a workspace with changes to tracked"
+        opts.separator "files and never stashes them. A rebase that stops on a conflict is aborted, so the workspace"
+        opts.separator "is left as it was. Exits 0 for every outcome (rebased, up_to_date, conflict,"
+        opts.separator "default_not_updated); read the outcome in the text or with --json. Exits 1 with an error when"
+        opts.separator "it refuses or fails; --json prints the code (dirty_worktree, no_upstream, ...)."
         opts.separator ""
         opts.on("--onto TARGET", "local, update, remote or upstream (required)") { |v| options[:onto] = v }
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
@@ -8225,8 +7700,10 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace rebase --onto update"
-        opts.separator "  workspace rebase --onto remote --name api.worktree-PROJ-123 --json"
+        opts.separator "  workspace rebase --onto update    # catch the branch up with origin's default branch: fetches, may move the local default branch, rewrites this branch's commits"
+        opts.separator "  workspace rebase --onto local    # rebase onto the local default branch with nothing fetched, for example offline"
+        opts.separator "  workspace rebase --onto remote --name api.worktree-PROJ-123 --json    # another workspace, for a script: rebase onto origin/<default> and read the outcome, even a conflict exits 0"
+        opts.separator "  workspace rebase --onto upstream    # pick up commits others pushed to this branch itself; also works on the default branch"
       end
     end
 
@@ -8252,14 +7729,17 @@ module Workspace
         opts.separator "branch's own history once held all of them (a rebase replaced them); otherwise it is refused."
         opts.separator "A pull request checkout (pr-N, from `start '#N'`) is pushed to the pull request's head branch"
         opts.separator "once gh confirms the pull request is open, comes from origin, and is at the commit fetched."
+        opts.separator "This changes origin for real. Exits 1 with an error when it refuses or the push fails; --json"
+        opts.separator "prints the code (push_rejected, push_auth_failed, ...)."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
-        opts.on("--json", "Print one JSON document (see docs/README.rebase.md)") { options[:json] = true }
+        opts.on("--json", "Print one JSON document (push is documented in docs/README.rebase.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace push"
-        opts.separator "  workspace push --name api.worktree-PROJ-123 --json"
+        opts.separator "  workspace push    # publish this branch to origin, setting its upstream the first time"
+        opts.separator "  workspace push --name api.worktree-PROJ-123    # push another workspace's branch without changing directory"
+        opts.separator "  workspace push --json    # after a rebase, for a script: forced with a lease only when the rebase replaced the upstream's commits; read outcome and forced"
       end
     end
 
@@ -8315,9 +7795,11 @@ module Workspace
         opts.separator "Allow 60s without --launch, and --prompt-timeout plus 60s with it."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace promote fix-login --dry-run --json"
-        opts.separator "  workspace promote fix-login --title \"Fix the login bug\" --spine --plan --carry-note research-login.md --json"
-        opts.separator "  workspace promote --name api --launch"
+        opts.separator "  workspace promote    # on a feature branch: move its commits and the checkout's changes into a new worktree workspace"
+        opts.separator "  workspace promote fix-login --dry-run    # on the default branch: say what would move to a new branch fix-login, write nothing"
+        opts.separator "  workspace promote fix-login --dry-run --json    # the same, as one JSON document"
+        opts.separator "  workspace promote fix-login --title \"Fix the login bug\" --spine --plan --carry-note research-login.md --json    # move it, make a spine and plan, copy one note, scripted"
+        opts.separator "  workspace promote --name api --launch    # move the branch the \"api\" checkout is on, from any directory, then launch the new workspace"
       end
     end
 
@@ -8384,36 +7866,17 @@ module Workspace
 
     def plan_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]\n" \
-          "       workspace plan path [--name WORKSPACE] [--json]\n" \
-          "       workspace plan show [--name WORKSPACE]\n" \
-          "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]\n" \
-          "       workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]\n" \
-          "       workspace plan pause [--name WORKSPACE] [--interrupt] [--json]\n" \
-          "       workspace plan delete [--name WORKSPACE] --yes [--json]\n" \
-          "       workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]\n" \
-          "       workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]\n" \
-          "       workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]\n" \
-          "       workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::PLAN)
         opts.separator ""
         opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
         opts.separator "line per task under '## Tasks'. workspace counts it, and works out one state from the"
         opts.separator "plan, the session and the pane that owns the plan."
         opts.separator ""
         opts.separator "Subcommands:"
-        opts.separator "  status   Count the plan and report its state (a workspace with no plan is a row, not an error)"
-        opts.separator "  path     Print where the plan is (or would be)"
-        opts.separator "  show     Print the plan file"
-        opts.separator "  init     Write a new plan, or import an existing document with --from"
-        opts.separator "  start    Set status: active, then launch the workspace with the implementation-plan play, or send"
-        opts.separator "           the main agent pane the play and \"Continue the plan.\" (a working pane is left alone)."
-        opts.separator "           With --task, send that one task to --pane, a new agent pane (--spawn), the task's owner,"
-        opts.separator "           or the main agent pane; the pane is written onto the task line as its owner"
-        opts.separator "  pause    Set status: paused; the agent stops before its next task. --interrupt also presses"
-        opts.separator "           the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works"
-        opts.separator "  delete   Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>; needs --yes; the session and worktree stay"
-        opts.separator "  task     add, set-state, set-title or move one task line; --if-revision (the revision from status --json) refuses a stale edit"
-        opts.separator "           with stale_revision. States: #{PlanFile::TASK_STATES.join(", ")}; blocked and skipped need --reason"
+        HelpPages.overview_verbs(HelpPages::PLAN).each { |line| opts.separator line }
+        opts.separator "Run `workspace plan VERB --help` for a verb's options. Task states: #{PlanFile::TASK_STATES.join(", ")}."
+        opts.separator ""
+        opts.separator "A verb that writes (init, start, pause, delete, task) changes the plan or the workspace for real."
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
         opts.on("--project [NAME]", "status: every workspace of a project (NAME, or the project of the current workspace)") { |v| take_plan_flag(options, :project, v || true) }
@@ -8439,20 +7902,16 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace plan status    # api.worktree-x  working  7/20 (40%)  T9 Add the token store"
-        opts.separator "  workspace plan status --all --json"
-        opts.separator "  workspace plan status --group billing --json"
-        opts.separator "  workspace plan init --title \"Auth rewrite\""
-        opts.separator "  workspace plan path    # /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
-        opts.separator "  workspace plan start --name api.worktree-x --json"
-        opts.separator "  workspace plan start --task=T4 --pane=%23 --json"
-        opts.separator "  workspace plan start --task=T5 --spawn=claude"
-        opts.separator "  workspace plan pause --interrupt --json"
-        opts.separator "  workspace plan task add --title \"Write the docs\" --phase=Docs --if-revision=9f8e7d6c --json"
-        opts.separator "  workspace plan task set-state --task=T3 --state=blocked --reason=\"needs the dev database\""
-        opts.separator "  workspace plan task set-title --task=T3 --title=\"Write the token store docs\""
-        opts.separator "  workspace plan task move --task=T5 --after=T1"
-        opts.separator "  workspace plan delete --yes"
+        opts.separator "  workspace plan status    # the plan of the workspace you are in, e.g. api.worktree-x  working  7/20 (40%)  T9 Add the token store"
+        opts.separator "  workspace plan status --all --json    # every workspace, as one JSON document"
+        opts.separator "  workspace plan path    # where the plan file is, e.g. /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
+        opts.separator "  workspace plan init --title \"Auth rewrite\"    # write a new plan"
+        opts.separator "  workspace plan start    # set it active, then launch the workspace or type the play into its agent pane"
+        opts.separator "  workspace plan start --task T4 --pane %23    # type one task into pane %23"
+        opts.separator "  workspace plan pause --interrupt    # stop after the current task and interrupt the working owner panes"
+        opts.separator "  workspace plan task add --title \"Write the docs\" --phase Docs    # add a task under the ### Docs heading"
+        opts.separator "  workspace plan task set-state --task T3 --state blocked --reason \"needs the dev database\"    # block a task"
+        opts.separator "  workspace plan delete --yes    # rename the plan file to IMPLEMENTATION_PLAN.md.deleted-<time>"
       end
     end
 
@@ -8462,6 +7921,8 @@ module Workspace
     end
 
     def cmd_plan(args)
+      return if verb_help_shown?(HelpPages::PLAN, args)
+
       options = {given: [], json: false, force: false, yes: false}
       parser = plan_parser(options)
       parser.parse!(args)
@@ -8610,8 +8071,9 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace dir    # the root of the workspace you are in"
-        opts.separator "  workspace dir work-notes     # /Users/zdennis/Documents/Obsidian-LocalOnly/Zendesk"
-        opts.separator "  workspace dir --name growth-engine  # /Users/zdennis/Code/zendesk/growth-engine"
+        opts.separator "  workspace dir api    # where the api project lives, from anywhere"
+        opts.separator "  workspace dir api | pbcopy    # put its path on the clipboard"
+        opts.separator "  workspace dir --name api.worktree-login    # the checkout of one worktree workspace"
       end
       parser.parse!(args)
 
@@ -8690,6 +8152,11 @@ module Workspace
         opts.separator ""
         opts.separator "Install or update the Alfred workflow for workspace focus."
         opts.separator "Copies workflow files to Alfred's preferences directory."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace alfred install    # add the 'wf' workflow to Alfred, or update it after upgrading workspace"
+        opts.separator "  workspace alfred install && workspace alfred info    # install, then confirm where it went"
+        opts.separator "  workspace alfred install | grep Installed    # print the line saying where it was installed"
       end
       parser.parse!(args)
 
@@ -8727,7 +8194,14 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace alfred uninstall"
         opts.separator ""
-        opts.separator "Remove the Alfred workflow for workspace focus."
+        opts.separator "Remove the Alfred workflow for workspace focus. Asks for a y/N"
+        opts.separator "confirmation before deleting; nothing is removed if the workflow is"
+        opts.separator "not installed."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace alfred uninstall    # remove the workflow from Alfred, after confirming"
+        opts.separator "  workspace alfred uninstall </dev/null    # answer nothing: it cancels and removes nothing"
+        opts.separator "  WORKSPACE_NO_INPUT=1 workspace alfred uninstall    # in an unattended script with the workflow installed: exits 1 with an error instead of waiting"
       end
       parser.parse!(args)
 
@@ -8752,6 +8226,11 @@ module Workspace
         opts.banner = "Usage: workspace alfred info"
         opts.separator ""
         opts.separator "Show the installation status of the Alfred workflow."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace alfred info    # see whether the workflow is installed, and where"
+        opts.separator "  workspace alfred info | grep -q 'is installed' || workspace alfred install    # install it only when missing"
+        opts.separator "  workspace alfred info | grep Location    # find the workflow's folder to edit it by hand"
       end
       parser.parse!(args)
 

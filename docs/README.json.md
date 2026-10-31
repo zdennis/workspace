@@ -65,6 +65,20 @@ The agent daemon's pane list (`sessions --json`) carries a boolean `turn_failed`
 
 `goal show [REF] --json` prints `{"schema_version":1,"ok":true,"goal":{...},"warnings":[]}` and `goal list [--all] --json` prints `{"schema_version":1,"ok":true,"goals":[...],"warnings":[]}`. Both are read-only; a source that can't answer is a null level plus a warning. `show` also carries `done_means` and `not_yet` (lists of `{code, text}`) and `delivery`, and `list` rows `delivered` and `not_yet_codes`: a finished plan or spine is `done` only once the branch's commits are on the default branch (local git only). Every field, the closed value sets, nullability and warning codes are in [README.goal.md](README.goal.md).
 
+## Help pages
+
+`--help --json` (or `--json --help`) on any subcommand or verb prints its help page as one JSON document, made from the text the page prints, so the two say the same. It is not enveloped. It prints the page and does nothing else.
+
+```json
+{"usage":["workspace ask list [WS] [--all] [--json]"],"description":"List the open questions.","options":[{"flags":"--all","description":"Include answered ones"}],"examples":[{"command":"workspace ask list","scenario":"open questions of this workspace"}],"sections":[{"heading":"Accepts","text":"..."}]}
+```
+
+- `usage`: the usage lines without `Usage:`. `description`: the text between the usage and the first heading. `options`: each flag with its words (`flags`) and text (`description`, continuation lines joined by a space). `examples`: the command and its scenario, split at the `    # ` separator (`scenario` is empty when there is none).
+- `sections`: every other headed part (`Accepts:`, `Exit codes:`, `Environment variables:`, the root page's `Subcommands:`) as `{heading, text}`; absent when there is none. A page of another shape still gives valid JSON: what is not recognised stays in `description` or `sections`.
+- Only a plain help request is intercepted: before any `--`, a `--json` and a `--help` or `-h`, with no word starting with a dash before the help word. A dashed word could be a flag that takes the help word as its value (`--name --help`), and the flags of a command are not known here, so such a line is left entirely alone, `--json` included, and behaves as it did before. The limit: `plan pause --interrupt --help --json` prints the text page. Put the verb and its arguments first: `plan pause --help --json`.
+- Also left alone: `--help` inside one argument (`ask "what does --help --json do"`), after `--`, and in `ask` after words that are not a verb (`ask what is --help --json` is a question, and prints what it always did). A command where `--json` alone is a flag runs as before.
+- A help request that fails (`nosuch --help --json`) keeps its exit status and prints the [error envelope](#failure) with code `usage`.
+
 ## Failure
 
 ```json

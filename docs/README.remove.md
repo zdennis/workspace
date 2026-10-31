@@ -48,14 +48,14 @@ One row, with `outcome` `removed`, or `would_remove` (status `dry_run`) for `--d
 ## Examples
 
 ```sh
-# See which files of the workspace you are in would go
-workspace remove --dry-run
+# Ask, then delete its tmuxinator config, settings file and state entry (backups kept; the checkout is untouched)
+workspace remove app
+
+# The same for the workspace you are in
+workspace remove
 
 # See which files would go
 workspace remove app --dry-run
-
-# Ask, then remove
-workspace remove app
 
 # No prompt, one JSON document
 workspace remove app --yes --json

@@ -115,7 +115,7 @@ A restarted agent daemon reads each pane's last `agent_state` back, so `workspac
 
 Recording activity never fails the command doing it: if the log can't be written, one warning goes to stderr and the command carries on. Nothing is written to stdout, so `--json` output stays JSON-only.
 
-When the event log exceeds 1MB (`event_log_compact_threshold` in the global config), workspace warns you to compact it. Compaction replays the log and rewrites it with one `compacted` event per active project, plus the latest `agent_state` of each pane that still has an agent (and changed within the last 7 days), that pane's latest idle `agent_alert`, and, while it is still waiting, its latest waiting `agent_alert` per agent. All other activity history is dropped.
+When the event log exceeds 1MB (`event_log_compact_threshold` in the global config), workspace warns you to compact it. Compaction replays the log and rewrites it with one `compacted` event per active project, plus the latest `agent_state` of each pane that still has an agent (and changed within the last 7 days), that pane's latest idle `agent_alert`, and, while it is still waiting, its latest waiting `agent_alert` per agent. All other activity history is dropped. There is no dry run, and `compact` ignores any extra flag: the log is still compacted.
 
 When an append leaves the log over 10MB, workspace rotates it on its own: the log is renamed to `.workspace-events.jsonl.1` (older files shift to `.2` and `.3`; the one past `.3` is deleted), and a new log, seeded with the same compacted state, takes its place. Rotated files keep the activity history, so the log and its rotated files stay under about 40MB. Rotation is safe with several workspace processes appending at once, and a failed rotation never fails the command that triggered it.
 
@@ -124,10 +124,22 @@ Existing users are automatically migrated on first run — the current state fil
 ## Examples
 
 ```sh
-# Compact the event log
+# Compact the event log: rewrites it in place and drops the history
 workspace event-log compact
 # => Compacted event log: 15360 -> 1024 bytes (8 project(s))
 
+# Check what compaction kept: one compacted event per active project
+workspace event-log compact && workspace event-log show --type compacted
+
 # The last 20 events for one project
 workspace event-log show --project myapp --limit 20
+
+# Why a pipeline stage stopped
+workspace event-log show --type stage_failed,stage_timed_out
+
+# Who waited for a lock, and who took one over
+workspace event-log show --type lock_wait_started,lock_takeover --project myapp
+
+# The newest event as JSON, for a script
+workspace event-log show --json --limit 1
 ```

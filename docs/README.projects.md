@@ -10,8 +10,8 @@ or remove all of its worktrees.
 workspace projects [list] [--running] [--git] [--json]
 workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]
 workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]
-workspace projects stop [NAME] [--dry-run] [--json]
-workspace projects kill NAME [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]
+workspace projects stop [NAME|PATH] [--dry-run] [--json]
+workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]
 workspace projects group create|add|list|show ...   # see "Groups"
 ```
 

@@ -57,9 +57,18 @@ Errors: `unknown_agent_kind` for an agent workspace installs no hooks for (`deta
 ## Examples
 
 ```sh
-# See what would go
+# See what would go from Codex's hooks.json first
 workspace hooks uninstall --agent codex --dry-run
 
-# Remove them
-workspace hooks uninstall --agent=codex
+# Stop Codex reporting to workspace, keeping your own hooks
+workspace hooks uninstall --agent codex
+
+# Clean up one workspace's checkout
+workspace hooks uninstall --agent claude --name my-feature
+
+# Preview every checkout of this project
+workspace hooks uninstall --agent claude --project --dry-run
+
+# A script removing the hooks and reading the outcome
+workspace hooks uninstall --agent=codex --json
 ```
