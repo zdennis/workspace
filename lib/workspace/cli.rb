@@ -3864,6 +3864,8 @@ module Workspace
 
       # With --json the notice is in an action document's `warnings` instead, and stderr stays empty.
       @error_output.puts "Warning: #{PIPELINE_DEPRECATION}" if %w[start advance status reset].include?(subcommand) && !rest.include?("--json")
+      return if subcommand && verb_help_shown?(HelpPages::PIPELINE, [subcommand, *rest])
+
       case subcommand
       when "start" then cmd_pipeline_start(rest)
       when "advance" then cmd_pipeline_advance(rest)
@@ -3881,36 +3883,26 @@ module Workspace
 
     def pipeline_help
       <<~HELP
-        Usage: workspace pipeline <subcommand> [options]
+        #{HelpPages.overview_usage(HelpPages::PIPELINE)}
 
         Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
         and shows where a run is stuck. `pipeline` will be removed in a later release.
 
-        Subcommands:
-          start <project> --work-item REF    Send a work item into the project's pipeline
-          advance <project> --work-item REF  Mark the running stage complete and move on
-          status <project>                   Show what the project has in flight
-          reset <project>                    Clear a stopped project's pipeline state
-
-        Options:
-          --work-item REF   Work item reference (e.g. WC-42)
-          --body TEXT       Message body to send (start/advance)
-          --json            Print JSON: the status (status), or an action document (start, advance, reset)
-
-        'advance' marks the running stage complete even if it has not finished.
+        #{HelpPages.overview_verbs(HelpPages::PIPELINE).join("\n")}
 
         Examples:
           workspace pipeline status myapp    # what is myapp working on?
-          workspace pipeline status myapp --json    # same, for a script
-          workspace pipeline start myapp --work-item WC-42 --body "/build add OAuth support"
-          workspace pipeline advance myapp --work-item WC-42    # push a work item through by hand
+          workspace pipeline status myapp --json    # the same, for a script
+          workspace pipeline start myapp --work-item WC-42 --body "/build add OAuth support"    # hand a work item to myapp's running agent
+          workspace pipeline advance myapp --work-item WC-42    # push a work item past its running stage by hand
           workspace pipeline reset myapp    # clear leftover state after stopping the agent
+          workspace pipeline start --help    # read the page of one subcommand
       HELP
     end
 
     def cmd_pipeline_start(args)
       project, work_item, body, json = parse_pipeline_args(args, "start")
-      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
+      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_page("start")}" if project.nil? || work_item.nil?
 
       run_action("pipeline start", json: json) do
         reply = send_to_agent(project,
@@ -3931,7 +3923,7 @@ module Workspace
     # token and the new stage ignores it, rather than being ended unasked.
     def cmd_pipeline_advance(args)
       project, work_item, body, json = parse_pipeline_args(args, "advance")
-      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
+      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_page("advance")}" if project.nil? || work_item.nil?
 
       run_action("pipeline advance", json: json) do
         token = read_pipeline_state(project).dig(work_item, "sentinel_token")
@@ -3955,12 +3947,11 @@ module Workspace
     def cmd_pipeline_status(args)
       as_json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pipeline status <project>"
-        opts.on("--json", "Print JSON ({schema_version, ok, entries}; failures print {schema_version, ok: false, error, code}) instead of a table") { as_json = true }
+        opts.on("--json") { as_json = true }
       end
       parser.parse!(args)
       project = args.shift
-      raise UsageError, parser.help if project.nil?
+      raise UsageError, pipeline_page("status") if project.nil?
 
       entries = read_pipeline_state(project)
       return @output.puts JSON.generate({"schema_version" => PIPELINE_JSON_SCHEMA_VERSION, "ok" => true, "entries" => entries.values}) if as_json
@@ -4009,12 +4000,11 @@ module Workspace
     def cmd_pipeline_reset(args)
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pipeline reset <project> [--json]"
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text") { json = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       project = args.shift
-      raise UsageError, "Usage: workspace pipeline reset <project> [--json]" if project.nil? || args.any?
+      raise UsageError, pipeline_page("reset") if project.nil? || args.any?
 
       run_action("pipeline reset", json: json) do
         if agent_running?(project)
@@ -4029,20 +4019,24 @@ module Workspace
       end
     end
 
-    def parse_pipeline_args(args, subcommand)
+    def parse_pipeline_args(args, verb)
       work_item = nil
       body = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pipeline #{subcommand} <project> --work-item REF [--json]"
-        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
-        opts.on("--body TEXT", "Message body") { |v| body = v }
-        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text") { json = true }
+        opts.on("--work-item REF") { |v| work_item = v }
+        opts.on("--body TEXT") { |v| body = v }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       project = args.shift
-      raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{pipeline_page(verb)}" if args.any?
       [project, work_item, body, json]
+    end
+
+    # The page of one pipeline verb, as text.
+    def pipeline_page(verb)
+      HelpPages.render(HelpPages::PIPELINE.fetch(verb)).join("\n")
     end
 
     def send_to_agent(project, message)
@@ -4925,6 +4919,9 @@ module Workspace
         opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...]` is what the agent daemon runs to move a run"
         opts.separator "on when a turn ends; it is not meant to be typed."
         opts.separator ""
+        opts.separator "`run` and `start` really start a run (start also makes a worktree); --dry-run checks and starts nothing."
+        opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
+        opts.separator ""
         opts.on("--name WORKSPACE", "run: the workspace to run in; status: that workspace's runs still going (default: the current workspace)") { |v| options[:name] = v }
         opts.on("--input KEY=VALUE", "run, start: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
         opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
@@ -4958,25 +4955,16 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace workflow show rpiv"
-        opts.separator "  workspace workflow show rpiv --source --json"
-        opts.separator "  workspace workflow validate lib/workflows/rpiv.yml --json"
-        opts.separator "  cat draft.yml | workspace workflow validate - --id ship --json"
-        opts.separator "  workspace workflow add ship draft.yml --dry-run --json"
-        opts.separator "  workspace workflow update ship draft.yml --if-sha256 SHA --json"
-        opts.separator "  workspace workflow remove ship --yes --json"
-        opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
-        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\""
-        opts.separator "  workspace workflow start rpiv PROJ-101 --dry-run --json"
-        opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\""
-        opts.separator "  workspace workflow status --json"
-        opts.separator "  workspace workflow status --project --json"
-        opts.separator "  workspace workflow events wr_2610041230559x3k --since 40 --json"
-        opts.separator "  workspace workflow files wr_2610041230559x3k --json"
-        opts.separator "  workspace workflow approve wr_2610041230559x3k --note \"Skip the migration.\""
-        opts.separator "  workspace workflow approve wr_2610041230559x3k --step plan --attempt 2 --note-sha256 HEX --json"
-        opts.separator "  workspace workflow reject wr_2610041230559x3k --note \"Too big; split it.\""
-        opts.separator "  workspace workflow resume wr_2610041230559x3k --from implement"
+        opts.separator "  workspace workflow show    # list the workflows you can run"
+        opts.separator "  workspace workflow show rpiv    # see the inputs and steps of one before running it"
+        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --dry-run    # check a run in this workspace and start nothing"
+        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\"    # start it for real: step one is typed into the Claude pane"
+        opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\"    # make a worktree workspace from a sentence and run rpiv in it"
+        opts.separator "  workspace workflow status    # which runs are going, and why one is stuck"
+        opts.separator "  workspace workflow approve RUN --note \"Skip the migration.\"    # pass the gate a run waits at"
+        opts.separator "  workspace workflow reject RUN --note \"Too big; split it.\"    # send the gated step back with a reason"
+        opts.separator "  workspace workflow resume RUN --from implement    # start a stuck run again at one step"
+        opts.separator "  workspace workflow cancel RUN    # end a run and release its locks"
       end
     end
 

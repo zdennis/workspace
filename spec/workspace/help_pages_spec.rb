@@ -49,6 +49,7 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["pr"].keys).to match_array(%w[create feedback])
       expect(pages["ticket"].keys).to match_array(%w[show list])
       expect(pages["goal"].keys).to match_array(%w[show list])
+      expect(pages["pipeline"].keys).to match_array(%w[start advance status reset])
       expect(pages["notes"].keys).to eq(["dir"])
       expect(pages["instructions"].keys).to eq(["compose"])
       expect(pages["ui"].keys).to eq(["open"])

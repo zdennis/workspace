@@ -9966,6 +9966,27 @@ RSpec.describe Workspace::CLI do
         expect(error_output.string).to include("Usage: workspace pipeline status")
       end
 
+      it "prints the reset page when reset has no project" do
+        cli, _, error_output = build_test_cli(config: config)
+        expect { cli.run(["pipeline", "reset"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Usage: workspace pipeline reset PROJECT")
+        expect(error_output.string).to include("Examples:")
+      end
+
+      it "prints the reset page when reset has extra arguments" do
+        cli, _, error_output = build_test_cli(config: config)
+        expect { cli.run(["pipeline", "reset", "myapp", "extra"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Usage: workspace pipeline reset PROJECT")
+        expect(error_output.string).to include("Examples:")
+      end
+
+      it "prints the advance page when advance has no --work-item" do
+        cli, _, error_output = build_test_cli(config: config)
+        expect { cli.run(["pipeline", "advance", "myapp"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Usage: workspace pipeline advance PROJECT")
+        expect(error_output.string).to include("Examples:")
+      end
+
       it "shows a stage's deadline in local time plus how long remains" do
         now = Time.utc(2026, 9, 27, 12, 0, 0)
         deadline = Time.utc(2026, 9, 27, 12, 12, 0)
@@ -10369,13 +10390,13 @@ RSpec.describe Workspace::CLI do
     it "prints help for an unknown subcommand" do
       cli, _, error_output = build_test_cli(config: config)
       expect { cli.run(["pipeline", "nonsense"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("workspace pipeline <subcommand>")
+      expect(error_output.string).to include("Usage: workspace pipeline start PROJECT")
     end
 
     it "prints help with no subcommand" do
       cli, output, = build_test_cli(config: config)
       cli.run(["pipeline"])
-      expect(output.string).to include("workspace pipeline <subcommand>")
+      expect(output.string).to include("Usage: workspace pipeline start PROJECT")
     end
   end
 

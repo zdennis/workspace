@@ -286,7 +286,13 @@ module Workspace
           "workspace (rpiv, rpiv-auto-approve, pr-feedback, investigate). See docs/README.workflow.md."
         ],
         options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow show", "list the workflows you can run"],
+          ["workspace workflow show rpiv", "see the inputs and steps of one before running it"],
+          ["workspace workflow show rpiv --source", "read the file's text, to start your own copy"],
+          ["workspace workflow show rpiv --source --json", "the text and its sha256 as one document, for a script"],
+          ["workspace workflow show --json", "every definition as one document, for a script"]
+        ]
       },
       "validate" => {
         usage: ["workflow validate PATH|- [--id ID] [--json]"],
@@ -297,7 +303,12 @@ module Workspace
           "\"stdin\"); a relative prompt_file: is read from the file's directory (stdin: the current directory)."
         ],
         options: [["--id ID", "Check the text as this workflow id"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow validate draft.yml", "check a definition you are writing: prints valid, or exits 1 with an error listing every problem"],
+          ["workspace workflow validate - < draft.yml", "check text read from stdin"],
+          ["workspace workflow validate draft.yml --id ship", "check it as the workflow \"ship\" when the file is named otherwise"],
+          ["workspace workflow validate draft.yml --json", "the checked definition as one document, or an error document with the problems"]
+        ]
       },
       "add" => {
         usage: ["workflow add ID PATH|- [--dry-run] [--json]"],
@@ -305,10 +316,17 @@ module Workspace
         about: [
           "Saves a definition (a file, or - for stdin) as ID.yml in ~/.config/workspace/workflows/, after the",
           "checks `workflow validate` makes; refused with workflow_exists when that file is there. A preset of",
-          "the same id is left alone and the copy shadows it. A relative prompt_file: is read from that directory."
+          "the same id is left alone and the copy shadows it. A relative prompt_file: is read from that directory.",
+          "Without --dry-run it writes that file."
         ],
         options: [["--dry-run", "Check, and write no definition (the lock file may be created)"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow add ship draft.yml", "save draft.yml as your workflow \"ship\""],
+          ["workspace workflow add ship draft.yml --dry-run", "check it and see where it would go, saving nothing"],
+          ["workspace workflow add ship - < draft.yml", "save text read from stdin"],
+          ["workspace workflow add rpiv draft.yml", "keep your own rpiv that shadows the preset"],
+          ["workspace workflow add ship draft.yml --json", "report the saved path and sha256 as one document, for a script"]
+        ]
       },
       "update" => {
         usage: ["workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]"],
@@ -317,11 +335,16 @@ module Workspace
           "Replaces your ID.yml (a file, or - for stdin) after the same checks as `workflow add`, only if the",
           "file's raw bytes still hash to --if-sha256 (from `workflow show ID --source`; a broken file can be",
           "replaced). Refused with stale_workflow when it changed, builtin_workflow for a preset with no file",
-          "of yours."
+          "of yours. Without --dry-run it overwrites that file."
         ],
         options: [["--if-sha256 SHA", "The sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches"],
           ["--dry-run", "Check, and write no definition (the lock file may be created)"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow update ship draft.yml --if-sha256 SHA", "replace your ship.yml; SHA is the sha256 that `workflow show ship --source --json` gave"],
+          ["workspace workflow update ship draft.yml --if-sha256 SHA --dry-run", "check the replacement and write nothing"],
+          ["workspace workflow update ship - --if-sha256 SHA < draft.yml", "replace it with text read from stdin"],
+          ["workspace workflow update ship draft.yml --if-sha256 SHA --json", "report the new sha256 as one document, for a script"]
+        ]
       },
       "remove" => {
         usage: ["workflow remove ID [--yes] [--dry-run] [--json]"],
@@ -332,29 +355,48 @@ module Workspace
           "again; unknown_workflow when you have no file, builtin_workflow for a preset alone."
         ],
         options: [["--yes", "Do not ask before deleting the file"], ["--dry-run", "Check and delete nothing"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow remove ship", "delete your ship.yml after a y/N question"],
+          ["workspace workflow remove ship --dry-run", "see which file would be deleted, deleting nothing"],
+          ["workspace workflow remove ship --yes", "delete it without asking, for a script"],
+          ["workspace workflow remove ship --yes --json", "delete it and report one document (--json never asks, so it needs --yes)"]
+        ]
       },
       "run" => {
         usage: ["workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]"],
         summary: "Start a run of a workflow in a workspace",
         about: [
           "A run is an ordered list of steps, each done by the agent in the workspace's Claude pane. --dry-run",
-          "checks the inputs, the project's commands and the pane, and starts nothing."
+          "checks the inputs, the project's commands and the pane, and starts nothing.",
+          "",
+          "Without --dry-run this really starts the run: the first step is typed into the pane, and the",
+          "workspace's agent daemon is started if it is not running."
         ],
         options: [name_opt("The workspace to run in (default: detected from the current directory)"),
           ["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable)"],
           ["--note TEXT", "Added to every step's instructions"],
           PANE_OPT,
           ["--dry-run", "Report what would start and start nothing"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\"", "start rpiv in this workspace; its first step is typed into the Claude pane"],
+          ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --dry-run", "check the inputs and the pane first and start nothing"],
+          ["workspace workflow run rpiv --name my-app --input task=\"PROJ-101 invoice PDF export\"", "run in another workspace than the one you are standing in"],
+          ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --note \"Keep the change small.\"", "tell every step something extra"],
+          ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --pane %19", "run in a pane other than the workspace's Claude pane"]
+        ]
       },
       "start" => {
         usage: ["workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",
         about: [
+          "Run it inside the project's git checkout; the main agent must be Claude Code.",
+          "",
           "REF is a JIRA key or URL, a pull request, an issue or a branch. Waits for the workspace's agent, then",
           "runs ID in it. A fork's pull request, or a branch tracking another repository, is refused with",
-          "fork_pull_request before anything is made."
+          "fork_pull_request before anything is made.",
+          "",
+          "Without --dry-run this makes things for real: a worktree and its workspace (as `workspace start`",
+          "does), then the first step is typed into the new workspace's agent pane."
         ],
         options: [["--prompt TEXT", "The task as free text (the workflow's task input, and the branch's name when there is no REF)"],
           ["--branch BRANCH", "The branch for a --prompt (default: the prompt's words); refused with a REF"],
@@ -366,7 +408,15 @@ module Workspace
           ["--[no-]headless", "Start the session in plain tmux, as `workspace start --headless`"],
           ["--prompt-timeout DURATION", "How long to wait for the coding agent to be ready (default 60s)"],
           ["--dry-run", "Check everything and make nothing"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow start rpiv PROJ-101", "make a workspace for the ticket and run rpiv in it"],
+          ["workspace workflow start rpiv PROJ-101 --dry-run", "read the ticket and check everything, making nothing"],
+          ["workspace workflow start rpiv --prompt \"add a hello script\"", "no ticket: start from a sentence, with the branch named from its words"],
+          ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],
+          ["workspace workflow start pr-feedback '#123'", "work through the review feedback on pull request 123 (needs gh)"],
+          ["workspace workflow start rpiv PROJ-101 --note \"Keep the change small.\"", "tell every step something extra"],
+          ["workspace workflow start rpiv PROJ-101 --headless", "run in plain tmux, with no iTerm window"]
+        ]
       },
       "status" => {
         usage: ["workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--json]"],
@@ -379,7 +429,14 @@ module Workspace
           "pane_gone, with the commands that resolve it."
         ],
         options: [name_opt("Only this workspace's runs (default: the current workspace)"), ["--project [NAME]", "All runs of a project, finished too (NAME, or the project of the current workspace)"], ["--all", "Every workspace's runs, finished too"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow status", "the runs still going in this workspace, each with its step and why it is stuck"],
+          ["workspace workflow status RUN", "one run, going or finished"],
+          ["workspace workflow status --name my-app", "only the runs of one workspace"],
+          ["workspace workflow status --project", "the main checkout's and its worktrees' runs, finished too"],
+          ["workspace workflow status --all", "every workspace's runs, finished too"],
+          ["workspace workflow status --json", "for a script: each run's state, reason and the commands that resolve it"]
+        ]
       },
       "events" => {
         usage: ["workflow events RUN [--since N] [--json]"],
@@ -391,7 +448,12 @@ module Workspace
           "--since N. --json adds truncated and next_since to continue from."
         ],
         options: [["--since N", "Only events after line N of the history (default 0)"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow events RUN", "a run's history, oldest first"],
+          ["workspace workflow events RUN --since 40", "only what happened after line 40"],
+          ["workspace workflow events RUN --json", "as one document, for a script"],
+          ["workspace workflow events RUN --since 40 --json", "poll for news: pass the document's next_since as --since next time"]
+        ]
       },
       "files" => {
         usage: ["workflow files RUN [--json]"],
@@ -403,7 +465,11 @@ module Workspace
           "its size (a link is reported, never followed)."
         ],
         options: [JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow files RUN", "what a run kept: prompts, check logs and the files each step writes, with sizes"],
+          ["workspace workflow files RUN", "a step ended without its files: the ones shown as missing are what it still owes"],
+          ["workspace workflow files RUN --json", "for a script: artifacts_dir and one row per file"]
+        ]
       },
       "resume" => {
         usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]"],
@@ -413,17 +479,30 @@ module Workspace
           "",
           "Asks for its lock again, runs a failed or undelivered step again, looks again at a step whose files",
           "were missing, or moves it to the workspace's Claude pane when its own is gone. --from at a waiting",
-          "gate is refused from a pane a run is bound to."
+          "gate is refused from a pane a run is bound to.",
+          "",
+          "A run waiting at a gate is approved or rejected instead; resume needs --from there. It types the",
+          "step into the run's pane again unless an agent is still working on it, or its check is running (then",
+          "it does nothing and says so). Use it for a run `workflow status` shows as stuck."
         ],
         options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow resume RUN", "pick a stuck run up again: its lock is asked for again, a failed step runs again"],
+          ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
+          ["workspace workflow resume RUN --note \"The migration is already applied.\"", "tell the next attempt something"],
+          ["workspace workflow resume RUN --pane %19", "the run's pane is gone: carry on in another pane of the workspace"]
+        ]
       },
       "cancel" => {
         usage: ["workflow cancel RUN [--json]"],
         summary: "End a run and release the locks it holds",
-        about: [RUN_ID],
+        about: [RUN_ID, "", "It does not type into the pane: the agent there is left as it is. A run that has ended is refused."],
         options: [JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow cancel RUN", "give up on a run that is going wrong; its locks are released"],
+          ["workspace workflow cancel RUN", "end a run that waits at a gate you will not pass or for a lock you no longer need"],
+          ["workspace workflow cancel RUN --json", "for a script: one action document"]
+        ]
       },
       "approve" => {
         usage: ["workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]"],
@@ -440,7 +519,12 @@ module Workspace
           ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"],
           ["--note-sha256 HEX", "The sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed"],
           WORKFLOW_NOTE, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow approve RUN", "pass the gate a run waits at (`workflow status` shows it as waiting_you)"],
+          ["workspace workflow approve RUN --note \"Skip the migration.\"", "pass it and tell the next step something"],
+          ["workspace workflow approve RUN --step plan --attempt 2", "pass it only if the run still waits at the plan step, attempt 2"],
+          ["workspace workflow approve RUN --step plan --attempt 2 --note-sha256 HEX", "pass it only if the plan note is still the one you read (HEX is gate_file.sha256)"]
+        ]
       },
       "reject" => {
         usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]"],
@@ -455,18 +539,100 @@ module Workspace
           ["--to STEP", "The step to run again (the gated step, or one before it)"],
           ["--step STEP", "The gated step you saw (current.step in status --json); refused unless the run waits there"],
           ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace workflow reject RUN --note \"Too big; split it.\"", "send the gated step back; it runs again with the note"],
+          ["workspace workflow reject RUN --note \"Research the API first.\" --to research", "go back to an earlier step of rpiv instead"],
+          ["workspace workflow reject RUN --note \"Too big; split it.\" --step plan --attempt 2", "turn it down only if the run still waits at the plan step, attempt 2"]
+        ]
       },
       "advance" => {
         hidden: true,
         usage: ["workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...]"],
         summary: "Move a run on; the agent daemon runs this when a turn ends",
-        about: ["It is not meant to be typed. #{RUN_ID}"],
+        about: ["It is not meant to be typed. #{RUN_ID} It prints nothing.", "",
+          "Typed by hand it decides the run's step as the daemon would, so use `workflow resume` instead."],
         options: [["--turn-ended", "A turn ended in the run's pane"],
           ["--pane PANE", "The run's pane"],
           ["--turn-started AT", "When that turn began (ISO 8601)"],
           ["--background-task TYPE:ID", "A background task still going when the turn ended (repeatable)"]],
-        examples: []
+        examples: [
+          ["workspace workflow advance RUN", "look at a run waiting on a lock, or a check that never reported back, and move it on if it can go"],
+          ["workspace workflow advance RUN --turn-ended --pane %19", "what the daemon runs when an agent's turn ends in the run's pane"],
+          ["workspace workflow advance RUN --turn-ended --pane %19 --turn-started \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"", "the same, with the time that turn began"]
+        ]
+      }
+    }.freeze
+
+    PIPELINE_ABOUT = "This command will be removed in a later release; use `workspace workflow`.".freeze
+    PIPELINE_WORK_ITEM = ["--work-item REF", "Work item reference (e.g. WC-42)"].freeze
+
+    PIPELINE = {
+      "start" => {
+        usage: ["pipeline start PROJECT --work-item REF [--body TEXT] [--json]"],
+        summary: "Send a work item into a project's pipeline",
+        about: [
+          PIPELINE_ABOUT,
+          "",
+          "Sends the item to the project's running agent daemon (no_daemon when none runs), which takes it",
+          "from there. This changes the project's pipeline state for real."
+        ],
+        options: [PIPELINE_WORK_ITEM,
+          ["--body TEXT", "The message to send (default: \"Begin work on REF.\")"],
+          ["--json", "Print one action document (see docs/README.json.md) instead of text"]],
+        examples: [
+          ["workspace pipeline start myapp --work-item WC-42", "hand WC-42 to myapp's agent with the default message"],
+          ["workspace pipeline start myapp --work-item WC-42 --body \"/build add OAuth support\"", "say what the first stage should do"],
+          ["workspace pipeline start myapp --work-item WC-42 --json", "for a script: one action document, with an error document and code when no agent runs"]
+        ]
+      },
+      "advance" => {
+        usage: ["pipeline advance PROJECT --work-item REF [--body TEXT] [--json]"],
+        summary: "Mark a work item's running stage complete and move on",
+        about: [
+          PIPELINE_ABOUT,
+          "",
+          "Interrupts whatever the stage's pane is doing (Ctrl-C), then types the completion sentinel, even if",
+          "the stage has not finished. Needs the project's agent daemon and a stage running for REF."
+        ],
+        options: [PIPELINE_WORK_ITEM,
+          ["--body TEXT", "The text after the sentinel (default: \"manual advance\")"],
+          ["--json", "Print one action document (see docs/README.json.md) instead of text"]],
+        examples: [
+          ["workspace pipeline advance myapp --work-item WC-42", "push WC-42 past a stage that is done but did not say so"],
+          ["workspace pipeline advance myapp --work-item WC-42 --body \"done by hand\"", "leave a reason after the sentinel"],
+          ["workspace pipeline advance myapp --work-item WC-42 --json", "for a script: one action document"]
+        ]
+      },
+      "status" => {
+        usage: ["pipeline status PROJECT [--json]"],
+        summary: "Show what a project has in flight",
+        about: [
+          PIPELINE_ABOUT,
+          "",
+          "Reads the project's saved pipeline state, so it works with no agent running. A project with nothing",
+          "in flight says so and exits 0."
+        ],
+        options: [["--json", "Print JSON ({schema_version, ok, entries}; failures print {schema_version, ok: false, error, code}) instead of a table"]],
+        examples: [
+          ["workspace pipeline status myapp", "what is myapp working on, and when is each stage due"],
+          ["workspace pipeline status myapp --json", "the same as one document, for a script"],
+          ["workspace pipeline status api", "a project with nothing in flight says so and exits 0"]
+        ]
+      },
+      "reset" => {
+        usage: ["pipeline reset PROJECT [--json]"],
+        summary: "Clear a stopped project's pipeline state",
+        about: [
+          PIPELINE_ABOUT,
+          "",
+          "Deletes the project's saved pipeline state. Refused while its agent daemon is running."
+        ],
+        options: [["--json", "Print one action document (see docs/README.json.md) instead of text"]],
+        examples: [
+          ["workspace pipeline reset myapp", "clear leftover state after stopping myapp's agent"],
+          ["workspace pipeline reset myapp --json", "for a script: one action document, an error document if the agent still runs"],
+          ["workspace pipeline reset api", "a project with no saved state succeeds too, printing the same line"]
+        ]
       }
     }.freeze
 
@@ -2008,7 +2174,7 @@ module Workspace
       "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL,
       "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "projects" => PROJECTS,
       "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT, "ask" => ASK, "inbox" => INBOX,
-      "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV
+      "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV, "pipeline" => PIPELINE
     }.freeze
 
     # The page for the leading verb words of +args+, longest match first; failing that, the one
