@@ -437,7 +437,8 @@ module Workspace
           "pane_gone, with the commands that resolve it.",
           "",
           "--table shows one row per run, finished ones too at every scope, with its workspace as it is now: live, stopped",
-          "or gone, and whether its config, tmux session, worktree and state directory exist (? when that could not be read)."
+          "or gone, and whether its config, tmux session, worktree and state directory exist (? when that could not be read).",
+          "Stopped keeps its config with no tmux session; gone has no config left."
         ],
         options: [name_opt("Only this workspace's runs (default: the current workspace)"), ["--project [NAME]", "All runs of a project, finished too (NAME, or the project of the current workspace)"], ["--all", "Every workspace's runs, finished too"], ["--table", "One row per run with its workspace's status and what still exists, finished runs too"], JSON_OPT],
         examples: [

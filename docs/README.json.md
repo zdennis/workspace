@@ -28,7 +28,7 @@ With `--json` these commands keep their original success shape, which other tool
 
 `warnings` is always a list (empty today). The bare `--json` default stays until a later major version. It is a per-call flag, not a config key, so a caller states which shape it parses in the command itself.
 
-To ask which of these a given CLI supports, run `workspace capabilities --json` (see [capabilities](README.capabilities.md)). The shared scope rule for `workflow status` and `plan status`, `--project` included, needs `workflow` 9 and `plan` 6. The documents themselves are the same as before.
+To ask which of these a given CLI supports, run `workspace capabilities --json` (see [capabilities](README.capabilities.md)). The shared scope rule for `workflow status` and `plan status`, `--project` included, needs `workflow` 9 and `plan` 6. `workflow status --table` and the `worktree` field need `workflow` 10. The documents themselves are the same as before.
 
 ## Actions
 
@@ -54,6 +54,12 @@ These commands take `--json` and print one action document: `add`, `launch`, `st
 - `kill` ends the tmux session last. Run it from outside the session it kills, or the process can end before the document prints.
 - `stop` with `--json` does not warn about a named workspace that isn't active; it gives that workspace a `not_running` row. When iTerm2 does not answer within 5 seconds, `stop` still stops the workspace and leaves its window open; `warnings` says so.
 - `agent run --json` is not an action document. It prints `{"schema_version":1,"ok":true,"workspace":"api","work_item_ref":"wi_12","dispatch_id":"agent-run-ab12cd34","dry_run":false,"reply":{...}}`, where `reply` is the agent's reply as is, including its own `ok`. The exit code is 0 whatever the reply says; read `reply.ok`. With `--dry-run` there is `message` (what would be sent) and no `reply`.
+
+## Workflow status rows
+
+`workflow status --table --json` prints `{"schema_version":1,"ok":true,"generated_at":...,"rows":[...],"warnings":[]}`: one row per run, with `id`, `workflow`, `state`, `step` (`null` once the run has finished), `workspace`, `workspace_status` (`live`, `stopped`, `gone` or `unknown`), `agent` (`working`, `waiting`, `idle` or `null`), and `has_config`, `has_tmux_session`, `has_worktree`, `has_state_dir` (`true`, `false`, or `null` when it could not be read). The workspace fields describe the workspace now, not when the run ran. See [the status table](README.workflow.md#the-status-table).
+
+`worktree`, the checkout path stored with the run (or `null`), is on every row of `workflow status --json` and on the `run` object of every `workflow` action document. Both need `workflow` 10.
 
 ## Snapshot
 
