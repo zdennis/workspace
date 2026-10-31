@@ -74,31 +74,10 @@ module HelpExamplesSpec
     "event-log compact",
 
     # T3 gave these a page of their own; their examples come with the group tasks
-    "pr create",
-    "pr feedback",
-    "projects group",
-    "projects group add",
-    "projects group create",
-    "projects group list",
-    "projects group show",
-    "projects kill",
-    "projects list",
-    "projects members",
-    "projects show",
-    "projects stop",
-    "ticket list",
-    "ticket show",
     "ui open",
     "ui open inbox",
     "ui open notes",
     "ui open task",
-
-    # T19: repositories
-    "pr",
-    "projects",
-    "push",
-    "rebase",
-    "ticket",
 
     # T20: events and links
     "event-log",

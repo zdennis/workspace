@@ -53,7 +53,7 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["notes"].keys).to eq(["dir"])
       expect(pages["instructions"].keys).to eq(["compose"])
       expect(pages["ui"].keys).to eq(["open"])
-      expect(pages["projects"].keys).to eq(["list"])
+      expect(pages["projects"].keys).to eq(%w[list show members stop kill])
       expect(pages["projects group"].keys).to match_array(%w[create add list show])
       expect(pages["config"].keys).to eq(%w[show set get unset edit keys validate])
       expect(pages["ask"].keys).to match_array(%w[list answer deliver withdraw])
@@ -117,13 +117,18 @@ RSpec.describe Workspace::HelpPages do
       "plan" => :plan_parser, "daemon" => :daemon_parser, "workflow" => :workflow_parser, "library" => :library_parser,
       "spine" => :spine_parser, "binding" => :binding_parser, "step" => :step_parser, "review" => :review_parser,
       "pr" => :pr_parser, "ticket" => :ticket_parser, "goal" => :goal_parser, "notes" => :notes_parser,
-      "instructions" => :instructions_parser, "ui" => :ui_parser
+      "instructions" => :instructions_parser, "ui" => :ui_parser,
+      # `projects list` parses inline, so it has no factory to check.
+      "projects" => {"show" => :projects_show_parser, "members" => :projects_members_parser,
+                     "stop" => :projects_stop_parser, "kill" => :projects_kill_parser}
     }
     parsers.each do |command, factory|
       it "list only flags the #{command} parser accepts" do
         with_cli do |cli, *|
           pages.fetch(command).each do |key, page|
             parser_factory = ((command == "spine" && key == "init") ? :spine_init_parser : factory)
+            parser_factory = factory[key] if factory.is_a?(Hash)
+            next unless parser_factory
             page[:options].each do |label, _|
               word = label.split(", ").first
               flag = word.split.first.sub("[no-]", "")

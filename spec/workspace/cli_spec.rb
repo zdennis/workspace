@@ -8361,6 +8361,16 @@ RSpec.describe Workspace::CLI do
       expect(rebase_command).to have_received(:call).with(name: "api", onto: "update", json: true, working_dir: an_instance_of(String))
     end
 
+    [%w[rebase --onto bogus --help], %w[rebase --name x --help], %w[push --json --help]].each do |argv|
+      it "prints the page and runs nothing for 'workspace #{argv.join(" ")}'" do
+        cli.run(argv)
+
+        expect(output.string).to start_with("Usage: workspace #{argv.first}")
+        expect(rebase_command).not_to have_received(:call)
+        expect(push_command).not_to have_received(:call)
+      end
+    end
+
     it "requires --onto for rebase" do
       expect { cli.run(["rebase", "--json"]) }.to raise_error(FakeSystemExit)
 
@@ -8450,6 +8460,15 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to include("workspace pr create").and include("--draft")
       expect(pull_request_command).not_to have_received(:create)
+    end
+
+    ["--help", "-h"].each do |flag|
+      it "prints the page of pr create for #{flag} and creates nothing" do
+        cli.run(["pr", "create", flag])
+
+        expect(output.string).to start_with("Usage: workspace pr create")
+        expect(pull_request_command).not_to have_received(:create)
+      end
     end
 
     it "rejects a missing subcommand, an unknown one and extra arguments as usage errors" do
@@ -9196,6 +9215,13 @@ RSpec.describe Workspace::CLI do
       expect(projects_command.calls).to eq([{running_only: false, json: false, git: true}, {running_only: false, json: true, git: true}])
     end
 
+    it "rejects an unknown option to list as a usage error and lists nothing" do
+      expect { cli.run(["projects", "list", "--bogus"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("--bogus")
+      expect(projects_command.calls).to be_empty
+    end
+
     it "documents --git and --no-git in the projects help" do
       cli.run(["projects", "--help"])
       cli.run(["projects", "list", "--help"])
@@ -9401,6 +9427,22 @@ RSpec.describe Workspace::CLI do
         cli.run(["projects", "kill", "--help"])
 
         expect(output.string).to include("--timeout DURATION", "default 5s")
+      end
+
+      [%w[--help], %w[-h], %w[--yes --help], %w[app --yes -h]].each do |argv|
+        it "prints its page and removes nothing for 'projects kill #{argv.join(" ")}'" do
+          cli.run(["projects", "kill", *argv])
+
+          expect(output.string).to start_with("Usage: workspace projects kill")
+          expect(actions_command.calls).to be_empty
+        end
+      end
+
+      it "rejects an unknown option as a usage error and removes nothing" do
+        expect { cli.run(["projects", "kill", "app", "--bogus"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(error_output.string).to include("--bogus")
+        expect(actions_command.calls).to be_empty
       end
 
       it "rejects a second argument" do

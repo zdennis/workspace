@@ -6827,29 +6827,13 @@ module Workspace
           cmd_projects_list(rest)
         end
       when "show"
-        if rest.include?("--help") || rest.include?("-h")
-          @output.puts projects_show_parser({}).help
-        else
-          cmd_projects_show(rest)
-        end
+        cmd_projects_show(rest) unless verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
       when "members"
-        if rest.include?("--help") || rest.include?("-h")
-          @output.puts projects_members_parser({}).help
-        else
-          cmd_projects_members(rest)
-        end
+        cmd_projects_members(rest) unless verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
       when "stop"
-        if rest.include?("--help") || rest.include?("-h")
-          @output.puts projects_stop_parser({}).help
-        else
-          cmd_projects_stop(rest)
-        end
+        cmd_projects_stop(rest) unless verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
       when "kill"
-        if rest.include?("--help") || rest.include?("-h")
-          @output.puts projects_kill_parser({}).help
-        else
-          cmd_projects_kill(rest)
-        end
+        cmd_projects_kill(rest) unless verb_help_shown?(HelpPages::PROJECTS, [subcommand, *rest])
       when "group"
         cmd_projects_group(rest)
       when "help" then @output.puts projects_help
@@ -6923,42 +6907,17 @@ module Workspace
         project with no git repo, a missing checkout, or a name shared with another project.
 
         Examples:
-          workspace projects                # same as 'workspace projects list'
-          workspace projects --running      # projects with something running
-          workspace projects --json         # for a script
-          workspace projects show           # the project for the current directory
-          workspace projects show app --json
-          workspace projects members        # one workspace per line
-          workspace projects stop app --dry-run
-          workspace projects kill app --dry-run
+        #{HelpPages.overview_examples(HelpPages::PROJECTS).join("\n")}
+        #{HelpPages.overview_examples(HelpPages::GROUPS.slice("create", "list")).join("\n")}
       HELP
     end
 
     def projects_show_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]"
-        opts.separator ""
-        opts.separator "Show one project: its workspaces (running, headless, agent states, open asks, pipeline entries,"
-        opts.separator "branch and unsaved work), worktrees with no workspace config, the repo-wide locks and the"
-        opts.separator "dev environment. NAME is a project name, a member"
-        opts.separator "workspace name or a path (use a path when two projects share a name); it defaults"
-        opts.separator "to the project containing the current directory."
-        opts.separator ""
-        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
-        opts.on("--no-agents", "Don't ask the agent daemons for agent states") { options[:agents] = false }
-        opts.on("--no-git", "Don't run git (no branch or unsaved work, no unconfigured worktrees)") { options[:git] = false }
-        opts.on("--timeout SECONDS", Float, "Seconds to wait for each running workspace's agent daemon (default 1) and for all the git reads (default 5)") { |seconds| options[:timeout] = seconds }
-        opts.separator ""
-        opts.separator "A daemon that is down or doesn't answer in time shows as unavailable, and a checkout git can't answer for"
-        opts.separator "shows as unknown (treated as unsaved); the command still exits 0."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects show"
-        opts.separator "  workspace projects show app --json"
-        opts.separator "  workspace projects show ~/src/app"
-        opts.separator "  workspace projects show --no-agents    # skip the agent daemons"
-        opts.separator "  workspace projects show --no-git       # skip git (fastest)"
-        opts.separator "  workspace projects show --timeout 0.5"
+        opts.on("--json") { options[:json] = true }
+        opts.on("--no-agents") { options[:agents] = false }
+        opts.on("--no-git") { options[:git] = false }
+        opts.on("--timeout SECONDS", Float) { |seconds| options[:timeout] = seconds }
       end
     end
 
@@ -6980,29 +6939,10 @@ module Workspace
 
     def projects_members_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]"
-        opts.separator ""
-        opts.separator "List a project's member workspaces, one per line, main checkout first. NAME is a project"
-        opts.separator "name, a member workspace name or a path (use a path when two projects share a name);"
-        opts.separator "it defaults to the project containing the current directory."
-        opts.separator ""
-        opts.on("--path", "Print each checkout's path instead of its workspace name (not with --json)") { options[:path] = true }
-        opts.on("--all", "Also list worktrees that have no workspace config, shown only with --path or --json (runs git)") { options[:all] = true }
-        opts.on("--timeout SECONDS", Float, "Seconds to wait for the worktree listing under --all (default 5)") { |seconds| options[:timeout] = seconds }
-        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
-        opts.separator ""
-        opts.separator "Without --all no git runs. Members whose checkout is gone are still listed. Names only: with --all"
-        opts.separator "the unconfigured worktrees are omitted (a note goes to stderr) unless --path or --json is given."
-        opts.separator "An empty result prints a note to stderr and nothing to stdout, so loop over the output"
-        opts.separator "(for/while read -r) rather than pass it unquoted to a command that acts on every workspace"
-        opts.separator "when given no argument."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects members"
-        opts.separator "  for ws in $(workspace projects members app); do workspace stop \"$ws\"; done"
-        opts.separator "  workspace projects members app | while read -r ws; do workspace stop \"$ws\"; done"
-        opts.separator "  workspace projects members --path"
-        opts.separator "  workspace projects members --all --json"
+        opts.on("--path") { options[:path] = true }
+        opts.on("--all") { options[:all] = true }
+        opts.on("--timeout SECONDS", Float) { |seconds| options[:timeout] = seconds }
+        opts.on("--json") { options[:json] = true }
       end
     end
 
@@ -7020,24 +6960,8 @@ module Workspace
 
     def projects_stop_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects stop [NAME|PATH] [--dry-run] [--json]"
-        opts.separator ""
-        opts.separator "Stop every running workspace of a project (its main checkout and worktrees) and their tmux"
-        opts.separator "sessions in one step. NAME is a project name, a member workspace name or a path (use a path"
-        opts.separator "when two projects share a name); it defaults to the project containing the current directory."
-        opts.separator ""
-        opts.on("--dry-run", "List the workspaces that would be stopped and stop nothing") { options[:dry_run] = true }
-        opts.on("--json", "Print one schema-versioned result object (see docs/README.projects.md)") { options[:json] = true }
-        opts.separator ""
-        opts.separator "There is no prompt and no unsaved-work check, like 'workspace stop'. If you run this from inside"
-        opts.separator "one of the project's sessions, that session is stopped last, after the result is printed."
-        opts.separator "Exit status: 0 stopped or nothing running, 3 some stopped and some failed, 1 nothing stopped or"
-        opts.separator "a usage error."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects stop                # the project for the current directory"
-        opts.separator "  workspace projects stop app --dry-run"
-        opts.separator "  workspace projects stop ~/src/app --json"
+        opts.on("--dry-run") { options[:dry_run] = true }
+        opts.on("--json") { options[:json] = true }
       end
     end
 
@@ -7053,37 +6977,12 @@ module Workspace
 
     def projects_kill_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]"
-        opts.separator ""
-        opts.separator "Remove every worktree workspace of a project in one step, each the way 'workspace kill' does"
-        opts.separator "(tmux session, git worktree, tmuxinator config, project settings, state entry). The main"
-        opts.separator "checkout is never removed, and worktrees with no workspace config are not touched. NAME is"
-        opts.separator "required: a project name, a member workspace name or a path."
-        opts.separator ""
-        opts.on("--dry-run", "Run the checks and show what would be removed; remove nothing") { options[:dry_run] = true }
-        opts.on("--yes", "Don't ask for confirmation (every check still runs)") { options[:yes] = true }
-        opts.on("--force", "Let worktrees whose checkout is gone or that git can't check past preflight (kill still re-checks for unsaved work, so an unknown one can fail)") { options[:force] = true }
-        opts.on("--discard-unsaved", "Also remove worktrees that have unsaved work, losing it") { options[:discard_unsaved] = true }
-        opts.on("--timeout DURATION", "Time all the unsaved-work checks may take together, e.g. 10 or 30s (default 5s);",
-          "a worktree not checked in time can't be checked") { |value| options[:timeout] = parse_duration_option("--timeout", value, positive: true) }
-        opts.on("--json", "Print one schema-versioned result object (see docs/README.projects.md); needs --yes or --dry-run") { options[:json] = true }
-        opts.separator ""
-        opts.separator "Every worktree is checked before anything is removed. If any has unsaved work (uncommitted"
-        opts.separator "changes to tracked files or unpushed commits), can't be checked, has a checkout that is gone,"
-        opts.separator "or is running the dev environment, nothing is removed and each problem is listed. --force"
-        opts.separator "overrides only a gone checkout or a failed check; unsaved work needs --discard-unsaved. A"
-        opts.separator "running dev environment is never overridden: run 'workspace dev down' first."
-        opts.separator ""
-        opts.separator "--force does not skip the prompt; --yes does. Without a terminal, or with --json, pass --yes"
-        opts.separator "(or --dry-run). If you run this from one of the worktrees, it is removed last."
-        opts.separator "Exit status: 0 removed, nothing to remove, cancelled or a dry run that would proceed;"
-        opts.separator "1 refused, nothing removed, or a usage error; 3 some removed and some failed."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects kill app --dry-run"
-        opts.separator "  workspace projects kill app"
-        opts.separator "  workspace projects kill app --yes --json"
-        opts.separator "  workspace projects kill ~/src/app --force --yes"
+        opts.on("--dry-run") { options[:dry_run] = true }
+        opts.on("--yes") { options[:yes] = true }
+        opts.on("--force") { options[:force] = true }
+        opts.on("--discard-unsaved") { options[:discard_unsaved] = true }
+        opts.on("--timeout DURATION") { |value| options[:timeout] = parse_duration_option("--timeout", value, positive: true) }
+        opts.on("--json") { options[:json] = true }
       end
     end
 
@@ -7115,9 +7014,7 @@ module Workspace
         "Subcommands:", *HelpPages.overview_verbs(HelpPages::GROUPS),
         "Run `workspace projects group VERB --help` for a verb's options.", "",
         "Examples:",
-        "  workspace projects group create Billing",
-        "  workspace projects group add billing ~/src/api",
-        "  workspace projects group list --json"].join("\n")
+        *HelpPages.overview_examples(HelpPages::GROUPS)].join("\n")
     end
 
     def cmd_projects_group(args)
@@ -7170,18 +7067,9 @@ module Workspace
       json = false
       git = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects [list] [--running] [--git] [--json]"
-        opts.separator ""
-        opts.separator "List projects (a repository's main checkout plus its worktrees) and their workspaces."
-        opts.separator ""
-        opts.on("--running", "Only projects with at least one running workspace") { running = true }
-        opts.on("--git", "Add an UNSAVED column (runs git in every checkout, and counts worktrees with no workspace config)") { git = true }
-        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace projects list"
-        opts.separator "  workspace projects list --running --json"
-        opts.separator "  workspace projects list --git    # which projects have unsaved work"
+        opts.on("--running") { running = true }
+        opts.on("--git") { git = true }
+        opts.on("--json") { json = true }
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace projects --help'." if args.any?
@@ -7345,11 +7233,7 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace ticket show PROJ-123"
-        opts.separator "  workspace ticket show https://github.com/acme/api/pull/41 --json"
-        opts.separator "  workspace ticket show feature/login --name api"
-        opts.separator "  workspace ticket list --json    # what is assigned to me"
-        opts.separator "  workspace ticket list --recent --source=gh --limit=10"
+        HelpPages.overview_examples(HelpPages::TICKET, per_verb: 2).each { |line| opts.separator line }
       end
     end
 
@@ -7718,7 +7602,8 @@ module Workspace
         opts.separator ""
         opts.separator "Open a pull request for a workspace's branch and leave the workspace alone. When the"
         opts.separator "branch already has a pull request, it is returned and nothing else happens. Otherwise the"
-        opts.separator "branch is pushed to origin if it has no upstream, and 'gh pr create --fill' runs. Refuses a"
+        opts.separator "branch is pushed to origin if it has no upstream, and 'gh pr create --fill' runs, opening a"
+        opts.separator "real pull request. A branch that already has an upstream is not pushed. Refuses a"
         opts.separator "branch with no commits ahead of its base. Needs 'gh', logged in."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
@@ -7734,10 +7619,7 @@ module Workspace
         opts.separator "Needs 'gh', logged in."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace pr feedback --json"
-        opts.separator "  workspace pr create"
-        opts.separator "  workspace pr create --draft --json"
-        opts.separator "  workspace pr create --name api.worktree-PROJ-123"
+        HelpPages.overview_examples(HelpPages::PR, per_verb: 2).each { |line| opts.separator line }
       end
     end
 
@@ -7775,8 +7657,11 @@ module Workspace
         opts.separator "  remote   fetch origin, rebase onto origin/<default>"
         opts.separator "  upstream fetch the branch's own upstream and rebase onto it; works on the default"
         opts.separator "           branch too (refused: no_upstream, upstream_gone)"
-        opts.separator "Refuses a workspace with changes to tracked files and never stashes them. A rebase that"
-        opts.separator "stops on a conflict is aborted, so the workspace is left as it was."
+        opts.separator "A successful rebase rewrites the branch's commits. Refuses a workspace with changes to tracked"
+        opts.separator "files and never stashes them. A rebase that stops on a conflict is aborted, so the workspace"
+        opts.separator "is left as it was. Exits 0 for every outcome (rebased, up_to_date, conflict,"
+        opts.separator "default_not_updated); read the outcome in the text or with --json. Exits 1 with an error when"
+        opts.separator "it refuses or fails; --json prints the code (dirty_worktree, no_upstream, ...)."
         opts.separator ""
         opts.on("--onto TARGET", "local, update, remote or upstream (required)") { |v| options[:onto] = v }
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
@@ -7784,8 +7669,10 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace rebase --onto update"
-        opts.separator "  workspace rebase --onto remote --name api.worktree-PROJ-123 --json"
+        opts.separator "  workspace rebase --onto update    # catch the branch up with origin's default branch: fetches, may move the local default branch, rewrites this branch's commits"
+        opts.separator "  workspace rebase --onto local    # rebase onto the local default branch with nothing fetched, for example offline"
+        opts.separator "  workspace rebase --onto remote --name api.worktree-PROJ-123 --json    # another workspace, for a script: rebase onto origin/<default> and read the outcome, even a conflict exits 0"
+        opts.separator "  workspace rebase --onto upstream    # pick up commits others pushed to this branch itself; also works on the default branch"
       end
     end
 
@@ -7811,14 +7698,17 @@ module Workspace
         opts.separator "branch's own history once held all of them (a rebase replaced them); otherwise it is refused."
         opts.separator "A pull request checkout (pr-N, from `start '#N'`) is pushed to the pull request's head branch"
         opts.separator "once gh confirms the pull request is open, comes from origin, and is at the commit fetched."
+        opts.separator "This changes origin for real. Exits 1 with an error when it refuses or the push fails; --json"
+        opts.separator "prints the code (push_rejected, push_auth_failed, ...)."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
-        opts.on("--json", "Print one JSON document (see docs/README.rebase.md)") { options[:json] = true }
+        opts.on("--json", "Print one JSON document (push is documented in docs/README.rebase.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace push"
-        opts.separator "  workspace push --name api.worktree-PROJ-123 --json"
+        opts.separator "  workspace push    # publish this branch to origin, setting its upstream the first time"
+        opts.separator "  workspace push --name api.worktree-PROJ-123    # push another workspace's branch without changing directory"
+        opts.separator "  workspace push --json    # after a rebase, for a script: forced with a lease only when the rebase replaced the upstream's commits; read outcome and forced"
       end
     end
 

@@ -125,8 +125,11 @@ Fixed in 1a2b3c4: the retry count now comes from config.
 ## Examples
 
 ```sh
-workspace pr create
-workspace pr create --draft --json
-workspace pr create --name api.worktree-PROJ-123
-workspace pr feedback --json
+workspace pr create                                  # push the branch if it has no upstream and open the pull request, or print the one it has
+workspace pr create --draft                          # open it as a draft while the work is unfinished
+workspace pr create --name api.worktree-PROJ-123     # another workspace's branch, without changing directory
+workspace pr create --json                           # for a script: outcome, url and number
+workspace pr feedback                                # what reviewers and CI said about the branch's pull request
+workspace pr feedback --all                          # include resolved threads
+workspace pr feedback --json                         # for a script or an agent: the comment bodies too
 ```

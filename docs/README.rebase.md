@@ -132,7 +132,11 @@ Capability: `rebase` 4 (1 had `local`, `update` and `remote`; 2 adds `upstream`;
 ## Examples
 
 ```sh
-workspace rebase --onto update
-workspace push
-workspace rebase --onto remote --name api.worktree-PROJ-123 --json
+workspace rebase --onto update                 # catch up with origin's default branch; rewrites the branch's commits
+workspace rebase --onto local                  # onto the local default branch, nothing fetched
+workspace rebase --onto remote --name api.worktree-PROJ-123 --json   # another workspace, for a script; a conflict still exits 0
+workspace rebase --onto upstream               # pick up commits pushed to this branch itself
+workspace push                                 # publish the branch to origin, setting its upstream the first time
+workspace push --name api.worktree-PROJ-123    # another workspace's branch, without changing directory
+workspace push --json                          # after a rebase, for a script: read outcome and forced
 ```
