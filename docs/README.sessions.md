@@ -77,11 +77,13 @@ Limits:
 - Both fields are `null`, not absent, on every pane, and always on a pane that isn't Claude Code or isn't waiting.
 - `waiting_input` is `null` for a tool the summary has no rule for, MCP tools included. `waiting_tool` is still set.
 - Both are `null` while several requests are pending, or none is. A `Notification` doesn't say whose dialog it is, so the daemon names a tool only when one request is pending. The wait is then filed under the main agent, and it can end while one of those dialogs is still open.
-- A lost main request can leave a sub-agent's only request labelling a main dialog.
+- A lost main request can leave a sub-agent's only request labelling a main dialog. So can one the daemon dropped: a main tool of the same name finishing beside the dialog clears it.
+- A wait filed under a sub-agent ends on any event from that sub-agent, as a main wait does on a main event, so a parallel tool finishing can end it with the dialog still open. A repeat `Notification` then opens it again with a new `waiting_since` and alert.
+- `waiting_tool` is one line cut to 200 characters. A daemon started before the upgrade leaves both keys out of `sessions --json`; `snapshot` still reports `null`.
 - A replaced request shows only at the next `Notification`, so a dialog answered within about 6s can leave the old tool showing.
 - Requests are kept in memory. A daemon restart during a wait can repeat its alert, and the wait is then filed under the main agent, so only a main event ends it.
 - An allow fires no hook until the tool ends, and a tool that fails fires none that is forwarded, so its fields can stay until a later event.
-- Deny and Esc fire no hook. A wait with a tool ends through the screen scan once the ready prompt is back in the last 12 lines of the pane, which also happens at an allow. A long multi-line draft or a tall footer pushes the prompt out of those lines and leaves the wait open. Whether an `idle_prompt` follows a deny wasn't observed.
+- Deny and Esc fire no hook. A wait with a tool ends through the screen scan once the ready prompt is back in the last 12 lines of the pane, which also happens at an allow. A long multi-line draft or a tall footer pushes the prompt out of those lines and leaves the wait open, and so does a draft starting with a numbered item (`1. `), which reads like a menu row. Whether an `idle_prompt` follows a deny wasn't observed.
 - `state` can read `done` during a background sub-agent's prompt, as it did before; test `waiting_tool` instead.
 - Hooks installed before `PermissionRequest` was added leave the fields `null`. Run `workspace init --install-hooks` or `workspace doctor --fix`.
 

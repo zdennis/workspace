@@ -595,6 +595,7 @@ RSpec.describe Workspace::SessionMonitor do
 
         expect(pane("%2")["waiting_tool"]).to eq("Ba sh")
         expect(pane("%2")["waiting_input"].bytesize).to be <= Workspace::ToolInputSummary::MAX_BYTES
+        expect(pane("%2")["waiting_input"]).to be_valid_encoding
       end
 
       it "reports a null input with the tool set for a tool with no summary" do
@@ -899,6 +900,47 @@ RSpec.describe Workspace::SessionMonitor do
 
         expect(pane("%2")).to include("waiting_tool" => "Bash")
       end
+
+      it "never moves an elicitation wait a permission Notification met while none could bind" do
+        prompt("elicitation_dialog")
+        request(agent_id: "sub-1")
+        request(agent_id: "sub-2")
+        prompt
+        tool_done(agent_id: "sub-2")
+        prompt
+        tool_done(agent_id: "sub-1")
+
+        expect(waits.keys).to eq([nil])
+        expect(pane("%2")["state"]).to eq("waiting")
+      end
+
+      it "never moves a wait an elicitation took over" do
+        request(agent_id: "sub-1")
+        request(agent_id: "sub-2")
+        prompt
+        prompt("elicitation_dialog")
+        tool_done(agent_id: "sub-2")
+        prompt
+        tool_done(agent_id: "sub-1")
+
+        expect(waits.keys).to eq([nil])
+      end
+
+      it "leaves a main elicitation under the main agent when a sub-agent's dialog binds" do
+        prompt("elicitation_dialog")
+        since = waits[nil][:since]
+        allow(clock).to receive(:now).and_return(now + 5)
+        request(agent_id: "sub-1")
+        prompt
+
+        expect(waits.keys).to contain_exactly(nil, "sub-1")
+        expect(waits[nil][:since]).to eq(since)
+        expect_null_fields
+
+        tool_done(agent_id: "sub-1")
+        expect(waits.keys).to eq([nil])
+        expect(pane("%2")["state"]).to eq("waiting")
+      end
     end
 
     it "reports null for both fields on every pane with no wait, shell panes included" do
@@ -1012,6 +1054,15 @@ RSpec.describe Workspace::SessionMonitor do
 
         expect(waits.keys).to eq([nil])
         expect(alerted_waits).to eq({nil => now})
+        expect(requests.keys).to eq([nil])
+      end
+
+      it "keeps the wait while the cursor sits on an AskUserQuestion menu's last row" do
+        wait_on_bound_tool
+
+        scan_showing("  3. Blue\n     Blue\n  4. Type something.\n#{rule}\n❯ 5. Chat about this\n\nEnter to select · Esc to cancel\n")
+
+        expect(waits.keys).to eq([nil])
         expect(requests.keys).to eq([nil])
       end
 

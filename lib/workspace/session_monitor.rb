@@ -721,13 +721,18 @@ module Workspace
     READY_TAIL_LINES = 12
     private_constant :READY_TAIL_LINES
 
+    # An AskUserQuestion menu draws a rule above its last row, so with the
+    # cursor there it reads like the ready prompt.
+    MENU_ROW_PATTERN = /─{3,}\n❯[ \t ]?\d+\. /
+    private_constant :MENU_ROW_PATTERN
+
     # Deny and Esc fire no hook. A bound permission wait ends when the ready
     # prompt is back at the bottom of the screen; trailing blank rows (inline
     # panes) are stripped first, and an empty capture says nothing.
     def end_answered_permission_waits(pane, provider, screen)
       return unless provider&.key == "claude" && provider.ready_pattern
       tail = screen.scrub.rstrip.lines.last(READY_TAIL_LINES).join
-      return if tail.empty? || !provider.ready_pattern.match?(tail)
+      return if tail.empty? || !provider.ready_pattern.match?(tail) || MENU_ROW_PATTERN.match?(tail)
 
       pane[:waits].select { |_, wait| wait[:tool] }.each do |agent_id, wait|
         pane[:waits].delete(agent_id)
@@ -822,7 +827,7 @@ module Workspace
         # A repeat notification during one wait keeps the original start, so
         # the wait is timed (and alerted) once. So does the first one after a
         # restart, for a wait the last daemon alerted for.
-        wait = permission_prompt?(event) ? bind_permission_wait(pane, event) : open_wait(pane, event["agent_id"])
+        wait = permission_prompt?(event) ? bind_permission_wait(pane, event) : open_wait(pane, event["agent_id"]).merge!(other_prompt: true)
         wait[:message] = self.class.clean_message(event["message"])
       elsif TURN_EVENTS.include?(event["event"])
         clear_waiting(pane)
@@ -981,8 +986,14 @@ module Workspace
       return open_wait(pane, event["agent_id"]) unless requests.size == 1
 
       agent_id, request = requests.first
-      pane[:waits][agent_id] ||= pane[:waits].delete(nil) || resumed_wait(pane, agent_id)
+      pane[:waits][agent_id] ||= take_unbound_permission_wait(pane) || resumed_wait(pane, agent_id)
       pane[:waits][agent_id].merge!(request)
+    end
+
+    # Only a permission wait moves: a main elicitation is still on screen and
+    # ends on a main event, whatever a sub-agent does.
+    def take_unbound_permission_wait(pane)
+      pane[:waits].delete(nil) if pane[:waits][nil] && !pane[:waits][nil][:other_prompt]
     end
 
     def clear_permission_requests(pane, event)
