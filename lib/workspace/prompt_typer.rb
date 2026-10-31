@@ -46,9 +46,10 @@ module Workspace
     #
     # @param pane_id [String] tmux pane id
     # @param pasted [String, nil] text already pasted, which the input line must then hold
+    # @param exact [String, nil] text the whole input must equal; see {TypingSafety#check}
     # @return [Hash, nil] nil when the pane can take text, else the {TypingSafety#check} refusal
-    def check(pane_id, pasted: nil)
-      @safety.check(@session_monitor&.typing_facts(pane_id), @tmux.capture_screen(pane_id), pasted: pasted)
+    def check(pane_id, pasted: nil, exact: nil)
+      @safety.check(@session_monitor&.typing_facts(pane_id), @tmux.capture_screen(pane_id), pasted: pasted, exact: exact)
     end
 
     # Checks, pastes, checks again, presses Enter.

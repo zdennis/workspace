@@ -41,9 +41,12 @@ module Workspace
     # @param screen [String, nil] the pane's current screen
     # @param pasted [String, nil] the text already pasted, which the input
     #   line must then start with instead of being empty
+    # @param exact [String, nil] text the whole input, however it wraps, must
+    #   equal: no placeholder and no prefix count, so a person's draft can't
+    #   read as this text. `input_changed` otherwise
     # @return [Hash, nil] nil when the pane can take text, else `:code`
     #   (`not_an_agent` or `pane_not_ready`), `:reason` and `:message`
-    def check(facts, screen, pasted: nil)
+    def check(facts, screen, pasted: nil, exact: nil)
       return refusal("unknown", "the session monitor hasn't seen this pane yet; try again in a few seconds") unless facts
 
       kind = facts[:kind]
@@ -60,7 +63,11 @@ module Workspace
 
       input = input_line(pattern, screen)
       return refusal("no_input_prompt", "#{provider.label}'s input prompt isn't on screen (a dialog may be open)") unless input
-      if pasted
+      if exact
+        unless squeeze(whole_input(pattern, screen)) == squeeze(exact)
+          return refusal("input_changed", "#{provider.label}'s input isn't exactly the given text")
+        end
+      elsif pasted
         unless input.start_with?(pasted[0, PASTED_PREFIX]) || input.match?(/\A#{Tmux::PASTE_PLACEHOLDER.source}/)
           return refusal("input_changed", "#{provider.label}'s input line doesn't start with the pasted text")
         end
@@ -79,6 +86,17 @@ module Workspace
       matches = screen.scan(/(?:#{pattern.source})([^\n]*)/)
       return nil if matches.empty?
       matches.last.first.gsub(/[[:space:] ]+/, " ").strip
+    end
+
+    # Everything from the last input prompt down to the rule that closes the box.
+    def whole_input(pattern, screen)
+      last = screen.to_enum(:scan, pattern).map { Regexp.last_match }.last
+      last.post_match.lines.take_while { |line| !line.match?(/\A\s*─{3,}\s*\z/) }.join
+    end
+
+    # A wrapped line gains spaces, so spaces can't take part in the comparison.
+    def squeeze(text)
+      text.gsub(/[[:space:]]+/, "")
     end
 
     def refusal(reason, message)

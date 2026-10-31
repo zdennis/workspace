@@ -100,6 +100,33 @@ RSpec.describe Workspace::SessionLedger do
     end
   end
 
+  describe "#read_open_record" do
+    it "raises on a ledger that can't be read, and is nil with no ledger" do
+      expect(ledger.read_open_record(pane_id: "%1", tmux_server: "10")).to be_nil
+
+      FileUtils.mkdir_p(path)
+      expect { ledger.read_open_record(pane_id: "%1", tmux_server: "10") }.to raise_error(SystemCallError)
+      expect(ledger.open_record_for(pane_id: "%1", tmux_server: "10")).to be_nil
+    end
+  end
+
+  describe "#open_record_for" do
+    it "answers the whole SessionStart entry of the open session" do
+      ledger.record("event" => "session_start", "session_id" => "a", "pane_id" => "%1", "tmux_server" => "10", "cwd" => "/work")
+
+      expect(ledger.open_record_for(pane_id: "%1", tmux_server: "10")).to include("session_id" => "a", "cwd" => "/work")
+    end
+
+    it "is nil once that session ended, and for a start with no session id" do
+      ledger.record("event" => "session_start", "session_id" => "a", "pane_id" => "%1", "tmux_server" => "10")
+      ledger.record("event" => "session_end", "session_id" => "a")
+      expect(ledger.open_record_for(pane_id: "%1", tmux_server: "10")).to be_nil
+
+      ledger.record("event" => "session_start", "pane_id" => "%1", "tmux_server" => "10")
+      expect(ledger.open_record_for(pane_id: "%1", tmux_server: "10")).to be_nil
+    end
+  end
+
   it "returns false instead of raising when the file can't be written" do
     FileUtils.mkdir_p(path)
 

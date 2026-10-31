@@ -117,6 +117,20 @@ RSpec.describe Workspace::PromptTyper do
     expect(tmux.delivered.size).to eq(1)
   end
 
+  it "checks for the whole text with exact:, where pasted: takes a prefix or a placeholder" do
+    text = "An API error stopped your last turn"
+    tmux.screens = ["────────\n❯ #{text} and my own words\n"]
+    expect(typer.check("%5", pasted: text)).to be_nil
+    expect(typer.check("%5", exact: text)).to include(reason: "input_changed")
+
+    tmux.screens = ["────────\n❯ [Pasted text #1 +3 lines]\n"]
+    expect(typer.check("%5", pasted: text)).to be_nil
+    expect(typer.check("%5", exact: text)).to include(reason: "input_changed")
+
+    tmux.screens = ["────────\n❯ #{text}\n"]
+    expect(typer.check("%5", exact: text)).to be_nil
+  end
+
   it "reports Enter that didn't take" do
     tmux.screens = [empty_prompt, "────────\n❯ run the specs\n"]
     tmux.statuses = [:pasted, :unsubmitted]
