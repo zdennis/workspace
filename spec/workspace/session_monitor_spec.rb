@@ -214,6 +214,18 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["activity_state"]).not_to eq("waiting")
     end
 
+    it "drops the main agent's unanswered permission request, as a Stop does" do
+      monitor.record(ask.merge("event" => "permission_request", "tool" => "Bash", "input" => {"command" => "ls"}))
+      requests = monitor.instance_variable_get(:@panes)["%2"][:permission_requests]
+      expect(requests.keys).to eq([nil])
+
+      show("question_closed_single")
+      scans(2)
+
+      expect(open_tools).to eq([])
+      expect(requests).to be_empty
+    end
+
     it "leaves a sub-agent's wait alone" do
       monitor.record(ask.merge("event" => "notification", "agent_id" => "sub1", "message" => "permission"))
       show("question_closed_single")

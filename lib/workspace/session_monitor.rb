@@ -880,6 +880,7 @@ module Workspace
       tools.each { |id| pane[:open_tools].delete(id) }
       pane[:waits].delete(nil)
       pane[:alerted_waits]&.delete(nil)
+      pane[:permission_requests].delete(nil)
       pane[:turn_ended] = true
       pane.delete(:question_screen)
       log_question_closed(pane)
