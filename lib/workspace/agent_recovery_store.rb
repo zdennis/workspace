@@ -11,7 +11,7 @@ module Workspace
   #
   # An entry holds `session_id`, `transcript_path`, `cwd`, `error`,
   # `attempts`, `phase` (`waiting`, `attempting`, `watching`, `gave_up`),
-  # `stopped` (our signal went out and no agent has come back),
+  # `stopped` (our SIGINT went out and no new agent has come back),
   # `attempt_session_id`, `last_signal_at`, `last_subagent_at`, `failed_at`,
   # `next_attempt_at`, `defer_since`, `agent_pid`, `agent_started`,
   # `last_turn_uuid`, `draft_text`, `failed_during_attempt`,

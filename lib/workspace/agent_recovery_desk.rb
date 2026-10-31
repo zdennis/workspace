@@ -42,12 +42,26 @@ module Workspace
   # message goes to the live prompt, with no signal and no marker, and a turn
   # that fails again or a message no `user_prompt` hook answers leads to a
   # restart. A restart stops the agent, types the resume command, waits for the
-  # agent and types a message. A failed attempt counts toward
-  # {AgentRecoveryStore::MAX_ATTEMPTS}, so nothing repeats without bound, and
-  # there is no second typed attempt, because `attempts` is then above 0. The
-  # only signal is one SIGINT per restart, through
-  # {AgentStopper#stop}. There is no escalation: any other signal starts a new,
-  # empty conversation in a `claude ... || claude` pane.
+  # agent and types a message, which a `user_prompt` hook must answer here too.
+  # A failed attempt counts toward {AgentRecoveryStore::MAX_ATTEMPTS}, so nothing
+  # repeats without bound, and there is no second typed attempt, because
+  # `attempts` is then above 0. The only signal is one SIGINT per restart,
+  # through {AgentStopper#stop}. There is no escalation: any other signal starts
+  # a new, empty conversation in a `claude ... || claude` pane.
+  #
+  # `stopped` means our SIGINT went out and no new agent has come back, and it
+  # is the only thing that lets a resume line reach a pane, read again just
+  # before the keystroke. Only
+  # {AgentStopper#stop} answering `:signalled` keeps it set; a SessionEnd in
+  # `waiting` after a `not_stopped` sets it too, because that signal did go out
+  # and the late exit can't be told from a person's. A same-id SessionStart or
+  # any agent found clears it. An empty pane never sets it, so an agent that
+  # came up and vanished, or left with no signal of ours, is not resumed: the
+  # attempt gives up `unconfirmed` there and then, with nothing typed, whatever
+  # failed turn it reported. After an attempt no entry waits with no agent and
+  # `stopped` false, where a late hook could silence it, but for the
+  # {AgentRecoveryStore::SIGNAL_HOLD} seconds a take-back leaves for an earlier
+  # signal's SessionEnd.
   class AgentRecoveryDesk
     # The `error` kinds that go on the attempt schedule; any other gives up at once.
     RETRYABLE_ERRORS = %w[server_error overloaded rate_limit unknown].freeze
@@ -89,7 +103,7 @@ module Workspace
     # Seconds between polls and between typing tries.
     POLL_INTERVAL = 1
 
-    # Seconds a typed message has to bring a `user_prompt` hook.
+    # Seconds a message, typed or resumed, has to bring a `user_prompt` hook.
     PROMPT_WAIT = 30
 
     # What the agent is told at its live prompt.
@@ -127,7 +141,7 @@ module Workspace
       keyword_init: true)
     private_constant :Attempt
 
-    # Outcomes that say what is in the pane, so step 6 takes no last read.
+    # Outcomes that say what is in the pane, so {#typed_steps} looks no further.
     SETTLED_OUTCOMES = %w[resumed typed person_resumed fresh_agent].freeze
     private_constant :SETTLED_OUTCOMES
 
@@ -144,13 +158,13 @@ module Workspace
 
     GIVE_UP_BODIES = {
       "attempts_exhausted" => "The API kept failing (%<error>s) through %<attempts>d recovery attempts, so workspace stopped trying.",
-      "not_retryable" => "The turn failed with %<error>s, which trying again won't fix. Nothing was stopped.",
+      "not_retryable" => "The turn failed with %<error>s, which trying again won't fix, so workspace won't try again.",
       "cannot_restart" => "The turn failed with %<error>s and workspace can't restart this pane: it has its own start command, " \
         "something other than a shell runs the agent, or the transcript is gone.",
       "fresh_conversation" => "A new conversation started in the pane in place of the one that failed (%<error>s). " \
         "Nothing was typed into it.",
-      "deferred" => "The turn failed with %<error>s, and the pane stayed busy or unreadable for 30 minutes. " \
-        "Nothing was stopped or typed.",
+      "deferred" => "The turn failed with %<error>s, and the pane stayed busy or unreadable for 30 minutes, so workspace " \
+        "stopped trying. Nothing was stopped or typed in those 30 minutes.",
       "unconfirmed" => "After %<attempts>d recovery attempts workspace can no longer confirm the turn ended on the error " \
         "(%<error>s), so it stopped trying.",
       "unconfirmed_no_attempts" => "A turn failed with %<cause>s, then with %<error>s, and workspace can no longer confirm that " \
@@ -379,14 +393,23 @@ module Workspace
       return false unless transcript_path.is_a?(String) && !transcript_path.empty?
       entry.clear unless same
       if entry["phase"] == "gave_up"
-        return false unless entry["give_up_reason"] == "not_retryable"
+        return false unless reopens?(entry, live)
         entry["stopped"] = false
+        entry["last_signal_at"] = nil
         entry["give_up_reason"] = nil
         entry["item_open"] = true
         entry["item_error"] = entry["error"]
       end
       fill(entry, session_id, error, transcript_path)
       schedule(entry, live)
+    end
+
+    # A retryable failure can follow a give-up that said nothing about the API
+    # any more. An `unconfirmed` one needs a live agent: someone resumed the
+    # session, and with no agent the failure is a late line from one that left.
+    # The count is kept, so {AgentRecoveryStore::MAX_ATTEMPTS} still ends it.
+    def reopens?(entry, live)
+      entry["give_up_reason"] == "not_retryable" || (entry["give_up_reason"] == "unconfirmed" && !live.nil?)
     end
 
     def fill(entry, session_id, error, transcript_path)
@@ -412,8 +435,13 @@ module Workspace
     # itself doesn't count: after a signal that didn't stop it, its late hooks
     # must not end the recovery, and a pid that was never read proves nothing.
     def agent_came_back?(entry, live)
-      return false unless live && entry["stopped"] == true && %w[waiting watching].include?(entry["phase"])
-      !entry["agent_pid"].nil? && (live[:pid] != entry["agent_pid"] || live[:started] != entry["agent_started"])
+      entry["stopped"] == true && %w[waiting watching].include?(entry["phase"]) && other_agent?(entry, live)
+    end
+
+    # A pid that was never read proves nothing.
+    def other_agent?(entry, live)
+      return false unless live && !entry["agent_pid"].nil?
+      live[:pid] != entry["agent_pid"] || live[:started] != entry["agent_started"]
     end
 
     def store_agent(entry, live)
@@ -471,7 +499,7 @@ module Workspace
       same = seen["session_id"] == session_id
       live = live_agent(pane_id) if open_phase && same
       # Before the write that may end the hold, so no prune sees the old pid.
-      rebind(pane_id) if open_phase && same && seen["stopped"] == true
+      rebind(pane_id) if open_phase && same && someone_resumed?(seen, live)
 
       gave_up = false
       stored = @store.update(pane_id) do |entry|
@@ -486,14 +514,25 @@ module Workspace
       case entry["phase"]
       when "attempting"
         entry["attempt_session_id"] = session_id
+        # The new agent is known: what it does next owes nothing to our signal.
+        forget_signal(entry) if session_id == entry["session_id"]
       when "waiting", "watching"
         if entry["session_id"] != session_id
           return other_session_started(entry, source)
         end
-        entry.merge!("stopped" => false, "phase" => "watching", "defer_since" => nil) if entry["stopped"] == true
+        # Attempts run in `attempting`, so another agent here is someone else's resume, never to be signalled.
+        entry.merge!("stopped" => false, "phase" => "watching", "defer_since" => nil) if someone_resumed?(entry, live)
         store_agent(entry, live)
       end
       false
+    end
+
+    # Whether a same-id SessionStart outside an attempt is a new agent. After
+    # attempts a blank pid proves it too: a `turn_failed` from a gone agent or a
+    # failed `ps` can blank the stored one, and any agent here must not be signalled.
+    def someone_resumed?(entry, live)
+      return true if entry["stopped"] == true || other_agent?(entry, live)
+      !live.nil? && entry["agent_pid"].nil? && entry["attempts"].to_i.positive?
     end
 
     # A person or a workflow cleared the conversation, or no stop of ours came
@@ -537,20 +576,27 @@ module Workspace
       @rebind_queue.call(pane_id, agent_pid) if agent_pid
     end
 
+    # After attempts the count is reported, never dropped: a Stop has already
+    # deleted the entry of an agent that finished a turn, so one still here ended
+    # with its recovery unfinished. A `/clear` is a person moving on, as ever.
     def session_ended(message)
-      deleted = false
-      @store.update(message["pane_id"]) do |entry|
+      deleted = gave_up = false
+      stored = @store.update(message["pane_id"]) do |entry|
         next if entry.empty? || entry["session_id"] != message["session_id"]
         next unless %w[waiting watching].include?(entry["phase"]) && entry["stopped"] != true
 
         if entry["phase"] == "waiting" && signalled_lately?(entry)
           entry["stopped"] = true
-        else
+        elsif entry["attempts"].to_i.zero? || message["reason"] == "clear"
           entry.clear
           deleted = true
+        else
+          give_up_in(entry, "unconfirmed")
+          gave_up = true
         end
       end
       resolve(message["session_id"]) if deleted
+      report_give_up(message["pane_id"], stored) if gave_up
     end
 
     # The monitor's failed-turn flag isn't persisted, so the panes failed when
@@ -735,7 +781,7 @@ module Workspace
       return answer unless answer.answer == :go
       return nil unless answer.mode == :typed
 
-      failure_refusal(pane_id, seen) || mark_attempting(pane_id, seen, answer, "prompt_seen" => false)
+      failure_refusal(pane_id, seen) || mark_attempting(pane_id, seen, answer)
     end
 
     # @return [Verdict, nil] the answer to act on, unless the stored failure
@@ -759,7 +805,8 @@ module Workspace
       opened = false
       @store.update(pane_id) do |entry|
         next unless same_wait?(entry, seen) && entry["attempts"] == seen["attempts"]
-        entry.merge!(fields, "attempts" => number, "phase" => "attempting", "attempt_session_id" => nil, "defer_since" => nil)
+        entry.merge!(fields, "attempts" => number, "phase" => "attempting", "attempt_session_id" => nil, "defer_since" => nil,
+          "prompt_seen" => false)
         opened = true
       end
       return nil unless opened
@@ -771,7 +818,8 @@ module Workspace
 
     # The marker and `stopped` are written before the signal, because the
     # SessionEnd it causes can arrive at once, and with no marker it would stop
-    # the dev server. A stop that raises sent nothing.
+    # the dev server. Any answer but `:signalled` sent nothing, so `stopped` is
+    # taken back: an agent gone by now left on someone's word, not ours.
     def signal_agent(attempt, seen, detail)
       return take_back(attempt, seen, :defer) unless @marker.mark(attempt.session_id)
 
@@ -782,8 +830,9 @@ module Workspace
         :unread
       end
       case result
-      when :signalled, :not_running then attempt
+      when :signalled then attempt
       when :stale then take_back(attempt, seen, :clear)
+      when :not_running then take_back(attempt, seen, :defer, keep_marker: true)
       else take_back(attempt, seen, :defer)
       end
     end
@@ -792,9 +841,13 @@ module Workspace
     # how step 1 found it, `defer_since` included, so the defer limit still
     # runs. What a hook wrote meanwhile is honoured as step 6 would.
     #
+    # An empty pane answers `:clear`, so no entry waits with no agent, unless an
+    # earlier signal may explain it. With `:not_running` that signal's SessionEnd
+    # may be in flight, so its marker is left to expire.
+    #
     # @return [Verdict] the answer to act on; it finds a changed entry and does nothing
-    def take_back(attempt, seen, answer)
-      @marker.clear(attempt.session_id)
+    def take_back(attempt, seen, answer, keep_marker: false)
+      @marker.clear(attempt.session_id) unless keep_marker
       live = last_read(attempt.pane_id)
       row = nil
       restored = %w[phase attempts stopped last_signal_at defer_since].to_h { |key| [key, seen[key]] }
@@ -804,23 +857,37 @@ module Workspace
         row = hook_row(entry, live)
       end
       close_row(attempt, row, stored)
-      verdict(answer)
+      verdict((agent_gone?(seen, live) && !signalled_lately?(seen)) ? :clear : answer)
     end
 
-    # Steps 2 to 5. Each step answers nil to go on.
+    # Steps 2 to 5. Each step answers nil to go on. A message no hook answers is
+    # `no_response`: Enter can fall on an agent still starting, whose screen
+    # changes all the same, and nothing else would ever end the wait.
     def restart_steps(attempt)
       ended = attempt.resume_only ? nil : await_exit(attempt)
       ended ||= resume_in_pane(attempt) || await_agent(attempt)
       return ended if ended
 
-      typed = type_message(attempt)
-      return typed if typed.is_a?(Array)
-      [(typed == "submitted") ? "resumed" : typed]
+      expect_message(attempt)
+      outcome, agent = typed_steps(attempt)
+      [(outcome == "typed") ? "resumed" : outcome, agent]
     end
 
-    # Typed steps 2 to 4, sharing the restart's typing. An agent that came in
-    # after the last identity check is named here, because step 6 would store
-    # any agent its last read finds as ours to stop.
+    # The new agent's input line is empty, so its text is ours from here on, and
+    # a kill during the typing or the prompt wait leaves text {#check} recognises.
+    # It isn't written at step 1: a `not_stopped` agent still holds the text of
+    # the attempt before. Only a hook from here on can answer the message, and a
+    # prompt the worker took late can't: {#type_once} refuses any prompt the
+    # monitor saw after step 1.
+    def expect_message(attempt)
+      @store.update(attempt.pane_id) do |entry|
+        entry.merge!("draft_text" => attempt.message, "prompt_seen" => false) if attempt_current?(entry, attempt)
+      end
+    end
+
+    # Typing and the prompt wait, for a typed attempt and a restart's step 5. An
+    # agent that came in after the last identity check is named here, because
+    # step 6 would store any agent its last read finds as ours to stop.
     def typed_steps(attempt)
       typed = type_message(attempt)
       typed = await_prompt(attempt) if typed == "submitted"
@@ -831,7 +898,7 @@ module Workspace
       (look == :other) ? identify(attempt, agent) : ended
     end
 
-    # Typed step 4. A `stop` or `turn_failed` in this wait is taken by step 6.
+    # The wait after Enter. A `stop` or `turn_failed` in it is taken by step 6.
     #
     # @return [String] "typed", or "no_response" with no `user_prompt` hook in {PROMPT_WAIT}
     def await_prompt(attempt)
@@ -914,7 +981,7 @@ module Workspace
       held = session_held?(attempt.session_id)
       look, agent = pane_look(attempt)
       return [:other, agent] if look == :other
-      return ["pane_not_clear"] unless look == :clear && !held
+      return ["pane_not_clear"] unless look == :clear && !held && @store.get(pane_id)&.fetch("stopped", false) == true
       return ["not_delivered"] unless @tmux.send_key(@session_name, pane_id, "C-u")
 
       @tmux.deliver(@session_name, pane_id, attempt.command).landed? ? nil : ["not_delivered"]
@@ -927,7 +994,9 @@ module Workspace
     end
 
     # Step 4. The agent's pid is stored as soon as it is seen, whatever happens
-    # next, so {#check} doesn't read our own agent as someone else's.
+    # next, so {#check} doesn't read our own agent as someone else's. The agent
+    # we signalled has left by now, so the signal goes too: this agent got none,
+    # and its SessionEnd must not read as that signal's.
     def await_agent(attempt)
       pane_id = attempt.pane_id
       @readiness.wait(@session_name, deadline: @readiness.deadline_in(READY_WAIT), only_pane: pane_id, detector: @detector)
@@ -940,12 +1009,17 @@ module Workspace
       @store.update(pane_id) do |entry|
         next unless attempt_current?(entry, attempt)
         store_agent(entry, agent)
-        entry["stopped"] = false
+        forget_signal(entry)
       end
       session = await_session(attempt)
       return ["fresh_agent"] if session && session != attempt.session_id
       rebind(pane_id)
       session ? nil : ["not_ready"]
+    end
+
+    def forget_signal(entry)
+      entry["stopped"] = false
+      entry["last_signal_at"] = nil
     end
 
     # Step 5. The lock is held for one try, so the workspace's other deliveries
@@ -1014,7 +1088,7 @@ module Workspace
     # @return [void]
     def finish(attempt, outcome, agent: nil)
       pane_id = attempt.pane_id
-      live = agent || (SETTLED_OUTCOMES.include?(outcome) ? :unread : last_read(pane_id))
+      live = agent || ((outcome == "fresh_agent") ? :unread : last_read(pane_id))
       rebind(pane_id) if live.is_a?(Hash) && !ours?(live, attempt)
 
       Thread.handle_interrupt(Object => :never) do
@@ -1022,6 +1096,10 @@ module Workspace
         stored = @store.update(pane_id) do |entry|
           next unless attempt_current?(entry, attempt)
           seen = entry.dup
+          row = hook_row(entry, live)
+          next if row
+
+          outcome = "agent_left" if live.nil? && %w[resumed typed].include?(outcome)
           row = close_attempt(entry, attempt, outcome, live)
         end
         next unless seen
@@ -1034,9 +1112,6 @@ module Workspace
 
     # @return [Symbol, nil] +:resolved+, +:gave_up+, or nil when there is nothing to report
     def close_attempt(entry, attempt, outcome, live)
-      row = hook_row(entry, live)
-      return row if row
-
       case outcome
       when "resumed" then entry.merge!("phase" => "watching", "last_signal_at" => nil, "draft_text" => nil)
       when "typed"
@@ -1051,6 +1126,10 @@ module Workspace
       else
         apply_read(entry, live)
         entry["draft_text"] = attempt.message if DRAFT_OUTCOMES.include?(outcome)
+        if agent_gone?(entry, live)
+          give_up_in(entry, "unconfirmed")
+          return :gave_up
+        end
         return :gave_up if schedule_next(entry)
       end
       nil
@@ -1078,15 +1157,27 @@ module Workspace
       apply_read(entry, live)
       entry["phase"] = "watching"
       known = (live == :unread) ? {pid: entry["agent_pid"], started: entry["agent_started"]} : live
-      intake(entry, entry["session_id"], entry["error"], entry["transcript_path"], known) ? :gave_up : :rescheduled
+      return :gave_up if intake(entry, entry["session_id"], entry["error"], entry["transcript_path"], known)
+      return :rescheduled unless agent_gone?(entry, live)
+
+      give_up_in(entry, "unconfirmed")
+      :gave_up
     end
 
-    # From the last read: an agent is ours to stop next time, and none means
-    # the next attempt is `resume_only`. A read that failed changes nothing.
+    # From the last read: an agent is ours to stop next time. An empty pane or a
+    # failed read changes nothing, so `stopped` survives only where our signal
+    # went out and no agent has come back since.
     def apply_read(entry, live)
-      return if live == :unread
-      entry["stopped"] = live.nil?
-      store_agent(entry, live) if live
+      return unless live.is_a?(Hash)
+      entry["stopped"] = false
+      store_agent(entry, live)
+    end
+
+    # Nothing is left to recover and no signal of ours explains why.
+    #
+    # @param live [Hash, nil, Symbol] {#last_read}'s answer
+    def agent_gone?(entry, live)
+      live.nil? && entry["stopped"] != true
     end
 
     def close_row(attempt, row, stored)
@@ -1202,7 +1293,11 @@ module Workspace
 
     # Picks up an attempt the daemon lost by restarting: says so, then looks at
     # the pane. Nothing is decided on a pane or process table that can't be
-    # read; the next scan tries again.
+    # read; the next scan tries again. A closed pane has no ledger to read:
+    # `open_record` could only answer `:unreadable` for it, on every scan. It
+    # keeps the marker, because that read can be wrong. `stopped` true with no
+    # agent still resumes; {#check_gone} refuses if the ledger shows a new agent
+    # came and went, and defers on a closed pane until the defer limit ends it.
     def reconcile(pane_id)
       detail = pane_detail(pane_id)
       return if detail == :unknown
@@ -1210,7 +1305,7 @@ module Workspace
       return unless tree
 
       agent = detail && @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
-      opened = open_record(pane_id)
+      opened = detail && open_record(pane_id)
       return if opened == :unreadable
 
       open_session = opened&.fetch("session_id")
@@ -1228,7 +1323,7 @@ module Workspace
 
       record_interrupted(pane_id, seen)
       # A live agent may still exit from our signal: its marker is left to expire.
-      @marker.clear(seen["session_id"]) unless agent
+      @marker.clear(seen["session_id"]) if detail && !agent
       resolve(seen["session_id"]) if finished
       report_give_up(pane_id, stored) if gave_up
     end
@@ -1246,9 +1341,12 @@ module Workspace
         return true
       end
 
-      entry["stopped"] = agent.nil?
-      store_agent(entry, agent) if agent
+      apply_read(entry, agent)
       entry["failed_at"] = stamp if failed
+      if agent_gone?(entry, agent)
+        give_up_in(entry, "unconfirmed")
+        return true
+      end
       schedule_next(entry)
     end
 
@@ -1274,6 +1372,7 @@ module Workspace
       unless entry["stopped"] == true
         return verdict(signalled_lately?(entry) ? :defer : :clear)
       end
+      return verdict(:clear) if started_since_signal?(entry)
       return verdict(:never) unless File.file?(entry["transcript_path"].to_s)
 
       command = resume_line(entry)
@@ -1282,6 +1381,15 @@ module Workspace
       return verdict(:defer) if !clear || @stopper.session_held?(session_id: entry["session_id"], tree: tree)
       return verdict(:defer) unless still_screen(pane_id, screen)
       verdict(:go, mode: :resume_only, command: command)
+    end
+
+    # The ledger is written by the hook, not the daemon, so it knows of a new
+    # agent whose SessionStart came while the daemon was down. A ledger that
+    # can't be read raises, which {#safe_check} answers with `:defer`.
+    def started_since_signal?(entry)
+      signalled = parse_time(entry["last_signal_at"])
+      started = parse_time(@ledger.last_start_at(entry["session_id"]))
+      !signalled.nil? && !started.nil? && started > signalled
     end
 
     # What may clear comes first, so an agent at work is deferred and never
@@ -1418,11 +1526,11 @@ module Workspace
     end
 
     # The pane's details, nil when the session doesn't have it, or :unknown
-    # when tmux listed no pane at all: a failed tmux call must not read as the
-    # pane being gone.
+    # when tmux listed no pane at all and doesn't say the session is gone: a
+    # failed tmux call must not read as the pane being gone.
     def pane_detail(pane_id)
       details = @tmux.pane_details(@session_name, window: nil)
-      return :unknown if details.empty?
+      return @tmux.session_gone?(@session_name) ? nil : :unknown if details.empty?
       details.find { |d| d[:id] == pane_id }
     end
 

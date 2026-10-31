@@ -9,7 +9,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
   let(:tmux) do
     Class.new(CLITestHelpers::FakeTmux) do
-      attr_accessor :details, :screen, :scripted, :start_commands, :on_deliver
+      attr_accessor :details, :screen, :scripted, :start_commands, :on_deliver, :gone
 
       def initialize(screen)
         super()
@@ -24,9 +24,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         @details
       end
 
+      def session_gone?(_session) = @gone == true
+
       def pane_start_commands(_session) = @start_commands
 
-      def server_pid_for_pane(_pane_id) = "77"
+      def server_pid_for_pane(pane_id) = (@details.any? { |detail| detail[:id] == pane_id }) ? "77" : nil
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
 
@@ -105,7 +107,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
   let(:dir) { Dir.mktmpdir }
   let(:store) { Workspace::AgentRecoveryStore.new(path: File.join(dir, "agent-recovery.json"), clock: clock) }
-  let(:ledger) { Workspace::SessionLedger.new(path: File.join(dir, "ledger.jsonl"), logger: Workspace::Logger.new) }
+  let(:ledger) { Workspace::SessionLedger.new(path: File.join(dir, "ledger.jsonl"), clock: -> { now[0] }, logger: Workspace::Logger.new) }
   let(:inbox) { Workspace::InboxStore.new(path: File.join(dir, "inbox.json"), clock: -> { now[0] }) }
   let(:marker) { Workspace::RecoveryStopMarker.new(state_dir: dir, clock: clock) }
   let(:transcript_path) { File.join(dir, "session.jsonl") }
@@ -447,6 +449,72 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(entry).not_to include("give_up_reason")
     end
 
+    describe "on an unconfirmed give-up" do
+      def given_up(**fields)
+        due_entry(phase: "watching", attempts: 3, last_signal_at: stamp(t0), **fields)
+        event("session_end", reason: "prompt_input_exit")
+        expect_gave_up("unconfirmed")
+      end
+
+      it "reopens with a live agent, keeping the count and the item until a Stop" do
+        given_up
+        failed
+        expect(entry).to include("phase" => "waiting", "attempts" => 3, "give_up_reason" => nil, "stopped" => false,
+          "last_signal_at" => nil, "item_open" => true, "agent_pid" => 20, "failed_at" => stamp(now[0]))
+        expect(inbox.list.first["state"]).to eq("open")
+
+        event("stop")
+        expect(entry).to be_nil
+        expect(inbox.list.first["state"]).to eq("done")
+      end
+
+      it "stays given up with no live agent" do
+        given_up
+        gone!
+        failed
+
+        expect_gave_up("unconfirmed")
+      end
+
+      it "gives up attempts_exhausted at 12, with the one item, and stays there" do
+        given_up(attempts: 12)
+        failed
+        expect_gave_up("attempts_exhausted")
+
+        failed
+        expect_gave_up("attempts_exhausted")
+      end
+
+      it "holds off on a prompt since the new failure, and types no first message again" do
+        given_up
+        failed
+        store.update("%5") { |current| current["last_turn_uuid"] = "u-err" }
+
+        facts[:last_user_prompt_at] = now[0] + 1
+        expect(answer).to eq(:defer)
+
+        facts[:last_user_prompt_at] = now[0] - 1
+        expect(desk.check("%5", entry)).to have_attributes(answer: :go, mode: :restart)
+      end
+
+      it "leaves another give-up alone" do
+        due_entry(phase: "gave_up", give_up_reason: "attempts_exhausted")
+        failed
+
+        expect(entry).to include("phase" => "gave_up", "give_up_reason" => "attempts_exhausted")
+      end
+    end
+
+    {0 => "before any attempt", 3 => "after restarts"}.each do |attempts, name|
+      it "words a not_retryable item truly #{name}" do
+        due_entry(attempts: attempts)
+        failed("billing_error")
+
+        expect(inbox.list.first["body"]).to include("won't try again")
+        expect(inbox.list.first["body"]).not_to include("Nothing was stopped")
+      end
+    end
+
     it "returns a not_retryable record to waiting with its count, and a Stop resolves the one item" do
       failed("authentication_failed")
       store.update("%5") { |e| e.merge!("attempts" => 2, "stopped" => true) }
@@ -461,7 +529,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     end
 
     it "changes nothing after any other give-up" do
-      %w[attempts_exhausted cannot_restart fresh_conversation deferred unconfirmed].each do |reason|
+      %w[attempts_exhausted cannot_restart fresh_conversation deferred].each do |reason|
         due_entry(phase: "gave_up", give_up_reason: reason)
         before = entry
         failed
@@ -660,15 +728,22 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   end
 
   describe "session_start" do
-    it "in attempting writes attempt_session_id and nothing else, for either id" do
-      [sid, other_sid].each do |id|
-        due_entry(phase: "attempting", stopped: true)
-        before = entry
-        event("session_start", session: id, source: "resume")
+    it "in attempting, same id: the new agent is known, so stopped and the signal go, and the hold stays" do
+      due_entry(phase: "attempting", stopped: true, last_signal_at: stamp(t0))
+      before = entry
+      event("session_start", source: "resume")
 
-        expect(entry).to eq(before.merge("attempt_session_id" => id))
-        expect(desk.holding?("%5")).to be(true)
-      end
+      expect(entry).to eq(before.merge("attempt_session_id" => sid, "stopped" => false, "last_signal_at" => nil))
+      expect(desk.holding?("%5")).to be(true)
+    end
+
+    it "in attempting, another id, writes attempt_session_id and nothing else" do
+      due_entry(phase: "attempting", stopped: true)
+      before = entry
+      event("session_start", session: other_sid, source: "resume")
+
+      expect(entry).to eq(before.merge("attempt_session_id" => other_sid))
+      expect(desk.holding?("%5")).to be(true)
     end
 
     it "in waiting or watching, same id, stopped: a person resumed it" do
@@ -696,14 +771,60 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(held).to be(true)
     end
 
-    it "in waiting or watching, same id, not stopped: refreshes the pid" do
+    it "in waiting or watching, same id, not stopped, same agent: stays as it was" do
       %w[waiting watching].each do |phase|
         due_entry(phase: phase)
-        processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(31, 10, "claude", lstart: "Wed")])
+        event("session_start", source: "compact")
+
+        expect(entry).to include("phase" => phase, "agent_pid" => 20)
+        expect(rebound).to eq([])
+      end
+    end
+
+    it "in waiting or watching, same id, no pid stored, no attempts: stores the agent and proves nothing" do
+      %w[waiting watching].each do |phase|
+        due_entry(phase: phase, attempts: 0, agent_pid: nil, agent_started: nil)
         event("session_start", source: "resume")
 
-        expect(entry).to include("phase" => phase, "agent_pid" => 31, "agent_started" => "Wed")
+        expect(entry).to include("phase" => phase, "agent_pid" => 20)
         expect(rebound).to eq([])
+      end
+    end
+
+    it "in waiting or watching, same id, pid blanked after attempts: watched, stored and rebound" do
+      %w[waiting watching].each do |phase|
+        rebound.clear
+        due_entry(phase: phase, attempts: 2, agent_pid: nil, agent_started: nil, defer_since: stamp(t0))
+        event("session_start", source: "resume")
+
+        expect(entry).to include("phase" => "watching", "agent_pid" => 20, "defer_since" => nil)
+        expect(rebound).to eq([["%5", 10]])
+        desk.scan
+        expect_no_attempt
+      end
+    end
+
+    it "in waiting, same id, pid blanked and no agent read: stays as it was" do
+      due_entry(attempts: 2, agent_pid: nil, agent_started: nil)
+      gone!
+      event("session_start", source: "resume")
+
+      expect(entry).to include("phase" => "waiting", "agent_pid" => nil)
+      expect(rebound).to eq([])
+    end
+
+    it "in waiting or watching, same id, another agent: someone else resumed it, so it is watched and never signalled" do
+      [["waiting", {pid: 31, lstart: "Wed"}], ["watching", {pid: 20, lstart: "Wed"}]].each do |phase, agent|
+        rebound.clear
+        due_entry(phase: phase, defer_since: stamp(t0))
+        processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(agent[:pid], 10, "claude", lstart: agent[:lstart])])
+        event("session_start", source: "resume")
+
+        expect(entry).to include("phase" => "watching", "stopped" => false, "agent_pid" => agent[:pid],
+          "agent_started" => "Wed", "defer_since" => nil)
+        expect(rebound).to eq([["%5", 10]])
+        desk.scan
+        expect_no_attempt
       end
     end
 
@@ -811,12 +932,49 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(entry).to include("stopped" => true, "phase" => "waiting")
     end
 
-    it "deletes in waiting with an old signal or none, and in watching" do
+    it "deletes with no attempts, in waiting with an old signal or none, and in watching" do
       [{last_signal_at: stamp(t0 - 400)}, {}, {phase: "watching", last_signal_at: stamp(t0)}].each do |fields|
-        due_entry(**fields)
+        due_entry(attempts: 0, **fields)
         event("session_end", reason: "prompt_input_exit")
         expect(entry).to be_nil
       end
+    end
+
+    %w[waiting watching].each do |phase|
+      it "gives up unconfirmed after attempts in #{phase}, with one item" do
+        due_entry(phase: phase, attempts: 2, stopped: false)
+        event("session_end", reason: "prompt_input_exit")
+
+        expect_gave_up("unconfirmed")
+        expect(inbox.list.first["state"]).to eq("open")
+      end
+    end
+
+    it "leaves an open item open after attempts, as the give-up's item" do
+      failed("authentication_failed")
+      failed
+      store.update("%5") { |e| e["attempts"] = 2 }
+      event("session_end", reason: "prompt_input_exit")
+
+      expect_gave_up("unconfirmed")
+      expect(inbox.list.first["state"]).to eq("open")
+    end
+
+    it "deletes on a /clear after attempts: the person moved on" do
+      due_entry(attempts: 2)
+      event("session_end", reason: "clear")
+
+      expect(entry).to be_nil
+      expect(inbox.list).to eq([])
+    end
+
+    it "has nothing to give up after a real resumed whose turn completed" do
+      due_entry(phase: "watching", attempts: 3)
+      event("stop")
+      event("session_end", reason: "prompt_input_exit")
+
+      expect(entry).to be_nil
+      expect(inbox.list).to eq([])
     end
 
     it "resolves the open item when a person ended the session" do
@@ -833,6 +991,20 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       event("session_end", session: other_sid)
 
       expect(entry).not_to be_nil
+    end
+  end
+
+  describe "a SessionEnd with no attempts and stopped false" do
+    %w[waiting watching].each do |phase|
+      it "in #{phase} deletes the entry and resolves its item" do
+        failed("authentication_failed")
+        failed
+        store.update("%5") { |current| current.merge!("phase" => phase, "stopped" => false, "attempts" => 0) }
+        event("session_end")
+
+        expect(entry).to be_nil
+        expect(inbox.list.first["state"]).to eq("done")
+      end
     end
   end
 
@@ -1093,8 +1265,8 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(events[0][2]).to include("mode" => "typed")
     end
 
-    it "sets stopped when no agent is left, so the next attempt is resume_only" do
-      due_entry(phase: "attempting", attempts: 2, stopped: false)
+    it "keeps stopped with no agent left and no new agent reported, so the next attempt is resume_only" do
+      due_entry(phase: "attempting", attempts: 2, stopped: true, last_signal_at: stamp(t0 + 60))
       marker.mark(sid)
       ledger.record("event" => "session_end", "session_id" => sid)
       gone!
@@ -1105,6 +1277,162 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       now[0] += 300
       desk.scan
       expect(attempts.first[2]).to have_attributes(answer: :go, mode: :resume_only)
+    end
+
+    it "gives up with nothing typed when the ledger shows a new agent came and went while the daemon was down" do
+      due_entry(phase: "attempting", attempts: 2, stopped: true, last_signal_at: stamp(t0 + 60))
+      now[0] += 5
+      start_session(sid)
+      ledger.record("event" => "session_end", "session_id" => sid)
+      gone!
+      desk.scan
+      expect(entry).to include("phase" => "waiting", "stopped" => true)
+
+      now[0] += 300
+      desk.scan
+
+      expect_gave_up("unconfirmed")
+      expect_no_attempt
+      expect(tmux.sent_keys).to eq([])
+    end
+
+    it "defers a resume on a ledger that can't be read" do
+      due_entry(stopped: true, last_signal_at: stamp(t0 + 60))
+      gone!
+      FileUtils.rm_f(File.join(dir, "ledger.jsonl"))
+      FileUtils.mkdir_p(File.join(dir, "ledger.jsonl"))
+      desk.scan
+
+      expect_no_attempt
+      expect(entry["phase"]).to eq("waiting")
+      expect(entry["defer_since"]).not_to be_nil
+    end
+
+    describe "a closed pane" do
+      def closed! = tmux.details = [{id: "%9", window: 0, index: 2, pid: 99, command: "zsh"}]
+
+      def ride_out_the_defer_limit
+        now[0] = Time.iso8601(entry["next_attempt_at"]) + 1
+        desk.scan
+        expect(entry).to include("phase" => "waiting")
+        now[0] += described_class::DEFER_LIMIT
+        desk.scan
+      end
+
+      it "finishes a restart, then ends in one give-up with nothing sent" do
+        due_entry(phase: "attempting", attempts: 3, stopped: true)
+        marker.mark(sid)
+        closed!
+        desk.scan
+
+        expect(entry).to include("phase" => "waiting", "stopped" => true, "attempts" => 3)
+        expect(marker.marked?(sid)).to be(true)
+        expect(events.map { |_, _, data| data["outcome"] }).to eq(["interrupted"])
+
+        ride_out_the_defer_limit
+        expect_gave_up("deferred")
+        desk.scan
+        expect(events.size).to eq(2)
+        expect_no_attempt
+        expect(tmux.sent_keys).to eq([])
+      end
+
+      it "gives up a typed attempt at once" do
+        due_entry(phase: "attempting", attempts: 1)
+        closed!
+        desk.scan
+
+        expect_gave_up("unconfirmed")
+        expect(entry["stopped"]).to be(false)
+        expect_no_attempt
+      end
+
+      it "says nothing was done in the 30 minutes, which holds after an attempt that stopped the agent" do
+        due_entry(attempts: 3, stopped: true)
+        closed!
+        desk.scan
+        now[0] += described_class::DEFER_LIMIT
+        desk.scan
+
+        expect(inbox.list.first["body"]).to include("Nothing was stopped or typed in those 30 minutes")
+      end
+
+      it "leaves stopped false and the marker alone: the read may be wrong" do
+        due_entry(phase: "attempting", attempts: 3, stopped: false)
+        marker.mark(sid)
+        tmux.details = []
+        tmux.gone = true
+        desk.scan
+
+        expect(entry).to include("stopped" => false)
+        expect(marker.marked?(sid)).to be(true)
+        expect_gave_up("unconfirmed")
+        expect_no_attempt
+        expect(tmux.sent_keys).to eq([])
+      end
+
+      it "finishes when the session went with its last pane" do
+        due_entry(phase: "attempting", attempts: 3, stopped: true)
+        tmux.details = []
+        tmux.gone = true
+        desk.scan
+
+        expect(entry).to include("phase" => "waiting", "stopped" => true)
+        ride_out_the_defer_limit
+        expect_gave_up("deferred")
+        expect_no_attempt
+      end
+
+      it "reads a turn stop recorded before the pane closed" do
+        due_entry(phase: "attempting", attempts: 3, turn_completed: true)
+        closed!
+        desk.scan
+
+        expect(entry).to be_nil
+      end
+    end
+
+    it "keeps stopped false after a typed attempt whose agent left, so nothing is typed into the shell" do
+      due_entry(phase: "attempting", attempts: 1, stopped: false)
+      ledger.record("event" => "session_end", "session_id" => sid)
+      gone!
+      desk.scan
+
+      expect(entry).to include("stopped" => false, "attempts" => 1)
+      expect_gave_up("unconfirmed")
+      expect_no_attempt
+      expect(tmux.sent_keys).to eq([])
+    end
+
+    it "gives up on a retryable failure recorded before the agent left" do
+      due_entry(phase: "attempting", attempts: 3, stopped: false, failed_during_attempt: true)
+      ledger.record("event" => "session_end", "session_id" => sid)
+      gone!
+      desk.scan
+
+      expect(entry).to include("stopped" => false)
+      expect_gave_up("unconfirmed")
+    end
+
+    it "still reschedules a failure recorded before a restart whose signal has no agent back yet" do
+      due_entry(phase: "attempting", attempts: 3, stopped: true, failed_during_attempt: true)
+      ledger.record("event" => "session_end", "session_id" => sid)
+      gone!
+      desk.scan
+
+      expect(entry).to include("phase" => "waiting", "stopped" => true)
+    end
+
+    it "doesn't resume an interrupted attempt whose new agent reported and left" do
+      due_entry(phase: "attempting", attempts: 3, stopped: false, agent_pid: 21, last_signal_at: nil)
+      ledger.record("event" => "session_end", "session_id" => sid)
+      gone!
+      desk.scan
+
+      expect(entry).to include("stopped" => false)
+      expect_gave_up("unconfirmed")
+      expect_no_attempt
+      expect(tmux.sent_keys).to eq([])
     end
 
     it "gives up with fresh_conversation when the ledger names another session" do
@@ -1480,6 +1808,19 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(desk.check("%5", entry)).to have_attributes(answer: :go, mode: :resume_only, command: "cd -- /work && claude --resume #{sid}")
     end
 
+    it "answers resume_only over a ledger whose start is older than the signal, which is every real resume" do
+      store.update("%5") { |e| e["last_signal_at"] = stamp(t0 + 30) }
+      expect(ledger.last_start_at(sid)).not_to be_nil
+
+      expect(desk.check("%5", entry)).to have_attributes(answer: :go, mode: :resume_only)
+    end
+
+    it "answers :clear over a ledger whose start is later than the signal" do
+      store.update("%5") { |e| e["last_signal_at"] = stamp(t0 - 30) }
+
+      expect(answer).to eq(:clear)
+    end
+
     it "defers on a stored session id that isn't one" do
       store.update("%5") { |e| e["session_id"] = "not-a-session" }
       allow(resume_command).to receive(:call).and_return("cd -- /work && claude --resume x")
@@ -1709,10 +2050,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       tmux.details = [{id: "%5", window: 0, index: 1, pid: 10, command: "claude"}]
     end
 
-    def agent_resumes(session: sid, pid: 21)
+    def agent_resumes(session: sid, pid: 21, answers: true)
       agent_appears(pid: pid)
       start_session(session)
       event("session_start", session: session, source: "resume")
+      hooks[:enter] ||= -> { event("user_prompt", session: session) } if answers
     end
 
     def healthy_run
@@ -1846,10 +2188,342 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       end
     end
 
+    describe "the prompt wait after the second message" do
+      let(:rule_prompt) { "────────\n❯ " }
+
+      def resume_swallows_enter
+        hooks[:signal] = -> { agent_exits }
+        hooks[:deliver] = -> { agent_resumes(answers: false) }
+      end
+
+      def agent_leaves(pid)
+        processes.reject! { |process| process[:pid] == pid }
+        ledger.record("event" => "session_end", "session_id" => sid)
+        gone!
+      end
+
+      def next_attempt
+        now[0] = Time.iso8601(entry["next_attempt_at"]) + 1
+        desk.scan
+      end
+
+      it "is no_response with the screen changing and no hook, never watching" do
+        due_entry
+        resume_swallows_enter
+        hooks[:enter] = -> { tmux.screen = "#{empty_prompt}status line redrawn\n" }
+        desk.scan
+
+        expect(outcomes).to eq(["no_response"])
+        expect(sleeps.count(described_class::POLL_INTERVAL)).to be >= described_class::PROMPT_WAIT
+        expect(entry).to include("stopped" => false, "agent_pid" => 21, "last_signal_at" => nil,
+          "draft_text" => a_string_matching(message))
+        expect_rescheduled(2)
+      end
+
+      it "gives up on a person's SessionEnd after no_response, with one item and nothing typed into the shell" do
+        due_entry
+        resume_swallows_enter
+        desk.scan
+        expect(outcomes).to eq(["no_response"])
+        hooks[:deliver] = nil
+
+        now[0] += 60
+        expect(desk.holding?("%5")).to be(false)
+        agent_leaves(21)
+        event("session_end")
+        desk.scan
+
+        expect_gave_up("unconfirmed")
+        expect(entry["stopped"]).to be(false)
+        expect(resumes.size).to eq(1)
+        expect(signals).to eq([["INT", 20]])
+      end
+
+      it "opens with prompt_seen false, a restart and a resume_only alike" do
+        due_entry(prompt_seen: true)
+        seen = {}
+        hooks[:signal] = lambda {
+          seen[:restart] = entry["prompt_seen"]
+          agent_exits
+        }
+        hooks[:deliver] = -> { agent_resumes(answers: false) }
+        desk.scan
+        expect(seen[:restart]).to be(false)
+
+        agent_leaves(21)
+        store.update("%5") { |current| current.merge!("stopped" => true, "prompt_seen" => true) }
+        hooks[:deliver] = lambda {
+          seen[:resume_only] = entry["prompt_seen"]
+          agent_resumes(pid: 22, answers: false)
+        }
+        next_attempt
+        expect(seen[:resume_only]).to be(false)
+      end
+
+      it "doesn't take a prompt the worker read before typing for the answer" do
+        due_entry
+        resume_swallows_enter
+        hooks[:wait] = -> { event("user_prompt") }
+        desk.scan
+
+        expect(outcomes).to eq(["no_response"])
+      end
+
+      it "is resumed once the hook arrives, and goes to watching" do
+        due_entry
+        healthy_run
+        desk.scan
+
+        expect(outcomes).to eq(["resumed"])
+        expect(sleeps.count(described_class::POLL_INTERVAL)).to be < described_class::PROMPT_WAIT
+        expect(entry).to include("phase" => "watching", "draft_text" => nil)
+      end
+
+      it "lets the next attempt stop that agent with our text in its input line" do
+        due_entry
+        resume_swallows_enter
+        desk.scan
+        typed = messages.first
+        tmux.screen = "#{rule_prompt}#{typed}\n"
+
+        hooks[:signal] = -> { agent_leaves(21) }
+        hooks[:deliver] = lambda {
+          tmux.screen = empty_prompt
+          agent_resumes(pid: 22)
+        }
+        next_attempt
+
+        expect(signals).to eq([["INT", 20], ["INT", 21]])
+        expect(outcomes).to eq(%w[no_response resumed])
+        expect(entry).to include("phase" => "watching", "agent_pid" => 22, "draft_text" => nil)
+      end
+
+      it "covers a resume_only attempt the same way" do
+        due_entry(attempts: 2, stopped: true)
+        ledger.record("event" => "session_end", "session_id" => sid)
+        gone!
+        hooks[:deliver] = -> { agent_resumes(answers: false) }
+        desk.scan
+
+        expect(signals).to eq([])
+        expect(outcomes).to eq(["no_response"])
+        expect(entry).to include("stopped" => false, "agent_pid" => 21, "draft_text" => a_string_matching(message))
+        expect_rescheduled(3)
+
+        typed = messages.first
+        tmux.screen = "#{rule_prompt}#{typed}\n"
+        hooks[:signal] = -> { agent_leaves(21) }
+        hooks[:deliver] = lambda {
+          tmux.screen = empty_prompt
+          agent_resumes(pid: 22)
+        }
+        next_attempt
+
+        expect(signals).to eq([["INT", 21]])
+        expect(outcomes).to eq(%w[no_response resumed])
+      end
+
+      it "doesn't read a person's draft as ours after no_response" do
+        due_entry
+        resume_swallows_enter
+        desk.scan
+        store.update("%5") { |current| current["last_turn_uuid"] = "u-err" }
+        tmux.screen = "#{rule_prompt}a person's draft\n"
+
+        expect(answer).to eq(:defer)
+      end
+
+      it "recognises our text after a kill during the wait" do
+        due_entry
+        resume_swallows_enter
+        allow(desk).to receive(:await_prompt) do
+          tmux.screen = "#{rule_prompt}#{messages.first}\n"
+          raise "killed"
+        end
+        desk.scan
+        desk.scan
+        store.update("%5") { |current| current["last_turn_uuid"] = "u-err" }
+
+        expect(outcomes).to eq(["interrupted"])
+        expect(entry).to include("phase" => "waiting", "stopped" => false, "agent_pid" => 21)
+        expect(answer).to eq(:go)
+      end
+
+      it "keeps the draft of the attempt before while that agent won't stop" do
+        due_entry(draft_text: "ours")
+        desk.scan
+
+        expect(outcomes).to eq(["not_stopped"])
+        expect(entry["draft_text"]).to eq("ours")
+      end
+
+      it "takes a stop in the wait ahead of no_response" do
+        due_entry
+        resume_swallows_enter
+        hooks[:sleep] = -> { event("stop") if entry["phase"] == "attempting" && messages.any? }
+        desk.scan
+
+        expect(entry).to be_nil
+        expect(outcomes).to eq(["no_response"])
+      end
+
+      it "takes a failed turn in the wait ahead of no_response" do
+        due_entry
+        resume_swallows_enter
+        hooks[:sleep] = -> { failed("overloaded") if entry["error"] == "server_error" && messages.any? }
+        desk.scan
+
+        expect(entry).to include("phase" => "waiting", "attempts" => 2, "error" => "overloaded")
+        expect(entry).not_to include("failed_during_attempt")
+      end
+
+      it "leaves stopped false when the resumed agent sends SessionEnd in the wait, and gives up with nothing typed" do
+        due_entry
+        resume_swallows_enter
+        hooks[:enter] = lambda {
+          agent_leaves(21)
+          event("session_end")
+        }
+        desk.scan
+
+        expect(outcomes).to eq(["no_response"])
+        expect(entry["stopped"]).to be(false)
+        expect_gave_up("unconfirmed")
+        expect(resumes.size).to eq(1)
+        expect(signals).to eq([["INT", 20]])
+      end
+
+      it "stays resumed, and resolves, when a Stop came before the pane emptied" do
+        due_entry
+        resume_swallows_enter
+        hooks[:enter] = lambda {
+          event("user_prompt")
+          event("stop")
+          agent_leaves(21)
+        }
+        desk.scan
+
+        expect(outcomes).to eq(["resumed"])
+        expect(entry).to be_nil
+      end
+
+      it "doesn't watch an agent that took the message and ended before step 6" do
+        due_entry
+        resume_swallows_enter
+        hooks[:enter] = lambda {
+          event("user_prompt")
+          agent_leaves(21)
+          event("session_end")
+        }
+        desk.scan
+
+        expect(outcomes).to eq(["agent_left"])
+        expect(entry["stopped"]).to be(false)
+        expect_gave_up("unconfirmed")
+        expect(resumes.size).to eq(1)
+      end
+
+      it "gives up when the pane reads as gone at step 6, with stopped false" do
+        due_entry
+        healthy_run
+        allow(desk).to receive(:await_prompt) do
+          tmux.details = [{id: "%9", window: 0, index: 2, pid: 99, command: "zsh"}]
+          "typed"
+        end
+        desk.scan
+
+        expect(outcomes).to eq(["agent_left"])
+        expect(entry["stopped"]).to be(false)
+        expect_gave_up("unconfirmed")
+      end
+
+      it "forgets the signal once an agent is found, with no SessionStart seen" do
+        due_entry
+        hooks[:signal] = -> { agent_exits }
+        hooks[:deliver] = -> { agent_appears }
+        desk.scan
+
+        expect(outcomes).to eq(["not_ready"])
+        expect(entry).to include("stopped" => false, "last_signal_at" => nil, "agent_pid" => 21)
+
+        agent_leaves(21)
+        event("session_end")
+        expect_gave_up("unconfirmed")
+        expect(entry["stopped"]).to be(false)
+      end
+
+      it "stays resumed, and watches, when the last read fails" do
+        due_entry
+        healthy_run
+        allow(desk).to receive(:await_prompt) do
+          tree_broken[0] = true
+          "typed"
+        end
+        desk.scan
+
+        expect(outcomes).to eq(["resumed"])
+        expect(entry["phase"]).to eq("watching")
+      end
+
+      it "gives up unconfirmed at 12 on agent_left, going round no more" do
+        due_entry(attempts: 11)
+        resume_swallows_enter
+        hooks[:enter] = lambda {
+          event("user_prompt")
+          agent_leaves(21)
+        }
+        desk.scan
+
+        expect(outcomes).to eq(["agent_left"])
+        expect_gave_up("unconfirmed")
+        expect(entry["attempts"]).to eq(12)
+      end
+
+      it "doesn't resume an agent that vanished in the wait with no hook: it may have been a person's to end" do
+        due_entry
+        resume_swallows_enter
+        hooks[:enter] = -> { agent_leaves(21) }
+        desk.scan
+
+        expect(outcomes).to eq(["no_response"])
+        expect(entry["stopped"]).to be(false)
+        expect_gave_up("unconfirmed")
+        expect(resumes.size).to eq(1)
+        expect(signals).to eq([["INT", 20]])
+      end
+
+      it "doesn't resume after a SessionEnd in the ready wait, of the agent the resume line brought up" do
+        due_entry
+        resume_swallows_enter
+        hooks[:wait] = lambda {
+          agent_leaves(21)
+          event("session_end")
+        }
+        desk.scan
+
+        expect(outcomes).to eq(["not_ready"])
+        expect(entry["stopped"]).to be(false)
+        expect_gave_up("unconfirmed")
+        expect(resumes.size).to eq(1)
+      end
+
+      it "doesn't resume after a SessionEnd taken just after step 6 read the pane empty" do
+        due_entry
+        resume_swallows_enter
+        hooks[:enter] = -> { agent_leaves(21) }
+        desk.scan
+        event("session_end")
+
+        expect_gave_up("unconfirmed")
+        expect(events.count { |type, _, _| type == "agent_recovery_gave_up" }).to eq(1)
+        expect(resumes.size).to eq(1)
+      end
+    end
+
     describe "our own session_start in the attempt" do
       before { due_entry }
 
-      it "leaves the phase and stopped alone until step 4, and the hold past rebind_queue" do
+      it "leaves the phase alone, clears stopped, and keeps the hold past rebind_queue" do
         seen = {}
         hooks[:signal] = -> { agent_exits }
         hooks[:deliver] = lambda {
@@ -1859,7 +2533,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         hooks[:rebind] = -> { seen[:holding] = desk.holding?("%5") }
         desk.scan
 
-        expect(seen[:after_hook]).to include("phase" => "attempting", "stopped" => true, "attempt_session_id" => sid)
+        expect(seen[:after_hook]).to include("phase" => "attempting", "stopped" => false, "attempt_session_id" => sid)
         expect(seen[:holding]).to be(true)
       end
 
@@ -1881,7 +2555,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(entry["failed_at"]).not_to eq(stamp(t0))
       end
 
-      it "is not_ready with stopped kept when the agent dies before step 4, and the next attempt is resume_only" do
+      it "is not_ready with stopped false when the agent that reported dies before step 4, and nothing is typed" do
         healthy_run
         hooks[:wait] = lambda {
           ledger.record("event" => "session_end", "session_id" => sid)
@@ -1891,14 +2565,84 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         desk.scan
 
         expect(outcomes).to eq(["not_ready"])
-        expect(entry["stopped"]).to be(true)
+        expect(entry["stopped"]).to be(false)
+        expect_gave_up("unconfirmed")
+        expect(signals.size).to eq(1)
+        expect(resumes.size).to eq(1)
+      end
+    end
 
-        hooks[:wait] = nil
-        now[0] += 240
+    describe "a not_stopped signal" do
+      def exits_late
+        processes.reject! { |process| process[:pid] == 20 }
+        ledger.record("event" => "session_end", "session_id" => sid)
+        gone!
+      end
+
+      def signal_goes_unheeded
+        due_entry
+        desk.scan
+        expect(outcomes).to eq(["not_stopped"])
+        expect(signals).to eq([["INT", 20]])
+      end
+
+      it "resumes an agent that exits late, its SessionEnd arriving after the attempt closed" do
+        signal_goes_unheeded
+        expect(entry).to include("phase" => "waiting", "stopped" => false)
+
+        now[0] += 60
+        exits_late
+        event("session_end")
+        expect(entry).to include("phase" => "waiting", "stopped" => true)
+
+        hooks[:deliver] = -> { agent_resumes }
+        now[0] = Time.iso8601(entry["next_attempt_at"]) + 1
+        expect(desk.check("%5", entry)).to have_attributes(answer: :go, mode: :resume_only)
         desk.scan
 
-        expect(signals.size).to eq(1)
-        expect(outcomes.last).to eq("resumed")
+        expect(signals).to eq([["INT", 20]])
+        expect(resumes.size).to eq(1)
+        expect(outcomes).to eq(%w[not_stopped resumed])
+        expect(lines.last).to include("attempt" => 3, "mode" => "restart")
+      end
+
+      it "gives up, nothing typed, when the SessionEnd arrived inside the attempt" do
+        due_entry
+        ended = false
+        hooks[:sleep] = lambda {
+          next if ended || signals.empty?
+          ended = true
+          event("session_end")
+        }
+        desk.scan
+        hooks[:sleep] = nil
+        expect(outcomes).to eq(["not_stopped"])
+        expect(entry).to include("phase" => "waiting", "stopped" => false)
+
+        exits_late
+        now[0] = Time.iso8601(entry["next_attempt_at"]) + 1
+        desk.scan
+        expect(entry).to include("phase" => "waiting", "stopped" => false)
+        expect(entry["defer_since"]).not_to be_nil
+
+        now[0] += Workspace::AgentRecoveryStore::SIGNAL_HOLD
+        desk.scan
+
+        expect_gave_up("unconfirmed")
+        expect(signals).to eq([["INT", 20]])
+        expect(tmux.sent_keys).to eq([])
+        expect(tmux.sent_key_names).to eq([])
+      end
+
+      it "gives up at once on a SessionEnd after the 5 minutes, leaving stopped false" do
+        signal_goes_unheeded
+        now[0] += Workspace::AgentRecoveryStore::SIGNAL_HOLD + 1
+        exits_late
+        event("session_end")
+
+        expect_gave_up("unconfirmed")
+        expect(entry["stopped"]).to be(false)
+        expect(tmux.sent_keys).to eq([])
       end
     end
 
@@ -2309,7 +3053,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
           expect(messages).to eq([])
           expect(outcomes).to eq(["pane_not_clear"])
-          expect(entry["stopped"]).to be(true)
+          expect(entry["stopped"]).to be(false)
         end
 
         it "types no message to an agent that isn't the attempt's" do
@@ -2337,6 +3081,19 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       before do
         allow(typer).to receive(:type).and_call_original
         hooks[:signal] = -> { agent_exits }
+      end
+
+      it "types no resume line once a new agent reported, even with the pane clear again at the keystroke" do
+        due_entry
+        allow(desk).to receive(:await_exit).and_wrap_original do |original, attempt|
+          original.call(attempt).tap { event("session_start", source: "resume") }
+        end
+        desk.scan
+
+        expect(resumes).to eq([])
+        expect(tmux.sent_key_names).to eq([])
+        expect(outcomes).to eq(["pane_not_clear"])
+        expect_gave_up("unconfirmed")
       end
 
       it "is pane_not_clear when the third read is false, with no agent" do
@@ -2547,6 +3304,53 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         end
       end
 
+      it "takes stopped back when the agent left between the check and the stop, and resumes nothing" do
+        due_entry
+        allow(stopper).to receive(:stop) do
+          processes.reject! { |process| process[:pid] == 20 }
+          ledger.record("event" => "session_end", "session_id" => sid)
+          gone!
+          event("session_end")
+          :not_running
+        end
+        desk.scan
+
+        expect(lines).to eq([])
+        expect(entry).to include("stopped" => false, "attempts" => 1)
+        expect_gave_up("unconfirmed")
+        expect(signals).to eq([])
+        expect(resumes).to eq([])
+      end
+
+      it "leaves the marker on :not_running, and waits for an earlier signal's SessionEnd" do
+        due_entry(last_signal_at: stamp(now[0] - 100))
+        allow(stopper).to receive(:stop) do
+          processes.reject! { |process| process[:pid] == 20 }
+          gone!
+          :not_running
+        end
+        desk.scan
+
+        expect(marker.marked?(sid)).to be(true)
+        expect(entry).to include("phase" => "waiting", "stopped" => false)
+
+        event("session_end")
+        expect(entry).to include("phase" => "waiting", "stopped" => true)
+      end
+
+      it "can't set stopped on a take-back: no signal went out" do
+        due_entry
+        allow(stopper).to receive(:stop) do
+          failed("overloaded")
+          gone!
+          :background
+        end
+        desk.scan
+
+        expect(signals).to eq([])
+        expect(entry).to include("stopped" => false, "error" => "overloaded")
+      end
+
       describe "a background agent, not the terminal's foreground group" do
         let(:group_read) { ->(pid) { (pid == 20) ? [20, 10] : [10, 10] } }
 
@@ -2615,14 +3419,15 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect_rescheduled(2)
       end
 
-      it "sets stopped when the agent dies after step 4 and before the last update" do
+      it "leaves stopped false when the agent dies after step 4 and before the last update" do
         allow(typer).to receive(:type) do
           processes.reject! { |process| process[:pid] == 21 }
           Workspace::PromptTyper::Result.new(outcome: :failed)
         end
         desk.scan
 
-        expect(entry).to include("stopped" => true, "phase" => "waiting")
+        expect(entry["stopped"]).to be(false)
+        expect_gave_up("unconfirmed")
       end
 
       it "presses Enter once on :not_submitted and never retypes" do
@@ -2753,7 +3558,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     end
 
     describe "step 6" do
-      failing = %w[not_stopped claim_lost pane_not_clear not_delivered not_ready not_typed not_submitted no_response]
+      failing = %w[not_stopped claim_lost pane_not_clear not_delivered not_ready not_typed not_submitted no_response agent_left]
       agent = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
 
       def run_to(outcome, agent: nil, &hook)
@@ -2817,6 +3622,14 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
           expect(entry["stopped"]).to be(true)
         end
+      end
+
+      it "leaves the stopped our signal set when the pane reads as gone" do
+        due_entry(stopped: false)
+        run_to("not_ready") { tmux.details = [{id: "%9", window: 0, index: 2, pid: 99, command: "zsh"}] }
+
+        expect(signals).to eq([["INT", 20]])
+        expect(entry).to include("stopped" => true, "phase" => "waiting")
       end
 
       it "keeps stopped when the last read fails" do
@@ -3237,23 +4050,20 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect_restart_after("claim_lost")
       end
 
-      it "pane_not_clear with a shell left leads to resume_only" do
+      it "a person's /exit before the paste gives up with nothing typed into their shell" do
         before_typing { gone! }
         desk.scan
 
         expect(messages).to eq([])
         expect(outcomes).to eq(["pane_not_clear"])
-        expect(entry).to include("stopped" => true, "phase" => "waiting", "attempts" => 1)
+        expect(entry).to include("stopped" => false, "attempts" => 1)
+        expect_gave_up("unconfirmed")
+        expect(texts).to eq([])
         expect_no_stop
-
-        hooks[:deliver] = -> { agent_resumes }
-        next_attempt
-        expect(signals).to eq([])
-        expect(resumes.size).to eq(1)
-        expect(outcomes).to eq(%w[pane_not_clear resumed])
+        expect(outcomes).to eq(["pane_not_clear"])
       end
 
-      it "pane_not_clear with no agent and no clear pane leads to resume_only too" do
+      it "pane_not_clear with no agent and no clear pane leaves stopped false too" do
         before_typing do
           gone!
           tmux.details = [{id: "%5", window: 0, index: 1, pid: 10, command: "vim"}]
@@ -3261,7 +4071,51 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         desk.scan
 
         expect(outcomes).to eq(["pane_not_clear"])
-        expect(entry["stopped"]).to be(true)
+        expect(entry["stopped"]).to be(false)
+      end
+
+      it "a failure hook with the agent gone gives up at once, leaving nothing a late hook could silence" do
+        hooks[:enter] = lambda {
+          failed("overloaded")
+          gone!
+        }
+        desk.scan
+
+        expect(entry).to include("stopped" => false, "error" => "overloaded")
+        expect_gave_up("unconfirmed")
+        event("tool_use")
+        expect(entry["phase"]).to eq("gave_up")
+        expect(resumes).to eq([])
+        expect(tmux.sent_key_names).to eq([])
+      end
+
+      it "never signals a person who resumes after a failure hook and a SessionEnd in the attempt" do
+        hooks[:enter] = lambda {
+          failed("overloaded")
+          event("session_end", reason: "prompt_input_exit")
+          gone!
+        }
+        desk.scan
+        hooks[:enter] = nil
+        agent_appears(pid: 31)
+        start_session(sid)
+        event("session_start", source: "resume")
+        tmux.screen = empty_prompt
+        now[0] += 3600
+        desk.scan
+
+        expect_gave_up("unconfirmed")
+        expect(signals).to eq([])
+      end
+
+      it "a non-retryable failure hook with the agent gone stays not_retryable" do
+        hooks[:enter] = lambda {
+          failed("billing_error")
+          gone!
+        }
+        desk.scan
+
+        expect_gave_up("not_retryable")
       end
 
       [[:refused, {reason: "waiting"}], [:aborted, {}], [:not_landed, {}], [:failed, {}]].each do |typer_outcome, fields|
@@ -3300,22 +4154,28 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(answer).to eq(:go)
       end
 
-      it "resumes past a late prompt hook from a no_response turn whose agent then died" do
+      it "gives up when the agent leaves after the prompt hook, typing nothing more" do
+        hooks[:enter] = lambda {
+          event("user_prompt")
+          gone!
+        }
+        desk.scan
+
+        expect(outcomes).to eq(["agent_left"])
+        expect(entry).to include("stopped" => false, "attempts" => 1)
+        expect_gave_up("unconfirmed")
+        expect(messages).to eq([message])
+        expect_no_stop
+      end
+
+      it "gives up after a no_response turn whose agent left, typing nothing more" do
         hooks[:enter] = -> { gone! }
         desk.scan
         expect(outcomes).to eq(["no_response"])
-        expect(entry["stopped"]).to be(true)
-
-        facts[:last_user_prompt_at] = now[0]
-        event("user_prompt")
-        expect(entry).to include("phase" => "waiting", "stopped" => true)
-
-        hooks[:enter] = nil
-        hooks[:deliver] = -> { agent_resumes }
-        next_attempt
-
-        expect(signals).to eq([])
-        expect(outcomes).to eq(%w[no_response resumed])
+        expect(entry["stopped"]).to be(false)
+        expect_gave_up("unconfirmed")
+        expect(messages).to eq([message])
+        expect_no_stop
       end
 
       it "a person's prompt in the retry window stops the paste, as not_typed" do
@@ -3575,6 +4435,68 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect_gave_up("cannot_restart")
         expect(signals).to eq([])
       end
+    end
+
+    it "drives a whole outage to success, and the next outage types first again" do
+      after_each = lambda do |attempts|
+        expect(entry).to include("phase" => "waiting", "attempts" => attempts, "stopped" => false)
+        expect(entry["last_signal_at"]).to be_nil
+      end
+
+      failed
+      now[0] = t0 + 61
+      hooks[:enter] = lambda {
+        event("user_prompt")
+        failed
+      }
+      desk.scan
+      expect(outcomes).to eq(["typed"])
+      expect(signals).to eq([])
+      expect(resumes).to eq([])
+      after_each.call(1)
+
+      hooks[:enter] = nil
+      hooks[:signal] = -> { agent_exits }
+      hooks[:deliver] = -> { agent_resumes(answers: false) }
+      next_attempt
+      expect(outcomes).to eq(%w[typed no_response])
+      expect(signals).to eq([["INT", 20]])
+      expect(resumes.size).to eq(1)
+      after_each.call(2)
+      expect(entry).to include("agent_pid" => 21, "draft_text" => a_string_matching(/workspace restarted Claude Code/))
+
+      tmux.screen = "#{rule_prompt}#{entry["draft_text"]}\n"
+      hooks[:signal] = lambda {
+        processes.reject! { |process| process[:pid] == 21 }
+        agent_exits
+      }
+      hooks[:deliver] = lambda {
+        tmux.screen = empty_prompt
+        agent_resumes(pid: 22)
+      }
+      next_attempt
+      expect(outcomes).to eq(%w[typed no_response resumed])
+      expect(lines.map { |line| line["attempt"] }).to eq([1, 2, 3])
+      expect(lines.map { |line| line["mode"] }).to eq(%w[typed restart restart])
+      expect(signals).to eq([["INT", 20], ["INT", 21]])
+      expect(resumes.size).to eq(2)
+      expect(entry).to include("phase" => "watching", "attempts" => 3, "stopped" => false, "last_signal_at" => nil,
+        "agent_pid" => 22)
+
+      event("stop")
+      expect(entry).to be_nil
+      expect(inbox.list.map { |item| item["state"] } - ["done"]).to eq([])
+
+      hooks[:signal] = nil
+      hooks[:deliver] = nil
+      failed
+      now[0] += 61
+      hooks[:enter] = -> { event("user_prompt") }
+      desk.scan
+
+      expect(lines.last).to include("attempt" => 1, "mode" => "typed", "outcome" => "typed")
+      expect(signals).to eq([["INT", 20], ["INT", 21]])
+      expect(resumes.size).to eq(2)
     end
 
     it "goes from a failure through a typed attempt and a restart to a stop, entry gone, lines in order" do

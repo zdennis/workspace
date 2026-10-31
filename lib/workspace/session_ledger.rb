@@ -143,6 +143,20 @@ module Workspace
       nil
     end
 
+    # @param session_id [String]
+    # @return [String, nil] the `at` of the session's latest SessionStart, in any pane; nil when none is recorded
+    # @raise [SystemCallError] if the ledger exists but can't be read
+    def last_start_at(session_id)
+      latest = nil
+      File.foreach(@path) do |line|
+        entry = parse(line)
+        latest = entry["at"] if entry && entry["event"] == "session_start" && entry["session_id"] == session_id
+      end
+      latest
+    rescue Errno::ENOENT
+      nil
+    end
+
     private
 
     SLOT_FIELDS = %w[pane_slot pane_id tmux_server session_id transcript_path cwd layout at kind].freeze
