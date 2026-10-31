@@ -2203,7 +2203,7 @@ RSpec.describe Workspace::Commands::Agent do
         run_agent do
           send_event("user_prompt")
           send_event("stop")
-          expect(nudger.turns).to eq([["myapp", "%5", now]])
+          expect(nudger.turns).to eq([["myapp", "%5", now, nil]])
 
           send_event("user_prompt")
           send_event("turn_failed", error: "server_error")
