@@ -4355,10 +4355,10 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace review list    # what is ready in this project"
-        opts.separator "  workspace review --patch --max-bytes 50000 --json    # the packet with the patch cut at 50000 bytes"
-        opts.separator "  workspace review my-app.worktree-fix-login --json"
         opts.separator "  workspace review    # the packet for the workspace in the current directory"
+        opts.separator "  workspace review list    # what is ready in this project"
+        opts.separator "  workspace review my-app.worktree-fix-login --json    # the packet for one workspace by name, as JSON"
+        opts.separator "  workspace review --patch --max-bytes 50000 --json    # the packet with the patch cut at 50000 bytes"
       end
     end
 
@@ -5165,10 +5165,10 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace step status"
-        opts.separator "  workspace step done --summary \"Plan written; three commits.\""
-        opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\""
-        opts.separator "  workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\""
+        opts.separator "  workspace step status    # which run, step and attempt this pane is on"
+        opts.separator "  workspace step done --summary \"Plan written; three commits.\"    # record a pass, then end your turn"
+        opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\"    # fail the step at the turn's end"
+        opts.separator "  workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"    # fail it with a word for why"
       end
     end
 
@@ -7618,9 +7618,9 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace goal show                  # the workspace you are in"
-        opts.separator "  workspace goal show LAB-1 --json"
-        opts.separator "  workspace goal list"
+        opts.separator "  workspace goal show    # the goal of the workspace you are in"
+        opts.separator "  workspace goal show LAB-1 --json    # the goal for a ticket key, as JSON"
+        opts.separator "  workspace goal list    # one line per goal"
       end
     end
 
@@ -7659,24 +7659,16 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace spine show    # the spine of the workspace you are in"
-        opts.separator "  workspace spine show api.worktree-login --json"
-        opts.separator "  workspace spine show --name=api.worktree-login --json"
-        opts.separator "  workspace spine show --stage implement/api --body --json"
-        opts.separator "  workspace spine show --evaluate --json    # state (incl. checking, check_failed), gate_results, disputes, checker and current for every stage"
-        opts.separator "  workspace spine set verify --status in_progress"
-        opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\""
-        opts.separator "  workspace spine set api.worktree-login review --status=completed --note=\"2 nits, fixed\" --json"
-        opts.separator "  workspace spine set api.worktree-login implement --status completed --recursive --if-revision 9f8e7d6c"
-        opts.separator "  workspace spine check verify --item 2 --done"
-        opts.separator "  workspace spine check api.worktree-login implement/api --item 1 --item 3 --undone --if-revision 9f8e7d6c --json"
-        opts.separator "  workspace spine verify relationships --pass --note \"74 commands classed, no gaps\""
-        opts.separator "  workspace spine verify api.worktree-login verify --fail --note \"item 2 is not in the diff\" --by=\"claude %27\" --json"
-        opts.separator "  workspace spine goal set \"Fix the OAuth refresh race\""
-        opts.separator "  workspace spine start verify    # the stage's owner pane, else the main agent pane"
-        opts.separator "  workspace spine start api.worktree-login implement/api --spawn codex --json"
-        opts.separator "  workspace spine start research --pane %21 --play team-research"
-        opts.separator "  workspace spine start implement --fan-out --max=2 --json    # one new agent per ready sub-stage"
+        opts.separator "  workspace spine show    # the stages of the workspace you are in"
+        opts.separator "  workspace spine show --evaluate --json    # judge every stage against the plan, git, the pull request and the panes (up to about 5s)"
+        opts.separator "  workspace spine init --dry-run    # preview the spine/ files; nothing is written"
+        opts.separator "  workspace spine set verify --status in_progress    # mark a stage started"
+        opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\"    # record who works it and a note"
+        opts.separator "  workspace spine check verify --item 2 --done    # tick item 2 of the stage's Done when list"
+        opts.separator "  workspace spine verify verify --pass --note \"CI green, all 4 items met\"    # a checker records a pass (not the agent that did the stage)"
+        opts.separator "  workspace spine goal set \"Fix the OAuth refresh race\"    # write the goal's title"
+        opts.separator "  workspace spine start verify    # type the stage's brief into its owner pane, else the main agent pane"
+        opts.separator "  workspace spine start implement --fan-out --max 2    # one new agent pane per ready sub-stage, at most two"
       end
     end
 
@@ -8153,36 +8145,7 @@ module Workspace
         HelpPages.overview_verbs(HelpPages::PLAN).each { |line| opts.separator line }
         opts.separator "Run `workspace plan VERB --help` for a verb's options. Task states: #{PlanFile::TASK_STATES.join(", ")}."
         opts.separator ""
-        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]\n" \
-          "       workspace plan path [--name WORKSPACE] [--json]\n" \
-          "       workspace plan show [--name WORKSPACE]\n" \
-          "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]\n" \
-          "       workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]\n" \
-          "       workspace plan pause [--name WORKSPACE] [--interrupt] [--json]\n" \
-          "       workspace plan delete [--name WORKSPACE] --yes [--json]\n" \
-          "       workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]\n" \
-          "       workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]\n" \
-          "       workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]\n" \
-          "       workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]"
-        opts.separator ""
-        opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
-        opts.separator "line per task under '## Tasks'. workspace counts it, and works out one state from the"
-        opts.separator "plan, the session and the pane that owns the plan."
-        opts.separator ""
-        opts.separator "Subcommands:"
-        opts.separator "  status   Count the plan and report its state (a workspace with no plan is a row, not an error)"
-        opts.separator "  path     Print where the plan is (or would be)"
-        opts.separator "  show     Print the plan file"
-        opts.separator "  init     Write a new plan, or import an existing document with --from"
-        opts.separator "  start    Set status: active, then launch the workspace with the implementation-plan play, or send"
-        opts.separator "           the main agent pane the play and \"Continue the plan.\" (a working pane is left alone)."
-        opts.separator "           With --task, send that one task to --pane, a new agent pane (--spawn), the task's owner,"
-        opts.separator "           or the main agent pane; the pane is written onto the task line as its owner"
-        opts.separator "  pause    Set status: paused; the agent stops before its next task. --interrupt also presses"
-        opts.separator "           the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works"
-        opts.separator "  delete   Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>; needs --yes; the session and worktree stay"
-        opts.separator "  task     add, set-state, set-title or move one task line; --if-revision (the revision from status --json) refuses a stale edit"
-        opts.separator "           with stale_revision. States: #{PlanFile::TASK_STATES.join(", ")}; blocked and skipped need --reason"
+        opts.separator "A verb that writes (init, start, pause, delete, task) changes the plan or the workspace for real."
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
         opts.on("--project [NAME]", "status: every workspace of a project (NAME, or the project of the current workspace)") { |v| take_plan_flag(options, :project, v || true) }
@@ -8208,20 +8171,16 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace plan status    # api.worktree-x  working  7/20 (40%)  T9 Add the token store"
-        opts.separator "  workspace plan status --all --json"
-        opts.separator "  workspace plan status --group billing --json"
-        opts.separator "  workspace plan init --title \"Auth rewrite\""
-        opts.separator "  workspace plan path    # /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
-        opts.separator "  workspace plan start --name api.worktree-x --json"
-        opts.separator "  workspace plan start --task=T4 --pane=%23 --json"
-        opts.separator "  workspace plan start --task=T5 --spawn=claude"
-        opts.separator "  workspace plan pause --interrupt --json"
-        opts.separator "  workspace plan task add --title \"Write the docs\" --phase=Docs --if-revision=9f8e7d6c --json"
-        opts.separator "  workspace plan task set-state --task=T3 --state=blocked --reason=\"needs the dev database\""
-        opts.separator "  workspace plan task set-title --task=T3 --title=\"Write the token store docs\""
-        opts.separator "  workspace plan task move --task=T5 --after=T1"
-        opts.separator "  workspace plan delete --yes"
+        opts.separator "  workspace plan status    # the plan of the workspace you are in, e.g. api.worktree-x  working  7/20 (40%)  T9 Add the token store"
+        opts.separator "  workspace plan status --all --json    # every workspace, as one JSON document"
+        opts.separator "  workspace plan path    # where the plan file is, e.g. /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
+        opts.separator "  workspace plan init --title \"Auth rewrite\"    # write a new plan"
+        opts.separator "  workspace plan start    # set it active, then launch the workspace or type the play into its agent pane"
+        opts.separator "  workspace plan start --task T4 --pane %23    # type one task into pane %23"
+        opts.separator "  workspace plan pause --interrupt    # stop after the current task and interrupt the working owner panes"
+        opts.separator "  workspace plan task add --title \"Write the docs\" --phase Docs    # add a task under the ### Docs heading"
+        opts.separator "  workspace plan task set-state --task T3 --state blocked --reason \"needs the dev database\"    # block a task"
+        opts.separator "  workspace plan delete --yes    # rename the plan file to IMPLEMENTATION_PLAN.md.deleted-<time>"
       end
     end
 

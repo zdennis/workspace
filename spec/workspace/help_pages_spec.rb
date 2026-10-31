@@ -174,6 +174,24 @@ RSpec.describe Workspace::HelpPages do
       expect(described_class.lookup(table, %w[--name x show])).to be_nil
       expect(described_class.lookup(table, %w[bogus --help])).to be_nil
     end
+
+    it "lets a word that leads exactly one two-word verb find that verb" do
+      local = {"goal set" => {}, "task add" => {}, "task move" => {}, "show" => {}}
+      expect(described_class.lookup(local, %w[goal --help]).first).to eq("goal set")
+      expect(described_class.lookup(local, %w[task --help])).to be_nil
+      expect(described_class.lookup(local, %w[bogus --help])).to be_nil
+    end
+
+    it "prints the goal set page for spine goal --help" do
+      with_cli do |cli, out, *|
+        begin
+          cli.run(%w[spine goal --help])
+        rescue SystemExit
+          nil
+        end
+        expect(out.string).to eq(described_class.render(described_class::SPINE.fetch("goal set")).join("\n") + "\n")
+      end
+    end
   end
 
   describe "--help before any work" do

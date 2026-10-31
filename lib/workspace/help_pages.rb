@@ -42,32 +42,53 @@ module Workspace
           ["--group GROUP", "Every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)"],
           ["--file PATH", "Read any file, with no workspace and a state from the file alone"],
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan status", "the plan of the workspace you are in: state, counts and the current task"],
+          ["workspace plan status --name api.worktree-x", "one workspace by name"],
+          ["workspace plan status --all", "every workspace, one line each (no plan reads \"no plan\")"],
+          ["workspace plan status --group billing", "every workspace of every repository in the billing group"],
+          ["workspace plan status --file IMPLEMENTATION_PLAN.md", "a plan file in the current directory, with no workspace"],
+          ["workspace plan status --json", "one JSON document, with the revision that --if-revision takes"]
+        ]
       },
       "path" => {
         usage: ["plan path [--name WORKSPACE] [--json]"],
         summary: "Print where the plan is (or would be)",
         about: [],
         options: [NAME_OPT, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan path", "where the plan of the workspace you are in is, whether or not the file exists"],
+          ["workspace plan path --name api.worktree-x", "the same for one workspace by name"],
+          ["workspace plan path --json", "adds exists (is the file there?) and notes_dir"]
+        ]
       },
       "show" => {
         usage: ["plan show [--name WORKSPACE]"],
         summary: "Print the plan file",
-        about: [],
+        about: ["Exits 1 with an error when there is no plan."],
         options: [NAME_OPT],
-        examples: []
+        examples: [
+          ["workspace plan show", "print the plan of the workspace you are in"],
+          ["workspace plan show --name api.worktree-x", "print the plan of one workspace by name"],
+          ["workspace plan show --name api.worktree-x | grep '\\[!\\]'", "list the blocked tasks of that plan"]
+        ]
       },
       "init" => {
         usage: ["plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]"],
         summary: "Write a new plan, or import an existing document with --from",
-        about: [],
+        about: ["Writes the plan file for real. A plan that is already there is an error (exit 1, plan_exists) unless --force replaces it."],
         options: [NAME_OPT,
           ["--title TITLE", "The plan's title (default: the workspace task's title)"],
           ["--from FILE", "Import this document as the plan"],
           ["--force", "Replace a plan that is already there"],
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan init", "write a new plan, titled after the workspace's task if it has one, in the notes directory (it makes the directory)"],
+          ["workspace plan init --title \"Auth rewrite\"", "write a new plan with your own title"],
+          ["workspace plan init --from design.md", "import design.md (read from the current directory) as the plan"],
+          ["workspace plan init --from design.md --force", "replace the plan that is already there with design.md (the old plan is overwritten)"],
+          ["workspace plan init --name api.worktree-x --json", "write the plan of another workspace; with a plan there and no --force it exits 1 with plan_exists"]
+        ]
       },
       "start" => {
         usage: ["plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]"],
@@ -84,26 +105,40 @@ module Workspace
           ["--pane PANE", "With --task: the pane to send it to, a pane id (%19) or window.pane (0.1)"],
           ["--spawn KIND", "With --task: start a new agent pane for it (#{AGENT_KINDS})"],
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan start", "set the plan active, then launch the workspace or type the play into its main agent pane"],
+          ["workspace plan start --name api.worktree-x --json", "the same for one workspace by name, with a JSON action document"],
+          ["workspace plan start --task T4", "type task T4 into the task's owner pane, else the main agent pane, and write the pane onto the task"],
+          ["workspace plan start --task T4 --pane %23", "type task T4 into pane %23 of the workspace's session"],
+          ["workspace plan start --task T5 --spawn claude", "split a new pane, start Claude Code in it and type task T5 there"]
+        ]
       },
       "pause" => {
         usage: ["plan pause [--name WORKSPACE] [--interrupt] [--json]"],
         summary: "Set status: paused; the agent stops before its next task",
-        about: ["--interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works."],
+        about: ["Writes status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works."],
         options: [NAME_OPT, ["--interrupt", "Interrupt the owner panes that are working"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan pause", "set status: paused; the agent stops before its next task and nothing is interrupted"],
+          ["workspace plan pause --interrupt", "also press the interrupt key in each owner pane that is working"],
+          ["workspace plan pause --name api.worktree-x --json", "pause one workspace by name, with a JSON action document"]
+        ]
       },
       "delete" => {
         usage: ["plan delete [--name WORKSPACE] --yes [--json]"],
         summary: "Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>",
-        about: ["Needs --yes; the session and worktree stay."],
+        about: ["Needs --yes, and then renames the plan file for real; the session and worktree stay."],
         options: [NAME_OPT, ["--yes", "Confirm the delete"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan delete --yes", "rename the plan of the workspace you are in to IMPLEMENTATION_PLAN.md.deleted-<time> for real"],
+          ["workspace plan delete --name api.worktree-x --yes", "the same for one workspace by name"],
+          ["workspace plan delete --yes --json", "the same, with a JSON action document; with a plan there and no --yes it exits 1 with confirmation_required (no plan: no_plan)"]
+        ]
       },
       "task add" => {
         usage: ["plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]"],
         summary: "Add one task line to the plan",
-        about: ["Blocked and skipped tasks need --reason."],
+        about: ["Writes one task line into the plan file for real. Blocked and skipped tasks need --reason."],
         options: [NAME_OPT,
           ["--title TITLE", "The new task's title"],
           ["--id ID", "The new task's id (default: the next number after the plan's last id)"],
@@ -113,35 +148,50 @@ module Workspace
           ["--after ID", "Place the task after this task"],
           REVISION_OPT,
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan task add --title \"Write the docs\"", "add a to-do task with the next free id to the plan of this workspace"],
+          ["workspace plan task add --title \"Write the docs\" --phase Docs", "add it under the ### Docs heading"],
+          ["workspace plan task add --title \"Add the index\" --id T7 --after T3", "give it the id T7 and put it after task T3"],
+          ["workspace plan task add --title \"Wait for CI\" --state blocked --reason \"CI is down\"", "add a blocked task; blocked and skipped need --reason"],
+          ["workspace plan task add --title \"Write the docs\" --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
+        ]
       },
       "task set-state" => {
         usage: ["plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]"],
         summary: "Set one task's state",
-        about: ["Blocked and skipped tasks need --reason."],
+        about: ["Rewrites one task line of the plan file for real. Blocked and skipped tasks need --reason."],
         options: [NAME_OPT,
           ["--task ID", "The task (its id, such as T3)"],
           ["--state STATE", "The new state: done, in_progress, skipped, blocked or todo"],
           ["--reason TEXT", "Why a task is blocked or skipped"],
           REVISION_OPT,
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan task set-state --task T3 --state done", "mark task T3 done in the plan of this workspace"],
+          ["workspace plan task set-state --task T3 --state in_progress", "mark it in progress"],
+          ["workspace plan task set-state --task T3 --state blocked --reason \"needs the dev database\"", "block it; blocked and skipped need --reason"],
+          ["workspace plan task set-state --task T3 --state done --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
+        ]
       },
       "task set-title" => {
         usage: ["plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]"],
         summary: "Change one task's title",
-        about: [],
+        about: ["Rewrites one task line of the plan file for real."],
         options: [NAME_OPT,
           ["--task ID", "The task (its id, such as T3)"],
           ["--title TITLE", "The new title"],
           REVISION_OPT,
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan task set-title --task T3 --title \"Write the token store docs\"", "change the title of task T3; its id, state and place stay"],
+          ["workspace plan task set-title --name api.worktree-x --task T3 --title \"Write the docs\"", "the same in the plan of one workspace by name"],
+          ["workspace plan task set-title --task T3 --title \"Write the docs\" --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
+        ]
       },
       "task move" => {
         usage: ["plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]"],
         summary: "Move one task line",
-        about: ["Moves it after or before another task, or to the end of a phase."],
+        about: ["Moves it after or before another task, or to the end of a phase, in the plan file for real."],
         options: [NAME_OPT,
           ["--task ID", "The task (its id, such as T3)"],
           ["--after ID", "Place the task after this task"],
@@ -149,7 +199,12 @@ module Workspace
           ["--phase NAME", "Move to the end of this phase"],
           REVISION_OPT,
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace plan task move --task T5 --after T1", "move task T5 to just after task T1"],
+          ["workspace plan task move --task T5 --before T2", "move task T5 to just before task T2"],
+          ["workspace plan task move --task T5 --phase Docs", "move task T5 to the end of the ### Docs phase"],
+          ["workspace plan task move --task T5 --after T1 --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
+        ]
       }
     }.freeze
 
@@ -554,7 +609,13 @@ module Workspace
           ["--body", "Add the text after the frontmatter (16 KB at most) to the stage, or to the goal without --stage"],
           ["--evaluate", "Judge each stage against the plan, git, the pull request, the review agent and the panes (reads gh and the agent daemon, up to about 5s; an unreadable source leaves its gates unchecked)"],
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace spine show", "the stages of the workspace you are in"],
+          ["workspace spine show api.worktree-login", "the stages of one workspace by name"],
+          ["workspace spine show --stage implement/api --body", "one stage and its sub-stages, with the text after the frontmatter"],
+          ["workspace spine show --evaluate", "judge each stage against the plan, git, the pull request and the panes (may take up to about 5s)"],
+          ["workspace spine show --json", "one JSON document, with each stage file's revision for --if-revision"]
+        ]
       },
       "set" => {
         usage: ["spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE] [--if-revision REV] [--recursive] [--by LABEL] [--json]"],
@@ -572,7 +633,13 @@ module Workspace
           SPINE_IF_REVISION,
           ["--recursive", "Also set every sub-stage that is not completed or skipped"],
           SPINE_BY, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace spine set verify --status in_progress", "mark the verify stage of the workspace you are in as started"],
+          ["workspace spine set verify --owner %6 --note \"waiting on CI\"", "record who works the stage and a one-line note, leaving the status alone"],
+          ["workspace spine set api.worktree-login review --status completed --note \"2 nits, fixed\"", "mark a stage of one workspace by name completed, with a note"],
+          ["workspace spine set implement --status completed --recursive", "complete the stage and every sub-stage that is not completed or skipped"],
+          ["workspace spine set verify --status blocked --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the stage file is still at that revision (from spine show --json)"]
+        ]
       },
       "check" => {
         usage: ["spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone) [--if-revision REV] [--by LABEL] [--json]"],
@@ -588,7 +655,12 @@ module Workspace
           ["--done", "Tick the items"],
           ["--undone", "Untick the items"],
           SPINE_IF_REVISION, SPINE_BY, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace spine check verify --item 2 --done", "tick item 2 of the verify stage's Done when list"],
+          ["workspace spine check implement/api --item 1 --item 3 --done", "tick items 1 and 3 of a sub-stage"],
+          ["workspace spine check api.worktree-login verify --item 2 --undone", "untick item 2 in one workspace by name"],
+          ["workspace spine check verify --item 2 --done --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the stage file is still at that revision (from spine show --json)"]
+        ]
       },
       "verify" => {
         usage: ["spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--by LABEL] [--if-revision REV] [--json]"],
@@ -598,7 +670,9 @@ module Workspace
           "other line. A stage opts in with a check: line in its file (check: required); 'set --status",
           "completed' then makes it check: pending, and any other status resets it to required. Refuses a stage",
           "that has not opted in (check_not_required) and one that is not completed (stage_not_completed). A",
-          "spine_changed event with change check is written."
+          "spine_changed event with change check is written. The verdict is the checker's: run it from a",
+          "different pane or sub-agent than the one that did the stage, never on your own stage (nothing",
+          "enforces this)."
         ],
         options: [NAME_OPT,
           ["--pass", "The stage passed its check"],
@@ -606,7 +680,12 @@ module Workspace
           ["--note TEXT", "The verdict's note, required, 300 characters at most"],
           ["--by LABEL", "The checked_by label (default: the agent and pane id of $TMUX_PANE, else person)"],
           SPINE_IF_REVISION, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace spine verify verify --pass --note \"CI green, all 4 items met\"", "record that the completed verify stage passed its check"],
+          ["workspace spine verify verify --fail --note \"item 2 is not in the diff\"", "record that it failed its check; the note says why"],
+          ["workspace spine verify api.worktree-login review --pass --note \"2 nits, fixed\" --by \"claude %27\"", "check a stage of one workspace by name, under your own label"],
+          ["workspace spine verify verify --pass --note \"CI green\" --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the stage file is still at that revision (from spine show --json)"]
+        ]
       },
       "goal set" => {
         usage: ["spine goal set [WORKSPACE] TEXT [--if-revision REV] [--by LABEL] [--json]"],
@@ -619,7 +698,11 @@ module Workspace
         options: [NAME_OPT,
           ["--if-revision REV", "Refuse with stale_revision unless goal.md's revision (from show) is REV"],
           SPINE_BY, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace spine goal set \"Fix the OAuth refresh race\"", "write the goal's title in spine/goal.md of the workspace you are in"],
+          ["workspace spine goal set api.worktree-login \"Fix the OAuth refresh race\"", "the same for one workspace by name"],
+          ["workspace spine goal set \"Fix the OAuth refresh race\" --if-revision 9f8e7d6c --json", "refuse with stale_revision unless goal.md is still at that revision"]
+        ]
       },
       "start" => {
         usage: ["spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF] [--if-revision REV] [--json]",
@@ -645,7 +728,13 @@ module Workspace
           ["--fan-out", "Start every startable sub-stage of STAGE-PATH, each in a new pane"],
           ["--max N", "With --fan-out: spawn at most N panes (default 3)"],
           SPINE_IF_REVISION, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace spine start verify", "set the verify stage in_progress and type its brief into the stage's owner pane, else the main agent pane"],
+          ["workspace spine start api.worktree-login implement/api --spawn codex", "split a new pane, start Codex in it and type the brief there"],
+          ["workspace spine start research --pane %21 --play review", "type the brief into pane %21 with the review play instead of the research one"],
+          ["workspace spine start implement --fan-out --max 2", "start up to two ready sub-stages, each in a new pane"],
+          ["workspace spine start verify --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the stage file is still at that revision (from spine show --json)"]
+        ]
       },
       "init" => {
         usage: ["spine init [WORKSPACE] [--name WORKSPACE] [--template NAME] [--dry-run] [--json]"],
@@ -660,7 +749,12 @@ module Workspace
         options: [NAME_OPT,
           ["--template NAME", "The spine template (default: the spine.template config, else default). See: workspace library list --kind spine"],
           ["--dry-run", "Say what would be written and write nothing"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace spine init --dry-run", "preview the files for the workspace you are in; nothing is written"],
+          ["workspace spine init", "write spine/ from the default template for real, unless spine/ exists (then it says exists)"],
+          ["workspace spine init api.worktree-login --template team", "write it for one workspace by name from your spine template named team (workspace library list --kind spine shows them)"],
+          ["workspace spine init --json", "the same as one JSON document"]
+        ]
       }
     }.freeze
 
@@ -721,7 +815,13 @@ module Workspace
           ["--summary TEXT", "One line about what was done, or what is left"],
           ["--code WORD", "A word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)"],
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace step done", "record a pass for the step your pane is on; then end your turn"],
+          ["workspace step done --summary \"Plan written; three commits.\"", "record a pass with one line on what was done"],
+          ["workspace step done --status fail --summary \"Two specs still fail in billing.\"", "fail the step when the turn ends, without running its check"],
+          ["workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"", "fail it with a word for why, kept with the failed step"],
+          ["workspace step done --summary \"Docs written\" --json", "the same as one JSON document; outside a run's pane it exits 1 with not_bound"]
+        ]
       },
       "status" => {
         usage: ["step status [--json]"],
@@ -731,7 +831,11 @@ module Workspace
           "from the pane the run is bound to."
         ],
         options: [JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace step status", "which workflow run, step and attempt this pane is on, and the files the step must leave"],
+          ["workspace step status --json", "the same as one JSON document, with whether each file is there (produces); outside a run's pane it exits 1 with not_bound"],
+          ["workspace step status --json | jq '.step.produces'", "list the files the step must leave, and whether each was written this attempt (current)"]
+        ]
       }
     }.freeze
 
@@ -751,7 +855,13 @@ module Workspace
           ["--patch", "Include the unified patch of the diffstat's range (git.patch in --json)"],
           ["--max-bytes N", "With --patch: most patch bytes to return, 1 to 5242880 (default 200000)"],
           ["--json", "Print schema-versioned JSON (see docs/README.review.md)"]],
-        examples: []
+        examples: [
+          ["workspace review show", "the review packet of the workspace in the current directory"],
+          ["workspace review show my-app.worktree-fix-login", "the packet of one workspace by name"],
+          ["workspace review show --name my-app.worktree-fix-login --json", "the same, with the workspace as an option and one JSON document"],
+          ["workspace review show --patch", "include the unified patch of the branch (cut at 200000 bytes)"],
+          ["workspace review show --patch --max-bytes 50000 --json", "the patch cut at 50000 bytes, in git.patch of the JSON document"]
+        ]
       },
       "list" => {
         usage: ["review list [PROJECT] [--json]"],
@@ -763,7 +873,11 @@ module Workspace
           "workspaces whose agent is done, and never calls gh. Reads only."
         ],
         options: [["--json", "Print schema-versioned JSON (see docs/README.review.md)"]],
-        examples: []
+        examples: [
+          ["workspace review list", "the workspaces of the current directory's project that are ready for review"],
+          ["workspace review list my-app", "the same for the project my-app"],
+          ["workspace review list my-app --json", "one JSON document, for a script that picks the next workspace to review"]
+        ]
       }
     }.freeze
 
@@ -838,14 +952,23 @@ module Workspace
           "workspace of the current directory. Reads only: nothing is written and 'gh' is not run."
         ],
         options: [JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace goal show", "where the goal of the workspace you are in is, level by level"],
+          ["workspace goal show my-app.worktree-fix-login", "the same for one workspace by name"],
+          ["workspace goal show LAB-1", "the goal for a ticket key (a branch, task id or run id works too)"],
+          ["workspace goal show --json", "one JSON document, for a script"]
+        ]
       },
       "list" => {
         usage: ["goal list [--all] [--json]"],
         summary: "List goals, one line each",
         about: ["Each line has the workspace, state, stage, step and agent state."],
         options: [["--all", "Include workspaces with no plan, run or spine (state none)"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace goal list", "one line per goal"],
+          ["workspace goal list --all", "also the workspaces with no plan, run or spine (state none)"],
+          ["workspace goal list --json", "one JSON document, for a script"]
+        ]
       }
     }.freeze
 
@@ -1888,7 +2011,8 @@ module Workspace
       "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV
     }.freeze
 
-    # The page for the leading verb words of +args+, longest match first.
+    # The page for the leading verb words of +args+, longest match first; failing that, the one
+    # two-word verb the first word leads (`spine goal` shows `goal set`).
     #
     # @param table [Hash] one of the tables above
     # @param args [Array<String>] the command's arguments
@@ -1899,7 +2023,10 @@ module Workspace
         key = words.first(n).join(" ")
         return [key, table[key]] if table.key?(key)
       end
-      nil
+      # A word that leads exactly one two-word verb (`spine goal` for `goal set`) shows that verb's page.
+      return nil if words.empty?
+      led = table.keys.select { |key| key.start_with?("#{words.first} ") }
+      (led.length == 1) ? [led.first, table[led.first]] : nil
     end
 
     # The flags of a page that take a value (a metavar, not an optional `[NAME]`), so a
