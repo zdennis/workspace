@@ -941,6 +941,111 @@ RSpec.describe Workspace::SessionMonitor do
         expect(pane("%2")).to include("waiting_tool" => "Bash", "waiting_input" => "rm -rf build")
       end
     end
+
+    describe "a ready prompt back on the screen" do
+      let(:rule) { "─" * 40 }
+      let(:footer) { "#{rule}\n❯ \n#{rule}\n  Opus test status line one\n  line two 50% left\n  ⏸ manual mode on\n" }
+      let(:ready) { "⏺ Bash(touch a.txt)\n  ⎿  Interrupted · What should Claude do instead?\n\n#{footer}" }
+      let(:dialog) do
+        "⏺ Bash(touch a.txt)\n  ⎿  Waiting…\n\n#{rule}\n Bash command\n Create empty file a.txt\n" \
+          "#{"╌" * 40}\n touch a.txt\n#{"╌" * 40}\n Do you want to proceed?\n ❯ 1. Yes\n" \
+          "   2. Yes, and don’t ask again for: touch *\n   3. No\n\n Esc to cancel · Tab to amend\n"
+      end
+
+      def alerted_waits
+        monitor.instance_variable_get(:@panes)["%2"][:alerted_waits]
+      end
+
+      def wait_on_bound_tool
+        request
+        prompt
+        monitor.instance_variable_get(:@panes)["%2"][:alerted_waits] = {nil => now}
+      end
+
+      def scan_showing(screen)
+        allow(tmux).to receive(:capture_pane).and_return(screen)
+        monitor.scan
+      end
+
+      it "keeps a newer request from the same agent, whose dialog is yet to be drawn" do
+        wait_on_bound_tool
+        request(tool: "Write", input: "notes.txt")
+
+        scan_showing(ready)
+
+        expect(waits).to be_empty
+        expect(requests[nil]).to eq(tool: "Write", input: "notes.txt")
+      end
+
+      it "reads a capture with invalid UTF-8 bytes" do
+        wait_on_bound_tool
+
+        scan_showing("\xFF\n#{ready}")
+
+        expect(waits).to be_empty
+      end
+
+      it "ends a bound wait, its alert entry and its request" do
+        wait_on_bound_tool
+
+        scan_showing(ready)
+
+        expect(waits).to be_empty
+        expect(alerted_waits).to be_empty
+        expect(requests).to be_empty
+        expect(pane("%2")["state"]).not_to eq("waiting")
+        expect_null_fields
+      end
+
+      it "ends the wait when blank rows sit below the footer" do
+        wait_on_bound_tool
+
+        scan_showing(ready + ("\n" * 30))
+
+        expect(waits).to be_empty
+      end
+
+      it "keeps the wait while the dialog is shown" do
+        wait_on_bound_tool
+
+        scan_showing(dialog)
+
+        expect(waits.keys).to eq([nil])
+        expect(alerted_waits).to eq({nil => now})
+        expect(requests.keys).to eq([nil])
+      end
+
+      it "keeps the wait for a dialog below an old ready prompt in scrollback" do
+        wait_on_bound_tool
+
+        scan_showing(ready + ("older output\n" * 3) + dialog + ("\n" * 20))
+
+        expect(waits.keys).to eq([nil])
+        expect(requests.keys).to eq([nil])
+      end
+
+      it "keeps the wait when the capture is empty or blank" do
+        wait_on_bound_tool
+
+        scan_showing("")
+        scan_showing("\n\n  \n")
+
+        expect(waits.keys).to eq([nil])
+        expect(requests.keys).to eq([nil])
+      end
+
+      it "keeps a wait with no bound tool" do
+        request(agent_id: "sub-1")
+        request(tool: "Write", input: "a.rb", agent_id: "sub-2")
+        prompt
+        expect(waits.values.map { |wait| wait[:tool] }).to eq([nil])
+
+        scan_showing(ready)
+
+        expect(waits.size).to eq(1)
+        expect(requests.keys).to eq(["sub-1", "sub-2"])
+      end
+    end
   end
 
   describe "#send_alerts" do

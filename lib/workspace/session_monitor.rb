@@ -195,8 +195,8 @@ module Workspace
     # Re-reads one pane now instead of waiting for the next {#scan}, so a
     # caller about to refuse on a stale reading (a shell seen just before an
     # agent started in the pane) can decide on a fresh one. Updates the pane's
-    # cached kind and activity only; alerts and logged changes are left to the
-    # next scan. Reads once; a failed tmux or process listing leaves the cache
+    # cached kind and activity, and ends a permission wait whose dialog is
+    # gone; alerts and logged changes are left to the next scan. Reads once; a failed tmux or process listing leaves the cache
     # as it was. Takes no scan slot, which a busy scan thread or another
     # daemon would hold, so the rescan can answer under load. A scan that read
     # the process table before the agent started may still overwrite the fresh
@@ -714,6 +714,28 @@ module Workspace
 
       screen = refresh_activity(pane, now)
       refresh_screen_wait(pane, agent && agent[:provider], screen, now)
+      end_answered_permission_waits(pane, agent && agent[:provider], screen)
+    end
+
+    # The shortest permission dialog is 12 lines, so a tail this long can't reach above its top rule.
+    READY_TAIL_LINES = 12
+    private_constant :READY_TAIL_LINES
+
+    # Deny and Esc fire no hook. A bound permission wait ends when the ready
+    # prompt is back at the bottom of the screen; trailing blank rows (inline
+    # panes) are stripped first, and an empty capture says nothing.
+    def end_answered_permission_waits(pane, provider, screen)
+      return unless provider&.key == "claude" && provider.ready_pattern
+      tail = screen.scrub.rstrip.lines.last(READY_TAIL_LINES).join
+      return if tail.empty? || !provider.ready_pattern.match?(tail)
+
+      pane[:waits].select { |_, wait| wait[:tool] }.each do |agent_id, wait|
+        pane[:waits].delete(agent_id)
+        pane[:alerted_waits]&.delete(agent_id)
+        # A differing request is newer than this wait, its dialog not yet drawn.
+        requests = pane[:permission_requests]
+        requests.delete(agent_id) if requests[agent_id] == wait.slice(:tool, :input)
+      end
     end
 
     # The key of the wait a matched screen opens in the pane's waits. Hooks
