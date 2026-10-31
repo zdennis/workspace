@@ -270,6 +270,7 @@ require_relative "workspace/checkout_move"
 require_relative "workspace/notes_dir"
 require_relative "workspace/notes_setup"
 require_relative "workspace/plan_file"
+require_relative "workspace/plan_paused"
 require_relative "workspace/notes_carry"
 require_relative "workspace/spine_file"
 require_relative "workspace/spine_rollup"
@@ -752,6 +753,11 @@ module Workspace
       agent_recovery_desk_factory: agent_recovery_desk_factory,
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
+      handoff_watcher_factory: ->(workspace:, session_monitor:, **rest) {
+        HandoffWatcher.new(tmux: tmux, workspace: workspace, session_monitor: session_monitor, logger: logger,
+          plan_paused: PlanPaused.new(workspace: workspace, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }),
+          typer: PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger), **rest)
+      },
       spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
       logger: logger,

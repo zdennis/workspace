@@ -73,6 +73,9 @@ module Workspace
       #   release a pane (the claim registers the calling thread) and +rebind_queue+ (pane id, agent pid),
       #   builds the {Workspace::AgentRecoveryDesk}, or answers nil when recovery is off or the workspace's
       #   agent isn't Claude Code; nil (the default) never builds one
+      # @param handoff_watcher_factory [#call, nil] given the keywords workspace, session_name, session_monitor,
+      #   delivery_lock, restarting and event_log, builds the {Workspace::HandoffWatcher} that follows up on a
+      #   stalled handoff and takes `handoff_watch`; nil builds the default one (its plan is never paused)
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
       # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
@@ -118,6 +121,7 @@ module Workspace
         agent_status_desk_factory: nil,
         prompt_queue_desk_factory: nil,
         agent_recovery_desk_factory: nil,
+        handoff_watcher_factory: nil,
         name_migration: nil,
         plan_progress_watcher_factory: nil,
         spine_watcher_factory: nil,
@@ -155,6 +159,7 @@ module Workspace
         @prompt_queue_desk_factory = prompt_queue_desk_factory || method(:build_prompt_queue_desk)
         @agent_recovery_desk_factory = agent_recovery_desk_factory
         @agent_recovery_desk = nil
+        @handoff_watcher_factory = handoff_watcher_factory || method(:build_handoff_watcher)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
         # When the main agent's current turn began, by pane id, for the workflow nudger.
@@ -251,6 +256,9 @@ module Workspace
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
         @session_monitor.on_scan = -> { scan_desks } if @session_monitor.respond_to?(:on_scan=)
 
+        @handoff_watcher = @handoff_watcher_factory.call(workspace: name, session_name: @tmux_session,
+          session_monitor: @session_monitor, delivery_lock: @delivery_lock, restarting: restarting, event_log: @event_log)
+
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
         @daemon_started = true
@@ -264,6 +272,7 @@ module Workspace
         @session_monitor&.stop
         @plan_progress_watcher&.stop
         @spine_watcher&.stop
+        @handoff_watcher&.stop
         stop_restarts
         watcher&.join(1)
         watcher&.kill
@@ -411,6 +420,9 @@ module Workspace
         when "inject" then handle_inject(message, client)
         when "restart_agent" then handle_restart_agent(message, client)
         when "session_event"
+          # Before the monitor records it: a /clear moves the pane's session_id there, and a poll
+          # in the gap would end the watch session_changed, not carried_out.
+          notify_handoff_watcher(message)
           @session_monitor&.record(message)
           @hook_event_log&.record(message)
           nudge_workflow(message) if @workflow_nudger && message["agent_id"].nil?
@@ -418,6 +430,7 @@ module Workspace
           @prompt_queue_desk&.session_event(message)
           @agent_recovery_desk&.session_event(message)
           reply_to(client, "ok" => true)
+        when "handoff_watch" then reply_to(client, handle_handoff_watch(message))
         when "status_request" then handle_status_request(message, client)
         when "prompt_send" then handle_prompt_send(message, client)
         when "prompt_interrupt_send" then handle_prompt_send(message, client, :interrupt_send)
@@ -492,6 +505,55 @@ module Workspace
           end
         end
         :handed_off
+      end
+
+      # Longest follow-up or save-state text a handoff_watch may carry. A longer one
+      # is refused rather than cut, since a cut command could be broken.
+      MAX_WATCH_TEXT = 4_000
+      private_constant :MAX_WATCH_TEXT
+
+      # Opens a handoff follow-up watch for `handoff check`. Arming only reads facts,
+      # so it is answered on the accept thread.
+      #
+      # @return [Hash] `ok`, `watching` and `reason`, or an error reply
+      def handle_handoff_watch(message)
+        pane_id = message["pane_id"]
+        sent_at = parse_watch_time(message["sent_at"])
+        interval = message["interval"]
+        max = message["max"]
+        text = message["text"]
+        sent_text = message["sent_text"]
+        valid = pane_id.is_a?(String) && pane_id.match?(Workspace::TmuxPane::PANE_ID) && sent_at &&
+          interval.is_a?(Numeric) && interval.to_f.finite? && interval > 0 &&
+          max.is_a?(Integer) && max > 0 &&
+          [text, sent_text].all? { |t| t.is_a?(String) && !t.strip.empty? && t.length <= MAX_WATCH_TEXT }
+        unless valid
+          return {"ok" => false, "error" => "usage",
+                  "message" => "handoff_watch needs a pane_id, an ISO 8601 sent_at, a positive interval and max, " \
+                               "and a text and sent_text of 1 to #{MAX_WATCH_TEXT} characters"}
+        end
+
+        detail = @tmux.pane_details(@tmux_session, window: nil).find { |d| d[:id] == pane_id }
+        ref = (detail && detail[:window] == 0) ? pipeline_ref_on(detail[:index]) : nil
+        if ref
+          return {"ok" => false, "error" => "pipeline_stage", "work_item_ref" => ref,
+                  "message" => "#{ref} has a pipeline stage running on pane #{pane_id}; it gets no handoff follow-ups"}
+        end
+
+        # Started on the first arm, not at boot: its thread wakes every tick, and a stop waits for the tick.
+        # Safe without a lock: this runs on the accept thread, so no two arms race to start it.
+        @handoff_watcher.start
+        result = @handoff_watcher.arm(pane_id: pane_id, sent_at: sent_at, interval: interval, max: max, text: text, sent_text: sent_text)
+        {"ok" => true, "watching" => result[:watching], "reason" => result[:reason]}
+      rescue => e
+        {"ok" => false, "error" => "internal_error", "message" => e.message}
+      end
+
+      # @return [Time, nil] the time +value+ spells as ISO 8601, nil when it is not a string or not a time
+      def parse_watch_time(value)
+        Time.iso8601(value) if value.is_a?(String)
+      rescue ArgumentError
+        nil
       end
 
       # Answers `agent-run send --when-idle` from a worker thread, which owns
@@ -1237,6 +1299,19 @@ module Workspace
       def build_agent_status_desk(workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:, restarting:)
         AgentStatusDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
           hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting, logger: @logger)
+      end
+
+      # Shows a hook event to the handoff watcher. A failure there is logged and costs the monitor nothing.
+      def notify_handoff_watcher(message)
+        @handoff_watcher&.session_event(message)
+      rescue => e
+        @logger.debug { "handoff watcher: #{e.class}: #{e.message}" }
+      end
+
+      def build_handoff_watcher(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:)
+        HandoffWatcher.new(tmux: @tmux, session_name: session_name, workspace: workspace, session_monitor: session_monitor,
+          typer: PromptTyper.new(tmux: @tmux, session_monitor: session_monitor, logger: @logger),
+          delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: @logger)
       end
 
       def build_prompt_queue_desk(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:,

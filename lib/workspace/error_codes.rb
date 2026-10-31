@@ -171,6 +171,7 @@ module Workspace
       "pane_gone" => "The pane closed before or during the restart.",
       "pane_busy" => "The pane didn't go quiet in time, or plan start or spine start found it waiting on a person (or, with --task or spine start, working on something else); nothing was typed. From agent-run send --clear-first without --when-idle: the agent is mid-turn, holds a draft or is held by a restart (details.reason not_ready), or prompts are queued ahead (queued_ahead); nothing was typed or queued.",
       "pane_in_pipeline" => "A pipeline stage is running on the pane; pass force to restart it.",
+      "pipeline_stage" => "A pipeline stage is running on the pane, so a handoff can't be carried out there; handoff check starts no follow-ups for it.",
       "not_an_agent" => "The pane is running a shell, not a coding agent (agent-run restart, agent-run send --when-idle or --clear-first).",
       "unsupported_agent" => "The pane's agent can't be restarted; or, from agent-run send --when-idle, its screen can't be checked for a dialog or a draft (every agent but Claude Code), so nothing was queued. details.kind.",
       "pane_waiting" => "agent-run send --when-idle, --clear-first or --interrupt:the pane's agent waits on a person (a permission prompt, a question, AskUserQuestion or ExitPlanMode), so nothing was queued. details.reason: waiting or question_open.",
