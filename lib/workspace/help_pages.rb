@@ -425,7 +425,7 @@ module Workspace
         ]
       },
       "status" => {
-        usage: ["workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--json]"],
+        usage: ["workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]"],
         summary: "Show the runs still going, each with its step and why it is stuck",
         about: [
           RUN_ID + " With RUN, shows that one run.",
@@ -434,15 +434,19 @@ module Workspace
           "checkout's and its worktrees' runs, finished ones too, and --all every workspace's, finished ones too.",
           "",
           "A run that is not moving says why: waiting_lock, waiting_you, turn_ended_incomplete, failed_check or",
-          "pane_gone, with the commands that resolve it."
+          "pane_gone, with the commands that resolve it.",
+          "",
+          "--table shows one row per run, finished ones too at every scope, with its workspace as it is now: live, stopped",
+          "or gone, and whether its config, tmux session, worktree and state directory exist (? when that could not be read)."
         ],
-        options: [name_opt("Only this workspace's runs (default: the current workspace)"), ["--project [NAME]", "All runs of a project, finished too (NAME, or the project of the current workspace)"], ["--all", "Every workspace's runs, finished too"], JSON_OPT],
+        options: [name_opt("Only this workspace's runs (default: the current workspace)"), ["--project [NAME]", "All runs of a project, finished too (NAME, or the project of the current workspace)"], ["--all", "Every workspace's runs, finished too"], ["--table", "One row per run with its workspace's status and what still exists, finished runs too"], JSON_OPT],
         examples: [
           ["workspace workflow status", "the runs still going in this workspace, each with its step and why it is stuck"],
           ["workspace workflow status RUN", "one run, going or finished"],
           ["workspace workflow status --name my-app", "only the runs of one workspace"],
           ["workspace workflow status --project", "the main checkout's and its worktrees' runs, finished too"],
           ["workspace workflow status --all", "every workspace's runs, finished too"],
+          ["workspace workflow status --all --table", "each run beside whether its workspace is live, stopped or gone"],
           ["workspace workflow status --json", "for a script: each run's state, reason and the commands that resolve it"]
         ]
       },

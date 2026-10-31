@@ -591,6 +591,8 @@ module Workspace
     )
     workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
       gate_note: workflow_gate_note)
+    workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
+      agents: ProjectAgents.new(client: agent_snapshot_client))
     workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
@@ -598,6 +600,7 @@ module Workspace
       run_files: WorkflowRunFiles.new,
       engine: workflow_engine,
       status: workflow_status,
+      workspace_facts: workflow_workspace_facts,
       store: workflow_store,
       panes: workflow_panes,
       tmux: tmux,

@@ -13,8 +13,9 @@ RSpec.describe Workspace::Commands::Workflow do
   let(:tmux) { instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []) }
   let(:process_tree) { instance_double(Workspace::ProcessTree) }
   let(:lock_holder) { instance_double(Workspace::LockHolder) }
+  let(:workspace_facts) { nil }
   subject(:command) do
-    described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+    described_class.new(catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, store: store, panes: panes, files: nil, run_files: nil,
       tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
       clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
   end
@@ -423,6 +424,182 @@ RSpec.describe Workspace::Commands::Workflow do
 
         expect(run_ids).to eq(%w[wr_3 wr_2 wr_1])
       end
+    end
+  end
+
+  describe "#status --table" do
+    around do |example|
+      Dir.mktmpdir("wf-status-table") do |dir|
+        @dir = dir
+        example.run
+      end
+    end
+
+    let(:now) { Time.utc(2026, 10, 4, 13, 0, 0) }
+    let(:ids) { %w[wr_1 wr_2 wr_3] }
+    let(:store) do
+      Workspace::WorkflowRunStore.new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, id_generator: -> { ids.shift })
+    end
+    let(:status) do
+      Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes, pane_of: "%5", alive?: true, daemon_running?: true),
+        snapshot_client: instance_double(Workspace::AgentSnapshotClient, fetch: {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]}),
+        ask_store_for: ->(_workspace) { instance_double(Workspace::AskStore, list: []) },
+        gate_note: instance_double(Workspace::WorkflowGateNote), clock: -> { now })
+    end
+    let(:live) { {"status" => "live", "agent" => "working", "config" => true, "tmux_session" => true, "state_dir" => true} }
+    let(:gone) { {"status" => "gone", "agent" => nil, "config" => false, "tmux_session" => false, "state_dir" => true} }
+    let(:facts) { {"app" => live, "old" => gone} }
+    let(:workspace_facts) { instance_double(Workspace::WorkflowWorkspaceFacts) }
+    let(:project) { Struct.new(:name, :members).new("app", [Struct.new(:workspace).new("app")]) }
+
+    before { allow(workspace_facts).to receive(:call) { |names| facts.slice(*names) } }
+
+    def create(created_at, workspace: "app", worktree: @dir)
+      store.create({
+        "workflow" => "flow", "title" => "Flow", "workspace" => workspace, "project" => "app", "worktree" => worktree, "task" => "t",
+        "inputs" => {}, "state" => "running", "created_at" => created_at, "started_at" => created_at, "ended_at" => nil,
+        "current" => "plan", "pane" => "%5", "loops" => {}, "reason" => nil, "artifacts_dir" => "#{@dir}/wr",
+        "definition" => {"steps" => [{"id" => "plan", "title" => "Plan", "timeout" => nil}]},
+        "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => created_at}]}}
+      })
+    end
+
+    def finish(id)
+      store.update(id) do |run|
+        run["state"] = "completed"
+        run["ended_at"] = "2026-10-04T12:59:00Z"
+      end
+    end
+
+    def workspace_scope(name) = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: name)
+
+    def lines = output.string.lines.map(&:chomp)
+
+    it "shows a finished run at :workspace scope, which the plain read leaves out" do
+      create("2026-10-04T12:00:00Z")
+      finish("wr_1")
+
+      command.status(scope: workspace_scope("app"), table: true)
+      expect(lines.last).to start_with("wr_1  completed")
+
+      output.truncate(0)
+      output.rewind
+      command.status(scope: workspace_scope("app"), json: true)
+      expect(json["runs"]).to eq([])
+    end
+
+    it "prints a running row and a killed row against real and missing directories" do
+      create("2026-10-04T12:00:00Z")
+      create("2026-10-04T12:01:00Z", workspace: "old", worktree: File.join(@dir, "missing"))
+      finish("wr_2")
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), table: true)
+
+      expect(lines).to eq([
+        "Run   State           Workspace  Status               Config  tmux session  Worktree  State dir",
+        "wr_1  running (plan)  app        Live, agent working  yes     yes           yes       yes",
+        "wr_2  completed       old        Gone                 no      no            no        yes"
+      ])
+    end
+
+    it "lists a project's runs and one run by id" do
+      create("2026-10-04T12:00:00Z")
+      create("2026-10-04T12:01:00Z", workspace: "old")
+      finish("wr_2")
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :project, project: project), table: true)
+      expect(lines.size).to eq(3)
+
+      output.truncate(0)
+      output.rewind
+      command.status(run: "wr_2", table: true)
+      expect(lines.size).to eq(2)
+      expect(lines.last).to start_with("wr_2  completed")
+    end
+
+    it "reads the facts of two runs in one workspace once" do
+      create("2026-10-04T12:00:00Z")
+      create("2026-10-04T12:01:00Z")
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), table: true)
+
+      expect(workspace_facts).to have_received(:call).once
+    end
+
+    it "words every status, and prints ? for what is not known" do
+      %w[a b c].each { |name| create("2026-10-04T12:00:00Z", workspace: name) }
+      allow(workspace_facts).to receive(:call).and_return(
+        "a" => {"status" => "live", "agent" => nil, "config" => nil, "tmux_session" => nil, "state_dir" => nil},
+        "b" => {"status" => "stopped", "agent" => nil, "config" => true, "tmux_session" => false, "state_dir" => true},
+        "c" => {"status" => "unknown", "agent" => nil, "config" => nil, "tmux_session" => nil, "state_dir" => nil}
+      )
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), table: true)
+
+      expect(output.string).to include("Live, agent unknown  ?       ?             yes", "Stopped", "Unknown")
+    end
+
+    it "prints a worktree that is not a string or holds a NUL byte as ?" do
+      create("2026-10-04T12:00:00Z", worktree: "bad\0path")
+      create("2026-10-04T12:01:00Z", worktree: nil)
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), table: true, json: true)
+
+      expect(json["rows"].map { |row| row["has_worktree"] }).to eq([nil, nil])
+    end
+
+    it "escapes control characters in a cell and keeps the columns aligned" do
+      create("2026-10-04T12:00:00Z", workspace: "ap\e[2Jp")
+      create("2026-10-04T12:01:00Z")
+      allow(workspace_facts).to receive(:call).and_return("ap\e[2Jp" => gone, "app" => live)
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), table: true)
+
+      expect(output.string).not_to include("\e")
+      expect(lines[1]).to include("ap\\e[2Jp")
+      expect(lines.map { |line| line.index(/Live|Gone|Status/) }.uniq.size).to eq(1)
+    end
+
+    it "prints warnings after the table" do
+      create("2026-10-04T12:00:00Z")
+      File.write(File.join(@dir, "runs", "bad.json"), "{")
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), table: true)
+
+      expect(lines.last).to start_with("Warning: The run file")
+    end
+
+    it "writes the rows document with typed keys" do
+      create("2026-10-04T12:00:00Z")
+      create("2026-10-04T12:01:00Z", workspace: "old", worktree: File.join(@dir, "missing"))
+      finish("wr_2")
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), table: true, json: true)
+
+      expect(json.keys).to eq(%w[schema_version ok generated_at rows warnings])
+      expect(json["rows"]).to eq([
+        {"id" => "wr_1", "workflow" => "flow", "state" => "running", "step" => "plan", "workspace" => "app", "workspace_status" => "live",
+         "agent" => "working", "has_config" => true, "has_tmux_session" => true, "has_worktree" => true, "has_state_dir" => true},
+        {"id" => "wr_2", "workflow" => "flow", "state" => "completed", "step" => nil, "workspace" => "old", "workspace_status" => "gone",
+         "agent" => nil, "has_config" => false, "has_tmux_session" => false, "has_worktree" => false, "has_state_dir" => true}
+      ])
+    end
+
+    it "leaves the plain --json document without rows" do
+      create("2026-10-04T12:00:00Z")
+
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), json: true)
+
+      expect(json.keys).to eq(%w[schema_version ok generated_at runs warnings])
+      expect(workspace_facts).not_to have_received(:call)
+    end
+
+    it "says each scope has no runs, without the finished-runs hint" do
+      command.status(scope: workspace_scope("app"), table: true)
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :project, project: project), table: true)
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :all), table: true)
+
+      expect(output.string).to eq("No workflow runs in app.\nNo workflow runs in project app.\nNo workflow runs.\n")
     end
   end
 

@@ -22,6 +22,7 @@ module Workspace
       # @param catalog [Workspace::WorkflowCatalog]
       # @param engine [Workspace::WorkflowEngine]
       # @param status [Workspace::WorkflowStatus]
+      # @param workspace_facts [Workspace::WorkflowWorkspaceFacts, nil] reads the workspace facts `status --table` shows
       # @param store [Workspace::WorkflowRunStore]
       # @param panes [Workspace::WorkflowPanes]
       # @param files [Workspace::WorkflowFiles] writes a user's definitions (`add`)
@@ -34,7 +35,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, pid: Process.pid,
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -45,6 +46,7 @@ module Workspace
         @run_files = run_files
         @engine = engine
         @status = status
+        @workspace_facts = workspace_facts
         @store = store
         @panes = panes
         @clock = clock
@@ -213,18 +215,20 @@ module Workspace
       #   runs still going, `:project` all of a project's runs, `:all` every run; nil is `:all`
       # @param json [Boolean]
       # @param hint [Boolean] when a workspace has no run going, say where finished runs are
+      # @param table [Boolean] one row per run with its workspace's status and what exists, finished runs at every scope
       # @return [void]
       # @raise [Workspace::Error] code `unknown_run`
-      def status(run: nil, scope: nil, json: false, hint: true)
+      def status(run: nil, scope: nil, json: false, hint: true, table: false)
         result = if run
           @status.run(run)
         elsif scope&.kind == :workspace
-          @status.runs(workspace: scope.workspace, all: false)
+          @status.runs(workspace: scope.workspace, all: table)
         elsif scope&.kind == :project
           @status.in_project(scope.project)
         else
           @status.runs(workspace: nil, all: true)
         end
+        return status_table(result, scope, run, json) if table
         return document("generated_at" => @clock.call.utc.iso8601, "runs" => result["runs"], "warnings" => result["warnings"]) if json
         @output.puts status_empty_text(scope, hint) if result["runs"].empty? && !run
         result["runs"].each { |each| describe(each) }
@@ -427,6 +431,71 @@ module Workspace
       end
 
       private
+
+      TABLE_HEADER = ["Run", "State", "Workspace", "Status", "Config", "tmux session", "Worktree", "State dir"].freeze
+
+      def status_table(result, scope, run, json)
+        runs = result["runs"]
+        facts = @workspace_facts.call(runs.map { |each| each["workspace"] })
+        rows = runs.map { |each| table_row(each, facts.fetch(each["workspace"], {}), worktree_exists?(each["worktree"])) }
+        if json
+          return document("generated_at" => @clock.call.utc.iso8601, "rows" => rows.map { |row| table_json(row) }, "warnings" => result["warnings"])
+        end
+        @output.puts table_empty_text(scope) if rows.empty? && !run
+        print_table(rows) unless rows.empty?
+        result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
+      end
+
+      def worktree_exists?(path)
+        File.directory?(path) if path.is_a?(String)
+      rescue ArgumentError
+        nil
+      end
+
+      def table_row(run, facts, worktree)
+        finished = WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
+        {"run" => run, "facts" => facts, "worktree" => worktree, "finished" => finished}
+      end
+
+      def table_json(row)
+        run = row["run"]
+        facts = row["facts"]
+        {"id" => run["id"], "workflow" => run["workflow"], "state" => run["state"], "step" => (row["finished"] ? nil : run.dig("current", "step")),
+         "workspace" => run["workspace"], "workspace_status" => facts["status"] || "unknown", "agent" => facts["agent"],
+         "has_config" => facts["config"], "has_tmux_session" => facts["tmux_session"], "has_worktree" => row["worktree"], "has_state_dir" => facts["state_dir"]}
+      end
+
+      def print_table(rows)
+        lines = rows.map do |row|
+          run = row["run"]
+          facts = row["facts"]
+          state = row["finished"] ? run["state"] : "#{run["state"]} (#{run.dig("current", "step")})"
+          [run["id"], state, run["workspace"], workspace_status_text(facts), *[facts["config"], facts["tmux_session"], row["worktree"], facts["state_dir"]].map { |value| yes_no(value) }]
+            .map { |cell| TerminalText.escape(cell) }
+        end
+        widths = TABLE_HEADER.each_index.map { |i| ([TABLE_HEADER[i]] + lines.map { |line| line[i] }).map(&:length).max }
+        ([TABLE_HEADER] + lines).each { |line| @output.puts line.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
+      end
+
+      def workspace_status_text(facts)
+        case facts["status"]
+        when "live" then "Live, agent #{facts["agent"] || "unknown"}"
+        when "stopped" then "Stopped"
+        when "gone" then "Gone"
+        else "Unknown"
+        end
+      end
+
+      def yes_no(value)
+        {true => "yes", false => "no"}.fetch(value, "?")
+      end
+
+      def table_empty_text(scope)
+        case scope&.kind
+        when :workspace then "No workflow runs in #{scope.workspace}."
+        else status_empty_text(scope, false)
+        end
+      end
 
       def status_empty_text(scope, hint)
         case scope&.kind
