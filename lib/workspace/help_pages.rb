@@ -654,7 +654,12 @@ module Workspace
           "name. `workspace library` alone lists."
         ],
         options: [["--kind KIND", "Only this kind: agent, play, prompt, recipe, skill or spine"], *LIBRARY_SCOPES, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library list", "see everything you can use from here: your project's entries, the global ones and the built-in packs"],
+          ["workspace library list --kind skill --global", "only the skills in the global store, e.g. before installing one"],
+          ["workspace library list --builtin --kind play", "the packs that ship with workspace and that instructions compose can name"],
+          ["workspace library list --kind prompt --json", "for a script: the same rows as one JSON document"]
+        ]
       },
       "show" => {
         usage: ["library show REF [--global | --builtin | --project [NAME]] [--json]"],
@@ -664,7 +669,12 @@ module Workspace
           "it on, e.g. workspace start BRANCH --prompt \"$(workspace library show prompt/kickoff)\"."
         ],
         options: [*LIBRARY_SCOPES, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library show prompt/kickoff", "read back a prompt you saved, exactly as it will be sent"],
+          ["workspace library show kickoff", "the same with a bare name, when only one kind has an entry called kickoff"],
+          ["workspace library show play/commits --builtin", "read a pack that ships with workspace before you rely on it"],
+          ["workspace library show kickoff --json", "for a script: the entry and its body as one JSON document; a name nothing has exits 1 with unknown_library_entry"]
+        ]
       },
       "info" => {
         usage: ["library info REF [--global | --builtin | --project [NAME]] [--json]"],
@@ -674,7 +684,11 @@ module Workspace
           "`library show` prints; it is false when a project entry of the same name hides a global one."
         ],
         options: [*LIBRARY_SCOPES, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library info kickoff", "find out where an entry lives and whether it is a link, and whether it is the one `library show` prints"],
+          ["workspace library info play/commits --builtin", "see the path and description of a built-in pack"],
+          ["workspace library info skill/write-tests --global --json", "for a script: the global copy's details as one JSON document"]
+        ]
       },
       "add" => {
         usage: ["library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]"],
@@ -686,7 +700,10 @@ module Workspace
           "",
           "--kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt (for 'start",
           "--recipe'); --kind skill takes a directory holding SKILL.md; --kind spine takes a folder of",
-          "plan-spine stage files (a template for 'spine init')."
+          "plan-spine stage files (a template for 'spine init').",
+          "",
+          "This writes to the library for real (the global store, or the project's with --project); --dry-run",
+          "says what would happen and writes nothing."
         ],
         options: [["--kind KIND", "agent, play, prompt, recipe, skill or spine (required)"],
           ["--as NAME", "The entry name (lowercase letters, digits and hyphens)"],
@@ -694,21 +711,46 @@ module Workspace
           ["--force", "Replace an entry that has different content"],
           ["--project [NAME]", "Add to the project's store (NAME, or the project of the current directory)"],
           LIBRARY_DRY_RUN, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library add kickoff.md --kind prompt", "save a file as the global prompt kickoff, named after the file"],
+          ["workspace library add kickoff.md --kind prompt --dry-run", "check first: it reports added, unchanged or the refusal and writes nothing"],
+          ["workspace library add kickoff.md --kind prompt --project", "keep it for the project of the current directory only"],
+          ["workspace library add ~/Notes/playbook.md --kind play --link", "link a note, so edits to the note show up in the library at once"],
+          ["workspace library add ~/Notes/spine-template --kind spine --as team --link", "keep a folder of stage files as a template for 'spine init'"],
+          ["workspace library add - --kind prompt --as resume-note < resume.txt", "save text from stdin, which needs --as for the name"],
+          ["workspace library add kickoff.md --kind prompt --force", "replace kickoff after you changed the file; without --force a different file under that name exits 1 with an error"]
+        ]
       },
       "update" => {
         usage: ["library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]"],
         summary: "Replace a library entry's content, or repoint its link",
-        about: ["REF is kind/name, or a bare name when one kind has it."],
+        about: [
+          "REF is kind/name, or a bare name when one kind has it. The entry must already exist in the global",
+          "store, or in the project's with --project; this writes it for real unless --dry-run."
+        ],
         options: [["--link", "Store a symlink to PATH instead of a copy"], LIBRARY_PROJECT, LIBRARY_DRY_RUN, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library update prompt/kickoff kickoff.md", "replace the global prompt with the edited file"],
+          ["workspace library update prompt/kickoff kickoff.md --dry-run", "see whether the file differs from the stored prompt: updated or unchanged, nothing written"],
+          ["workspace library update kickoff kickoff.md --project", "replace the project's copy only, by bare name"],
+          ["workspace library update play/playbook ~/Notes/new-playbook.md --link", "point a linked play at another note"]
+        ]
       },
       "remove" => {
         usage: ["library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]"],
         summary: "Delete a library entry or its link",
-        about: ["Deletes the entry or its link from the library; the source file is never touched."],
+        about: [
+          "Deletes the entry or its link from the global store, or the project's with --project, for real; the",
+          "source file is never touched. It asks first on a terminal. With --json it never asks, so pass --yes",
+          "or --dry-run."
+        ],
         options: [["--yes", "Don't ask"], LIBRARY_PROJECT, LIBRARY_DRY_RUN, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library remove prompt/kickoff", "delete a global entry, answering the question on the terminal"],
+          ["workspace library remove prompt/kickoff --dry-run", "see what would go before anything does"],
+          ["workspace library remove play/playbook --yes", "delete a linked play without being asked, as a script must; the note it linked stays"],
+          ["workspace library remove kickoff --project --yes", "delete the project's copy and let the global one show through again"]
+        ]
       },
       "install" => {
         usage: ["library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]"],
@@ -718,14 +760,22 @@ module Workspace
           "agents_dir says otherwise, as start --skill/--agent does for a new workspace: identical content is",
           "unchanged, different content needs --force, a path the repo tracks is never overwritten; the copy is",
           "listed in info/exclude. --user copies to your home-level directory instead",
-          "(library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default)."
+          "(library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default). This writes files for",
+          "real; --dry-run reports what it would do and writes nothing."
         ],
         options: [LIBRARY_WORKSPACE,
           ["--user", "Copy to the user-level directory instead of a workspace"],
           ["--from STORE", "Copy the entry of this store, global or project (default: the project's, else global)"],
           ["--force", "Replace a copy that has different content"],
           LIBRARY_DRY_RUN, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library install skill/write-tests", "give the workspace you are in a skill from the library"],
+          ["workspace library install skill/write-tests --dry-run", "check what would be copied into this workspace's checkout and write nothing"],
+          ["workspace library install agent/reviewer --name my-app", "give another workspace a subagent without leaving your directory"],
+          ["workspace library install skill/write-tests --user", "make a skill available in every project, from your home directory"],
+          ["workspace library install skill/write-tests --from global --force", "replace a copy you edited with the global entry, even where the project has its own"],
+          ["workspace library install skill/write-tests --name my-app --json", "for a script: the outcome (installed or unchanged) as one JSON document"]
+        ]
       },
       "uninstall" => {
         usage: ["library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]"],
@@ -733,13 +783,19 @@ module Workspace
         about: [
           "Deletes the copy of REF that `library install` made in a workspace's checkout, or with --user from",
           "the home-level directory. A copy that differs from the library entry needs --force; the library entry",
-          "and the info/exclude line stay."
+          "and the info/exclude line stay. This deletes files for real; --dry-run reports and deletes nothing."
         ],
         options: [LIBRARY_WORKSPACE,
           ["--user", "Remove the user-level copy"],
           ["--force", "Remove a copy that differs from the library entry"],
           LIBRARY_DRY_RUN, JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library uninstall skill/write-tests", "take a skill back out of the workspace you are in"],
+          ["workspace library uninstall skill/write-tests --dry-run", "see which copy would be deleted from this workspace's checkout"],
+          ["workspace library uninstall agent/reviewer --name my-app", "take a subagent out of another workspace"],
+          ["workspace library uninstall skill/write-tests --force", "delete a copy you edited, which would otherwise be refused"],
+          ["workspace library uninstall agent/reviewer --user", "remove the copy from your home directory"]
+        ]
       },
       "installed" => {
         usage: ["library installed [--name WS | --user] [--kind skill|agent] [--json]"],
@@ -752,7 +808,11 @@ module Workspace
         options: [LIBRARY_WORKSPACE,
           ["--user", "List the user-level copies"],
           ["--kind KIND", "Only skills or only agents"], JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace library installed", "see which skills and agents the workspace you are in got from the library, and which you edited"],
+          ["workspace library installed --name my-app --kind skill", "only the skills of another workspace"],
+          ["workspace library installed --user --json", "for a script: the copies in your home directory as one JSON document"]
+        ]
       }
     }.freeze
 
@@ -936,7 +996,8 @@ module Workspace
           "When the agent in a bound pane starts a session (startup, /clear, resume or compact), session-event",
           "reminds it of its subject, so it survives a lost context. Nothing is typed into the pane. A pane is",
           "stored by its tmux pane id (%19) and only counts in the tmux session it was bound in. Setting a",
-          "binding replaces the whole earlier one, its packs included."
+          "binding replaces the whole earlier one, its packs included. This records the binding for real, in",
+          "bindings.json; there is no dry run."
         ],
         options: [name_opt("Workspace name (default: the project detected from the current directory)"),
           ["--pane PANE", "Pane id (%19) or window.pane (0.1) of the workspace's own session; defaults to $TMUX_PANE"],
@@ -949,21 +1010,35 @@ module Workspace
           ["--artifacts PATH", "Directory holding the subject's artifacts; stored as an absolute path"],
           ["--pack NAME", "Library pack the agent is also reminded of (repeatable; replaces the stored list; see `workspace instructions --help`)"],
           BINDING_JSON],
-        examples: []
+        examples: [
+          ["workspace binding set --kind play --id play/orchestrator", "from inside the agent's own pane: remind it of a play after a /clear"],
+          ["workspace binding set my-app --pane %5 --kind run --id wr_01 --step implement --attempt 2", "bind the pane of a workflow run's second implement attempt"],
+          ["workspace binding set my-app --pane 0.1 --kind review --id acme/api#835 --focus security", "bind a review pane by window.pane, with the focus the reviewer was given"],
+          ["workspace binding set --pane %5 --kind play --id play/research --pack commits --pack notes", "also remind the agent of two packs, which replaces any packs stored before"],
+          ["workspace binding set --pane %5 --kind run --id wr_01 --json", "for a script: the stored binding as one JSON action document"]
+        ]
       },
       "show" => {
         usage: ["binding show [--pane %ID] [--json]"],
         summary: "Print a pane's binding",
         about: [BINDING_ABOUT, "It is marked stale when the pane is no longer in the tmux session and slot it was bound in; a stale binding is not announced."],
         options: [BINDING_PANE, BINDING_JSON],
-        examples: []
+        examples: [
+          ["workspace binding show", "from inside an agent's pane: what it is reminded of after a /clear"],
+          ["workspace binding show --pane %5", "check a pane after a restore: is its binding stale?"],
+          ["workspace binding show --pane %5 --json", "for a script: stale, packs and plays as fields; a pane with no binding exits 1 with not_bound"]
+        ]
       },
       "clear" => {
         usage: ["binding clear [--pane %ID] [--json]"],
         summary: "Remove a pane's binding",
-        about: [BINDING_ABOUT],
+        about: [BINDING_ABOUT, "This removes the pane's entry from bindings.json for real; nothing is typed into the pane."],
         options: [BINDING_PANE, BINDING_JSON],
-        examples: []
+        examples: [
+          ["workspace binding clear", "from inside the agent's pane: stop reminding it once its work is done"],
+          ["workspace binding clear --pane %5", "unbind another pane, e.g. one whose run was cancelled"],
+          ["workspace binding clear --pane %5 --json", "for a script: the removed binding as one JSON action document; a pane with no binding exits 1 with not_bound"]
+        ]
       }
     }.freeze
 
@@ -1176,8 +1251,9 @@ module Workspace
           "notes (where working notes go), handoff (run 'workspace handoff check' after every task), dev (queue",
           "for the shared dev environment before testing, release it when done) and implementation-plan (keep",
           "the counted task list in IMPLEMENTATION_PLAN.md); `workspace library list --builtin` lists them all.",
-          "With no --pack, binding, orchestrator and commits are composed, in that order. Each pack is printed",
-          "under a heading that names where it came from.",
+          "With no --pack, binding, orchestrator and commits are composed, in that order, unless the config key",
+          "workflows.defaults.include lists others. Each pack is printed under a heading that names where it",
+          "came from.",
           "",
           "Any other library play can be named as a pack too: the project's library is searched, then global.",
           "A play named like a built-in pack never takes its place here; give your own another name.",
@@ -1187,7 +1263,8 @@ module Workspace
           "bound, and commits by the project's commands.test and commands.lint when they are set (workspace",
           "config set commands.test ...). --pane defaults to $TMUX_PANE, the pane the command runs in, unless",
           "--name is given. Text composed for another pane, as in start --prompt \"$(...)\", would carry this",
-          "pane's binding: name the packs and leave binding out, or bind that pane first."
+          "pane's binding: name the packs and leave binding out, or bind that pane first. Nothing is written or",
+          "sent: the text is printed."
         ],
         options: [["--pack NAME", "A pack to compose (repeatable, composed in the order given)"],
           ["--pane PANE", "Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)"],
@@ -1195,7 +1272,14 @@ module Workspace
           ["--start", "Print what start and launch send with the first prompt, and send nothing: the automatic packs (notes, unless notes.instructions is false) then each --pack"],
           ["--no-packs", "With --start: leave out the automatic packs (cannot be combined with --pack)"],
           JSON_OPT],
-        examples: []
+        examples: [
+          ["workspace instructions compose", "print the default packs for the project of this directory, to read or to paste"],
+          ["workspace instructions compose --pack commits --pack review", "only these two packs, in this order"],
+          ["workspace instructions compose --pane %5", "the default packs with the binding of pane %5 after the binding pack"],
+          ["workspace instructions compose --start --name my-app", "see what start or launch would send my-app with its first prompt; nothing is sent"],
+          ["workspace instructions compose --pack orchestrator --name my-app --json", "for a script: the packs and the text as one JSON document, composed for my-app"],
+          ["workspace instructions compose --pack nonesuch --json", "a pack that is not in any library exits 1 with unknown_library_entry"]
+        ]
       }
     }.freeze
 

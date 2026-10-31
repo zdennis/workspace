@@ -235,14 +235,24 @@ Every field is optional, but a recipe must set at least one besides `description
 ## Examples
 
 ```sh
-workspace library add --kind play --link ~/Notes/Projects/Workspace/Agent\ Orchestration\ Playbook.md
-workspace library add kickoff.md --kind prompt --project
-echo "Start at CLI27." | workspace library add - --kind prompt --as start-cli27
-workspace library list --kind play --json
+workspace library list                                               # everything visible from here
+workspace library list --builtin --kind play                         # the packs that ship with workspace
+workspace library show prompt/kickoff                                # read back a saved prompt
+workspace library info kickoff                                       # path, link target, whether it is the effective entry
+workspace library add kickoff.md --kind prompt                       # save a file as the global prompt kickoff
+workspace library add kickoff.md --kind prompt --dry-run             # report added, unchanged or the refusal; write nothing
+workspace library add kickoff.md --kind prompt --project             # for the project of the current directory only
+workspace library add ~/Notes/playbook.md --kind play --link         # edits to the note show up at once
+workspace library add ~/Notes/spine-template --kind spine --as team --link
+workspace library add - --kind prompt --as resume-note < resume.txt  # stdin needs --as
 workspace library add ~/.claude/agents/reviewer.md --kind agent
 workspace library add ~/src/skills/write-tests --kind skill --link
-workspace library info play/agent-orchestration-playbook
+workspace library update prompt/kickoff kickoff.md                   # replace the stored content
+workspace library remove prompt/kickoff                              # asks first on a terminal
+workspace library remove play/playbook --yes                         # no question; the linked note stays
+workspace library install skill/write-tests                          # into this workspace's checkout
+workspace library install agent/reviewer --user                      # into your home directory
+workspace library installed --name my-app --kind skill               # what a workspace got from the library
+workspace library uninstall skill/write-tests                        # take the copy back out
 workspace start feature/x --prompt "$(workspace library show prompt/kickoff)"
-workspace library update prompt/kickoff kickoff-v2.md
-workspace library remove play/agent-orchestration-playbook --yes
 ```

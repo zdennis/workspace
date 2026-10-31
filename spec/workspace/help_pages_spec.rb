@@ -252,6 +252,26 @@ RSpec.describe Workspace::HelpPages do
         expect(text).to include("Run `workspace plan VERB --help`")
       end
     end
+
+    %w[library binding instructions].each do |command|
+      it "shows on 'workspace #{command} --help' only examples a verb page of #{command} has" do
+        with_cli do |cli, out, *|
+          cli.run([command, "--help"])
+          shown = out.string.split("Examples:\n").last.lines.map { |line| line.strip.split(Workspace::HelpPages::EXAMPLE_SEPARATOR).first }
+          on_verb_pages = Workspace::HelpPages::COMMANDS.fetch(command).values.flat_map { |page| page[:examples].map(&:first) }
+          expect(shown).not_to be_empty
+          expect(shown - on_verb_pages).to eq([])
+          expect(shown.length).to be_between(3, 10)
+        end
+      end
+    end
+
+    it "leads the binding overview with the minimal set form" do
+      with_cli do |cli, out, *|
+        cli.run(%w[binding --help])
+        expect(out.string.split("Examples:\n").last.lines.first).to include("workspace binding set --kind play --id play/orchestrator")
+      end
+    end
   end
 
   describe "a literal --help" do

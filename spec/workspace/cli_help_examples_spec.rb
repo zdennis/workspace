@@ -74,20 +74,7 @@ module HelpExamplesSpec
     "event-log compact",
 
     # T3 gave these a page of their own; their examples come with the group tasks
-    "binding clear",
-    "binding set",
-    "binding show",
     "config show",
-    "instructions compose",
-    "library add",
-    "library info",
-    "library install",
-    "library installed",
-    "library list",
-    "library remove",
-    "library show",
-    "library uninstall",
-    "library update",
     "pr create",
     "pr feedback",
     "projects group",
@@ -106,11 +93,6 @@ module HelpExamplesSpec
     "ui open inbox",
     "ui open notes",
     "ui open task",
-
-    # T17: library and packs
-    "binding",
-    "instructions",
-    "library",
 
     # T18: configuration
     "config",

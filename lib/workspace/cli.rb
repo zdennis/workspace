@@ -4606,9 +4606,10 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace binding set my-app --pane %5 --kind run --id wr_01 --step implement --attempt 2"
-        opts.separator "  workspace binding show"
-        opts.separator "  workspace binding clear --pane %5"
+        HelpPages::BINDING.each_value do |page|
+          command, scenario = page[:examples].first
+          opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}"
+        end
       end
     end
 
@@ -4709,15 +4710,10 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace library add --kind play --link ~/Notes/Agent\\ Orchestration\\ Playbook.md"
-        opts.separator "  workspace library add kickoff.md --kind prompt --project"
-        opts.separator "  workspace library list --kind play --json"
-        opts.separator "  workspace library add ~/Notes/spine-template --kind spine --as team --link"
-        opts.separator "  workspace start feature/x --prompt \"$(workspace library show prompt/kickoff)\""
-        opts.separator "  workspace library remove play/agent-orchestration-playbook --yes"
-        opts.separator "  workspace library install skill/write-tests --name my-app --json"
-        opts.separator "  workspace library uninstall skill/write-tests --name my-app"
-        opts.separator "  workspace library installed --name my-app --kind skill --json"
+        HelpPages::LIBRARY.each_value do |page|
+          command, scenario = page[:examples].first
+          opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}"
+        end
       end
     end
 
@@ -4854,11 +4850,9 @@ module Workspace
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace instructions compose"
-        opts.separator "  workspace instructions compose --pack orchestrator"
-        opts.separator "  workspace instructions compose --pack commits --pack review --name my-app --json"
-        opts.separator "  workspace instructions compose --start --name my-app    # what start and launch send"
-        opts.separator "  workspace start feature/x --prompt \"$(workspace instructions compose --pack orchestrator)\""
+        HelpPages::INSTRUCTIONS["compose"][:examples].each do |command, scenario|
+          opts.separator "  #{command}#{HelpPages::EXAMPLE_SEPARATOR}#{scenario}"
+        end
       end
     end
 
