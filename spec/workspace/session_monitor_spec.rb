@@ -343,6 +343,20 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["state"]).not_to eq("done")
     end
 
+    it "keeps done when a sub-agent uses a tool after the Stop" do
+      stop
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      expect(pane("%2")["state"]).to eq("done")
+    end
+
+    it "leaves done when the main agent uses a tool after the Stop" do
+      stop
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => nil)
+
+      expect(pane("%2")["state"]).not_to eq("done")
+    end
+
     it "leaves done when a sub-agent starts" do
       stop
       monitor.record("event" => "subagent_start", "pane_id" => "%2", "agent" => {"name" => "x"})
@@ -1641,6 +1655,15 @@ RSpec.describe Workspace::SessionMonitor do
     it "is the time of the Stop for a done pane" do
       at(5)
       monitor.record("pane_id" => "%2", "event" => "stop")
+
+      expect(monitor.fresh_since("%2")).to eq(now + 5)
+    end
+
+    it "stays the time of the Stop when a sub-agent uses a tool afterward" do
+      at(5)
+      monitor.record("pane_id" => "%2", "event" => "stop")
+      at(9)
+      monitor.record("pane_id" => "%2", "event" => "tool_use", "agent_id" => "sub-1")
 
       expect(monitor.fresh_since("%2")).to eq(now + 5)
     end

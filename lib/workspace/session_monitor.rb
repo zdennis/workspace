@@ -888,7 +888,8 @@ module Workspace
           pane[:done] = done_mark(event)
           pane.delete(:restored_ready)
         end
-      when "user_prompt", "session_start", "session_end", "tool_use" then pane.delete(:done)
+      when "user_prompt", "session_start", "session_end" then pane.delete(:done)
+      when "tool_use" then pane.delete(:done) unless event["agent_id"]
       end
       pane[:last_user_prompt_at] = @clock.now if event["event"] == "user_prompt"
       if event["event"] == "session_start"
