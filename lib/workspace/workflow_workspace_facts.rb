@@ -65,6 +65,8 @@ module Workspace
       return "live" if session == true
       return ((answer && answer["available"]) ? "live" : "unknown") if session.nil?
 
+      return "unknown" if config.nil?
+
       config ? "stopped" : "gone"
     end
 

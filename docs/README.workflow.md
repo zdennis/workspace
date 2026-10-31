@@ -152,7 +152,7 @@ The workspace columns describe the workspace as it is now, not as it was when th
 | `Live, agent unknown` | The session exists, but the agent daemon did not answer in time or answered with no agent panes, so what the agent is doing is not known |
 | `Stopped` | The workspace has a config but no tmux session. `workspace launch` can bring it back when the worktree is still there (Worktree `yes`) |
 | `Gone` | No tmux session and no config: the workspace was removed |
-| `Unknown` | tmux could not say whether the session exists and the agent daemon did not answer, or the run's workspace name is unusable |
+| `Unknown` | tmux could not say whether the session exists and the agent daemon did not answer, the session is gone but the config could not be read, or the run's workspace name is unusable |
 
 The other columns say whether each piece exists: `yes`, `no`, or `?` when it could not be read (tmux gave no answer, for example). Worktree is the checkout path stored with the run. A `no` in State dir can also mean nothing was ever written there.
 

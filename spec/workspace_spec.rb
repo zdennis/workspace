@@ -378,6 +378,14 @@ RSpec.describe Workspace do
       expect(nudger.instance_variable_get(:@executable)).to eq(File.expand_path("../bin/workspace", __dir__))
     end
 
+    it "gives workflow the reader of workspace facts that status --table needs" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      facts = cli.instance_variable_get(:@workflow_command).instance_variable_get(:@workspace_facts)
+
+      expect(facts).to be_a(Workspace::WorkflowWorkspaceFacts)
+    end
+
     it "gives start a library installer that checks tracked files with the shared git" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

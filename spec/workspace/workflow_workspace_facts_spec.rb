@@ -193,6 +193,20 @@ RSpec.describe Workspace::WorkflowWorkspaceFacts do
     end
   end
 
+  describe "when a config or state dir read raises" do
+    [Errno::EACCES, ArgumentError].each do |error|
+      it "reads a config it can't read as nil and the status as unknown after #{error}" do
+        allow(project_config).to receive(:exists?).and_raise(error)
+        expect(facts.call(["a"])["a"]).to include("config" => nil, "status" => "unknown")
+      end
+
+      it "reads a state dir it can't read as nil after #{error}" do
+        allow(config).to receive(:pipeline_state_dir).and_raise(error)
+        expect(facts.call(["a"])["a"]).to include("state_dir" => nil, "status" => "gone")
+      end
+    end
+  end
+
   describe "when Liveness raises" do
     [Errno::EACCES, ArgumentError].each do |error|
       it "reads every session as nil after #{error}" do
