@@ -2523,6 +2523,15 @@ RSpec.describe Workspace::Commands::Agent do
         expect(watcher.stopped).to be(true)
       end
 
+      it "holds a follow-up back while an API-error recovery holds the pane" do
+        run_agent do
+          agent.instance_variable_set(:@agent_recovery_desk, double(holding?: true, scan: nil, session_event: nil))
+          expect(built.first[:restarting].call("%5")).to be(true)
+          agent.instance_variable_set(:@agent_recovery_desk, double(holding?: false, scan: nil, session_event: nil))
+          expect(built.first[:restarting].call("%5")).to be(false)
+        end
+      end
+
       it "arms the watch with the sent time as a Time and answers what the watcher said" do
         run_agent do
           expect(watcher.started).to be_falsey

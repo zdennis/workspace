@@ -242,6 +242,7 @@ module Workspace
         @spine_watcher.owner_report = @spine_owner_report if @spine_watcher.respond_to?(:owner_report=)
         @spine_watcher&.start
         restarting = ->(pane_id) { @state_lock.synchronize { @restarts.key?(pane_id) } }
+        recovering = ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false }
         @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock,
           restarting: restarting)
@@ -251,13 +252,15 @@ module Workspace
           session_monitor: @session_monitor, delivery_lock: @delivery_lock, restarting: restarting,
           claim_restart: ->(pane_id) { claim_restart_for_queue(pane_id) },
           release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) },
-          recovering: ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false })
+          recovering: recovering)
         @agent_recovery_desk = build_agent_recovery_desk(name, restarting)
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
         @session_monitor.on_scan = -> { scan_desks } if @session_monitor.respond_to?(:on_scan=)
 
+        # A recovery can hold a quiet pane whose agent is stopped, so a follow-up waits for it as for a restart.
         @handoff_watcher = @handoff_watcher_factory.call(workspace: name, session_name: @tmux_session,
-          session_monitor: @session_monitor, delivery_lock: @delivery_lock, restarting: restarting, event_log: @event_log)
+          session_monitor: @session_monitor, delivery_lock: @delivery_lock, event_log: @event_log,
+          restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
 
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
