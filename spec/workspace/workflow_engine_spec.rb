@@ -689,6 +689,73 @@ RSpec.describe Workspace::WorkflowEngine do
       end
     end
 
+    describe "a repeat of one stop" do
+      let(:first_since) { "2026-10-04T12:01:00Z" }
+
+      before do
+        start
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5")
+        events.clear
+        now[0] += 60
+      end
+
+      it "keeps the reason's since and announces nothing when the daemon names no turn start" do
+        before = store.find("wr_1")["reason"]
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(store.find("wr_1")["reason"]).to eq(before)
+        expect(before["since"]).to eq(first_since)
+        expect(events).to eq([])
+      end
+
+      it "keeps the since when the turn began before the stop was recorded" do
+        before = store.find("wr_1")["reason"]
+
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 0, 30))
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 0, 500_000))
+
+        expect(store.find("wr_1")["reason"]).to eq(before)
+        expect(events).to eq([])
+      end
+
+      it "gives a stop after a later turn a since of its own" do
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 30))
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(events.map(&:first)).to eq(["workflow_changed"])
+      end
+
+      it "gives a new attempt a new since" do
+        engine.resume("wr_1", from: "plan", pane: "%5")
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(store.find("wr_1")["reason"]).to include("since" => "2026-10-04T12:03:00Z")
+        expect(store.find("wr_1")["reason"]["details"]["attempt"]).to eq(2)
+      end
+
+      it "gives a stop after a pane-less resume a new since" do
+        engine.resume("wr_1")
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+      end
+
+      it "stores a changed missing list and keeps the since" do
+        allow(File).to receive(:exist?).and_call_original
+        allow(File).to receive(:exist?).with(File.join(worktree, ".workflow", "wr_1", "plan.md")).and_return(true)
+        allow(File).to receive(:mtime).and_call_original
+        allow(File).to receive(:mtime).with(File.join(worktree, ".workflow", "wr_1", "plan.md")).and_return(Time.utc(2026, 10, 4, 11, 0, 0))
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        reason = store.find("wr_1")["reason"]
+        expect(reason["since"]).to eq(first_since)
+        expect(reason["details"]).to include("missing" => [], "stale" => [File.join(worktree, ".workflow", "wr_1", "plan.md")])
+      end
+    end
+
     it "ignores a turn that ends while the run waits for a lock" do
       locked = definition("steps:\n  verify:\n    prompt: P\n    uses: [test-db]\n")
       start(locked, inputs: {}, pane: "%5", workspace: "app.worktree-a")

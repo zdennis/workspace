@@ -196,7 +196,7 @@ module Workspace
         next unless state["state"] == "running"
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
-        check = evaluate(stored)
+        check = evaluate(stored, turn_started: turn_started)
       end
       check ? finish_check(run_id, check) : run
     end
@@ -325,7 +325,13 @@ module Workspace
           stored["pending_context"].unshift("The last attempt of this step failed: #{failure_text(stored["reason"]["details"])}.")
         end
         case state["state"]
-        when "running" then pane ? dispatch(stored) : (check = evaluate(stored))
+        when "running"
+          if pane
+            dispatch(stored)
+          else
+            stored["reason"] = nil
+            check = evaluate(stored)
+          end
         when "checking" then check = evaluate(stored)
         when "passed" then advance(stored)
         else dispatch(stored)
@@ -749,6 +755,14 @@ module Workspace
       {"code" => code, "since" => now_iso, "details" => details}
     end
 
+    def stop_reason(stored, turn_started, code, details)
+      fresh = reason(code, details)
+      return fresh unless stored && stored["code"] == code && stored["since"]
+      return fresh unless %w[step attempt].all? { |key| stored.dig("details", key) == details[key] }
+      return fresh if turn_started && turn_started.to_i > Time.iso8601(stored["since"]).to_i
+      fresh.merge("since" => stored["since"])
+    end
+
     def values(run)
       branch = begin
         @git.worktree_branch(run["worktree"])
@@ -800,7 +814,10 @@ module Workspace
 
     # Decides a step whose turn ended. Returns the check to run, when the
     # step has one and nothing else already decided it.
-    def evaluate(run)
+    # A stop the daemon sees again (the same code, step and attempt) keeps its `since`, so a
+    # repeat raises no second notice; a turn that began after the stop was recorded is a new stop.
+    # The stored `since` is whole seconds, so a turn that began in the same second is the same stop.
+    def evaluate(run, turn_started: nil)
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
@@ -826,7 +843,7 @@ module Workspace
       if missing.any? || stale.any?
         state["state"] = "running"
         run["state"] = "waiting"
-        run["reason"] = reason("turn_ended_incomplete", "step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale)
+        run["reason"] = stop_reason(run["reason"], turn_started, "turn_ended_incomplete", "step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale)
         return nil
       end
       unless step["status"]
