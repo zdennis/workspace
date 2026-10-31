@@ -2263,6 +2263,53 @@ RSpec.describe Workspace::Commands::Agent do
         end
       end
 
+      describe "the claim's real path" do
+        let(:restarts) { agent.instance_variable_get(:@restarts) }
+
+        def in_thread(&block) = Thread.new(&block).value
+
+        it "refuses a free pane while shutting down, and writes nothing" do
+          run_agent do
+            claim = built.first[:claim_restart]
+            agent.instance_variable_set(:@shutting_down, true)
+
+            expect(in_thread { claim.call("%5") }).to be_nil
+            expect(restarts).not_to have_key("%5")
+          end
+        end
+
+        it "refuses a pane another claim holds, and leaves that claim alone" do
+          run_agent do
+            claim = built.first[:claim_restart]
+            restarts["%5"] = :starting
+            expect(in_thread { claim.call("%5") }).to be_nil
+            expect(restarts["%5"]).to eq(:starting)
+
+            held = agent.send(:claim_restart_for_queue, "%6")
+            expect(in_thread { claim.call("%6") }).to be_nil
+            expect(restarts["%6"]).to equal(held)
+          end
+        end
+
+        it "releases by the token's identity, so an old token can't end a newer claim" do
+          run_agent do
+            claim, release = built.first.values_at(:claim_restart, :release_restart)
+            first = Thread.new { claim.call("%5") }.tap(&:join)
+            old = first.value
+            release.call("%5", old)
+            expect(restarts).not_to have_key("%5")
+
+            newer = in_thread { claim.call("%5") }
+            release.call("%5", old)
+            expect(restarts["%5"]).to equal(newer)
+            expect(newer).not_to equal(old)
+
+            release.call("%5", newer)
+            expect(restarts).not_to have_key("%5")
+          end
+        end
+      end
+
       it "rebinds the queue through the prompt queue store" do
         store = instance_double(Workspace::PromptQueueStore, rebind_agent: nil)
         allow(Workspace::PromptQueueStore).to receive(:new).and_call_original

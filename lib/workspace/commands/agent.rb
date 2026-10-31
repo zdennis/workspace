@@ -1259,12 +1259,7 @@ module Workspace
         @agent_recovery_desk_factory.call(workspace: workspace, session_name: @tmux_session,
           session_monitor: @session_monitor, delivery_lock: @delivery_lock, event_log: @event_log,
           restarting: restarting,
-          claim_restart: ->(pane_id) {
-            @state_lock.synchronize do
-              next nil if @shutting_down || @restarts.key?(pane_id)
-              @restarts[pane_id] = Thread.current
-            end
-          },
+          claim_restart: ->(pane_id) { claim_restart_for_recovery(pane_id) },
           release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) },
           rebind_queue: ->(pane_id, agent_pid) { PromptQueueStore.new(path: queue_path).rebind_agent(pane_id, agent_pid: agent_pid) })
       end
@@ -1290,7 +1285,21 @@ module Workspace
         end
       end
 
-      # Releases a claim {#claim_restart_for_queue} made, and only that one.
+      # Claims a pane in @restarts for a recovery attempt, on the attempt's own
+      # thread. The token is that thread, so {#stop_restarts} kills it, and a claim
+      # made after shutdown began is refused: that sweep would never see it.
+      #
+      # @return [Thread, nil] the claim's token, for releasing it; nil when the
+      #   pane is held or the daemon is shutting down
+      def claim_restart_for_recovery(pane_id)
+        @state_lock.synchronize do
+          next nil if @shutting_down || @restarts.key?(pane_id)
+          @restarts[pane_id] = Thread.current
+        end
+      end
+
+      # Releases a claim {#claim_restart_for_queue} or
+      # {#claim_restart_for_recovery} made, and only that one.
       def release_restart_for_queue(pane_id, token)
         @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id].equal?(token) }
       end
