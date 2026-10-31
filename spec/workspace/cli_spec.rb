@@ -20,6 +20,7 @@ RSpec.describe Workspace::CLI do
     git = overrides[:git] || Workspace::Git.new(output: output, input: input)
 
     project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
+    status_scope = overrides[:status_scope] || Workspace::StatusScope.new(project_detector: project_detector, catalog: overrides[:project_catalog] || CLITestHelpers::FakeStatusCatalog.new)
 
     stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, agent_ensurer: CLITestHelpers::FakeAgentEnsurer.new, output: output, error_output: error_output, sleeper: ->(_) {})
@@ -62,6 +63,7 @@ RSpec.describe Workspace::CLI do
       project_settings: project_settings,
       hook_runner: hook_runner,
       project_detector: project_detector,
+      status_scope: status_scope,
       workspace_name: overrides[:workspace_name],
       lineage: overrides[:lineage] || CLITestHelpers::FakeLineage.new,
       launch_command: launch_command,

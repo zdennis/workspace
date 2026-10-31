@@ -294,6 +294,17 @@ module CLITestHelpers
     end
   end
 
+  # A catalog with no projects: `find` is always an unknown workspace.
+  class FakeStatusCatalog
+    def all = []
+
+    def member_at(_project, _path) = nil
+
+    def find(token)
+      raise Workspace::Error.new("Unknown project or workspace '#{token}'", code: "unknown_workspace", details: {"name" => token})
+    end
+  end
+
   class FakeProjectConfig
     def initialize(roots = {})
       @roots = roots

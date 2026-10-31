@@ -456,7 +456,7 @@ module Workspace
       require "yaml"
       config = YAML.safe_load_file(path)
       config&.dig("root")
-    rescue Psych::SyntaxError
+    rescue Psych::Exception
       nil
     end
   end
