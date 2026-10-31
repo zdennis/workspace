@@ -67,6 +67,43 @@ RSpec.describe Workspace do
       expect(resolver).to equal(cli.instance_variable_get(:@notes_command).instance_variable_get(:@config_resolver))
     end
 
+    describe "the agent recovery desk factory" do
+      def recovery_wiring
+        Dir.mktmpdir("ws-recovery-wiring") do |state|
+          allow(ENV).to receive(:fetch).and_call_original
+          allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
+          cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+          factory = cli.instance_variable_get(:@agent_command).instance_variable_get(:@agent_recovery_desk_factory)
+          release = cli.instance_variable_get(:@session_event_command).instance_variable_get(:@dev_session_release)
+          args = {workspace: "ws-smoke", session_name: "ws", session_monitor: instance_double(Workspace::SessionMonitor),
+                  delivery_lock: Mutex.new, event_log: nil, restarting: ->(_) { false }, claim_restart: ->(_) {},
+                  release_restart: ->(*) {}, rebind_queue: ->(*) {}}
+          yield factory, args, release
+        end
+      end
+
+      it "builds a desk with the defaults, sharing one stop marker with the session-event hook" do
+        recovery_wiring do |factory, args, release|
+          desk = factory.call(**args)
+
+          expect(desk).to be_a(Workspace::AgentRecoveryDesk)
+          expect(desk.instance_variable_get(:@marker)).to equal(release.instance_variable_get(:@recovery_marker))
+        end
+      end
+
+      it "builds no desk with agent.recovery.enabled off" do
+        allow_any_instance_of(Workspace::AgentRecoveryConfig).to receive(:enabled?).and_return(false)
+
+        recovery_wiring { |factory, args, _| expect(factory.call(**args)).to be_nil }
+      end
+
+      it "builds no desk when the workspace's agent.kind is not claude" do
+        allow_any_instance_of(Workspace::AgentCommands).to receive(:kind).and_return("codex")
+
+        recovery_wiring { |factory, args, _| expect(factory.call(**args)).to be_nil }
+      end
+    end
+
     it "wires pr feedback to the reader and the shared workspace checkout" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

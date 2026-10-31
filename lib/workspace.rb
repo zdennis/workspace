@@ -232,6 +232,7 @@ require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/notifier"
 require_relative "workspace/alert_config"
+require_relative "workspace/agent_recovery_config"
 require_relative "workspace/agentd_config"
 require_relative "workspace/handoff_config"
 require_relative "workspace/context_reasons"
@@ -521,13 +522,14 @@ module Workspace
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
+    recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
     delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
     workspace_for_session = SessionWorkspace.new(tmux: tmux, project_config: project_config, config: config,
       on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
       workspace_for_session: workspace_for_session, delivery_log: delivery_log,
       lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
-      dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), logger: logger))
+      dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
     bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
@@ -670,9 +672,10 @@ module Workspace
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, agent_command_check: AgentCommandCheck.new, project_detector: project_detector, config_resolver: config_resolver, output: output, error_output: error_output)
     config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
+    agent_resume_command = AgentResumeCommand.new(tmuxinator_report: tmuxinator_report, agent_commands: agent_commands)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
       process_tree: process_tree, agent_ensurer: ensure_agent_command, agent_commands: agent_commands,
-      resume_command: AgentResumeCommand.new(tmuxinator_report: tmuxinator_report, agent_commands: agent_commands), output: output, error_output: error_output)
+      resume_command: agent_resume_command, output: output, error_output: error_output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
     # The reader takes its own limiter, separate from the monitor's: it serves
@@ -688,6 +691,8 @@ module Workspace
 
     alert_config = AlertConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
+    agent_recovery_config = AgentRecoveryConfig.new(config_resolver: config_resolver, project_config: project_config,
+      lineage: lineage, error_output: error_output)
     agentd_config = AgentdConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
@@ -701,6 +706,21 @@ module Workspace
     inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
       session_ledger: session_ledger, run_store: workflow_store, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, derived: inbox_derived, acks: inbox_acks,
       output: output, error_output: error_output, notes: notes_command)
+
+    # Nil with recovery off or for a workspace whose agent isn't Claude Code, so the daemon builds no desk.
+    agent_recovery_desk_factory = lambda do |**given|
+      workspace = given.fetch(:workspace)
+      next nil unless agent_recovery_config.enabled?(workspace) && agent_commands.kind(workspace) == "claude"
+      session_monitor = given.fetch(:session_monitor)
+      AgentRecoveryDesk.new(tmux: tmux, workspace: workspace, session_name: given.fetch(:session_name), session_monitor: session_monitor,
+        store: AgentRecoveryStore.new(path: config.agent_recovery_path(workspace)), transcript: TranscriptSummary.new,
+        stopper: AgentStopper.new(process_tree: process_tree), detector: agent_commands.detector(workspace),
+        process_tree: process_tree, ledger: session_ledger, resume_command: agent_resume_command,
+        prompt_typer: PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger),
+        readiness: agent_readiness, marker: recovery_stop_marker,
+        inbox: -> { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) },
+        logger: logger, **given.slice(:delivery_lock, :event_log, :restarting, :claim_restart, :release_restart, :rebind_queue))
+    end
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
@@ -728,6 +748,7 @@ module Workspace
       task_store: task_store,
       workflow_nudger: workflow_nudger,
       name_migration: name_migration,
+      agent_recovery_desk_factory: agent_recovery_desk_factory,
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
       spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },

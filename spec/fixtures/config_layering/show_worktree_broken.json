@@ -1050,6 +1050,39 @@
       ]
     },
     {
+      "key": "agent.recovery.enabled",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": true,
+      "effective": null,
+      "source": "unreadable",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-b"
+      ],
+      "applies": "daemon_restart",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "`true` or `false`: whether the agent daemon recovers a Claude Code agent whose turn ended on an API error (`server_error`, `overloaded`, `rate_limit` or `unknown`): it types a message to continue at the live prompt first, then restarts and resumes the conversation if that fails, on a schedule of up to 12 attempts; any other error kind gets one inbox item (default `true`; ignored when `agent.kind` isn't `claude`)",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
+    },
+    {
       "key": "agent.commands.claude",
       "scope": "project",
       "type": "command",
