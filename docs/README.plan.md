@@ -5,7 +5,7 @@ Read, start, pause and delete a workspace's plan: the counted task list in `IMPL
 ## Usage
 
 ```sh
-workspace plan status [--name WORKSPACE | --all | --file PATH | --group GROUP] [--json]
+workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]
 workspace plan path [--name WORKSPACE] [--json]
 workspace plan show [--name WORKSPACE]
 workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]
@@ -18,13 +18,13 @@ workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name
 workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]
 ```
 
-Without `--name`, the workspace is the one detected from the current directory. `--all`, `--file`, `--group` and `--name` exclude each other, and a flag that does not belong to the subcommand is a usage error. So are `--pane` with `--spawn`, either of them without `--task`, and a `--spawn` kind that is not `claude`, `codex`, `opencode` or `pi`. Every flag also takes the `--flag=value` form.
+Without `--name`, the workspace is the one detected from the current directory. `--all`, `--file`, `--group`, `--project` and `--name` exclude each other, and a flag that does not belong to the subcommand is a usage error. So are `--pane` with `--spawn`, either of them without `--task`, and a `--spawn` kind that is not `claude`, `codex`, `opencode` or `pi`. Every flag also takes the `--flag=value` form.
 
 ## Subcommands
 
 | Subcommand | What it does |
 |------------|--------------|
-| `status` | Counts the plan and reports its state. A workspace with no plan is a row with `exists: false`, not an error. `--all` lists every configured workspace whose checkout exists; `--file PATH` parses any file, with `workspace: null` and a state from the file alone (no session, pane or question is read); `--group GROUP` is the [merged view of a group](#a-groups-plans) |
+| `status` | Counts the plan and reports its state. A workspace with no plan is a row with `exists: false`, not an error. With no flag it reports the current workspace, and `--project [NAME]` every workspace of a project (see [Which workspaces `status` reports](#which-workspaces-status-reports)). `--all` lists every configured workspace whose checkout exists; `--file PATH` parses any file, with `workspace: null` and a state from the file alone (no session, pane or question is read); `--group GROUP` is the [merged view of a group](#a-groups-plans) |
 | `path` | Prints the plan's absolute path alone, whether or not the file exists. Makes nothing |
 | `show` | Prints the plan file as it is. Fails with `no_plan` when there is none |
 | `init` | Writes a new plan into the notes directory, making the directory first. `--title` sets the title (default: the title of the workspace's task, else none). `--from FILE` imports an existing document as the plan: it gets new frontmatter unless it has its own (then `--title` is ignored). Fails with `plan_exists` when a plan is there; `--force` replaces it. The file is written whole or not at all |
@@ -32,6 +32,24 @@ Without `--name`, the workspace is the one detected from the current directory. 
 | `pause` | Sets `status: paused`. Interrupts nothing unless `--interrupt` is given |
 | `delete` | Renames the plan to `IMPLEMENTATION_PLAN.md.deleted-<time>`. Needs `--yes` |
 | `task` | `add`, `set-state`, `set-title` or `move` changes one task line (see [Task verbs](#task-verbs)) |
+
+## Which workspaces `status` reports
+
+| You give | You get |
+|----------|---------|
+| nothing | The current workspace's row. Outside any workspace: `not_in_workspace`, exit 1, naming `--name`, `--project NAME` and `--all` |
+| `--name WS` | `WS`'s row; an unknown name is `unknown_workspace` |
+| `--project` | A row for each workspace of the project that holds the current workspace. A workspace that is in no project (detected, but with no config) is `unknown_workspace`; outside any workspace, `not_in_workspace` |
+| `--project NAME` | The same for the project `NAME`, from anywhere. An unknown project is `unknown_workspace` |
+| `--all` | Every configured workspace whose checkout exists |
+
+An empty value (`--name ""`, `--project=""`) counts as not given. `--project` takes an optional NAME, so a bare word after it is read as the project: `plan status --project wr_x` looks for a project called `wr_x`.
+
+**The current workspace** is found with a `.workspace` marker, then a key in the state file, then the configured checkout that contains the directory (the deepest one if several do). The last step means a configured main checkout with no state entry gets its row, where it used to be `not_in_workspace`, and a linked worktree with no config inside a main checkout resolves to the main workspace.
+
+`plan path` and `plan show` keep their own detection, which stops at the marker and the state file. In a configured main checkout with no state entry they are `not_in_workspace` while `plan status` answers; pass `--name`.
+
+`workflow status` follows the same rule; see [Which runs `status` shows](README.workflow.md#which-runs-status-shows). The two differ on an unknown `--name`: `plan status --name GHOST` is `unknown_workspace`, while `workflow status --name GHOST` prints no runs, because run files outlive their workspace.
 
 ## Start, pause and delete
 

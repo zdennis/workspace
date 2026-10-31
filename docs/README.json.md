@@ -28,7 +28,7 @@ With `--json` these commands keep their original success shape, which other tool
 
 `warnings` is always a list (empty today). The bare `--json` default stays until a later major version. It is a per-call flag, not a config key, so a caller states which shape it parses in the command itself.
 
-To ask which of these a given CLI supports, run `workspace capabilities --json` (see [capabilities](README.capabilities.md)).
+To ask which of these a given CLI supports, run `workspace capabilities --json` (see [capabilities](README.capabilities.md)). The shared scope rule for `workflow status` and `plan status`, `--project` included, needs `workflow` 8 and `plan` 6. The documents themselves are the same as before.
 
 ## Actions
 
@@ -99,10 +99,10 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | Code | Meaning |
 |---|---|
 | `error` | Any failure without a more specific code. |
-| `usage` | A bad option, a missing or extra argument, or an unknown subcommand. |
-| `unknown_workspace` | The named workspace isn't known. `details.name`. |
+| `usage` | A bad option, a missing or extra argument, or an unknown subcommand. Also, on `workflow status` and `plan status`, more than one of the scope flags `--name`, `--project` and `--all` (and, for `plan status`, `--file` and `--group`), or `workflow status RUN` with a scope flag. |
+| `unknown_workspace` | The named workspace isn't known. `details.name`. Also an unknown `--project NAME`, and a bare `--project` from a workspace that is in no project, on `workflow status` and `plan status`. |
 | `workspace_name_case_conflict` | A new workspace would have a name that differs only in case from an existing workspace with a different directory (`add`, `launch PATH`, `start`). The existing one is renamed to lowercase the next time its agentd starts. `details.name`, `details.existing`, `details.existing_root`. |
-| `not_in_workspace` | No workspace could be detected from the working directory. `details.path`. |
+| `not_in_workspace` | No workspace could be detected from the working directory. `details.path`. `workflow status` and `plan status` with no scope flag, or with a bare `--project`, outside a workspace; the message names `--name WORKSPACE`, `--project NAME` and `--all`, which answer from anywhere (see [`workflow status`](README.workflow.md#which-runs-status-shows)). |
 | `no_daemon` | No agent daemon is running for the workspace. |
 | `connection_failed` | The agent daemon's socket refused or dropped the connection. From `agent-run send --when-idle` or `--clear-first`, `details.maybe_delivered: true` means the daemon had the prompt but didn't answer within 90s: it may have been queued or typed, so check the pane (or `prompt_queued` in `events`) before sending it again. |
 | `unreadable_reply` | The agent daemon's reply couldn't be read. `details.maybe_delivered: true` as for `connection_failed`. |
