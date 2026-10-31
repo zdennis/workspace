@@ -28,7 +28,7 @@ With `--json` these commands keep their original success shape, which other tool
 
 `warnings` is always a list (empty today). The bare `--json` default stays until a later major version. It is a per-call flag, not a config key, so a caller states which shape it parses in the command itself.
 
-To ask which of these a given CLI supports, run `workspace capabilities --json` (see [capabilities](README.capabilities.md)). The shared scope rule for `workflow status` and `plan status`, `--project` included, needs `workflow` 8 and `plan` 6. The documents themselves are the same as before.
+To ask which of these a given CLI supports, run `workspace capabilities --json` (see [capabilities](README.capabilities.md)). The shared scope rule for `workflow status` and `plan status`, `--project` included, needs `workflow` 9 and `plan` 6. The documents themselves are the same as before.
 
 ## Actions
 
