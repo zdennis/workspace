@@ -1,7 +1,7 @@
 schema_version: 1
 id: rpiv-auto-approve
 title: Research, Plan, Implement, Verify (auto-approve)
-description: One feature end to end with no person, two reviewer agents approving the plan, and a test-backed verify loop.
+description: One feature end to end with no person, three reviewer agents voting on the plan, and a test-backed verify loop.
 
 inputs:
   task:
@@ -16,8 +16,9 @@ instructions: |
   Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
   inputs; read them before you start.
 
-# Five steps, two plan rejections and three trips back from verify fit in fifteen.
-max_attempts: 15
+# Five steps, nine plan rejections and three trips back from verify fit in twenty-nine;
+# three more cover a step run again for a file it didn't write.
+max_attempts: 32
 
 steps:
   research:
@@ -34,8 +35,11 @@ steps:
     title: Plan
     include: [notes, implementation-plan]
     prompt: |
-      If {{artifacts}}/plan-approval.md exists, reviewers turned the last plan down: answer
-      every objection in it.
+      If {{artifacts}}/plan-approval.md exists, reviewers turned the last plan down. Read every
+      reviewer's reasons, including the ones that approved. Don't just patch the objection or
+      argue with it: rethink what it takes, and find an approach that meets the concerns of all
+      the reviewers, changing the design if the current one can't. Keep what is sound, and say
+      in plan.md how each objection was answered.
       Using {{artifacts}}/research.md, write the plan as the workspace plan: the
       IMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title "<title>"` first if it does not exist), in the syntax the
       implementation-plan instructions give, so `workspace plan status` shows it.
@@ -56,32 +60,45 @@ steps:
 
   plan_review:
     title: Plan review
+    # The conversation stays the planner's, so a rejection goes back to the agent that wrote
+    # the plan. The reviewers are sub-agents, so they read it fresh all the same.
+    context: continue
     prompt: |
       Decide whether the workspace plan (`workspace plan path`) may go ahead. No person will
       look at it, so this review is the only approval it gets.
       Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
       {{artifacts}}/research.md. Do not edit the plan or change code.
-      Start two reviewer sub-agents in one message, each with its own fresh context, giving each
-      the paths and this task, and neither the other's answer:
+      Start three reviewer sub-agents in one message, each with its own fresh context, giving each
+      the paths and this task, and none of the others' answers from this round:
       - supportive: look for what makes the plan sound, and approve unless something would
         really stop it working.
       - skeptical: assume the plan is wrong and try to prove it: missing cases, wrong order,
         steps that can't be undone, requirements of the task it doesn't meet. Approve only
         if you can't find a blocking problem.
+      - implementer: you will have to build this. Check each task is small, ordered, testable
+        and says enough to start, and approve unless something would really stop you.
+      If {{artifacts}}/plan-approval.md exists, give all three its path: it is the last round's
+      result, there to show what was objected to, and no one's vote carries over. Each checks
+      the objections were answered, and rejects for a new problem only if
+      it blocks the plan.
       Each answers approve or reject, with its reasons. Don't resolve a disagreement yourself and
-      don't run a reviewer again: one reject is a rejection.
-      Write {{artifacts}}/plan-approval.md, these three lines first, then each reviewer's reasons:
+      don't run a reviewer again. The plan is approved when the skeptical reviewer and at least
+      one other approve; the check works that out from the lines below.
+      Write {{artifacts}}/plan-approval.md with exactly these four lines first, in this order and
+      with no other formatting, then each reviewer's reasons:
       plan_revision: REV
       supportive: approve or reject
       skeptical: approve or reject
+      implementer: approve or reject
     produces: [plan-approval.md]
-    # Done only when both approved the plan as it stands now. A rejection goes back to plan.
+    # Done only when the skeptic and one other approved the plan as it stands now. A rejection goes back to plan.
     status:
       run: |
-        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; text = File.read(File.join(ENV.fetch("WORKSPACE_RUN_ARTIFACTS"), "plan-approval.md")); revision = plan && plan["revision"]; exit(revision && text[/^plan_revision: (\S+)$/, 1] == revision && text.match?(/^supportive: approve$/) && text.match?(/^skeptical: approve$/) ? 0 : 1)'
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; revision, supportive, skeptical, implementer = File.readlines(File.join(ENV.fetch("WORKSPACE_RUN_ARTIFACTS"), "plan-approval.md"), chomp: true); exit(plan && plan["revision"] && revision == "plan_revision: #{plan["revision"]}" && skeptical == "skeptical: approve" && (supportive == "supportive: approve" || implementer == "implementer: approve") ? 0 : 1)'
     on_fail:
       goto: plan
-      max: 2
+      max: 9
+      context: continue
     timeout: 30m
 
   implement:
