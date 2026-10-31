@@ -784,6 +784,43 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(events).to eq([])
       end
 
+      it "announces one workflow_changed across Stops whose task lists shrink and reorder" do
+        events.clear
+        [[tasks.last], [tasks.last, tasks.first], tasks].each do |listed|
+          now[0] += 60
+          engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: listed)
+        end
+
+        expect(store.find("wr_1")["reason"]["details"]["tasks"]).to eq(tasks)
+        expect(events).to eq([])
+      end
+
+      it "fires no event when the missing list of a hold changes" do
+        store.update("wr_1") { |run| run["reason"]["details"]["missing"] = [] }
+        events.clear
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+
+        expect(store.find("wr_1")["reason"]["details"]["missing"]).not_to eq([])
+        expect(events).to eq([])
+      end
+
+      it "announces a hold as running with the turn_ended_background reason" do
+        events.clear
+        store.update("wr_1") { |run| run["reason"] = nil }
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+
+        expect(events.map(&:last)).to include(a_hash_including("state" => "running", "reason" => "turn_ended_background"))
+        expect(store.find("wr_1")["state"]).to eq("waiting")
+      end
+
+      it "drops the hold on a pane-less resume and re-evaluates with nothing listed" do
+        engine.resume("wr_1")
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete")
+      end
+
       it "shows turn_ended_incomplete once, with a since of its own, on a Stop with no tasks" do
         events.clear
         now[0] += 60

@@ -462,7 +462,7 @@ Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, 
 
 ## Events
 
-Every change to a run writes one `workflow_changed` to the [event log](README.event-log.md), under the run's workspace, with `run_id`, `workflow`, `workspace`, `state`, `step` and `reason` (the stored reason code, or `null`). It says a run changed; refetch `workflow status --json`. A run's locks write `lock_wait_started`, `lock_acquired` and `lock_released` under the repository's project, with `run_id` in place of `pid`.
+Every change to a run writes one `workflow_changed`, except that a held run (`turn_ended_background`) writes one on entering the hold, with `state` `running`, and none while it lasts to the [event log](README.event-log.md), under the run's workspace, with `run_id`, `workflow`, `workspace`, `state`, `step` and `reason` (the stored reason code, or `null`). It says a run changed; refetch `workflow status --json`. A run's locks write `lock_wait_started`, `lock_acquired` and `lock_released` under the repository's project, with `run_id` in place of `pid`.
 
 ## Examples
 

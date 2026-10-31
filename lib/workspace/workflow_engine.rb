@@ -466,12 +466,21 @@ module Workspace
     # What `workflow status` shows of a run's progress; a change in it is announced.
     def fingerprint(run)
       state = step_state(run)
-      [run["state"], run["current"], run["reason"]&.except("seen_at"), state["state"], state["attempts"].size, state.dig("gate", "state")]
+      [run["state"], run["current"], shown_reason(run["reason"]), state["state"], state["attempts"].size, state.dig("gate", "state")]
+    end
+
+    # A hold shows nothing that moves, so only its code and since count; its seen_at, tasks and missing change nothing a reader sees.
+    def shown_reason(reason)
+      hold?(reason) ? reason.slice("code", "since") : reason&.except("seen_at")
+    end
+
+    def hold?(reason)
+      reason && reason["code"] == "turn_ended_background"
     end
 
     def changed(run)
       @event_log&.record(type: "workflow_changed", project: run["workspace"],
-        data: {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "state" => run["state"],
+        data: {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "state" => hold?(run["reason"]) ? "running" : run["state"],
                "step" => run["current"], "reason" => run.dig("reason", "code")})
     end
 
