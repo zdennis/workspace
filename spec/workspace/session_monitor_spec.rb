@@ -538,6 +538,368 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "permission requests" do
+    let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
+
+    subject(:monitor) do
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, notifier: notifier)
+    end
+
+    before { monitor.scan }
+
+    def at(seconds)
+      allow(clock).to receive(:now).and_return(now + seconds)
+    end
+
+    def event(name, **fields)
+      monitor.record({"event" => name, "pane_id" => "%2"}.merge(fields.transform_keys(&:to_s).compact))
+    end
+
+    def request(tool: "Bash", input: "rm -rf build", agent_id: nil)
+      event("permission_request", tool: tool, input: input, agent_id: agent_id)
+    end
+
+    def prompt(type = "permission_prompt")
+      event("notification", notification_type: type, message: "Claude needs your permission")
+    end
+
+    def tool_done(tool: "Bash", agent_id: nil)
+      event("tool_use", tool: tool, agent_id: agent_id)
+    end
+
+    def waits
+      monitor.instance_variable_get(:@panes)["%2"][:waits]
+    end
+
+    def requests
+      monitor.instance_variable_get(:@panes)["%2"][:permission_requests]
+    end
+
+    def expect_null_fields
+      expect(pane("%2")).to include("waiting_tool" => nil, "waiting_input" => nil)
+    end
+
+    describe "storing a request" do
+      it "keeps the whole summary, past the length of a message" do
+        input = "x" * 250
+        request(input: input)
+        prompt
+
+        expect(pane("%2")).to include("waiting_tool" => "Bash", "waiting_input" => input)
+      end
+
+      it "caps the input and cleans the tool name" do
+        request(tool: "Ba\nsh", input: "é" * 400)
+        prompt
+
+        expect(pane("%2")["waiting_tool"]).to eq("Ba sh")
+        expect(pane("%2")["waiting_input"].bytesize).to be <= Workspace::ToolInputSummary::MAX_BYTES
+      end
+
+      it "puts a replaced request last" do
+        request(agent_id: "sub-1")
+        request(agent_id: "sub-2")
+        request(tool: "Read", agent_id: "sub-1")
+
+        expect(requests.keys).to eq(["sub-2", "sub-1"])
+        expect(requests["sub-1"][:tool]).to eq("Read")
+      end
+    end
+
+    describe "keying" do
+      it "keys the wait to a sub-agent's only request, which that sub-agent's PostToolUse ends and main's leaves" do
+        request(agent_id: "sub-1")
+        prompt
+
+        expect(waits.keys).to eq(["sub-1"])
+        expect(pane("%2")).to include("waiting_tool" => "Bash", "waiting_input" => "rm -rf build")
+
+        tool_done(tool: "Read")
+        expect(pane("%2")["state"]).to eq("waiting")
+
+        tool_done(agent_id: "sub-1")
+        expect(pane("%2")["state"]).not_to eq("waiting")
+        expect_null_fields
+      end
+    end
+
+    describe "a dead request" do
+      [
+        ["a sub-agent's then main's", ["sub-1", nil]],
+        ["main's then a sub-agent's", [nil, "sub-1"]]
+      ].each do |name, order|
+        it "gives a nil-keyed wait with null fields, with #{name}" do
+          order.each { |agent_id| request(agent_id: agent_id) }
+          prompt
+
+          expect(waits.keys).to eq([nil])
+          expect_null_fields
+
+          tool_done(agent_id: "sub-1")
+          expect(pane("%2")["state"]).to eq("waiting")
+
+          tool_done
+          expect(pane("%2")["state"]).not_to eq("waiting")
+        end
+      end
+
+      it "is gone after a main user_prompt, so that turn's main request binds alone" do
+        request(agent_id: "sub-1")
+        event("user_prompt")
+        request(tool: "Write", input: "a.rb")
+        prompt
+
+        expect(waits.keys).to eq([nil])
+        expect(pane("%2")).to include("waiting_tool" => "Write", "waiting_input" => "a.rb")
+      end
+    end
+
+    describe "two live requests" do
+      it "binds the one left once the first of two sub-agents is answered" do
+        request(tool: "Bash", agent_id: "sub-1")
+        request(tool: "Write", input: "a.rb", agent_id: "sub-2")
+        prompt
+        expect_null_fields
+
+        tool_done(agent_id: "sub-1")
+        prompt
+
+        expect(pane("%2")).to include("waiting_tool" => "Write", "waiting_input" => "a.rb")
+      end
+
+      it "binds the sub-agent's once main is answered" do
+        request(tool: "Bash")
+        request(tool: "Write", input: "a.rb", agent_id: "sub-1")
+        prompt
+        expect_null_fields
+
+        tool_done
+        prompt
+
+        expect(pane("%2")).to include("waiting_tool" => "Write", "waiting_input" => "a.rb")
+      end
+
+      it "binds main's once the sub-agent is answered" do
+        request(tool: "Bash")
+        request(tool: "Write", input: "a.rb", agent_id: "sub-1")
+        prompt
+        expect_null_fields
+
+        tool_done(tool: "Write", agent_id: "sub-1")
+        prompt
+
+        expect(pane("%2")).to include("waiting_tool" => "Bash", "waiting_input" => "rm -rf build")
+      end
+    end
+
+    describe "a moved wait" do
+      it "moves the unbound wait to the bound agent with its since and alert state, leaving one wait" do
+        prompt
+        monitor.send_alerts
+        at(10)
+        request(agent_id: "sub-1")
+        prompt
+
+        expect(waits.keys).to eq(["sub-1"])
+        expect(pane("%2")).to include("waiting_since" => now.iso8601, "waiting_tool" => "Bash")
+        expect(monitor.send_alerts).to eq([])
+        expect(notifier).to have_received(:notify).once
+      end
+    end
+
+    describe "an allowed tool still running" do
+      it "leaves main's bound wait with its since and null fields when a sub-agent's Notification comes" do
+        request(tool: "Bash")
+        prompt
+        at(10)
+        request(tool: "Write", input: "a.rb", agent_id: "sub-1")
+        at(20)
+        prompt
+
+        expect(pane("%2")).to include("waiting_since" => now.iso8601)
+        expect_null_fields
+      end
+
+      it "does the same with the sub-agent as the allowed one" do
+        request(tool: "Write", input: "a.rb", agent_id: "sub-1")
+        prompt
+        at(10)
+        request(tool: "Bash")
+        at(20)
+        prompt
+
+        expect(pane("%2")).to include("waiting_since" => now.iso8601)
+        expect_null_fields
+      end
+
+      it "does the same with the wait unbound" do
+        request(tool: "Bash")
+        request(tool: "Write", input: "a.rb", agent_id: "sub-1")
+        prompt
+        at(20)
+        prompt
+
+        expect(waits.keys).to eq([nil])
+        expect(pane("%2")).to include("waiting_since" => now.iso8601)
+        expect_null_fields
+      end
+    end
+
+    describe "repeats" do
+      it "keeps one wait, on the same agent, with its original since" do
+        request(agent_id: "sub-1")
+        prompt
+        at(30)
+        prompt
+
+        expect(waits.keys).to eq(["sub-1"])
+        expect(pane("%2")).to include("waiting_since" => now.iso8601, "waiting_tool" => "Bash")
+      end
+
+      it "updates the wait from a replaced request on the next Notification" do
+        request(agent_id: "sub-1")
+        prompt
+        request(tool: "Write", input: "a.rb", agent_id: "sub-1")
+        expect(pane("%2")).to include("waiting_tool" => "Bash")
+
+        prompt
+
+        expect(pane("%2")).to include("waiting_tool" => "Write", "waiting_input" => "a.rb")
+      end
+    end
+
+    describe "clearing" do
+      it "keeps a sub-agent's request across a main Stop before its Notification" do
+        request(agent_id: "sub-1")
+        event("stop")
+        prompt
+
+        expect(waits.keys).to eq(["sub-1"])
+        expect(pane("%2")).to include("waiting_tool" => "Bash")
+      end
+
+      it "wipes the wait and the request on a main Stop after the Notification" do
+        request(agent_id: "sub-1")
+        prompt
+
+        event("stop")
+
+        expect(waits).to be_empty
+        expect(requests).to be_empty
+      end
+
+      it "leaves the request on a tool_use of another name and clears it on one of the same" do
+        request
+        tool_done(tool: "Read")
+        expect(requests.keys).to eq([nil])
+
+        tool_done
+        expect(requests).to be_empty
+      end
+
+      it "leaves the request on a tool_start" do
+        request
+        event("tool_start", tool: "Bash")
+
+        expect(requests.keys).to eq([nil])
+      end
+
+      it "clears that sub-agent's request on its subagent_stop and no other's" do
+        request
+        request(agent_id: "sub-1")
+        request(agent_id: "sub-2")
+
+        event("subagent_stop", agent_id: "sub-1")
+        event("subagent_stop")
+
+        expect(requests.keys).to eq([nil, "sub-2"])
+      end
+
+      it "clears main's request on a main stop or turn_failed and keeps a sub-agent's" do
+        %w[stop turn_failed].each do |name|
+          request
+          request(agent_id: "sub-1")
+
+          event(name)
+
+          expect(requests.keys).to eq(["sub-1"])
+        end
+      end
+
+      %w[user_prompt session_start session_end].each do |name|
+        it "clears every request on #{name}" do
+          request
+          request(agent_id: "sub-1")
+
+          event(name)
+
+          expect(requests).to be_empty
+        end
+      end
+
+      it "clears every request when the agent leaves the pane" do
+        request
+        request(agent_id: "sub-1")
+        allow(snapshot).to receive(:find_descendant).and_return(nil)
+
+        monitor.scan
+
+        expect(requests).to be_empty
+      end
+    end
+
+    describe "no effect" do
+      it "opens no wait and changes no state for a request with no Notification" do
+        before = pane("%2")
+        request
+
+        expect(waits).to be_empty
+        expect(pane("%2")).to include(before.slice("state", "state_since", "waiting_since", "waiting_tool", "stop_reason"))
+      end
+
+      it "leaves a finished turn done" do
+        event("stop")
+        request(agent_id: "sub-1")
+
+        expect(pane("%2")["state"]).to eq("done")
+      end
+
+      it "never ends an open wait" do
+        prompt
+        request
+        request(agent_id: "sub-1")
+
+        expect(waits.keys).to eq([nil])
+        expect(pane("%2")["state"]).to eq("waiting")
+      end
+
+      it "takes no request for an idle or elicitation notification" do
+        %w[idle_prompt elicitation_dialog].each do |type|
+          request
+          prompt(type)
+
+          expect(pane("%2")["state"]).to eq("waiting")
+          expect_null_fields
+          event("user_prompt")
+        end
+      end
+
+      it "leaves a bound wait's fields alone on any other notification type" do
+        request
+        prompt
+        prompt("elicitation_dialog")
+
+        expect(pane("%2")).to include("waiting_tool" => "Bash")
+      end
+    end
+
+    it "reports null for both fields on every pane with no wait, shell panes included" do
+      expect(pane("%1")).to include("waiting_tool" => nil, "waiting_input" => nil)
+      expect(pane("%2")).to include("waiting_tool" => nil, "waiting_input" => nil)
+    end
+  end
+
   describe "#send_alerts" do
     let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
 
