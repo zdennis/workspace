@@ -9,7 +9,7 @@ description: >-
 
 inputs:
   task:
-    description: The bug in words. `workflow start` fills it from the ticket and `--prompt`. Read it from `workflow status --json`; it is not in these instructions.
+    description: The bug in words. `workflow start` fills it from the ticket and `--prompt`. Read it with `workflow status RUN --json` (a bare read may return two runs); it is not in these instructions.
   spec:
     description: A ticket file under .workflow/tickets; filled by workflow start
     pattern: '/(?:(?!\.\.(?:/|\z))[^\x00-\x1f\x7f\u0080-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\u2060\u061c\u180e"\x27`$\\])+/\.workflow/tickets/[A-Za-z0-9._-]+\.md'
@@ -63,7 +63,7 @@ steps:
       <reason> --summary "<one sentence, display only>"` and ends your turn. Reasons are the words
       in the list. A reported failure is not guarded.
       - With the pull request and the CI run both unset, run `workspace pr feedback --name {{workspace}} --json`. When it
-        says `no_pull_request`, read `inputs.task` from `workflow status` and the spec file: with
+        says `no_pull_request`, read `inputs.task` from `workflow status {{run}} --json` and the spec file: with
         neither, the reason is `no_input`; with either, go on with no pull request.
       - `pr_mismatch`: the pull request is set and `pull_request.number` differs. Skip this check when
         the pull request came from the branch.
