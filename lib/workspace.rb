@@ -347,6 +347,7 @@ require_relative "workspace/commands/spine_start"
 require_relative "workspace/commands/projects"
 require_relative "workspace/commands/groups"
 require_relative "workspace/commands/review"
+require_relative "workspace/agent_resume_command"
 require_relative "workspace/commands/restore"
 require_relative "workspace/commands/snapshot"
 require_relative "workspace/commands/events"
@@ -666,7 +667,8 @@ module Workspace
     config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
-      process_tree: process_tree, agent_ensurer: ensure_agent_command, agent_commands: agent_commands, output: output, error_output: error_output)
+      process_tree: process_tree, agent_ensurer: ensure_agent_command, agent_commands: agent_commands,
+      resume_command: AgentResumeCommand.new(tmuxinator_report: tmuxinator_report, agent_commands: agent_commands), output: output, error_output: error_output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
     # The reader takes its own limiter, separate from the monitor's: it serves

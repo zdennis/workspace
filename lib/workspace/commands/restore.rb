@@ -1,11 +1,9 @@
-require "shellwords"
-
 module Workspace
   module Commands
     # Brings back the coding-agent panes a reboot or a tmux restart took: reads
     # the session ledger, recreates each recorded agent pane that is gone
     # (however it was made, including one split by hand), and types
-    # `claude --resume <session_id>` into it from the session's directory.
+    # the resume line into it from the session's directory (see {AgentResumeCommand}).
     #
     # A workspace whose tmux session is not running is launched first, through
     # the block given to {#call}. The panes its config gives a command are left
@@ -13,10 +11,6 @@ module Workspace
     # never typed into. Pane bindings follow their slot to the pane that now
     # sits there.
     class Restore
-      # A Claude Code session id. Anything else is never put on a command line:
-      # `claude --resume` reads a value that is not an id as a search term.
-      SESSION_ID = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
-
       # A pane showing one of these is at a prompt, so a command can be typed into it.
       SHELLS = %w[zsh bash fish sh dash ksh tcsh csh].freeze
 
@@ -25,11 +19,6 @@ module Workspace
       # every named reason (`prompt_input_exit`, `logout`, `clear`, ...) is the
       # user ending the session.
       RESUMABLE_END_REASONS = [nil, "other"].freeze
-
-      # Flags of the workspace config's own `claude` pane that a resumed
-      # session is started with too. Claude Code does not restore the
-      # permission mode of a session that ran with it.
-      CARRIED_FLAGS = %w[--dangerously-skip-permissions].freeze
 
       # Seconds to wait for a launched session to have the panes its config defines.
       PANE_WAIT = 10
@@ -52,11 +41,12 @@ module Workspace
       #   that is running without one, so the resumed sessions are monitored; nil starts none
       # @param agent_commands [Workspace::AgentCommands, nil] the command that starts Claude Code per
       #   workspace, and the program names that count as an agent; nil means `claude` alone
+      # @param resume_command [Workspace::AgentResumeCommand] builds the line typed to resume a session
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param clock [#call] monotonic seconds, bounding the wait for a launched session's panes
       # @param output [IO] output stream for the plan and the results
       # @param error_output [IO] error output stream for warnings
-      def initialize(ledger:, tmux:, pane_bindings:, tmuxinator_report:, process_tree:, agent_ensurer: nil, agent_commands: nil,
+      def initialize(ledger:, tmux:, pane_bindings:, tmuxinator_report:, process_tree:, resume_command:, agent_ensurer: nil, agent_commands: nil,
         sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
         output: $stdout, error_output: $stderr)
         @ledger = ledger
@@ -66,6 +56,7 @@ module Workspace
         @process_tree = process_tree
         @agent_ensurer = agent_ensurer
         @agent_commands = agent_commands
+        @resume_command = resume_command
         @sleeper = sleeper
         @clock = clock
         @output = output
@@ -136,8 +127,7 @@ module Workspace
       # with. Nil when there is no config.
       def config_for(name)
         windows = @tmuxinator_report.show(name)["windows"]
-        claude = windows.flat_map { |window| window["panes"] }.find { |pane| pane["kind"] == "claude" }
-        {kinds: windows.map { |window| window["panes"].map { |pane| pane["kind"] } }, flags: Array(claude && claude["flags"]) & CARRIED_FLAGS}
+        {kinds: windows.map { |window| window["panes"].map { |pane| pane["kind"] } }, flags: @resume_command.flags_for(name) || []}
       rescue Workspace::Error
         nil
       end
@@ -248,7 +238,7 @@ module Workspace
         # The ledger names the agent only when it isn't Claude Code, the one agent resumed here.
         return skip("other_agent", "The pane ran #{slot["kind"]}, which restore does not resume.") if slot["kind"] && !claude_names(plan).include?(slot["kind"])
         return skip("ended", "The session ended (#{slot["end_reason"]}).") unless RESUMABLE_END_REASONS.include?(slot["end_reason"])
-        return unmatched("no_session_id", "The ledger has no usable session id for this pane.") unless slot["session_id"].to_s.match?(SESSION_ID)
+        return unmatched("no_session_id", "The ledger has no usable session id for this pane.") unless slot["session_id"].to_s.match?(AgentResumeCommand::SESSION_ID)
         return unmatched("cwd_missing", "The session's directory is gone: #{slot["cwd"].inspect}.") unless slot["cwd"].is_a?(String) && File.directory?(slot["cwd"])
         return unmatched("transcript_missing", "Claude Code no longer has the conversation: #{slot["transcript_path"]} is gone.") if slot["transcript_path"].is_a?(String) && !File.exist?(slot["transcript_path"])
 
@@ -468,9 +458,7 @@ module Workspace
       end
 
       def resume_command(plan, slot)
-        program = @agent_commands ? @agent_commands.command_for(plan[:workspace], "claude") : "claude"
-        words = [program, *plan[:config]&.fetch(:flags), "--resume", slot["session_id"]]
-        "cd -- #{Shellwords.escape(slot["cwd"])} && #{words.join(" ")}"
+        @resume_command.call(workspace: plan[:workspace], cwd: slot["cwd"], session_id: slot["session_id"], flags: plan[:config]&.fetch(:flags) || [])
       end
 
       def resume_message(decision, verb)
