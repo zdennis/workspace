@@ -26,7 +26,7 @@ The file is backed up first (`hooks.json.workspace-backup-<timestamp>`, see [`in
 
 `workspace init`, `start` and `doctor --fix` install the hooks again when Codex is on `PATH`; run `init --no-install-hooks` to skip that step. To stop `start` from touching the file, run `workspace config set codex.hooks.install false` (see [`start`](README.start.md)); `init` and `doctor --fix` are explicit and still install.
 
-The hooks workspace installs for Claude Code cover `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`, `SubagentStop` and `Notification` (`workspace init --install-hooks` lists them). `StopFailure` is the one that tells the agent daemon a turn ended on an API error, so it can [recover the agent](README.agentd.md#recovering-from-an-api-error). `hooks uninstall` removes it with the rest.
+The hooks workspace installs for Claude Code cover `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`, `SubagentStop`, `Notification` and `PermissionRequest` (`workspace init --install-hooks` lists them). `StopFailure` is the one that tells the agent daemon a turn ended on an API error, so it can [recover the agent](README.agentd.md#recovering-from-an-api-error). `PermissionRequest` names the tool a permission dialog asks about, for [`waiting_tool` and `waiting_input`](README.sessions.md#waiting-detail). `hooks uninstall` removes both with the rest.
 
 ### Other checkouts (`--name`, `--project`)
 
