@@ -14,6 +14,12 @@ module Workspace
   # whose agent has ended its turn, reads `waiting_you` with kind `delivery`:
   # nobody can tell whether the agent had the line.
   #
+  # While a resume is parked ({WorkflowEngine#park}) the stored reason is not
+  # shown, the flag is `parked` and `current` holds `parked`; only a person's
+  # part (a prompt, a question) shows as a reason. Past the park's limit the
+  # reason is `waiting_you`, `kind: dispatch`, `error: parked_timeout`, worked
+  # out here, so it shows with no daemon to record it.
+  #
   # Every reason carries `actions`, the commands that would resolve it, as
   # `{action, args, needs}` entries. With `needs` empty, `workspace <action>
   # <args...>` runs as written. Otherwise the caller supplies one value per
@@ -86,7 +92,8 @@ module Workspace
     # @param id [String] a run id
     # @return [Hash] "runs", holding the one run as "id", "workflow", "title", "workspace",
     #   "project", "worktree", "state", "created_at", "started_at", "ended_at", "current" ("step",
-    #   "attempt", "state", "reason", "flags"), "steps" ("id", "title", "state", "attempts",
+    #   "attempt", "state", "reason", "flags", and "parked" ("pane", "from", "requested_at",
+    #   "expires_at") while a resume is parked), "steps" ("id", "title", "state", "attempts",
     #   "gate", "gate_file", "note_changed"), "base_sha", "pane", "task", "inputs", "loops", "artifacts_dir" and "events_path";
     #   and "warnings"
     # @raise [Workspace::Error] code `unknown_run`
@@ -116,11 +123,12 @@ module Workspace
     def present(run, warnings)
       state = run["steps"].fetch(run["current"])
       finished = WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-      pane = finished ? nil : (@panes.pane_of(run["id"]) || run["pane"])
+      pane = finished ? nil : (run.dig("parked", "pane") || @panes.pane_of(run["id"]) || run["pane"])
       working = !finished && %w[running checking].include?(state["state"])
       daemon_warning(run, working, warnings) unless finished
-      # What the pane shows matters only while an agent should be working in it.
-      shown = (working && @panes.alive?(run["id"])) ? pane_state(run["workspace"], pane, warnings) : nil
+      # What the pane shows matters only while an agent should be working in it, or a parked resume waits on
+      # it; a run parked before its first step has no binding for `alive?` to find.
+      shown = ((working && @panes.alive?(run["id"])) || (!finished && run["parked"])) ? pane_state(run["workspace"], pane, warnings) : nil
       reason = finished ? nil : reason_for(run, working, pane, shown, warnings)
       reason = with_gate_file(run, reason, warnings) if reason
       {
@@ -130,11 +138,21 @@ module Workspace
         "cancelled_by" => run["cancelled_by"],
         "current" => {"step" => run["current"], "attempt" => state["attempts"].last&.fetch("n", nil), "state" => state["state"],
                       "reason" => reason&.merge("actions" => actions(run, reason, pane)),
-                      "flags" => finished ? [] : flags(run, state, reason, shown)},
+                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)),
         "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
         "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
         "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
       }
+    end
+
+    # A live park, as `current` shows it; never its note.
+    def parked_row(run, pane)
+      return {} unless live_park?(run)
+      {"parked" => run["parked"].slice("from", "requested_at", "expires_at").merge("pane" => pane)}
+    end
+
+    def live_park?(run)
+      WorkflowEngine.parked(run, @clock.call) == :waiting
     end
 
     # The stored state, except that a hidden turn_ended_incomplete leaves the run running.
@@ -172,7 +190,7 @@ module Workspace
     # is seen and no lock is asked for again, while it keeps what it holds.
     def daemon_warning(run, working, warnings)
       # A run that waits for a person needs no daemon until that person acts.
-      return unless working || run.dig("reason", "code") == "waiting_lock"
+      return unless working || run["parked"] || run.dig("reason", "code") == "waiting_lock"
       return if @panes.daemon_running?(run["workspace"])
       warnings << "Workflow run #{run["id"]} will not move: '#{run["workspace"]}' has no agent daemon running. It keeps the locks it holds " \
         "and its place in a queue. Launch the workspace and run `workspace workflow resume #{run["id"]}`, or end it with " \
@@ -180,8 +198,13 @@ module Workspace
     end
 
     # The stored reason stands unless an agent should be working: then what
-    # the pane shows comes first.
+    # the pane shows comes first. A parked run hides it: the resume needs it,
+    # and nobody has to act on it.
     def reason_for(run, working, pane, shown, warnings)
+      case WorkflowEngine.parked(run, @clock.call)
+      when :waiting then return waiting_on_person(run, pane, shown, warnings)
+      when :expired then return gate_waiting?(run) ? run["reason"] : park_timeout(run, pane)
+      end
       stored = run["reason"]
       return stored unless working
       unless @panes.alive?(run["id"])
@@ -189,6 +212,18 @@ module Workspace
                 "details" => {"step" => run["current"], "pane" => pane, "workspace" => run["workspace"]}}
       end
       waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || hide_while_working(stored, shown)
+    end
+
+    def gate_waiting?(run)
+      run.dig("steps", run["current"], "gate", "state") == "waiting"
+    end
+
+    # Worked out here, so a timeout shows even with no daemon to record it.
+    def park_timeout(run, pane)
+      checking = run["steps"].fetch(run["current"])["state"] == "checking"
+      {"code" => "waiting_you", "since" => run["parked"]["expires_at"],
+       "details" => {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"], "error" => "parked_timeout",
+                     "message" => WorkflowEngine.park_timeout_message(pane, checking: checking)}}
     end
 
     # A turn that ended with background tasks listed is held (turn_ended_background) and hidden. One that
@@ -260,6 +295,7 @@ module Workspace
       end
       delivering = WorkflowEngine.delivery(state["attempts"].last, @clock.call) == :delivering
       flags << "delivering" if delivering
+      flags << "parked" if live_park?(run)
       # The agent is idle on a step that still reads as being worked on: its turn ended unseen.
       if state["state"] == "running" && reason.nil? && !delivering && !hidden_reason?(run["reason"], shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
         flags << "idle"

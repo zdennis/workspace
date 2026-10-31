@@ -1,4 +1,5 @@
 require "fileutils"
+require "securerandom"
 require "time"
 
 module Workspace
@@ -25,6 +26,11 @@ module Workspace
   # Resources a step `uses:` are held by the run, taken before the step's
   # prompt is typed and given up at a gate, on a failure that stops the run,
   # and at the end.
+  #
+  # A resume that can't be carried out yet is parked ({#park}): a request
+  # stored on the run as `parked`, not an attempt. No attempt is made and no
+  # new resource taken until {#release_park}. Until then a turn's end, a tick
+  # and a check's result decide nothing.
   class WorkflowEngine
     # The one line typed into the pane; the instructions themselves are in the file.
     KICK = "Read %s and follow it."
@@ -38,6 +44,16 @@ module Workspace
     # Seconds after an attempt starts during which its line may still be on its
     # way: the daemon's answer to `restart_agent`, plus a minute to start it.
     DELIVERY_WINDOW = WorkflowPanes::REPLY_TIMEOUT + 60
+
+    # Seconds a parked resume waits for the turn to end.
+    PARK_SECONDS = 3600
+
+    # How many times a released resume that could not be typed is parked again.
+    # Each failed delivery is an attempt, and attempts count against `max_attempts`.
+    PARK_RETRIES = 3
+
+    # Delivery failures that a later try can get past.
+    PARK_AGAIN_CODES = %w[pane_busy restart_in_progress].freeze
 
     # Where the line that starts an attempt stands. An attempt is stored as
     # `delivering` before its line is typed, outside the run's lock, and the
@@ -53,6 +69,31 @@ module Workspace
       (now - Time.iso8601(attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
     rescue ArgumentError, TypeError
       :unknown
+    end
+
+    # Where a run's parked resume stands.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Symbol, nil] :waiting, :expired (an unreadable time too), or nil with no park
+    def self.parked(run, now)
+      parked = run["parked"]
+      return nil unless parked
+      (now > Time.iso8601(parked["expires_at"])) ? :expired : :waiting
+    rescue ArgumentError, TypeError
+      :expired
+    end
+
+    # The one wording of a parked resume that ran out of time.
+    #
+    # @param pane [String] the pane the resume waited on
+    # @param checking [Boolean] the step reads `checking`, so a check's result may have been thrown away
+    # @return [String]
+    def self.park_timeout_message(pane, checking: false)
+      text = "the turn in pane #{pane} did not end within 1 hour, so nothing was typed. Any --from or --pane on that resume was not applied, " \
+        "and a note is kept for the next attempt. Resume the run again. A step still running is decided as usual when its turn ends."
+      return text unless checking
+      "#{text} A check that finished while this was parked was not recorded; resume the run to run it again."
     end
 
     # @param store [Workspace::WorkflowRunStore]
@@ -99,24 +140,36 @@ module Workspace
     # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
     BACKGROUND_HOLD = 90 * 60
 
-    # Whether a run is one only a timer will wake: it waits for a lock, its
-    # check was started and never reported back (the process running it
-    # died), judged by the check's time limit plus a minute, or it has been
-    # held for background tasks longer than {BACKGROUND_HOLD}.
+    # Whether a run is one only a timer will wake: a resume is parked on it,
+    # it waits for a lock, its check was started and never reported back
+    # (the process running it died), judged by the check's time limit plus a
+    # minute, or it has been held for background tasks longer than
+    # {BACKGROUND_HOLD}.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
-    # @return [Symbol, nil] :lock, :background, :check, or nil
+    # @return [Symbol, nil] :parked, :lock, :background, :check, or nil
     def self.wakeable?(run, now)
+      return :parked if run["parked"]
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)
+      # A park that failed left its reason on a checking step: that run waits for a person's resume.
+      :check if run["reason"].nil? && lost_check?(run, now)
+    end
+
+    # Whether nothing is left to report the current step's check: its process
+    # died, or a park threw its result away (a park that ended left a reason
+    # on the step, or one past its limit is still stored).
+    def self.lost_check?(run, now)
       state = run["steps"].fetch(run["current"])
-      return nil unless state["state"] == "checking"
+      return false unless state["state"] == "checking"
+      return true if run["reason"] || parked(run, now) == :expired
       started = state["attempts"].last&.dig("check", "started_at")
       step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
       timeout = step.dig("status", "timeout") || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
-      :check if started.nil? || now - Time.iso8601(started) > timeout + 60
+      started.nil? || now - Time.iso8601(started) > timeout + 60
     end
+    private_class_method :lost_check?
 
     # A hold with no readable `seen_at` has nothing to measure it by, so it counts as expired.
     def self.background_expired?(reason, now)
@@ -210,15 +263,19 @@ module Workspace
     # @param background [Array<Hash>] the background tasks (`"id"`, `"type"`) the agent still listed when
     #   its turn ended. A step the files do not yet complete is then held (`turn_ended_background`) and
     #   not reported as stopped, since each task that ends starts another turn
+    # @param stopped_at [Time, nil] when the turn's end was seen. One from before the attempt
+    #   began can't be that attempt's own, even with no +turn_started+
     # @return [Hash{String=>Object}] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, pane: nil, turn_started: nil, background: [])
+    def turn_ended(run_id, pane: nil, turn_started: nil, stopped_at: nil, background: [])
       check = nil
       run = transition(run_id) do |stored|
+        next if stored["parked"]
         state = step_state(stored)
         next unless state["state"] == "running"
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
+        next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
         check = evaluate(stored, turn_started: turn_started, background: background)
       end
       check ? finish_check(run_id, check) : run
@@ -314,7 +371,8 @@ module Workspace
     # runs a failed or undelivered step again, looks again at a step whose
     # turn ended without its files or without the daemon seeing it, and
     # moves the run to another pane when its own is gone. A step an agent is
-    # working on, and a check that is still running, are left alone.
+    # working on, and a check that is still running, are left alone. A resume
+    # that acts takes over from a parked one; one that does nothing leaves it.
     #
     # @param run_id [String]
     # @param from [String, nil] start again at this step instead
@@ -330,38 +388,98 @@ module Workspace
       check = nil
       unchanged = nil
       run = transition(run_id) do |stored|
-        # Refusals come first, so a refused resume leaves the run and its pane as they were.
-        refuse_resume(stored, from: from)
-        state = step_state(stored)
-        # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
-        unchanged = from ? nil : left_alone(stored, state, pane, turn_over)
-        next if unchanged
-        rebind(stored, pane) if pane
-        stored["pending_context"] << "Note from the person who resumed the run: #{note}" if note
-        if from
-          event(stored, "run_resumed", "from" => from)
-          stored["current"] = from
-          next dispatch(stored)
-        end
-        event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"])
-        if state["state"] == "failed" && stored.dig("reason", "code") == "failed_check"
-          stored["pending_context"].unshift("The last attempt of this step failed: #{failure_text(stored["reason"]["details"])}.")
-        end
-        case state["state"]
-        when "running"
-          if pane
-            dispatch(stored)
-          else
-            stored["reason"] = nil
-            check = evaluate(stored)
-          end
-        when "checking" then check = evaluate(stored)
-        when "passed" then advance(stored)
-        else dispatch(stored)
-        end
+        check, unchanged = resume_step(stored, from: from, note: note, pane: pane, turn_over: turn_over)
       end
       run = finish_check(run_id, check) if check
       unchanged ? run.merge("unchanged" => unchanged) : run
+    end
+
+    # Stores a resume for later, with the same arguments as {#resume}: no
+    # attempt, no binding, no new lock. What the run already has stays, and
+    # {#release_park} carries it out. A live park stays as it is, so repeating
+    # the call can't extend the wait; one past its limit is replaced.
+    #
+    # @param run_id [String]
+    # @param from [String, nil] see {#resume}
+    # @param note [String, nil] see {#resume}; stored in the run, never in an event
+    # @param pane [String, nil] see {#resume}
+    # @param turn_over [Hash{String=>Object}, nil] see {#resume}
+    # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why, as a
+    #   sentence) when nothing was stored
+    # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has
+    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil)
+      unchanged = nil
+      run = transition(run_id) do |stored|
+        refuse_resume(stored, from: from)
+        if self.class.parked(stored, @clock.call) == :waiting
+          unchanged = "a resume is already parked for pane #{park_target(stored)}"
+          next
+        end
+        unchanged = from ? nil : left_alone(stored, step_state(stored), pane, turn_over)
+        next if unchanged
+        check_pane(pane, run_id: run_id) if pane && @panes.run_on(pane) != run_id
+        drop_park(stored, "expired")
+        store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over},
+          expires_at: (@clock.call + PARK_SECONDS).utc.iso8601, retries: 0)
+      end
+      unchanged ? run.merge("unchanged" => unchanged) : run
+    end
+
+    # Carries out a parked resume, in one change with taking it off the run.
+    #
+    # @param run_id [String]
+    # @param id [String] the park's id; any other changes nothing
+    # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why, as a
+    #   sentence) when the resume did nothing, its note kept for the next attempt
+    # @raise [Workspace::Error] see {#resume}; the run stays parked
+    def release_park(run_id, id)
+      check = nil
+      unchanged = nil
+      run = transition(run_id) do |stored|
+        parked = stored["parked"]
+        next unless parked && parked["id"] == id
+        stored.delete("parked")
+        check, unchanged = resume_step(stored, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"])
+        add_resume_note(stored, parked["note"]) if unchanged
+        event(stored, "resume_parked_ended", {"step" => stored["current"], "how" => unchanged ? "unchanged" : "released"}
+          .merge(unchanged ? {"detail" => unchanged} : {}))
+        next unless @delivery
+        step_state(stored)["attempts"].last["after_park"] = {"expires_at" => parked["expires_at"], "pane" => @delivery["pane"], "retries" => parked["retries"]}
+      end
+      run = finish_check(run_id, check) if check
+      unchanged ? run.merge("unchanged" => unchanged) : run
+    end
+
+    # Ends a park that can't be released, and leaves the run waiting for a
+    # person. The step and what it holds stay, so a `running` step keeps its
+    # attempt and a later resume decides it. A lock the run queued for is given
+    # up, since the run would no longer use it. A run waiting at a gate keeps
+    # its gate reason, so approve and reject stay open; the failure is in the
+    # `resume_parked_ended` event.
+    #
+    # @param run_id [String]
+    # @param id [String] the park's id; any other changes nothing
+    # @param code [String] why, stored as the reason's `error`
+    # @param message [String]
+    # @return [Hash{String=>Object}] the run afterwards
+    # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
+    def park_failed(run_id, id, code:, message:)
+      transition(run_id) do |stored|
+        next unless stored.dig("parked", "id") == id
+        if step_state(stored).dig("gate", "state") == "waiting"
+          drop_park(stored, "failed", "error" => code, "message" => message)
+          next
+        end
+        target = park_target(stored)
+        case stored.dig("reason", "code")
+        when "waiting_lock" then release(stored)
+        when "failed_check" then stored["pending_context"].unshift(last_failure(stored))
+        end
+        drop_park(stored, "failed")
+        stored["state"] = "waiting"
+        stored["reason"] = reason(PANE_GONE_CODES.include?(code) ? "pane_gone" : "waiting_you",
+          "kind" => "dispatch", "step" => stored["current"], "pane" => target, "workspace" => stored["workspace"], "error" => code, "message" => message)
+      end
     end
 
     # What {#resume} refuses, checked without changing anything, so a caller
@@ -446,6 +564,81 @@ module Workspace
 
     private
 
+    # The body of {#resume}, inside a transition.
+    #
+    # @return [Array] the check to run, or nil; and why nothing was done, or nil
+    def resume_step(stored, from:, note:, pane:, turn_over:)
+      # Refusals come first, so a refused resume leaves the run and its pane as they were.
+      refuse_resume(stored, from: from)
+      state = step_state(stored)
+      # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
+      unchanged = from ? nil : left_alone(stored, state, pane, turn_over)
+      return [nil, unchanged] if unchanged
+      rebind(stored, pane) if pane
+      drop_park(stored, "taken_over")
+      add_resume_note(stored, note)
+      if from
+        event(stored, "run_resumed", "from" => from)
+        stored["current"] = from
+        dispatch(stored)
+        return [nil, nil]
+      end
+      event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"])
+      stored["pending_context"].unshift(last_failure(stored)) if state["state"] == "failed" && stored.dig("reason", "code") == "failed_check"
+      check = nil
+      case state["state"]
+      when "running"
+        if pane
+          dispatch(stored)
+        else
+          stored["reason"] = nil
+          check = evaluate(stored)
+        end
+      when "checking" then check = evaluate(stored)
+      when "passed" then advance(stored)
+      else dispatch(stored)
+      end
+      [check, nil]
+    end
+
+    def add_resume_note(run, note)
+      run["pending_context"] << "Note from the person who resumed the run: #{note}" if note
+    end
+
+    def last_failure(run)
+      "The last attempt of this step failed: #{failure_text(run["reason"]["details"])}."
+    end
+
+    def park_target(run)
+      run["parked"]["pane"] || bound_pane(run)
+    end
+
+    # +request+ is what a resume would be given: "from", "note", "pane", "turn_over".
+    def store_park(run, request, expires_at:, retries:, event_data: {})
+      run["parked"] = request.merge("id" => SecureRandom.hex(8), "requested_at" => now_iso, "expires_at" => expires_at, "retries" => retries)
+      event(run, "resume_parked", {"step" => run["current"], "pane" => park_target(run), "from" => request["from"],
+                                   "has_note" => !request["note"].nil?}.merge(event_data))
+    end
+
+    # Takes a park off the run however it ended. A note moves to the pending
+    # context, so it reaches the next attempt whichever path starts it.
+    def drop_park(run, how, extra = {})
+      parked = run.delete("parked")
+      return unless parked
+      add_resume_note(run, parked["note"])
+      event(run, "resume_parked_ended", {"step" => run["current"], "how" => how}.merge(extra))
+    end
+
+    # After a release's line could not be typed: the failure stands unless a
+    # later try can help. The first pass already moved the step and the pane,
+    # and {#not_delivered} put the note back, so the new park only waits.
+    def park_again(run, after, kick)
+      return unless after && PARK_AGAIN_CODES.include?(kick[:code].to_s) && after["retries"] < PARK_RETRIES
+      return unless self.class.parked({"parked" => after}, @clock.call) == :waiting
+      store_park(run, {"from" => nil, "note" => nil, "pane" => nil, "turn_over" => nil}, expires_at: after["expires_at"], retries: after["retries"] + 1,
+        event_data: {"pane" => after["pane"], "retry" => true})
+    end
+
     # Runs one change to a run under its lock and announces it, then types
     # the line of a step the change started, once the lock is given up.
     def transition(run_id, nonblocking: false)
@@ -466,7 +659,7 @@ module Workspace
     # What `workflow status` shows of a run's progress; a change in it is announced.
     def fingerprint(run)
       state = step_state(run)
-      [run["state"], run["current"], shown_reason(run["reason"]), state["state"], state["attempts"].size, state.dig("gate", "state")]
+      [run["state"], run["current"], shown_reason(run["reason"]), state["state"], state["attempts"].size, state.dig("gate", "state"), run.key?("parked")]
     end
 
     # A hold shows nothing that moves, so only its code and since count; its seen_at, tasks and missing change nothing a reader sees.
@@ -481,7 +674,7 @@ module Workspace
     def changed(run)
       @event_log&.record(type: "workflow_changed", project: run["workspace"],
         data: {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "state" => hold?(run["reason"]) ? "running" : run["state"],
-               "step" => run["current"], "reason" => run.dig("reason", "code")})
+               "step" => run["current"], "reason" => run["parked"] ? nil : run.dig("reason", "code")})
     end
 
     def event(run, type, data = {})
@@ -577,12 +770,22 @@ module Workspace
       )
     end
 
-    def check_pane(pane)
+    # +run_id+ is the run asking, which a park of its own can't refuse.
+    def check_pane(pane, run_id: nil)
       return unless pane
-      other = @panes.run_on(pane)
-      return unless other && active?(other)
+      bound = @panes.run_on(pane)
+      other = (bound && active?(bound)) ? bound : parked_on(pane, run_id)
+      return unless other
       raise Workspace::Error.new("Pane #{pane} is already running workflow run #{other}. Cancel it, or pass --pane for another agent pane.",
         code: "pane_has_run", details: {"pane" => pane, "run_id" => other})
+    end
+
+    # Another run waiting to start in +pane+: a run parked by `workflow run` has no binding yet.
+    def parked_on(pane, run_id)
+      now = @clock.call
+      @store.active.find do |run|
+        run["id"] != run_id && self.class.parked(run, now) == :waiting && (run["parked"]["pane"] || run["pane"]) == pane
+      end&.fetch("id")
     end
 
     def active?(run_id)
@@ -630,7 +833,7 @@ module Workspace
     end
 
     def rebind(run, pane)
-      check_pane(pane) unless @panes.run_on(pane) == run["id"]
+      check_pane(pane, run_id: run["id"]) unless @panes.run_on(pane) == run["id"]
       @panes.unbind(run["id"])
       run["pane"] = pane
     end
@@ -647,7 +850,7 @@ module Workspace
         over = turn_over && turn_over["step"] == run["current"] && turn_over["attempt"] == state["attempts"].last&.fetch("n", nil)
         "an agent is working on step #{run["current"]}" unless pane || run["reason"] || over
       when "checking"
-        "the check of step #{run["current"]} is still running" unless self.class.wakeable?(run, @clock.call) == :check
+        "the check of step #{run["current"]} is still running" unless self.class.send(:lost_check?, run, @clock.call)
       end
     end
 
@@ -657,6 +860,7 @@ module Workspace
     # after the run's lock is given up, so a process that dies while the
     # daemon answers leaves an attempt a turn's end can decide.
     def dispatch(run, context: nil)
+      drop_park(run, "moved_on")
       step = step_def(run)
       state = step_state(run)
       # A rejected gate stays marked for the first run of the step again, and no longer.
@@ -710,9 +914,12 @@ module Workspace
       transition(run_id) do |stored|
         state = stored["steps"].fetch(delivery["step"])
         attempt = state["attempts"].last
+        after = (attempt["n"] == delivery["attempt"]) ? attempt.delete("after_park") : nil
         next unless stored["current"] == delivery["step"] && attempt["n"] == delivery["attempt"] && attempt["delivery"] == "delivering"
         attempt.delete("delivery")
-        not_delivered(stored, state, attempt, kick) unless kick[:ok]
+        next if kick[:ok]
+        not_delivered(stored, state, attempt, kick)
+        park_again(stored, after, kick)
       end
     rescue Workspace::Error => e
       # Cancelled while the line was on its way: the cancel stands.
@@ -977,10 +1184,11 @@ module Workspace
     # Whether the run still waits for this check: it is still on that step and
     # attempt, checking. A cancel, a kill or a `resume --from` ends that, and
     # the check is stopped instead of running on beside the lock's next holder.
+    # So does a park: only a `--from` parks over a check, and that restarts the step.
     def wanted?(run_id, check)
       run = @store.find(run_id)
       state = run["steps"].fetch(check["step"])
-      !WorkflowRunStore::TERMINAL_STATES.include?(run["state"]) && run["current"] == check["step"] &&
+      !run["parked"] && !WorkflowRunStore::TERMINAL_STATES.include?(run["state"]) && run["current"] == check["step"] &&
         state["state"] == "checking" && state["attempts"].last["n"] == check["attempt"]
     rescue Workspace::Error, SystemCallError
       true
@@ -988,6 +1196,7 @@ module Workspace
 
     def apply_check(run_id, check, result)
       transition(run_id) do |stored|
+        next if stored["parked"]
         state = step_state(stored)
         attempt = state["attempts"].last
         # The run moved on while the check ran (a resume, a reject): its result decides nothing.
@@ -1041,6 +1250,7 @@ module Workspace
     end
 
     def finish(run, state)
+      drop_park(run, "ended")
       release(run)
       @panes.unbind(run["id"])
       run["state"] = state
