@@ -199,8 +199,8 @@ module Workspace
     end
 
     # A step whose line never reached an agent: a stored `pane_gone` or `waiting_you` of kind `dispatch`
-    # (`not_started`, `parked_timeout`). Status hides a live park and a `pane_busy` wait, so they never reach here,
-    # and a `pane_gone` it works out itself has no kind.
+    # (`not_started`, `parked_timeout`). Status hides a live park, so it never reaches here, and a `pane_gone`
+    # it works out itself has no kind.
     def undelivered?(reason)
       %w[waiting_you pane_gone].include?(reason["code"]) && reason.dig("details", "kind") == "dispatch"
     end

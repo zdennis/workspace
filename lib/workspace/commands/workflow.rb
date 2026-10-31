@@ -749,6 +749,8 @@ module Workspace
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
+        parked = current["parked"]
+        @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
       end
 

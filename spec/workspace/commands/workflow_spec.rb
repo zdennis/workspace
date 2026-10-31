@@ -218,6 +218,16 @@ RSpec.describe Workspace::Commands::Workflow do
   describe "#status" do
     def workspace_scope(name) = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: name)
 
+    it "prints where a parked resume waits and until when" do
+      parked = shown("state" => "running", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "flags" => ["parked"], "reason" => nil,
+                                                         "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [parked], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("flag: parked\n  parked: pane %5 until 2026-10-04T14:00:00Z; carried out once that pane's turn ends\n")
+    end
+
     let(:gate) do
       shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "passed", "flags" => ["timed_out"],
                                                 "reason" => reason("waiting_you", {"kind" => "gate", "step" => "plan", "artifacts" => ["/src/app/.workflow/wr_1/plan.md"]},

@@ -502,8 +502,8 @@ module Workspace
           "Run from the pane it would type into (an agent resuming its own run) it types nothing: the answer is",
           "`parked`, exit 0, and the caller should end its turn. The agent daemon carries it out once the turn",
           "is over, within 1 hour, else the run reads waiting_you / parked_timeout. It needs a daemon started",
-          "after the upgrade (workspace daemon restart) and a pane in window 0. A draft in a Claude pane's",
-          "input box holds a type-in back (pane_busy, input_not_empty)."
+          "after the upgrade (workspace daemon restart) and a pane in window 0. With a draft in a Claude pane's",
+          "input box nothing is typed and the draft stays (pane_busy, input_not_empty)."
         ],
         options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, JSON_OPT],
         examples: [
