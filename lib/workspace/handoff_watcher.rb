@@ -40,6 +40,13 @@ module Workspace
     ALERTED = %w[stalled expired].freeze
     private_constant :ALERTED
 
+    # How Claude Code hands a multi-line paste to UserPromptSubmit: one block at
+    # the very start, its closing tag absent when `session-event` cut the prompt.
+    # Text after a complete block fails the match on the closing tag, so it
+    # stays in the capture as part of the prompt.
+    PASTED_BLOCK = %r{\A\s*<pasted_content(?:\s[^>]*)?>(.*?)(?:</pasted_content(?:\s[^>]*)?>\s*)?\z}m
+    private_constant :PASTED_BLOCK
+
     # What {PromptTyper} reports when the text is or may be in the pane.
     LANDED = [:submitted, :not_submitted].freeze
     private_constant :LANDED
@@ -221,11 +228,19 @@ module Workspace
     # No prompt string and the paste placeholder can't be told from ours, so
     # neither counts as another prompt.
     def other_prompt?(watch, prompt)
-      cleaned = SessionMonitor.clean_message(prompt)
+      cleaned = SessionMonitor.clean_message(unwrap(prompt))
       return false if cleaned.nil? || cleaned.match?(/\A#{Tmux::PASTE_PLACEHOLDER.source}/)
       @mutex.synchronize do
         watch.fingerprints.none? { |print| print[:cut] ? cleaned.start_with?(print[:print]) : cleaned == print[:print] }
       end
+    end
+
+    # Runs before {SessionMonitor.clean_message}, whose length cap and the
+    # fingerprints must see the pasted text, not the tag.
+    def unwrap(prompt)
+      return prompt unless prompt.is_a?(String)
+      scrubbed = prompt.scrub
+      scrubbed[PASTED_BLOCK, 1] || scrubbed
     end
 
     def check(watch)

@@ -1,5 +1,7 @@
 require "spec_helper"
 require "timeout"
+require "tmpdir"
+require "socket"
 
 RSpec.describe Workspace::HandoffWatcher do
   let(:empty_prompt) { "────────\n❯ \n" }
@@ -423,6 +425,137 @@ RSpec.describe Workspace::HandoffWatcher do
       arm
       watcher.session_event(event("session_end", reason: "logout"))
       expect_end("session_ended")
+    end
+  end
+
+  describe "prompts Claude Code wraps as a paste" do
+    let(:limit) { Workspace::Commands::SessionEvent::MAX_PROMPT_LENGTH }
+    let(:long) { (1..60).map { |n| "Line #{n} of the save-state prompt, which runs past the hook's cut." }.join("\n") }
+
+    def wrapped(inner, lead: "", close: true)
+      "#{lead}<pasted_content id=\"e50c\">\n#{inner}\n#{"</pasted_content id=\"e50c\">" if close}"
+    end
+
+    ["", "\n\n"].each do |lead|
+      it "changes nothing for the save-state prompt wrapped, with #{lead.size} leading newlines" do
+        arm
+        prompt(wrapped(sent_text, lead: lead))
+        expect(ends).to be_empty
+      end
+
+      it "changes nothing for the follow-up wrapped, with #{lead.size} leading newlines" do
+        arm
+        prompt(wrapped(text, lead: lead))
+        expect(ends).to be_empty
+      end
+
+      it "changes nothing for a long prompt cut before its closing tag, with #{lead.size} leading newlines" do
+        arm(sent_text: long)
+        cut = wrapped(long, lead: lead)[0, limit]
+        expect(cut).not_to include("</pasted_content")
+        prompt(cut)
+        expect(ends).to be_empty
+      end
+    end
+
+    it "changes nothing for a long prompt wrapped whole" do
+      arm(text: long)
+      prompt(wrapped(long))
+      expect(ends).to be_empty
+    end
+
+    it "takes any id and an opening tag with no id" do
+      arm
+      prompt(wrapped(text).gsub("e50c", "0000-ffff"))
+      prompt("<pasted_content>\n#{text}\n</pasted_content>")
+      expect(ends).to be_empty
+    end
+
+    it "changes nothing for an empty block" do
+      arm
+      prompt(wrapped(""))
+      expect(ends).to be_empty
+    end
+
+    it "ends on a person's wrapped paste of other text" do
+      arm
+      prompt(wrapped("Here is the stack trace\nfrom the failing run"))
+      expect_end("other_prompt")
+    end
+
+    it "ends on a person's text followed by a wrapped block" do
+      arm
+      prompt("look at this: #{wrapped(sent_text)}")
+      expect_end("other_prompt")
+    end
+
+    it "ends on a short exact fingerprint wrapped with text after the block" do
+      arm(sent_text: "continue")
+      prompt(wrapped("continue"))
+      expect(ends).to be_empty
+
+      prompt("#{wrapped("continue")} and then do the migration")
+      expect_end("other_prompt")
+    end
+
+    it "ends on a tag that is only named in the text" do
+      arm
+      prompt("what does <pasted_content> mean?")
+      expect_end("other_prompt")
+    end
+
+    it "keeps bare prompts as they were" do
+      arm(sent_text: "continue")
+      prompt("continue")
+      prompt(text)
+      expect(ends).to be_empty
+
+      prompt("something else")
+      expect_end("other_prompt")
+    end
+
+    context "through session-event" do
+      let(:tmpdir) { Dir.mktmpdir }
+      let(:socket_path) { File.join(tmpdir, "agent.sock") }
+      let(:session_tmux) { instance_double(Workspace::Tmux, pane_layout: nil, server_pid_for_pane: nil, session_name_for_pane: "ws") }
+      let(:config) { instance_double(Workspace::Config, agent_socket_path: socket_path) }
+
+      after { FileUtils.remove_entry(tmpdir) }
+
+      def through_session_event(prompt_text)
+        server = UNIXServer.new(socket_path)
+        received = nil
+        listener = Thread.new do
+          client = server.accept
+          received = JSON.parse(client.gets)
+          client.puts(JSON.generate("ok" => true))
+          client.close
+        end
+        payload = {"hook_event_name" => "UserPromptSubmit", "session_id" => "s1", "prompt" => prompt_text}
+        Workspace::Commands::SessionEvent.new(config: config, tmux: session_tmux, input: StringIO.new(JSON.generate(payload)),
+          env: {"TMUX_PANE" => "%5"}).call
+        listener.join(2)
+        received
+      ensure
+        server&.close
+        File.unlink(socket_path) if File.exist?(socket_path)
+      end
+
+      it "keeps the watch for our long prompt, cut and with no closing tag" do
+        arm(sent_text: long)
+        message = through_session_event(wrapped(long, lead: "\n\n"))
+        expect(message["prompt"].length).to eq(limit)
+        expect(message["prompt"]).not_to include("</pasted_content")
+
+        watcher.session_event(message)
+        expect(ends).to be_empty
+      end
+
+      it "ends the watch for a person's long paste, cut the same way" do
+        arm
+        watcher.session_event(through_session_event(wrapped(long)))
+        expect_end("other_prompt")
+      end
     end
   end
 
