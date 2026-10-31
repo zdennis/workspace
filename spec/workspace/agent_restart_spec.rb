@@ -450,6 +450,57 @@ RSpec.describe Workspace::AgentRestart do
       expect(tmux.delivered).to be_empty
     end
 
+    describe "the check before the prompt" do
+      let(:draft) { {reason: "input_not_empty", message: "the input holds a draft"} }
+
+      before do
+        moving[0] = false
+        tmux.define_singleton_method(:capture_screen) { |_| "still" }
+      end
+
+      def after_clear
+        ->(_id) { (tmux.delivered.any? { |d| d[:text] == "/clear" }) ? yield : nil }
+      end
+
+      it "refuses a draft typed after the clear, typing nothing but /clear" do
+        restart = proven(screen_ready: after_clear { draft })
+
+        result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")
+
+        expect(result).to include("ok" => false, "error" => "pane_busy", "reason" => "input_not_empty")
+        expect(result["message"]).to include("the conversation was cleared but the prompt was not typed")
+        expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+      end
+
+      it "types the prompt when the refusal clears inside the window" do
+        restart = proven(screen_ready: after_clear { (now[0] < 2) ? {reason: "turn_started", message: "a spinner"} : nil })
+        @on_tick = nil
+
+        result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")
+
+        expect(result).to include("ok" => true)
+        expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+      end
+
+      it "does not check a pane that is not Claude Code" do
+        kinds["%18"] = "codex"
+        restart = proven(screen_ready: ->(_id) { draft })
+
+        expect(restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")).to include("ok" => true)
+        expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+      end
+
+      it "returns run_unbound at once, without waiting out the window" do
+        restart = proven(screen_ready: after_clear { draft }, run_bound: ->(_id, _run) { tmux.delivered.empty? })
+
+        result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md", run_id: "r1")
+
+        expect(result).to include("error" => "run_unbound")
+        expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+        expect(now[0]).to be < 5
+      end
+    end
+
     describe "after the last check refuses" do
       let(:draft) { {reason: "input_not_empty", message: "the input holds a draft"} }
       let(:clear_times) { [] }

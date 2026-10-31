@@ -55,6 +55,10 @@ module Workspace
     TURN_OVER_FOR = 5.0
     # Longest wait for the hook that confirms a prompt typed on a moving screen.
     PROMPT_CONFIRM_TIMEOUT = 15
+    # Longest a Claude Code pane's screen may refuse the prompt after the clear
+    # (a redraw, a busy row) before the restart gives up; a draft that stays is
+    # never typed over.
+    PROMPT_SETTLE = 5
     # Seconds kept in hand, so the reply reaches a caller waiting for it.
     REPLY_MARGIN = 2
     # Least time given to that hook, however late the reply would be: a shorter
@@ -83,7 +87,9 @@ module Workspace
     # @param turn_over [#call] given a pane id, answers nil when the main turn is
     #   proven over, else what is missing, by name (`details.proof_missing`)
     # @param screen_ready [#call] given a pane id, answers
-    #   {Workspace::IdlePromptCheck#refusal} for its screen as it is now
+    #   {Workspace::IdlePromptCheck#refusal} for its screen as it is now; asked
+    #   before /clear and again before the prompt, so a draft typed in between
+    #   is not joined
     # @param subagents_running [#call] given a pane id, how many sub-agents of its
     #   agent the session monitor sees running (nil or 0 for none); asked as
     #   /clear is typed on a Claude Code pane, to warn that they may be lost
@@ -99,6 +105,7 @@ module Workspace
     # @param poll_interval [Numeric] see {POLL_INTERVAL}
     # @param turn_over_for [Numeric] see {TURN_OVER_FOR}
     # @param prompt_confirm_timeout [Numeric] see {PROMPT_CONFIRM_TIMEOUT}
+    # @param prompt_settle [Numeric] see {PROMPT_SETTLE}
     # @param reply_timeout [Numeric] how long a waiting caller listens for the reply;
     #   it bounds the prompt's confirmation only when {#call} is told one is waiting
     # @param logger [Workspace::Logger] debug logger
@@ -115,7 +122,7 @@ module Workspace
       wall_clock: -> { Time.now },
       sleeper: ->(seconds) { sleep(seconds) },
       quiet_timeout: QUIET_TIMEOUT, quiet_for: QUIET_FOR, poll_interval: POLL_INTERVAL,
-      turn_over_for: TURN_OVER_FOR, prompt_confirm_timeout: PROMPT_CONFIRM_TIMEOUT, reply_timeout: WorkflowPanes::REPLY_TIMEOUT,
+      turn_over_for: TURN_OVER_FOR, prompt_confirm_timeout: PROMPT_CONFIRM_TIMEOUT, prompt_settle: PROMPT_SETTLE, reply_timeout: WorkflowPanes::REPLY_TIMEOUT,
       logger: Workspace::Logger.new)
       @tmux = tmux
       @context_reader = context_reader
@@ -123,6 +130,7 @@ module Workspace
       @delivery_lock = delivery_lock
       @pipeline_ref = pipeline_ref
       @pane_state = pane_state
+      @prompt_settle = prompt_settle
       @agent_pid = agent_pid
       @pane_kind = pane_kind
       @delivery_facts = delivery_facts
@@ -209,7 +217,7 @@ module Workspace
       reply["context_after"] = after[:pct]
 
       typed_at = nil
-      sent = deliver(pane_id, prompt, check_pipeline: !force, before_typing: -> { unbound_failure(pane_id, run_id, "the prompt") }) do
+      sent = deliver_prompt(pane_id, prompt, force: force, run_id: run_id) do
         typed_at = @wall_clock.call
       end
       return reply.merge(sent) if sent.key?("error")
@@ -341,6 +349,33 @@ module Workspace
 
         moving = quiet["moving"] == true
       end
+    end
+
+    # Types the prompt after the clear. A Claude Code pane's screen is checked
+    # under the lock first, so a draft typed since the clear is not joined. A
+    # refusal is retried for {PROMPT_SETTLE}, since the screen may still be
+    # redrawing after the clear; then the pane stays cleared and the prompt
+    # untyped.
+    def deliver_prompt(pane_id, prompt, force:, run_id:, &on_typing)
+      settle_until = @clock.call + @prompt_settle
+      loop do
+        sent = deliver(pane_id, prompt, check_pipeline: !force,
+          before_typing: -> { prompt_refusal(pane_id, run_id) }, &on_typing)
+        return sent unless sent["error"] == "pane_busy" && @clock.call < settle_until
+
+        @sleeper.call(@poll_interval)
+      end
+    end
+
+    def prompt_refusal(pane_id, run_id)
+      unbound = unbound_failure(pane_id, run_id, "the prompt")
+      return unbound if unbound
+      return nil unless @pane_kind.call(pane_id) == "claude"
+
+      refused = @screen_ready.call(pane_id)
+      return nil unless refused
+
+      busy_failure(refused[:reason], "#{refused[:message]} in pane #{pane_id}; the conversation was cleared but the prompt was not typed")
     end
 
     # The check made under the delivery lock right before the clear command.
