@@ -62,11 +62,30 @@ A coding-agent pane (any pane whose `kind` isn't `"shell"`) carries four fields 
 | Field | Meaning |
 |-------|---------|
 | `last_event_at` | ISO 8601 UTC time of the last hook event the daemon saw for the pane (any event, including a notification), or `null` |
-| `current_tool` | The tool name only (`Bash`, `Read`, ...) of the main agent's most recently started tool that has not finished, or `null` between tools. Never the command, input or output. Tools a sub-agent runs are not counted; while the main agent waits on one, `current_tool` is `Agent` (`Task` on older Claude Code) |
+| `current_tool` | The tool name only (`Bash`, `Read`, ...) of the main agent's most recently started tool that has not finished, or `null` between tools. Never the command, input or output (`waiting_input` differs; see [Waiting detail](#waiting-detail)). Tools a sub-agent runs are not counted; while the main agent waits on one, `current_tool` is `Agent` (`Task` on older Claude Code) |
 | `current_tool_since` | ISO 8601 UTC time that tool started, or `null` |
 | `subagents` | The sub-agents running now, each `{"agent_id", "description", "since"}`. `description` is the Agent call's description (cut to 120 characters; the sub-agent's name when it has none) and `since` is ISO 8601 UTC. `agent_id` is `null` until it can be told which sub-agent an id belongs to: Claude Code names a sub-agent only once it runs, so the id is taken from its first hook event when exactly one running sub-agent has none, and from its stop. A sub-agent leaves the list when its stop is seen, or when the turn or session ends. Its Agent call returning does not end it, since a background Agent call returns at once. With sub-agents in parallel and no id, a stop closes the oldest running one |
 
 `current_tool` ends on the tool's PostToolUse, and on the turn or session ending or a new prompt, so a tool whose finish was never seen does not stay current past the turn. A pane that is `working` with `current_tool: "Bash"` since 12 seconds ago is busy; one whose `last_event_at` is many minutes old is probably hung. The older `agents` list stays as it was.
+
+### Waiting detail
+
+During a Claude Code permission wait, each `--json` pane (and each [`snapshot`](README.snapshot.md) pane) also carries `waiting_tool` and `waiting_input` (capability `waiting_detail`): the tool the dialog asks about and a one-line summary of the call, at most 300 bytes, built like the events stream's [`input`](README.events.md#hook-event-lines). Unlike `current_tool`, `waiting_input` can hold the start of a command or a file path, so treat it as sensitive. Both come from Claude's `PermissionRequest` hook, which `session-event` forwards but which opens no wait and changes no `state`; the `Notification` still opens the wait.
+
+Limits:
+
+- Both fields are `null`, not absent, on every pane, and always on a pane that isn't Claude Code or isn't waiting.
+- `waiting_input` is `null` for a tool the summary has no rule for, MCP tools included. `waiting_tool` is still set.
+- Both are `null` while several requests are pending, or none is. A `Notification` doesn't say whose dialog it is, so the daemon names a tool only when one request is pending. The wait is then filed under the main agent, and it can end while one of those dialogs is still open.
+- A lost main request can leave a sub-agent's only request labelling a main dialog. So can one the daemon dropped: a main tool of the same name finishing beside the dialog clears it.
+- A wait filed under a sub-agent ends on any event from that sub-agent, as a main wait does on a main event, so a parallel tool finishing can end it with the dialog still open. A repeat `Notification` then opens it again with a new `waiting_since` and alert.
+- `waiting_tool` is one line cut to 200 characters. A daemon started before the upgrade leaves both keys out of `sessions --json`; `snapshot` still reports `null`.
+- A replaced request shows only at the next `Notification`, so a dialog answered within about 6s can leave the old tool showing.
+- Requests are kept in memory. A daemon restart during a wait can repeat its alert, and the wait is then filed under the main agent, so only a main event ends it.
+- An allow fires no hook until the tool ends, and a tool that fails fires none that is forwarded, so its fields can stay until a later event.
+- Deny and Esc fire no hook. A wait with a tool ends through the screen scan once the ready prompt is back in the last 12 lines of the pane, which also happens at an allow. A long multi-line draft or a tall footer pushes the prompt out of those lines and leaves the wait open, and so does a draft starting with a numbered item (`1. `), which reads like a menu row. Whether an `idle_prompt` follows a deny wasn't observed.
+- `state` can read `done` during a background sub-agent's prompt, as it did before; test `waiting_tool` instead.
+- Hooks installed before `PermissionRequest` was added leave the fields `null`. Run `workspace init --install-hooks` or `workspace doctor --fix`.
 
 ### Hook mode
 

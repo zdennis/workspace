@@ -420,7 +420,7 @@ module Workspace
           {
             "pane_id" => pane["pane_id"], "index" => pane["index"], "kind" => pane["kind"], "title" => pane["title"],
             "display_label" => pane["display_label"], "state" => pane["state"], "state_since" => pane["state_since"],
-            "stop_reason" => pane["stop_reason"], "waiting_message" => pane["waiting_message"], "context_pct" => pane["context_pct"],
+            "stop_reason" => pane["stop_reason"], "waiting_message" => pane["waiting_message"], "waiting_tool" => pane["waiting_tool"], "waiting_input" => pane["waiting_input"], "context_pct" => pane["context_pct"],
             "agents" => Array(pane["agents"]).map { |agent| {"name" => agent["name"], "state" => agent["state"]} },
             "lock" => pane["lock_name"], "lock_state" => pane["lock_state"], "open_questions" => pane["open_questions"]
           }

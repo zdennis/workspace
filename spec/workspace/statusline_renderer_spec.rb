@@ -20,7 +20,7 @@ RSpec.describe Workspace::StatuslineRenderer do
   end
 
   it "never makes a network call: no usage/session fields appear" do
-    payload = {"model" => {"display_name" => "Sonnet"}, "context_window" => {"used_percentage" => 5}}
+    payload = {"model" => {"display_name" => "Sonnet"}, "cwd" => "/tmp/myproject", "context_window" => {"used_percentage" => 5}}
     output = renderer.render(payload)
     expect(output).not_to match(/session|weekly|resets/i)
   end

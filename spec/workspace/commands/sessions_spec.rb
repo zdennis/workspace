@@ -119,6 +119,18 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(JSON.parse(output.string)["panes"].first["waiting_message"]).to eq("needs your [31mpermission")
     end
 
+    it "passes waiting_tool and waiting_input through in --json" do
+      waiting = {"workspace" => "proj", "panes" => [
+        {"pane_id" => "%1", "index" => 0, "state" => "waiting", "waiting_tool" => "Bash", "waiting_input" => "rm -rf build", "agents" => []},
+        {"pane_id" => "%2", "index" => 1, "state" => "idle", "waiting_tool" => nil, "waiting_input" => nil, "agents" => []}
+      ]}
+      with_daemon(reply: waiting) { command.call(name: "proj", json: true) }
+
+      panes = JSON.parse(output.string)["panes"]
+      expect(panes[0]).to include("waiting_tool" => "Bash", "waiting_input" => "rm -rf build")
+      expect(panes[1]).to include("waiting_tool" => nil, "waiting_input" => nil)
+    end
+
     it "says so when the workspace has no panes" do
       with_daemon(reply: {"workspace" => "proj", "panes" => []}) { command.call(name: "proj") }
 

@@ -21,6 +21,7 @@ module Workspace
         "git_facts" => 1,
         "prune_safe" => 2,
         "snapshot" => 6,
+        "waiting_detail" => 1,
         "events_follow" => 1,
         "events_tool_input" => 1,
         "actions_manifest" => 0,

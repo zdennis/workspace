@@ -30,7 +30,10 @@ module Workspace
   # daemon doesn't alert again for a quiet stretch or a wait the last one
   # already alerted for. A wait the last daemon alerted for counts as the
   # same wait if the agent that raised it asks again before sending any
-  # other hook event; a wait that begins after that alerts as usual.
+  # other hook event; a wait that begins after that alerts as usual. Pending
+  # permission requests are not logged, so a wait filed under a sub-agent can't
+  # be matched to a Notification, which names no agent: if its dialog asks again
+  # after a restart, it alerts again with a new start time.
   class SessionMonitor
     # A pane whose output has not changed for this long is reported idle. Agents
     # spend most of a turn blocked on the network, so CPU is not a usable
@@ -192,8 +195,8 @@ module Workspace
     # Re-reads one pane now instead of waiting for the next {#scan}, so a
     # caller about to refuse on a stale reading (a shell seen just before an
     # agent started in the pane) can decide on a fresh one. Updates the pane's
-    # cached kind and activity only; alerts and logged changes are left to the
-    # next scan. Reads once; a failed tmux or process listing leaves the cache
+    # cached kind and activity, and ends a permission wait whose dialog is
+    # gone; alerts and logged changes are left to the next scan. Reads once; a failed tmux or process listing leaves the cache
     # as it was. Takes no scan slot, which a busy scan thread or another
     # daemon would hold, so the rescan can answer under load. A scan that read
     # the process table before the agent started may still overwrite the fresh
@@ -687,7 +690,7 @@ module Workspace
     end
 
     def new_pane(pane_id)
-      {pane_id: pane_id, agents: [], waits: {}, kind: "unknown", index: nil}
+      {pane_id: pane_id, agents: [], waits: {}, permission_requests: {}, kind: "unknown", index: nil}
     end
 
     def refresh_pane(detail, tree, now)
@@ -705,11 +708,39 @@ module Workspace
       # Nobody is left to answer a prompt once the agent has exited.
       unless agent
         clear_waiting(pane)
+        pane[:permission_requests].clear
         pane.delete(:done)
       end
 
       screen = refresh_activity(pane, now)
       refresh_screen_wait(pane, agent && agent[:provider], screen, now)
+      end_answered_permission_waits(pane, agent && agent[:provider], screen)
+    end
+
+    # The shortest permission dialog is 12 lines, so a tail this long can't reach above its top rule.
+    READY_TAIL_LINES = 12
+    private_constant :READY_TAIL_LINES
+
+    # An AskUserQuestion menu draws a rule above its last row, so with the
+    # cursor there it reads like the ready prompt.
+    MENU_ROW_PATTERN = /─{3,}\n❯[ \t ]?\d+\. /
+    private_constant :MENU_ROW_PATTERN
+
+    # Deny and Esc fire no hook. A bound permission wait ends when the ready
+    # prompt is back at the bottom of the screen; trailing blank rows (inline
+    # panes) are stripped first, and an empty capture says nothing.
+    def end_answered_permission_waits(pane, provider, screen)
+      return unless provider&.key == "claude" && provider.ready_pattern
+      tail = screen.scrub.rstrip.lines.last(READY_TAIL_LINES).join
+      return if tail.empty? || !provider.ready_pattern.match?(tail) || MENU_ROW_PATTERN.match?(tail)
+
+      pane[:waits].select { |_, wait| wait[:tool] }.each do |agent_id, wait|
+        pane[:waits].delete(agent_id)
+        pane[:alerted_waits]&.delete(agent_id)
+        # A differing request is newer than this wait, its dialog not yet drawn.
+        requests = pane[:permission_requests]
+        requests.delete(agent_id) if requests[agent_id] == wait.slice(:tool, :input)
+      end
     end
 
     # The key of the wait a matched screen opens in the pane's waits. Hooks
@@ -771,13 +802,23 @@ module Workspace
     # can each be waiting on a person at once. Any other event from an agent
     # ends that agent's wait: a tool ran after a permission prompt, say. It
     # leaves the other agents' waits alone. Hooks mark a sub-agent's events
-    # with its agent_id; SubagentStop always comes from one. Claude Code's
-    # Notification payload carries no tool call id, so a wait can't be tied
-    # to one prompt more tightly than to the agent that raised it.
+    # with its agent_id; SubagentStop always comes from one.
+    #
+    # A probe of Claude Code 2.1.316 showed what a permission prompt sends. Its
+    # PermissionRequest names the tool, the input and a sub-agent's agent_id, no
+    # tool call id, and opens no wait. Its Notification, about 6s later, names
+    # none of them, even for a sub-agent, and may never come. An allow sends
+    # nothing until the tool ends, and a deny or Esc nothing at all, so a stored
+    # request may already be answered. So a permission_prompt Notification names
+    # a tool only when exactly one request is pending, filing the wait under
+    # that agent; otherwise it can't say whose dialog it is and the fields stay
+    # null.
     def apply_event(pane, event)
       # A tool starting says nothing about a wait: with tools run side by side, one
       # can start while another waits on a permission prompt.
       return if event["event"] == "tool_start"
+
+      return note_permission_request(pane, event) if event["event"] == "permission_request"
 
       # Claude Code says it is idle a minute after a Stop; nobody is asked.
       return if idle_input_notification?(pane, event)
@@ -786,7 +827,7 @@ module Workspace
         # A repeat notification during one wait keeps the original start, so
         # the wait is timed (and alerted) once. So does the first one after a
         # restart, for a wait the last daemon alerted for.
-        wait = (pane[:waits][event["agent_id"]] ||= resumed_wait(pane, event["agent_id"]))
+        wait = permission_prompt?(event) ? bind_permission_wait(pane, event) : open_wait(pane, event["agent_id"]).merge!(other_prompt: true)
         wait[:message] = self.class.clean_message(event["message"])
       elsif TURN_EVENTS.include?(event["event"])
         clear_waiting(pane)
@@ -797,6 +838,7 @@ module Workspace
         pane[:waits].delete(event_agent_id(event))
         pane[:alerted_waits]&.delete(event_agent_id(event))
       end
+      clear_permission_requests(pane, event)
 
       case event["event"]
       when "stop"
@@ -921,8 +963,53 @@ module Workspace
     end
 
     def clear_waiting(pane)
+      pane[:waits].each_key { |agent_id| pane[:permission_requests].delete(agent_id) }
       pane[:waits].clear
       pane.delete(:alerted_waits)
+    end
+
+    def permission_prompt?(event)
+      event["notification_type"] == "permission_prompt"
+    end
+
+    def note_permission_request(pane, event)
+      agent_id = event["agent_id"]
+      pane[:permission_requests].delete(agent_id)
+      pane[:permission_requests][agent_id] = {
+        tool: self.class.clean_message(event["tool"]), input: ToolInputSummary.cap(event["input"])
+      }
+    end
+
+    def bind_permission_wait(pane, event)
+      pane[:waits].each_value { |wait| wait.merge!(tool: nil, input: nil) }
+      requests = pane[:permission_requests]
+      return open_wait(pane, event["agent_id"]) unless requests.size == 1
+
+      agent_id, request = requests.first
+      pane[:waits][agent_id] ||= take_unbound_permission_wait(pane) || resumed_wait(pane, agent_id)
+      pane[:waits][agent_id].merge!(request)
+    end
+
+    # Only a permission wait moves: a main elicitation is still on screen and
+    # ends on a main event, whatever a sub-agent does.
+    def take_unbound_permission_wait(pane)
+      pane[:waits].delete(nil) if pane[:waits][nil] && !pane[:waits][nil][:other_prompt]
+    end
+
+    def clear_permission_requests(pane, event)
+      requests = pane[:permission_requests]
+      case event["event"]
+      when "user_prompt", "session_start", "session_end" then requests.clear
+      when "stop", "turn_failed" then requests.delete(nil) unless event["agent_id"]
+      when "subagent_stop" then requests.delete(event_agent_id(event))
+      when "tool_use"
+        request = requests[event["agent_id"]]
+        requests.delete(event["agent_id"]) if request && request[:tool] == self.class.clean_message(event["tool"])
+      end
+    end
+
+    def open_wait(pane, agent_id)
+      pane[:waits][agent_id] ||= resumed_wait(pane, agent_id)
     end
 
     def resumed_wait(pane, agent_id)
@@ -977,6 +1064,8 @@ module Workspace
         "waiting_since" => waiting_since&.utc&.iso8601,
         "waiting_seconds" => waiting_since && (now - waiting_since).round,
         "waiting_message" => wait&.dig(:message),
+        "waiting_tool" => wait&.dig(:tool),
+        "waiting_input" => wait&.dig(:input),
         "stop_reason" => pane[:done]&.dig(:stop_reason),
         "turn_failed" => !pane[:turn_failed].nil?,
         "session_id" => pane[:session_id],

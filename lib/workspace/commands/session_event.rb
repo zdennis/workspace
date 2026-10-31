@@ -28,7 +28,8 @@ module Workspace
         # A PreToolUse for the Agent (earlier Task) tool is "subagent_start" instead; see {#translate}.
         "PreToolUse" => "tool_start",
         "Notification" => "notification",
-        "PostToolUse" => "tool_use"
+        "PostToolUse" => "tool_use",
+        "PermissionRequest" => "permission_request"
       }.freeze
 
       # Codex's hooks (see {Workspace::AgentProvider::CODEX_EVENTS}). A
@@ -356,6 +357,7 @@ module Workspace
       # are read here and never forwarded.
       def tool_fields(payload)
         hook = payload["hook_event_name"]
+        return permission_fields(payload) if claude? && hook == "PermissionRequest"
         return {} unless hook == "PreToolUse" || hook == "PostToolUse"
 
         fields = {
@@ -374,6 +376,13 @@ module Workspace
           fields["subagent_type"] = clean(payload["tool_input"]["subagent_type"], MAX_NAME_LENGTH)
         end
         fields
+      end
+
+      def permission_fields(payload)
+        {
+          "tool" => name_field(payload, "tool_name"),
+          "input" => ToolInputSummary.call(payload["tool_name"], payload["tool_input"])
+        }
       end
 
       def session_fields(payload)
