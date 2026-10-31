@@ -332,4 +332,58 @@ RSpec.describe Workspace::PromptQueueStore do
     expect(store.announce(ids[1])).to include("announced" => true, "position" => 2)
     expect(store.announce("nope")).to be_nil
   end
+
+  describe "a refusal" do
+    def refuse(reason, message = "words")
+      claim = store.claim("%5", daemon_pid: 4242) { ready_at(1) }.first
+      store.finish(claim, :requeue, reason: reason, message: message)
+    end
+
+    before { add("one") }
+
+    it "is stored on the requeued entry, outside the claim keys" do
+      refuse("input_not_empty", "the input line holds a draft")
+
+      expect(store.entries.first).to include("state" => "queued", "refused_reason" => "input_not_empty",
+        "refused_message" => "the input line holds a draft", "refused_at" => "2026-10-19T12:00:00.000Z", "refusals" => 1)
+      expect(described_class::CLAIM_KEYS & store.entries.first.keys).to eq([])
+    end
+
+    it "counts repeats and keeps the first time for the same reason, restarting both when the reason changes" do
+      refuse("input_not_empty")
+      now[0] += 10
+      ready = 2
+      claim = store.claim("%5", daemon_pid: 4242) { ready_at(ready) }.first
+      store.finish(claim, :requeue, reason: "input_not_empty", message: "newer words")
+
+      expect(store.entries.first).to include("refusals" => 2, "refused_at" => "2026-10-19T12:00:00.000Z", "refused_message" => "newer words")
+
+      now[0] += 10
+      claim = store.claim("%5", daemon_pid: 4242) { ready_at(3) }.first
+      store.finish(claim, :requeue, reason: "dialog_open", message: "x")
+
+      expect(store.entries.first).to include("refusals" => 1, "refused_reason" => "dialog_open", "refused_at" => "2026-10-19T12:00:20.000Z")
+    end
+
+    it "stays through a requeue that names no reason" do
+      refuse("input_not_empty")
+      claim = store.claim("%5", daemon_pid: 4242) { ready_at(2) }.first
+      store.finish(claim, :requeue)
+
+      expect(store.entries.first).to include("refused_reason" => "input_not_empty", "refusals" => 1)
+    end
+
+    it "reads as nil on an entry from an older file" do
+      expect(store.entries.first.values_at("refused_reason", "refused_message", "refused_at", "refusals")).to eq([nil] * 4)
+    end
+
+    it "goes away with a delivered entry" do
+      refuse("input_not_empty")
+      claim = store.claim("%5", daemon_pid: 4242) { ready_at(2) }.first
+      store.start_paste(claim)
+      store.finish(claim, :delivered)
+
+      expect(store.entries).to eq([])
+    end
+  end
 end

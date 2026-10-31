@@ -47,6 +47,7 @@ The same log records what agents and pipelines do. `reconstruct` ignores these e
 | `pipeline_dropped` | agent daemon, coordinator has no record of the work item | `work_item_ref`, `message` |
 | `agent_state` | agent daemon's session monitor, on each change | `pane_id`, `pane_pid`, `index`, `kind`, `state` (`working`, `idle`, `waiting`, `done`, `exited`, `closed`), `since`, and `stop_reason` for `done` |
 | `agent_alert` | agent daemon's session monitor, once the notify command accepts an alert | `pane_id`, `pane_pid`, `kind` (`idle` or `waiting`; missing means `idle`); for `idle`: `idle_since` (when the output went quiet); for `waiting`: `agent_id` (`null` for the main agent), `waiting_since` |
+| `prompt_refused` | agent daemon, a queued `agent-run send --when-idle` prompt the pane would not take (a draft in the input line, say) | `id`, `pane_id`, `reason`, `message`. Written when the reason first appears or changes, not on every retry. See [`events`](README.events.md#queued-prompt-lines) |
 | `lock_wait_started` | `lock acquire --wait`, `dev up` | `lock`, `pid`, `holder`; for `lock`: `task`, `position` |
 | `lock_acquired` | same, once a wait ends with the lock | `lock`, `pid`, `waited_seconds` |
 | `lock_takeover` | `lock acquire` taking over an idle holder; `dev up --force` | `lock`, `pid`, `from`; for `lock`: `waited_seconds`, `idle_since` |

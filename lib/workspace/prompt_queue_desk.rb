@@ -271,9 +271,12 @@ module Workspace
 
       announced = @store.announce(entry["id"])
       return error("not_delivered", "the prompt left the queue before it could be reported", "id" => entry["id"]) unless announced
+      refused = result && result[:id] == entry["id"] && result[:outcome] == :requeued && result[:refused]
+      record_refusal(entry, refused[:reason], refused[:message]) if refused
       record(EventLog::PROMPT_QUEUED, "id" => entry["id"], "pane_id" => entry["pane_id"],
         "position" => announced["position"], "clear_first" => announced["clear_first"] == true)
-      {"ok" => true, "queued" => true, "id" => entry["id"], "position" => announced["position"]}
+      queued = {"ok" => true, "queued" => true, "id" => entry["id"], "position" => announced["position"]}
+      refused ? queued.merge("waiting_reason" => refused[:reason]) : queued
     end
 
     # The reply for an entry its own send's delivery ended; nil when the
@@ -483,7 +486,7 @@ module Workspace
         if progress[:cleared_at]
           finish(entry, :drop, outcome: :dropped, reason: "not_delivered", message: typed.message || typed.outcome.to_s)
         else
-          finish(entry, :requeue, outcome: :requeued)
+          finish(entry, :requeue, outcome: :requeued, reason: typed.reason, message: typed.message)
         end
       end
     end
@@ -515,7 +518,7 @@ module Workspace
       when :not_submitted
         progress[:cleared_at] = cleared_at
         finish(entry, :drop, outcome: :dropped, reason: "clear_unconfirmed", message: "Enter wasn't confirmed (#{typed.message})")
-      else finish(entry, :requeue, outcome: :requeued)
+      else finish(entry, :requeue, outcome: :requeued, reason: typed.reason, message: typed.message)
       end
     end
 
@@ -560,9 +563,22 @@ module Workspace
     end
 
     def finish(entry, how, outcome:, reason: nil, submitted: nil, message: nil)
-      ended = @store.finish(entry, how)
+      ended = if how == :requeue
+        @store.finish(entry, how, reason: reason, message: message)
+      else
+        @store.finish(entry, how)
+      end
       dequeued(ended, outcome.to_s, reason: reason, submitted: submitted) if ended && outcome != :requeued
-      {id: entry["id"], outcome: outcome, reason: reason, submitted: submitted, message: message}
+      result = {id: entry["id"], outcome: outcome, reason: reason, submitted: submitted, message: message}
+      if how == :requeue && reason
+        result[:refused] = {reason: reason, message: message}
+        record_refusal(ended, reason, message) if ended && ended["announced"] && ended["refused_reason"] != reason
+      end
+      result
+    end
+
+    def record_refusal(entry, reason, message)
+      record(EventLog::PROMPT_REFUSED, "id" => entry["id"], "pane_id" => entry["pane_id"], "reason" => reason, "message" => message)
     end
 
     # The checks made again under the delivery lock, after the quiet wait.

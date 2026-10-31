@@ -161,6 +161,7 @@ module Workspace
       # @param json [Boolean] print the result as JSON instead of a sentence
       # @return [Hash] the daemon's answer: `"delivered"` and `"submitted"`
       #   (and `"cleared"` after a clear), or `"queued"`, `"id"` and `"position"`
+      #   (plus `"waiting_reason"` when the first try was refused)
       # @raise [Workspace::UsageError] for a body over the limit
       # @raise [Workspace::Error] `no_daemon`, `connection_failed`,
       #   `unreadable_reply`, the {Workspace::PaneLocator} codes, and the
@@ -193,6 +194,7 @@ module Workspace
           cleared = clear_first ? "clears the conversation and " : ""
           @output.puts "Queued for pane #{detail[:id]} at position #{result["position"]} (#{result["id"]}); " \
             "the agent daemon #{cleared}types it when the agent's turn ends (prompt_dequeued in workspace events says how it went)."
+          @output.puts "The first try was refused (#{TerminalText.escape(result["waiting_reason"].to_s)}); agent-run queue list says why." if result["waiting_reason"]
         elsif result["cleared"]
           @output.puts "Pane #{detail[:id]} was idle; cleared the conversation, typed the text and pressed Enter."
         else

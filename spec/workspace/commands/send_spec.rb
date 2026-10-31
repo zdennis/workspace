@@ -191,6 +191,15 @@ RSpec.describe Workspace::Commands::Send do
         "types it when the agent's turn ends (prompt_dequeued in workspace events says how it went).\n")
     end
 
+    it "says why the first try was refused, with control characters escaped" do
+      reply_with("ok" => true, "queued" => true, "id" => "q1", "position" => 1, "pane_id" => "%3", "waiting_reason" => "input_not_empty\e[31m\nx")
+
+      command.through_daemon(name: "api", pane: "%3", body: "go", when_idle: true)
+
+      expect(output.string).to include("The first try was refused (input_not_empty\\e[31m\\nx); agent-run queue list says why.\n")
+      expect(output.string).not_to include("\e")
+    end
+
     it "raises clear_unconfirmed as the exit-75 error, with its details" do
       reply_with("ok" => false, "error" => "clear_unconfirmed", "message" => "not confirmed", "id" => "q1", "clear_typed" => true)
 
