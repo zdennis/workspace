@@ -32,6 +32,11 @@ module Workspace
   # pane outside window 0, which always defers, because the monitor scans
   # window 0 only and so has no facts for it.
   #
+  # An agent whose process group doesn't hold the pane's terminal gets nothing:
+  # a shell that took the terminal back runs whatever is typed, even while a
+  # continued agent redraws its prompt. {#check} defers, and every typing try
+  # and Enter press reads the groups again and refuses.
+  #
   # An attempt runs on its own thread, inside a claim on the pane, and one
   # {AgentRecoveryStore#update} ends it. The first of an outage is typed: the
   # message goes to the live prompt, with no signal and no marker, and a turn
@@ -90,10 +95,11 @@ module Workspace
     # What the agent is told at its live prompt.
     TYPED_MESSAGE = "An API error stopped your last turn (%<error>s). Continue where you left off."
 
-    # What the agent is told once it has been resumed.
+    # What the agent is told once it has been resumed. Neither message may hold
+    # anything a shell expands: one that lands at a shell must do nothing.
     RESUMED_MESSAGE = "An API error stopped your last turn (%<error>s), so workspace restarted Claude Code and resumed this " \
       "conversation. Locks your old process held were released, so take them again before you use them. A dev server " \
-      "started with `workspace dev up` is still running and keeps its lock. Continue where you left off."
+      "started with workspace dev up is still running and keeps its lock. Continue where you left off."
 
     # Event log line for a finished attempt.
     ATTEMPT_EVENT = "agent_recovery_attempt"
@@ -851,16 +857,16 @@ module Workspace
       end
     end
 
-    # @return [Array] +:same+ (the agent we stopped), +:other+ with the agent,
-    #   +:clear+ (a shell holding the terminal), or +:none+ when the pane is
-    #   neither or can't be read
+    # @return [Array] +:same+ with the agent and the pane's pid (the agent we
+    #   stopped), +:other+ with the agent, +:clear+ (a shell holding the
+    #   terminal), or +:none+ when the pane is neither or can't be read
     def pane_look(attempt)
       detail = pane_detail(attempt.pane_id)
       tree = detail.is_a?(Hash) ? read_tree : nil
       return [:none] unless tree
 
       agent = @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
-      return ours?(agent, attempt) ? [:same] : [:other, agent] if agent
+      return ours?(agent, attempt) ? [:same, agent, detail[:pid]] : [:other, agent] if agent
       clear = @stopper.pane_clear?(pane_pid: detail[:pid], command: detail[:command], detector: @detector, tree: tree)
       clear ? [:clear] : [:none]
     end
@@ -958,15 +964,16 @@ module Workspace
     end
 
     # Each try's identity check, under the lock: nothing is typed unless the
-    # claim holds and the pane still has the attempt's agent.
+    # claim holds and the pane still has the attempt's agent, holding the
+    # terminal.
     #
     # @return [Array, nil] the refusal; +:other+ with an agent we didn't start
     def typing_refusal(attempt)
       return ["claim_lost"] unless @restarting.call(attempt.pane_id)
 
-      look, agent = pane_look(attempt)
+      look, agent, pane_pid = pane_look(attempt)
       case look
-      when :same then nil
+      when :same then @stopper.foreground?(pid: agent[:pid], pane_pid: pane_pid) ? nil : ["pane_not_clear"]
       when :other then [:other, agent]
       else ["pane_not_clear"]
       end
@@ -979,17 +986,20 @@ module Workspace
     def type_once(attempt)
       pane_id = attempt.pane_id
       typed = @prompt_typer.type(session_name: @session_name, target: pane_id, pane_id: pane_id, text: attempt.message,
-        before_paste: -> { !prompt_after?(pane_id, attempt.opened_at) })
+        before_paste: -> { !prompt_after?(pane_id, attempt.opened_at) }, before_enter: -> { typing_refusal(attempt).nil? })
       case typed.outcome
       when :submitted then "submitted"
-      when :not_submitted then press_enter(pane_id, attempt.message) ? "submitted" : "not_submitted"
+      when :not_submitted then press_enter(attempt) ? "submitted" : "not_submitted"
       when :refused then (typed.reason == "unknown") ? :retry : "not_typed"
       else "not_typed"
       end
     end
 
-    def press_enter(pane_id, message)
-      @prompt_typer.check(pane_id, pasted: message).nil? && @tmux.deliver(@session_name, pane_id, "", enter: true).ok?
+    # The paste took time, so the pane is read again before Enter.
+    def press_enter(attempt)
+      pane_id = attempt.pane_id
+      typing_refusal(attempt).nil? && @prompt_typer.check(pane_id, pasted: attempt.message).nil? &&
+        @tmux.deliver(@session_name, pane_id, "", enter: true).ok?
     end
 
     # Step 6: one update, so it can't overwrite a hook's write, then the line.
@@ -1277,7 +1287,9 @@ module Workspace
     # What may clear comes first, so an agent at work is deferred and never
     # read as a transcript that moved on.
     def check_live(pane_id, entry, detail, tree, agent, screen)
-      return verdict(:defer) if entry["stopped"] == true || held_off?(pane_id, entry, screen)
+      return verdict(:defer) if entry["stopped"] == true
+      return verdict(:defer) unless @stopper.foreground?(pid: agent[:pid], pane_pid: detail[:pid])
+      return verdict(:defer) if held_off?(pane_id, entry, screen)
 
       unless entry["agent_pid"]
         @store.update(pane_id) { |current| store_agent(current, agent) if same_wait?(current, entry) }

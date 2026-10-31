@@ -138,6 +138,45 @@ RSpec.describe Workspace::AgentStopper do
     end
   end
 
+  describe "#foreground?" do
+    def foreground?(reader)
+      described_class.new(process_tree: process_tree, group_reader: reader).foreground?(pid: 20, pane_pid: 10)
+    end
+
+    it "is true for an agent's group that holds the terminal" do
+      expect(foreground?(->(_pid) { [20, 20] })).to be true
+    end
+
+    it "is true for a wrapper's agent, whose group is the wrapper's" do
+      expect(foreground?(->(pid) { (pid == 20) ? [15, 15] : [10, 15] })).to be true
+    end
+
+    it "is false once the shell has taken the terminal back from a stopped agent" do
+      expect(foreground?(->(pid) { (pid == 20) ? [20, 10] : [10, 10] })).to be false
+    end
+
+    it "is false when a group can't be read" do
+      expect(foreground?(->(_pid) {})).to be false
+      expect(foreground?(->(pid) { (pid == 20) ? nil : [10, 10] })).to be false
+      expect(foreground?(->(pid) { (pid == 20) ? [10, 10] : nil })).to be false
+    end
+
+    it "is false when the reader raises" do
+      expect(foreground?(->(_pid) { raise Errno::EAGAIN })).to be false
+    end
+
+    it "reads the groups again on every call" do
+      read = 0
+      foreground = described_class.new(process_tree: process_tree, group_reader: ->(_pid) {
+        read += 1
+        [10, 10]
+      })
+
+      2.times { foreground.foreground?(pid: 20, pane_pid: 10) }
+      expect(read).to eq(4)
+    end
+  end
+
   describe "#session_held?" do
     def held?(args) = stopper.session_held?(session_id: "abc-1", tree: snapshot(proc_entry(10, 1, "-zsh"), proc_entry(40, 1, args)))
 

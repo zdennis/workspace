@@ -227,6 +227,14 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     expect(signals).to eq([])
   end
 
+  describe "the typed messages" do
+    [described_class::TYPED_MESSAGE, described_class::RESUMED_MESSAGE].each do |template|
+      it "hold nothing a shell expands or runs: #{template[0, 30]}" do
+        expect(format(template, error: "server_error")).not_to match(/[`$;&|<>\\'"\n]/)
+      end
+    end
+  end
+
   describe "the worker" do
     it "does no store or process call on the caller's thread, and works the queue in order" do
       blocks = []
@@ -1366,6 +1374,49 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       end
     end
 
+    describe "an agent whose group doesn't hold the terminal" do
+      {"a shell that took it back" => ->(pid) { (pid == 20) ? [20, 10] : [10, 10] },
+       "an agent's group that can't be read" => ->(pid) { (pid == 20) ? nil : [10, 10] },
+       "a terminal that can't be read" => ->(pid) { (pid == 20) ? [20, 20] : nil },
+       "a read that raises" => ->(_pid) { raise Errno::EAGAIN }}.each do |name, read|
+        context "with #{name}" do
+          let(:group_read) { read }
+
+          [0, 1].each do |count|
+            it "defers with attempts at #{count}, with a prompt on the screen" do
+              due_entry(attempts: count)
+
+              expect(answer).to eq(:defer)
+              desk.scan
+              expect_no_attempt
+              expect(entry["defer_since"]).not_to be_nil
+            end
+          end
+        end
+      end
+
+      it "answers :go again once the agent's group has the terminal back" do
+        due_entry(attempts: 0)
+        foreground = [false]
+        allow(stopper).to receive(:foreground?).with(pid: 20, pane_pid: 10) { foreground[0] }
+
+        expect(answer).to eq(:defer)
+        foreground[0] = true
+        expect(answer).to eq(:go)
+      end
+
+      it "answers :go for a wrapper's agent in the group that holds the terminal" do
+        due_entry(attempts: 0)
+        processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(15, 10, "/bin/sh /Users/z/bin/claude-dev"),
+          proc_entry(20, 15, "claude")])
+        allow(stopper).to receive(:foreground?).and_call_original
+        group_ids.replace([15, 15])
+
+        expect(answer).to eq(:go)
+        expect(stopper).to have_received(:foreground?).with(pid: 20, pane_pid: 10)
+      end
+    end
+
     it "gives up cannot_restart once attempts are above 0, for a start command" do
       due_entry
       tmux.start_commands = [{window: 0, index: 1, id: "%5", start_command: "claude"}]
@@ -2239,6 +2290,18 @@ RSpec.describe Workspace::AgentRecoveryDesk do
           expect(outcomes).to eq(["claim_lost"])
         end
 
+        {"a shell that took the terminal back" => [21, 10], "a group that can't be read" => []}.each do |name, ids|
+          it "types no message to the resumed agent with #{name}" do
+            due_entry
+            hooks[:rebind] = -> { group_ids.replace(ids) }
+            desk.scan
+
+            expect(messages).to eq([])
+            expect(typer).not_to have_received(:type)
+            expect(outcomes).to eq(["pane_not_clear"])
+          end
+        end
+
         it "types no message once no agent is left" do
           due_entry
           hooks[:rebind] = -> { processes.reject! { |process| process[:pid] == 21 } }
@@ -2572,6 +2635,55 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(typer).to have_received(:type).once
         expect(texts.count("")).to eq(1)
         expect(outcomes).to eq(["resumed"])
+      end
+
+      it "never presses Enter when the shell takes the terminal after the paste" do
+        allow(tmux).to receive(:deliver).and_wrap_original do |original, session, pane, text, enter: true|
+          original.call(session, pane, text, enter: enter).tap { group_ids.replace([21, 10]) unless enter }
+        end
+        desk.scan
+
+        expect(texts).not_to include("")
+        expect(outcomes).to eq(["not_submitted"])
+        expect(entry["draft_text"]).to match(/workspace restarted Claude Code/)
+      end
+
+      it "reads the groups on every try" do
+        reads = []
+        allow(typer).to receive(:type).and_return(Workspace::PromptTyper::Result.new(outcome: :refused, reason: "unknown"))
+        allow(stopper).to receive(:foreground?).and_wrap_original do |original, **args|
+          reads << args[:pid]
+          original.call(**args)
+        end
+        desk.scan
+
+        expect(typer).to have_received(:type).exactly(described_class::TYPE_TRIES).times
+        expect(reads.count(21)).to eq(described_class::TYPE_TRIES)
+      end
+
+      it "stops trying when the terminal is lost between tries, typing nothing more" do
+        tries = 0
+        allow(typer).to receive(:type) do
+          tries += 1
+          allow(stopper).to receive(:foreground?).and_return(false)
+          Workspace::PromptTyper::Result.new(outcome: :refused, reason: "unknown")
+        end
+        desk.scan
+
+        expect(tries).to eq(1)
+        expect(outcomes).to eq(["pane_not_clear"])
+      end
+
+      it "doesn't press Enter on :not_submitted once the shell holds the terminal" do
+        allow(typer).to receive(:type) do |text:, **|
+          tmux.screen = "#{rule_prompt}#{text}\n"
+          allow(stopper).to receive(:foreground?).and_return(false)
+          Workspace::PromptTyper::Result.new(outcome: :not_submitted)
+        end
+        desk.scan
+
+        expect(texts).not_to include("")
+        expect(outcomes).to eq(["not_submitted"])
       end
 
       it "leaves draft_text after a failed Enter, and the next check answers :go" do
@@ -3214,6 +3326,60 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(outcomes).to eq(["not_typed"])
         expect(entry).to include("phase" => "waiting", "attempts" => 1)
         expect(answer).to eq(:defer)
+      end
+
+      {"a shell that took the terminal back" => [20, 10], "a group that can't be read" => []}.each do |name, ids|
+        it "types and presses nothing with #{name} after the check passed" do
+          allow(typer).to receive(:type).and_call_original
+          before_typing { group_ids.replace(ids) }
+          desk.scan
+
+          expect(tmux.sent_keys).to eq([])
+          expect(typer).not_to have_received(:type)
+          expect(outcomes).to eq(["pane_not_clear"])
+          expect(entry).to include("phase" => "waiting", "attempts" => 1)
+          expect_no_stop
+        end
+      end
+
+      describe "the shell taking the terminal after the paste" do
+        before do
+          flipped = false
+          allow(tmux).to receive(:deliver).and_wrap_original do |original, session, pane, text, enter: true|
+            original.call(session, pane, text, enter: enter).tap do
+              next if enter || flipped
+              flipped = true
+              group_ids.replace([20, 10])
+            end
+          end
+          desk.scan
+        end
+
+        it "never presses Enter, and leaves our text as the draft" do
+          expect(texts).to eq([message])
+          expect(outcomes).to eq(["not_submitted"])
+          expect(entry["draft_text"]).to eq(message)
+        end
+
+        it "empties the line with C-u ahead of the resume, on a restart once the agent has it back" do
+          group_ids.replace([10, 10])
+          expect_restart_after("not_submitted")
+
+          expect(tmux.sent_key_names.map { |key| key[:key] }).to eq(["C-u"])
+        end
+      end
+
+      it "presses no Enter on :not_submitted once the shell holds the terminal" do
+        allow(typer).to receive(:type) do |text:, **|
+          tmux.screen = "#{rule_prompt}#{text}\n"
+          allow(stopper).to receive(:foreground?).and_return(false)
+          Workspace::PromptTyper::Result.new(outcome: :not_submitted)
+        end
+        desk.scan
+
+        expect(texts).not_to include("")
+        expect(outcomes).to eq(["not_submitted"])
+        expect(entry["draft_text"]).to eq(message)
       end
 
       it "an input line that lost the text is not_submitted, and leads to a restart" do

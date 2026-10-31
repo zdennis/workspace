@@ -64,11 +64,23 @@ module Workspace
       process = @process_tree.snapshot.find(pid)
       return :not_running unless process
       return :stale unless process[:lstart] == started
-      return :background unless foreground?(pid, pane_pid)
+      return :background unless foreground?(pid: pid, pane_pid: pane_pid)
       @signaller.call("INT", pid)
       :signalled
     rescue Errno::ESRCH
       :not_running
+    end
+
+    # @param pid [Integer] the agent's process
+    # @param pane_pid [Integer] the pane's process (its shell), which answers for the terminal
+    # @return [Boolean] whether the process group of +pid+ holds the pane's terminal; false when a group
+    #   can't be read. Each call runs `ps` twice, so the answer is fresh and no snapshot is involved.
+    def foreground?(pid:, pane_pid:)
+      pgid, = @group_reader.call(pid)
+      _, tpgid = @group_reader.call(pane_pid)
+      !pgid.nil? && pgid == tpgid
+    rescue
+      false
     end
 
     # @return [Boolean] whether the pane is at a shell prompt that holds the terminal, with no agent under it
@@ -95,12 +107,6 @@ module Workspace
     def resumes?(words, session_id)
       words.include?("--resume=#{session_id}") ||
         words.each_cons(2).any? { |flag, value| RESUME_FLAGS.include?(flag) && value == session_id }
-    end
-
-    def foreground?(pid, pane_pid)
-      pgid, = @group_reader.call(pid)
-      _, tpgid = @group_reader.call(pane_pid)
-      !pgid.nil? && pgid == tpgid
     end
 
     def shell?(process)
