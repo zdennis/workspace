@@ -71,7 +71,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports the workflow feature" do
       command.call(json: true)
 
-      expect(document["features"]).to include("workflow" => 8)
+      expect(document["features"]).to include("workflow" => 9)
     end
 
     it "reports the restore feature" do
@@ -152,10 +152,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("dev_down_holder" => 1)
     end
 
-    it "reports plan 5 once plan start can ask for a draft" do
+    it "reports plan 6 once plan status takes the shared scope rule and --project" do
       command.call(json: true)
 
-      expect(document["features"]).to include("plan" => 5)
+      expect(document["features"]).to include("plan" => 6)
     end
 
     it "reports ticket 2 once ticket list and start --slug exist" do
