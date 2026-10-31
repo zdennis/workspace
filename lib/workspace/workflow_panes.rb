@@ -171,10 +171,13 @@ module Workspace
     # @param pane [String] a pane id
     # @param text [String] one line
     # @param fresh [Boolean] start a new conversation first
-    # @return [Hash] :ok; when false, :code (an error code) and :message
-    def kick(workspace:, pane:, text:, fresh:)
+    # @param run_id [String, nil] the run the line is for; the daemon types nothing
+    #   more once the pane is no longer bound to it
+    # @return [Hash] :ok, and :warning when the daemon gave one; when false, :code
+    #   (an error code) and :message, with :reason and :proof_missing when the daemon gave them
+    def kick(workspace:, pane:, text:, fresh:, run_id: nil)
       ensure_daemon!(workspace)
-      fresh ? restart(workspace, pane, text) : type(workspace, pane, text)
+      fresh ? restart(workspace, pane, text, run_id) : type(workspace, pane, text)
     rescue Workspace::Error => e
       {ok: false, code: e.code, message: e.message.lines.first.to_s.strip}
     end
@@ -215,11 +218,13 @@ module Workspace
       {ok: false, code: "not_delivered", message: delivery.message}
     end
 
-    def restart(workspace, pane, text)
-      reply = request(workspace, "type" => "restart_agent", "workspace" => workspace, "pane" => pane, "prompt" => text,
-        "force" => false, "wait" => true)
-      return {ok: true} if reply["ok"]
-      {ok: false, code: reply["error"].to_s, message: [reply["message"], reply["fix"]].compact.join(" "), reason: reply["reason"]}.compact
+    def restart(workspace, pane, text, run_id)
+      message = {"type" => "restart_agent", "workspace" => workspace, "pane" => pane, "prompt" => text, "force" => false, "wait" => true}
+      message["run_id"] = run_id if run_id
+      reply = request(workspace, message)
+      return {ok: true, warning: reply["warning"]}.compact if reply["ok"]
+      {ok: false, code: reply["error"].to_s, message: [reply["message"], reply["fix"]].compact.join(" "), reason: reply["reason"],
+       proof_missing: reply.dig("details", "proof_missing"), warning: reply["warning"]}.compact
     end
 
     def request(workspace, message)

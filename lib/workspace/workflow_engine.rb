@@ -700,13 +700,13 @@ module Workspace
     # as before; a late answer for an attempt already settled changes nothing.
     def deliver(run_id, delivery)
       kick = begin
-        @panes.kick(workspace: delivery["workspace"], pane: delivery["pane"], text: delivery["text"], fresh: delivery["fresh"])
+        @panes.kick(workspace: delivery["workspace"], pane: delivery["pane"], text: delivery["text"], fresh: delivery["fresh"], run_id: run_id)
       rescue => e
         # Whatever went wrong, the mark is settled here: left set, it would hold off `resume` for nothing.
         {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
       end
       @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
-        "pane" => delivery["pane"], "delivered" => kick[:ok])
+        "pane" => delivery["pane"], "delivered" => kick[:ok], **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
       transition(run_id) do |stored|
         state = stored["steps"].fetch(delivery["step"])
         attempt = state["attempts"].last
@@ -731,7 +731,8 @@ module Workspace
       gone = PANE_GONE_CODES.include?(kick[:code].to_s)
       run["reason"] = reason(gone ? "pane_gone" : "waiting_you",
         {"kind" => "dispatch", "step" => run["current"], "pane" => run["pane"], "workspace" => run["workspace"],
-         "error" => kick[:code].to_s, "message" => kick[:message]&.to_s&.scrub, "reason" => kick[:reason]&.to_s}.compact)
+         "error" => kick[:code].to_s, "message" => kick[:message]&.to_s&.scrub, "reason" => kick[:reason]&.to_s,
+         "proof_missing" => kick[:proof_missing]&.to_s}.compact)
     end
 
     # @return [Hash, nil] the lock the run has to wait for; nil when it holds everything the step uses

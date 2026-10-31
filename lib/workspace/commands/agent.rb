@@ -59,6 +59,11 @@ module Workspace
       #   its pane, and on a timer; nil leaves workflow runs alone
       # @param agent_restart_factory [#call] builds the {Workspace::AgentRestart}
       #   that runs one `restart_agent` message
+      # @param transcript_summary [Workspace::TranscriptSummary] says whether the main
+      #   agent wrote anything after its Stop
+      # @param idle_prompt_check [Workspace::IdlePromptCheck] reads a pane's input box
+      # @param pane_bindings [Workspace::PaneBindings, nil] says which run a pane is
+      #   bound to; a restart for a run stops typing once that changes
       # @param hook_event_log_factory [#call, nil] given the workspace name, builds the
       #   {Workspace::HookEventLog} each forwarded hook event is written to; nil writes none
       # @param agent_status_desk_factory [#call, nil] given the workspace, its tmux session, the session
@@ -117,6 +122,9 @@ module Workspace
         workflow_nudger: nil,
         scan_slots: nil,
         agent_restart_factory: nil,
+        transcript_summary: TranscriptSummary.new,
+        idle_prompt_check: IdlePromptCheck.new,
+        pane_bindings: nil,
         hook_event_log_factory: nil,
         agent_status_desk_factory: nil,
         prompt_queue_desk_factory: nil,
@@ -151,6 +159,9 @@ module Workspace
         @workflow_nudger = workflow_nudger
         @scan_slots = scan_slots
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
+        @transcript_summary = transcript_summary
+        @idle_prompt_check = idle_prompt_check
+        @pane_bindings = pane_bindings
         @hook_event_log_factory = hook_event_log_factory
         @plan_progress_watcher_factory = plan_progress_watcher_factory
         @spine_watcher_factory = spine_watcher_factory
@@ -623,7 +634,7 @@ module Workspace
           @state_lock.synchronize do
             @restarts[pane_id] = Thread.new do
               run_restart(started, message["prompt"], message["force"] == true,
-                timeout, wait ? client : nil)
+                timeout, wait ? client : nil, run_id: message["run_id"])
             end
           end
           spawned = true
@@ -775,7 +786,7 @@ module Workspace
       # A worker killed by {#stop_restarts} says so on stderr and to a
       # waiting caller, including whether /clear was already typed, since
       # that leaves the pane cleared with no prompt.
-      def run_restart(started, prompt, force, timeout, client)
+      def run_restart(started, prompt, force, timeout, client, run_id: nil)
         pane_id = started["pane_id"]
         restart = nil
         finished = false
@@ -787,9 +798,12 @@ module Workspace
             pane_state: ->(id) { @session_monitor&.restart_state(id) },
             agent_pid: ->(id) { @session_monitor&.agent_pid(id) },
             pane_kind: ->(id) { @session_monitor&.pane_kind(id) },
-            delivery_facts: ->(id) { @session_monitor&.delivery_facts(id) }
+            delivery_facts: ->(id) { @session_monitor&.delivery_facts(id) },
+            turn_over: method(:main_turn_missing),
+            screen_ready: ->(id) { @idle_prompt_check.refusal(@session_monitor&.typing_facts(id), @tmux.capture_screen_styled(id)) },
+            run_bound: method(:pane_bound_to_run?)
           )
-          restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout)
+          restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout, run_id: run_id, waiting: !client.nil?)
         rescue => e
           {"ok" => false, "error" => "internal_error", "message" => e.message}
         end
@@ -808,6 +822,22 @@ module Workspace
           nil
         end
         release_restart(pane_id)
+      end
+
+      # What keeps a pane's main turn from being proven over, by name: the monitor's
+      # evidence, then what the transcript holds after the Stop. nil once proven.
+      def main_turn_missing(pane_id)
+        evidence = @session_monitor&.main_turn_evidence(pane_id)
+        return "no_monitor" unless evidence
+        return evidence[:missing] if evidence[:missing]
+
+        found = @transcript_summary.main_activity_after?(evidence[:transcript_path], evidence[:since])
+        found && "transcript_activity:#{found}"
+      end
+
+      def pane_bound_to_run?(pane_id, run_id)
+        entry = @pane_bindings&.binding_for(pane_id)
+        !entry.nil? && entry["kind"] == "run" && entry["id"] == run_id
       end
 
       def release_restart(pane_id)
@@ -831,10 +861,10 @@ module Workspace
       end
 
       def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
-        delivery_facts: ->(_pane_id) {})
+        delivery_facts: ->(_pane_id) {}, **proof)
         AgentRestart.new(tmux: @tmux, context_reader: @context_reader, session_name: session_name,
           delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid, pane_kind: pane_kind,
-          delivery_facts: delivery_facts, logger: @logger)
+          delivery_facts: delivery_facts, logger: @logger, **proof)
       end
 
       def urgent_steer_reply(ref, entry, body)

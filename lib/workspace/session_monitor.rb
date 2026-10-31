@@ -304,7 +304,7 @@ module Workspace
 
     # The state the restart busy check goes by. A pane's agent that has ended
     # its turn (a Stop hook) is idle here even though {#pane_state} still says
-    # "working" until `alerts.idle_after` of screen quiet; otherwise an agent
+    # "working" until {DEFAULT_IDLE_AFTER} of screen quiet; otherwise an agent
     # restarting itself would wait on its own last output. A pane with waits
     # is "waiting". With no turn event seen (or one still in progress) this
     # is {#pane_state}.
@@ -320,6 +320,33 @@ module Workspace
         next "waiting" unless pane[:waits].empty?
         next "idle" if pane[:turn_ended]
         state_of(pane, now - (pane[:last_activity_at] || now))
+      end
+    end
+
+    # When a hook-mode Claude Code pane's main agent ended its turn, if nothing
+    # since says otherwise.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [Time, nil] the main Stop this monitor heard; nil when any part
+    #   of {#main_turn_evidence} is missing
+    def main_turn_over_since(pane_id)
+      main_turn_evidence(pane_id)[:since]
+    end
+
+    # What the monitor knows of the main agent's turn being over: a main Stop
+    # from hook-mode Claude Code, with no main tool, sub-agent start, prompt or
+    # session event since, no wait, no open tool and no failed turn. Stopped
+    # sub-agents and redraws say nothing about it. The times are this monitor's
+    # own, so a daemon restart forgets them and reads `no_stop_seen`.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [Hash] `:since` and `:transcript_path` with the proof, else
+    #   `:missing`: the first thing that failed, by name
+    def main_turn_evidence(pane_id)
+      @lock.synchronize do
+        pane = @panes[pane_id]
+        missing = pane ? main_turn_missing(pane) : "pane_unknown"
+        missing ? {missing: missing} : {since: pane[:main_stopped_at], transcript_path: pane[:transcript_path]}
       end
     end
 
@@ -486,6 +513,16 @@ module Workspace
       return pane[:own_quiet_at] if pane[:restored_ready]
       return pane[:done][:since] if state == "done"
       pane[:last_activity_at] && pane[:last_activity_at] + @idle_after
+    end
+
+    def main_turn_missing(pane)
+      return "not_claude" unless pane[:kind] == "claude"
+      return "no_hooks" unless pane[:hook_kind] == "claude"
+      return "no_stop_seen" unless pane[:main_stopped_at]
+      return MAIN_ACTIVITY.fetch(pane[:main_active_event]) if pane[:main_active_at]
+      return "turn_failed" if pane[:turn_failed]
+      return "waiting" unless pane[:waits].empty?
+      "open_tool" unless pane[:open_tools].to_h.empty?
     end
 
     # The body of {#scan}, run under a machine-wide scan slot when a limiter
@@ -840,6 +877,28 @@ module Workspace
     IDLE_INPUT_MESSAGE = "Claude is waiting for your input"
     private_constant :IDLE_INPUT_MESSAGE
 
+    # Events that show the main agent active after a Stop, and how
+    # {#main_turn_evidence} names each one.
+    MAIN_ACTIVITY = {
+      "tool_start" => "main_tool_after_stop", "tool_use" => "main_tool_after_stop", "subagent_start" => "subagent_start_after_stop",
+      "user_prompt" => "main_prompt_after_stop", "session_start" => "session_start_after_stop", "session_end" => "session_end_after_stop"
+    }.freeze
+    private_constant :MAIN_ACTIVITY
+
+    # A main Stop starts the count again. A sub-agent's tool says nothing of the
+    # main agent, but any sub-agent start does, as it takes away the done mark.
+    def note_main_turn(pane, event)
+      name = event["event"]
+      if name == "stop" && event["agent_id"].nil?
+        pane[:main_stopped_at] = @clock.now
+        pane.delete(:main_active_at)
+        pane.delete(:main_active_event)
+      elsif MAIN_ACTIVITY.key?(name) && (event["agent_id"].nil? || name == "subagent_start")
+        pane[:main_active_at] = @clock.now
+        pane[:main_active_event] = name
+      end
+    end
+
     # Waits are kept per agent, since the main agent and parallel sub-agents
     # can each be waiting on a person at once. Any other event from an agent
     # ends that agent's wait: a tool ran after a permission prompt, say. It
@@ -856,6 +915,8 @@ module Workspace
     # that agent; otherwise it can't say whose dialog it is and the fields stay
     # null.
     def apply_event(pane, event)
+      note_main_turn(pane, event)
+
       # A tool starting says nothing about a wait: with tools run side by side, one
       # can start while another waits on a permission prompt.
       return if event["event"] == "tool_start"

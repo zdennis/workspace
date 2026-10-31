@@ -1,6 +1,103 @@
 require "tmpdir"
 
 RSpec.describe Workspace::TranscriptSummary do
+  describe "#main_activity_after?" do
+    let(:dir) { Dir.mktmpdir("transcript-activity") }
+    let(:path) { File.join(dir, "t.jsonl") }
+    let(:stop) { Time.utc(2026, 10, 31, 12, 0, 0) }
+    let(:later) { "2026-10-31T12:00:01.000Z" }
+    let(:earlier) { "2026-10-31T11:59:59.000Z" }
+
+    after { FileUtils.remove_entry(dir) }
+
+    def transcript(*records)
+      File.write(path, records.map { |r| r.is_a?(String) ? r : JSON.generate(r) }.join("\n") + "\n")
+    end
+
+    def activity = summary.main_activity_after?(path, stop)
+
+    let(:summary) { described_class.new }
+
+    described_class::HOUSEKEEPING_RECORDS.each do |type|
+      it "doesn't count #{type}" do
+        transcript({"type" => type, "timestamp" => later})
+        expect(activity).to be_nil
+      end
+    end
+
+    %w[user assistant queue-operation api-request cost-v2].each do |type|
+      it "counts #{type} stamped after the time and answers its type" do
+        transcript({"type" => type, "timestamp" => later})
+        expect(activity).to eq(type)
+      end
+
+      it "doesn't count #{type} stamped before the time" do
+        transcript({"type" => type, "timestamp" => earlier})
+        expect(activity).to be_nil
+      end
+    end
+
+    it "finds a record that sits before an older one, since records aren't in time order" do
+      transcript({"type" => "api-request", "timestamp" => later}, {"type" => "user", "timestamp" => earlier})
+      expect(activity).to eq("api-request")
+    end
+
+    it "doesn't count sidechain records" do
+      transcript({"type" => "assistant", "timestamp" => later, "isSidechain" => true})
+      expect(activity).to be_nil
+    end
+
+    it "skips unstamped records" do
+      transcript({"type" => "api-request-blob"})
+      expect(activity).to be_nil
+    end
+
+    it "counts a line it can't parse, such as one still being written" do
+      transcript({"type" => "system", "timestamp" => later}, %({"type":"assist))
+      expect(activity).to eq("unreadable")
+    end
+
+    it "counts a stamp it can't read" do
+      transcript({"type" => "user", "timestamp" => "soon"})
+      expect(activity).to eq("unreadable")
+    end
+
+    it "counts an unreadable transcript" do
+      expect(summary.main_activity_after?(File.join(dir, "gone.jsonl"), stop)).to eq("unreadable")
+      expect(summary.main_activity_after?(nil, stop)).to eq("unreadable")
+      expect(summary.main_activity_after?(dir, stop)).to eq("unreadable")
+    end
+
+    it "reads the tail of a large transcript" do
+      filler = JSON.generate({"type" => "user", "timestamp" => earlier, "pad" => "x" * 2000})
+      transcript(*Array.new(400) { filler }, {"type" => "queue-operation", "timestamp" => later})
+      expect(activity).to eq("queue-operation")
+    end
+
+    context "with the structure of a real transcript" do
+      let(:fixture) { File.expand_path("../fixtures/claude_transcripts/turn_end_then_wake_up.jsonl", __dir__) }
+      let(:records) { File.readlines(fixture).map { |line| JSON.parse(line) } }
+      let(:turn_end) { Time.iso8601(records.find { |r| r["subtype"] == "stop_hook_summary" }["timestamp"]) }
+
+      it "holds structure only" do
+        expect(records.flat_map(&:keys).uniq - %w[type subtype operation timestamp isSidechain isMeta]).to be_empty
+      end
+
+      it "finds nothing in the turn end's own records" do
+        wake_up = records.index { |r| r["type"] == "queue-operation" }
+        transcript(*records.first(wake_up))
+
+        expect(activity_at(turn_end)).to be_nil
+      end
+
+      it "finds the later wake-up" do
+        expect(summary.main_activity_after?(fixture, turn_end)).not_to be_nil
+      end
+
+      def activity_at(time) = summary.main_activity_after?(path, time)
+    end
+  end
+
   let(:tmpdir) { Dir.mktmpdir }
   let(:summary) { described_class.new }
 

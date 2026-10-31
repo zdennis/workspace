@@ -152,6 +152,7 @@ require_relative "workspace/tool_input_summary"
 require_relative "workspace/hook_event_log"
 require_relative "workspace/agent_status_requests"
 require_relative "workspace/typing_safety"
+require_relative "workspace/idle_prompt_check"
 require_relative "workspace/prompt_typer"
 require_relative "workspace/agent_status_desk"
 require_relative "workspace/event_stream"
@@ -760,6 +761,9 @@ module Workspace
       workflow_nudger: workflow_nudger,
       name_migration: name_migration,
       agent_recovery_desk_factory: agent_recovery_desk_factory,
+      transcript_summary: TranscriptSummary.new,
+      idle_prompt_check: IdlePromptCheck.new,
+      pane_bindings: pane_bindings,
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
       handoff_watcher_factory: ->(workspace:, session_monitor:, **rest) {

@@ -29,8 +29,8 @@ module Workspace
   # A `working` pane passes: Claude Code queues text typed during a turn.
   #
   # Every daemon delivery that reads the input line gets this through
-  # {PromptTyper#check}. {Tmux#deliver}, {AgentRestart} and {PaneDispatch}
-  # never read the input line.
+  # {PromptTyper#check}, and {AgentRestart} through {IdlePromptCheck}.
+  # {Tmux#deliver} and {PaneDispatch} never read the input line.
   class TypingSafety
     # Tools that draw a menu the typed text would answer.
     QUESTION_TOOLS = %w[AskUserQuestion ExitPlanMode].freeze

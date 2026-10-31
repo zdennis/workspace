@@ -159,7 +159,7 @@ RSpec.describe Workspace::WorkflowEngine do
       )
       expect(panes.bound).to eq("%5" => {workspace: "app.worktree-x", run_id: "wr_1", step: "plan", attempt: 1,
                                          instructions: prompt, artifacts: File.join(worktree, ".workflow", "wr_1")})
-      expect(panes.kicks).to eq([{workspace: "app.worktree-x", pane: "%5", text: "Read #{prompt} and follow it.", fresh: true}])
+      expect(panes.kicks).to eq([{workspace: "app.worktree-x", pane: "%5", text: "Read #{prompt} and follow it.", fresh: true, run_id: "wr_1"}])
       expect(store.find("wr_1")).to eq(run)
       expect(history).to eq(%w[run_started step_dispatching step_dispatched])
     end
@@ -514,6 +514,34 @@ RSpec.describe Workspace::WorkflowEngine do
     panes.kick_result = {ok: false, code: "pane_busy", message: "pane %5 kept changing", reason: "background_activity"}
 
     expect(start["reason"]["details"]).to include("error" => "pane_busy", "reason" => "background_activity")
+  end
+
+  it "keeps what a moving screen lacked in the reason's details and the dispatch event" do
+    panes.kick_result = {ok: false, code: "pane_busy", message: "kept changing", reason: "background_activity", proof_missing: "main_tool_after_stop"}
+
+    run = start
+
+    expect(run["reason"]["details"]).to include("proof_missing" => "main_tool_after_stop")
+    event = File.readlines(store.events_path(run["id"])).map { |line| JSON.parse(line) }.find { |e| e["type"] == "step_dispatched" }
+    expect(event).to include("delivered" => false, "proof_missing" => "main_tool_after_stop")
+  end
+
+  it "puts a delivery's warning in the dispatch event" do
+    panes.kick_result = {ok: true, warning: "background work may be lost"}
+
+    run = start
+
+    event = File.readlines(store.events_path(run["id"])).map { |line| JSON.parse(line) }.find { |e| e["type"] == "step_dispatched" }
+    expect(event).to include("delivered" => true, "warning" => "background work may be lost")
+  end
+
+  it "reads as waiting on a person when a prompt is unconfirmed" do
+    panes.kick_result = {ok: false, code: "not_delivered", message: "may still be in the input box", reason: "prompt_unconfirmed"}
+
+    run = start
+
+    expect(run["reason"]).to include("code" => "waiting_you")
+    expect(run["reason"]["details"]).to include("reason" => "prompt_unconfirmed")
   end
 
   describe "run from a process with no UTF-8 locale" do

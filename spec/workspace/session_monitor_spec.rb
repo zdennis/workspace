@@ -31,6 +31,92 @@ RSpec.describe Workspace::SessionMonitor do
     monitor.snapshot["panes"].find { |p| p["pane_id"] == id }
   end
 
+  describe "#main_turn_over_since" do
+    let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
+    let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
+
+    before { monitor.scan }
+
+    def hook(name, extra = {})
+      times[0] += 1
+      monitor.record({"event" => name, "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t.jsonl"}.merge(extra))
+    end
+
+    def missing = monitor.main_turn_evidence("%2")[:missing]
+
+    it "is the time of the main Stop, with the transcript" do
+      hook("stop")
+
+      expect(monitor.main_turn_over_since("%2")).to eq(times[0])
+      expect(monitor.main_turn_evidence("%2")).to eq(since: times[0], transcript_path: "/t.jsonl")
+    end
+
+    it "is nil for a pane not seen, a shell and a pane with no Stop heard" do
+      expect(monitor.main_turn_over_since("%9")).to be_nil
+      expect(monitor.main_turn_evidence("%9")[:missing]).to eq("pane_unknown")
+      expect(monitor.main_turn_evidence("%1")[:missing]).to eq("not_claude")
+      hook("user_prompt")
+      expect(missing).to eq("no_stop_seen")
+    end
+
+    it "is nil with no hooks from the pane's agent" do
+      expect(missing).to eq("no_hooks")
+    end
+
+    it "is nil for hooks from another agent" do
+      hook("stop", "agent_kind" => "codex")
+      expect(missing).to eq("no_hooks")
+    end
+
+    it "doesn't take a sub-agent's Stop for the main one" do
+      hook("user_prompt")
+      hook("stop", "agent_id" => "a1")
+      expect(missing).to eq("no_stop_seen")
+    end
+
+    {
+      "tool_start" => "main_tool_after_stop", "tool_use" => "main_tool_after_stop", "user_prompt" => "main_prompt_after_stop",
+      "subagent_start" => "subagent_start_after_stop", "session_start" => "session_start_after_stop", "session_end" => "session_end_after_stop"
+    }.each do |event, name|
+      it "is nil after a main #{event}, until the next Stop" do
+        hook("stop")
+        hook(event, "tool" => "Bash")
+
+        expect(monitor.main_turn_over_since("%2")).to be_nil
+        expect(missing).to eq(name)
+
+        hook("stop")
+        expect(monitor.main_turn_over_since("%2")).to eq(times[0])
+      end
+    end
+
+    it "keeps its time through a sub-agent's tool use and Stop" do
+      hook("stop")
+      stopped = times[0]
+      hook("tool_start", "agent_id" => "a1", "tool" => "Bash")
+      hook("tool_use", "agent_id" => "a1", "tool" => "Bash")
+      hook("stop", "agent_id" => "a1")
+
+      expect(monitor.main_turn_over_since("%2")).to eq(stopped)
+    end
+
+    it "counts a sub-agent start from a sub-agent, which takes the done mark too" do
+      hook("stop")
+      hook("subagent_start", "agent_id" => "a1")
+      expect(missing).to eq("subagent_start_after_stop")
+    end
+
+    it "is nil on a wait, and on a failed turn" do
+      hook("stop")
+      hook("notification", "message" => "Allow Bash?", "notification_type" => "permission_prompt")
+      expect(missing).to eq("waiting")
+
+      hook("stop")
+      monitor.mark_turn_failed("%2")
+      expect(missing).to eq("turn_failed")
+    end
+  end
+
   describe "the default poll interval" do
     it "matches the agentd.poll_interval default the config schema declares" do
       expect(monitor.instance_variable_get(:@poll_interval)).to eq(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL)

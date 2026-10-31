@@ -309,6 +309,32 @@ RSpec.describe Workspace::WorkflowPanes do
         .to eq(ok: false, code: "pane_busy", message: "pane %5 kept changing", reason: "background_activity")
     end
 
+    it "sends the run id, so the daemon stops typing once the run is gone" do
+      replies << JSON.generate("ok" => true) + "\n"
+
+      panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true, run_id: "wr_1")
+
+      expect(sockets.first.last.sent.first).to include("run_id" => "wr_1")
+    end
+
+    it "keeps what the daemon says kept a moving screen from being accepted" do
+      replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "kept changing", "reason" => "background_activity",
+        "details" => {"proof_missing" => "transcript_activity:cost-v2"}) + "\n"
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)).to eq(ok: false, code: "pane_busy", message: "kept changing",
+        reason: "background_activity", proof_missing: "transcript_activity:cost-v2")
+    end
+
+    it "keeps the daemon's warning, on a success and on a failure" do
+      replies << JSON.generate("ok" => true, "warning" => "may be lost") + "\n"
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)).to eq(ok: true, warning: "may be lost")
+
+      replies.clear
+      replies << JSON.generate("ok" => false, "error" => "not_delivered", "message" => "m", "reason" => "prompt_unconfirmed", "warning" => "may be lost") + "\n"
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true))
+        .to eq(ok: false, code: "not_delivered", message: "m", reason: "prompt_unconfirmed", warning: "may be lost")
+    end
+
     it "passes on the daemon's refusal, with its code and how to fix it" do
       replies << JSON.generate("ok" => false, "error" => "context_unknown", "message" => "can't read context usage for pane 0.1", "fix" => "Run workspace doctor.") + "\n"
 

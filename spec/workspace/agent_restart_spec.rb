@@ -311,6 +311,412 @@ RSpec.describe Workspace::AgentRestart do
     expect(tmux.delivered.first[:text]).to eq("/clear")
   end
 
+  describe "the proof on a moving screen and the last check" do
+    let(:kinds) { {"%18" => "claude"} }
+    let(:missing) { [nil] }
+    let(:screen_refusals) { [nil] }
+    let(:bound) { [true] }
+    let(:prompt_hook) { [true] }
+    let(:moving) { [true] }
+    let(:hook_facts) do
+      ->(_id) { {hooks: true, last_user_prompt_at: (prompt_hook[0] && tmux.delivered.size >= 2) ? wall[0] : nil} }
+    end
+
+    def proven(**overrides)
+      described_class.new(tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        delivery_lock: Mutex.new, pipeline_ref: ->(_) {},
+        pane_state: ->(id) { pane_states[id] }, pane_kind: ->(id) { kinds[id] }, delivery_facts: hook_facts,
+        turn_over: ->(_id) { missing[0] }, screen_ready: ->(_id) { screen_refusals[0] },
+        run_bound: ->(_id, _run) { bound[0] },
+        clock: -> { now[0] }, wall_clock: -> { wall[0] },
+        sleeper: ->(seconds) {
+          now[0] += seconds
+          wall[0] += seconds
+          @on_tick&.call
+        },
+        quiet_timeout: 30, quiet_for: 1, poll_interval: 0.5, turn_over_for: 5, prompt_confirm_timeout: 15, **overrides)
+    end
+
+    def go(**opts)
+      proven.call(pane_id: "%18", prompt: "Read HANDOFF.md", **opts)
+    end
+
+    before do
+      pane_states["%18"] = "idle"
+      frame = 0
+      flag = moving
+      tmux.define_singleton_method(:capture_screen) { |_| flag[0] ? "frame #{frame += 1}" : "still" }
+      readings.push(reading(42, at: wall[0] - 60), reading(3, at: wall[0] + 3600))
+    end
+
+    it "accepts a moving screen once the proof has held for TURN_OVER_FOR" do
+      result = go
+
+      expect(result).to include("ok" => true, "status" => "restarted")
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+      expect(now[0]).to be_between(5, 8)
+    end
+
+    it "starts the hold again when the proof lapses" do
+      missing[0] = nil
+      @on_tick = -> { missing[0] = now[0].between?(2.9, 3.1) ? "main_tool_after_stop" : nil }
+
+      go
+
+      expect(now[0]).to be >= 8
+    end
+
+    {"late main tool" => "main_tool_after_stop", "transcript record" => "transcript_activity:queue-operation", "no hooks" => "no_hooks"}.each do |name, code|
+      it "keeps the wait on a #{name} and names it" do
+        missing[0] = code
+
+        result = go
+
+        expect(result).to include("ok" => false, "error" => "pane_busy", "reason" => "background_activity")
+        expect(result.dig("details", "proof_missing")).to eq(code)
+        expect(result["message"]).to include(code)
+        expect(tmux.delivered).to be_empty
+      end
+    end
+
+    it "names a refused screen in proof_missing" do
+      screen_refusals[0] = {reason: "input_not_empty", message: "a draft"}
+
+      result = go
+
+      expect(result.dig("details", "proof_missing")).to eq("input_not_empty")
+      expect(tmux.delivered).to be_empty
+    end
+
+    it "says the proof came too late when the deadline falls inside the hold" do
+      missing[0] = "no_stop_seen"
+      @on_tick = -> { missing[0] = (now[0] >= 28) ? nil : "no_stop_seen" }
+
+      expect(go.dig("details", "proof_missing")).to eq("proof_too_recent")
+    end
+
+    it "keeps a Codex pane on the screen rule" do
+      kinds["%18"] = "codex"
+
+      result = go
+
+      expect(result.dig("details", "proof_missing")).to eq("not_claude")
+      expect(tmux.delivered).to be_empty
+    end
+
+    it "never accepts a pane the monitor reads as working" do
+      pane_states["%18"] = "working"
+
+      expect(go).to include("reason" => "working", "details" => {"proof_missing" => "working"})
+    end
+
+    it "waits out a spinner at the last check on the bypass path" do
+      calls = 0
+      restart = proven(screen_ready: lambda { |_id|
+        calls += 1
+        (calls > 11 && now[0] < 9) ? {reason: "turn_started", message: "a spinner"} : nil
+      })
+
+      result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")
+
+      expect(result).to include("ok" => true)
+      expect(now[0]).to be >= 9
+    end
+
+    it "refuses when the spinner outlasts the deadline, and takes the lock only for each check" do
+      lock = Mutex.new
+      held_during_sleep = false
+      calls = 0
+      restart = proven(delivery_lock: lock, screen_ready: lambda { |_id|
+        calls += 1
+        (calls > 11) ? {reason: "turn_started", message: "a spinner"} : nil
+      })
+      @on_tick = -> { held_during_sleep ||= lock.locked? }
+
+      result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")
+
+      expect(result).to include("ok" => false, "error" => "pane_busy", "reason" => "turn_started",
+        "details" => {"proof_missing" => "turn_started"})
+      expect(tmux.delivered).to be_empty
+      expect(now[0]).to be_within(1).of(30)
+      expect(held_during_sleep).to be(false)
+    end
+
+    it "refuses turn_started when the turn proof lapses at the last check" do
+      @on_tick = -> { missing[0] = "main_tool_after_stop" if now[0] >= 5.5 }
+      restart = proven(turn_over_for: 5.5)
+
+      expect(restart.call(pane_id: "%18", prompt: "x")).to include("error" => "pane_busy")
+      expect(tmux.delivered).to be_empty
+    end
+
+    describe "after the last check refuses" do
+      let(:draft) { {reason: "input_not_empty", message: "the input holds a draft"} }
+      let(:clear_times) { [] }
+
+      before do
+        times = clear_times
+        clock = now
+        original = tmux.method(:deliver)
+        tmux.define_singleton_method(:deliver) do |session, target, text|
+          times << clock[0] if text == "/clear"
+          original.call(session, target, text)
+        end
+      end
+
+      # A last check that refuses once the wait has passed, until t=9.
+      def refusing_last_check
+        calls = 0
+        ->(refused) { ((calls += 1) > 11 && now[0] < 9) ? refused : nil }
+      end
+
+      it "holds QUIET_FOR again after a draft is deleted" do
+        moving[0] = false
+        screen = ["❯ half a thought"]
+        tmux.define_singleton_method(:capture_screen) { |_| screen[0] }
+        screen_refusals[0] = draft
+        @on_tick = lambda do
+          next unless now[0] >= 3
+          screen[0] = "❯ "
+          screen_refusals[0] = nil
+        end
+
+        expect(go).to include("ok" => true)
+        expect(clear_times.first).to be >= 4
+      end
+
+      it "holds QUIET_FOR again after a submitted draft's turn stops" do
+        moving[0] = false
+        screen = ["❯ half a thought"]
+        tmux.define_singleton_method(:capture_screen) { |_| screen[0] }
+        screen_refusals[0] = draft
+        @on_tick = lambda do
+          next unless now[0] >= 2
+          screen_refusals[0] = nil
+          pane_states["%18"] = (now[0] < 6) ? "working" : "idle"
+          screen[0] = (now[0] < 6) ? "✽ Frosting… (#{now[0]}s)" : "❯ "
+        end
+
+        expect(go).to include("ok" => true)
+        expect(clear_times.first).to be >= 7
+      end
+
+      it "holds TURN_OVER_FOR again after a spinner at the last check" do
+        refuse = refusing_last_check
+        restart = proven(screen_ready: ->(_id) { refuse.call({reason: "turn_started", message: "a spinner"}) })
+
+        expect(restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")).to include("ok" => true)
+        expect(clear_times.first).to be >= 14
+      end
+
+      it "holds TURN_OVER_FOR again after the proof lapses at the last check" do
+        refuse = refusing_last_check
+        restart = proven(turn_over: ->(_id) { refuse.call("main_tool_after_stop") })
+
+        expect(restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")).to include("ok" => true)
+        expect(clear_times.first).to be >= 14
+      end
+
+      it "warns and needs the prompt hook when the retry was accepted on a moving screen" do
+        moving[0] = false
+        prompt_hook[0] = false
+        screen_refusals[0] = draft
+        @on_tick = lambda do
+          next unless now[0] >= 2
+          moving[0] = true
+          screen_refusals[0] = nil
+        end
+
+        result = go
+
+        expect(result).to include("ok" => false, "error" => "not_delivered", "reason" => "prompt_unconfirmed")
+        expect(result["warning"]).to include("background work")
+      end
+
+      it "neither warns nor needs the prompt hook when the retry went in on a still screen" do
+        prompt_hook[0] = false
+        refuse = refusing_last_check
+        @on_tick = -> { moving[0] = false if now[0] >= 6 }
+        restart = proven(screen_ready: ->(_id) { refuse.call({reason: "turn_started", message: "a spinner"}) })
+
+        result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")
+
+        expect(result).to include("ok" => true)
+        expect(result).not_to have_key("warning")
+      end
+
+      it "answers pane_gone when the pane closes during the retry's wait" do
+        moving[0] = false
+        gone = [false]
+        tmux.define_singleton_method(:capture_screen) { |_| gone[0] ? nil : "still" }
+        screen_refusals[0] = draft
+        @on_tick = -> { gone[0] = true if now[0] >= 2 }
+
+        expect(go).to include("ok" => false, "error" => "pane_gone")
+        expect(tmux.delivered).to be_empty
+      end
+    end
+
+    context "on a still screen" do
+      before { moving[0] = false }
+
+      it "types as before with an empty box, and warns of nothing" do
+        result = go
+
+        expect(result).to include("ok" => true)
+        expect(result).not_to have_key("warning")
+      end
+
+      it "needs no proof and no prompt hook" do
+        missing[0] = "no_stop_seen"
+        prompt_hook[0] = false
+
+        expect(go).to include("ok" => true)
+      end
+
+      it "refuses a draft with TypingSafety's reason and types nothing" do
+        screen_refusals[0] = {reason: "input_not_empty", message: "the input holds a draft"}
+
+        result = go
+
+        expect(result).to include("ok" => false, "error" => "pane_busy", "reason" => "input_not_empty")
+        expect(result).not_to have_key("details")
+        expect(tmux.delivered).to be_empty
+      end
+
+      it "refuses a turn that started during the last check" do
+        screen_refusals[0] = {reason: "turn_started", message: "a spinner"}
+
+        expect(go).to include("reason" => "turn_started")
+        expect(tmux.delivered).to be_empty
+      end
+
+      it "refuses when the monitor turns to working during the last check" do
+        tmux.define_singleton_method(:capture_screen) { |_| "still" }
+        states = pane_states
+        original = tmux.method(:pane_details)
+        tmux.define_singleton_method(:pane_details) do |session, window: "0"|
+          states["%18"] = "working"
+          original.call(session, window: window)
+        end
+
+        expect(go).to include("ok" => false, "reason" => "turn_started")
+        expect(tmux.delivered).to be_empty
+      end
+
+      it "types over a draft on Codex, as it always has" do
+        kinds["%18"] = "codex"
+        screen_refusals[0] = {reason: "input_not_empty", message: "a draft"}
+
+        expect(go).to include("ok" => true)
+      end
+
+      it "types on a pane the monitor has not identified, as it always has" do
+        kinds.clear
+        screen_refusals[0] = {reason: "unknown", message: "not seen"}
+
+        expect(go).to include("ok" => true)
+      end
+    end
+
+    it "gives run_unbound with nothing typed when the run is gone before /clear" do
+      bound[0] = false
+
+      expect(go(run_id: "wr_1")).to include("ok" => false, "error" => "run_unbound")
+      expect(tmux.delivered).to be_empty
+    end
+
+    it "gives run_unbound before the prompt when the run goes after /clear" do
+      original = tmux.method(:deliver)
+      flag = bound
+      tmux.define_singleton_method(:deliver) do |*args|
+        flag[0] = false
+        original.call(*args)
+      end
+
+      expect(go(run_id: "wr_1")).to include("ok" => false, "error" => "run_unbound")
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+    end
+
+    it "does not ask about a binding with no run id" do
+      bound[0] = false
+
+      expect(go).to include("ok" => true)
+    end
+
+    it "reports prompt_unconfirmed when no user_prompt hook comes" do
+      prompt_hook[0] = false
+
+      result = go
+
+      expect(result).to include("ok" => false, "error" => "not_delivered", "reason" => "prompt_unconfirmed")
+      expect(result["message"]).to include("may still be in the input box")
+      expect(result["warning"]).to include("background work")
+    end
+
+    it "bounds the prompt wait by the time left to reply to a waiting caller" do
+      prompt_hook[0] = false
+      restart = proven(reply_timeout: 12)
+
+      restart.call(pane_id: "%18", prompt: "Read HANDOFF.md", waiting: true)
+
+      expect(now[0]).to be <= 11
+    end
+
+    it "gives the prompt hook its whole wait when no caller is waiting" do
+      prompt_hook[0] = false
+      @on_tick = -> { prompt_hook[0] = now[0] >= 18 }
+      restart = proven(reply_timeout: 12)
+
+      expect(restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")).to include("ok" => true)
+    end
+
+    context "when the reply is already due as the prompt is typed" do
+      let(:typed_at) { [] }
+
+      before do
+        prompt_hook[0] = false
+        @on_tick = -> { typed_at << now[0] if tmux.delivered.size >= 2 && typed_at.empty? }
+      end
+
+      it "still waits MIN_PROMPT_CONFIRM for the prompt hook" do
+        tick = @on_tick
+        @on_tick = lambda do
+          tick.call
+          prompt_hook[0] = typed_at.any? && now[0] >= typed_at.first + 2.5
+        end
+
+        result = proven(reply_timeout: 7).call(pane_id: "%18", prompt: "Read HANDOFF.md", waiting: true)
+
+        expect(result).to include("ok" => true)
+      end
+
+      it "gives up on the prompt hook just after MIN_PROMPT_CONFIRM" do
+        result = proven(reply_timeout: 7).call(pane_id: "%18", prompt: "Read HANDOFF.md", waiting: true)
+
+        expect(result).to include("reason" => "prompt_unconfirmed")
+        expect(now[0] - typed_at.first).to be <= described_class::MIN_PROMPT_CONFIRM
+      end
+    end
+
+    it "does not count a prompt hook from before the typing" do
+      earlier = wall[0]
+      prompt_hook[0] = false
+      restart = proven(delivery_facts: ->(_id) { {hooks: true, last_user_prompt_at: earlier} })
+
+      expect(restart.call(pane_id: "%18", prompt: "x")).to include("reason" => "prompt_unconfirmed")
+    end
+
+    it "joins the background warning and the prompt delivery's own warning" do
+      tmux.statuses.push(:submitted, :unverified)
+
+      result = go
+
+      expect(result["warning"]).to start_with("background work in pane %18")
+      expect(result["warning"]).to end_with("; fake unverified")
+    end
+  end
+
   describe "when the pane never goes quiet" do
     before do
       frame = 0
