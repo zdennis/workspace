@@ -135,6 +135,7 @@ end
 
 require_relative "workspace/version"
 require_relative "workspace/help_pages"
+require_relative "workspace/help_json"
 require_relative "workspace/error_codes"
 require_relative "workspace/output_gate"
 require_relative "workspace/json_envelope"

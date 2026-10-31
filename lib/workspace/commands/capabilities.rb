@@ -106,7 +106,8 @@ module Workspace
         "bookkeeping_excluded" => 1,
         "split_cwd" => 1,
         "launch_prompt_status" => 1,
-        "kill_branches" => 1
+        "kill_branches" => 1,
+        "help_json" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

@@ -241,6 +241,9 @@ module Workspace
       @logger.enable! if args.delete("--debug")
       @input.no_input! if take_no_input_flag!(args) && @input.respond_to?(:no_input!)
       settle_name_flags!(args)
+      plain = HelpJson.strip(args)
+      return run_help_json(plain) if plain
+
       subcommand = args.shift
       @logger.debug { "subcommand=#{subcommand} args=#{args.inspect}" }
 
@@ -437,6 +440,50 @@ module Workspace
     end
 
     private
+
+    # `--help --json`: runs the command without `--json`, so it prints its own help page, keeps
+    # that text (what it writes through the output and to `$stdout`, as OptionParser does) and
+    # prints it as one {HelpJson} document. A run that does not end in success (an unknown
+    # subcommand, say) keeps its status and prints its first line of text as one error document.
+    #
+    # @param args [Array<String>] the arguments without `--json`
+    def run_help_json(args)
+      buffer = StringIO.new
+      errors = StringIO.new
+      status = 0
+      saved = [$stdout, @error_output, @exit_handler]
+      begin
+        $stdout = buffer
+        @error_output = errors
+        @exit_handler = HelpJson::ExitRecorder
+        capture_output(buffer) { run(args) }
+      rescue HelpJson::Exit, SystemExit => e
+        status = e.status
+      ensure
+        $stdout, @error_output, @exit_handler = saved
+      end
+      if status.zero?
+        @output.puts JSON.generate(HelpJson.document(buffer.string))
+      else
+        message = (errors.string + buffer.string).lines.map(&:strip).find { |line| !line.empty? } || "help failed"
+        @output.puts JSON.generate(JsonEnvelope.error(JsonEnvelope::SCHEMA_VERSION, message, code: "usage"))
+        @exit_handler.exit(status)
+      end
+    end
+
+    # Points what the CLI and its collaborators print at +buffer+ while the block runs, through
+    # {OutputGate#divert_to}; a plain stream (a test double) is put behind a gate for the while.
+    def capture_output(buffer, &block)
+      return @output.divert_to(buffer, &block) if @output.respond_to?(:divert_to)
+
+      original = @output
+      @output = OutputGate.new(original)
+      begin
+        @output.divert_to(buffer, &block)
+      ensure
+        @output = original
+      end
+    end
 
     # The rescue funnel's output: with `--json` among the arguments, the
     # failure goes to stdout as one {JsonEnvelope} error document and stderr
@@ -918,7 +965,7 @@ module Workspace
       title_from_ticket = false
       slug = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|branch>"
+        opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>"
         opts.separator ""
         opts.separator "Create a git worktree and launch it as a workspace project."
         opts.separator ""

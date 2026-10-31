@@ -69,7 +69,7 @@ end
 RSpec.describe "help pages end with examples" do
   pages = HelpExamplesSpec::PAGES
   aliases = HelpExamplesSpec::ALIASES
-  def run_help(argv)
+  def run_help(argv, extra: [])
     out = StringIO.new
     err = StringIO.new
     status = 0
@@ -94,7 +94,7 @@ RSpec.describe "help pages end with examples" do
             begin
               $stdout = out
               $stderr = err
-              cli.run(argv + ["--help"])
+              cli.run(argv + ["--help"] + extra)
             rescue SystemExit => e
               status = e.status
             rescue Workspace::Error => e
@@ -161,6 +161,23 @@ RSpec.describe "help pages end with examples" do
   pages.each do |page|
     it "has a good page for 'workspace #{page} --help'" do
       expect(problems(argv_for(page))).to eq([])
+    end
+  end
+
+  pages.each do |page|
+    it "prints the page of 'workspace #{page} --help --json' as one document with the text page's examples" do
+      text, = run_help(argv_for(page))
+      json_text, status, = run_help(argv_for(page), extra: ["--json"])
+      doc = JSON.parse(json_text)
+
+      lines = text.lines.map(&:chomp)
+      heading = lines.rindex { |l| l.match?(/\A\S.*:\z/) }
+      text_examples = lines[(heading + 1)..].reject { |l| l.strip.empty? }
+      expect(status).to eq(0)
+      expect(doc.keys).to start_with("usage", "description", "options", "examples")
+      expect(doc["usage"]).not_to be_empty
+      expect(doc["examples"].size).to eq(text_examples.size)
+      expect(doc["examples"].map { |e| e["command"] }).to all(match(/\A(?:[A-Z_]+=\S+ )*workspace/))
     end
   end
 

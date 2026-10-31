@@ -247,6 +247,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("kill_branches" => 1)
     end
 
+    it "reports help_json 1 once --help --json prints the help page as a document" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("help_json" => 1)
+    end
+
     it "reports launch_prompt_status 1 once the closing line tells a lost prompt" do
       command.call(json: true)
 

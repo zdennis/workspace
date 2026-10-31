@@ -8361,7 +8361,7 @@ RSpec.describe Workspace::CLI do
       expect(rebase_command).to have_received(:call).with(name: "api", onto: "update", json: true, working_dir: an_instance_of(String))
     end
 
-    [%w[rebase --onto bogus --help], %w[rebase --name x --help], %w[push --json --help]].each do |argv|
+    [%w[rebase --onto bogus --help], %w[rebase --name x --help], %w[push --help]].each do |argv|
       it "prints the page and runs nothing for 'workspace #{argv.join(" ")}'" do
         cli.run(argv)
 
@@ -8369,6 +8369,30 @@ RSpec.describe Workspace::CLI do
         expect(rebase_command).not_to have_received(:call)
         expect(push_command).not_to have_received(:call)
       end
+    end
+
+    %w[--json --help].permutation.each do |flags|
+      it "prints the page as one document and runs nothing for 'workspace push #{flags.join(" ")}'" do
+        cli.run(["push", *flags])
+
+        expect(JSON.parse(output.string)["usage"].first).to start_with("workspace push")
+        expect(rebase_command).not_to have_received(:call)
+        expect(push_command).not_to have_received(:call)
+      end
+    end
+
+    it "keeps the status of a failed help run under an injected exit handler and prints one error document" do
+      expect { cli.run(%w[nosuch --help --json]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => "Unknown subcommand: nosuch")
+      expect(error_output.string).to eq("")
+    end
+
+    it "runs nothing and prints text for 'workspace rebase --name --help --json', where --help is the name" do
+      expect { cli.run(%w[rebase --name --help --json]) }.to raise_error(FakeSystemExit)
+
+      expect(output.string).not_to include('"examples"')
+      expect(rebase_command).not_to have_received(:call)
     end
 
     it "requires --onto for rebase" do
