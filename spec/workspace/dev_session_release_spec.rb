@@ -43,7 +43,41 @@ RSpec.describe Workspace::DevSessionRelease do
     expect(spawned).to be_empty
   end
 
-  it "starts nothing when no lock names the session, there is no lock directory, or there is no session id" do
+  describe "a recovery stop" do
+    let(:marker) { Workspace::RecoveryStopMarker.new(state_dir: File.join(tmpdir, "state")) }
+
+    before { write_locks("repo-a", devenv_started_by("sess-1")) }
+
+    it "starts no release while the session is marked, and one again once cleared" do
+      marker.mark("sess-1")
+      expect(release.call(session_id: "sess-1", cwd: tmpdir, reason: "prompt_input_exit")).to be(false)
+      expect(spawned).to be_empty
+
+      marker.clear("sess-1")
+      expect(release.call(session_id: "sess-1", cwd: tmpdir, reason: "prompt_input_exit")).to be(true)
+    end
+
+    it "releases when the marker is stale" do
+      marker.mark("sess-1")
+      old = Time.now - Workspace::RecoveryStopMarker::MAX_AGE - 5
+      File.utime(old, old, File.join(tmpdir, "state", "agent-recovery", "stopping", "sess-1"))
+
+      expect(release.call(session_id: "sess-1", cwd: tmpdir, reason: "logout")).to be(true)
+    end
+
+    it "marks only the one session" do
+      marker.mark("sess-2")
+
+      expect(release.call(session_id: "sess-1", cwd: tmpdir, reason: "logout")).to be(true)
+    end
+
+    it "still never releases on a clear" do
+      expect(release.call(session_id: "sess-1", cwd: tmpdir, reason: "clear")).to be(false)
+    end
+  end
+
+  it "starts nothing when no lock names
+ the session, there is no lock directory, or there is no session id" do
     expect(release.call(session_id: "sess-1", cwd: tmpdir, reason: "logout")).to be(false)
 
     write_locks("repo-a", devenv_started_by("sess-9"))

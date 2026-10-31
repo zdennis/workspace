@@ -80,12 +80,13 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
   end
   let(:restarting) { [] }
+  let(:recovering) { [] }
   let(:refuse_claim) { [false] }
   let(:on_sleep) { [] }
 
   subject(:desk) do
     described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
-      delivery_lock: Mutex.new, restarting: ->(id) { restarting.include?(id) },
+      delivery_lock: Mutex.new, restarting: ->(id) { restarting.include?(id) }, recovering: ->(id) { recovering.include?(id) },
       claim_restart: ->(id) { (restarting.include?(id) || refuse_claim[0]) ? nil : (restarting << id) && :claim },
       release_restart: ->(id, token) { restarting.delete(id) if token == :claim },
       event_log: event_log, clock: clock,
@@ -619,6 +620,77 @@ RSpec.describe Workspace::PromptQueueDesk do
       stop_hook
 
       expect(typed).to eq(["run the specs"])
+    end
+  end
+
+  describe "while an API-error recovery holds the pane" do
+    before do
+      working!
+      send_prompt
+      turn_ends!(t0 + 30)
+      recovering << "%5"
+    end
+
+    it "keeps the entry through the agent's own session_end" do
+      desk.session_event("pane_id" => "%5", "event" => "session_end", "reason" => "other")
+
+      expect(store.entries.size).to eq(1)
+    end
+
+    it "keeps the entry and types nothing when a scan finds a shell" do
+      facts.merge!(kind: "shell", agent_pid: nil)
+      desk.scan
+
+      expect(store.entries.size).to eq(1)
+      expect(typed).to eq([])
+    end
+
+    it "keeps the entry and types nothing when a scan finds a changed agent pid" do
+      facts[:agent_pid] = 202
+      desk.scan
+      stop_hook
+
+      expect(store.entries.size).to eq(1)
+      expect(typed).to eq([])
+    end
+
+    it "queues a send without delivering it" do
+      reply = send_prompt("second")
+
+      expect(reply).to include("queued" => true)
+      expect(store.entries.size).to eq(2)
+      expect(typed).to eq([])
+    end
+
+    it "queues nothing and refuses a send that may not wait" do
+      reply = desk.send_prompt("pane_id" => "%5", "text" => "now", "when_idle" => false)
+
+      expect(reply).to include("ok" => false, "error" => "pane_busy")
+      expect(store.entries.size).to eq(1)
+      expect(typed).to eq([])
+    end
+
+    it "delivers the entry once the recovery is over and the resumed agent's turn ends" do
+      facts[:agent_pid] = 202
+      store.rebind_agent("%5", agent_pid: 202)
+      recovering.clear
+      stop_hook
+
+      expect(typed).to eq(["run the specs"])
+    end
+
+    it "does not make the recovering call on the hook's thread" do
+      blocks = []
+      calls = []
+      deferred = described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
+        delivery_lock: Mutex.new, recovering: ->(id) { calls << id && false }, event_log: event_log, clock: clock,
+        spawn: ->(&block) { blocks << block })
+
+      deferred.session_event("pane_id" => "%5", "event" => "session_end", "reason" => "other")
+      expect(calls).to eq([])
+      blocks.each(&:call)
+      expect(calls).to eq(["%5"])
+      expect(store.entries).to eq([])
     end
   end
 
