@@ -211,6 +211,21 @@ module Workspace
       end
     end
 
+    # Moves the pane's queued entries to the agent a recovery resumed, so a changed agent pid (a
+    # wrapper pane starts a new process) is not read as an agent that exited.
+    #
+    # @param pane_id [String]
+    # @param agent_pid [Integer, nil] the resumed agent's pid; nil changes nothing
+    # @return [Integer] how many entries took it
+    def rebind_agent(pane_id, agent_pid:)
+      return 0 unless agent_pid
+      with_lock do |data|
+        moved = data["entries"].select { |e| e["pane_id"] == pane_id }
+        moved.each { |e| e["agent_pid"] = agent_pid }
+        moved.size
+      end
+    end
+
     # Marks the paste as starting, unless a cancel was asked for meanwhile:
     # then the entry is removed and nothing should be typed. Only the claim
     # that is current may start it, once: a claim that was reaped and taken

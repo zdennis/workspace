@@ -76,4 +76,29 @@ RSpec.describe Workspace::TypingSafety do
     expect(safety.check(facts, "────────\n❯ [Pasted text #1 +80 lines]\n")).to include(reason: "input_not_empty")
     expect(safety.check(facts, "────────\n❯ my draft [Pasted text #1 +80 lines]\n", pasted: pasted)).to include(reason: "input_changed")
   end
+
+  describe "with exact:" do
+    let(:text) { "An API error stopped your last turn. Continue where you left off." }
+
+    it "passes only on the whole text, however it wraps" do
+      expect(safety.check(facts, "────────\n❯ #{text}\n────────\n  status\n", exact: text)).to be_nil
+      wrapped = "────────\n❯ An API error stopped your last turn.\n  Continue where you left off.\n────────\n"
+      expect(safety.check(facts, wrapped, exact: text)).to be_nil
+    end
+
+    it "refuses a longer draft, a shorter one, more lines, and a paste placeholder" do
+      ["#{text} and more", text[0, 30], "#{text}\n  a second line", "[Pasted text #1 +80 lines]"].each do |input|
+        expect(safety.check(facts, "────────\n❯ #{input}\n────────\n", exact: text)).to include(reason: "input_changed")
+      end
+    end
+
+    it "reads past a person's line that holds box-drawing characters" do
+      screen = "────────\n❯ #{text}\n  a ───── line of mine\n────────\n"
+      expect(safety.check(facts, screen, exact: text)).to include(reason: "input_changed")
+    end
+
+    it "still refuses a waiting pane" do
+      expect(safety.check(facts(state: "waiting"), "────────\n❯ #{text}\n", exact: text)).to include(reason: "waiting")
+    end
+  end
 end

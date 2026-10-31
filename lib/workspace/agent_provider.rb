@@ -17,11 +17,13 @@ module Workspace
       "SessionEnd" => nil,
       "UserPromptSubmit" => nil,
       "Stop" => nil,
+      # A turn that ended on an API error, not a finished answer.
+      "StopFailure" => nil,
       "SubagentStop" => nil,
       # PreToolUse fires for every tool; workspace wants all of them (a tool
       # use of any kind marks the holder active again), so the matcher is
       # nil ("*" in Claude Code's own hook conventions). Sub-agent detection
-      # (the Task tool starting a sub-agent) is done inside session-event by
+      # (the Agent tool, earlier the Task tool, starting a sub-agent) is done inside session-event by
       # inspecting the tool name, not by narrowing the matcher here. A
       # second PreToolUse matcher group (e.g. "Edit|Write|MultiEdit|NotebookEdit")
       # may be added later without disturbing this one.

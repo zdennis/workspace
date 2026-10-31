@@ -100,6 +100,30 @@ module Workspace
     # @param tmux_server [String, nil] the pane's tmux server pid; entries from another server don't count
     # @return [String, nil] the session id, or nil when none is open, none is recorded, or the ledger can't be read
     def open_session_for(pane_id:, tmux_server:)
+      open_record_for(pane_id: pane_id, tmux_server: tmux_server)&.fetch("session_id")
+    end
+
+    # The whole SessionStart entry of the session {#open_session_for} names, so a caller can read
+    # the directory the session started in rather than one a hook reported later.
+    #
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @param tmux_server [String, nil] the pane's tmux server pid; entries from another server don't count
+    # @return [Hash{String=>Object}, nil] the entry, or nil when no session is open, none is recorded,
+    #   or the ledger can't be read
+    def open_record_for(pane_id:, tmux_server:)
+      read_open_record(pane_id: pane_id, tmux_server: tmux_server)
+    rescue SystemCallError
+      nil
+    end
+
+    # {#open_record_for} for a caller that must tell "no session is open" from "the ledger
+    # can't be read". No ledger yet means no session is open.
+    #
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @param tmux_server [String, nil] the pane's tmux server pid; entries from another server don't count
+    # @return [Hash{String=>Object}, nil] the entry, or nil when no session is open or none is recorded
+    # @raise [SystemCallError] if the ledger exists but can't be read
+    def read_open_record(pane_id:, tmux_server:)
       return nil if pane_id.to_s.empty? || tmux_server.to_s.empty?
 
       current = nil
@@ -108,13 +132,28 @@ module Workspace
         next unless entry
         case entry["event"]
         when "session_start"
-          current = entry["session_id"] if entry["pane_id"] == pane_id && entry["tmux_server"] == tmux_server
+          current = entry if entry["pane_id"] == pane_id && entry["tmux_server"] == tmux_server
         when "session_end"
-          current = nil if current && entry["session_id"] == current
+          current = nil if current && entry["session_id"] == current["session_id"]
         end
       end
-      (current.is_a?(String) && !current.empty?) ? current : nil
-    rescue SystemCallError
+      id = current && current["session_id"]
+      (id.is_a?(String) && !id.empty?) ? current : nil
+    rescue Errno::ENOENT
+      nil
+    end
+
+    # @param session_id [String]
+    # @return [String, nil] the `at` of the session's latest SessionStart, in any pane; nil when none is recorded
+    # @raise [SystemCallError] if the ledger exists but can't be read
+    def last_start_at(session_id)
+      latest = nil
+      File.foreach(@path) do |line|
+        entry = parse(line)
+        latest = entry["at"] if entry && entry["event"] == "session_start" && entry["session_id"] == session_id
+      end
+      latest
+    rescue Errno::ENOENT
       nil
     end
 

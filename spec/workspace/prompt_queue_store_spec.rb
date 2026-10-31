@@ -282,6 +282,16 @@ RSpec.describe Workspace::PromptQueueStore do
     expect(store.rebind_session("%5", from: nil, to: "s3")).to eq(0)
   end
 
+  it "moves a pane's entries to the resumed agent's pid, and no other pane's" do
+    add("one")
+    add("two")
+    add("other", pane_id: "%6")
+
+    expect(store.rebind_agent("%5", agent_pid: 202)).to eq(2)
+    expect(store.entries.map { |e| [e["text"], e["agent_pid"]] }).to eq([["one", 202], ["two", 202], ["other", 101]])
+    expect(store.rebind_agent("%5", agent_pid: nil)).to eq(0)
+  end
+
   describe "#cancel" do
     it "removes a queued entry, refuses one being pasted, and doesn't know a gone one" do
       add("one")

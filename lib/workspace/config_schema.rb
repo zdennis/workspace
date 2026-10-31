@@ -396,6 +396,8 @@ module Workspace
         doc: "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)"),
       Key.new(name: "agent.kind", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, settable: true, default: "claude", choices: AgentProvider.all.map(&:key), parser: AGENT_KIND,
         doc: "Which coding agent a new workspace's main agent pane runs: #{AgentProvider.all.map { |p| "`#{p.key}`" }.join(", ")} (default `claude`)"),
+      Key.new(name: "agent.recovery.enabled", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: true, restart: true, parser: BOOLEAN,
+        doc: "`true` or `false`: whether the agent daemon recovers a Claude Code agent whose turn ended on an API error (`server_error`, `overloaded`, `rate_limit` or `unknown`): it types a message to continue at the live prompt first, then restarts and resumes the conversation if that fails, on a schedule of up to 12 attempts; any other error kind gets one inbox item (default `true`; ignored when `agent.kind` isn't `claude`)"),
       *AgentProvider.all.map do |provider|
         Key.new(name: "agent.commands.#{provider.key}", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :command, sensitive: true, settable: true, restart: true, default: provider.executable, examples: ["#{provider.executable}-dev"], parser: COMMAND,
           doc: "Command to run for #{provider.label}; a wrapper must pass its arguments through (e.g. `#{provider.executable}-dev`, default `#{provider.executable}`). See [Agent commands](README.config.md#agent-commands)")

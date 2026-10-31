@@ -13,6 +13,8 @@ module Workspace
     # Seconds `tmux list-sessions` or `tmux start-server` may take before the
     # tmux server is taken to be wedged.
     DEFAULT_COMMAND_TIMEOUT = 10
+    # What tmux says on stderr when a session, or the whole server, isn't there.
+    SESSION_GONE = /can't find session|no server running|error connecting to .* \(No such file or directory\)/
 
     # @param config [Workspace::Config] configuration for path lookups
     # @param logger [Workspace::Logger] debug logger
@@ -80,6 +82,20 @@ module Workspace
     def session_exists?(name, project: nil)
       run_bounded(*(project && socket_arguments(project)), "has-session", "-t", session_target(name), capture: false).last
     rescue SystemCallError
+      false
+    end
+
+    # Unlike a false {#session_exists?}, a true answer here is tmux's own word:
+    # a tmux that can't be run or reached reads as not gone. The server is gone
+    # too when its socket is, which is how the last session's end looks.
+    #
+    # @param name [String] the session's name, matched exactly
+    # @return [Boolean] whether tmux says the session isn't there
+    def session_gone?(name)
+      stderr = +""
+      _, ok = run_bounded("has-session", "-t", session_target(name), capture: false, stderr_sink: stderr)
+      !ok && SESSION_GONE.match?(stderr)
+    rescue SystemCallError, Workspace::Error
       false
     end
 

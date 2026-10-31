@@ -337,6 +337,16 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(current["flags"]).to eq(["idle"])
   end
 
+  it "does not flag idle a pane showing a failed turn, nor say a lost delivery for it" do
+    create
+    snapshot["panes"].first.merge!("state" => "idle", "turn_failed" => true)
+    expect(current["flags"]).to eq([])
+
+    store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last["delivery"] = "delivering" }
+    now[0] = Time.utc(2026, 10, 4, 12, 40, 1) + Workspace::WorkflowEngine::DELIVERY_WINDOW
+    expect(current).to include("state" => "running", "reason" => nil, "flags" => [])
+  end
+
   it "flags idle a pane that is done, once it has been quiet long enough for the turn's end to have been handled" do
     create
     snapshot["panes"].first.merge!("state" => "done", "state_since" => "2026-10-04T12:59:51Z")

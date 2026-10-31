@@ -276,6 +276,29 @@ module Workspace
       end
     end
 
+    # @param pane_id [String] tmux pane id
+    # @return [Integer, nil] how many sub-agents of the pane's agent are running,
+    #   or nil when the pane hasn't been scanned yet
+    def running_subagents(pane_id)
+      @lock.synchronize { @panes[pane_id]&.fetch(:agents)&.count { |agent| agent[:state] == "running" } }
+    end
+
+    # Marks the pane's turn as failed without a hook event, as agentd does after
+    # a restart that found the agent stopped on an error. Ends the turn, so a late
+    # idle notification opens no wait. Does nothing for a pane not scanned yet.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [void]
+    def mark_turn_failed(pane_id)
+      @lock.synchronize do
+        pane = @panes[pane_id]
+        next unless pane
+        pane[:turn_failed] = {session_id: pane[:session_id]}
+        pane[:turn_ended] = true
+      end
+      nil
+    end
+
     # The state the restart busy check goes by. A pane's agent that has ended
     # its turn (a Stop hook) is idle here even though {#pane_state} still says
     # "working" until `alerts.idle_after` of screen quiet; otherwise an agent
@@ -738,7 +761,7 @@ module Workspace
     end
 
     # Events that start, end, or restart a turn clear a wait whoever raised it.
-    TURN_EVENTS = ["user_prompt", "stop", "session_start", "session_end"].freeze
+    TURN_EVENTS = ["user_prompt", "stop", "session_start", "session_end", "turn_failed"].freeze
     private_constant :TURN_EVENTS
 
     IDLE_INPUT_MESSAGE = "Claude is waiting for your input"
@@ -768,7 +791,9 @@ module Workspace
       elsif TURN_EVENTS.include?(event["event"])
         clear_waiting(pane)
         pane[:turn_ended] = (event["event"] != "user_prompt")
-      else
+        update_turn_failed(pane, event)
+      elsif event["event"] != "subagent_start"
+        # Like a tool start, a sub-agent start (the Agent tool) leaves a wait alone.
         pane[:waits].delete(event_agent_id(event))
         pane[:alerted_waits]&.delete(event_agent_id(event))
       end
@@ -814,14 +839,14 @@ module Workspace
     end
 
     # Events that leave no tool of the main agent running.
-    TOOL_RESET_EVENTS = ["user_prompt", "stop", "session_start", "session_end"].freeze
+    TOOL_RESET_EVENTS = ["user_prompt", "stop", "session_start", "session_end", "turn_failed"].freeze
     private_constant :TOOL_RESET_EVENTS
 
     # Keeps what `sessions` says about tools: the main agent's tools still
     # running (by tool_use_id, so tools run side by side finish one by one),
     # and the id of each sub-agent. Only the tool's name is kept, never its
-    # input. A sub-agent is not ended by its Task call's PostToolUse, since a
-    # background Task returns at once while the sub-agent keeps running.
+    # input. A sub-agent is not ended by its Agent call's PostToolUse, since a
+    # background Agent call returns at once while the sub-agent keeps running.
     def track_tools(pane, event)
       open = (pane[:open_tools] ||= {})
       main = event["agent_id"].nil?
@@ -830,8 +855,8 @@ module Workspace
       case event["event"]
       when "tool_start", "subagent_start"
         # A sub-agent the agent names itself (Codex's SubagentStart) has no
-        # tool call to wait on; Claude Code's comes from its Task call.
-        name = event["tool"] || ((event["event"] == "subagent_start" && !event["subagent_id"]) ? "Task" : nil)
+        # tool call to wait on; Claude Code's comes from its Agent (earlier Task) call.
+        name = event["tool"] || ((event["event"] == "subagent_start" && !event["subagent_id"]) ? "Agent" : nil)
         if main && name
           open.delete(id || :anonymous)
           open[id || :anonymous] = {tool: self.class.clean_message(name)&.slice(0, 64), since: @clock.now}
@@ -878,6 +903,21 @@ module Workspace
       type = event["notification_type"]
       return type == "idle_prompt" if type
       event["message"].to_s.strip == IDLE_INPUT_MESSAGE
+    end
+
+    # A failed turn stays the pane's state until the person or the agent starts
+    # another: a prompt, a Stop, or a new session. A Stop-less end of the session,
+    # a resumed session with the same id and the agent leaving the pane keep it.
+    def update_turn_failed(pane, event)
+      case event["event"]
+      when "turn_failed"
+        pane[:turn_failed] = {session_id: event["session_id"] || pane[:session_id]}
+      when "user_prompt", "stop"
+        pane.delete(:turn_failed)
+      when "session_start"
+        failed = pane[:turn_failed]
+        pane.delete(:turn_failed) if failed && event["session_id"] != failed[:session_id]
+      end
     end
 
     def clear_waiting(pane)
@@ -938,6 +978,7 @@ module Workspace
         "waiting_seconds" => waiting_since && (now - waiting_since).round,
         "waiting_message" => wait&.dig(:message),
         "stop_reason" => pane[:done]&.dig(:stop_reason),
+        "turn_failed" => !pane[:turn_failed].nil?,
         "session_id" => pane[:session_id],
         "display_label" => display_label(pane, task, now),
         "agents" => pane[:agents].map { |agent|

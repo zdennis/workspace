@@ -22,8 +22,10 @@ module Workspace
         "SessionEnd" => "session_end",
         "UserPromptSubmit" => "user_prompt",
         "Stop" => "stop",
+        # The turn ended on an API error; `error` says which kind.
+        "StopFailure" => "turn_failed",
         "SubagentStop" => "subagent_stop",
-        # A PreToolUse for the Task tool is "subagent_start" instead; see {#translate}.
+        # A PreToolUse for the Agent (earlier Task) tool is "subagent_start" instead; see {#translate}.
         "PreToolUse" => "tool_start",
         "Notification" => "notification",
         "PostToolUse" => "tool_use"
@@ -67,11 +69,15 @@ module Workspace
       # file; a label only needs its opening, so the rest is cut.
       MAX_PROMPT_LENGTH = 1000
 
+      # What a StopFailure's `error` must look like to be forwarded: a kind name, never text.
+      ERROR_KIND = /\A[a-z_]+\z/
+
       # Longest stop reason forwarded to the daemon.
       MAX_STOP_REASON_LENGTH = 64
 
-      # The tool whose PreToolUse starts a sub-agent.
-      SUBAGENT_TOOL = "Task"
+      # The tools whose PreToolUse starts a sub-agent: "Agent" since Claude Code
+      # 2.1.314, "Task" before.
+      SUBAGENT_TOOLS = %w[Agent Task].freeze
 
       # Tools that work on one file, named by `file_path` or `notebook_path`
       # in their input. Only these forward a path, made relative to the checkout.
@@ -292,7 +298,9 @@ module Workspace
         name = AGENT_EVENTS.fetch(@agent)[hook]
         return nil unless name
 
-        name = "subagent_start" if claude? && hook == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL
+        return nil if name == "turn_failed" && agent_id_for(payload)
+
+        name = "subagent_start" if claude? && hook == "PreToolUse" && SUBAGENT_TOOLS.include?(payload["tool_name"])
 
         {
           "type" => "session_event",
@@ -310,7 +318,8 @@ module Workspace
           "message" => message_for(payload),
           "notification_type" => notification_type_for(payload),
           "prompt" => prompt_for(payload),
-          "stop_reason" => stop_reason_for(payload)
+          "stop_reason" => stop_reason_for(payload),
+          "error" => error_kind_for(payload)
         }.merge(tool_fields(payload), session_fields(payload), codex_subagent_fields(payload)).compact
       end
 
@@ -360,7 +369,7 @@ module Workspace
           duration = payload["duration_ms"]
           fields["duration_ms"] = duration.round if duration.is_a?(Numeric) && duration >= 0
         end
-        if claude? && fields["tool"] == SUBAGENT_TOOL && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
+        if claude? && SUBAGENT_TOOLS.include?(fields["tool"]) && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
           fields["description"] = clean(payload["tool_input"]["description"], MAX_DESCRIPTION_LENGTH)
           fields["subagent_type"] = clean(payload["tool_input"]["subagent_type"], MAX_NAME_LENGTH)
         end
@@ -441,6 +450,15 @@ module Workspace
         name_field(payload, "notification_type")
       end
 
+      # A StopFailure's error kind (`rate_limit`, `server_error`, ...); anything
+      # that is not a bare lowercase name is left out.
+      def error_kind_for(payload)
+        return nil unless payload["hook_event_name"] == "StopFailure"
+
+        error = text_field(payload, "error")
+        error if error&.match?(ERROR_KIND)
+      end
+
       def stop_reason_for(payload)
         return "interrupted" if codex? && payload["hook_event_name"] == "Interrupt"
         return nil unless payload["hook_event_name"] == "Stop"
@@ -469,7 +487,7 @@ module Workspace
         end
 
         input = payload["tool_input"]
-        return nil unless payload["hook_event_name"] == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL && input.is_a?(Hash)
+        return nil unless payload["hook_event_name"] == "PreToolUse" && SUBAGENT_TOOLS.include?(payload["tool_name"]) && input.is_a?(Hash)
 
         name = input["subagent_type"] || input["description"]
         name ? {"name" => name} : nil

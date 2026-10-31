@@ -185,6 +185,15 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(panes.idle?("app", "%5")).to be true
     end
 
+    it "does not count a pane showing a failed turn, whether idle or done for long" do
+      allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0).and_return("panes" => [
+        {"pane_id" => "%5", "state" => "idle", "turn_failed" => true},
+        {"pane_id" => "%6", "state" => "done", "turn_failed" => true, "state_since" => "2026-10-04T11:00:00Z"}
+      ])
+
+      expect(%w[%5 %6].map { |pane| panes.idle?("app", pane) }).to eq([false, false])
+    end
+
     it "does not count a pane that is working or waiting, however long ago that began, nor a done pane with no time" do
       allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0).and_return("panes" => [
         {"pane_id" => "%5", "state" => "working", "state_since" => "2026-10-04T11:00:00Z", "idle_seconds" => 600},
@@ -224,6 +233,16 @@ RSpec.describe Workspace::WorkflowPanes do
           .to eq(ok: false, code: "pane_busy", message: "the agent in pane %5 is in the middle of a turn; resume the run when it is done")
       end
       expect(tmux).not_to have_received(:deliver)
+    end
+
+    it "answers pane_busy for a shell pane showing a failed turn, and types for an agent pane showing one" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
+      shown.merge!("kind" => "shell", "state" => "idle", "turn_failed" => true)
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)).to include(ok: false, code: "pane_busy")
+      expect(tmux).not_to have_received(:deliver)
+
+      shown["kind"] = "claude"
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)).to eq(ok: true)
     end
 
     it "types it when the agent is idle or done, when the daemon does not know the pane, and when the daemon does not answer" do

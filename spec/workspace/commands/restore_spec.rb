@@ -127,8 +127,11 @@ RSpec.describe Workspace::Commands::Restore do
     end
   end
 
+  let(:agent_commands) { nil }
+  let(:resume_command) { Workspace::AgentResumeCommand.new(tmuxinator_report: report, agent_commands: agent_commands) }
+
   subject(:restore) do
-    described_class.new(ledger: ledger, tmux: tmux, pane_bindings: bindings, tmuxinator_report: report, process_tree: process_tree, agent_ensurer: ensurer,
+    described_class.new(ledger: ledger, tmux: tmux, pane_bindings: bindings, tmuxinator_report: report, resume_command: resume_command, process_tree: process_tree, agent_ensurer: ensurer,
       sleeper: ->(seconds) {
         sleeps << seconds
         now[0] += seconds
@@ -1179,7 +1182,7 @@ RSpec.describe Workspace::Commands::Restore do
     it "is optional" do
       running_session
       started("api:0.2", sid(1))
-      command = described_class.new(ledger: ledger, tmux: tmux, pane_bindings: bindings, tmuxinator_report: report, process_tree: process_tree,
+      command = described_class.new(ledger: ledger, tmux: tmux, pane_bindings: bindings, tmuxinator_report: report, resume_command: resume_command, process_tree: process_tree,
         output: output, error_output: error_output)
 
       expect(command.call(["api"])[:exit_code]).to eq(0)
@@ -1213,7 +1216,7 @@ RSpec.describe Workspace::Commands::Restore do
     let(:report) { Workspace::TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands) }
 
     subject(:restore) do
-      described_class.new(ledger: ledger, tmux: tmux, pane_bindings: bindings, tmuxinator_report: report, process_tree: process_tree,
+      described_class.new(ledger: ledger, tmux: tmux, pane_bindings: bindings, tmuxinator_report: report, resume_command: resume_command, process_tree: process_tree,
         agent_ensurer: ensurer, agent_commands: agent_commands, sleeper: ->(_) {}, clock: -> { now[0] }, output: output, error_output: error_output)
     end
 

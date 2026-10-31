@@ -61,6 +61,46 @@ RSpec.describe Workspace::PromptTyper do
     expect(tmux.delivered).to be_empty
   end
 
+  describe "before_enter" do
+    before { tmux.screens = [empty_prompt, "────────\n❯ run the specs\n"] }
+
+    it "leaves the text unsubmitted and presses no Enter when it says no" do
+      result = type(before_enter: -> { false })
+
+      expect(result.outcome).to eq(:not_submitted)
+      expect(result).to be_landed
+      expect(tmux.delivered).to eq([["api", "0.1", "run the specs", false]])
+    end
+
+    it "presses Enter when it says yes" do
+      expect(type(before_enter: -> { true }).outcome).to eq(:submitted)
+      expect(tmux.delivered.last).to eq(["api", "0.1", "", true])
+    end
+
+    it "is called after the last check and before Enter" do
+      order = []
+      allow(typer).to receive(:check).and_wrap_original do |original, *args, **opts|
+        order << :check
+        original.call(*args, **opts)
+      end
+      allow(tmux).to receive(:deliver).and_wrap_original do |original, *args, **opts|
+        order << (opts[:enter] ? :enter : :paste)
+        original.call(*args, **opts)
+      end
+      type(before_enter: -> { (order << :before_enter) && true })
+
+      expect(order).to eq([:check, :paste, :check, :before_enter, :enter])
+    end
+
+    it "isn't called when the last check already refused" do
+      tmux.screens = [empty_prompt, empty_prompt]
+      called = false
+      type(before_enter: -> { called = true })
+
+      expect(called).to be(false)
+    end
+  end
+
   it "stops before the paste when before_paste says no" do
     result = type(before_paste: -> { false })
 
@@ -115,6 +155,20 @@ RSpec.describe Workspace::PromptTyper do
 
     expect(result.to_h).to include(outcome: :not_submitted, reason: "input_changed")
     expect(tmux.delivered.size).to eq(1)
+  end
+
+  it "checks for the whole text with exact:, where pasted: takes a prefix or a placeholder" do
+    text = "An API error stopped your last turn"
+    tmux.screens = ["────────\n❯ #{text} and my own words\n"]
+    expect(typer.check("%5", pasted: text)).to be_nil
+    expect(typer.check("%5", exact: text)).to include(reason: "input_changed")
+
+    tmux.screens = ["────────\n❯ [Pasted text #1 +3 lines]\n"]
+    expect(typer.check("%5", pasted: text)).to be_nil
+    expect(typer.check("%5", exact: text)).to include(reason: "input_changed")
+
+    tmux.screens = ["────────\n❯ #{text}\n"]
+    expect(typer.check("%5", exact: text)).to be_nil
   end
 
   it "reports Enter that didn't take" do

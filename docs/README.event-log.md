@@ -59,6 +59,19 @@ Hook-rate activity (each tool start and finish, sub-agent start and stop, sessio
 
 An acquire that doesn't wait records nothing here; `locks.jsonl` in the lock store already audits every acquire and release.
 
+### Agent recovery
+
+The agent daemon writes two lines when it recovers an agent from an API error (see [`agentd`](README.agentd.md#recovering-from-an-api-error)). Neither holds the error's text, only its kind.
+
+| Type | Written by | `data` |
+|------|-----------|--------|
+| `agent_recovery_attempt` | agent daemon, one attempt finished | `attempt` (from 1, of at most 12), `session_id`, `pane_id`, `error` (the kind), `mode` (`typed` or `restart`), `outcome` |
+| `agent_recovery_gave_up` | agent daemon, it stopped trying and added one inbox item | `pane_id`, `session_id`, `attempts`, `error`, `reason` |
+
+`outcome` is `typed` (Claude Code took the typed message), `resumed` (restarted and Claude Code took the message), `agent_left` (the message was taken, then no agent was left in the pane), `no_response` (no prompt hook within 30 seconds of the message), `not_submitted`, `not_typed`, `not_stopped`, `not_delivered`, `pane_not_clear`, `not_ready`, `person_resumed` (a person resumed the conversation first), `resumed_elsewhere` (the same session opened in another pane, so nothing was typed), `fresh_agent` (a different conversation started in the pane), `claim_lost` or `interrupted` (the daemon restarted during the attempt). The agentd page says what each one means. `fresh_agent` gives up. The failed outcomes count toward the 12 and schedule the next attempt.
+
+`reason` is `attempts_exhausted`, `not_retryable`, `cannot_restart`, `fresh_conversation`, `deferred` or `unconfirmed`.
+
 ### State and lifecycle events
 
 These record that something changed, so a reader can refetch (`snapshot --json`) instead of polling. They carry identifiers and names, never the user's text: no question, answer, prompt, task title, path or config value. Like every activity event, `reconstruct` ignores them. Every event has a string `project` (an event with a nil one is not written; the global `config_changed` uses an empty string), and the workspace name also sits in `data.workspace` where one applies.

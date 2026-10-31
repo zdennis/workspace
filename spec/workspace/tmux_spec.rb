@@ -75,6 +75,40 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.start_server).to be_nil
     end
 
+    describe "#session_gone?" do
+      {
+        "a missing session" => "can't find session: Notes",
+        "a server that isn't running" => "no server running on /tmp/tmux-501/default",
+        "a server with no socket" => "error connecting to /tmp/tmux-501/default (No such file or directory)"
+      }.each do |name, text|
+        it "is true on #{name}" do
+          fake_tmux(%(echo "#{text}" >&2\nexit 1))
+          expect(tmux.session_gone?("Notes")).to be(true)
+        end
+      end
+
+      it "is false on a session that is there" do
+        fake_tmux("exit 0")
+        expect(tmux.session_gone?("Notes")).to be(false)
+      end
+
+      it "is false on a missing file that isn't the socket" do
+        fake_tmux(%(echo "/etc/tmux.conf: No such file or directory" >&2\nexit 1))
+        expect(tmux.session_gone?("Notes")).to be(false)
+      end
+
+      it "is false on any other failure" do
+        fake_tmux(%(echo "error connecting to /tmp/tmux-501/default (Permission denied)" >&2\nexit 1))
+        expect(tmux.session_gone?("Notes")).to be(false)
+      end
+
+      it "is false when tmux can't be run" do
+        FileUtils.mkdir_p(bin)
+        ENV["PATH"] = bin
+        expect(tmux.session_gone?("Notes")).to be(false)
+      end
+    end
+
     describe "#session_exists? and #rename_session" do
       let(:args_file) { File.join(tmpdir, "args") }
 

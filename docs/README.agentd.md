@@ -104,6 +104,72 @@ A paste counts as having landed once the pane's screen shows the last 16 non-bla
 
 **Unverified deliveries** — sometimes the agent can't tell whether the text arrived at all: the screen kept changing (so it never settled enough to compare) or it couldn't be read back. That outcome is "unverified" — it may or may not have landed, and, exactly like a text-landed-but-not-submitted delivery, it is never resent, since resending could type it twice. A command in this state starts the stage with a `Warning:` status update. An urgent steer in this state answers `not_submitted` (see below). A prompt sent by `launch --prompt` fails with a message ending "...it may not have arrived" (see [README.launch.md](README.launch.md)).
 
+### Recovering from an API error
+
+When a Claude Code turn ends on an API error, the agent daemon gets the agent going again. Claude Code reports the error through its `StopFailure` hook, which [`session-event`](README.session-event.md) forwards as `turn_failed` with the error's kind (`server_error`, `overloaded`, `rate_limit`, `unknown`, `authentication_failed`, ...). A sub-agent's failure is not the main agent's and is ignored. The hook is installed by `workspace init`, `start` and `doctor --fix`; a project whose hooks were installed earlier doesn't have it until one of those runs again.
+
+**When it acts.** Only for the kinds `server_error`, `overloaded`, `rate_limit` and `unknown`. Any other kind, such as a bad credential, gets one [inbox](README.inbox.md) item at once (`not_retryable`) and nothing is stopped or typed. The daemon waits 30 seconds after the failure, then reads the session's transcript and checks that its last turn record is still that error and that the session is the one open in the pane. If Claude Code has gone on by itself, the daemon does nothing.
+
+**It types first, and restarts only after that.** The first attempt of an outage types a short message at the live prompt (`An API error stopped your last turn (server_error). Continue where you left off.`) and stops nothing. If that turn fails again, or the message brings no prompt hook within 30 seconds (`no_response`), the attempts after it restart the agent: the daemon sends one SIGINT to the Claude Code process (never another signal, never to the shell), waits up to 15 seconds for it to leave, empties the shell's input line with `C-u`, types the resume command and waits up to 60 seconds for the agent. The resume command is the one [`restore`](README.restore.md) uses: the pane's configured command with `--resume SESSION_ID`, in the session's directory, plus `--dangerously-skip-permissions` when the agent being recovered was started with it. That is read from the Claude Code process's own arguments, under any wrapper, and kept with its pid, so it outlives the process; the workspace config never decides it, and a person's plain `claude` in a split stays plain. `ps` can't show where a prompt starts, so the flag counts only among the options: past a bare word that isn't the value of a known one-value option, including a second value of a multi-value option such as `--mcp-config a b`, it reads as absent, and that agent stops at permission prompts after its resume. With no flags read for the agent the daemon defers and types nothing. The session id, transcript and conversation stay the same. Then it types a second message that says the agent was restarted and its old locks were released, so it should take them again. That message gets the same 30-second wait for a prompt hook: Enter can fall on an agent that is still starting, and with no hook the attempt ends `no_response` and the next one stops that agent, with the message still in its input line if it is there. The daemon resumes only an agent it sent a SIGINT to, and only until a new agent reports in. An agent that leaves without that signal, during the typed attempt for example, isn't resumed, and neither is a resumed agent that vanishes, whether a person ended it or it crashed with no hook: the pane may be a person's by then, so the daemon gives up as `unconfirmed` at the end of that attempt and types nothing into the shell. An agent that ends after attempts with no completed turn gets the same give-up, whenever it ends, unless it ends with `/clear`. The cost is that a resumed agent that crashes needs a person to resume it.
+
+**The schedule.** An outage gets up to 12 attempts, the typed one included, with waits of 1, 2, 4, 8 and then 15 minutes before each. The first wait counts from the failure and each later one from the end of the previous attempt, so 135 minutes is the sum of the waits, not the total time. A turn that completes ends the outage: the record is deleted, the inbox item (if any) is resolved, and the next outage types first again. After the 12th attempt the daemon gives up with one inbox item.
+
+**What it waits for.** Before each attempt the daemon reads the pane, and it waits (the attempt isn't counted) while any of these holds:
+
+- the screen is still changing, or shows `Retrying in` or `esc to interrupt`
+- the input line holds text that isn't the daemon's own message
+- a prompt was submitted since the failure
+- the main agent has a sub-agent running (one with no event for 10 minutes stops counting, because an outage can kill a sub-agent before it reports)
+- the agent's process group doesn't hold the pane's terminal, so typed text would reach a shell
+- the pane is outside window 0 of the session, which the session monitor doesn't scan: such an agent is always deferred
+- tmux, `ps`, the transcript or the session ledger can't be read
+- a second `claude` process sits in the pane and is listed first: the real agent is refused, and the daemon types and stops nothing
+
+A pane that waits 30 minutes without a break is given up as `deferred`, with nothing typed or stopped. A healthy agent is never stopped. An open [`ask`](README.ask.md) doesn't hold an attempt off, because an ask can stay open for good; it survives the restart.
+
+**What a restart keeps and what it loses.** The dev server started with `workspace dev up` keeps running and keeps its lock, and prompts queued with `agent-run send --when-idle` stay queued and go to the resumed agent. A lock the old agent held is released. These are lost:
+
+- text a person had typed at the shell of a pane the daemon stopped, because `C-u` empties the line before the resume command goes in
+- a draft in the agent's own input line, because SIGINT makes Claude Code exit
+- background Bash tasks, and background sub-agents whose record already closed at a Stop, because they live in the process that is stopped
+
+While the daemon is recovering a pane, [`agent-run send`](README.agent-run.md) to a pane that currently reads as a shell answers `not_an_agent`. That can last until the next attempt, up to 15 minutes. A queued prompt isn't dropped.
+
+**What it doesn't detect.** A frozen agent (one stopped with `SIGSTOP`, for example) isn't detected as such: the typed attempt ends `not_typed`, because the paste can't render, and a SIGINT stays pending until the process runs again. A request that hangs without failing isn't detected either, because Claude Code reports no error for it, and neither is a resumed agent that then hangs. Recovery acts on API errors Claude Code reports, nothing else.
+
+**Turning it off.** `agent.recovery.enabled` is on by default. `workspace config set agent.recovery.enabled false` turns it off for the workspace, project or globally (see [`config`](README.config.md)); read the effective value with `workspace config agent.recovery.enabled` (`config get` prints nothing for a key that only has its default). The daemon reads the key when it starts, so the change takes effect at the next start: `workspace agentd restart`.
+
+**Why a pane wasn't recovered.** A give-up writes an `agent_recovery_gave_up` line to the [event log](README.event-log.md#agent-recovery) and adds one inbox item, `agent-recovery:SESSION_ID`, with the pane id as its link. The `reason` is one of:
+
+| Reason | What happened |
+|--------|---------------|
+| `attempts_exhausted` | The error kept coming through all 12 attempts |
+| `not_retryable` | The error kind isn't one trying again can fix, so no attempt follows. A later retryable failure of the same session starts the schedule again |
+| `cannot_restart` | The pane has its own start command, something other than a shell runs the agent, or the transcript is gone. No attempt was made |
+| `fresh_conversation` | A new conversation took the pane's place (a `claude ... \|\| claude` wrapper started one), so nothing was typed into it |
+| `deferred` | The pane stayed busy or unreadable for 30 minutes (the list above), or tmux no longer lists it. Nothing was stopped or typed in those 30 minutes; attempts before them may have |
+| `unconfirmed` | The daemon could no longer confirm that the turn ended on the error, after attempts had been made (or, with no attempt made, an inbox item from an earlier failure was already open and a later failure could not be confirmed). A later retryable failure of the same session with an agent in the pane starts the schedule again, with the count kept |
+
+The item is resolved when a later turn of that session completes. Each finished attempt writes an `agent_recovery_attempt` line whose `outcome` says how it ended; a failed attempt counts toward the 12 and schedules the next:
+
+| Outcome | What happened |
+|---------|---------------|
+| `typed` | The message was typed, Claude Code took it (a prompt hook arrived) and it was still in the pane. The agent is watched until its turn ends |
+| `resumed` | The agent was restarted, took the second message (a prompt hook arrived) and was still in the pane. It is watched until its turn ends |
+| `agent_left` | The message was taken (`typed` or `resumed` so far), but no agent was left in the pane at the end of the attempt. The daemon gives up with `unconfirmed` at once and nothing is typed |
+| `no_response` | The typed message, or the second message of a restart, got no prompt hook in 30 seconds. The next attempt restarts the agent. The text may still be in the input line |
+| `not_submitted` | The text was pasted but Enter didn't take. It may be in the input line |
+| `not_typed` | Nothing was typed: the pane wasn't safe to type into, a person's prompt came in, or the agent didn't hold the terminal |
+| `not_stopped` | The agent was still running 15 seconds after the SIGINT. If it exits late, within 5 minutes of the signal, and its SessionEnd arrives after the attempt ended, the next attempt resumes it: that exit can't be told from a person's. Otherwise the daemon gives up with `unconfirmed`, nothing typed: with the SessionEnd seen during the attempt, after the pane defers until the signal is 5 minutes old; with one later than that, at once |
+| `not_delivered` | The resume command didn't reach the pane |
+| `pane_not_clear` | The pane wasn't at a shell prompt, a process still held the session, or the agent didn't hold the terminal |
+| `not_ready` | The resumed agent didn't show its prompt in 60 seconds, or died first |
+| `person_resumed` | A person resumed the conversation in the pane first. Nothing more was typed |
+| `resumed_elsewhere` | The same session opened in another pane. Nothing was typed, so one session never runs in two panes, and the record is deleted |
+| `fresh_agent` | A different conversation started in the pane. The attempt ends and the daemon gives up with `fresh_conversation` |
+| `claim_lost` | Another restart took the pane |
+| `interrupted` | The daemon itself stopped or restarted during the attempt; the next daemon found it and went on |
+
 ## Wire protocol
 
 The agent answers every inbound connection with exactly one JSON line, so a caller can always tell an answer apart from a dead agent. (The one exception: a `restart_agent` caller that waits gets no line if the agent shuts down first.)

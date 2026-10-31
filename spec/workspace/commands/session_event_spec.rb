@@ -266,6 +266,15 @@ RSpec.describe Workspace::Commands::SessionEvent do
       )
     end
 
+    it "counts the Agent tool Claude Code 2.1.314 reports as a sub-agent start" do
+      event = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Agent", "tool_use_id" => "toolu_415751845",
+        "tool_input" => {"description" => "bg", "prompt" => "T11SUB do it", "subagent_type" => "general-purpose"})
+
+      expect(event).to include("event" => "subagent_start", "tool" => "Agent", "tool_use_id" => "toolu_415751845",
+        "description" => "bg", "subagent_type" => "general-purpose", "agent" => {"name" => "general-purpose"})
+      expect(JSON.generate(event)).not_to include("T11SUB")
+    end
+
     it "falls back to the task description when no subagent type is given" do
       event = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Task",
         "tool_input" => {"description" => "review the diff"})
@@ -367,6 +376,27 @@ RSpec.describe Workspace::Commands::SessionEvent do
 
     it "forwards a stop reason only from a Stop" do
       expect(deliver("hook_event_name" => "SubagentStop", "stop_reason" => "end_turn")).not_to have_key("stop_reason")
+    end
+
+    it "translates a StopFailure into turn_failed with its error kind and session id" do
+      event = deliver("hook_event_name" => "StopFailure", "session_id" => "sess-1", "error" => "rate_limit")
+
+      expect(event).to include("event" => "turn_failed", "error" => "rate_limit", "session_id" => "sess-1")
+      expect(event["event"]).not_to eq("stop")
+    end
+
+    it "leaves out a StopFailure error that is not a bare kind name" do
+      ["Rate limit: try later", "rate-limit", "", 3, nil].each do |bad|
+        expect(deliver("hook_event_name" => "StopFailure", "error" => bad)).not_to have_key("error")
+      end
+    end
+
+    it "forwards an error only from a StopFailure" do
+      expect(deliver("hook_event_name" => "Stop", "error" => "rate_limit")).not_to have_key("error")
+    end
+
+    it "drops a StopFailure from a sub-agent" do
+      expect(deliver("hook_event_name" => "StopFailure", "error" => "rate_limit", "agent_id" => "sub-1")).to be_nil
     end
 
     it "forwards a PostToolUse as tool use, which ends a wait for permission" do

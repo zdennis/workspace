@@ -62,6 +62,9 @@ module Workspace
     # @param store [Workspace::PromptQueueStore] the workspace's queue
     # @param delivery_lock [Mutex] held while typing, shared with the daemon's other deliveries
     # @param restarting [#call] given a pane id, whether a restart holds the pane
+    # @param recovering [#call] given a pane id, whether an API-error recovery holds the pane: its
+    #   agent was stopped, or is about to be, and a resumed one will take its place. While true nothing
+    #   is dropped and nothing is typed, and a send only queues
     # @param claim_restart [#call] given a pane id, claims it as a restart would, for a
     #   clear; returns a token, or nil when a restart already holds the pane
     # @param release_restart [#call] given a pane id and a token, releases that claim
@@ -74,7 +77,7 @@ module Workspace
     # @param daemon_pid [Integer] written into each claim
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, session_name:, workspace:, session_monitor:, store:, delivery_lock:,
-      restarting: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
+      restarting: ->(_pane_id) { false }, recovering: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
       release_restart: ->(_pane_id, _token) {}, event_log: nil, typer: nil, providers: AgentProvider.all,
       clock: Time, sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) },
       daemon_pid: Process.pid, logger: Workspace::Logger.new)
@@ -85,6 +88,7 @@ module Workspace
       @store = store
       @delivery_lock = delivery_lock
       @restarting = restarting
+      @recovering = recovering
       @claim_restart = claim_restart
       @release_restart = release_restart
       @event_log = event_log
@@ -140,7 +144,8 @@ module Workspace
             "limit" => PromptQueueStore::MAX_PER_PANE).merge(context)
         end
 
-        result = (entry["position"] == 1) ? deliver_locked(pane_id) : nil
+        # deliver_locked would prune the entry in a wrapper pane before the resumed agent rebinds it.
+        result = (entry["position"] == 1 && !@recovering.call(pane_id)) ? deliver_locked(pane_id) : nil
         busy = when_idle ? nil : withdrawn(entry, result)
         (busy || send_reply(entry, result)).merge(context)
       end
@@ -197,7 +202,7 @@ module Workspace
 
       @spawn.call do
         @store.bind_session(pane_id, session_id) if bind
-        drop_all(pane_id, "session_ended") if ending
+        drop_all(pane_id, "session_ended") if ending && !@recovering.call(pane_id)
         deliver_next(pane_id) if turn_ended
       rescue => e
         @logger.debug { "prompt queue: hook event for #{pane_id} (#{e.class}: #{e.message})" }
@@ -229,6 +234,7 @@ module Workspace
     #   `:outcome`, `:cleared`, and `:submitted` or `:reason`), or nil when
     #   none was claimed
     def deliver_next(pane_id, wait: true)
+      return nil if @recovering.call(pane_id)
       lock = pane_lock(pane_id)
       return nil unless wait || lock.try_lock
       begin

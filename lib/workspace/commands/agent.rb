@@ -65,9 +65,14 @@ module Workspace
       #   monitor, the hook event log, the delivery lock and a pane-restarting check, builds the
       #   {Workspace::AgentStatusDesk} that answers `status_request` and `status_post`; nil builds the default one
       # @param prompt_queue_desk_factory [#call, nil] given the workspace, its tmux session, the session
-      #   monitor, the delivery lock, a pane-restarting check and the calls that claim and release a
-      #   pane for a restart, builds the {Workspace::PromptQueueDesk} that answers `prompt_send` and
-      #   delivers queued prompts; nil builds the default one
+      #   monitor, the delivery lock, a pane-restarting check, the calls that claim and release a
+      #   pane for a restart and a pane-recovering check, builds the {Workspace::PromptQueueDesk} that
+      #   answers `prompt_send` and delivers queued prompts; nil builds the default one
+      # @param agent_recovery_desk_factory [#call, nil] given the workspace, its tmux session, the session
+      #   monitor, the delivery lock, the event log, a pane-restarting check, the calls that claim and
+      #   release a pane (the claim registers the calling thread) and +rebind_queue+ (pane id, agent pid),
+      #   builds the {Workspace::AgentRecoveryDesk}, or answers nil when recovery is off or the workspace's
+      #   agent isn't Claude Code; nil (the default) never builds one
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
       # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
@@ -112,6 +117,7 @@ module Workspace
         hook_event_log_factory: nil,
         agent_status_desk_factory: nil,
         prompt_queue_desk_factory: nil,
+        agent_recovery_desk_factory: nil,
         name_migration: nil,
         plan_progress_watcher_factory: nil,
         spine_watcher_factory: nil,
@@ -147,6 +153,8 @@ module Workspace
         @spine_owner_report_factory = spine_owner_report_factory
         @agent_status_desk_factory = agent_status_desk_factory || method(:build_agent_status_desk)
         @prompt_queue_desk_factory = prompt_queue_desk_factory || method(:build_prompt_queue_desk)
+        @agent_recovery_desk_factory = agent_recovery_desk_factory
+        @agent_recovery_desk = nil
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
         # When the main agent's current turn began, by pane id, for the workflow nudger.
@@ -237,9 +245,11 @@ module Workspace
         @prompt_queue_desk = @prompt_queue_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, delivery_lock: @delivery_lock, restarting: restarting,
           claim_restart: ->(pane_id) { claim_restart_for_queue(pane_id) },
-          release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) })
+          release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) },
+          recovering: ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false })
+        @agent_recovery_desk = build_agent_recovery_desk(name, restarting)
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
-        @session_monitor.on_scan = -> { @prompt_queue_desk.scan } if @prompt_queue_desk && @session_monitor.respond_to?(:on_scan=)
+        @session_monitor.on_scan = -> { scan_desks } if @session_monitor.respond_to?(:on_scan=)
 
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
@@ -406,6 +416,7 @@ module Workspace
           nudge_workflow(message) if @workflow_nudger && message["agent_id"].nil?
           report_owner_finished(message) if @spine_owner_report && message["agent_id"].nil?
           @prompt_queue_desk&.session_event(message)
+          @agent_recovery_desk&.session_event(message)
           reply_to(client, "ok" => true)
         when "status_request" then handle_status_request(message, client)
         when "prompt_send" then handle_prompt_send(message, client)
@@ -1229,11 +1240,38 @@ module Workspace
       end
 
       def build_prompt_queue_desk(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:,
-        claim_restart:, release_restart:)
+        claim_restart:, release_restart:, recovering: ->(_pane_id) { false })
         PromptQueueDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
           store: PromptQueueStore.new(path: @config.prompt_queue_path(workspace)), delivery_lock: delivery_lock,
           restarting: restarting, claim_restart: claim_restart, release_restart: release_restart,
-          event_log: @event_log, logger: @logger)
+          recovering: recovering, event_log: @event_log, logger: @logger)
+      end
+
+      # Asks the injected factory for the recovery desk. Its claim runs on the
+      # attempt's own thread, so the thread goes into @restarts as the token
+      # and {#stop_restarts} can kill an attempt; the claim is refused while
+      # any claim holds the pane, and a release matches by identity.
+      #
+      # @return [Workspace::AgentRecoveryDesk, nil] nil with no factory, with recovery off, or for another agent
+      def build_agent_recovery_desk(workspace, restarting)
+        return nil unless @agent_recovery_desk_factory
+        queue_path = @config.prompt_queue_path(workspace)
+        @agent_recovery_desk_factory.call(workspace: workspace, session_name: @tmux_session,
+          session_monitor: @session_monitor, delivery_lock: @delivery_lock, event_log: @event_log,
+          restarting: restarting,
+          claim_restart: ->(pane_id) { claim_restart_for_recovery(pane_id) },
+          release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) },
+          rebind_queue: ->(pane_id, agent_pid) { PromptQueueStore.new(path: queue_path).rebind_agent(pane_id, agent_pid: agent_pid) })
+      end
+
+      # The session monitor's after-scan call: both desks run, and one that
+      # raises does not stop the other.
+      def scan_desks
+        [@prompt_queue_desk, @agent_recovery_desk].compact.each do |desk|
+          desk.scan
+        rescue => e
+          @logger.debug { "agent: #{desk.class.name.split("::").last} scan failed (#{e.class}: #{e.message})" }
+        end
       end
 
       # Claims a pane in @restarts for a queued prompt's clear, refusing
@@ -1247,7 +1285,21 @@ module Workspace
         end
       end
 
-      # Releases a claim {#claim_restart_for_queue} made, and only that one.
+      # Claims a pane in @restarts for a recovery attempt, on the attempt's own
+      # thread. The token is that thread, so {#stop_restarts} kills it, and a claim
+      # made after shutdown began is refused: that sweep would never see it.
+      #
+      # @return [Thread, nil] the claim's token, for releasing it; nil when the
+      #   pane is held or the daemon is shutting down
+      def claim_restart_for_recovery(pane_id)
+        @state_lock.synchronize do
+          next nil if @shutting_down || @restarts.key?(pane_id)
+          @restarts[pane_id] = Thread.current
+        end
+      end
+
+      # Releases a claim {#claim_restart_for_queue} or
+      # {#claim_restart_for_recovery} made, and only that one.
       def release_restart_for_queue(pane_id, token)
         @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id].equal?(token) }
       end

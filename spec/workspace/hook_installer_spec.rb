@@ -108,6 +108,20 @@ RSpec.describe Workspace::HookInstaller do
       expect(installer.stale_tracked_hooks?(provider, tmpdir, command)).to be true
     end
 
+    it "calls a checkout whose hooks lack StopFailure stale" do
+      installer.install(provider, tmpdir, command, quiet: true)
+      without = settings
+      without["hooks"].delete("StopFailure")
+      write_settings(without)
+
+      expect(installer.stale_tracked_hooks?(provider, tmpdir, command)).to be true
+
+      installer.install(provider, tmpdir, command, quiet: true)
+
+      expect(settings["hooks"]).to include("StopFailure")
+      expect(installer.stale_tracked_hooks?(provider, tmpdir, command)).to be false
+    end
+
     it "chains a differing tracked statusLine command into statusline.command and routes through workspace in local" do
       write_settings("statusLine" => {"type" => "command", "command" => "mine.sh"})
 
@@ -157,7 +171,7 @@ RSpec.describe Workspace::HookInstaller do
     it "creates the settings file when the project has none" do
       installer.install(provider, tmpdir, command)
 
-      expect(settings["hooks"]).to include("SessionStart", "SubagentStop", "PreToolUse")
+      expect(settings["hooks"]).to include("SessionStart", "SubagentStop", "PreToolUse", "StopFailure")
     end
 
     it "preserves unrelated settings and the user's own hooks" do

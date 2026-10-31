@@ -33,6 +33,7 @@ module Workspace
     # @return [Boolean]
     def self.turn_over?(shown, now)
       return false unless shown
+      return false if shown["turn_failed"]
       return true if shown["state"] == "idle"
       shown["state"] == "done" && !shown["state_since"].nil? && now - Time.iso8601(shown["state_since"]) >= DONE_GRACE
     rescue ArgumentError
@@ -191,9 +192,11 @@ module Workspace
         "A workflow needs it to see when a turn ends.", code: "no_daemon", details: {"workspace" => workspace})
     end
 
-    # Whether the daemon shows the pane's agent working or waiting at a prompt; false when it can't say.
+    # Whether the daemon shows the pane's agent working or waiting at a prompt, or a
+    # shell where an agent's turn failed (nothing to type a step's line to); false when it can't say.
     def busy?(workspace, pane)
       shown = Array(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT)["panes"]).find { |each| each["pane_id"] == pane }
+      return true if shown && shown["turn_failed"] && shown["kind"] == "shell"
       %w[working waiting].include?(shown && shown["state"])
     rescue Workspace::Error
       false

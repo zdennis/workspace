@@ -46,9 +46,10 @@ module Workspace
     #
     # @param pane_id [String] tmux pane id
     # @param pasted [String, nil] text already pasted, which the input line must then hold
+    # @param exact [String, nil] text the whole input must equal; see {TypingSafety#check}
     # @return [Hash, nil] nil when the pane can take text, else the {TypingSafety#check} refusal
-    def check(pane_id, pasted: nil)
-      @safety.check(@session_monitor&.typing_facts(pane_id), @tmux.capture_screen(pane_id), pasted: pasted)
+    def check(pane_id, pasted: nil, exact: nil)
+      @safety.check(@session_monitor&.typing_facts(pane_id), @tmux.capture_screen(pane_id), pasted: pasted, exact: exact)
     end
 
     # Checks, pastes, checks again, presses Enter.
@@ -59,8 +60,11 @@ module Workspace
     # @param text [String] the prompt
     # @param before_paste [#call, nil] called after the first check passes and
     #   right before the paste; a false answer stops there with +:aborted+
+    # @param before_enter [#call, nil] called after the last check and right
+    #   before Enter; a false answer stops there with +:not_submitted+, the
+    #   text left in the pane
     # @return [Result]
-    def type(session_name:, target:, pane_id:, text:, before_paste: nil)
+    def type(session_name:, target:, pane_id:, text:, before_paste: nil, before_enter: nil)
       refused = check(pane_id)
       return Result.new(outcome: :refused, code: refused[:code], reason: refused[:reason], message: refused[:message]) if refused
       return Result.new(outcome: :aborted) if before_paste && !before_paste.call
@@ -74,6 +78,7 @@ module Workspace
 
       changed = check(pane_id, pasted: text)
       return unsubmitted("Enter was not pressed: #{changed[:message]}", pasted, reason: changed[:reason]) if changed
+      return unsubmitted("Enter was not pressed: the caller's last check refused", pasted) if before_enter && !before_enter.call
 
       submitted = @tmux.deliver(session_name, target, "", enter: true)
       @logger.debug { "prompt typer: submitted in #{session_name}:#{target}: #{submitted.status}" }

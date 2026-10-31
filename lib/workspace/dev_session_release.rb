@@ -15,10 +15,12 @@ module Workspace
     # @param config [Workspace::Config] supplies the lock directory and the log path
     # @param executable [String] path to `bin/workspace`
     # @param spawner [#call] starts a detached process: `(argv, cwd, log)`
+    # @param recovery_marker [Workspace::RecoveryStopMarker, nil] nil builds one from +config+
     # @param logger [Workspace::Logger] debug logger
-    def initialize(config:, executable:, spawner: nil, logger: Workspace::Logger.new)
+    def initialize(config:, executable:, spawner: nil, recovery_marker: nil, logger: Workspace::Logger.new)
       @config = config
       @executable = executable
+      @recovery_marker = recovery_marker || RecoveryStopMarker.new(state_dir: config.state_dir)
       @spawner = spawner || method(:spawn_detached)
       @logger = logger
     end
@@ -28,7 +30,7 @@ module Workspace
     # @param reason [String, nil] why it ended, from the hook payload
     # @return [Boolean] whether a release was started
     def call(session_id:, cwd:, reason:)
-      return false if reason == "clear" || session_id.to_s.empty? || !named?(session_id)
+      return false if reason == "clear" || session_id.to_s.empty? || @recovery_marker.marked?(session_id) || !named?(session_id)
 
       cwd = Dir.pwd unless cwd && File.directory?(cwd)
       @spawner.call([RbConfig.ruby, @executable, "dev", "__release", session_id], cwd, log_path)
