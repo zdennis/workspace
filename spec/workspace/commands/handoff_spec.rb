@@ -384,6 +384,248 @@ RSpec.describe Workspace::Commands::Handoff do
     end
   end
 
+  describe "#check following up" do
+    let(:over_pane) { claude_pane.merge("context_pct" => 42) }
+    let(:defaults) do
+      {threshold: 11, check_prompt: nil, resume_prompt: nil, followup_interval: 30, followup_max: 10, followup_prompt: nil}
+    end
+    let(:watch_requests) { [] }
+    let(:delivered) { [] }
+
+    before do
+      allow(tmux).to receive(:deliver) do |_session, _pane, text|
+        delivered << text
+        Workspace::Tmux::Delivery.new(status: :submitted)
+      end
+    end
+
+    # Answers the "sessions" request, then the next request with +watch_reply+ (a String; nil
+    # leaves it unanswered, :partial writes half a line and waits, :gone closes the socket first), recording what that request said.
+    def with_daemon(panes, watch_reply: {ok: true, watching: true, reason: nil}.to_json)
+      File.delete(socket_path) if File.exist?(socket_path)
+      server = UNIXServer.new(socket_path)
+      thread = Thread.new do
+        client = server.accept
+        client.gets
+        client.puts({"workspace" => "myapp", "panes" => panes}.to_json)
+        client.close
+        if watch_reply == :gone
+          server.close
+          File.delete(socket_path)
+          next
+        end
+        client = begin
+          server.accept
+        rescue IOError
+          next
+        end
+        watch_requests << JSON.parse(client.gets)
+        client.puts(watch_reply) if watch_reply.is_a?(String)
+        client.write('{"ok":tru') if watch_reply == :partial
+        # Silent and partial daemons hold the connection until `check` gives up and closes it.
+        client.read if watch_reply.nil? || watch_reply == :partial
+        client.close
+      end
+      yield
+    ensure
+      server&.close
+      thread&.join(2)
+    end
+
+    def check(**opts)
+      result = nil
+      with_daemon([over_pane], **opts.slice(:watch_reply)) do
+        result = command.check(name: "myapp", handoff_doc: "HANDOFF.md", **opts.except(:watch_reply))
+      end
+      result
+    end
+
+    it "asks the daemon to watch the pane after a landed prompt" do
+      sent_at = Time.now
+      expect(check).to eq(exit_code: 1)
+
+      request = watch_requests.first
+      expect(request).to include("type" => "handoff_watch", "workspace" => "myapp", "pane_id" => "%1",
+        "interval" => 30, "max" => 10, "sent_text" => delivered.first)
+      expect(Time.iso8601(request["sent_at"])).to be_within(5).of(sent_at)
+      expect(request["sent_at"]).to match(/\.\d{3}/)
+      expect(request["text"]).to include("workspace handoff new myapp --pane '%1' --handoff-doc HANDOFF.md")
+      expect(output.string).to include("follow up")
+    end
+
+    it "sends nothing to the daemon when the prompt did not land" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :failed))
+
+      with_daemon([over_pane]) { command.check(name: "myapp", json: true) }
+
+      expect(watch_requests).to be_empty
+      expect(JSON.parse(output.string)).to include("status" => "handoff_send_failed").and(satisfy { |doc| !doc.key?("followup") })
+    end
+
+    it "puts followup in the --json document of a handoff_sent only" do
+      check(json: true)
+      document = JSON.parse(output.string)
+      expect(document["followup"]).to eq("watching" => true, "reason" => nil)
+      expect(document.keys - ["followup"]).to eq(%w[schema_version ok status context_pct threshold pane pane_id delivery landed next doc])
+    end
+
+    it "leaves followup out of the under-threshold and undetermined documents" do
+      with_sessions([claude_pane]) { command.check(name: "myapp", json: true) }
+      expect(JSON.parse(output.string)).not_to have_key("followup")
+    end
+
+    describe "skipping the watch" do
+      it "skips with 'disabled' when followup_max is 0" do
+        allow(handoff_config).to receive(:for_workspace).with("myapp").and_return(defaults.merge(followup_max: 0))
+        check(json: true)
+        expect(JSON.parse(output.string)["followup"]).to eq("watching" => false, "reason" => "disabled")
+        expect(watch_requests).to be_empty
+      end
+
+      %w[run review].each do |kind|
+        it "skips with 'bound_pane' for a #{kind} binding" do
+          allow(binder).to receive(:live).with(pane: "%1").and_return({"kind" => kind})
+          check(json: true)
+          expect(JSON.parse(output.string)["followup"]).to eq("watching" => false, "reason" => "bound_pane")
+          expect(watch_requests).to be_empty
+        end
+      end
+
+      it "still watches a pane bound to a play" do
+        allow(binder).to receive(:live).with(pane: "%1").and_return({"kind" => "play"})
+        check(json: true)
+        expect(JSON.parse(output.string)["followup"]).to eq("watching" => true, "reason" => nil)
+      end
+
+      it "skips with 'text_too_long' when the prompt would pass the daemon's 4,000 character limit" do
+        result = check(json: true, handoff_prompt: "x" * 4000, handoff_doc: nil)
+        expect(result).to eq(exit_code: 1)
+        expect(JSON.parse(output.string)["followup"]).to eq("watching" => false, "reason" => "text_too_long")
+        expect(watch_requests).to be_empty
+        expect(delivered.size).to eq(1)
+      end
+
+      it "still exits 1 when looking up the binding raises" do
+        allow(binder).to receive(:live).and_raise(Workspace::Error, "bindings unreadable")
+        expect(check(json: true)).to eq(exit_code: 1)
+        expect(JSON.parse(output.string)["followup"]).to eq("watching" => false, "reason" => "error")
+        expect(error_output.string).to include("bindings unreadable")
+      end
+
+      it "reports the daemon's reason when it declines" do
+        check(json: true, watch_reply: {ok: true, watching: false, reason: "not_claude"}.to_json)
+        expect(JSON.parse(output.string)["followup"]).to eq("watching" => false, "reason" => "not_claude")
+        expect(output.string).not_to include("will follow up")
+      end
+
+      describe "when the daemon does not take the request" do
+        before { stub_const("#{described_class}::FOLLOWUP_REPLY_WAIT", 0.2) }
+
+        let(:outcomes) do
+          {
+            dead: {watch_reply: :gone, reason: "no_daemon"},
+            silent: {watch_reply: nil, reason: "no_reply"},
+            partial: {watch_reply: :partial, reason: "no_reply"},
+            old: {watch_reply: {ok: false, error: "unknown_type"}.to_json, reason: "unsupported_daemon"}
+          }
+        end
+
+        it "reports the same handoff_sent status and exit code whichever way" do
+          outcomes.each_value do |outcome|
+            output.truncate(0)
+            output.rewind
+            expect(check(json: true, watch_reply: outcome[:watch_reply])).to eq(exit_code: 1)
+            document = JSON.parse(output.string)
+            expect(document).to include("status" => "handoff_sent", "landed" => true)
+            expect(document["followup"]).to eq("watching" => false, "reason" => outcome[:reason])
+          end
+        end
+
+        it "warns once when the daemon is gone" do
+          check(json: true, watch_reply: :gone)
+          expect(error_output.string.scan("Warning").size).to eq(1)
+        end
+
+        it "warns once, within the limit, when the daemon is silent" do
+          started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          check(json: true, watch_reply: nil)
+          expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1.5
+          expect(error_output.string.scan("Warning").size).to eq(1)
+        end
+
+        it "gives up on a daemon that writes half a line instead of waiting for the rest" do
+          started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          check(json: true, watch_reply: :partial)
+          expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1.5
+          expect(error_output.string.scan("Warning").size).to eq(1)
+        end
+
+        it "does not warn about an old daemon" do
+          check(json: true, watch_reply: outcomes[:old][:watch_reply])
+          expect(error_output.string).to eq("")
+        end
+      end
+
+      it "does not warn when the daemon declines" do
+        check(json: true, watch_reply: {ok: true, watching: false, reason: "not_claude"}.to_json)
+        expect(error_output.string).to eq("")
+      end
+
+      it "gives the reason 'unknown' when the daemon declines without one" do
+        check(json: true, watch_reply: {ok: true, watching: false}.to_json)
+        expect(JSON.parse(output.string)["followup"]).to eq("watching" => false, "reason" => "unknown")
+        output.truncate(0)
+        output.rewind
+        check(json: true, watch_reply: {ok: true, watching: false, reason: ""}.to_json)
+        expect(JSON.parse(output.string)["followup"]).to eq("watching" => false, "reason" => "unknown")
+      end
+    end
+
+    describe "the command the follow-up names" do
+      it "keeps --handoff-prompt, shell-quoted, when a prompt is given" do
+        check(handoff_prompt: "resume it", handoff_doc: nil)
+        expect(watch_requests.first["text"]).to include("workspace handoff new myapp --pane '%1' --handoff-prompt resume\\ it")
+      end
+
+      it "leaves the plan to be found, as the save-state prompt does" do
+        File.write(File.join(tmpdir, "IMPLEMENTATION_PLAN.md"), "x")
+        allow(notes).to receive(:info).and_return({"dir" => tmpdir})
+        with_daemon([over_pane]) { command.check(name: "myapp") }
+        expect(watch_requests.first["text"]).to include("workspace handoff new myapp --pane '%1'")
+        expect(watch_requests.first["text"]).not_to include("--handoff-doc")
+      end
+
+      it "keeps the --handoff-doc PATH the path-picking prompt shows" do
+        allow(notes).to receive(:info).and_raise(Workspace::Error, "no notes dir")
+        with_daemon([over_pane]) { command.check(name: "myapp") }
+        expect(delivered.first).to include("--pane '%1' --handoff-doc PATH")
+        expect(watch_requests.first["text"]).to include("workspace handoff new myapp --pane '%1' --handoff-doc PATH")
+      end
+    end
+
+    describe "the follow-up template" do
+      let(:built_in) { format(Workspace::ConfigSchema.default("handoff.followup_prompt"), new_cmd: "workspace handoff new myapp --pane '%1' --handoff-doc HANDOFF.md") }
+
+      it "uses handoff.followup_prompt with %{new_cmd}" do
+        allow(handoff_config).to receive(:for_workspace).with("myapp").and_return(defaults.merge(followup_prompt: "Handing off? Run %{new_cmd}"))
+        check
+        expect(watch_requests.first["text"]).to eq("Handing off? Run workspace handoff new myapp --pane '%1' --handoff-doc HANDOFF.md")
+      end
+
+      it "falls back to the schema's default text, with a warning, when the template is bad" do
+        allow(handoff_config).to receive(:for_workspace).with("myapp").and_return(defaults.merge(followup_prompt: "50% sure, run %{new_cmd} %{usage}"))
+        check
+        expect(watch_requests.first["text"]).to eq(built_in)
+        expect(error_output.string).to match(/invalid prompt template/)
+      end
+
+      it "uses the schema's default when none is set" do
+        check
+        expect(watch_requests.first["text"]).to eq(built_in)
+      end
+    end
+  end
+
   describe "#new" do
     it "resolves the default Claude pane and delegates to restart_agent_command" do
       allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
