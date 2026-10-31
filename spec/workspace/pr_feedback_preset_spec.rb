@@ -33,16 +33,31 @@ RSpec.describe "the shipped workflow presets" do
     it "runs rpiv's steps with a reviewed plan and no gate" do
       expect(steps.map { |step| step["id"] }).to eq(%w[research plan plan_review implement verify])
       expect(steps.map { |step| step["gate"] }.compact).to be_empty
-      expect(review["on_fail"]).to include("goto" => "plan", "max" => 2)
+      expect(review["on_fail"]).to include("goto" => "plan", "max" => 9, "context" => "continue")
+      expect(review["context"]).to eq("continue")
     end
 
-    it "passes only when both reviewers approved the current plan" do
-      approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\n"
+    it "passes only when the skeptic and one other approved the current plan" do
+      approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\nimplementer: approve\n"
 
       expect(check(approved)).to be(true)
       expect(check(approved.sub("skeptical: approve", "skeptical: reject"))).to be(false)
-      expect(check(approved.sub("supportive: approve", "supportive: reject"))).to be(false)
+      expect(check(approved.sub("supportive: approve", "supportive: reject"))).to be(true)
+      expect(check(approved.sub("implementer: approve", "implementer: reject"))).to be(true)
+      expect(check(approved.sub("supportive: approve", "supportive: reject").sub("implementer: approve", "implementer: reject"))).to be(false)
       expect(check(approved, revision: "def456")).to be(false)
+    end
+
+    it "reads the votes from the header, never from a reviewer's reasons" do
+      rejected = "plan_revision: abc123\nsupportive: approve\nskeptical: reject\nimplementer: approve\n"
+
+      expect(check(rejected)).to be(false)
+      expect(check(rejected + "\n## Reasons\nskeptical: approve\n")).to be(false)
+      expect(check("plan_revision: abc123\nskeptical: approve\nskeptical: reject\nsupportive: approve\n")).to be(false)
+    end
+
+    it "leaves attempts for every rejection the loops allow" do
+      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to be >= 29
     end
   end
 
