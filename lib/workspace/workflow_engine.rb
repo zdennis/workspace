@@ -91,15 +91,20 @@ module Workspace
       @delivery = nil
     end
 
-    # Whether a run is one only a timer will wake: it waits for a lock, or
-    # its check was started and never reported back (the process running it
-    # died), judged by the check's time limit plus a minute.
+    # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
+    BACKGROUND_HOLD = 90 * 60
+
+    # Whether a run is one only a timer will wake: it waits for a lock, its
+    # check was started and never reported back (the process running it
+    # died), judged by the check's time limit plus a minute, or it has been
+    # held for background tasks longer than {BACKGROUND_HOLD}.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
-    # @return [Symbol, nil] :lock, :check, or nil
+    # @return [Symbol, nil] :lock, :background, :check, or nil
     def self.wakeable?(run, now)
       return :lock if run.dig("reason", "code") == "waiting_lock"
+      return :background if background_expired?(run["reason"], now)
       state = run["steps"].fetch(run["current"])
       return nil unless state["state"] == "checking"
       started = state["attempts"].last&.dig("check", "started_at")
@@ -107,6 +112,15 @@ module Workspace
       timeout = step.dig("status", "timeout") || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
       :check if started.nil? || now - Time.iso8601(started) > timeout + 60
     end
+
+    # A hold with no readable `seen_at` has nothing to measure it by, so it counts as expired.
+    def self.background_expired?(reason, now)
+      return false unless reason && reason["code"] == "turn_ended_background"
+      now - Time.iso8601(reason["seen_at"].to_s) > BACKGROUND_HOLD
+    rescue ArgumentError
+      true
+    end
+    private_class_method :background_expired?
 
     # Checks everything `start` would refuse, and changes nothing.
     #
@@ -398,9 +412,10 @@ module Workspace
     end
 
     # The periodic look at a run nothing else will wake: one waiting for a
-    # lock asks for it again, and a check that never reported back (its
-    # process died) is run again. Does nothing while another process is
-    # changing the run.
+    # lock asks for it again, a hold for background tasks that passed
+    # {BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, and a check
+    # that never reported back (its process died) is run again. Does nothing
+    # while another process is changing the run.
     #
     # @param run_id [String]
     # @return [Hash{String=>Object}, nil] the run afterwards; nil when nothing was done
@@ -412,6 +427,9 @@ module Workspace
         when :lock
           acted = true
           dispatch(stored)
+        when :background
+          acted = true
+          expire_background(stored)
         when :check
           acted = true
           check = evaluate(stored)
@@ -757,6 +775,13 @@ module Workspace
 
     def reason(code, details)
       {"code" => code, "since" => now_iso, "details" => details}
+    end
+
+    # No turn ended, so the step is neither passed nor checked: the hold only
+    # becomes the stop it was hiding, with a `since` of its own.
+    def expire_background(run)
+      held = run["reason"]["details"]
+      run["reason"] = reason("turn_ended_incomplete", held.slice("step", "attempt", "missing", "stale").merge("background_tasks" => held["tasks"]))
     end
 
     def stop_reason(stored, turn_started, code, details)

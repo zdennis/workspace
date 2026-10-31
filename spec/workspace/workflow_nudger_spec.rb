@@ -68,6 +68,17 @@ RSpec.describe Workspace::WorkflowNudger do
       expect(spawned.map(&:first)).to eq(%w[wr_1 wr_6 wr_7].map { |id| [RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", id] })
     end
 
+    it "wakes a hold for background tasks only once it is more than 90 minutes old" do
+      held = ->(id, seen_at) { run(id, "app").merge("reason" => {"code" => "turn_ended_background", "seen_at" => seen_at}) }
+      allow(store).to receive(:active).and_return([
+        held.call("wr_1", "2026-10-04T11:00:00Z"),
+        held.call("wr_2", "2026-10-04T11:00:01Z"),
+        held.call("wr_3", "2026-10-04T10:59:59Z")
+      ])
+
+      expect(nudger.tick("app")).to eq(%w[wr_3])
+    end
+
     it "wakes the other runs, and says which one it could not look at, when a run file is malformed" do
       allow(store).to receive(:active).and_return([
         run("wr_1", "app", reason: "waiting_lock").except("steps"),

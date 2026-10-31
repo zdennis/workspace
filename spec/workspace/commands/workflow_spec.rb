@@ -259,6 +259,8 @@ RSpec.describe Workspace::Commands::Workflow do
           "turn_ended_incomplete: the turn ended without /a/plan.md, /a/risks.md",
         reason("turn_ended_incomplete", {"missing" => [], "stale" => ["/a/plan.md"]}) =>
           "turn_ended_incomplete: the turn ended with /a/plan.md left by an earlier attempt and not written again",
+        reason("turn_ended_incomplete", {"missing" => ["/a/plan.md"], "background_tasks" => [{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k\e[31m1", "type" => "sub\nagent"}]}) =>
+          "turn_ended_incomplete: the turn ended without /a/plan.md and background tasks were still listed after 90 minutes: shell b1a2c3d4e, sub\\nagent k\\e[31m1",
         reason("failed_check", {"step" => "verify", "cause" => "check", "exit_code" => 1, "log" => "/a/verify.1.check.log"}) =>
           "failed_check: step verify's check exited 1; log: /a/verify.1.check.log",
         reason("failed_check", {"step" => "verify", "cause" => "check", "timed_out" => true, "log" => "/a/v.log"}) =>

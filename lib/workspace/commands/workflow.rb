@@ -589,8 +589,11 @@ module Workspace
           end
         when "turn_ended_incomplete"
           stale = Array(details["stale"])
+          # Task types and ids come from a stored run, so they are escaped like any text printed to a terminal.
+          tasks = Array(details["background_tasks"]).grep(Hash).map { |task| TerminalText.escape("#{task["type"]} #{task["id"]}") }
           ["the turn ended", ("without #{details["missing"].join(", ")}" if details["missing"].any?),
-            ("with #{stale.join(", ")} left by an earlier attempt and not written again" if stale.any?)].compact.join(" ")
+            ("with #{stale.join(", ")} left by an earlier attempt and not written again" if stale.any?),
+            ("and background tasks were still listed after 90 minutes: #{tasks.join(", ")}" if tasks.any?)].compact.join(" ")
         when "failed_check"
           if details["cause"] == "reported"
             "step #{details["step"]} was reported failed#{": #{details["summary"]}" if details["summary"]}"

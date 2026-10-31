@@ -800,6 +800,51 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
       end
 
+      it "leaves a hold 89 minutes old alone" do
+        now[0] += 88 * 60
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+      end
+
+      it "turns a hold 91 minutes old into a turn_ended_incomplete stop that shows, with the tasks" do
+        now[0] += 91 * 60
+        run = engine.tick("wr_1")
+
+        expect(run["reason"]).to eq("code" => "turn_ended_incomplete", "since" => "2026-10-04T13:32:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "missing" => [File.join(worktree, ".workflow", "wr_1", "plan.md")], "stale" => [], "background_tasks" => tasks})
+        expect(run["state"]).to eq("waiting")
+        expect(run["steps"]["plan"]["state"]).to eq("running")
+        expect(events.map(&:first)).to include("workflow_changed")
+      end
+
+      it "expires a hold whose seen_at can't be read" do
+        store.update("wr_1") { |run| run["reason"]["seen_at"] = "t" }
+
+        expect(engine.tick("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+      end
+
+      it "pushes the expiry out when a Stop at minute 80 lists tasks again" do
+        now[0] += 79 * 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+        now[0] += 11 * 60
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+
+        now[0] += 80 * 60
+        expect(engine.tick("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+      end
+
+      it "holds again, with the reason hidden, on a Stop that lists tasks after expiry" do
+        now[0] += 91 * 60
+        engine.tick("wr_1")
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T13:33:00Z")
+      end
+
       it "passes the step when its files exist, whatever is listed" do
         artifact("plan.md")
         now[0] += 60
