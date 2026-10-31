@@ -36,6 +36,9 @@ module Workspace
     # Seconds after an attempt starts during which an idle pane is not flagged `idle`.
     IDLE_GRACE = 30
 
+    # Seconds a fresh turn_ended_incomplete stays hidden: a task that settled just before Stop restarts the turn on its own.
+    INCOMPLETE_GRACE = 10
+
     # @param store [Workspace::WorkflowRunStore]
     # @param panes [Workspace::WorkflowPanes] says whether a run's pane is still there
     # @param snapshot_client [Workspace::AgentSnapshotClient] reads each pane's state from the daemon
@@ -170,11 +173,20 @@ module Workspace
       hidden_reason?(stored, shown) ? nil : stored
     end
 
-    # A held turn (background tasks listed) is hidden whatever the pane reads; an incomplete one only while the pane works.
+    # A held turn (background tasks listed) is hidden whatever the pane reads; an incomplete one while the pane works
+    # and for its first INCOMPLETE_GRACE seconds.
     def hidden_reason?(stored, shown)
       return false unless stored
       return true if stored["code"] == "turn_ended_background"
-      stored["code"] == "turn_ended_incomplete" && !!shown && shown["state"] == "working"
+      return false unless stored["code"] == "turn_ended_incomplete"
+      (!!shown && shown["state"] == "working") || within_incomplete_grace?(stored["since"])
+    end
+
+    # A since that does not parse counts as old.
+    def within_incomplete_grace?(since)
+      !since.nil? && @clock.call - Time.iso8601(since) < INCOMPLETE_GRACE
+    rescue ArgumentError
+      false
     end
 
     def lost_delivery(run, pane, shown)
