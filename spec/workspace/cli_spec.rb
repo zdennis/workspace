@@ -7164,7 +7164,7 @@ RSpec.describe Workspace::CLI do
       output.truncate(0)
       output.rewind
       cli.run(["workflow", "status", "--help"])
-      expect(output.string).to include("Usage: workspace workflow status [RUN]", "waiting_lock, waiting_you, turn_ended_incomplete")
+      expect(output.string).to include("Usage: workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all]", "waiting_lock, waiting_you, turn_ended_incomplete")
 
       cli.run(["help"])
       expect(output.string).to match(/^\s+workflow\s+Run a workflow \(ordered steps, e\.g\. rpiv\)/)

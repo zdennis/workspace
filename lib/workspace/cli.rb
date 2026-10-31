@@ -7222,9 +7222,9 @@ module Workspace
         opts.separator "WORKSPACE_NO_INPUT) when it would have to ask; a re-run with nothing to ask is fine."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace skills install"
-        opts.separator "  workspace skills install --install-all --no-input --json"
-        opts.separator "  workspace skills uninstall --dry-run"
+        opts.separator "  workspace skills install    # link the workspace skills into the coding agents found here, asking which"
+        opts.separator "  workspace skills install --install-all --no-input --json    # a script: every harness found, no question"
+        opts.separator "  workspace skills uninstall --dry-run    # list the links that would be removed, and remove none"
       end
     end
 

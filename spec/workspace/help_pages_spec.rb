@@ -135,7 +135,8 @@ RSpec.describe Workspace::HelpPages do
               flag = word.split.first.sub("[no-]", "")
               takes_value = word.include?(" ") && !word.include?("[")
               options = Hash.new { |hash, k| hash[k] = [] }
-              argv = takes_value ? [flag, "1"] : [flag]
+              value = label.include?("TYPE:ID") ? "shell:1" : "1"
+              argv = takes_value ? [flag, value] : [flag]
               expect { cli.send(parser_factory, options).parse(argv) }.not_to raise_error, "#{command} #{key} #{label}"
             end
           end

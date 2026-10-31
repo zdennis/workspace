@@ -46,6 +46,7 @@ module HelpExamplesSpec
     "promote", "prune", "push", "reactivate", "rebase", "relaunch", "remove", "repair", "resize", "restore",
     "run", "run-and-report", "report-run-status", "session-event", "sessions", "set-command", "snapshot",
     "review", "review show", "review list",
+    "skills",
     "spine", "spine show", "spine init", "spine set", "spine check", "spine verify", "spine start", "spine goal",
     "spine goal set",
     "start", "status", "statusline", "step", "step done", "step status", "stop",
