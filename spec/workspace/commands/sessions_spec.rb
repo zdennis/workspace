@@ -74,6 +74,17 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true}.merge(expected))
     end
 
+    it "carries what a parked resume reads through --json" do
+      monitor_row = {"activity_state" => "idle", "main_turn_over_since" => "2026-09-26T12:00:00.250Z", "transcript_path" => "/t.jsonl", "open_tools" => ["Bash"]}
+      reply = payload.merge("features" => ["parked_resume"], "panes" => [payload["panes"].first.merge(monitor_row)])
+
+      with_daemon(reply: reply) { command.call(name: "proj", json: true) }
+
+      printed = JSON.parse(output.string)
+      expect(printed["features"]).to eq(["parked_resume"])
+      expect(printed["panes"].first).to include(monitor_row)
+    end
+
     it "puts schema_version as the first key of the --json payload" do
       with_daemon { command.call(name: "proj", json: true) }
 

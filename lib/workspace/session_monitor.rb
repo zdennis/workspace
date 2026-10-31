@@ -40,6 +40,10 @@ module Workspace
     # signal; changing output is.
     DEFAULT_IDLE_AFTER = 30
 
+    # What this daemon can do that an older one can't, listed in {#snapshot}:
+    # `parked_resume` is the fields {WorkflowPanes} proves a turn's end from.
+    FEATURES = ["parked_resume"].freeze
+
     # Seconds between scans when no `agentd.poll_interval` says otherwise.
     # Each scan is one `tmux list-panes`, one `ps` snapshot and a
     # `capture-pane` per pane, so a short interval is real recurring CPU.
@@ -104,11 +108,13 @@ module Workspace
     # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
     #   monitors scan at once, machine-wide; a scan that can't take a slot is
     #   skipped rather than waited out. nil scans without a limit.
+    # @param question_check [Workspace::QuestionClosedCheck] reads whether a
+    #   question dialog is gone from a pane's screen
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, detector: AgentDetector.new, poll_interval: DEFAULT_POLL_INTERVAL, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
-      context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil)
+      context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil, question_check: QuestionClosedCheck.new)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -130,6 +136,7 @@ module Workspace
       @label_reader = label_reader
       @task_reader = task_reader
       @scan_slots = scan_slots
+      @question_check = question_check
       @panes = {}
       @failed_scans = 0
       @last_scan_at = nil
@@ -195,8 +202,9 @@ module Workspace
     # Re-reads one pane now instead of waiting for the next {#scan}, so a
     # caller about to refuse on a stale reading (a shell seen just before an
     # agent started in the pane) can decide on a fresh one. Updates the pane's
-    # cached kind and activity, and ends a permission wait whose dialog is
-    # gone; alerts and logged changes are left to the next scan. Reads once; a failed tmux or process listing leaves the cache
+    # cached kind and activity, ends a permission wait whose dialog is gone, and
+    # closes a question whose dialog the screen proves gone (the same hold
+    # applies); alerts and logged changes are left to the next scan. Reads once; a failed tmux or process listing leaves the cache
     # as it was. Takes no scan slot, which a busy scan thread or another
     # daemon would hold, so the rescan can answer under load. A scan that read
     # the process table before the agent started may still overwrite the fresh
@@ -248,6 +256,7 @@ module Workspace
       {
         "workspace" => @session_name,
         "updated_at" => now.utc.iso8601,
+        "features" => FEATURES,
         "task" => present_task(task, panes),
         "panes" => panes.sort_by { |p| p["index"] || 0 }
       }
@@ -286,6 +295,17 @@ module Workspace
       @lock.synchronize { @panes[pane_id]&.fetch(:agents)&.count { |agent| agent[:state] == "running" } }
     end
 
+    # @param pane_id [String] tmux pane id
+    # @return [Integer, nil] how many sub-agents were started in the pane and not
+    #   yet ended by their own SubagentStop, or nil when the pane hasn't been
+    #   scanned yet. Unlike {#running_subagents}, a main-agent Stop leaves the
+    #   count alone, so a background sub-agent outliving the turn still counts.
+    #   A SessionStart or SessionEnd clears it; a missed stop can leave a stale
+    #   entry until then.
+    def background_subagents(pane_id)
+      @lock.synchronize { @panes[pane_id]&.fetch(:background_subagents, nil)&.size || (@panes[pane_id] && 0) }
+    end
+
     # Marks the pane's turn as failed without a hook event, as agentd does after
     # a restart that found the agent stopped on an error. Ends the turn, so a late
     # idle notification opens no wait. Does nothing for a pane not scanned yet.
@@ -304,7 +324,7 @@ module Workspace
 
     # The state the restart busy check goes by. A pane's agent that has ended
     # its turn (a Stop hook) is idle here even though {#pane_state} still says
-    # "working" until `alerts.idle_after` of screen quiet; otherwise an agent
+    # "working" until {DEFAULT_IDLE_AFTER} of screen quiet; otherwise an agent
     # restarting itself would wait on its own last output. A pane with waits
     # is "waiting". With no turn event seen (or one still in progress) this
     # is {#pane_state}.
@@ -320,6 +340,23 @@ module Workspace
         next "waiting" unless pane[:waits].empty?
         next "idle" if pane[:turn_ended]
         state_of(pane, now - (pane[:last_activity_at] || now))
+      end
+    end
+
+    # What the monitor knows of the main agent's turn being over: a main Stop
+    # from hook-mode Claude Code, with no main tool, sub-agent start, prompt or
+    # session event since, no wait, no open tool and no failed turn. Stopped
+    # sub-agents and redraws say nothing about it. The times are this monitor's
+    # own, so a daemon restart forgets them and reads `no_stop_seen`.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [Hash] `:since` and `:transcript_path` with the proof, else
+    #   `:missing`: the first thing that failed, by name
+    def main_turn_evidence(pane_id)
+      @lock.synchronize do
+        pane = @panes[pane_id]
+        missing = pane ? main_turn_missing(pane) : "pane_unknown"
+        missing ? {missing: missing} : {since: pane[:main_stopped_at], transcript_path: pane[:transcript_path]}
       end
     end
 
@@ -486,6 +523,16 @@ module Workspace
       return pane[:own_quiet_at] if pane[:restored_ready]
       return pane[:done][:since] if state == "done"
       pane[:last_activity_at] && pane[:last_activity_at] + @idle_after
+    end
+
+    def main_turn_missing(pane)
+      return "not_claude" unless pane[:kind] == "claude"
+      return "no_hooks" unless pane[:hook_kind] == "claude"
+      return "no_stop_seen" unless pane[:main_stopped_at]
+      return MAIN_ACTIVITY.fetch(pane[:main_active_event]) if pane[:main_active_at]
+      return "turn_failed" if pane[:turn_failed]
+      return "waiting" unless pane[:waits].empty?
+      "open_tool" unless pane[:open_tools].to_h.empty?
     end
 
     # The body of {#scan}, run under a machine-wide scan slot when a limiter
@@ -704,6 +751,12 @@ module Workspace
       nil
     end
 
+    def log_question_closed(pane)
+      @error_output.puts "workspace agent: question closed in #{pane[:pane_id]} of #{@session_name}: its dialog is gone from the screen"
+    rescue
+      nil
+    end
+
     def log_alert_failure(error)
       @logger.debug { "session monitor: alert failed (#{error.class}: #{error.message})" }
     rescue
@@ -757,6 +810,7 @@ module Workspace
       screen = refresh_activity(pane, now)
       refresh_screen_wait(pane, agent && agent[:provider], screen, now)
       end_answered_permission_waits(pane, agent && agent[:provider], screen)
+      refresh_question(pane, now)
     end
 
     # The shortest permission dialog is 12 lines, so a tail this long can't reach above its top rule.
@@ -783,6 +837,53 @@ module Workspace
         requests = pane[:permission_requests]
         requests.delete(agent_id) if requests[agent_id] == wait.slice(:tool, :input)
       end
+    end
+
+    # Esc on a question sends no hook, so a question tool stays open and the
+    # wait its Notification opened stays too, for good. One screen reading of
+    # {QuestionClosedCheck} held for {QuestionClosedCheck::HOLD} seconds, with no
+    # hook event since, closes both. The capture is made only for a pane with a
+    # question tool open. Anything else starts the wait over, a tool that opened
+    # since included, and nothing is closed.
+    def refresh_question(pane, now)
+      tools = pane[:open_tools].to_h.select { |_, tool| TypingSafety::QUESTION_TOOLS.include?(tool[:tool]) }.keys
+      return pane.delete(:question_screen) if tools.empty?
+
+      reading = @question_check.reading(pane[:kind], question_capture(pane))
+      held = pane[:question_screen]
+      if question_reading_held?(pane, held, tools, reading)
+        close_question(pane, tools) if now - held[:since] >= QuestionClosedCheck::HOLD
+      else
+        pane[:question_screen] = reading && {tools: tools, reading: reading, since: now}
+      end
+    end
+
+    # A failed capture proves nothing, so it reads as no screen.
+    def question_capture(pane)
+      @tmux.capture_screen_styled(pane[:pane_id])
+    rescue => e
+      @logger.debug { "session monitor: question capture failed in #{pane[:pane_id]} (#{e.class}: #{e.message})" }
+      nil
+    end
+
+    def question_reading_held?(pane, held, tools, reading)
+      return false unless reading && held
+      return false if pane[:last_event_at] && pane[:last_event_at] > held[:since]
+
+      held[:tools] == tools && held[:reading] == reading
+    end
+
+    # The turn ended with the Esc: as after a Stop, the idle notification that
+    # comes later opens no wait. Only the main agent's wait goes; a sub-agent's
+    # is its own.
+    def close_question(pane, tools)
+      tools.each { |id| pane[:open_tools].delete(id) }
+      pane[:waits].delete(nil)
+      pane[:alerted_waits]&.delete(nil)
+      pane[:permission_requests].delete(nil)
+      pane[:turn_ended] = true
+      pane.delete(:question_screen)
+      log_question_closed(pane)
     end
 
     # The key of the wait a matched screen opens in the pane's waits. Hooks
@@ -840,6 +941,28 @@ module Workspace
     IDLE_INPUT_MESSAGE = "Claude is waiting for your input"
     private_constant :IDLE_INPUT_MESSAGE
 
+    # Events that show the main agent active after a Stop, and how
+    # {#main_turn_evidence} names each one.
+    MAIN_ACTIVITY = {
+      "tool_start" => "main_tool_after_stop", "tool_use" => "main_tool_after_stop", "subagent_start" => "subagent_start_after_stop",
+      "user_prompt" => "main_prompt_after_stop", "session_start" => "session_start_after_stop", "session_end" => "session_end_after_stop"
+    }.freeze
+    private_constant :MAIN_ACTIVITY
+
+    # A main Stop starts the count again. A sub-agent's tool says nothing of the
+    # main agent, but any sub-agent start does, as it takes away the done mark.
+    def note_main_turn(pane, event)
+      name = event["event"]
+      if name == "stop" && event["agent_id"].nil?
+        pane[:main_stopped_at] = @clock.now
+        pane.delete(:main_active_at)
+        pane.delete(:main_active_event)
+      elsif MAIN_ACTIVITY.key?(name) && (event["agent_id"].nil? || name == "subagent_start")
+        pane[:main_active_at] = @clock.now
+        pane[:main_active_event] = name
+      end
+    end
+
     # Waits are kept per agent, since the main agent and parallel sub-agents
     # can each be waiting on a person at once. Any other event from an agent
     # ends that agent's wait: a tool ran after a permission prompt, say. It
@@ -856,6 +979,8 @@ module Workspace
     # that agent; otherwise it can't say whose dialog it is and the fields stay
     # null.
     def apply_event(pane, event)
+      note_main_turn(pane, event)
+
       # A tool starting says nothing about a wait: with tools run side by side, one
       # can start while another waits on a permission prompt.
       return if event["event"] == "tool_start"
@@ -888,7 +1013,8 @@ module Workspace
           pane[:done] = done_mark(event)
           pane.delete(:restored_ready)
         end
-      when "user_prompt", "session_start", "session_end", "tool_use" then pane.delete(:done)
+      when "user_prompt", "session_start", "session_end" then pane.delete(:done)
+      when "tool_use" then pane.delete(:done) unless event["agent_id"]
       end
       pane[:last_user_prompt_at] = @clock.now if event["event"] == "user_prompt"
       if event["event"] == "session_start"
@@ -905,7 +1031,12 @@ module Workspace
         # A sub-agent the agent names itself (Codex) is known by its id from the start.
         agent[:agent_id] = event["subagent_id"] if event["subagent_id"]
         pane[:agents] << agent
+        (pane[:background_subagents] ||= []) << {agent_id: event["subagent_id"] || event["agent_id"]}
       when "subagent_stop"
+        background = (pane[:background_subagents] ||= [])
+        ended = background.find { |a| event["agent_id"] && a[:agent_id] == event["agent_id"] } ||
+          background.find { |a| !a[:agent_id] } || background.first
+        background.delete_at(background.index { |a| a.equal?(ended) }) if ended
         # Claude Code's SubagentStop does not say which sub-agent finished, so
         # the oldest running one is closed. With sub-agents running in parallel
         # this can pair the wrong start with the wrong stop; the count stays
@@ -915,7 +1046,10 @@ module Workspace
           pane[:agents].find { |a| a[:state] == "running" && !a[:agent_id] } ||
           pane[:agents].find { |a| a[:state] == "running" }
         running&.merge!(state: "done", ended_at: @clock.now)
+      when "session_start"
+        pane[:background_subagents]&.clear
       when "stop", "session_end"
+        pane[:background_subagents]&.clear if event["event"] == "session_end"
         pane[:agents].each do |agent|
           agent.merge!(state: "done", ended_at: @clock.now) if agent[:state] == "running"
         end
@@ -1102,6 +1236,10 @@ module Workspace
         "cwd" => pane[:cwd],
         "state" => state,
         "state_since" => state_since&.utc&.iso8601,
+        "activity_state" => state_of(pane, idle_for),
+        "main_turn_over_since" => main_turn_missing(pane) ? nil : pane[:main_stopped_at].utc.iso8601(3),
+        "transcript_path" => pane[:transcript_path],
+        "open_tools" => pane[:open_tools].to_h.values.map { |tool| tool[:tool] },
         "idle_seconds" => idle_for.round,
         "waiting_since" => waiting_since&.utc&.iso8601,
         "waiting_seconds" => waiting_since && (now - waiting_since).round,

@@ -29,7 +29,8 @@ module Workspace
         "PreToolUse" => "tool_start",
         "Notification" => "notification",
         "PostToolUse" => "tool_use",
-        "PermissionRequest" => "permission_request"
+        "PermissionRequest" => "permission_request",
+        "PostToolUseFailure" => "tool_use"
       }.freeze
 
       # Codex's hooks (see {Workspace::AgentProvider::CODEX_EVENTS}). A
@@ -355,12 +356,12 @@ module Workspace
 
       # What the events stream needs to know about a tool use: its name and id,
       # a file tool's path, a short summary of its input ({ToolInputSummary}), and
-      # on PostToolUse whether it worked. The rest of the input and the response
+      # once it has ended whether it worked. The rest of the input and the response
       # are read here and never forwarded.
       def tool_fields(payload)
         hook = payload["hook_event_name"]
         return permission_fields(payload) if claude? && hook == "PermissionRequest"
-        return {} unless hook == "PreToolUse" || hook == "PostToolUse"
+        return {} unless hook == "PreToolUse" || hook == "PostToolUse" || hook == "PostToolUseFailure"
 
         fields = {
           "tool" => name_field(payload, "tool_name"),
@@ -368,8 +369,8 @@ module Workspace
           "path" => relative_path(payload),
           "input" => ToolInputSummary.call(payload["tool_name"], payload["tool_input"])
         }
-        if hook == "PostToolUse"
-          fields["ok"] = tool_ok?(payload["tool_response"])
+        if hook != "PreToolUse"
+          fields["ok"] = hook == "PostToolUse" && tool_ok?(payload["tool_response"])
           duration = payload["duration_ms"]
           fields["duration_ms"] = duration.round if duration.is_a?(Numeric) && duration >= 0
         end

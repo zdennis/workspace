@@ -1,4 +1,5 @@
 require "json"
+require "time"
 
 module Workspace
   # Reads the last thing the assistant said from a Claude Code transcript, so
@@ -12,6 +13,18 @@ module Workspace
 
     # Longest message returned, in characters; longer text is cut and flagged.
     MAX_LENGTH = 4000
+
+    # Records Claude Code writes after an ordinary Stop, which say nothing of a
+    # new turn. Everything else counts as activity, a type not seen before
+    # included: `queue-operation` comes when a notification is queued, ahead of
+    # the request.
+    HOUSEKEEPING_RECORDS = %w[
+      system attachment last-prompt ai-title atis-latch mode permission-mode
+      file-history-snapshot file-history-delta cost-state tools-used
+    ].freeze
+
+    # What {#main_activity_after?} answers for a transcript it can't read.
+    UNREADABLE = "unreadable"
 
     # @param path [String, nil] a transcript path from a hook event
     # @return [Hash, nil] `{"text" =>, "truncated" =>, "at" =>}`, `at` being the entry's timestamp as
@@ -58,7 +71,44 @@ module Workspace
       nil
     end
 
+    # Whether the main agent wrote anything after a time, from the tail of its
+    # transcript. Records are not in time order, so the whole tail is read.
+    # Housekeeping and sidechain records don't count; unstamped records are
+    # skipped, since a stamped `api-request` sits beside each `api-request-blob`.
+    #
+    # @param path [String, nil] a transcript path from a hook event
+    # @param time [Time] when the main turn ended
+    # @return [String, nil] the type of a record stamped after +time+, or
+    #   {UNREADABLE} when the transcript or a line of its tail can't be read;
+    #   nil when neither was found
+    def main_activity_after?(path, time)
+      return UNREADABLE unless path.is_a?(String) && path.end_with?(".jsonl")
+
+      stat = File.stat(path)
+      return UNREADABLE unless stat.file?
+
+      tail_lines(path, stat.size).reverse_each do |line|
+        found = activity_after(line, time)
+        return found if found
+      end
+      nil
+    rescue SystemCallError, IOError
+      UNREADABLE
+    end
+
     private
+
+    def activity_after(line, time)
+      return nil if line.strip.empty?
+
+      entry = JSON.parse(line)
+      return UNREADABLE unless entry.is_a?(Hash)
+      return nil if entry["isSidechain"] == true || HOUSEKEEPING_RECORDS.include?(entry["type"]) || entry["timestamp"].nil?
+
+      (Time.iso8601(entry["timestamp"]) > time) ? entry["type"].to_s[0, 64] : nil
+    rescue JSON::ParserError, ArgumentError, TypeError
+      UNREADABLE
+    end
 
     def tail_lines(path, size)
       lines = File.open(path, "rb") { |file|

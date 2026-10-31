@@ -29,6 +29,8 @@ RSpec.describe Workspace::PromptQueueDesk do
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
 
+      def capture_screen_styled(pane_id) = capture_screen(pane_id)
+
       def log = (@log ||= [])
 
       def key_ok = @key_ok != false
@@ -43,7 +45,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       def deliver(session, target, text, enter: true)
         log << [:deliver, text, enter]
         @delivered << [session, target, text, enter]
-        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n")
+        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n────────\n")
         status = @statuses.shift || (enter ? :submitted : :pasted)
         Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
       end
@@ -148,6 +150,16 @@ RSpec.describe Workspace::PromptQueueDesk do
       expect(events).to eq([])
     end
 
+    it "types into a pane that shows only Claude Code's suggestion" do
+      suggestion = "────────\n\e[39m❯ \e[2msend %45 the reply when it's done\e[0m\n────────\n"
+      tmux.scripted = -> { typed.empty? ? suggestion : "────────\n❯ run the specs\n────────\n" }
+
+      reply = send_prompt
+
+      expect(reply).to include("ok" => true)
+      expect(typed).to eq(["run the specs"])
+    end
+
     it "queues instead of typing over a draft in the input line" do
       tmux.screen = "────────\n❯ half a thought\n"
 
@@ -156,6 +168,74 @@ RSpec.describe Workspace::PromptQueueDesk do
       expect(reply).to include("ok" => true, "queued" => true, "position" => 1)
       expect(typed).to eq([])
       expect(store.entries.first).to include("state" => "queued")
+    end
+  end
+
+  describe "a refusal at delivery time" do
+    before { working! }
+
+    def refused_events = events.select { |type, _, _| type == "prompt_refused" }.map(&:last)
+
+    def draft_screen! = (tmux.screen = "────────\n❯ half a thought\n")
+
+    it "stores why the entry waits and writes one prompt_refused for ten refusals" do
+      send_prompt
+      draft_screen!
+      turn_ends!(t0 + 30)
+      stop_hook
+
+      expect(store.entries.first).to include("refused_reason" => "input_not_empty", "refusals" => 1)
+      expect(store.entries.first["refused_message"]).to be_a(String)
+
+      9.times do |n|
+        turn_ends!(t0 + 60 + (n * 10))
+        desk.deliver_next("%5")
+      end
+
+      expect(store.entries.first["refusals"]).to eq(10)
+      expect(refused_events).to eq([{"id" => "0000000000000001", "pane_id" => "%5", "reason" => "input_not_empty",
+                                     "message" => store.entries.first["refused_message"]}])
+    end
+
+    it "writes a second event when the reason changes" do
+      send_prompt
+      draft_screen!
+      turn_ends!(t0 + 30)
+      stop_hook
+      tmux.screen = "────────\n❯ \n"
+      typing_refusal = Workspace::PromptTyper::Result.new(outcome: :refused, code: "not_ready", reason: "dialog_open", message: "a dialog is open")
+      allow_any_instance_of(Workspace::PromptTyper).to receive(:type).and_return(typing_refusal)
+      turn_ends!(t0 + 60)
+      desk.deliver_next("%5")
+      turn_ends!(t0 + 90)
+      desk.deliver_next("%5")
+
+      expect(refused_events.map { |e| e["reason"] }).to eq(%w[input_not_empty dialog_open])
+      expect(store.entries.first).to include("refused_reason" => "dialog_open", "refusals" => 2)
+    end
+
+    it "clears the stored refusal once the entry is typed" do
+      send_prompt
+      draft_screen!
+      turn_ends!(t0 + 30)
+      stop_hook
+      tmux.screen = empty_prompt
+      turn_ends!(t0 + 60)
+      desk.deliver_next("%5")
+
+      expect(store.entries).to eq([])
+      expect(typed).to eq(["run the specs"])
+    end
+
+    it "tells the sender of a first-try refusal why, and records the event after the entry is announced" do
+      working_off = facts.merge!(state: "done", fresh_since: t0 - 5)
+      draft_screen!
+
+      reply = send_prompt
+
+      expect(working_off).to be_a(Hash)
+      expect(reply).to include("queued" => true, "waiting_reason" => "input_not_empty")
+      expect(refused_events.map { |e| e["reason"] }).to eq(["input_not_empty"])
     end
   end
 
@@ -447,7 +527,7 @@ RSpec.describe Workspace::PromptQueueDesk do
     turn_ends!(t0 + 30)
     allow(tmux).to receive(:deliver).and_wrap_original do |original, session, target, body, enter: true|
       result = original.call(session, target, body, enter: enter)
-      tmux.screen = "────────\n❯ [Pasted text #1 +40 lines]\n" unless enter
+      tmux.screen = "────────\n❯ [Pasted text #1 +40 lines]\n────────\n" unless enter
       result
     end
 

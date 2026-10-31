@@ -44,7 +44,9 @@ module Workspace
       # @param json [Boolean] print one JSON document
       # @return [Array<Hash>] the rows: `id`, `pane_id`, `position`, `state`,
       #   `queued_at`, `clear_first`, `preview` (the first 200 characters,
-      #   control characters escaped) and `length` (characters in the full text)
+      #   control characters escaped) and `length` (characters in the full text),
+      #   and `waiting_reason`, `waiting_message` and `waiting_since` (nil unless the
+      #   pane refused the text at its last try: why, in words, and since when)
       # @raise [Workspace::Error] when the queue file can't be read, or the
       #   {Workspace::PaneLocator} codes for a `window.pane` that doesn't resolve
       def list(name:, pane: nil, json: false)
@@ -137,7 +139,9 @@ module Workspace
           text = entry["text"].to_s
           {"id" => entry["id"], "pane_id" => entry["pane_id"], "position" => positions[entry["pane_id"]] += 1,
            "state" => entry["state"], "queued_at" => entry["queued_at"], "clear_first" => entry["clear_first"] == true,
-           "preview" => TerminalText.escape(text[0, PREVIEW_LENGTH]), "length" => text.length}
+           "preview" => TerminalText.escape(text[0, PREVIEW_LENGTH]), "length" => text.length,
+           "waiting_reason" => entry["refused_reason"], "waiting_message" => entry["refused_message"],
+           "waiting_since" => entry["refused_at"]}
         end
         oldest = rows.group_by { |r| r["pane_id"] }.transform_values { |group| group.map { |r| r["queued_at"].to_s }.min }
         panes = rows.map { |r| r["pane_id"] }.uniq.each_with_index.sort_by { |pane_id, index| [oldest[pane_id], index] }.map(&:first)
@@ -154,7 +158,15 @@ module Workspace
           preview = row["preview"]
           preview = "#{preview[0, room - 3]}..." if preview.length > room
           @output.puts "#{head}#{preview}"
+          @output.puts "    waiting: #{waiting_line(row)}" if row["waiting_reason"]
         end
+      end
+
+      def waiting_line(row)
+        line = TerminalText.escape(row["waiting_reason"].to_s)
+        line += ": #{TerminalText.escape(row["waiting_message"].to_s)}" if row["waiting_message"]
+        line += " (for #{age(row["waiting_since"])})" if row["waiting_since"]
+        line
       end
 
       def age(queued_at)

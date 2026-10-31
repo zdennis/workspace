@@ -159,7 +159,7 @@ RSpec.describe Workspace::WorkflowEngine do
       )
       expect(panes.bound).to eq("%5" => {workspace: "app.worktree-x", run_id: "wr_1", step: "plan", attempt: 1,
                                          instructions: prompt, artifacts: File.join(worktree, ".workflow", "wr_1")})
-      expect(panes.kicks).to eq([{workspace: "app.worktree-x", pane: "%5", text: "Read #{prompt} and follow it.", fresh: true}])
+      expect(panes.kicks).to eq([{workspace: "app.worktree-x", pane: "%5", text: "Read #{prompt} and follow it.", fresh: true, run_id: "wr_1"}])
       expect(store.find("wr_1")).to eq(run)
       expect(history).to eq(%w[run_started step_dispatching step_dispatched])
     end
@@ -508,6 +508,50 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(reason["code"]).to eq("waiting_you")
       expect(reason["details"]).to include("kind" => "dispatch", "error" => "pane_busy", "message" => "pane %5 did not go quiet")
     end
+  end
+
+  it "keeps the reason a busy pane gave in the run's reason details" do
+    panes.kick_result = {ok: false, code: "pane_busy", message: "pane %5 kept changing", reason: "background_activity"}
+
+    expect(start["reason"]["details"]).to include("error" => "pane_busy", "reason" => "background_activity")
+  end
+
+  it "keeps what a moving screen lacked in the reason's details and the dispatch event" do
+    panes.kick_result = {ok: false, code: "pane_busy", message: "kept changing", reason: "background_activity", proof_missing: "main_tool_after_stop"}
+
+    run = start
+
+    expect(run["reason"]["details"]).to include("proof_missing" => "main_tool_after_stop")
+    event = File.readlines(store.events_path(run["id"])).map { |line| JSON.parse(line) }.find { |e| e["type"] == "step_dispatched" }
+    expect(event).to include("delivered" => false, "proof_missing" => "main_tool_after_stop")
+  end
+
+  it "puts a delivery's warning in the dispatch event" do
+    panes.kick_result = {ok: true, warning: "background work may be lost"}
+
+    run = start
+
+    event = File.readlines(store.events_path(run["id"])).map { |line| JSON.parse(line) }.find { |e| e["type"] == "step_dispatched" }
+    expect(event).to include("delivered" => true, "warning" => "background work may be lost")
+  end
+
+  it "puts the warning of a /clear typed over a running sub-agent in the dispatch event" do
+    text = "a sub-agent was still running in pane %5 when /clear was typed and may be lost; fake unverified"
+    panes.kick_result = {ok: true, warning: text}
+
+    run = start
+
+    event = File.readlines(store.events_path(run["id"])).map { |line| JSON.parse(line) }.find { |e| e["type"] == "step_dispatched" }
+    expect(event).to include("delivered" => true, "warning" => text)
+  end
+
+  it "reads as waiting on a person when a prompt is unconfirmed" do
+    panes.kick_result = {ok: false, code: "not_delivered", message: "may still be in the input box", reason: "prompt_unconfirmed"}
+
+    run = start
+
+    expect(run["reason"]).to include("code" => "waiting_you")
+    expect(run["reason"]["details"]).to include("reason" => "prompt_unconfirmed")
   end
 
   describe "run from a process with no UTF-8 locale" do
@@ -2374,6 +2418,721 @@ RSpec.describe Workspace::WorkflowEngine do
       run = engine.turn_ended("wr_1", pane: "%5")
 
       expect(run["reason"]["details"]).to include("code" => "check_error", "code_source" => "engine")
+    end
+  end
+
+  describe "a parked resume" do
+    let(:single) { definition("steps:\n  work:\n    prompt: P\n    produces: [out.md]\n") }
+    let(:checked) { definition("steps:\n  work:\n    prompt: P\n    status: {command: test}\n") }
+    let(:locked) { definition("steps:\n  verify:\n    prompt: P\n    uses: [test-db]\n") }
+
+    def parked(id = "wr_1") = store.find(id)["parked"]
+
+    def attempts(id = "wr_1")
+      store.find(id)["steps"].values.sum { |state| state["attempts"].size }
+    end
+
+    def event_of(type, id = "wr_1")
+      history_lines(id).reverse.find { |line| line["type"] == type }
+    end
+
+    def undelivered(code = "pane_busy", definition = single)
+      panes.kick_result = {ok: false, code: code, message: "the pane is busy"}
+      start(definition, inputs: {})
+      panes.kick_result = {ok: true}
+    end
+
+    def failed_run
+      check_results << {exit_code: 1, timed_out: false}
+      start(checked, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    def incomplete_run
+      start(single, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    def lock_waiting_run
+      start(locked, inputs: {}, pane: "%5", workspace: "app.worktree-a")
+      start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+    end
+
+    def checking_run(started_at: now.first.iso8601)
+      to_verify
+      store.update("wr_1") do |run|
+        run["steps"]["verify"]["state"] = "checking"
+        run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => started_at}
+      end
+    end
+
+    describe ".parked" do
+      let(:run) { {"parked" => {"expires_at" => now.first.iso8601}} }
+
+      it "is nil with no park" do
+        expect(described_class.parked({}, now.first)).to be_nil
+      end
+
+      it "waits up to expires_at and is expired past it" do
+        expect(described_class.parked(run, now.first)).to eq(:waiting)
+        expect(described_class.parked(run, now.first + 1)).to eq(:expired)
+      end
+
+      it "reads an unreadable time as expired" do
+        expect(described_class.parked({"parked" => {"expires_at" => "garbled"}}, now.first)).to eq(:expired)
+        expect(described_class.parked({"parked" => {"expires_at" => nil}}, now.first)).to eq(:expired)
+      end
+    end
+
+    describe ".wakeable?" do
+      it "answers :parked ahead of a lock wait" do
+        lock_waiting_run
+        engine.park("wr_2")
+
+        expect(described_class.wakeable?(store.find("wr_2"), now.first)).to eq(:parked)
+      end
+
+      it "answers :parked ahead of a lost check" do
+        checking_run(started_at: "2026-10-04T10:00:00Z")
+        engine.park("wr_1")
+
+        expect(described_class.wakeable?(store.find("wr_1"), now.first)).to eq(:parked)
+      end
+
+      it "still answers :lock and :check with no park" do
+        lock_waiting_run
+        expect(described_class.wakeable?(store.find("wr_2"), now.first)).to eq(:lock)
+
+        store.update("wr_1") do |run|
+          run["steps"]["verify"]["state"] = "checking"
+          run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T10:00:00Z"}
+        end
+        expect(described_class.wakeable?(store.find("wr_1"), now.first)).to eq(:check)
+      end
+    end
+
+    describe "#park" do
+      it "stores a request and no attempt, with a limit an hour on" do
+        undelivered
+
+        run = engine.park("wr_1", note: "look again", pane: "%5", turn_over: {"step" => "work", "attempt" => 1})
+
+        expect(run["parked"]).to include("from" => nil, "note" => "look again", "pane" => "%5", "turn_over" => {"step" => "work", "attempt" => 1},
+          "requested_at" => "2026-10-04T12:00:00Z", "expires_at" => "2026-10-04T13:00:00Z", "retries" => 0)
+        expect(run["parked"]["id"]).to match(/\A\h+\z/)
+        expect(run).not_to have_key("unchanged")
+        expect(attempts).to eq(1)
+        expect(run["reason"]).to include("code" => "waiting_you")
+      end
+
+      it "keeps what a running step has: its attempt, binding and locks" do
+        to_build
+        store.update("wr_1") { |run| run["reason"] = {"code" => "turn_ended_incomplete", "since" => "t", "details" => {}} }
+        kicks = panes.kicks.size
+
+        engine.park("wr_1")
+
+        expect(panes.kicks.size).to eq(kicks)
+        expect(panes.pane_of("wr_1")).to eq("%5")
+        expect(lock_holder("test-db")).to include("run_id" => "wr_1")
+      end
+
+      it "writes resume_parked without the note, and announces the change" do
+        undelivered
+        events.clear
+
+        engine.park("wr_1", from: "work", note: "the secret word", pane: "%5")
+
+        expect(event_of("resume_parked")).to include("step" => "work", "pane" => "%5", "from" => "work", "has_note" => true)
+        expect(File.read(store.events_path("wr_1"))).not_to include("secret")
+        expect(events.map(&:first)).to eq(["workflow_changed"])
+        expect(events.first.last).to include("reason" => nil)
+      end
+
+      it "refuses what resume refuses, first" do
+        start
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect { engine.park("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("gate_waiting") }
+        expect { engine.park("wr_1", from: "nope") }.to raise_error(Workspace::UsageError)
+        expect(parked).to be_nil
+      end
+
+      it "stores nothing for a resume that would do nothing" do
+        start
+
+        run = engine.park("wr_1")
+
+        expect(run["unchanged"]).to eq("an agent is working on step plan")
+        expect(run).not_to have_key("parked")
+      end
+
+      it "skips left_alone for --from" do
+        start
+
+        expect(engine.park("wr_1", from: "plan")["parked"]).to include("from" => "plan")
+      end
+
+      it "answers unchanged for a second park and keeps the first as it was" do
+        undelivered
+        first = engine.park("wr_1", note: "first")["parked"]
+        now[0] += 60
+
+        run = engine.park("wr_1", note: "second", pane: "%9")
+
+        expect(run["unchanged"]).to eq("a resume is already parked for pane %5")
+        expect(parked).to eq(first)
+      end
+
+      it "answers unchanged for a second --from park too, and names the park's own pane" do
+        undelivered
+        first = engine.park("wr_1", from: "work", pane: "%7")["parked"]
+        now[0] += 60
+
+        run = engine.park("wr_1", from: "work")
+
+        expect(run["unchanged"]).to eq("a resume is already parked for pane %7")
+        expect(parked).to eq(first)
+      end
+
+      it "replaces a park past its limit that no tick settled, keeping its note" do
+        undelivered
+        first = engine.park("wr_1", note: "old note")["parked"]
+        now[0] += described_class::PARK_SECONDS + 1
+
+        run = engine.park("wr_1")
+
+        expect(run["parked"]["id"]).not_to eq(first["id"])
+        expect(run["parked"]["expires_at"]).to eq("2026-10-04T14:00:01Z")
+        expect(run["pending_context"]).to eq(["Note from the person who resumed the run: old note"])
+        expect(event_of("resume_parked_ended")).to include("how" => "expired")
+      end
+
+      it "refuses a pane another run has, now and not an hour from now" do
+        undelivered
+        panes.bind(workspace: "other", pane: "%9", run_id: "wr_2")
+        allow(store).to receive(:find).and_call_original
+        allow(store).to receive(:find).with("wr_2").and_return({"state" => "running"})
+
+        expect { engine.park("wr_1", pane: "%9") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
+        expect(parked).to be_nil
+      end
+
+      it "does not refuse the run's own pane" do
+        undelivered
+
+        expect(engine.park("wr_1", pane: "%5")["parked"]).to include("pane" => "%5")
+      end
+
+      it "takes a check that never reported back, as a resume does" do
+        checking_run(started_at: "2026-10-04T10:00:00Z")
+
+        expect(engine.park("wr_1")["parked"]).not_to be_nil
+      end
+
+      it "leaves a check still running alone, unless --from" do
+        checking_run
+
+        expect(engine.park("wr_1")["unchanged"]).to eq("the check of step verify is still running")
+        expect(engine.park("wr_1", from: "build")["parked"]).to include("from" => "build")
+      end
+    end
+
+    describe "what holds off while parked" do
+      {
+        "failed" => :failed_run, "waiting" => :undelivered, "turn_ended_incomplete" => :incomplete_run
+      }.each do |name, setup|
+        it "decides nothing on a Stop on a #{name} run" do
+          send(setup)
+          engine.park("wr_1")
+          before = store.find("wr_1")
+
+          engine.turn_ended("wr_1", pane: "%5")
+
+          expect(store.find("wr_1").except("updated_at")).to eq(before.except("updated_at"))
+        end
+      end
+
+      it "decides nothing on a Stop on a waiting_lock run" do
+        lock_waiting_run
+        engine.park("wr_2")
+        before = store.find("wr_2")
+
+        engine.turn_ended("wr_2", pane: "%6")
+
+        expect(store.find("wr_2").except("updated_at")).to eq(before.except("updated_at"))
+      end
+
+      it "dispatches nothing on a tick of a lock-waiting run, even with the lock free" do
+        lock_waiting_run
+        engine.park("wr_2")
+        engine.cancel("wr_1")
+        kicks = panes.kicks.size
+
+        expect(engine.tick("wr_2")).to be_nil
+
+        expect(panes.kicks.size).to eq(kicks)
+        expect(attempts("wr_2")).to eq(0)
+      end
+
+      it "reruns no lost check on a tick" do
+        checking_run(started_at: "2026-10-04T10:00:00Z")
+        engine.park("wr_1")
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(check_calls).to eq([])
+      end
+
+      it "survives a Stop and three ticks with no attempt added" do
+        undelivered
+        engine.park("wr_1")
+        before = attempts
+
+        engine.turn_ended("wr_1", pane: "%5")
+        3.times do
+          now[0] += 15
+          engine.tick("wr_1")
+        end
+
+        expect(attempts).to eq(before)
+        expect(parked).not_to be_nil
+        expect(panes.kicks.size).to eq(1)
+      end
+
+      it "ignores a check's result and stops the check" do
+        to_verify
+        stops = []
+        parking = lambda do |stop_when:, **|
+          stops << stop_when.call
+          engine.park("wr_1", from: "build")
+          stops << stop_when.call
+          {exit_code: 0, timed_out: false}
+        end
+
+        engine_with(checker: parking).turn_ended("wr_1", pane: "%5")
+
+        expect(stops).to eq([false, true])
+        expect(history).not_to include("check_finished")
+        expect(store.find("wr_1")["steps"]["verify"]["state"]).to eq("checking")
+        expect(parked).to include("from" => "build")
+      end
+
+      describe "a Stop from before the attempt began" do
+        it "decides nothing with no turn_started" do
+          start(single, inputs: {})
+          artifact("out.md")
+
+          run = engine.turn_ended("wr_1", pane: "%5", stopped_at: now.first - 1)
+
+          expect(run["steps"]["work"]["state"]).to eq("running")
+          expect(run["state"]).to eq("running")
+        end
+
+        it "decides as usual once the Stop is after it" do
+          start(single, inputs: {})
+          artifact("out.md")
+
+          expect(engine.turn_ended("wr_1", pane: "%5", stopped_at: now.first + 1)["state"]).to eq("completed")
+        end
+      end
+    end
+
+    describe "#release_park" do
+      it "does nothing for a stale id" do
+        undelivered
+        engine.park("wr_1")
+        before = store.find("wr_1")
+
+        run = engine.release_park("wr_1", "stale")
+
+        expect(run).not_to have_key("unchanged")
+        expect(store.find("wr_1").except("updated_at")).to eq(before.except("updated_at"))
+        expect(panes.kicks.size).to eq(1)
+      end
+
+      it "dispatches, and the note reaches the attempt in no event" do
+        undelivered
+        id = engine.park("wr_1", note: "the secret word")["parked"]["id"]
+
+        run = engine.release_park("wr_1", id)
+
+        expect(run).to include("state" => "running", "reason" => nil)
+        expect(run).not_to have_key("parked")
+        expect(run["steps"]["work"]["attempts"].last["context"]).to eq(["Note from the person who resumed the run: the secret word"])
+        expect(panes.kicks.size).to eq(2)
+        expect(event_of("resume_parked_ended")).to include("how" => "released", "step" => "work")
+        expect(File.read(store.events_path("wr_1"))).not_to include("secret")
+      end
+
+      it "carries out --from" do
+        to_build
+        id = engine.park("wr_1", from: "plan")["parked"]["id"]
+
+        run = engine.release_park("wr_1", id)
+
+        expect(run).to include("current" => "plan", "state" => "running")
+        expect(run["steps"]["plan"]["attempts"].size).to eq(2)
+      end
+
+      it "carries out --pane" do
+        undelivered
+        id = engine.park("wr_1", pane: "%8")["parked"]["id"]
+
+        run = engine.release_park("wr_1", id)
+
+        expect(run["pane"]).to eq("%8")
+        expect(panes.kicks.last).to include(pane: "%8")
+      end
+
+      it "carries out a stored turn_over, which decides the step" do
+        start(single, inputs: {})
+        artifact("out.md")
+        id = engine.park("wr_1", turn_over: {"step" => "work", "attempt" => 1})["parked"]["id"]
+
+        expect(engine.release_park("wr_1", id)["state"]).to eq("completed")
+      end
+
+      it "records a release that did nothing and keeps the note" do
+        start(single, inputs: {})
+        artifact("out.md")
+        id = engine.park("wr_1", from: "work", note: "keep me")["parked"]["id"]
+        store.update("wr_1") { |run| run["parked"]["from"] = nil }
+
+        run = engine.release_park("wr_1", id)
+
+        expect(run["unchanged"]).to eq("an agent is working on step work")
+        expect(run).not_to have_key("parked")
+        expect(run["pending_context"]).to eq(["Note from the person who resumed the run: keep me"])
+        expect(event_of("resume_parked_ended")).to include("how" => "unchanged", "detail" => "an agent is working on step work")
+      end
+
+      it "leaves the park when the resume is refused" do
+        undelivered
+        id = engine.park("wr_1", from: "work")["parked"]["id"]
+        store.update("wr_1") { |run| run["parked"]["from"] = "nope" }
+
+        expect { engine.release_park("wr_1", id) }.to raise_error(Workspace::UsageError)
+
+        expect(parked).to include("id" => id)
+        expect(history).not_to include("resume_parked_ended")
+      end
+
+      it "takes the after_park mark off an attempt that was delivered" do
+        undelivered
+        id = engine.park("wr_1")["parked"]["id"]
+
+        run = engine.release_park("wr_1", id)
+
+        expect(run["steps"]["work"]["attempts"].last).not_to have_key("after_park")
+      end
+
+      it "marks the attempt while its line is on its way" do
+        undelivered
+        id = engine.park("wr_1", pane: "%5")["parked"]["id"]
+        seen = nil
+        allow(panes).to receive(:kick) do
+          seen = store.find("wr_1")["steps"]["work"]["attempts"].last
+          {ok: true}
+        end
+
+        engine.release_park("wr_1", id)
+
+        expect(seen["after_park"]).to eq("expires_at" => "2026-10-04T13:00:00Z", "pane" => "%5", "retries" => 0)
+      end
+    end
+
+    describe "a release that could not be typed" do
+      def release_failing(code)
+        panes.kick_result = {ok: false, code: code, message: "busy"}
+        engine.release_park("wr_1", parked["id"])
+      end
+
+      %w[pane_busy restart_in_progress].each do |code|
+        it "parks again on #{code} with the same limit, and keeps the note for the next attempt" do
+          undelivered
+          first = engine.park("wr_1", from: "work", note: "keep me", pane: "%5")["parked"]
+          now[0] += 60
+
+          run = release_failing(code)
+
+          expect(run["parked"]).to include("expires_at" => first["expires_at"], "retries" => 1, "from" => nil, "note" => nil, "pane" => nil, "turn_over" => nil)
+          expect(run["parked"]["id"]).not_to eq(first["id"])
+          expect(run["pending_context"]).to eq(["Note from the person who resumed the run: keep me"])
+          expect(run["steps"]["work"]["attempts"].last).to include("outcome" => "not_delivered").and(satisfy { |attempt| !attempt.key?("after_park") })
+          expect(event_of("resume_parked")).to include("retry" => true, "pane" => "%5", "from" => nil, "has_note" => false)
+        end
+      end
+
+      it "stops at the fourth failure, which stays the failure it is" do
+        undelivered
+        engine.park("wr_1")
+
+        3.times { |n| expect(release_failing("pane_busy")["parked"]).to include("retries" => n + 1) }
+        run = release_failing("pane_busy")
+
+        expect(run).not_to have_key("parked")
+        expect(run["reason"]["details"]).to include("error" => "pane_busy")
+      end
+
+      it "does not park again past the limit" do
+        undelivered
+        engine.park("wr_1")
+        now[0] += described_class::PARK_SECONDS + 1
+
+        expect(release_failing("pane_busy")).not_to have_key("parked")
+      end
+
+      it "does not park again on any other code" do
+        undelivered
+        engine.park("wr_1")
+
+        run = release_failing("no_such_pane")
+
+        expect(run).not_to have_key("parked")
+        expect(run["reason"]).to include("code" => "pane_gone")
+      end
+
+      it "does not park a failed delivery that no park released" do
+        undelivered
+
+        expect(engine.resume("wr_1").tap { |run| expect(run["state"]).to eq("running") }).not_to have_key("parked")
+        panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+
+        expect(engine.resume("wr_1", from: "work")).not_to have_key("parked")
+      end
+    end
+
+    describe "what ends a park" do
+      it "a resume from elsewhere takes over, and the note stays for the attempt" do
+        undelivered
+        engine.park("wr_1", note: "parked note")
+
+        run = engine.resume("wr_1", note: "own note")
+
+        expect(run).not_to have_key("parked")
+        expect(run["steps"]["work"]["attempts"].last["context"]).to eq(["Note from the person who resumed the run: parked note",
+          "Note from the person who resumed the run: own note"])
+        expect(event_of("resume_parked_ended")).to include("how" => "taken_over")
+      end
+
+      it "a resume from elsewhere that does nothing leaves the park" do
+        start
+        id = engine.park("wr_1", from: "plan")["parked"]["id"]
+
+        run = engine.resume("wr_1")
+
+        expect(run["unchanged"]).to eq("an agent is working on step plan")
+        expect(parked).to include("id" => id)
+      end
+
+      it "approve moves on, and the note reaches the next step" do
+        start
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+        engine.park("wr_1", from: "plan", note: "parked note")
+
+        run = engine.approve("wr_1")
+
+        expect(run).not_to have_key("parked")
+        expect(run["steps"]["build"]["attempts"].last["context"]).to eq(["Note from the person who resumed the run: parked note"])
+        expect(event_of("resume_parked_ended")).to include("how" => "moved_on")
+      end
+
+      it "reject moves on, and the note reaches the step that runs again" do
+        start
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+        engine.park("wr_1", from: "plan", note: "parked note")
+
+        run = engine.reject("wr_1", note: "no")
+
+        expect(run).not_to have_key("parked")
+        expect(run["steps"]["plan"]["attempts"].last["context"]).to eq(["The plan step was rejected at its gate: no",
+          "Note from the person who resumed the run: parked note"])
+        expect(event_of("resume_parked_ended")).to include("how" => "moved_on")
+      end
+
+      it "cancel ends it" do
+        undelivered
+        engine.park("wr_1")
+
+        run = engine.cancel("wr_1")
+
+        expect(run).not_to have_key("parked")
+        expect(event_of("resume_parked_ended")).to include("how" => "ended")
+      end
+
+      it "a kill ends it" do
+        undelivered
+        engine.park("wr_1")
+
+        engine.workspace_killed("app.worktree-x")
+
+        expect(store.find("wr_1")).to include("state" => "cancelled").and(satisfy { |run| !run.key?("parked") })
+      end
+    end
+
+    describe "#park_failed" do
+      it "does nothing for a stale id" do
+        undelivered
+        engine.park("wr_1")
+        before = store.find("wr_1")
+
+        engine.park_failed("wr_1", "stale", code: "pane_gone", message: "gone")
+
+        expect(store.find("wr_1").except("updated_at")).to eq(before.except("updated_at"))
+      end
+
+      it "leaves a running step and its attempt to be decided as usual" do
+        to_build
+        store.update("wr_1") { |run| run["reason"] = {"code" => "turn_ended_incomplete", "since" => "t", "details" => {}} }
+        id = engine.park("wr_1", note: "keep me")["parked"]["id"]
+
+        run = engine.park_failed("wr_1", id, code: "parked_timeout", message: "too long")
+
+        expect(run).not_to have_key("parked")
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "waiting_you")
+        expect(run["reason"]["details"]).to eq("kind" => "dispatch", "step" => "build", "pane" => "%5", "workspace" => "app.worktree-x",
+          "error" => "parked_timeout", "message" => "too long")
+        expect(run["pending_context"]).to eq(["Note from the person who resumed the run: keep me"])
+        expect(run["steps"]["build"]).to include("state" => "running")
+        expect(lock_holder("test-db")).to include("run_id" => "wr_1")
+        expect(event_of("resume_parked_ended")).to include("how" => "failed")
+
+        expect(engine.turn_ended("wr_1", pane: "%5")["current"]).to eq("verify")
+      end
+
+      it "moves a failed step's failure into the pending context for the next attempt" do
+        failed_run
+        id = engine.park("wr_1")["parked"]["id"]
+
+        run = engine.park_failed("wr_1", id, code: "not_an_agent", message: "the agent has exited")
+
+        expect(run["pending_context"].first).to start_with("The last attempt of this step failed: its check exited 1")
+        expect(run["reason"]["details"]).to include("error" => "not_an_agent", "kind" => "dispatch")
+        expect(run["steps"]["work"]).to include("state" => "failed")
+      end
+
+      it "keeps the gate reason of a run waiting at a gate, and records the failure in the event" do
+        start
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+        before = store.find("wr_1")["reason"]
+        id = engine.park("wr_1", from: "plan", pane: "%9")["parked"]["id"]
+
+        run = engine.park_failed("wr_1", id, code: "parked_timeout", message: "too long")
+
+        expect(run).not_to have_key("parked")
+        expect(run["reason"]).to eq(before)
+        expect(run["reason"]["details"]).to include("kind" => "gate")
+        expect(run["steps"]["plan"]["gate"]).to include("state" => "waiting")
+        expect(event_of("resume_parked_ended")).to include("how" => "failed", "error" => "parked_timeout", "message" => "too long")
+      end
+
+      it "leaves a waiting step waiting" do
+        undelivered
+        id = engine.park("wr_1", pane: "%7")["parked"]["id"]
+
+        run = engine.park_failed("wr_1", id, code: "parked_timeout", message: "too long")
+
+        expect(run["steps"]["work"]).to include("state" => "waiting")
+        expect(run["reason"]["details"]).to include("pane" => "%7", "error" => "parked_timeout")
+      end
+
+      it "reads a code for a gone pane as pane_gone" do
+        undelivered
+        id = engine.park("wr_1")["parked"]["id"]
+
+        expect(engine.park_failed("wr_1", id, code: "pane_gone", message: "gone")["reason"]).to include("code" => "pane_gone")
+      end
+
+      it "gives up the queue place of a waiting_lock run, so the lock can't go to a run that won't use it" do
+        lock_waiting_run
+        id = engine.park("wr_2")["parked"]["id"]
+
+        engine.park_failed("wr_2", id, code: "parked_timeout", message: "too long")
+        engine.cancel("wr_1")
+
+        expect(lock_holder("test-db")).to be_nil
+      end
+    end
+
+    describe "#check_pane through a second run" do
+      it "refuses a pane a park with no pane of its own targets" do
+        undelivered
+        engine.park("wr_1")
+        panes.unbind("wr_1")
+
+        expect { start(single, inputs: {}) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
+      end
+
+      it "does not refuse a run its own park" do
+        undelivered
+        engine.park("wr_1")
+        panes.unbind("wr_1")
+
+        expect(engine.resume("wr_1", pane: "%5")).to include("state" => "running")
+      end
+
+      it "refuses a pane a park names, for a rebind by another run" do
+        undelivered
+        engine.park("wr_1", pane: "%8")
+        store.update("wr_1") { |run| run["pane"] = "%5" }
+        start(single, inputs: {}, pane: "%6")
+        store.update("wr_2") { |run| run["reason"] = {"code" => "pane_gone", "since" => "t", "details" => {}} }
+
+        expect { engine.resume("wr_2", pane: "%8") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
+      end
+
+      it "does not count a park past its limit" do
+        undelivered
+        engine.park("wr_1")
+        panes.unbind("wr_1")
+        now[0] += described_class::PARK_SECONDS + 1
+
+        expect(start(single, inputs: {})["id"]).to eq("wr_2")
+      end
+    end
+
+    describe "a --from park over a checking step" do
+      def parked_over_check
+        checking_run
+        engine.park("wr_1", from: "build")["parked"]["id"]
+      end
+
+      it "names the unrecorded check in the timeout message" do
+        message = described_class.park_timeout_message("%5", checking: true)
+
+        expect(message).to include("A check that finished while this was parked was not recorded; resume the run to run it again.")
+        expect(described_class.park_timeout_message("%5")).not_to include("not recorded")
+        expect(described_class.park_timeout_message("%5")).to start_with("the turn in pane %5 did not end within 1 hour, so nothing was typed.")
+      end
+
+      it "waits for a person after the timeout, and a plain resume is then allowed" do
+        id = parked_over_check
+        engine.park_failed("wr_1", id, code: "parked_timeout", message: described_class.park_timeout_message("%5", checking: true))
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(store.find("wr_1")["reason"]["details"]).to include("error" => "parked_timeout")
+
+        run = engine.resume("wr_1")
+
+        expect(run).not_to have_key("unchanged")
+        expect(check_calls.size).to eq(1)
+        expect(run["state"]).to eq("completed")
+      end
+
+      it "allows a plain resume once the park is past its limit, unsettled" do
+        parked_over_check
+        now[0] += described_class::PARK_SECONDS + 1
+
+        run = engine.resume("wr_1")
+
+        expect(run).not_to have_key("unchanged")
+        expect(run).not_to have_key("parked")
+      end
     end
   end
 

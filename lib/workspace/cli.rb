@@ -4948,7 +4948,7 @@ module Workspace
         opts.separator "waits at that step's gate (on that attempt), so a stale button can't pass a later gate. These"
         opts.separator "checks guard against mistakes; they are not a security boundary (docs/README.workflow.md)."
         opts.separator ""
-        opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...]` is what the agent daemon runs to move a run"
+        opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--stopped-at AT] [--background-task TYPE:ID]...]` is what the agent daemon runs to move a run"
         opts.separator "on when a turn ends; it is not meant to be typed."
         opts.separator ""
         opts.separator "`run` and `start` really start a run (start also makes a worktree); --dry-run checks and starts nothing."
@@ -4983,6 +4983,7 @@ module Workspace
         end
         opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
         opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
+        opts.on("--stopped-at AT", "advance: when the daemon saw that turn end (ISO 8601)") { |v| options[:stopped_at] = v }
         opts.on("--background-task TYPE:ID", "advance: a background task still going when the turn ended (repeatable)") { |v| options[:background] << workflow_background_task(v) }
         opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
@@ -5069,7 +5070,8 @@ module Workspace
         scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir) unless subject
         @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name], table: options[:table] || false)
       when "advance"
-        @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started]), background: options[:background], caller_pane: ENV["TMUX_PANE"])
+        @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started], "--turn-started"),
+          stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], caller_pane: ENV["TMUX_PANE"])
       when "run"
         name = options[:name] || @project_detector.detect(@working_dir)
         raise UsageError, "workflow run needs a workspace: pass --name, or run from inside a project." unless name
@@ -5078,7 +5080,7 @@ module Workspace
           # The checkout's root, where the run's files go: the named workspace's, or the detected one's.
           root = options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
           @workflow_command.run(id: subject, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: inputs,
-            pane: options[:pane], note: options[:note], dry_run: options[:dry_run])
+            pane: options[:pane], note: options[:note], dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"])
         end
       when "start"
         inputs = workflow_inputs(options[:inputs])
@@ -5138,10 +5140,10 @@ module Workspace
       text.to_i
     end
 
-    def workflow_time(text)
+    def workflow_time(text, flag)
       text && Time.iso8601(text)
     rescue ArgumentError
-      raise UsageError, "--turn-started takes an ISO 8601 time, got #{text[0, 40].inspect}."
+      raise UsageError, "#{flag} takes an ISO 8601 time, got #{text[0, 40].inspect}."
     end
 
     def workflow_background_task(text)

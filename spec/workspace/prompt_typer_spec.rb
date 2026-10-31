@@ -16,6 +16,8 @@ RSpec.describe Workspace::PromptTyper do
 
       def capture_screen(_pane_id) = (@screens.size > 1) ? @screens.shift : @screens.first
 
+      def capture_screen_styled(pane_id) = capture_screen(pane_id)
+
       def deliver(session, target, text, enter: true)
         @delivered << [session, target, text, enter]
         status = @statuses.shift || (enter ? :submitted : :pasted)
@@ -34,7 +36,7 @@ RSpec.describe Workspace::PromptTyper do
   end
 
   it "pastes without Enter, checks the input line holds the text, then presses Enter" do
-    tmux.screens = [empty_prompt, "────────\n❯ run the specs\n"]
+    tmux.screens = [empty_prompt, "────────\n❯ run the specs\n────────\n"]
 
     result = type
 
@@ -44,9 +46,21 @@ RSpec.describe Workspace::PromptTyper do
     expect(tmux.delivered).to eq([["api", "0.1", "run the specs", false], ["api", "0.1", "", true]])
   end
 
+  it "reads one styled capture, so a suggestion reads as an empty input and a draft does not" do
+    suggestion = "────────\n\e[39m❯ \e[2msend %45 the reply\e[0m\n"
+    tmux.screens = [suggestion]
+    expect(typer.check("%5")).to be_nil
+
+    tmux.screens = ["────────\n\e[39m❯ half a thought\n"]
+    expect(typer.check("%5")).to include(reason: "input_not_empty")
+
+    tmux.screens = [nil]
+    expect(typer.check("%5")).to include(reason: "no_input_prompt")
+  end
+
   it "takes the paste placeholder for a long paste as the text being there" do
     text = "step\n" * 50
-    tmux.screens = [empty_prompt, "────────\n❯ [Pasted text #1 +50 lines]\n"]
+    tmux.screens = [empty_prompt, "────────\n❯ [Pasted text #1 +50 lines]\n────────\n"]
 
     expect(type(text).outcome).to eq(:submitted)
   end
@@ -62,7 +76,7 @@ RSpec.describe Workspace::PromptTyper do
   end
 
   describe "before_enter" do
-    before { tmux.screens = [empty_prompt, "────────\n❯ run the specs\n"] }
+    before { tmux.screens = [empty_prompt, "────────\n❯ run the specs\n────────\n"] }
 
     it "leaves the text unsubmitted and presses no Enter when it says no" do
       result = type(before_enter: -> { false })
@@ -111,7 +125,7 @@ RSpec.describe Workspace::PromptTyper do
   it "calls before_paste after the first check and before the paste" do
     order = []
     allow(monitor).to receive(:typing_facts) { order << :check && facts }
-    tmux.screens = [empty_prompt, "────────\n❯ run the specs\n"]
+    tmux.screens = [empty_prompt, "────────\n❯ run the specs\n────────\n"]
 
     type(before_paste: -> { (order << :before_paste) && true })
 
@@ -157,22 +171,22 @@ RSpec.describe Workspace::PromptTyper do
     expect(tmux.delivered.size).to eq(1)
   end
 
-  it "checks for the whole text with exact:, where pasted: takes a prefix or a placeholder" do
+  it "checks for the whole text with exact:, where pasted: takes the same text or one placeholder" do
     text = "An API error stopped your last turn"
-    tmux.screens = ["────────\n❯ #{text} and my own words\n"]
+    tmux.screens = ["────────\n❯ #{text} and my own words\n────────\n"]
+    expect(typer.check("%5", pasted: text)).to include(reason: "input_changed")
+    expect(typer.check("%5", exact: text)).to include(reason: "input_changed")
+
+    tmux.screens = ["────────\n❯ [Pasted text #1 +3 lines]\n────────\n"]
     expect(typer.check("%5", pasted: text)).to be_nil
     expect(typer.check("%5", exact: text)).to include(reason: "input_changed")
 
-    tmux.screens = ["────────\n❯ [Pasted text #1 +3 lines]\n"]
-    expect(typer.check("%5", pasted: text)).to be_nil
-    expect(typer.check("%5", exact: text)).to include(reason: "input_changed")
-
-    tmux.screens = ["────────\n❯ #{text}\n"]
+    tmux.screens = ["────────\n❯ #{text}\n────────\n"]
     expect(typer.check("%5", exact: text)).to be_nil
   end
 
   it "reports Enter that didn't take" do
-    tmux.screens = [empty_prompt, "────────\n❯ run the specs\n"]
+    tmux.screens = [empty_prompt, "────────\n❯ run the specs\n────────\n"]
     tmux.statuses = [:pasted, :unsubmitted]
 
     result = type

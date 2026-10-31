@@ -375,7 +375,8 @@ module Workspace
           "checks the inputs, the project's commands and the pane, and starts nothing.",
           "",
           "Without --dry-run this really starts the run: the first step is typed into the pane, and the",
-          "workspace's agent daemon is started if it is not running."
+          "workspace's agent daemon is started if it is not running. Run from the pane it would type into, it",
+          "parks like `workflow resume`: the answer is `parked`, and the caller should end its turn."
         ],
         options: [name_opt("The workspace to run in (default: detected from the current directory)"),
           ["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable)"],
@@ -434,7 +435,7 @@ module Workspace
           "checkout's and its worktrees' runs, finished ones too, and --all every workspace's, finished ones too.",
           "",
           "A run that is not moving says why: waiting_lock, waiting_you, turn_ended_incomplete, failed_check or",
-          "pane_gone, with the commands that resolve it.",
+          "pane_gone, with the commands that resolve it. A parked resume shows as the flag `parked`.",
           "",
           "--table shows one row per run, finished ones too at every scope, with its workspace as it is now: live, stopped",
           "or gone, and whether its config, tmux session, worktree and state directory exist (? when that could not be read).",
@@ -496,7 +497,13 @@ module Workspace
           "",
           "A run waiting at a gate is approved or rejected instead; resume needs --from there. It types the",
           "step into the run's pane again unless an agent is still working on it, or its check is running (then",
-          "it does nothing and says so). Use it for a run `workflow status` shows as stuck."
+          "it does nothing and says so). Use it for a run `workflow status` shows as stuck.",
+          "",
+          "Run from the pane it would type into (an agent resuming its own run) it types nothing: the answer is",
+          "`parked`, exit 0, and the caller should end its turn. The agent daemon carries it out once the turn",
+          "is over, within 1 hour, else the run reads waiting_you / parked_timeout. It needs a daemon started",
+          "after the upgrade (workspace daemon restart) and a pane in window 0. With a draft in a Claude pane's",
+          "input box nothing is typed and the draft stays (pane_busy, input_not_empty)."
         ],
         options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, JSON_OPT],
         examples: [
@@ -560,13 +567,14 @@ module Workspace
       },
       "advance" => {
         hidden: true,
-        usage: ["workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--background-task TYPE:ID]...]"],
+        usage: ["workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--stopped-at AT] [--background-task TYPE:ID]...]"],
         summary: "Move a run on; the agent daemon runs this when a turn ends",
         about: ["It is not meant to be typed. #{RUN_ID} It prints nothing.", "",
           "Typed by hand it decides the run's step as the daemon would, so use `workflow resume` instead."],
         options: [["--turn-ended", "A turn ended in the run's pane"],
           ["--pane PANE", "The run's pane"],
           ["--turn-started AT", "When that turn began (ISO 8601)"],
+          ["--stopped-at AT", "When the daemon saw that turn end (ISO 8601)"],
           ["--background-task TYPE:ID", "A background task still going when the turn ended (repeatable)"]],
         examples: [
           ["workspace workflow advance RUN", "nudge a stuck run: it waits on a lock, or its check never finished; it moves on if it can"],
@@ -2262,7 +2270,13 @@ module Workspace
           "This restarts the pane for real. The agent daemon first waits up to 120s (fixed, not bounded by",
           "--timeout) for the pane to go quiet, types /clear, then waits until the new session's first",
           "status-line render confirms the clear, then types the prompt. --timeout only bounds that confirm",
-          "step. If the clear can't be confirmed, the prompt is not typed. An agent can run this on its own",
+          "step. A draft in a Claude pane's input box refuses it (pane_busy, reason input_not_empty; Claude's",
+          "grey suggestion is not a draft), and so does a running turn (turn_started). A screen that keeps",
+          "moving after the agent went idle is accepted once the turn is proven over for 5s, with a warning",
+          "that background work may be lost. A sub-agent still running (seen by hooks) when /clear is typed",
+          "gets its own warning; a background shell is not detected. Both are warnings only. Without --wait a",
+          "refusal shows only in the daemon's log.",
+          "If the clear can't be confirmed, the prompt is not typed. An agent can run this on its own",
           "pane and end its turn: the daemon types from outside the pane. Only Claude panes are accepted",
           "(other agents fail with code unsupported_agent). Needs context readings, so `workspace statusline`",
           "must be installed as Claude's statusLine."
@@ -2338,13 +2352,15 @@ module Workspace
       },
       "queue" => {
         usage: ["agent-run queue list [--name NAME] [--pane PANE] [--json]", "agent-run queue cancel --id ID [--name NAME] [--json]"],
-        summary: "List or cancel the prompts `agent-run send --when-idle` has queued",
+        summary: "List or cancel the prompts `agent-run send --when-idle` has queued, and see why each waits",
         about: [
           "Both read the queue file directly, so they work with no agent daemon running.",
           "",
           "list    One row per queued prompt: pane_id, position (from 1, within the pane), state",
           "        (queued or delivering), queued_at, clear_first, a 200-character preview and the",
-          "        full length. Rows come grouped by pane, the pane with the oldest entry first.",
+          "        full length, and waiting_reason, waiting_message and waiting_since (null unless the",
+          "        pane refused the text at its last try, e.g. input_not_empty for a draft). Rows come",
+          "        grouped by pane, the pane with the oldest entry first.",
           "cancel  Removes a queued prompt and answers its full text. See `queue cancel --help`."
         ],
         options: [],
@@ -2360,8 +2376,9 @@ module Workspace
         about: [
           "Reads the queue file directly, so it works with no agent daemon running. One row per queued",
           "prompt: pane_id, position (from 1, within the pane), state (queued or delivering), queued_at,",
-          "clear_first, a 200-character preview and the full length. Rows come grouped by pane, the pane with",
-          "the oldest entry first. --pane takes a pane id (%19, matched as given, no tmux call) or window.pane",
+          "clear_first, a 200-character preview and the full length, and waiting_reason, waiting_message and",
+          "waiting_since (null unless the pane refused the text at its last try, e.g. input_not_empty for a",
+          "draft). Rows come grouped by pane, the pane with the oldest entry first. --pane takes a pane id (%19, matched as given, no tmux call) or window.pane",
           "(0.1, looked up in the workspace's tmux session). Writes nothing."
         ],
         hidden: true,
@@ -2480,7 +2497,7 @@ module Workspace
         options: [HANDOFF_NAME, HANDOFF_PANE,
           ["--handoff-doc PATH", "Doc the agent reads and resumes from (default: the plan, else HANDOFF.md, in the notes directory); a relative PATH is relative to the current directory, not the notes directory, and is passed to the agent as written"],
           HANDOFF_PROMPT,
-          ["--wait", "Wait for the restart to finish and report how it went (don't use this from the agent being restarted)"],
+          ["--wait", "Wait for the restart to finish and report how it went (don't use this from the agent being restarted); without it a refusal (a draft in the input box: pane_busy, input_not_empty) shows only in the daemon's log"],
           ["--json", "Print the result as JSON"]],
         examples: [
           ["workspace handoff new", "restart this project's coding agent in a fresh conversation (it loses the current one, so save its state first); it picks the first Claude Code pane, else Codex, which may not be yours"],

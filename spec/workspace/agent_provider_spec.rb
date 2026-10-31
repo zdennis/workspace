@@ -143,6 +143,11 @@ RSpec.describe Workspace::AgentProvider do
       expect(settings["hooks"]["PermissionRequest"].first).not_to have_key("matcher")
     end
 
+    it "subscribes to PostToolUseFailure, which ends a tool that failed or was interrupted" do
+      expect(settings["hooks"]).to include("PostToolUseFailure")
+      expect(settings["hooks"]["PostToolUseFailure"].first).not_to have_key("matcher")
+    end
+
     it "gives Claude Code's hooks no timeout, as before" do
       expect(settings["hooks"].values.flatten.flat_map { |e| e["hooks"] }).to all(satisfy { |h| !h.key?("timeout") })
     end

@@ -31,9 +31,11 @@ RSpec.describe Workspace::AgentStatusDesk do
 
       def capture_screen(_pane_id) = (@screens.size > 1) ? @screens.shift : @screens.first
 
+      def capture_screen_styled(pane_id) = capture_screen(pane_id)
+
       def deliver(session, target, text, enter: true)
         @delivered << [session, target, text, enter]
-        @screens = [enter ? @screen : "────────────────────\n❯ #{text}\n"] unless @scripted
+        @screens = [enter ? @screen : "────────────────────\n❯ #{text}\n────────────────────\n"] unless @scripted
         status = @statuses.shift || (enter ? :submitted : :pasted)
         Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
       end

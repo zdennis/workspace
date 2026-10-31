@@ -1,0 +1,5 @@
+  Docs: [94m]8;id=1a2b3c;https://example.test/docs\example docs[39m]8;;\
+[38;5;244m────────────────────────────────────────
+[39m❯ [2msend %45 the reply when it's done[0m
+[38;5;244m────────────────────────────────────────
+[39m  [36m[Model][39m [38;5;246mexample status[39m

@@ -31,10 +31,12 @@ RSpec.describe Workspace::HandoffWatcher do
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
 
+      def capture_screen_styled(pane_id) = capture_screen(pane_id)
+
       def deliver(session, target, text, enter: true)
         on_paste&.call unless enter
         @delivered << [session, target, text, enter]
-        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n")
+        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n────────\n")
         status = @statuses.shift || (enter ? :submitted : :pasted)
         Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
       end

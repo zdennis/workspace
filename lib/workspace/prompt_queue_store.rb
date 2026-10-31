@@ -256,8 +256,12 @@ module Workspace
     # @param outcome [Symbol] `:delivered` (removed; the pane's
     #   `last_delivered_at` becomes the paste time), `:requeue` (back to
     #   `queued` where it was, claim fields cleared) or `:drop` (removed)
+    # @param reason [String, nil] with `:requeue`, why the pane refused the text:
+    #   stored as `refused_reason`, with `refused_message`, `refused_at` (when
+    #   this reason first refused) and a `refusals` count
+    # @param message [String, nil] the refusal's wording
     # @return [Hash, nil] the entry as it was, or nil when it is gone
-    def finish(claim, outcome)
+    def finish(claim, outcome, reason: nil, message: nil)
       with_lock do |data|
         entry = claimed(data, claim)
         next nil unless entry
@@ -269,6 +273,7 @@ module Workspace
         when :requeue
           entry["state"] = "queued"
           CLAIM_KEYS.each { |key| entry.delete(key) }
+          note_refusal(entry, reason, message) if reason
         when :drop then data["entries"].delete(entry)
         else raise ArgumentError, "unknown outcome #{outcome.inspect}"
         end
@@ -300,6 +305,14 @@ module Workspace
     end
 
     private
+
+    def note_refusal(entry, reason, message)
+      same = entry["refused_reason"] == reason
+      entry["refused_at"] = now unless same && entry["refused_at"]
+      entry["refusals"] = (same ? entry["refusals"].to_i : 0) + 1
+      entry["refused_reason"] = reason
+      entry["refused_message"] = message
+    end
 
     def reap(data)
       stale = data["entries"].select { |e| e["state"] == "delivering" && abandoned?(e) }

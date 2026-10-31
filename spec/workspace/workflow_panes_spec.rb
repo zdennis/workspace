@@ -34,8 +34,16 @@ RSpec.describe Workspace::WorkflowPanes do
   end
   subject(:panes) do
     described_class.new(config: config, bindings: bindings, tmux: tmux, locator: locator, binder: binder,
-      snapshot_client: snapshot_client, agent_ensurer: agent_ensurer, connector: connector, clock: -> { Time.utc(2026, 10, 4, 12, 0, 30) })
+      snapshot_client: snapshot_client, agent_ensurer: agent_ensurer, connector: connector, clock: -> { now[0] },
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        now[0] += seconds
+        on_sleep.call
+      })
   end
+  let(:now) { [Time.utc(2026, 10, 4, 12, 0, 30)] }
+  let(:sleeps) { [] }
+  let(:on_sleep) { -> {} }
 
   before do
     allow(locator).to receive(:locate).with("app", "%5").and_return(id: "%5", session: "app", window: 0, index: 1)
@@ -302,6 +310,39 @@ RSpec.describe Workspace::WorkflowPanes do
                                               "prompt" => "Read plan.md and follow it.", "force" => false, "wait" => true}])
     end
 
+    it "keeps the reason the daemon gives for a busy pane" do
+      replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "pane %5 kept changing", "reason" => "background_activity") + "\n"
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true))
+        .to eq(ok: false, code: "pane_busy", message: "pane %5 kept changing", reason: "background_activity")
+    end
+
+    it "sends the run id, so the daemon stops typing once the run is gone" do
+      replies << JSON.generate("ok" => true) + "\n"
+
+      panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true, run_id: "wr_1")
+
+      expect(sockets.first.last.sent.first).to include("run_id" => "wr_1")
+    end
+
+    it "keeps what the daemon says kept a moving screen from being accepted" do
+      replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "kept changing", "reason" => "background_activity",
+        "details" => {"proof_missing" => "transcript_activity:cost-v2"}) + "\n"
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)).to eq(ok: false, code: "pane_busy", message: "kept changing",
+        reason: "background_activity", proof_missing: "transcript_activity:cost-v2")
+    end
+
+    it "keeps the daemon's warning, on a success and on a failure" do
+      replies << JSON.generate("ok" => true, "warning" => "may be lost") + "\n"
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)).to eq(ok: true, warning: "may be lost")
+
+      replies.clear
+      replies << JSON.generate("ok" => false, "error" => "not_delivered", "message" => "m", "reason" => "prompt_unconfirmed", "warning" => "may be lost") + "\n"
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true))
+        .to eq(ok: false, code: "not_delivered", message: "m", reason: "prompt_unconfirmed", warning: "may be lost")
+    end
+
     it "passes on the daemon's refusal, with its code and how to fix it" do
       replies << JSON.generate("ok" => false, "error" => "context_unknown", "message" => "can't read context usage for pane 0.1", "fix" => "Run workspace doctor.") + "\n"
 
@@ -325,6 +366,356 @@ RSpec.describe Workspace::WorkflowPanes do
 
       ensure_result.status = :failed
       expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)).to include(ok: false, code: "no_daemon")
+    end
+  end
+
+  def box(*above, input: "")
+    rule = "─" * 40
+    [*above, rule, "❯ #{input}", rule, "  [Model] status", ""].join("\n")
+  end
+
+  describe "#main_turn_over?" do
+    let(:stopped_at) { "2026-10-04T12:00:10.000Z" }
+    let(:transcript) { File.join(@dir, "t.jsonl") }
+    let(:row) do
+      {"pane_id" => "%5", "kind" => "claude", "state" => "done", "activity_state" => "working", "open_tools" => [], "turn_failed" => false,
+       "main_turn_over_since" => stopped_at, "transcript_path" => transcript, "last_event_at" => "2026-10-04T12:00:10Z"}
+    end
+    let(:no_stop) { {"state" => "idle", "activity_state" => "idle", "main_turn_over_since" => nil, "transcript_path" => nil, "last_event_at" => nil} }
+    let(:screen) { [box] }
+
+    def record(type, at, **extra) = {"type" => type, "timestamp" => at, **extra}
+
+    def write_transcript(*records)
+      File.write(transcript, records.map { |entry| JSON.generate(entry) + "\n" }.join)
+    end
+
+    def over? = panes.main_turn_over?("app", "%5")
+
+    before do
+      write_transcript(record("assistant", "2026-10-04T12:00:09.000Z"), record("system", "2026-10-04T12:00:11.000Z"))
+      allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { {"panes" => [row]} }
+      allow(tmux).to receive(:capture_screen_styled).with("%5") { screen.first }
+    end
+
+    it "is false when tmux can't be run" do
+      allow(tmux).to receive(:capture_screen_styled).and_raise(Errno::ENOENT)
+      expect(over?).to be(false)
+    end
+
+    context "after a Stop" do
+      it "is true with housekeeping alone after the Stop and a quiet box" do
+        expect(over?).to be(true)
+      end
+
+      it "goes by the screen and the hooks, not by a done mark" do
+        row["state"] = "working"
+        expect(over?).to be(true)
+      end
+
+      it "is false for a woken turn with no hook yet: queue-operation in the transcript, a clear screen" do
+        write_transcript(record("queue-operation", "2026-10-04T12:00:12.000Z"))
+        expect(over?).to be(false)
+      end
+
+      it "does not fall back to the rule for no Stop when the transcript shows activity" do
+        write_transcript(record("queue-operation", "2026-10-04T12:00:12.000Z"))
+        row.merge!("state" => "idle", "activity_state" => "idle", "last_event_at" => "2026-10-04T11:59:00Z")
+        expect(over?).to be(false)
+      end
+
+      it "is false for a woken turn with no hook yet: a spinner row, a clean transcript" do
+        screen[0] = box("✽ Frosting… (3s · ↓ 12 tokens)", "")
+        expect(over?).to be(false)
+      end
+
+      it "is false with a draft, and true with a suggestion" do
+        screen[0] = box(input: "half a thought")
+        expect(over?).to be(false)
+
+        screen[0] = box(input: "\e[2msend the reply\e[0m")
+        expect(over?).to be(true)
+      end
+
+      it "is false with a nil transcript path, and an unreadable transcript" do
+        row["transcript_path"] = nil
+        expect(over?).to be(false)
+
+        row["transcript_path"] = File.join(@dir, "gone.jsonl")
+        expect(over?).to be(false)
+      end
+
+      it "is false for a stored time that can't be read" do
+        row["main_turn_over_since"] = "yesterday"
+        expect(over?).to be(false)
+      end
+
+      it "ignores a sub-agent's records after the Stop" do
+        write_transcript(record("assistant", "2026-10-04T12:00:12.000Z", isSidechain: true))
+        expect(over?).to be(true)
+      end
+    end
+
+    context "with no Stop to go by" do
+      before { row.merge!(no_stop) }
+
+      it "is true with no hook event at all: a pane with no hooks, a daemon restarted since the Stop" do
+        expect(over?).to be(true)
+      end
+
+      it "goes by the age of the last hook event, since activity_state can be a scan stale" do
+        row["last_event_at"] = "2026-10-04T12:00:25Z"
+        expect(over?).to be(false)
+
+        row["last_event_at"] = "2026-10-04T11:59:59Z"
+        expect(over?).to be(true)
+      end
+
+      it "is held by a background sub-agent's hook events only while they arrive" do
+        row["last_event_at"] = "2026-10-04T12:00:29Z"
+        expect(over?).to be(false)
+
+        now[0] += 31
+        expect(over?).to be(true)
+      end
+
+      it "is false while the screen reads working" do
+        row["activity_state"] = "working"
+        expect(over?).to be(false)
+      end
+
+      it "is false with a draft" do
+        screen[0] = box(input: "half a thought")
+        expect(over?).to be(false)
+      end
+
+      it "with a tool left open by Esc, goes by the screen" do
+        row["open_tools"] = ["Bash"]
+        expect(over?).to be(true)
+
+        screen[0] = box("  ⎿  Running… (54s · timeout 5m)", "")
+        expect(over?).to be(false)
+      end
+
+      it "is false with a question tool's menu open" do
+        row["open_tools"] = ["AskUserQuestion"]
+        expect(over?).to be(false)
+      end
+    end
+
+    %w[after_stop no_stop].each do |name|
+      context "in the #{name} case" do
+        before { row.merge!(no_stop) if name == "no_stop" }
+
+        it "is false for a failed turn, a permission prompt and another kind" do
+          row["turn_failed"] = true
+          expect(over?).to be(false)
+          row["turn_failed"] = false
+
+          row["state"] = "waiting"
+          expect(over?).to be(false)
+          row["state"] = "idle"
+
+          row["activity_state"] = "waiting"
+          expect(over?).to be(false)
+          row["activity_state"] = "idle"
+
+          row["kind"] = "codex"
+          expect(over?).to be(false)
+        end
+
+        it "is false for a failed capture" do
+          screen[0] = nil
+          expect(over?).to be(false)
+        end
+      end
+    end
+
+    it "is false with no row, no daemon and a daemon that doesn't answer" do
+      allow(snapshot_client).to receive(:fetch).and_return("panes" => [])
+      expect(over?).to be(false)
+
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no", reason: :timeout))
+      expect(over?).to be(false)
+
+      allow(config).to receive(:agent_running?).and_return(false)
+      expect(over?).to be(false)
+    end
+
+    it "is false for a row from a daemon before this code" do
+      row.reject! { |key, _| %w[activity_state open_tools main_turn_over_since transcript_path].include?(key) }
+      expect(over?).to be(false)
+    end
+  end
+
+  describe "the screen check before a continuing step's line" do
+    let(:shown) { {"pane_id" => "%5", "kind" => "claude", "state" => "done", "activity_state" => "working", "open_tools" => []} }
+    let(:snapshot) { {"features" => ["parked_resume"], "panes" => [shown]} }
+    let(:screen) { [box] }
+    let(:typed) { Workspace::Tmux::Delivery.new(status: :submitted, message: "ok") }
+
+    def kick = panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)
+
+    before do
+      allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { snapshot }
+      allow(tmux).to receive(:capture_screen_styled).with("%5") { screen.first }
+      allow(tmux).to receive(:deliver).and_return(typed)
+    end
+
+    it "types into an empty box and into a suggestion, with no wait" do
+      expect(kick).to eq(ok: true)
+
+      screen[0] = box(input: "\e[2msend the reply\e[0m")
+      expect(kick).to eq(ok: true)
+      expect(tmux).to have_received(:deliver).twice
+      expect(sleeps).to eq([])
+    end
+
+    it "refuses a spinner row with its reason, after waiting SCREEN_SETTLE, typing nothing" do
+      screen[0] = box("✽ Frosting… (3s)", "")
+
+      expect(kick).to include(ok: false, code: "pane_busy", reason: "turn_started", message: a_string_including("pane %5"))
+      expect(sleeps).to eq([0.5] * 10)
+      expect(tmux).not_to have_received(:deliver)
+    end
+
+    it "refuses a draft with its reason, typing nothing" do
+      screen[0] = box(input: "half a thought")
+
+      expect(kick).to include(ok: false, code: "pane_busy", reason: "input_not_empty")
+      expect(tmux).not_to have_received(:deliver)
+    end
+
+    context "when the refusal clears within SCREEN_SETTLE" do
+      let(:on_sleep) { -> { screen[0] = box if sleeps.size == 3 } }
+
+      it "types" do
+        screen[0] = box("✽ Frosting… (3s)", "")
+
+        expect(kick).to eq(ok: true)
+        expect(sleeps).to eq([0.5] * 3)
+        expect(tmux).to have_received(:deliver).once
+      end
+    end
+
+    context "when the daemon's row changes between looks" do
+      let(:on_sleep) { -> { shown["open_tools"] = [] if sleeps.size == 2 } }
+
+      it "fetches the snapshot again on each retry" do
+        shown["open_tools"] = ["AskUserQuestion"]
+
+        expect(kick).to eq(ok: true)
+        expect(snapshot_client).to have_received(:fetch).exactly(4).times
+      end
+    end
+
+    context "when the daemon stops answering after a refusal" do
+      let(:on_sleep) { -> { allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no", reason: :timeout)) } }
+
+      it "keeps the refusal" do
+        screen[0] = box("✽ Frosting… (3s)", "")
+
+        expect(kick).to include(ok: false, code: "pane_busy", reason: "turn_started")
+        expect(tmux).not_to have_received(:deliver)
+      end
+    end
+
+    it "types as today for another kind and for no row, without reading the screen" do
+      shown["kind"] = "codex"
+      expect(kick).to eq(ok: true)
+
+      snapshot["panes"] = []
+      expect(kick).to eq(ok: true)
+      expect(tmux).not_to have_received(:capture_screen_styled)
+    end
+
+    it "types as today against a daemon from before this code" do
+      snapshot.delete("features")
+      shown.delete("activity_state")
+      shown.delete("open_tools")
+
+      expect(kick).to eq(ok: true)
+      expect(tmux).not_to have_received(:capture_screen_styled)
+    end
+  end
+
+  describe "#parkable?" do
+    let(:snapshot) { {"features" => ["parked_resume"], "panes" => [{"pane_id" => "%5", "kind" => "claude"}]} }
+
+    before do
+      allow(snapshot_client).to receive(:fetch).with("app") { snapshot }
+      allow(tmux).to receive(:session_name_for).with("app").and_return("app-session")
+      allow(tmux).to receive(:pane_details).with("app-session").and_return([{id: "%5"}, {id: "%6"}])
+    end
+
+    it "is true for a Claude Code row, having started the daemon" do
+      expect(panes.parkable?("app", "%5")).to be(true)
+      expect(ensured).to eq(["app"])
+    end
+
+    it "is false for a shell or Codex row" do
+      %w[shell codex].each do |kind|
+        snapshot["panes"].first["kind"] = kind
+        expect(panes.parkable?("app", "%5")).to be(false)
+      end
+    end
+
+    it "is true for a missing row in window 0, false for a pane in another window" do
+      snapshot["panes"] = []
+
+      expect(panes.parkable?("app", "%6")).to be(true)
+      expect(panes.parkable?("app", "%9")).to be(false)
+    end
+
+    it "is false for a snapshot with no features" do
+      snapshot.delete("features")
+      expect(panes.parkable?("app", "%5")).to be(false)
+    end
+
+    it "is false when the daemon can't start or doesn't answer" do
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no", reason: :no_daemon))
+      expect(panes.parkable?("app", "%5")).to be(false)
+
+      ensure_result.status = :failed
+      expect(panes.parkable?("app", "%5")).to be(false)
+    end
+  end
+
+  describe "#agent_gone?" do
+    let(:row) { {"pane_id" => "%5", "kind" => "shell", "idle_seconds" => 30} }
+
+    before { allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { {"panes" => [row]} } }
+
+    it "is true for a shell row idle 30 seconds, false before that" do
+      expect(panes.agent_gone?("app", "%5")).to be(true)
+
+      row["idle_seconds"] = 29
+      expect(panes.agent_gone?("app", "%5")).to be(false)
+    end
+
+    it "is false for an agent row and for no row" do
+      row["kind"] = "claude"
+      expect(panes.agent_gone?("app", "%5")).to be(false)
+      expect(panes.agent_gone?("app", "%9")).to be(false)
+    end
+
+    it "is false for a daemon that doesn't answer" do
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no", reason: :no_daemon))
+      expect(panes.agent_gone?("app", "%5")).to be(false)
+    end
+  end
+
+  describe "#pane_gone?" do
+    it "says whether tmux still knows the pane" do
+      expect(panes.pane_gone?("%5")).to be(false)
+
+      allow(tmux).to receive(:session_name_for_pane).with("%5").and_return(nil)
+      expect(panes.pane_gone?("%5")).to be(true)
+    end
+
+    it "is false when tmux can't be run" do
+      allow(tmux).to receive(:session_name_for_pane).and_raise(Errno::ENOENT)
+      expect(panes.pane_gone?("%5")).to be(false)
     end
   end
 end

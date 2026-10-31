@@ -1,0 +1,40 @@
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude[0m [1mCode[0m [38;5;246mv2.1.316[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mHaiku[39m [38;5;246m5.5[39m [38;5;246m·[39m [38;5;246mClaude[39m [38;5;246mUltra[39m
+[38;5;174m ▝▝[39m   [38;5;174m▝▝[39m   [38;5;246m/private/tmp/claude-501/t19h/proj[39m
+
+[38;5;220m⚠[39m [38;5;220mYour[39m [38;5;220mlogin[39m [38;5;220mexpires[39m [38;5;220min[39m [38;5;220m3[39m [38;5;220mdays[38;5;246m ·[39m [38;5;246mrun[39m [38;5;246m/login[39m [38;5;246mto[39m [38;5;246mrenew[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mUse the AskUserQuestion tool now to ask me one question: "Which color?" with options Red, Green, [39m
+  [38;5;231mBlue. Do nothing else.[39m
+
+[38;5;246m[49m⏺ [39mUser declined to answer questions
+[38;5;246m [39m [38;5;246m⎿[39m [38;5;246m ·[39m [38;5;246mWhich[39m [38;5;246mcolor?[39m [38;5;246m(Red[39m [38;5;246m/[39m [38;5;246mGreen[39m [38;5;246m/[39m [38;5;246mBlue)[39m
+
+[38;5;246m✻[39m [38;5;246mBaked[39m [38;5;246mfor[39m [38;5;246m2s[39m [38;5;246m·[39m [38;5;246mdone[39m [38;5;246m2:11[39m [38;5;246mPM[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mCall AskUserQuestion once with two questions in the same call: header "Size" question "What [39m
+  [38;5;231msize?" options Small and Large; header "Taste" question "What taste?" multiSelect true options [39m
+  [38;5;231mSweet and Sour and Salty. Do nothing else.[39m
+
+[38;5;246m[49m⏺ [39mUser declined to answer questions
+[38;5;246m [39m [38;5;246m⎿[39m [38;5;246m ·[39m [38;5;246mWhat[39m [38;5;246msize?[39m [38;5;246m(Small[39m [38;5;246m/[39m [38;5;246mLarge)[39m
+     [38;5;246m·[39m [38;5;246mWhat[39m [38;5;246mtaste?[39m [38;5;246m(Sweet[39m [38;5;246m/[39m [38;5;246mSour[39m [38;5;246m/[39m [38;5;246mSalty)[39m
+
+[38;5;246m✻[39m [38;5;246mChurned[39m [38;5;246mfor[39m [38;5;246m2s[39m [38;5;246m·[39m [38;5;246mdone[39m [38;5;246m2:11[39m [38;5;246mPM[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mCall AskUserQuestion once: header "Layout", question "Which layout?", with two options each [39m
+  [38;5;231mhaving a preview field: label A preview "AAAA\nAAAA", label B preview "BBBB\nBBBB". Do nothing [39m
+  [38;5;231melse.[39m
+
+[2m[49m────────────────────────────────────────────────────────────────────────────────────────────────────
+[0m  [38;5;153mdialog[39m [38;5;153mwaiting[38;5;246m ·[39m [38;5;246mShowing[39m [38;5;246mdetailed[39m [38;5;246mtranscript[39m [38;5;246m·[39m [38;5;246mctrl+o[39m [38;5;246mto[39m [38;5;246mtoggle[39m [38;5;246m·[39m [38;5;246mctrl+e[39m [38;5;246mto[39m [38;5;246mshow[39m [38;5;246mall[39m      [38;5;246mverbose[39m
+
+
+
+
+
+
+
+
+
+

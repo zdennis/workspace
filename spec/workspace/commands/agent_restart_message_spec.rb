@@ -21,7 +21,7 @@ class RestartMessageTmux < CLITestHelpers::FakeTmux
 end
 
 class RestartMessageMonitor
-  attr_accessor :kinds, :pids, :facts
+  attr_accessor :kinds, :pids, :facts, :background
 
   def initialize
     @kinds = {"%17" => "shell", "%18" => "claude"}
@@ -35,6 +35,7 @@ class RestartMessageMonitor
   def agent_pid(id) = @pids[id]
   def pane_state(_id) = "idle"
   def delivery_facts(_id) = @facts
+  def background_subagents(id) = @background&.fetch(id, nil)
 
   def rescan_pane(id)
     (@rescans ||= []) << id
@@ -145,8 +146,16 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
 
       expect(reply).to eq("ok" => true, "status" => "started", "pane" => "0.1", "pane_id" => "%18", "context_pct" => 42)
       expect(restart.calls.pop(timeout: 2)).to eq(pane_id: "%18", prompt: "Read HANDOFF.md", force: false,
-        confirm_timeout: Workspace::AgentRestart::CONFIRM_TIMEOUT)
+        confirm_timeout: Workspace::AgentRestart::CONFIRM_TIMEOUT, run_id: nil, waiting: false)
       expect(restart.built_with).to include(session_name: "workspace-wt-myapp")
+    end
+  end
+
+  it "hands the message's run id to the restart" do
+    run_agent do
+      send_restart("run_id" => "wr_1")
+
+      expect(restart.calls.pop(timeout: 2)).to include(run_id: "wr_1")
     end
   end
 
@@ -176,7 +185,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   it "with wait, replies with the outcome once the restart finishes" do
     run_agent do
       waiter = Thread.new { send_restart("wait" => true, "timeout" => 5) }
-      expect(restart.calls.pop(timeout: 2)).to include(confirm_timeout: 5)
+      expect(restart.calls.pop(timeout: 2)).to include(confirm_timeout: 5, waiting: true)
       expect(waiter.join(0.1)).to be_nil
 
       restart.finish

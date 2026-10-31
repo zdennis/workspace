@@ -658,6 +658,104 @@ RSpec.describe Workspace::WorkflowStatus do
     end
   end
 
+  describe "a parked resume" do
+    let(:stored_reason) do
+      {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "dispatch", "step" => "plan", "pane" => "%5", "error" => "pane_busy", "message" => "busy"}}
+    end
+    let(:park) do
+      {"id" => "abc", "from" => "plan", "note" => "the secret word", "pane" => nil, "turn_over" => nil,
+       "requested_at" => "2026-10-04T12:30:00Z", "expires_at" => "2026-10-04T13:30:00Z", "retries" => 0}
+    end
+
+    def parked_run(state: "waiting", step_state: "waiting", reason: stored_reason, park_fields: {}, **rest)
+      create(state: state, step_state: step_state, reason: reason, parked: park.merge(park_fields), **rest)
+    end
+
+    it "hides the stored reason, shows the flag, and never the note" do
+      parked_run
+
+      result = status.run("wr_1")
+
+      expect(current["reason"]).to be_nil
+      expect(current["flags"]).to eq(["parked"])
+      expect(current["parked"]).to eq("pane" => "%5", "from" => "plan", "requested_at" => "2026-10-04T12:30:00Z", "expires_at" => "2026-10-04T13:30:00Z")
+      expect(result.to_json).not_to include("secret")
+    end
+
+    it "adds no parked key for a run with no park" do
+      create
+
+      expect(current).not_to have_key("parked")
+    end
+
+    it "shows the park's target as the run's pane" do
+      parked_run(park_fields: {"pane" => "%9"})
+
+      expect(status.run("wr_1")["runs"].first["pane"]).to eq("%9")
+      expect(current["parked"]).to include("pane" => "%9")
+    end
+
+    it "still shows a permission prompt" do
+      parked_run(state: "running", step_state: "running", reason: nil)
+      snapshot["panes"].first.merge!("state" => "waiting", "waiting_since" => "2026-10-04T12:50:00Z", "waiting_message" => "Claude needs your permission")
+
+      expect(current["reason"]).to include("code" => "waiting_you")
+      expect(current["reason"]["details"]).to include("kind" => "prompt", "pane" => "%5")
+    end
+
+    it "shows a permission prompt on a run with no binding yet, from its pane" do
+      parked_run(bound: false)
+      snapshot["panes"].first.merge!("state" => "waiting", "waiting_since" => "2026-10-04T12:50:00Z", "waiting_message" => "Claude needs your permission")
+
+      expect(current["reason"]["details"]).to include("kind" => "prompt", "pane" => "%5")
+    end
+
+    it "does not read a run with no binding yet as pane_gone" do
+      parked_run(state: "running", step_state: "running", reason: nil, bound: false)
+
+      expect(current["reason"]).to be_nil
+    end
+
+    it "shows parked_timeout past expires_at, worked out when read" do
+      parked_run
+      now[0] += 3600
+
+      expect(current["reason"]).to include("code" => "waiting_you", "since" => "2026-10-04T13:30:00Z")
+      expect(current["reason"]["details"]).to eq("kind" => "dispatch", "step" => "plan", "pane" => "%5", "workspace" => "app", "error" => "parked_timeout",
+        "message" => Workspace::WorkflowEngine.park_timeout_message("%5"))
+      expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+      expect(current["flags"]).to eq([])
+      expect(current).not_to have_key("parked")
+    end
+
+    it "keeps the gate reason of an expired park at a waiting gate" do
+      gate = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "plan", "artifacts" => []}}
+      steps = {"research" => {"state" => "passed", "attempts" => [{"n" => 1}]},
+               "plan" => {"state" => "passed", "gate" => {"state" => "waiting"}, "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:30:00Z"}]}}
+      parked_run(reason: gate, step_state: "passed", steps: steps)
+      now[0] += 3600
+
+      expect(current["reason"]["code"]).to eq("waiting_you")
+      expect(current["reason"]["details"]).to include("kind" => "gate")
+      expect(current["reason"]["details"]).not_to include("error" => "parked_timeout")
+    end
+
+    it "names the unrecorded check in the timeout of a checking step" do
+      parked_run(state: "running", step_state: "checking", reason: nil)
+      now[0] += 3600
+
+      expect(status.run("wr_1")["runs"].first["state"]).to eq("waiting")
+      expect(current["reason"]["details"]["message"]).to eq(Workspace::WorkflowEngine.park_timeout_message("%5", checking: true))
+    end
+
+    it "warns that a parked run will not move with no daemon" do
+      parked_run
+      panes.daemon = false
+
+      expect(status.run("wr_1")["warnings"].first).to include("Workflow run wr_1 will not move")
+    end
+  end
+
   describe "a rejected gate" do
     it "shows as rejected on the step's row" do
       run = create(state: "running", step_state: "running")

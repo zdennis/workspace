@@ -23,7 +23,7 @@ RSpec.describe Workspace::WorkflowNudger do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
 
       expect(nudger.turn_ended("app", "%5")).to eq("wr_1")
-      expect(spawned).to eq([[[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5"], "/log/app.log"]])
+      expect(spawned).to eq([[[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--stopped-at", "2026-10-04T12:30:00.000Z"], "/log/app.log"]])
     end
 
     it "passes on when the turn began, to the millisecond, when the daemon knows" do
@@ -31,7 +31,7 @@ RSpec.describe Workspace::WorkflowNudger do
 
       nudger.turn_ended("app", "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_456))
 
-      expect(spawned.first.first.last(5)).to eq(["--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z"])
+      expect(spawned.first.first.last(7)).to eq(["--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z", "--stopped-at", "2026-10-04T12:30:00.000Z"])
     end
 
     it "adds one --background-task TYPE:ID per task, in order, and nothing else of a task" do
@@ -41,8 +41,8 @@ RSpec.describe Workspace::WorkflowNudger do
       nudger.turn_ended("app", "%5", background: tasks)
       nudger.turn_ended("app", "%5", background: nil)
 
-      expect(spawned.first.first.drop(5)).to eq(["--turn-ended", "--pane", "%5", "--background-task", "shell:b1a2c3d4e", "--background-task", "MCP task:k12345678"])
-      expect(spawned.last.first.drop(5)).to eq(["--turn-ended", "--pane", "%5"])
+      expect(spawned.first.first.drop(5)).to eq(["--turn-ended", "--pane", "%5", "--stopped-at", "2026-10-04T12:30:00.000Z", "--background-task", "shell:b1a2c3d4e", "--background-task", "MCP task:k12345678"])
+      expect(spawned.last.first.drop(5)).to eq(["--turn-ended", "--pane", "%5", "--stopped-at", "2026-10-04T12:30:00.000Z"])
     end
 
     it "starts nothing for a pane bound to no run" do
@@ -60,6 +60,20 @@ RSpec.describe Workspace::WorkflowNudger do
       failing = described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(_) { "/log" },
         spawner: ->(*) { raise Errno::ENOENT })
       expect(failing.turn_ended("app", "%5")).to be_nil
+    end
+  end
+
+  describe "starting the process" do
+    it "clears TMUX_PANE, so a daemon started from a pane does not count as that pane" do
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(Process).to receive(:spawn).and_return(1234)
+      allow(Process).to receive(:detach)
+      real = described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(_) { "/log" }, clock: -> { now })
+
+      real.turn_ended("app", "%5")
+
+      expect(Process).to have_received(:spawn).with({"TMUX_PANE" => nil}, RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1",
+        "--turn-ended", "--pane", "%5", "--stopped-at", "2026-10-04T12:30:00.000Z", in: File::NULL, out: ["/log", "a"], err: ["/log", "a"])
     end
   end
 
@@ -88,6 +102,23 @@ RSpec.describe Workspace::WorkflowNudger do
       ])
 
       expect(nudger.tick("app")).to eq(%w[wr_3])
+    end
+
+    it "wakes a run with a parked resume, with no note on the command line" do
+      allow(store).to receive(:active).and_return([
+        run("wr_1", "app").merge("parked" => {"id" => "p1", "note" => "secret", "pane" => "%5", "expires_at" => "2026-10-04T13:00:00Z"})
+      ])
+
+      expect(nudger.tick("app")).to eq(%w[wr_1])
+      expect(spawned.map(&:first)).to eq([[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1"]])
+    end
+
+    it "picks up a parked run a turn's end could not wake, its pane being bound to no run" do
+      allow(panes).to receive(:run_on).with("%5").and_return(nil)
+      allow(store).to receive(:active).and_return([run("wr_1", "app").merge("parked" => {"id" => "p1", "expires_at" => "2026-10-04T13:00:00Z"})])
+
+      expect(nudger.turn_ended("app", "%5")).to be_nil
+      expect(nudger.tick("app")).to eq(%w[wr_1])
     end
 
     it "wakes the other runs, and says which one it could not look at, when a run file is malformed" do

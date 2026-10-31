@@ -52,6 +52,10 @@ module Workspace
     # `outcome` is "delivered", "cancelled" or "dropped" (with a `reason`).
     PROMPT_DEQUEUED = "prompt_dequeued"
 
+    # Lifecycle event type for a queued prompt the pane refused, written when
+    # the refusal's `reason` first appears or changes, not on every retry.
+    PROMPT_REFUSED = "prompt_refused"
+
     # Lifecycle event type for a watch opening on a pane after a handoff prompt landed.
     HANDOFF_WATCH_STARTED = "handoff_watch_started"
 

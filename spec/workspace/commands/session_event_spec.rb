@@ -450,6 +450,14 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(event).not_to have_key("message")
     end
 
+    it "forwards a PostToolUseFailure as a failed tool use, closing the tool by id" do
+      event = deliver("hook_event_name" => "PostToolUseFailure", "tool_name" => "AskUserQuestion", "tool_use_id" => "toolu_1",
+        "error" => "not forwarded", "is_interrupt" => true, "duration_ms" => 12)
+
+      expect(event).to include("event" => "tool_use", "tool" => "AskUserQuestion", "tool_use_id" => "toolu_1", "ok" => false, "duration_ms" => 12)
+      expect(event).not_to have_key("error")
+    end
+
     it "sends to an explicitly named workspace instead of the pane's session" do
       allow(config).to receive(:agent_socket_path).with("other").and_return(socket_path)
 

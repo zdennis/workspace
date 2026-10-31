@@ -36,7 +36,9 @@ module Workspace
       "PostToolUse" => nil,
       # PermissionRequest fires as the approval prompt opens, with the tool and
       # its input, so the pane can say what it waits on.
-      "PermissionRequest" => nil
+      "PermissionRequest" => nil,
+      # A tool that failed or was interrupted fires this in place of PostToolUse.
+      "PostToolUseFailure" => nil
     }.freeze
 
     # Codex's hook events, in its `hooks.json` (the same shape as Claude

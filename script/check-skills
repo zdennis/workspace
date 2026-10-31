@@ -146,6 +146,7 @@ raise "empty registry" if REGISTRY.empty?
 NOT_CODES = %w[
   maybe_delivered schema_version dry_run exit_code lock_cleared hook_mode
   waiting_message review_request prompt_queued lock_busy
+  input_not_empty parked_timeout
 ].freeze
 
 def feature_names

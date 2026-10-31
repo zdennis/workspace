@@ -360,6 +360,136 @@ RSpec.describe Workspace::InboxDerived do
     end
   end
 
+  describe "undelivered workflow steps" do
+    def dispatch_run(id, code:, error: "not_started", since: "2026-10-16T11:00:00Z", message: "The line did not reach the agent.")
+      run = workflow_run(id, workspace: "api.worktree-c", code: code, kind: "dispatch", since: since)
+      run["current"]["reason"]["details"].merge!("error" => error, "message" => message)
+      run
+    end
+
+    def undelivered
+      read[:rows].select { |r| r["kind"] == "workflow_undelivered" }
+    end
+
+    it "adds a row for a waiting_you dispatch reason" do
+      workflow_reply["runs"] = [dispatch_run("r-1", code: "waiting_you")]
+
+      expect(undelivered).to contain_exactly(a_hash_including(
+        "id" => "workflow:undelivered:r-1", "derived" => true, "state" => "open", "fingerprint" => "plan:2026-10-16T11:00:00Z",
+        "title" => "Workflow Fix login: step plan was not started", "body" => "The line did not reach the agent.",
+        "created_at" => "2026-10-16T11:00:00Z",
+        "scope" => a_hash_including("kind" => "workspace", "key" => "api.worktree-c"),
+        "links" => a_hash_including("run_id" => "r-1", "step" => "plan", "attempt" => 1)
+      ))
+    end
+
+    it "adds a row for the stored pane_gone of an undelivered line" do
+      workflow_reply["runs"] = [dispatch_run("r-1", code: "pane_gone", error: "pane_gone")]
+
+      expect(undelivered.map { |r| r["id"] }).to eq(["workflow:undelivered:r-1"])
+    end
+
+    it "adds a row for a parked_timeout past its expiry" do
+      workflow_reply["runs"] = [dispatch_run("r-1", code: "waiting_you", error: "parked_timeout")]
+
+      expect(undelivered.size).to eq(1)
+    end
+
+    it "adds no row for a pane_gone status worked out itself (no kind), a pane_busy wait or a gate" do
+      workflow_reply["runs"] = [workflow_run("r-1", workspace: "api.worktree-c", code: "pane_gone", kind: nil),
+        dispatch_run("r-2", code: "pane_busy"), workflow_run("r-3", workspace: "api.worktree-c", code: "waiting_you", kind: "gate")]
+
+      expect(undelivered).to be_empty
+      expect(read[:rows].map { |r| r["id"] }).to include("workflow:waiting_you:r-3")
+    end
+
+    it "changes the fingerprint with since" do
+      workflow_reply["runs"] = [dispatch_run("r-1", code: "waiting_you", since: "2026-10-16T11:00:00Z")]
+      first = undelivered.first["fingerprint"]
+      workflow_reply["runs"] = [dispatch_run("r-1", code: "waiting_you", since: "2026-10-16T11:30:00Z")]
+
+      expect(undelivered.first["fingerprint"]).not_to eq(first)
+    end
+
+    it "adds no row for a run in another workspace" do
+      workflow_reply["runs"] = [dispatch_run("r-1", code: "waiting_you").merge("workspace" => "elsewhere")]
+
+      expect(undelivered).to be_empty
+    end
+
+    context "through the real WorkflowStatus" do
+      let(:run_panes) { FakeWorkflowPanes.new }
+      let(:run_clock) { [Time.utc(2026, 10, 16, 12, 0, 0)] }
+      let(:run_store) do
+        Workspace::WorkflowRunStore.new(dir: File.join(tmpdir, "runs"), archive_dir: File.join(tmpdir, "archive"), clock: -> { run_clock.first })
+      end
+      let(:workflow_status) do
+        asks = Class.new { define_method(:list) { |open_only: false| [] } }.new
+        client = Class.new { define_method(:fetch) { |_name, timeout: nil| {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]} } }.new
+        Workspace::WorkflowStatus.new(store: run_store, panes: run_panes, snapshot_client: client, ask_store_for: ->(_w) { asks },
+          gate_note: Class.new { define_method(:find) { |_run| nil } }.new, clock: -> { run_clock.first })
+      end
+
+      def stored_run(reason:, parked: nil)
+        run = run_store.create({
+          "workflow" => "rpiv", "title" => "Fix login", "workspace" => "api.worktree-c", "project" => "api", "worktree" => "/src/api",
+          "state" => "waiting", "created_at" => "2026-10-16T11:00:00Z", "started_at" => "2026-10-16T11:00:00Z", "ended_at" => nil,
+          "current" => "plan", "pane" => "%5", "loops" => {}, "reason" => reason, "parked" => parked, "artifacts_dir" => "/x",
+          "definition" => {"steps" => [{"id" => "plan", "title" => "Plan", "timeout" => nil}]},
+          "steps" => {"plan" => {"state" => "waiting", "attempts" => [{"n" => 1, "started_at" => "2026-10-16T11:00:00Z"}]}}
+        })
+        run_panes.bind(workspace: "api.worktree-c", pane: "%5", run_id: run["id"])
+        run
+      end
+
+      let(:park) do
+        {"id" => "abc", "from" => "plan", "note" => nil, "pane" => nil, "turn_over" => nil,
+         "requested_at" => "2026-10-16T11:30:00Z", "expires_at" => "2026-10-16T12:30:00Z", "retries" => 0}
+      end
+
+      def reason(error, code: "waiting_you")
+        {"code" => code, "since" => "2026-10-16T11:10:00Z",
+         "details" => {"kind" => "dispatch", "step" => "plan", "pane" => "%5", "error" => error, "message" => "m"}}
+      end
+
+      it "shows no row while a park is live over a pane_busy reason" do
+        stored_run(reason: reason("pane_busy", code: "pane_busy"), parked: park)
+
+        expect(undelivered).to be_empty
+      end
+
+      it "shows no row while a park is live over a not_started reason" do
+        stored_run(reason: reason("not_started"), parked: park)
+
+        expect(undelivered).to be_empty
+      end
+
+      it "shows a not_started reason that no park hides" do
+        stored_run(reason: reason("not_started"))
+
+        expect(undelivered.size).to eq(1)
+      end
+
+      it "shows a parked_timeout worked out at read time past the expiry, with no daemon" do
+        run = stored_run(reason: reason("pane_busy", code: "pane_busy"), parked: park)
+        run_panes.daemon = false
+        run_clock[0] += 3600
+
+        expect(undelivered.map { |r| [r["id"], r["links"]["step"]] }).to eq([["workflow:undelivered:#{run["id"]}", "plan"]])
+      end
+
+      it "keeps the gate row, not this one, for a park expired at a waiting gate" do
+        gate = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "plan", "artifacts" => []}}
+        run = stored_run(reason: gate, parked: park)
+        run_store.update(run["id"]) { |r| r["steps"]["plan"].merge!("state" => "passed", "gate" => {"state" => "waiting"}) }
+        run_clock[0] += 3600
+
+        expect(undelivered).to be_empty
+        expect(read[:rows].map { |r| r["kind"] }).to include("workflow_waiting_you")
+      end
+    end
+  end
+
   describe "locks" do
     it "counts a dead holder or an agent idle past the grace, with a live waiter; never a process holder or one being cleared" do
       rows = read[:rows].select { |r| r["kind"] == "lock_stale" }

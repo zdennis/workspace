@@ -56,7 +56,28 @@ RSpec.describe Workspace::Commands::PromptQueue do
         [["%5", 1, "first"], ["%5", 2, "second"], ["%9", 1, "later pane"], ["%9", 2, "other"]]
       )
       expect(json["entries"].first).to eq("id" => ids[1], "pane_id" => "%5", "position" => 1, "state" => "queued",
-        "queued_at" => "2026-10-19T12:00:01.000Z", "clear_first" => false, "preview" => "first", "length" => 5)
+        "queued_at" => "2026-10-19T12:00:01.000Z", "clear_first" => false, "preview" => "first", "length" => 5,
+        "waiting_reason" => nil, "waiting_message" => nil, "waiting_since" => nil)
+    end
+
+    it "shows why a stuck entry waits, in the rows and as a second line in the text list" do
+      add("api", "run it")
+      claim = store_for("api").claim("%5", daemon_pid: 4242) { Time.utc(2026, 10, 19, 12, 0, 1) }.first
+      store_for("api").finish(claim, :requeue, reason: "input_not_empty", message: "the input line holds a draft\e[2J")
+      now[0] += 90
+
+      command.list(name: "api", json: true)
+
+      expect(json["entries"].first).to include("waiting_reason" => "input_not_empty",
+        "waiting_message" => "the input line holds a draft\e[2J", "waiting_since" => "2026-10-19T12:00:00.000Z")
+
+      output.truncate(0)
+      output.rewind
+      command.list(name: "api")
+
+      lines = output.string.lines
+      expect(lines.size).to eq(2)
+      expect(lines.last).to eq("    waiting: input_not_empty: the input line holds a draft\\e[2J (for 1m)\n")
     end
 
     it "cuts the preview at 200 characters, escapes control characters and reports the full length" do

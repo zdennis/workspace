@@ -32,8 +32,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
 
+      def capture_screen_styled(pane_id) = capture_screen(pane_id)
+
       def deliver(session, pane, text, enter: true)
-        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n")
+        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n────────\n")
         sent_keys << {session: session, pane: pane, text: text, enter: enter}
         on_deliver&.call(text)
         Workspace::Tmux::Delivery.new(status: enter ? :submitted : :pasted, message: "fake")
@@ -1666,6 +1668,13 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     it "accepts our own text wrapped over two lines" do
       due_entry(draft_text: "An API error stopped your last turn")
       tmux.screen = "────────\n❯ An API error stopped\n  your last turn\n────────\n  status\n"
+
+      expect(answer).to eq(:go)
+    end
+
+    it "goes ahead on a suggestion: the stored draft does not match it, then the plain check passes" do
+      due_entry(draft_text: "An API error stopped your last turn")
+      tmux.screen = "────────\n\e[39m❯ \e[2msend %45 the reply when it's done\e[0m\n────────\n"
 
       expect(answer).to eq(:go)
     end
@@ -3646,7 +3655,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "presses Enter once on :not_submitted and never retypes" do
         allow(typer).to receive(:type) do |text:, **|
-          tmux.screen = "#{rule_prompt}#{text}\n"
+          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
           Workspace::PromptTyper::Result.new(outcome: :not_submitted)
         end
         desk.scan
@@ -3695,7 +3704,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "doesn't press Enter on :not_submitted once the shell holds the terminal" do
         allow(typer).to receive(:type) do |text:, **|
-          tmux.screen = "#{rule_prompt}#{text}\n"
+          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
           allow(stopper).to receive(:foreground?).and_return(false)
           Workspace::PromptTyper::Result.new(outcome: :not_submitted)
         end
@@ -3709,7 +3718,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         typed = nil
         allow(typer).to receive(:type) do |text:, **|
           typed = text
-          tmux.screen = "#{rule_prompt}#{text}\n"
+          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
           allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :failed, message: "no"))
           Workspace::PromptTyper::Result.new(outcome: :not_submitted)
         end
@@ -4344,7 +4353,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "recognises a :not_landed paste that renders late" do
         allow(typer).to receive(:type) do |text:, **|
-          tmux.screen = "#{rule_prompt}#{text}\n"
+          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
           Workspace::PromptTyper::Result.new(outcome: :not_landed)
         end
         desk.scan
@@ -4445,7 +4454,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "presses no Enter on :not_submitted once the shell holds the terminal" do
         allow(typer).to receive(:type) do |text:, **|
-          tmux.screen = "#{rule_prompt}#{text}\n"
+          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
           allow(stopper).to receive(:foreground?).and_return(false)
           Workspace::PromptTyper::Result.new(outcome: :not_submitted)
         end

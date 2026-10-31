@@ -31,6 +31,381 @@ RSpec.describe Workspace::SessionMonitor do
     monitor.snapshot["panes"].find { |p| p["pane_id"] == id }
   end
 
+  describe "closing a question from the screen" do
+    let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
+    let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
+    let(:ask) { {"pane_id" => "%2", "session_id" => "s1"} }
+    let(:err) { StringIO.new }
+
+    subject(:monitor) do
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, error_output: err)
+    end
+
+    def fixture(name)
+      File.read(File.expand_path("../fixtures/claude_screens/#{name}.txt", __dir__))
+    end
+
+    def show(name)
+      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(fixture(name))
+    end
+
+    def open_question(tool = "AskUserQuestion", id = "t1")
+      monitor.record(ask.merge("event" => "tool_start", "tool" => tool, "tool_use_id" => id))
+    end
+
+    def scans(count, seconds: 10)
+      count.times do
+        times[0] += seconds
+        monitor.scan
+      end
+    end
+
+    def open_tools = monitor.typing_facts("%2")[:open_tools]
+
+    # What `WorkflowPanes#screen_refusal` builds in the `advance` process.
+    def advance_facts
+      row = pane("%2")
+      {kind: row["kind"], state: row["activity_state"], open_tools: row["open_tools"]}
+    end
+
+    before do
+      show("question_open_single")
+      monitor.scan
+      open_question
+    end
+
+    it "keeps the tool open for as long as a dialog shows, and types nothing into it" do
+      scans(30)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), Workspace::StyledScreen.parse(fixture("question_open_single"))))
+        .to include(reason: "question_open")
+    end
+
+    it "keeps the tool open through a slow PreToolUse hook, the box empty with a spinner over it" do
+      show("question_about_to_draw")
+      scans(30)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+    end
+
+    it "closes the tool only after one reading held, for the daemon's facts and for the snapshot" do
+      show("question_closed_single")
+      scans(1)
+      expect(open_tools).to eq(["AskUserQuestion"])
+
+      scans(1)
+      expect(open_tools).to eq([])
+      expect(advance_facts[:open_tools]).to eq([])
+      screen = Workspace::StyledScreen.parse(fixture("question_closed_single"))
+      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), screen)).to be_nil
+      expect(Workspace::TypingSafety.new.check(advance_facts, screen)).to be_nil
+    end
+
+    it "keeps the question open when the capture raises or comes back empty" do
+      allow(tmux).to receive(:capture_screen_styled).with("%2").and_raise(Workspace::Error, "no server")
+      scans(3)
+      expect(open_tools).to eq(["AskUserQuestion"])
+
+      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(nil)
+      scans(3)
+      expect(open_tools).to eq(["AskUserQuestion"])
+    end
+
+    it "keeps the question open when the capture is not valid UTF-8" do
+      allow(tmux).to receive(:capture_screen_styled).with("%2")
+        .and_return((+"────\n❯ \n────\ncaf\xE9\n").force_encoding("UTF-8"))
+      scans(3)
+      expect(open_tools).to eq(["AskUserQuestion"])
+    end
+
+    it "reports the close on the daemon's error stream" do
+      show("question_closed_single")
+      scans(1)
+      expect(err.string).to be_empty
+      scans(1)
+      expect(open_tools).to eq([])
+      expect(err.string).to match(/question closed in %2/)
+    end
+
+    it "waits out the hold when scans come faster" do
+      show("question_closed_single")
+      scans(8, seconds: 1)
+      expect(open_tools).to eq(["AskUserQuestion"])
+
+      scans(1, seconds: 1)
+      expect(open_tools).to eq([])
+    end
+
+    it "does not close on an empty box that a dialog then replaces" do
+      show("question_closed_single")
+      scans(1)
+      show("question_open_single")
+      scans(1)
+      show("question_closed_single")
+      scans(1)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+    end
+
+    it "starts over when the rows above the box change" do
+      show("question_closed_single")
+      scans(1)
+      show("question_closed_tabs")
+      scans(1)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+      scans(1)
+      expect(open_tools).to eq([])
+    end
+
+    it "starts over on a hook event" do
+      show("question_closed_single")
+      scans(1)
+      times[0] += 1
+      monitor.record(ask.merge("event" => "notification", "message" => "Claude needs your input"))
+      scans(1)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+      scans(1)
+      expect(open_tools).to eq([])
+    end
+
+    it "starts over for a question opened since" do
+      show("question_closed_single")
+      scans(1)
+      times[0] += 1
+      open_question("ExitPlanMode", "t2")
+      scans(1)
+
+      expect(open_tools).to eq(%w[AskUserQuestion ExitPlanMode])
+      scans(1)
+      expect(open_tools).to eq([])
+    end
+
+    it "leaves a draft alone: the tool stays open and the pane refused" do
+      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return("────────\n❯ half a thought\n────────\n")
+      scans(5)
+
+      expect(open_tools).to eq(["AskUserQuestion"])
+      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), "────────\n❯ half a thought\n────────\n"))
+        .to include(reason: "question_open")
+    end
+
+    it "keeps other tools open, closes ExitPlanMode too" do
+      monitor.record(ask.merge("event" => "tool_start", "tool" => "Bash", "tool_use_id" => "t2"))
+      open_question("ExitPlanMode", "t3")
+      show("question_closed_exit_plan")
+      scans(2)
+
+      expect(open_tools).to eq(["Bash"])
+    end
+
+    it "ends the wait the question's Notification opened, once the screen proves it" do
+      monitor.record(ask.merge("event" => "notification", "message" => "Claude needs your input"))
+      expect(monitor.restart_state("%2")).to eq("waiting")
+      show("question_closed_single")
+      scans(1)
+      expect(monitor.restart_state("%2")).to eq("waiting")
+
+      scans(1)
+      expect(monitor.restart_state("%2")).to eq("idle")
+      expect(pane("%2")["activity_state"]).not_to eq("waiting")
+    end
+
+    it "drops the main agent's unanswered permission request, as a Stop does" do
+      monitor.record(ask.merge("event" => "permission_request", "tool" => "Bash", "input" => {"command" => "ls"}))
+      requests = monitor.instance_variable_get(:@panes)["%2"][:permission_requests]
+      expect(requests.keys).to eq([nil])
+
+      show("question_closed_single")
+      scans(2)
+
+      expect(open_tools).to eq([])
+      expect(requests).to be_empty
+    end
+
+    it "leaves a sub-agent's wait alone" do
+      monitor.record(ask.merge("event" => "notification", "agent_id" => "sub1", "message" => "permission"))
+      show("question_closed_single")
+      scans(2)
+
+      expect(open_tools).to eq([])
+      expect(monitor.restart_state("%2")).to eq("waiting")
+    end
+
+    it "opens no wait for the idle notification that comes after" do
+      show("question_closed_single")
+      scans(2)
+      monitor.record(ask.merge("event" => "notification", "notification_type" => "idle_prompt", "message" => "Claude is waiting for your input"))
+
+      expect(monitor.restart_state("%2")).to eq("idle")
+    end
+
+    it "reads the styled screen only while a question tool is open" do
+      show("question_closed_single")
+      scans(2)
+      expect(tmux).not_to receive(:capture_screen_styled)
+
+      scans(3)
+    end
+  end
+
+  describe "#main_turn_evidence" do
+    let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
+    let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
+
+    before { monitor.scan }
+
+    def hook(name, extra = {})
+      times[0] += 1
+      monitor.record({"event" => name, "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t.jsonl"}.merge(extra))
+    end
+
+    def missing = monitor.main_turn_evidence("%2")[:missing]
+
+    it "is the time of the main Stop, with the transcript" do
+      hook("stop")
+
+      expect(monitor.main_turn_evidence("%2")).to eq(since: times[0], transcript_path: "/t.jsonl")
+    end
+
+    it "is nil for a pane not seen, a shell and a pane with no Stop heard" do
+      expect(monitor.main_turn_evidence("%9")[:missing]).to eq("pane_unknown")
+      expect(monitor.main_turn_evidence("%1")[:missing]).to eq("not_claude")
+      hook("user_prompt")
+      expect(missing).to eq("no_stop_seen")
+    end
+
+    it "is nil with no hooks from the pane's agent" do
+      expect(missing).to eq("no_hooks")
+    end
+
+    it "is nil for hooks from another agent" do
+      hook("stop", "agent_kind" => "codex")
+      expect(missing).to eq("no_hooks")
+    end
+
+    it "doesn't take a sub-agent's Stop for the main one" do
+      hook("user_prompt")
+      hook("stop", "agent_id" => "a1")
+      expect(missing).to eq("no_stop_seen")
+    end
+
+    {
+      "tool_start" => "main_tool_after_stop", "tool_use" => "main_tool_after_stop", "user_prompt" => "main_prompt_after_stop",
+      "subagent_start" => "subagent_start_after_stop", "session_start" => "session_start_after_stop", "session_end" => "session_end_after_stop"
+    }.each do |event, name|
+      it "is nil after a main #{event}, until the next Stop" do
+        hook("stop")
+        hook(event, "tool" => "Bash")
+
+        expect(monitor.main_turn_evidence("%2")[:since]).to be_nil
+        expect(missing).to eq(name)
+
+        hook("stop")
+        expect(monitor.main_turn_evidence("%2")[:since]).to eq(times[0])
+      end
+    end
+
+    it "keeps its time through a sub-agent's tool use and Stop" do
+      hook("stop")
+      stopped = times[0]
+      hook("tool_start", "agent_id" => "a1", "tool" => "Bash")
+      hook("tool_use", "agent_id" => "a1", "tool" => "Bash")
+      hook("stop", "agent_id" => "a1")
+
+      expect(monitor.main_turn_evidence("%2")[:since]).to eq(stopped)
+    end
+
+    it "counts a sub-agent start from a sub-agent, which takes the done mark too" do
+      hook("stop")
+      hook("subagent_start", "agent_id" => "a1")
+      expect(missing).to eq("subagent_start_after_stop")
+    end
+
+    it "is nil on a wait, and on a failed turn" do
+      hook("stop")
+      hook("notification", "message" => "Allow Bash?", "notification_type" => "permission_prompt")
+      expect(missing).to eq("waiting")
+
+      hook("stop")
+      monitor.mark_turn_failed("%2")
+      expect(missing).to eq("turn_failed")
+    end
+  end
+
+  describe "what a parked resume reads from the snapshot" do
+    let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
+    let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
+
+    before { monitor.scan }
+
+    def hook(name, extra = {})
+      times[0] += 1
+      monitor.record({"event" => name, "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t.jsonl"}.merge(extra))
+    end
+
+    it "lists the feature" do
+      expect(monitor.snapshot["features"]).to eq(["parked_resume"])
+    end
+
+    it "gives a main Stop's time to the millisecond, with the transcript" do
+      times[0] += 0.25
+      hook("stop")
+
+      expect(pane("%2")).to include("main_turn_over_since" => "2026-10-31T12:00:01.250Z", "transcript_path" => "/t.jsonl")
+    end
+
+    it "keeps the time through a sub-agent's tool use" do
+      hook("stop")
+      hook("tool_use", "agent_id" => "a1", "tool" => "Bash", "tool_use_id" => "t1")
+
+      expect(pane("%2")["main_turn_over_since"]).to eq("2026-10-31T12:00:01.000Z")
+    end
+
+    it "drops the time on a wake-up's main tool_start, with the done mark still set" do
+      hook("stop")
+      hook("tool_start", "tool" => "Bash", "tool_use_id" => "t1")
+
+      expect(pane("%2")).to include("state" => "done", "main_turn_over_since" => nil, "open_tools" => ["Bash"])
+    end
+
+    it "has no time for a pane with no Stop heard, a monitor that lost it, and a failed turn" do
+      expect(pane("%2")["main_turn_over_since"]).to be_nil
+
+      hook("stop")
+      monitor.mark_turn_failed("%2")
+      expect(pane("%2")).to include("main_turn_over_since" => nil, "turn_failed" => true)
+    end
+
+    it "gives the working state a done mark hides, and a waiting one" do
+      hook("stop")
+      expect(pane("%2")).to include("state" => "done", "activity_state" => "working")
+
+      times[0] += 31
+      expect(pane("%2")).to include("state" => "done", "activity_state" => "idle")
+
+      hook("notification", "message" => "Allow Bash?", "notification_type" => "permission_prompt")
+      expect(pane("%2")["activity_state"]).to eq("waiting")
+    end
+
+    it "closes a tool by id on a failed tool's event, which counts as main activity" do
+      hook("stop")
+      hook("tool_start", "tool" => "AskUserQuestion", "tool_use_id" => "t1")
+      hook("tool_start", "tool" => "Bash", "tool_use_id" => "t2")
+      hook("tool_use", "tool" => "AskUserQuestion", "tool_use_id" => "t1", "ok" => false)
+
+      expect(pane("%2")["open_tools"]).to eq(["Bash"])
+      expect(monitor.main_turn_evidence("%2")[:missing]).to eq("main_tool_after_stop")
+    end
+
+    it "gives a shell pane an empty tool list" do
+      expect(pane("%1")).to include("open_tools" => [], "transcript_path" => nil, "main_turn_over_since" => nil)
+    end
+  end
+
   describe "the default poll interval" do
     it "matches the agentd.poll_interval default the config schema declares" do
       expect(monitor.instance_variable_get(:@poll_interval)).to eq(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL)
@@ -339,6 +714,20 @@ RSpec.describe Workspace::SessionMonitor do
     it "leaves done when the agent works again without a prompt" do
       stop
       monitor.record("event" => "tool_use", "pane_id" => "%2")
+
+      expect(pane("%2")["state"]).not_to eq("done")
+    end
+
+    it "keeps done when a sub-agent uses a tool after the Stop" do
+      stop
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      expect(pane("%2")["state"]).to eq("done")
+    end
+
+    it "leaves done when the main agent uses a tool after the Stop" do
+      stop
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => nil)
 
       expect(pane("%2")["state"]).not_to eq("done")
     end
@@ -1476,6 +1865,69 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#background_subagents" do
+    def event(name, extra = {})
+      monitor.record({"event" => name, "pane_id" => "%2", "session_id" => "s1"}.merge(extra))
+    end
+
+    before { monitor.scan }
+
+    it "counts a sub-agent through the main agent\x27s Stop, until its own stop" do
+      event("subagent_start", "subagent_id" => "a1", "agent" => {"name" => "x"})
+      event("stop")
+
+      expect(monitor.running_subagents("%2")).to eq(0)
+      expect(monitor.background_subagents("%2")).to eq(1)
+
+      event("subagent_stop", "agent_id" => "a1")
+
+      expect(monitor.background_subagents("%2")).to eq(0)
+    end
+
+    it "closes only the sub-agent named by the stop" do
+      event("subagent_start", "subagent_id" => "a1")
+      event("subagent_start", "subagent_id" => "a2")
+      event("subagent_stop", "agent_id" => "a2")
+
+      expect(monitor.background_subagents("%2")).to eq(1)
+      event("subagent_stop", "agent_id" => "a1")
+      expect(monitor.background_subagents("%2")).to eq(0)
+    end
+
+    it "closes one when the stop names no sub-agent" do
+      event("subagent_start")
+      event("subagent_start")
+      event("subagent_stop")
+
+      expect(monitor.background_subagents("%2")).to eq(1)
+    end
+
+    it "counts a sub-agent started by the main agent's PreToolUse until its stop names it" do
+      event("subagent_start")
+      expect(monitor.background_subagents("%2")).to eq(1)
+
+      event("stop")
+      expect(monitor.background_subagents("%2")).to eq(1)
+
+      event("subagent_stop", "agent_id" => "a1")
+      expect(monitor.background_subagents("%2")).to eq(0)
+    end
+
+    it "is cleared by session_start and by session_end" do
+      event("subagent_start")
+      event("session_start", "source" => "clear")
+      expect(monitor.background_subagents("%2")).to eq(0)
+
+      event("subagent_start")
+      event("session_end")
+      expect(monitor.background_subagents("%2")).to eq(0)
+    end
+
+    it "answers nil for a pane not scanned" do
+      expect(monitor.background_subagents("%9")).to be_nil
+    end
+  end
+
   describe "#agent_pid" do
     it "returns the pid of the coding agent in a pane, and nil for a shell or unscanned pane" do
       monitor.scan
@@ -1641,6 +2093,15 @@ RSpec.describe Workspace::SessionMonitor do
     it "is the time of the Stop for a done pane" do
       at(5)
       monitor.record("pane_id" => "%2", "event" => "stop")
+
+      expect(monitor.fresh_since("%2")).to eq(now + 5)
+    end
+
+    it "stays the time of the Stop when a sub-agent uses a tool afterward" do
+      at(5)
+      monitor.record("pane_id" => "%2", "event" => "stop")
+      at(9)
+      monitor.record("pane_id" => "%2", "event" => "tool_use", "agent_id" => "sub-1")
 
       expect(monitor.fresh_since("%2")).to eq(now + 5)
     end

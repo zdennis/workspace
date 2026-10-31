@@ -586,6 +586,32 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#capture_screen_styled" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "reads the visible screen with its styling" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-e", "-p", "-t", "%23")
+        .and_return(["\e[2mscreen\e[0m\n", "", double(success?: true)])
+
+      expect(tmux.capture_screen_styled("%23")).to eq("\e[2mscreen\e[0m\n")
+    end
+
+    it "returns nil on failure" do
+      allow(Open3).to receive(:capture3).and_return(["", "no pane", double(success?: false)])
+
+      expect(tmux.capture_screen_styled("%99")).to be_nil
+    end
+
+    it "leaves #capture_screen on the plain capture" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-p", "-t", "%23")
+        .and_return(["screen\n", "", double(success?: true)])
+
+      expect(tmux.capture_screen("%23")).to eq("screen\n")
+    end
+  end
+
   describe "#send_key" do
     let(:tmux) { described_class.new(config: config) }
 

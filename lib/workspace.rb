@@ -152,6 +152,8 @@ require_relative "workspace/tool_input_summary"
 require_relative "workspace/hook_event_log"
 require_relative "workspace/agent_status_requests"
 require_relative "workspace/typing_safety"
+require_relative "workspace/idle_prompt_check"
+require_relative "workspace/question_closed_check"
 require_relative "workspace/prompt_typer"
 require_relative "workspace/agent_status_desk"
 require_relative "workspace/event_stream"
@@ -165,6 +167,7 @@ require_relative "workspace/skill_links"
 require_relative "workspace/agent_command_check"
 require_relative "workspace/launch_mode"
 require_relative "workspace/doctor"
+require_relative "workspace/styled_screen"
 require_relative "workspace/tmux"
 require_relative "workspace/tmux_pane"
 require_relative "workspace/pane_locator"
@@ -571,7 +574,7 @@ module Workspace
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
-      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command)
+      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,
@@ -759,6 +762,9 @@ module Workspace
       workflow_nudger: workflow_nudger,
       name_migration: name_migration,
       agent_recovery_desk_factory: agent_recovery_desk_factory,
+      transcript_summary: TranscriptSummary.new,
+      idle_prompt_check: IdlePromptCheck.new,
+      pane_bindings: pane_bindings,
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
       handoff_watcher_factory: ->(workspace:, session_monitor:, **rest) {

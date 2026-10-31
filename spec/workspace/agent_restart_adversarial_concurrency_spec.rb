@@ -210,3 +210,190 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrenc
     cleanup(agent) if agent
   end
 end
+
+# A pane whose screen redraws on every read, as a background sub-agent's timer
+# keeps it. Its box is what `styled` says. A delivery runs the hook events the
+# real agent would answer it with on the next tick.
+class MovingScreenTmux
+  BOX = "#{"─" * 40}\n❯ \n#{"─" * 40}\n"
+
+  attr_accessor :styled, :on_typing_check
+  attr_reader :texts
+
+  def initialize(after_delivery)
+    @styled = BOX
+    @frame = 0
+    @texts = []
+    @after_delivery = after_delivery
+  end
+
+  def pane_details(_session, window: "0")
+    @on_typing_check&.call if window.nil?
+    [{id: "%18", window: 0, index: 1, pid: 2, command: "claude", cwd: "/", title: ""}]
+  end
+
+  def capture_screen(_target) = "#{@frame += 1}s\n#{BOX}"
+
+  def capture_pane(_session, _index) = "pane"
+
+  def capture_screen_styled(_target) = @styled
+
+  def deliver(_session, _target, text, **)
+    @texts << text
+    @after_delivery.call(text)
+    Workspace::Tmux::Delivery.new(status: :submitted, message: "fake submitted")
+  end
+end
+
+RSpec.describe "restart_agent with main activity after the Stop" do
+  let(:clock) { Struct.new(:now).new(Time.utc(2026, 10, 31, 12, 0, 0)) }
+  let(:ticks) { [] }
+  let(:tmux) { MovingScreenTmux.new(method(:answer_delivery)) }
+  let(:dir) { Dir.mktmpdir("moving-screen") }
+  let(:transcript) { File.join(dir, "main.jsonl") }
+  let(:snapshot) { Object.new }
+  let(:process_tree) { instance_double(Workspace::ProcessTree, snapshot: snapshot) }
+  let(:detector) { ->(**) { {provider: Workspace::AgentProvider.find("claude"), pid: 99} } }
+  let(:monitor) do
+    Workspace::SessionMonitor.new(tmux: tmux, process_tree: process_tree, session_name: "s", clock: clock, detector: detector)
+  end
+  let(:context_reader) do
+    instance_double(Workspace::ContextReader, read: {pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil})
+  end
+  let(:bindings) { instance_double(Workspace::PaneBindings, binding_for: {"kind" => "run", "id" => "wr_1"}) }
+  let(:agent) do
+    factory = lambda do |**wired|
+      Workspace::AgentRestart.new(tmux: tmux, context_reader: context_reader, clock: -> { clock.now.to_f }, wall_clock: -> { clock.now },
+        sleeper: method(:tick), quiet_timeout: 30, **wired)
+    end
+    Workspace::Commands::Agent.new(config: instance_double(Workspace::Config), tmux: tmux,
+      work_coordinator_client: instance_double(Workspace::WorkCoordinatorClient),
+      pipeline_config: Workspace::PipelineConfig.new(config: instance_double(Workspace::Config)), context_reader: context_reader,
+      pane_bindings: bindings, agent_restart_factory: factory, output: StringIO.new, error_output: StringIO.new).tap do |built|
+      built.instance_variable_set(:@session_monitor, monitor)
+    end
+  end
+
+  before do
+    File.write(transcript, "")
+    monitor.scan
+    hook("user_prompt")
+    write_record("assistant")
+    clock.now += 1
+    hook("stop")
+    write_record("system", "subtype" => "stop_hook_summary")
+  end
+
+  after { FileUtils.remove_entry(dir) }
+
+  def hook(name, extra = {})
+    monitor.record({"event" => name, "pane_id" => "%18", "session_id" => "s1", "transcript_path" => transcript}.merge(extra))
+  end
+
+  def write_record(type, extra = {})
+    stamp = (clock.now + 0.001).utc.iso8601(3)
+    File.write(transcript, JSON.generate({"type" => type, "timestamp" => stamp}.merge(extra)) + "\n", mode: "a")
+  end
+
+  def tick(seconds)
+    clock.now += seconds
+    ticks.shift.call until ticks.empty?
+    @at&.call
+  end
+
+  def answer_delivery(text)
+    ticks << ((text == "/clear") ? -> { hook("session_start", "source" => "clear", "session_id" => "s2") } : -> { hook("user_prompt", "session_id" => "s2") })
+  end
+
+  # Runs the callable once, +seconds+ after the restart starts.
+  def after_seconds(seconds, thing)
+    start = clock.now
+    done = false
+    @at = lambda do
+      next if done || clock.now - start < seconds
+      done = true
+      thing.call
+    end
+  end
+
+  # Runs the callable once, under the delivery lock, right before the last check.
+  def at_the_final_check(thing)
+    done = false
+    tmux.on_typing_check = lambda do
+      next if done
+      done = true
+      thing.call
+    end
+  end
+
+  def restart(run_id: nil)
+    client = StringIO.new
+    agent.send(:run_restart, {"pane" => "0.1", "pane_id" => "%18"}, "Read the plan", false, 30, client, run_id: run_id)
+    JSON.parse(client.string.lines.last)
+  end
+
+  activity = {
+    "a main tool starting" => [->(s) { s.hook("tool_start", "tool" => "Bash", "tool_use_id" => "t1") }, /main_tool_after_stop|turn_started/],
+    "a main tool finishing" => [->(s) { s.hook("tool_use", "tool" => "Bash", "tool_use_id" => "t1") }, /main_tool_after_stop|turn_started/],
+    "a prompt" => [->(s) { s.hook("user_prompt") }, /main_prompt_after_stop|turn_started/],
+    "a sub-agent start" => [->(s) { s.hook("subagent_start", "tool" => "Agent") }, /subagent_start_after_stop|turn_started/],
+    "a session start" => [->(s) { s.hook("session_start", "source" => "resume") }, /session_start_after_stop|turn_started/],
+    "a queue-operation record" => [->(s) { s.write_record("queue-operation") }, %r{transcript_activity:queue-operation|turn_started}],
+    "a user record" => [->(s) { s.write_record("user") }, %r{transcript_activity:user|turn_started}],
+    "an assistant record" => [->(s) { s.write_record("assistant") }, %r{transcript_activity:assistant|turn_started}],
+    "an api-request record" => [->(s) { s.write_record("api-request") }, %r{transcript_activity:api-request|turn_started}],
+    "a record of a new type" => [->(s) { s.write_record("cost-v2") }, %r{transcript_activity:cost-v2|turn_started}],
+    "a spinner row" => [->(s) { s.tmux.styled = "✽ Frosting… (2s)\n\n#{MovingScreenTmux::BOX}" }, /turn_started/],
+    "a draft" => [->(s) { s.tmux.styled = "#{"─" * 40}\n❯ half a thought\n#{"─" * 40}\n" }, /input_not_empty/]
+  }
+
+  activity.each do |name, (act, proof)|
+    {"early in the wait" => 1, "while the proof is held" => 4}.each do |moment, seconds|
+      it "never types /clear after #{name} #{moment}" do
+        after_seconds(seconds, -> { act.call(self) })
+
+        reply = restart
+
+        expect(tmux.texts).to be_empty
+        expect(reply).to include("ok" => false, "error" => "pane_busy")
+        expect(reply.dig("details", "proof_missing")).to match(proof)
+      end
+    end
+
+    it "never types /clear after #{name} under the delivery lock" do
+      at_the_final_check(-> { act.call(self) })
+
+      reply = restart
+
+      expect(tmux.texts).to be_empty
+      expect(reply).to include("ok" => false, "error" => "pane_busy")
+      expect(reply.dig("details", "proof_missing")).to match(proof)
+    end
+  end
+
+  it "types /clear with no activity after the Stop, and warns of the background work" do
+    reply = restart
+
+    expect(tmux.texts).to eq(["/clear", "Read the plan"])
+    expect(reply).to include("ok" => true, "status" => "restarted")
+    expect(reply["warning"]).to include("background work in pane %18", "may be lost")
+  end
+
+  it "takes the Stop's own housekeeping and a sub-agent's tool for no activity" do
+    after_seconds(1, lambda {
+      write_record("system", "subtype" => "turn_duration")
+      write_record("attachment")
+      write_record("user", "isSidechain" => true)
+      hook("tool_use", "agent_id" => "a1", "tool" => "Bash", "tool_use_id" => "t2")
+    })
+
+    expect(restart).to include("ok" => true, "status" => "restarted")
+  end
+
+  it "stops when the run was cancelled during the wait, with nothing typed" do
+    after_seconds(1, -> { allow(bindings).to receive(:binding_for).and_return(nil) })
+
+    expect(restart(run_id: "wr_1")).to include("ok" => false, "error" => "run_unbound")
+    expect(tmux.texts).to be_empty
+  end
+end
