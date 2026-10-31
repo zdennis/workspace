@@ -7266,6 +7266,51 @@ RSpec.describe Workspace::CLI do
       expect(detector).not_to have_received(:detect)
     end
 
+    describe "status --project" do
+      let(:project) { Struct.new(:name, :members).new("my-app", [Struct.new(:workspace).new("detected-ws")]) }
+      let(:catalog) { instance_double(Workspace::ProjectCatalog, all: [project], find: project, member_at: nil) }
+      let(:built) do
+        build_test_cli(plan_command: plan_command, plan_dispatch_command: instance_double(Workspace::Commands::PlanDispatch), plan_task_command: instance_double(Workspace::Commands::PlanTask),
+          project_detector: detector, working_dir: "/some/dir", project_catalog: catalog)
+      end
+
+      it "reads the project of the current workspace when bare, or the named project, in text and JSON" do
+        cli.run(["plan", "status", "--project"])
+        cli.run(["plan", "status", "--project", "my-app", "--json"])
+
+        expect(plan_command).to have_received(:status).with(project: project, json: false)
+        expect(plan_command).to have_received(:status).with(project: project, json: true)
+      end
+
+      it "reads --project followed by another flag as a bare project" do
+        cli.run(["plan", "status", "--project", "--json"])
+
+        expect(catalog).not_to have_received(:find)
+        expect(plan_command).to have_received(:status).with(project: project, json: true)
+      end
+
+      it "refuses it beside each other scope with the fuller message, before looking anything up" do
+        [%w[--name a], %w[--all], %w[--file x], %w[--group g]].each do |flags|
+          expect { cli.run(["plan", "status", "--project", *flags, "--json"]) }.to raise_error(FakeSystemExit), flags.inspect
+          expect(JSON.parse(output.string.lines.last)).to include("code" => "usage", "error" => "Give only one of --name, --project, --all, --file and --group."), flags.inspect
+        end
+        expect(plan_command).not_to have_received(:status)
+      end
+
+      it "is refused by the other plan verbs" do
+        expect { cli.run(["plan", "show", "--project"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--project does not apply to 'plan show'")
+      end
+
+      it "answers not_in_workspace outside a workspace, naming the flags that fix it" do
+        allow(detector).to receive(:detect).and_return(nil)
+
+        expect { cli.run(["plan", "status", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(output.string)).to include("code" => "not_in_workspace")
+        expect(JSON.parse(output.string)["error"]).to include("--project NAME")
+      end
+    end
+
     it "passes path and show on with the workspace" do
       cli.run(["plan", "path", "--json"])
       cli.run(["plan", "show", "--name", "api"])
@@ -7351,8 +7396,8 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["plan", "path", "--group", "billing"]) }.to raise_error(FakeSystemExit)
     end
 
-    it "rejects more than one of --name, --all, --file and --group" do
-      [%w[--name a --all], %w[--all --file x], %w[--name a --file x], %w[--group g --all], %w[--group g --name a], %w[--group g --file x]].each do |flags|
+    it "rejects more than one of --name, --project, --all, --file and --group" do
+      [%w[--name a --all], %w[--project --all], %w[--project --name a], %w[--all --file x], %w[--name a --file x], %w[--group g --all], %w[--group g --name a], %w[--group g --file x]].each do |flags|
         expect { cli.run(["plan", "status", *flags, "--json"]) }.to raise_error(FakeSystemExit), flags.inspect
         expect(JSON.parse(output.string.lines.last)).to include("code" => "usage"), flags.inspect
       end

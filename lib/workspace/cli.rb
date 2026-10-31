@@ -8364,7 +8364,7 @@ module Workspace
     end
 
     PLAN_FLAGS = {
-      "status" => %i[name all file group json],
+      "status" => %i[name project all file group json],
       "path" => %i[name json],
       "show" => %i[name],
       "init" => %i[name title from force json],
@@ -8384,7 +8384,7 @@ module Workspace
 
     def plan_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --all | --file PATH | --group GROUP] [--json]\n" \
+        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]\n" \
           "       workspace plan path [--name WORKSPACE] [--json]\n" \
           "       workspace plan show [--name WORKSPACE]\n" \
           "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]\n" \
@@ -8416,6 +8416,7 @@ module Workspace
         opts.separator "           with stale_revision. States: #{PlanFile::TASK_STATES.join(", ")}; blocked and skipped need --reason"
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
+        opts.on("--project [NAME]", "status: every workspace of a project (NAME, or the project of the current workspace)") { |v| take_plan_flag(options, :project, v || true) }
         opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
         opts.on("--group GROUP", "status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)") { |v| take_plan_flag(options, :group, v) }
         opts.on("--file PATH", "status: read any file, with no workspace and a state from the file alone") { |v| take_plan_flag(options, :file, v) }
@@ -8483,8 +8484,8 @@ module Workspace
         end
         plan_task_usage(verb, options)
       end
-      if subcommand == "status" && options[:given].count { |key| %i[name all file group].include?(key) } > 1
-        raise UsageError, "Give only one of --name, --all, --file and --group."
+      if subcommand == "status" && options[:given].count { |key| %i[name project all file group].include?(key) } > 1
+        raise UsageError, "Give only one of --name, --project, --all, --file and --group."
       end
       raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
       raise UsageError, "--pane and --spawn need --task. Run 'workspace plan --help'." if (options[:pane] || options[:spawn]) && !options[:task]
@@ -8494,14 +8495,21 @@ module Workspace
       raise Error, "plan is not available: no plan command was wired" unless @plan_command && @plan_dispatch_command && @plan_task_command
 
       return @plan_command.status_group(group: options[:group], json: options[:json]) if options[:group]
-      return @plan_command.status(all: true, json: options[:json]) if options[:all]
       return @plan_command.status(file: options[:file], json: options[:json]) if options[:file]
+
+      if subcommand == "status"
+        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
+        case scope.kind
+        when :all then return @plan_command.status(all: true, json: options[:json])
+        when :project then return @plan_command.status(project: scope.project, json: options[:json])
+        else return @plan_command.status(names: [scope.workspace], json: options[:json])
+        end
+      end
 
       name = options[:name] || @project_detector.detect(@working_dir)
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
       case subcommand
-      when "status" then @plan_command.status(names: [name], json: options[:json])
       when "path" then @plan_command.path(name: name, json: options[:json])
       when "show" then @plan_command.show(name: name)
       when "init"
