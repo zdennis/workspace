@@ -52,6 +52,17 @@ module Workspace
     # `outcome` is "delivered", "cancelled" or "dropped" (with a `reason`).
     PROMPT_DEQUEUED = "prompt_dequeued"
 
+    # Lifecycle event type for a watch opening on a pane after a handoff prompt landed.
+    HANDOFF_WATCH_STARTED = "handoff_watch_started"
+
+    # Activity event type for one follow-up: its data's `outcome` is what
+    # {PromptTyper} did with it, and `attempt` counts from 1.
+    HANDOFF_FOLLOWUP = "handoff_followup"
+
+    # Lifecycle event type for a watch ending: its data's `reason` says why, and
+    # `tries` how many follow-ups counted.
+    HANDOFF_WATCH_ENDED = "handoff_watch_ended"
+
     # Event types {#reconstruct} replays into state.
     STATE_EVENT_TYPES = ["state_set", "launched", "window_discovered", "repaired", "migrated", "compacted",
       "state_removed", "killed", "stopped", "pruned"].freeze
