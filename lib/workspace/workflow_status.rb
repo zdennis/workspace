@@ -167,8 +167,9 @@ module Workspace
       waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || hide_while_working(stored, shown)
     end
 
-    # A turn that ended while a background sub-agent ran reads turn_ended_incomplete; once the
-    # pane is working again the agent is still on it, so nobody has to act.
+    # A turn that ended with background tasks listed is held (turn_ended_background) and hidden. One that
+    # ended while a sub-agent ran unlisted reads turn_ended_incomplete; once the pane is working again
+    # the agent is still on it, so nobody has to act.
     def hide_while_working(stored, shown)
       hidden_reason?(stored, shown) ? nil : stored
     end
