@@ -2013,7 +2013,7 @@ RSpec.describe Workspace::Commands::Agent do
           @ticks = []
         end
 
-        def turn_ended(workspace, pane, turn_started: nil) = @turns << [workspace, pane, turn_started]
+        def turn_ended(workspace, pane, turn_started: nil, background: nil) = @turns << [workspace, pane, turn_started, background]
 
         def tick(workspace) = @ticks << workspace
       end.new
@@ -2045,8 +2045,16 @@ RSpec.describe Workspace::Commands::Agent do
         expect(send_event("stop")).to eq("ok" => true)
 
         # This daemon did not see the turn begin, so it names no start: the end counts, as it always did.
-        expect(nudger.turns).to eq([["myapp", "%5", nil]])
+        expect(nudger.turns).to eq([["myapp", "%5", nil, nil]])
         expect(recorded_events).to eq(["stop"])
+      end
+    end
+
+    it "passes the Stop's background tasks to the nudger" do
+      run_agent do
+        send_event("stop", background_tasks: [{"id" => "b1a2c3d4e", "type" => "shell"}])
+
+        expect(nudger.turns).to eq([["myapp", "%5", nil, [{"id" => "b1a2c3d4e", "type" => "shell"}]]])
       end
     end
 
@@ -2058,7 +2066,7 @@ RSpec.describe Workspace::Commands::Agent do
         send_event("stop")
         send_event("stop")
 
-        expect(nudger.turns).to eq([["myapp", "%5", now], ["myapp", "%5", now]])
+        expect(nudger.turns).to eq([["myapp", "%5", now, nil], ["myapp", "%5", now, nil]])
       end
     end
 
@@ -2070,7 +2078,7 @@ RSpec.describe Workspace::Commands::Agent do
           send_event("stop")
         end
 
-        expect(nudger.turns).to eq([["myapp", "%5", nil]] * 2)
+        expect(nudger.turns).to eq([["myapp", "%5", nil, nil]] * 2)
       end
     end
 

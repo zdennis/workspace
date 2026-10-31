@@ -34,6 +34,17 @@ RSpec.describe Workspace::WorkflowNudger do
       expect(spawned.first.first.last(5)).to eq(["--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z"])
     end
 
+    it "adds one --background-task TYPE:ID per task, in order, and nothing else of a task" do
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      tasks = [{"id" => "b1a2c3d4e", "type" => "shell", "description" => "secret"}, {"id" => "k12345678", "type" => "MCP task"}]
+
+      nudger.turn_ended("app", "%5", background: tasks)
+      nudger.turn_ended("app", "%5", background: nil)
+
+      expect(spawned.first.first.drop(5)).to eq(["--turn-ended", "--pane", "%5", "--background-task", "shell:b1a2c3d4e", "--background-task", "MCP task:k12345678"])
+      expect(spawned.last.first.drop(5)).to eq(["--turn-ended", "--pane", "%5"])
+    end
+
     it "starts nothing for a pane bound to no run" do
       allow(panes).to receive(:run_on).with("%5").and_return(nil)
 

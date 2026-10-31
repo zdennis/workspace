@@ -617,7 +617,7 @@ RSpec.describe Workspace::Commands::Workflow do
         command.advance(run: "wr_1", turn_ended: true, pane: "%5", caller_pane: nil)
         command.advance(run: "wr_1", caller_pane: "%3")
 
-        expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil)
+        expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, background: [])
         expect(engine).to have_received(:tick).with("wr_1")
       end
 
@@ -634,7 +634,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         command.advance(run: "wr_9", turn_ended: true, caller_pane: "%5")
 
-        expect(engine).to have_received(:turn_ended).with("wr_9", pane: nil, turn_started: nil)
+        expect(engine).to have_received(:turn_ended).with("wr_9", pane: nil, turn_started: nil, background: [])
       end
     end
 
@@ -657,10 +657,22 @@ RSpec.describe Workspace::Commands::Workflow do
       command.advance(run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12))
       command.advance(run: "wr_1")
 
-      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil)
-      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12))
+      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, background: [])
+      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12), background: [])
       expect(engine).to have_received(:tick).with("wr_1")
       expect(output.string).to eq("")
+    end
+
+    it "passes the background tasks to the engine, and [] for nil from the nudger" do
+      allow(store).to receive(:find).with("wr_1").and_return("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]})
+      allow(engine).to receive(:turn_ended)
+      tasks = [{"id" => "k12345678", "type" => "MCP task"}]
+
+      command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: tasks)
+      command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: nil)
+
+      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, background: tasks)
+      expect(engine).to have_received(:turn_ended).with("wr_1", pane: "%5", turn_started: nil, background: [])
     end
   end
 

@@ -91,6 +91,11 @@ module Workspace
       @delivery = nil
     end
 
+    # The background task types that hold a step (the labels Claude Code lists), and the shape of a
+    # task id. The Stop hook boundary and `workflow advance --background-task` both check against these.
+    BACKGROUND_TASK_TYPES = ["subagent", "workflow", "shell", "monitor", "MCP task", "cloud session"].freeze
+    BACKGROUND_TASK_ID = /\A[\w-]{1,64}\z/
+
     # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
     BACKGROUND_HOLD = 90 * 60
 

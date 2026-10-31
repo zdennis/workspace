@@ -2,6 +2,7 @@ require "spec_helper"
 require "tmpdir"
 require "open3"
 require "stringio"
+require "socket"
 
 RSpec.describe Workspace::WorkflowEngine do
   around do |example|
@@ -791,6 +792,57 @@ RSpec.describe Workspace::WorkflowEngine do
 
         expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
         expect(events.map(&:first).count("workflow_changed")).to eq(1)
+      end
+
+      describe "from a recorded Stop payload, through the hook boundary and the CLI's flags" do
+        def background_from(payload)
+          env = {"TMUX_PANE" => "%5"}
+          sent = nil
+          server_path = File.join(@dir, "agent.sock")
+          server = UNIXServer.new(server_path)
+          config = instance_double(Workspace::Config, agent_socket_path: server_path)
+          tmux = instance_double(Workspace::Tmux, session_name_for_pane: "app", pane_layout: nil, server_pid_for_pane: nil)
+          listener = Thread.new do
+            client = server.accept
+            sent = JSON.parse(client.gets)
+            client.puts(JSON.generate("ok" => true))
+            client.close
+          end
+          Workspace::Commands::SessionEvent.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)), env: env).call(workspace: nil, agent: nil)
+          listener.join(2)
+          sent["background_tasks"]
+        ensure
+          server&.close
+        end
+
+        let(:stop) do
+          {"hook_event_name" => "Stop", "session_id" => "s1", "cwd" => "/x", "background_tasks" => [
+            {"id" => "b1a2c3d4e", "type" => "shell", "description" => "dev server", "command" => "bin/dev"},
+            {"id" => "k12345678", "type" => "subagent", "description" => "reviewer"},
+            {"id" => "d1", "type" => "dream"}
+          ]}
+        end
+
+        it "holds across several turn ends with no reason shown" do
+          background = background_from(stop)
+          expect(background).to eq([{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k12345678", "type" => "subagent"}])
+
+          3.times do
+            now[0] += 60
+            engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: background)
+          end
+
+          expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
+          expect(store.find("wr_1")["reason"]["details"]["tasks"]).to eq(background)
+        end
+
+        it "shows turn_ended_incomplete when the Stop lists an empty array" do
+          background = background_from(stop.merge("background_tasks" => []))
+          engine.turn_ended("wr_1", pane: "%5", background: background)
+
+          expect(background).to eq([])
+          expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+        end
       end
 
       it "keeps the since when the turn began after it" do

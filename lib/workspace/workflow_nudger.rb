@@ -34,12 +34,14 @@ module Workspace
     # @param pane_id [String] the pane the main agent's turn ended in
     # @param turn_started [Time, nil] when that turn began, when it is known; lets the
     #   run tell its step's own turn from one that was under way before the step started
+    # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
     # @return [String, nil] the run that was woken; nil for a pane bound to none
-    def turn_ended(workspace, pane_id, turn_started: nil)
+    def turn_ended(workspace, pane_id, turn_started: nil, background: nil)
       run_id = @panes.run_on(pane_id)
       return nil unless run_id
       started = turn_started ? ["--turn-started", turn_started.utc.iso8601(3)] : []
-      advance(workspace, run_id, "--turn-ended", "--pane", pane_id, *started)
+      tasks = Array(background).flat_map { |task| ["--background-task", "#{task["type"]}:#{task["id"]}"] }
+      advance(workspace, run_id, "--turn-ended", "--pane", pane_id, *started, *tasks)
       run_id
     rescue => e
       @logger.debug { "workflow: could not wake the run on #{pane_id} (#{e.class}: #{e.message})" }

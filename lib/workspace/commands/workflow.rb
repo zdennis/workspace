@@ -340,11 +340,12 @@ module Workspace
       # @param turn_ended [Boolean] a turn ended; false is the timer's look
       # @param pane [String, nil] the pane the turn ended in
       # @param turn_started [Time, nil] when the turn that ended began, when the daemon knows
+      # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [void]
       # @raise [Workspace::Error] code `bound_pane` for a step with a guard or a status check, from a pane
       #   bound to the run or a process under it
-      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, caller_pane: nil)
+      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, background: nil, caller_pane: nil)
         stored = begin
           @store.find(run)
         rescue Workspace::Error
@@ -355,7 +356,7 @@ module Workspace
         if stored && checked_step?(stored)
           refuse_caller!(stored, caller_pane, "workflow advance", "A guarded or checked step is decided by the agent daemon")
         end
-        turn_ended ? @engine.turn_ended(run, pane: pane, turn_started: turn_started) : @engine.tick(run)
+        turn_ended ? @engine.turn_ended(run, pane: pane, turn_started: turn_started, background: background || []) : @engine.tick(run)
         nil
       end
 
