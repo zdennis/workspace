@@ -46,6 +46,19 @@ RSpec.describe Workspace::StatusScope do
     expect(resolve(name: "ghost")).to have_attributes(kind: :workspace, workspace: "ghost", project: nil)
   end
 
+  it "counts an empty --name as not given" do
+    allow(detector).to receive(:detect).with(working_dir).and_return("app")
+
+    expect(resolve(name: "")).to have_attributes(kind: :workspace, workspace: "app")
+    expect(resolve(name: "", all: true)).to have_attributes(kind: :all)
+  end
+
+  it "treats an empty --project as a bare one" do
+    allow(detector).to receive(:detect).with(working_dir).and_return("app.worktree-login")
+
+    expect(resolve(project: "").project.name).to eq("app")
+  end
+
   it "resolves no flag to the detected workspace" do
     allow(detector).to receive(:detect).with(working_dir).and_return("app.worktree-login")
 

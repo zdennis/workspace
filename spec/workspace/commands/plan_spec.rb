@@ -363,6 +363,14 @@ RSpec.describe Workspace::Commands::Plan do
         expect(output.string).to eq("No plans in project none.\n")
       end
 
+      it "answers an empty list as JSON when the project has no workspace to read" do
+        empty = Workspace::ProjectCatalog::Project.new(name: "none", id: "x", path: "/r", vcs: "git", members: [members[2], members[3]])
+
+        command.status(project: empty, json: true)
+
+        expect(JSON.parse(output.string)).to include("ok" => true, "plans" => [])
+      end
+
       it "asks tmux once" do
         write_plan("api", "## Tasks\n- [ ] T1 a\n")
         write_plan("api.worktree-x", "## Tasks\n- [ ] T1 a\n")
