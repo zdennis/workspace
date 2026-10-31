@@ -219,7 +219,7 @@ module Workspace
       reply = request(workspace, "type" => "restart_agent", "workspace" => workspace, "pane" => pane, "prompt" => text,
         "force" => false, "wait" => true)
       return {ok: true} if reply["ok"]
-      {ok: false, code: reply["error"].to_s, message: [reply["message"], reply["fix"]].compact.join(" ")}
+      {ok: false, code: reply["error"].to_s, message: [reply["message"], reply["fix"]].compact.join(" "), reason: reply["reason"]}.compact
     end
 
     def request(workspace, message)

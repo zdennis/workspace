@@ -731,7 +731,7 @@ module Workspace
       gone = PANE_GONE_CODES.include?(kick[:code].to_s)
       run["reason"] = reason(gone ? "pane_gone" : "waiting_you",
         {"kind" => "dispatch", "step" => run["current"], "pane" => run["pane"], "workspace" => run["workspace"],
-         "error" => kick[:code].to_s, "message" => kick[:message]&.to_s&.scrub}.compact)
+         "error" => kick[:code].to_s, "message" => kick[:message]&.to_s&.scrub, "reason" => kick[:reason]&.to_s}.compact)
     end
 
     # @return [Hash, nil] the lock the run has to wait for; nil when it holds everything the step uses

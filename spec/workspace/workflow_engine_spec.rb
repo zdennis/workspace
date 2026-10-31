@@ -510,6 +510,12 @@ RSpec.describe Workspace::WorkflowEngine do
     end
   end
 
+  it "keeps the reason a busy pane gave in the run's reason details" do
+    panes.kick_result = {ok: false, code: "pane_busy", message: "pane %5 kept changing", reason: "background_activity"}
+
+    expect(start["reason"]["details"]).to include("error" => "pane_busy", "reason" => "background_activity")
+  end
+
   describe "run from a process with no UTF-8 locale" do
     let(:french) { definition("instructions: Travaille sur {{inputs.task}} (café).\ninputs:\n  task: {}\nsteps:\n  a:\n    prompt: Écris {{artifacts}}/a.md.\n    produces: [a.md]\n  b:\n    prompt: Vérifie.\n") }
 

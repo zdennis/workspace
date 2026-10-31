@@ -181,6 +181,10 @@ module Workspace
       {"ok" => false, "error" => error, "message" => message}
     end
 
+    def busy_failure(reason, message)
+      failure("pane_busy", message).merge("reason" => reason)
+    end
+
     # Waits until the pane has stopped changing for QUIET_FOR and the agent
     # is neither working nor waiting on a person: /clear typed into a
     # permission prompt would answer it, and one typed mid-turn would land in
@@ -203,12 +207,17 @@ module Workspace
         end
 
         if now >= deadline
-          why = case state
-          when "waiting" then "is waiting on a person"
-          when "working" then "was still working"
-          else "never stopped changing"
+          case state
+          when "waiting"
+            return busy_failure("waiting", "pane #{pane_id} is waiting on a person within #{@quiet_timeout}s; /clear was not typed")
+          when "working"
+            return busy_failure("working", "pane #{pane_id} was still working within #{@quiet_timeout}s; /clear was not typed")
+          when "idle"
+            return busy_failure("background_activity", "the agent in pane #{pane_id} reads as idle, but the screen kept changing for #{@quiet_timeout}s, " \
+              "possibly a background sub-agent or shell, or a turn still running; /clear was not typed")
+          else
+            return busy_failure("unknown_state", "pane #{pane_id} kept changing for #{@quiet_timeout}s and the agent's state isn't known; /clear was not typed")
           end
-          return failure("pane_busy", "pane #{pane_id} #{why} within #{@quiet_timeout}s; /clear was not typed")
         end
         @sleeper.call(@poll_interval)
       end

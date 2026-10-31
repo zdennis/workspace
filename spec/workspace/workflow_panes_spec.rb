@@ -302,6 +302,13 @@ RSpec.describe Workspace::WorkflowPanes do
                                               "prompt" => "Read plan.md and follow it.", "force" => false, "wait" => true}])
     end
 
+    it "keeps the reason the daemon gives for a busy pane" do
+      replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "pane %5 kept changing", "reason" => "background_activity") + "\n"
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true))
+        .to eq(ok: false, code: "pane_busy", message: "pane %5 kept changing", reason: "background_activity")
+    end
+
     it "passes on the daemon's refusal, with its code and how to fix it" do
       replies << JSON.generate("ok" => false, "error" => "context_unknown", "message" => "can't read context usage for pane 0.1", "fix" => "Run workspace doctor.") + "\n"
 

@@ -311,16 +311,39 @@ RSpec.describe Workspace::AgentRestart do
     expect(tmux.delivered.first[:text]).to eq("/clear")
   end
 
-  it "gives up without typing when the pane never goes quiet" do
-    frame = 0
-    tmux.define_singleton_method(:capture_screen) { |_| "⠋ working #{frame += 1}" }
-    readings.push(reading(42))
+  describe "when the pane never goes quiet" do
+    before do
+      frame = 0
+      tmux.define_singleton_method(:capture_screen) { |_| "⠋ working #{frame += 1}" }
+      readings.push(reading(42))
+    end
 
-    result = call
+    it "names a possible background job when the agent reads as idle" do
+      pane_states["%18"] = "idle"
 
-    expect(result).to include("ok" => false, "error" => "pane_busy")
-    expect(result["message"]).to include("never stopped changing within 10s")
-    expect(tmux.delivered).to be_empty
+      result = call
+
+      expect(result).to include("ok" => false, "error" => "pane_busy", "reason" => "background_activity")
+      expect(result["message"]).to include("pane %18 reads as idle", "kept changing for 10s", "background sub-agent or shell", "/clear was not typed")
+      expect(tmux.delivered).to be_empty
+    end
+
+    it "says the state isn't known when the monitor has none" do
+      result = call
+
+      expect(result).to include("ok" => false, "error" => "pane_busy", "reason" => "unknown_state")
+      expect(result["message"]).to include("kept changing for 10s", "state isn't known")
+      expect(tmux.delivered).to be_empty
+    end
+
+    it "keeps the working message and gives reason working" do
+      pane_states["%18"] = "working"
+
+      result = call
+
+      expect(result).to include("error" => "pane_busy", "reason" => "working")
+      expect(result["message"]).to include("was still working within 10s")
+    end
   end
 
   it "does not type /clear into a pane waiting on a person" do
@@ -330,6 +353,7 @@ RSpec.describe Workspace::AgentRestart do
     result = call
 
     expect(result).to include("error" => "pane_busy")
+    expect(result).to include("reason" => "waiting")
     expect(result["message"]).to include("is waiting on a person")
     expect(tmux.delivered).to be_empty
   end

@@ -169,7 +169,7 @@ module Workspace
       "wrong_session" => "The pane belongs to another tmux session.",
       "no_such_pane" => "No pane matches the reference.",
       "pane_gone" => "The pane closed before or during the restart.",
-      "pane_busy" => "The pane didn't go quiet in time, or plan start or spine start found it waiting on a person (or, with --task or spine start, working on something else); nothing was typed. From agent-run send --clear-first without --when-idle: the agent is mid-turn, holds a draft or is held by a restart (details.reason not_ready), or prompts are queued ahead (queued_ahead); nothing was typed or queued.",
+      "pane_busy" => "The pane didn't go quiet in time (details.reason or the reply's reason says why: working, waiting, background_activity when the agent read as idle but the screen kept changing, or unknown_state), or plan start or spine start found it waiting on a person (or, with --task or spine start, working on something else); nothing was typed. From agent-run send --clear-first without --when-idle: the agent is mid-turn, holds a draft or is held by a restart (details.reason not_ready), or prompts are queued ahead (queued_ahead); nothing was typed or queued.",
       "pane_in_pipeline" => "A pipeline stage is running on the pane; pass force to restart it.",
       "pipeline_stage" => "A pipeline stage is running on the pane, so a handoff can't be carried out there; handoff check starts no follow-ups for it.",
       "not_an_agent" => "The pane is running a shell, not a coding agent (agent-run restart, agent-run send --when-idle or --clear-first).",
