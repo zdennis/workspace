@@ -29,6 +29,10 @@ module Workspace
   # reply warns that background work may be lost. Nothing then proves Enter
   # took, so the prompt must be confirmed by a `user_prompt` hook.
   #
+  # A still screen with a running sub-agent in a Claude Code pane gets the same
+  # warning (`subagents_running:`), since /clear can end it. The monitor can't
+  # see a background shell, so nothing is said of one. It is only a warning.
+  #
   # Whichever way the wait ended, a Claude Code pane is checked again under the
   # delivery lock right before /clear: a still screen can hold a draft or a turn
   # just started. Other agents skip it. A refused check goes back through the
@@ -80,6 +84,9 @@ module Workspace
     #   proven over, else what is missing, by name (`details.proof_missing`)
     # @param screen_ready [#call] given a pane id, answers
     #   {Workspace::IdlePromptCheck#refusal} for its screen as it is now
+    # @param subagents_running [#call] given a pane id, how many sub-agents of its
+    #   agent the session monitor sees running (nil or 0 for none); asked as
+    #   /clear is typed on a Claude Code pane, to warn that they may be lost
     # @param run_bound [#call] given a pane id and a run id, says whether the pane
     #   is still bound to that run
     # @param clock [#call] monotonic seconds, for the bounded waits
@@ -102,6 +109,7 @@ module Workspace
       delivery_facts: ->(_pane_id) {},
       turn_over: ->(_pane_id) { "no_proof" },
       screen_ready: ->(_pane_id) {},
+      subagents_running: ->(_pane_id) {},
       run_bound: ->(_pane_id, _run_id) { false },
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
       wall_clock: -> { Time.now },
@@ -120,6 +128,7 @@ module Workspace
       @delivery_facts = delivery_facts
       @turn_over = turn_over
       @screen_ready = screen_ready
+      @subagents_running = subagents_running
       @run_bound = run_bound
       @clock = clock
       @wall_clock = wall_clock
@@ -150,7 +159,8 @@ module Workspace
     #   pane is no longer bound to it, nothing more is typed (`run_unbound`)
     # @param waiting [Boolean] whether a caller is listening for this reply
     # @return [Hash] the reply: "ok", then "status" or "error" and "message".
-    #   "warning" when background work may have been lost, joined with any
+    #   "warning" when background work may have been lost (a moving screen, or a
+    #   running sub-agent at the moment of /clear), joined with any
     #   warning from the prompt's delivery; a failed wait has
     #   "details" => {"proof_missing" => name}
     def call(pane_id:, prompt:, force: false, confirm_timeout: CONFIRM_TIMEOUT, run_id: nil, waiting: false)
@@ -174,14 +184,20 @@ module Workspace
       reply["context_before"] = before[:pct]
 
       cleared_at = nil
+      subagents = false
       clear = deliver_clear(pane_id, force: force, moving: moving, run_id: run_id, deadline: deadline) do |moving_at_clear|
         moving = moving_at_clear
         cleared_at = @wall_clock.call
+        subagents = kind == "claude" && @subagents_running.call(pane_id).to_i > 0
         @cleared = true
       end
       return reply.merge(clear) if clear.key?("error")
 
-      reply["warning"] = "background work in pane #{pane_id} was still running when #{@clear_command} was typed and may be lost" if moving
+      if subagents
+        reply["warning"] = "a sub-agent was still running in pane #{pane_id} when #{@clear_command} was typed and may be lost"
+      elsif moving
+        reply["warning"] = "background work in pane #{pane_id} was still running when #{@clear_command} was typed and may be lost"
+      end
 
       after = wait_for_clear(pane_id, before, cleared_at, confirm_timeout)
       unless after

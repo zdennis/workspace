@@ -567,6 +567,46 @@ RSpec.describe Workspace::AgentRestart do
         expect(result).not_to have_key("warning")
       end
 
+      context "with a sub-agent running" do
+        let(:running) { [2] }
+
+        before do
+          allow(self).to receive(:proven).and_wrap_original { |m, **o| m.call(subagents_running: ->(_id) { running[0] }, **o) }
+        end
+
+        it "warns that background work may be lost, and still clears" do
+          result = go
+
+          expect(result).to include("ok" => true)
+          expect(result["warning"]).to eq("a sub-agent was still running in pane %18 when /clear was typed and may be lost")
+          expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+        end
+
+        it "joins the prompt delivery's own warning" do
+          tmux.statuses.push(:submitted, :unverified)
+
+          expect(go["warning"]).to start_with("a sub-agent was still running in pane %18").and end_with("; fake unverified")
+        end
+
+        it "says nothing with none running" do
+          running[0] = 0
+
+          expect(go).not_to have_key("warning")
+        end
+
+        it "says nothing when the monitor has no count" do
+          running[0] = nil
+
+          expect(go).not_to have_key("warning")
+        end
+
+        it "says nothing for a Codex pane" do
+          kinds["%18"] = "codex"
+
+          expect(go).not_to have_key("warning")
+        end
+      end
+
       it "needs no proof and no prompt hook" do
         missing[0] = "no_stop_seen"
         prompt_hook[0] = false
@@ -714,6 +754,13 @@ RSpec.describe Workspace::AgentRestart do
 
       expect(result["warning"]).to start_with("background work in pane %18")
       expect(result["warning"]).to end_with("; fake unverified")
+    end
+
+    it "says only the sub-agent warning when a moving screen also has a sub-agent running" do
+      result = proven(subagents_running: ->(_id) { 1 }).call(pane_id: "%18", prompt: "Read HANDOFF.md")
+
+      expect(result["warning"]).to include("a sub-agent was still running in pane %18 when /clear was typed and may be lost")
+      expect(result["warning"]).not_to include("background work")
     end
   end
 

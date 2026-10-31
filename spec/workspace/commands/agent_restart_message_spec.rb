@@ -21,7 +21,7 @@ class RestartMessageTmux < CLITestHelpers::FakeTmux
 end
 
 class RestartMessageMonitor
-  attr_accessor :kinds, :pids, :facts
+  attr_accessor :kinds, :pids, :facts, :background
 
   def initialize
     @kinds = {"%17" => "shell", "%18" => "claude"}
@@ -35,6 +35,7 @@ class RestartMessageMonitor
   def agent_pid(id) = @pids[id]
   def pane_state(_id) = "idle"
   def delivery_facts(_id) = @facts
+  def background_subagents(id) = @background&.fetch(id, nil)
 
   def rescan_pane(id)
     (@rescans ||= []) << id

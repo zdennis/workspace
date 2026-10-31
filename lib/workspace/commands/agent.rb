@@ -801,6 +801,7 @@ module Workspace
             delivery_facts: ->(id) { @session_monitor&.delivery_facts(id) },
             turn_over: method(:main_turn_missing),
             screen_ready: ->(id) { @idle_prompt_check.refusal(@session_monitor&.typing_facts(id), @tmux.capture_screen_styled(id)) },
+            subagents_running: ->(id) { @session_monitor&.background_subagents(id) },
             run_bound: method(:pane_bound_to_run?)
           )
           restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout, run_id: run_id, waiting: !client.nil?)

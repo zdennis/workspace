@@ -535,6 +535,16 @@ RSpec.describe Workspace::WorkflowEngine do
     expect(event).to include("delivered" => true, "warning" => "background work may be lost")
   end
 
+  it "puts the warning of a /clear typed over a running sub-agent in the dispatch event" do
+    text = "a sub-agent was still running in pane %5 when /clear was typed and may be lost; fake unverified"
+    panes.kick_result = {ok: true, warning: text}
+
+    run = start
+
+    event = File.readlines(store.events_path(run["id"])).map { |line| JSON.parse(line) }.find { |e| e["type"] == "step_dispatched" }
+    expect(event).to include("delivered" => true, "warning" => text)
+  end
+
   it "reads as waiting on a person when a prompt is unconfirmed" do
     panes.kick_result = {ok: false, code: "not_delivered", message: "may still be in the input box", reason: "prompt_unconfirmed"}
 

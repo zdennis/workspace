@@ -295,6 +295,17 @@ module Workspace
       @lock.synchronize { @panes[pane_id]&.fetch(:agents)&.count { |agent| agent[:state] == "running" } }
     end
 
+    # @param pane_id [String] tmux pane id
+    # @return [Integer, nil] how many sub-agents were started in the pane and not
+    #   yet ended by their own SubagentStop, or nil when the pane hasn't been
+    #   scanned yet. Unlike {#running_subagents}, a main-agent Stop leaves the
+    #   count alone, so a background sub-agent outliving the turn still counts.
+    #   A SessionStart or SessionEnd clears it; a missed stop can leave a stale
+    #   entry until then.
+    def background_subagents(pane_id)
+      @lock.synchronize { @panes[pane_id]&.fetch(:background_subagents, nil)&.size || (@panes[pane_id] && 0) }
+    end
+
     # Marks the pane's turn as failed without a hook event, as agentd does after
     # a restart that found the agent stopped on an error. Ends the turn, so a late
     # idle notification opens no wait. Does nothing for a pane not scanned yet.
@@ -1029,7 +1040,12 @@ module Workspace
         # A sub-agent the agent names itself (Codex) is known by its id from the start.
         agent[:agent_id] = event["subagent_id"] if event["subagent_id"]
         pane[:agents] << agent
+        (pane[:background_subagents] ||= []) << {agent_id: event["subagent_id"] || event["agent_id"]}
       when "subagent_stop"
+        background = (pane[:background_subagents] ||= [])
+        ended = background.find { |a| event["agent_id"] && a[:agent_id] == event["agent_id"] } ||
+          background.find { |a| !a[:agent_id] } || background.first
+        background.delete_at(background.index { |a| a.equal?(ended) }) if ended
         # Claude Code's SubagentStop does not say which sub-agent finished, so
         # the oldest running one is closed. With sub-agents running in parallel
         # this can pair the wrong start with the wrong stop; the count stays
@@ -1039,7 +1055,10 @@ module Workspace
           pane[:agents].find { |a| a[:state] == "running" && !a[:agent_id] } ||
           pane[:agents].find { |a| a[:state] == "running" }
         running&.merge!(state: "done", ended_at: @clock.now)
+      when "session_start"
+        pane[:background_subagents]&.clear
       when "stop", "session_end"
+        pane[:background_subagents]&.clear if event["event"] == "session_end"
         pane[:agents].each do |agent|
           agent.merge!(state: "done", ended_at: @clock.now) if agent[:state] == "running"
         end

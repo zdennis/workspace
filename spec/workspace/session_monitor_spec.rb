@@ -1855,6 +1855,69 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#background_subagents" do
+    def event(name, extra = {})
+      monitor.record({"event" => name, "pane_id" => "%2", "session_id" => "s1"}.merge(extra))
+    end
+
+    before { monitor.scan }
+
+    it "counts a sub-agent through the main agent\x27s Stop, until its own stop" do
+      event("subagent_start", "subagent_id" => "a1", "agent" => {"name" => "x"})
+      event("stop")
+
+      expect(monitor.running_subagents("%2")).to eq(0)
+      expect(monitor.background_subagents("%2")).to eq(1)
+
+      event("subagent_stop", "agent_id" => "a1")
+
+      expect(monitor.background_subagents("%2")).to eq(0)
+    end
+
+    it "closes only the sub-agent named by the stop" do
+      event("subagent_start", "subagent_id" => "a1")
+      event("subagent_start", "subagent_id" => "a2")
+      event("subagent_stop", "agent_id" => "a2")
+
+      expect(monitor.background_subagents("%2")).to eq(1)
+      event("subagent_stop", "agent_id" => "a1")
+      expect(monitor.background_subagents("%2")).to eq(0)
+    end
+
+    it "closes one when the stop names no sub-agent" do
+      event("subagent_start")
+      event("subagent_start")
+      event("subagent_stop")
+
+      expect(monitor.background_subagents("%2")).to eq(1)
+    end
+
+    it "counts a sub-agent started by the main agent's PreToolUse until its stop names it" do
+      event("subagent_start")
+      expect(monitor.background_subagents("%2")).to eq(1)
+
+      event("stop")
+      expect(monitor.background_subagents("%2")).to eq(1)
+
+      event("subagent_stop", "agent_id" => "a1")
+      expect(monitor.background_subagents("%2")).to eq(0)
+    end
+
+    it "is cleared by session_start and by session_end" do
+      event("subagent_start")
+      event("session_start", "source" => "clear")
+      expect(monitor.background_subagents("%2")).to eq(0)
+
+      event("subagent_start")
+      event("session_end")
+      expect(monitor.background_subagents("%2")).to eq(0)
+    end
+
+    it "answers nil for a pane not scanned" do
+      expect(monitor.background_subagents("%9")).to be_nil
+    end
+  end
+
   describe "#agent_pid" do
     it "returns the pid of the coding agent in a pane, and nil for a shell or unscanned pane" do
       monitor.scan
