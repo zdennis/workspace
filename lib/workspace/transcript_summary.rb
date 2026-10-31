@@ -35,6 +35,29 @@ module Workspace
       nil
     end
 
+    # The newest main-thread `user` or `assistant` record of a transcript, so a caller can tell whether the
+    # agent's last turn ended in an API error. Housekeeping lines (`last-prompt`, `ai-title`, ...),
+    # sub-agent (sidechain) records and `isMeta` records (injected by Claude Code, neither a prompt nor an
+    # answer) are skipped. Only a top-level `isApiErrorMessage: true` counts as an error.
+    #
+    # @param path [String, nil] a transcript path from a hook event
+    # @return [Hash, nil] `{"type" =>, "api_error" =>, "uuid" =>}`; nil for a path that is nil, not a
+    #   `.jsonl` file or unreadable, or when the tail holds no such record
+    def last_turn_record(path)
+      return nil unless path.is_a?(String) && path.end_with?(".jsonl")
+
+      stat = File.stat(path)
+      return nil unless stat.file?
+
+      tail_lines(path, stat.size).reverse_each do |line|
+        record = turn_record(line)
+        return record if record
+      end
+      nil
+    rescue SystemCallError, IOError
+      nil
+    end
+
     private
 
     def tail_lines(path, size)
@@ -45,6 +68,16 @@ module Workspace
       # A tail read starts mid-line, so the first line may be a fragment.
       lines.shift if size > TAIL_BYTES
       lines
+    end
+
+    def turn_record(line)
+      entry = JSON.parse(line)
+      return nil unless entry.is_a?(Hash) && %w[user assistant].include?(entry["type"])
+      return nil if entry["isSidechain"] == true || entry["isMeta"] == true
+
+      {"type" => entry["type"], "api_error" => entry["isApiErrorMessage"] == true, "uuid" => entry["uuid"]}
+    rescue JSON::ParserError
+      nil
     end
 
     def assistant_message(line)

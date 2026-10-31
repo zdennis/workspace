@@ -89,4 +89,63 @@ RSpec.describe Workspace::TranscriptSummary do
 
     expect(summary.last_assistant_message(path)["text"]).to be_a(String)
   end
+
+  describe "#last_turn_record" do
+    def error_line(**extra)
+      assistant(text("API Error: 500"), **{"uuid" => "u-err", "isApiErrorMessage" => true, "error" => "unknown", "isSidechain" => false}.merge(extra))
+    end
+
+    def housekeeping = [{"type" => "last-prompt", "lastPrompt" => "go"}, {"type" => "ai-title", "aiTitle" => "T"}]
+
+    it "reads a final error followed by housekeeping lines" do
+      path = transcript(assistant(text("fine"), "uuid" => "u-ok"), error_line, *housekeeping)
+
+      expect(summary.last_turn_record(path)).to eq("type" => "assistant", "api_error" => true, "uuid" => "u-err")
+    end
+
+    it "reads a good assistant line after an error as no error" do
+      path = transcript(error_line, assistant(text("recovered"), "uuid" => "u-ok"))
+
+      expect(summary.last_turn_record(path)).to eq("type" => "assistant", "api_error" => false, "uuid" => "u-ok")
+    end
+
+    it "ignores isApiErrorMessage that appears only inside content" do
+      path = transcript(assistant(text('{"isApiErrorMessage": true}'), "uuid" => "u-1"))
+
+      expect(summary.last_turn_record(path)["api_error"]).to be(false)
+    end
+
+    it "skips a sidechain error" do
+      path = transcript(assistant(text("main"), "uuid" => "u-main"), error_line("isSidechain" => true, "uuid" => "u-side"))
+
+      expect(summary.last_turn_record(path)).to include("api_error" => false, "uuid" => "u-main")
+    end
+
+    it "skips an isMeta user line after an error, so the error is still last" do
+      path = transcript(error_line, {"type" => "user", "isMeta" => true, "uuid" => "u-meta", "message" => {"role" => "user", "content" => "caveat"}})
+
+      expect(summary.last_turn_record(path)).to include("api_error" => true, "uuid" => "u-err")
+    end
+
+    it "counts a real user line after an error" do
+      path = transcript(error_line, {"type" => "user", "isMeta" => false, "uuid" => "u-user", "message" => {"role" => "user", "content" => "retry"}})
+
+      expect(summary.last_turn_record(path)).to eq("type" => "user", "api_error" => false, "uuid" => "u-user")
+    end
+
+    it "skips a malformed line" do
+      path = transcript(error_line, "{not json")
+
+      expect(summary.last_turn_record(path)["api_error"]).to be(true)
+    end
+
+    it "is nil for a missing file, a non-jsonl path or no turn records" do
+      other = File.join(tmpdir, "t.txt").tap { |p| File.write(p, "x") }
+      empty = transcript(*housekeeping, name: "e.jsonl")
+
+      [nil, other, File.join(tmpdir, "missing.jsonl"), empty].each do |path|
+        expect(summary.last_turn_record(path)).to be_nil
+      end
+    end
+  end
 end
