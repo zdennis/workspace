@@ -17,6 +17,8 @@ module Workspace
       "SessionEnd" => nil,
       "UserPromptSubmit" => nil,
       "Stop" => nil,
+      # A turn that ended on an API error, not a finished answer.
+      "StopFailure" => nil,
       "SubagentStop" => nil,
       # PreToolUse fires for every tool; workspace wants all of them (a tool
       # use of any kind marks the holder active again), so the matcher is

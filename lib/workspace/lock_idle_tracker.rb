@@ -9,7 +9,7 @@ module Workspace
   # read or the store is locked. It never raises.
   class LockIdleTracker
     # Hook event => whether it marks the agent idle (true) or active (false).
-    EVENTS = {"Stop" => true, "UserPromptSubmit" => false, "PreToolUse" => false}.freeze
+    EVENTS = {"Stop" => true, "StopFailure" => true, "UserPromptSubmit" => false, "PreToolUse" => false}.freeze
 
     # @param config [Workspace::Config] supplies the lock directory
     # @param lock_namespace [Workspace::LockNamespace] resolves the store for a cwd

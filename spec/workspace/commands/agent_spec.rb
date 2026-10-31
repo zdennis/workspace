@@ -2074,6 +2074,16 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    it "does not wake the nudger for a turn that failed" do
+      run_agent do
+        send_event("user_prompt")
+        send_event("turn_failed", error: "rate_limit")
+
+        expect(nudger.turns).to eq([])
+        expect(recorded_events).to eq(%w[user_prompt turn_failed])
+      end
+    end
+
     it "says nothing for a sub-agent's stop, or for any other event" do
       run_agent do
         send_event("stop", agent_id: "sub-1")
@@ -2109,6 +2119,7 @@ RSpec.describe Workspace::Commands::Agent do
           send_event("stop")
           send_event("stop", agent_id: "sub-1")
           send_event("user_prompt")
+          send_event("turn_failed", error: "rate_limit")
 
           Timeout.timeout(2) { sleep 0.01 until turns.size >= 1 }
           sleep 0.05

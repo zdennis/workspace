@@ -129,6 +129,11 @@ RSpec.describe Workspace::AgentProvider do
       expect(settings["hooks"]["Stop"].first).not_to have_key("matcher")
     end
 
+    it "subscribes to StopFailure, the turn that ended on an API error" do
+      expect(settings["hooks"]).to include("StopFailure")
+      expect(settings["hooks"]["StopFailure"].first).not_to have_key("matcher")
+    end
+
     it "subscribes to Notification and PostToolUse, which start and end a pane's wait" do
       expect(settings["hooks"]).to include("Notification", "PostToolUse")
       expect(settings["hooks"]["PostToolUse"].first).not_to have_key("matcher")

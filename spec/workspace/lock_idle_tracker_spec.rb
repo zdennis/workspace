@@ -48,6 +48,13 @@ RSpec.describe Workspace::LockIdleTracker do
     expect(idle_since).to be_nil
   end
 
+  it "marks the agent's lock idle on StopFailure" do
+    hold(agent)
+
+    expect(tracker.update("StopFailure")).to eq(["edit"])
+    expect(idle_since).to eq(1_000_000)
+  end
+
   it "ignores other hook events" do
     hold(agent)
 
