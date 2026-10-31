@@ -399,6 +399,50 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(deliver("hook_event_name" => "StopFailure", "error" => "rate_limit", "agent_id" => "sub-1")).to be_nil
     end
 
+    describe "background tasks of a Stop" do
+      def tasks_of(payload, agent = nil) = deliver({"hook_event_name" => "Stop"}.merge(payload), agent)["background_tasks"]
+
+      it "keeps only id and type of each allowlisted task, never the description or command" do
+        listed = [
+          {"id" => "b1a2c3d4e", "type" => "shell", "description" => "npm run dev", "command" => "secret"},
+          {"id" => "a1b2c3d4e", "type" => "subagent", "description" => "review"},
+          {"id" => "k12345678", "type" => "MCP task", "status" => "running"}
+        ]
+
+        expect(tasks_of("background_tasks" => listed)).to eq([
+          {"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "a1b2c3d4e", "type" => "subagent"}, {"id" => "k12345678", "type" => "MCP task"}
+        ])
+      end
+
+      it "drops types off the allowlist (dream, teammate) and malformed ids and entries" do
+        listed = [{"id" => "d1", "type" => "dream"}, {"id" => "t1", "type" => "teammate"}, {"id" => "bad id!", "type" => "shell"},
+          {"id" => "x" * 65, "type" => "shell"}, {"id" => 7, "type" => "shell"}, "shell", {"id" => "ok-1", "type" => "monitor"}]
+
+        expect(tasks_of("background_tasks" => listed)).to eq([{"id" => "ok-1", "type" => "monitor"}])
+      end
+
+      it "keeps at most 32 tasks" do
+        listed = Array.new(40) { |i| {"id" => "t#{i}", "type" => "shell"} }
+
+        expect(tasks_of("background_tasks" => listed).length).to eq(32)
+      end
+
+      it "sends an empty list as empty, and no key for a missing field or a non-array" do
+        expect(tasks_of("background_tasks" => [])).to eq([])
+        expect(deliver("hook_event_name" => "Stop")).not_to have_key("background_tasks")
+        expect(deliver("hook_event_name" => "Stop", "background_tasks" => "shell")).not_to have_key("background_tasks")
+        expect(deliver("hook_event_name" => "Stop", "background_tasks" => {"id" => "a"})).not_to have_key("background_tasks")
+      end
+
+      it "sends none for another event, a sub-agent's Stop, or Codex" do
+        listed = [{"id" => "b1", "type" => "shell"}]
+
+        expect(deliver("hook_event_name" => "SubagentStop", "background_tasks" => listed)).not_to have_key("background_tasks")
+        expect(deliver("hook_event_name" => "Stop", "agent_id" => "sub-1", "background_tasks" => listed)).not_to have_key("background_tasks")
+        expect(deliver({"hook_event_name" => "Stop", "background_tasks" => listed}, "codex")).not_to have_key("background_tasks")
+      end
+    end
+
     it "forwards a PostToolUse as tool use, which ends a wait for permission" do
       event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "message" => "not a notification")
 

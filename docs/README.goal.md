@@ -36,9 +36,9 @@ The first rule that holds wins.
 | `state` | When | `waiting_on` |
 | --- | --- | --- |
 | `done` | every spine stage `completed` or `skipped`, or the plan is `done` with no active run (a `completed` run does not count as active), **and** the branch's commits are on the default branch | `nothing` |
-| `waiting` | run reason `waiting_you`, `failed_check` or `turn_ended_incomplete` (that one only while the turn is not `working`); plan `waiting`; the turn's pane `waiting` | `person` |
+| `waiting` | run reason `waiting_you`, `failed_check` or `turn_ended_incomplete` (that one only while the turn is not `working` and after its first 10 seconds); plan `waiting`; the turn's pane `waiting` | `person` |
 | `waiting_lock` | run reason `waiting_lock` | `lock` |
-| `working` | the turn is `working`, or the plan is `working` | `agent` |
+| `working` | the turn is `working`, the plan is `working`, or the run holds a step for background tasks (flag `background_work`) | `agent` |
 | `stuck` | run flag `idle` (the pane idle and the attempt at least 30s old) or `timed_out`, run reason `pane_gone`, plan `stalled`, or a running run whose workspace has no agent daemon | `person` |
 | `waiting` | the plan or spine is finished but the branch is not on the default branch. Checked after `working` and `stuck` and before `stopped` and `idle`, so a waiting reason, a working turn or a stuck run wins over it | `person`, with `next.event` `delivered` |
 | `waiting` | finished, but git could not say whether the branch landed (`delivery_unavailable`) | `nothing`, `next: null` |

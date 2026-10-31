@@ -2,6 +2,7 @@ require "spec_helper"
 require "tmpdir"
 require "open3"
 require "stringio"
+require "socket"
 
 RSpec.describe Workspace::WorkflowEngine do
   around do |example|
@@ -686,6 +687,267 @@ RSpec.describe Workspace::WorkflowEngine do
         run = engine.resume("wr_1", turn_over: {"step" => "build", "attempt" => 1})
 
         expect(run).to include("current" => "verify", "state" => "running")
+      end
+    end
+
+    describe "a repeat of one stop" do
+      let(:first_since) { "2026-10-04T12:01:00Z" }
+
+      before do
+        start
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5")
+        events.clear
+        now[0] += 60
+      end
+
+      it "keeps the reason's since and announces nothing when the daemon names no turn start" do
+        before = store.find("wr_1")["reason"]
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(store.find("wr_1")["reason"]).to eq(before)
+        expect(before["since"]).to eq(first_since)
+        expect(events).to eq([])
+      end
+
+      it "keeps the since when the turn began before the stop was recorded" do
+        before = store.find("wr_1")["reason"]
+
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 0, 30))
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 0, 500_000))
+
+        expect(store.find("wr_1")["reason"]).to eq(before)
+        expect(events).to eq([])
+      end
+
+      it "gives a stop after a later turn a since of its own" do
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 30))
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(events.map(&:first)).to eq(["workflow_changed"])
+      end
+
+      it "gives a new attempt a new since" do
+        engine.resume("wr_1", from: "plan", pane: "%5")
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(store.find("wr_1")["reason"]).to include("since" => "2026-10-04T12:03:00Z")
+        expect(store.find("wr_1")["reason"]["details"]["attempt"]).to eq(2)
+      end
+
+      it "gives a stop after a pane-less resume a new since" do
+        engine.resume("wr_1")
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+      end
+
+      it "stores a changed missing list and keeps the since" do
+        allow(File).to receive(:exist?).and_call_original
+        allow(File).to receive(:exist?).with(File.join(worktree, ".workflow", "wr_1", "plan.md")).and_return(true)
+        allow(File).to receive(:mtime).and_call_original
+        allow(File).to receive(:mtime).with(File.join(worktree, ".workflow", "wr_1", "plan.md")).and_return(Time.utc(2026, 10, 4, 11, 0, 0))
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        reason = store.find("wr_1")["reason"]
+        expect(reason["since"]).to eq(first_since)
+        expect(reason["details"]).to include("missing" => [], "stale" => [File.join(worktree, ".workflow", "wr_1", "plan.md")])
+      end
+    end
+
+    describe "a turn that ended with background tasks listed" do
+      let(:tasks) { [{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k12345678", "type" => "subagent"}] }
+
+      before do
+        start
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: tasks)
+      end
+
+      it "holds the step as turn_ended_background with the tasks and when they were seen" do
+        expect(store.find("wr_1")["reason"]).to eq("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:01:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "missing" => [File.join(worktree, ".workflow", "wr_1", "plan.md")], "stale" => [], "tasks" => tasks})
+        expect(store.find("wr_1")["state"]).to eq("waiting")
+      end
+
+      it "announces one workflow_changed across three Stops that list the same tasks" do
+        events.clear
+        2.times do
+          now[0] += 60
+          engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+        end
+
+        reason = store.find("wr_1")["reason"]
+        expect(reason).to include("since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:03:00Z")
+        expect(events).to eq([])
+      end
+
+      it "announces one workflow_changed across Stops whose task lists shrink and reorder" do
+        events.clear
+        [[tasks.last], [tasks.last, tasks.first], tasks].each do |listed|
+          now[0] += 60
+          engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: listed)
+        end
+
+        expect(store.find("wr_1")["reason"]["details"]["tasks"]).to eq(tasks)
+        expect(events).to eq([])
+      end
+
+      it "fires no event when the missing list of a hold changes" do
+        store.update("wr_1") { |run| run["reason"]["details"]["missing"] = [] }
+        events.clear
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+
+        expect(store.find("wr_1")["reason"]["details"]["missing"]).not_to eq([])
+        expect(events).to eq([])
+      end
+
+      it "announces a hold as running with the turn_ended_background reason" do
+        events.clear
+        store.update("wr_1") { |run| run["reason"] = nil }
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+
+        expect(events.map(&:last)).to include(a_hash_including("state" => "running", "reason" => "turn_ended_background"))
+        expect(store.find("wr_1")["state"]).to eq("waiting")
+      end
+
+      it "drops the hold on a pane-less resume and re-evaluates with nothing listed" do
+        engine.resume("wr_1")
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete")
+      end
+
+      it "shows turn_ended_incomplete once, with a since of its own, on a Stop with no tasks" do
+        events.clear
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: [])
+        engine.turn_ended("wr_1", pane: "%5", background: [])
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(events.map(&:first).count("workflow_changed")).to eq(1)
+      end
+
+      describe "from a recorded Stop payload, through the hook boundary and the CLI's flags" do
+        def background_from(payload)
+          env = {"TMUX_PANE" => "%5"}
+          sent = nil
+          server_path = File.join(@dir, "agent.sock")
+          server = UNIXServer.new(server_path)
+          config = instance_double(Workspace::Config, agent_socket_path: server_path)
+          tmux = instance_double(Workspace::Tmux, session_name_for_pane: "app", pane_layout: nil, server_pid_for_pane: nil)
+          listener = Thread.new do
+            client = server.accept
+            sent = JSON.parse(client.gets)
+            client.puts(JSON.generate("ok" => true))
+            client.close
+          end
+          Workspace::Commands::SessionEvent.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)), env: env).call(workspace: nil, agent: nil)
+          listener.join(2)
+          sent["background_tasks"]
+        ensure
+          server&.close
+        end
+
+        let(:stop) do
+          {"hook_event_name" => "Stop", "session_id" => "s1", "cwd" => "/x", "background_tasks" => [
+            {"id" => "b1a2c3d4e", "type" => "shell", "description" => "dev server", "command" => "bin/dev"},
+            {"id" => "k12345678", "type" => "subagent", "description" => "reviewer"},
+            {"id" => "d1", "type" => "dream"}
+          ]}
+        end
+
+        it "holds across several turn ends with no reason shown" do
+          background = background_from(stop)
+          expect(background).to eq([{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k12345678", "type" => "subagent"}])
+
+          3.times do
+            now[0] += 60
+            engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: background)
+          end
+
+          expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
+          expect(store.find("wr_1")["reason"]["details"]["tasks"]).to eq(background)
+        end
+
+        it "shows turn_ended_incomplete when the Stop lists an empty array" do
+          background = background_from(stop.merge("background_tasks" => []))
+          engine.turn_ended("wr_1", pane: "%5", background: background)
+
+          expect(background).to eq([])
+          expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+        end
+      end
+
+      it "keeps the since when the turn began after it" do
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 30), background: tasks)
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
+      end
+
+      it "leaves a hold 89 minutes old alone" do
+        now[0] += 88 * 60
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+      end
+
+      it "turns a hold 91 minutes old into a turn_ended_incomplete stop that shows, with the tasks" do
+        now[0] += 91 * 60
+        run = engine.tick("wr_1")
+
+        expect(run["reason"]).to eq("code" => "turn_ended_incomplete", "since" => "2026-10-04T13:32:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "missing" => [File.join(worktree, ".workflow", "wr_1", "plan.md")], "stale" => [], "background_tasks" => tasks})
+        expect(run["state"]).to eq("waiting")
+        expect(run["steps"]["plan"]["state"]).to eq("running")
+        expect(events.map(&:first)).to include("workflow_changed")
+      end
+
+      it "expires a hold whose seen_at can't be read" do
+        store.update("wr_1") { |run| run["reason"]["seen_at"] = "t" }
+
+        expect(engine.tick("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+      end
+
+      it "pushes the expiry out when a Stop at minute 80 lists tasks again" do
+        now[0] += 79 * 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+        now[0] += 11 * 60
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+
+        now[0] += 80 * 60
+        expect(engine.tick("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+      end
+
+      it "holds again, with the reason hidden, on a Stop that lists tasks after expiry" do
+        now[0] += 91 * 60
+        engine.tick("wr_1")
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T13:33:00Z")
+      end
+
+      it "passes the step when its files exist, whatever is listed" do
+        artifact("plan.md")
+        now[0] += 60
+        run = engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(run["steps"]["plan"]["state"]).to eq("passed")
+        expect(run["reason"]).not_to include("code" => "turn_ended_background")
+      end
+
+      it "fails the step on a reported fail, whatever is listed" do
+        engine.report("wr_1", status: "fail", summary: "no")
+        run = engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(run["reason"]).not_to include("code" => "turn_ended_background")
       end
     end
 

@@ -36,6 +36,9 @@ module Workspace
     # Seconds after an attempt starts during which an idle pane is not flagged `idle`.
     IDLE_GRACE = 30
 
+    # Seconds a fresh turn_ended_incomplete stays hidden: a task that settled just before Stop restarts the turn on its own.
+    INCOMPLETE_GRACE = 10
+
     # @param store [Workspace::WorkflowRunStore]
     # @param panes [Workspace::WorkflowPanes] says whether a run's pane is still there
     # @param snapshot_client [Workspace::AgentSnapshotClient] reads each pane's state from the daemon
@@ -113,7 +116,7 @@ module Workspace
     # The stored state, except that a hidden turn_ended_incomplete leaves the run running.
     def shown_state(run, reason, shown)
       return "waiting" if reason && run["state"] == "running"
-      return "running" if reason.nil? && hidden_incomplete?(run["reason"], shown)
+      return "running" if reason.nil? && hidden_reason?(run["reason"], shown)
       run["state"]
     end
 
@@ -164,14 +167,27 @@ module Workspace
       waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || hide_while_working(stored, shown)
     end
 
-    # A turn that ended while a background sub-agent ran reads turn_ended_incomplete; once the
-    # pane is working again the agent is still on it, so nobody has to act.
+    # A turn that ended with background tasks listed is held (turn_ended_background) and hidden. One that
+    # ended while a sub-agent ran unlisted reads turn_ended_incomplete; once the pane is working again
+    # the agent is still on it, so nobody has to act.
     def hide_while_working(stored, shown)
-      hidden_incomplete?(stored, shown) ? nil : stored
+      hidden_reason?(stored, shown) ? nil : stored
     end
 
-    def hidden_incomplete?(reason, shown)
-      !!reason && reason["code"] == "turn_ended_incomplete" && !!shown && shown["state"] == "working"
+    # A held turn (background tasks listed) is hidden whatever the pane reads; an incomplete one while the pane works
+    # and for its first INCOMPLETE_GRACE seconds.
+    def hidden_reason?(stored, shown)
+      return false unless stored
+      return true if stored["code"] == "turn_ended_background"
+      return false unless stored["code"] == "turn_ended_incomplete"
+      (!!shown && shown["state"] == "working") || within_incomplete_grace?(stored["since"])
+    end
+
+    # A since that does not parse counts as old.
+    def within_incomplete_grace?(since)
+      !since.nil? && @clock.call - Time.iso8601(since) < INCOMPLETE_GRACE
+    rescue ArgumentError
+      false
     end
 
     def lost_delivery(run, pane, shown)
@@ -221,9 +237,10 @@ module Workspace
       delivering = WorkflowEngine.delivery(state["attempts"].last, @clock.call) == :delivering
       flags << "delivering" if delivering
       # The agent is idle on a step that still reads as being worked on: its turn ended unseen.
-      if state["state"] == "running" && reason.nil? && !delivering && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
+      if state["state"] == "running" && reason.nil? && !delivering && !hidden_reason?(run["reason"], shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
         flags << "idle"
       end
+      flags << "background_work" if run.dig("reason", "code") == "turn_ended_background"
       flags
     end
 

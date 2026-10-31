@@ -6797,11 +6797,26 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z"])
 
       expect(workflow_command.calls.map(&:last)).to eq([
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000), caller_pane: ENV["TMUX_PANE"]}
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000), background: [], caller_pane: ENV["TMUX_PANE"]}
       ])
       expect(output.string).to eq("")
+    end
+
+    it "parses each --background-task on its first colon" do
+      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--background-task", "MCP task:k12345678", "--background-task", "shell:b-1"])
+
+      expect(workflow_command.calls.last.last[:background]).to eq([{"id" => "k12345678", "type" => "MCP task"}, {"id" => "b-1", "type" => "shell"}])
+    end
+
+    it "refuses a --background-task without a colon, an empty id or a type off the list" do
+      ["shell", "shell:", "dream:abc", "shell:a b", ":abc"].each do |value|
+        expect { cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--background-task", value]) }.to raise_error(FakeSystemExit)
+      end
+
+      expect(error_output.string).to include("--background-task takes TYPE:ID")
+      expect(workflow_command.calls).to be_empty
     end
 
     it "refuses a --turn-started that is not a time" do

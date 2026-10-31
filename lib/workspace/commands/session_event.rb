@@ -75,6 +75,7 @@ module Workspace
 
       # Longest stop reason forwarded to the daemon.
       MAX_STOP_REASON_LENGTH = 64
+      MAX_BACKGROUND_TASKS = 32
 
       # The tools whose PreToolUse starts a sub-agent: "Agent" since Claude Code
       # 2.1.314, "Task" before.
@@ -320,7 +321,8 @@ module Workspace
           "notification_type" => notification_type_for(payload),
           "prompt" => prompt_for(payload),
           "stop_reason" => stop_reason_for(payload),
-          "error" => error_kind_for(payload)
+          "error" => error_kind_for(payload),
+          "background_tasks" => background_tasks_for(payload)
         }.merge(tool_fields(payload), session_fields(payload), codex_subagent_fields(payload)).compact
       end
 
@@ -473,6 +475,24 @@ module Workspace
         return nil unless payload["hook_event_name"] == "Stop"
 
         text_field(payload, "stop_reason")&.then { |reason| reason[0, MAX_STOP_REASON_LENGTH] }
+      end
+
+      # The tasks a Claude Code Stop lists as still going: `id` and `type` of each allowlisted one,
+      # nothing else (no description or command leaves here). Nil for any other event, a missing
+      # field, or anything but an array, so the run reads "unknown" as it did before.
+      def background_tasks_for(payload)
+        return nil unless claude? && payload["hook_event_name"] == "Stop" && payload["agent_id"].nil?
+        tasks = payload["background_tasks"]
+        return nil unless tasks.is_a?(Array)
+
+        tasks.first(MAX_BACKGROUND_TASKS).filter_map do |task|
+          next unless task.is_a?(Hash)
+          type, id = task["type"], task["id"]
+          next unless type.is_a?(String) && WorkflowEngine::BACKGROUND_TASK_TYPES.include?(type)
+          next unless id.is_a?(String) && id.match?(WorkflowEngine::BACKGROUND_TASK_ID)
+
+          {"id" => id, "type" => type}
+        end
       end
 
       def text_field(payload, key)

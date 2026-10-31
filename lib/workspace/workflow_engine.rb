@@ -14,12 +14,13 @@ module Workspace
   # run's `max_attempts` last; after that the run waits for a person.
   #
   # A run that is not moving has a `reason` that says why, one of
-  # `waiting_lock`, `waiting_you`, `turn_ended_incomplete` and
-  # `failed_check`. {WorkflowStatus} adds `pane_gone`, which is read from
-  # tmux rather than stored. The one case with no reason is a turn that
-  # ended without the daemon seeing it (an interrupted turn, a daemon that
-  # was down): the step still reads `running`, {WorkflowStatus} flags it
-  # `idle`, and {#resume} looks at it.
+  # `waiting_lock`, `waiting_you`, `turn_ended_incomplete`,
+  # `turn_ended_background` (a turn that ended with background tasks listed;
+  # {WorkflowStatus} hides it) and `failed_check`. {WorkflowStatus} adds
+  # `pane_gone`, which is read from tmux rather than stored. The one case
+  # with no reason is a turn that ended without the daemon seeing it (an
+  # interrupted turn, a daemon that was down): the step still reads
+  # `running`, {WorkflowStatus} flags it `idle`, and {#resume} looks at it.
   #
   # Resources a step `uses:` are held by the run, taken before the step's
   # prompt is typed and given up at a gate, on a failure that stops the run,
@@ -90,15 +91,25 @@ module Workspace
       @delivery = nil
     end
 
-    # Whether a run is one only a timer will wake: it waits for a lock, or
-    # its check was started and never reported back (the process running it
-    # died), judged by the check's time limit plus a minute.
+    # The background task types that hold a step (the labels Claude Code lists), and the shape of a
+    # task id. The Stop hook boundary and `workflow advance --background-task` both check against these.
+    BACKGROUND_TASK_TYPES = ["subagent", "workflow", "shell", "monitor", "MCP task", "cloud session"].freeze
+    BACKGROUND_TASK_ID = /\A[\w-]{1,64}\z/
+
+    # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
+    BACKGROUND_HOLD = 90 * 60
+
+    # Whether a run is one only a timer will wake: it waits for a lock, its
+    # check was started and never reported back (the process running it
+    # died), judged by the check's time limit plus a minute, or it has been
+    # held for background tasks longer than {BACKGROUND_HOLD}.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
-    # @return [Symbol, nil] :lock, :check, or nil
+    # @return [Symbol, nil] :lock, :background, :check, or nil
     def self.wakeable?(run, now)
       return :lock if run.dig("reason", "code") == "waiting_lock"
+      return :background if background_expired?(run["reason"], now)
       state = run["steps"].fetch(run["current"])
       return nil unless state["state"] == "checking"
       started = state["attempts"].last&.dig("check", "started_at")
@@ -106,6 +117,15 @@ module Workspace
       timeout = step.dig("status", "timeout") || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
       :check if started.nil? || now - Time.iso8601(started) > timeout + 60
     end
+
+    # A hold with no readable `seen_at` has nothing to measure it by, so it counts as expired.
+    def self.background_expired?(reason, now)
+      return false unless reason && reason["code"] == "turn_ended_background"
+      now - Time.iso8601(reason["seen_at"].to_s) > BACKGROUND_HOLD
+    rescue ArgumentError
+      true
+    end
+    private_class_method :background_expired?
 
     # Checks everything `start` would refuse, and changes nothing.
     #
@@ -187,16 +207,19 @@ module Workspace
     #   A turn that began before the step's attempt did was already under way when the
     #   step's line was typed (a person talking to the agent at a gate), and its end
     #   decides nothing. Without it every end of a turn in the pane counts
+    # @param background [Array<Hash>] the background tasks (`"id"`, `"type"`) the agent still listed when
+    #   its turn ended. A step the files do not yet complete is then held (`turn_ended_background`) and
+    #   not reported as stopped, since each task that ends starts another turn
     # @return [Hash{String=>Object}] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, pane: nil, turn_started: nil)
+    def turn_ended(run_id, pane: nil, turn_started: nil, background: [])
       check = nil
       run = transition(run_id) do |stored|
         state = step_state(stored)
         next unless state["state"] == "running"
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
-        check = evaluate(stored)
+        check = evaluate(stored, turn_started: turn_started, background: background)
       end
       check ? finish_check(run_id, check) : run
     end
@@ -325,7 +348,13 @@ module Workspace
           stored["pending_context"].unshift("The last attempt of this step failed: #{failure_text(stored["reason"]["details"])}.")
         end
         case state["state"]
-        when "running" then pane ? dispatch(stored) : (check = evaluate(stored))
+        when "running"
+          if pane
+            dispatch(stored)
+          else
+            stored["reason"] = nil
+            check = evaluate(stored)
+          end
         when "checking" then check = evaluate(stored)
         when "passed" then advance(stored)
         else dispatch(stored)
@@ -388,9 +417,10 @@ module Workspace
     end
 
     # The periodic look at a run nothing else will wake: one waiting for a
-    # lock asks for it again, and a check that never reported back (its
-    # process died) is run again. Does nothing while another process is
-    # changing the run.
+    # lock asks for it again, a hold for background tasks that passed
+    # {BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, and a check
+    # that never reported back (its process died) is run again. Does nothing
+    # while another process is changing the run.
     #
     # @param run_id [String]
     # @return [Hash{String=>Object}, nil] the run afterwards; nil when nothing was done
@@ -402,6 +432,9 @@ module Workspace
         when :lock
           acted = true
           dispatch(stored)
+        when :background
+          acted = true
+          expire_background(stored)
         when :check
           acted = true
           check = evaluate(stored)
@@ -433,12 +466,21 @@ module Workspace
     # What `workflow status` shows of a run's progress; a change in it is announced.
     def fingerprint(run)
       state = step_state(run)
-      [run["state"], run["current"], run["reason"], state["state"], state["attempts"].size, state.dig("gate", "state")]
+      [run["state"], run["current"], shown_reason(run["reason"]), state["state"], state["attempts"].size, state.dig("gate", "state")]
+    end
+
+    # A hold shows nothing that moves, so only its code and since count; its seen_at, tasks and missing change nothing a reader sees.
+    def shown_reason(reason)
+      hold?(reason) ? reason.slice("code", "since") : reason&.except("seen_at")
+    end
+
+    def hold?(reason)
+      reason && reason["code"] == "turn_ended_background"
     end
 
     def changed(run)
       @event_log&.record(type: "workflow_changed", project: run["workspace"],
-        data: {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "state" => run["state"],
+        data: {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "state" => hold?(run["reason"]) ? "running" : run["state"],
                "step" => run["current"], "reason" => run.dig("reason", "code")})
     end
 
@@ -749,6 +791,21 @@ module Workspace
       {"code" => code, "since" => now_iso, "details" => details}
     end
 
+    # No turn ended, so the step is neither passed nor checked: the hold only
+    # becomes the stop it was hiding, with a `since` of its own.
+    def expire_background(run)
+      held = run["reason"]["details"]
+      run["reason"] = reason("turn_ended_incomplete", held.slice("step", "attempt", "missing", "stale").merge("background_tasks" => held["tasks"]))
+    end
+
+    def stop_reason(stored, turn_started, code, details)
+      fresh = reason(code, details)
+      return fresh unless stored && stored["code"] == code && stored["since"]
+      return fresh unless %w[step attempt].all? { |key| stored.dig("details", key) == details[key] }
+      return fresh if turn_started && turn_started.to_i > Time.iso8601(stored["since"]).to_i
+      fresh.merge("since" => stored["since"])
+    end
+
     def values(run)
       branch = begin
         @git.worktree_branch(run["worktree"])
@@ -800,7 +857,10 @@ module Workspace
 
     # Decides a step whose turn ended. Returns the check to run, when the
     # step has one and nothing else already decided it.
-    def evaluate(run)
+    # A stop the daemon sees again (the same code, step and attempt) keeps its `since`, so a
+    # repeat raises no second notice; a turn that began after the stop was recorded is a new stop.
+    # The stored `since` is whole seconds, so a turn that began in the same second is the same stop.
+    def evaluate(run, turn_started: nil, background: [])
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
@@ -826,7 +886,13 @@ module Workspace
       if missing.any? || stale.any?
         state["state"] = "running"
         run["state"] = "waiting"
-        run["reason"] = reason("turn_ended_incomplete", "step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale)
+        details = {"step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale}
+        run["reason"] = if background.any?
+          # Every notification starts a new turn and a hold is hidden, so its `since` stays.
+          stop_reason(run["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
+        else
+          stop_reason(run["reason"], turn_started, "turn_ended_incomplete", details)
+        end
         return nil
       end
       unless step["status"]

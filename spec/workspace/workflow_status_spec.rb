@@ -151,6 +151,30 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(run["current"]["reason"]).to be_nil
   end
 
+  describe "a stored turn_ended_background" do
+    let(:hold) do
+      {"code" => "turn_ended_background", "since" => "2026-10-04T12:50:00Z", "seen_at" => "2026-10-04T12:55:00Z",
+       "details" => {"step" => "plan", "attempt" => 2, "missing" => [], "stale" => [], "tasks" => [{"id" => "k12345678", "type" => "subagent"}]}}
+    end
+
+    it "reads running with no reason and only background_work whatever the idle pane shows" do
+      create(state: "waiting", reason: hold)
+      snapshot["panes"].first["state"] = "idle"
+      now[0] = Time.utc(2026, 10, 4, 13, 30, 0)
+
+      result = status.run("wr_1")["runs"].first
+
+      expect(result["state"]).to eq("running")
+      expect(result["current"]).to include("reason" => nil, "flags" => ["background_work"])
+    end
+
+    it "still says pane_gone when the pane is closed" do
+      create(state: "waiting", reason: hold, bound: false)
+
+      expect(current["reason"]).to include("code" => "pane_gone")
+    end
+  end
+
   describe "a stored turn_ended_incomplete" do
     let(:incomplete) do
       {"code" => "turn_ended_incomplete", "since" => "2026-10-04T12:50:00Z",
@@ -179,6 +203,57 @@ RSpec.describe Workspace::WorkflowStatus do
 
       expect(result["current"]["reason"]).to be_nil
       expect(result["state"]).to eq("running")
+    end
+
+    describe "for its first 10 seconds" do
+      before { snapshot["panes"].first.merge!("state" => "idle", "state_since" => "2026-10-04T12:00:00Z") }
+
+      def stopped_at(since)
+        incomplete.merge("since" => since)
+      end
+
+      it "reads running at 5 seconds, with no reason and no idle flag" do
+        create(state: "waiting", reason: stopped_at("2026-10-04T12:59:55Z"))
+
+        result = status.run("wr_1")["runs"].first
+
+        expect(result["current"]["reason"]).to be_nil
+        expect(result["state"]).to eq("running")
+        expect(result["current"]["flags"]).to eq([])
+      end
+
+      it "shows the reason at 11 seconds" do
+        create(state: "waiting", reason: stopped_at("2026-10-04T12:59:49Z"))
+
+        result = status.run("wr_1")["runs"].first
+
+        expect(result["current"]["reason"]).to include("code" => "turn_ended_incomplete")
+        expect(result["state"]).to eq("waiting")
+      end
+
+      it "keeps showing a repeat Stop whose since is past the window" do
+        create(state: "waiting", reason: stopped_at("2026-10-04T12:50:00Z"))
+        now[0] = Time.utc(2026, 10, 4, 13, 0, 3)
+
+        expect(current["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:50:00Z")
+      end
+
+      it "shows a reason whose since does not parse, and raises nothing" do
+        create(state: "waiting", reason: stopped_at("t"))
+
+        expect(current["reason"]).to include("code" => "turn_ended_incomplete", "since" => "t")
+      end
+
+      it "reads as waiting on a person to GoalState, which does not hide it" do
+        create(state: "waiting", reason: stopped_at("2026-10-04T12:59:55Z"))
+        row = status.run("wr_1")["runs"].first
+        member = {"plan" => nil, "spine" => {"exists" => true, "stages" => 2, "counts" => {"in_progress" => 1, "pending" => 1}},
+                  "running" => true, "daemon" => {"up" => true}, "questions" => []}
+
+        goal = Workspace::GoalState.new(name: "app", member: member, run: row, turn: {"state" => "idle"}, pane: nil, plan_present: false)
+
+        expect(goal).to have_attributes(state: "idle", waiting_on: "person")
+      end
     end
 
     it "is hidden in the --json document's current reason too" do
