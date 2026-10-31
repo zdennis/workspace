@@ -2909,6 +2909,21 @@ RSpec.describe Workspace::Commands::Agent do
         expect(instances.map(&:object_id).uniq.size).to eq(1)
       end
     end
+
+    it "builds a handoff watcher with a PlanPaused" do
+      Dir.mktmpdir("ws-handoff-watcher-wiring") do |state|
+        allow(ENV).to receive(:fetch).and_call_original
+        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
+
+        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+        factory = cli.instance_variable_get(:@agent_command).instance_variable_get(:@handoff_watcher_factory)
+        watcher = factory.call(workspace: "ws", session_name: "ws", session_monitor: instance_double(Workspace::SessionMonitor),
+          delivery_lock: Mutex.new, restarting: ->(_pane_id) { false }, event_log: nil)
+
+        expect(watcher).to be_a(Workspace::HandoffWatcher)
+        expect(watcher.instance_variable_get(:@plan_paused)).to be_a(Workspace::PlanPaused)
+      end
+    end
   end
 
   describe "the Claude pane lookup with configured names" do
