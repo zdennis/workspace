@@ -243,6 +243,13 @@ RSpec.describe Workspace::HookInstaller do
       expect(settings["hooks"]["PreToolUse"].size).to eq(1)
     end
 
+    it "lists PermissionRequest once, not doubled on reinstall" do
+      installer.install(provider, tmpdir, command)
+      installer.install(provider, tmpdir, command)
+
+      expect(settings["hooks"]["PermissionRequest"].size).to eq(1)
+    end
+
     it "refuses to touch a settings file it cannot parse" do
       FileUtils.mkdir_p(File.dirname(settings_path))
       File.write(settings_path, "{ not json")

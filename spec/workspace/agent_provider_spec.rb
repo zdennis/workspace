@@ -139,6 +139,10 @@ RSpec.describe Workspace::AgentProvider do
       expect(settings["hooks"]["PostToolUse"].first).not_to have_key("matcher")
     end
 
+    it "subscribes to PermissionRequest without a matcher" do
+      expect(settings["hooks"]["PermissionRequest"].first).not_to have_key("matcher")
+    end
+
     it "gives Claude Code's hooks no timeout, as before" do
       expect(settings["hooks"].values.flatten.flat_map { |e| e["hooks"] }).to all(satisfy { |h| !h.key?("timeout") })
     end

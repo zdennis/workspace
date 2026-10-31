@@ -424,6 +424,34 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(received["workspace"]).to eq("other")
     end
 
+    describe "a permission request" do
+      it "is sent as permission_request with the tool and a summary of its input" do
+        event = deliver("hook_event_name" => "PermissionRequest", "tool_name" => "Bash", "tool_use_id" => "toolu_1",
+          "tool_input" => {"command" => "git push\nrm -rf x", "description" => "Push"})
+
+        expect(event).to include("event" => "permission_request", "tool" => "Bash", "input" => "git push")
+        expect(event).not_to have_key("path")
+        expect(event).not_to have_key("tool_use_id")
+      end
+
+      it "prints nothing to stdout" do
+        expect { deliver("hook_event_name" => "PermissionRequest", "tool_name" => "Bash") }.not_to output.to_stdout
+      end
+
+      it "carries the agent_id of a sub-agent" do
+        expect(deliver("hook_event_name" => "PermissionRequest", "tool_name" => "Bash", "agent_id" => "sub-1"))
+          .to include("agent_id" => "sub-1")
+      end
+
+      it "cuts a multi-byte command past the limit to 300 bytes of valid UTF-8" do
+        event = deliver("hook_event_name" => "PermissionRequest", "tool_name" => "Bash",
+          "tool_input" => {"command" => "echo " + "é" * 400})
+
+        expect(event["input"].bytesize).to be <= 300
+        expect(event["input"]).to be_valid_encoding
+      end
+    end
+
     describe "tool uses" do
       let(:checkout) { File.join(tmpdir, "repo") }
 

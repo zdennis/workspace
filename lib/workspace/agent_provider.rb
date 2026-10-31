@@ -33,7 +33,10 @@ module Workspace
       "Notification" => nil,
       # PostToolUse is the first event after a person approves a permission
       # prompt, so it is what takes the pane out of `waiting`.
-      "PostToolUse" => nil
+      "PostToolUse" => nil,
+      # PermissionRequest fires as the approval prompt opens, with the tool and
+      # its input, so the pane can say what it waits on.
+      "PermissionRequest" => nil
     }.freeze
 
     # Codex's hook events, in its `hooks.json` (the same shape as Claude
