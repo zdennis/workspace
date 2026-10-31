@@ -89,6 +89,10 @@ The built-in `plan-review` play posts its verdict as one item per verdict. works
 
 `WS` is the workspace name. `source.ref` holds the 8-hex plan revision the reviewers read (`plan status --json` `revision`), `source.kind` is `agent`, and `note.path` is `plan-review.md`. The play posts the new verdict first (with `--reopen`), then runs `done --dedupe-key` on the other key, so a crash between the two leaves both items open and never none. The close step leaves only the latest verdict open. A blocking verdict never records a failed spine check, so an earlier passed check on the plan stage stays. Do not match on the titles.
 
+## Items the agent daemon posts
+
+When the agent daemon gives up recovering an agent from an API error, it posts one `alert` item to the workspace: `dedupe_key` `agent-recovery:SESSION_ID`, `source.kind` `session`, `links.pane` the pane id, and a body that names the reason (`attempts_exhausted`, `not_retryable`, `cannot_restart`, `fresh_conversation`, `deferred` or `unconfirmed`; see [`agentd`](README.agentd.md#recovering-from-an-api-error)). The daemon marks it `done` when a later turn of that session completes.
+
 ## Retention
 
 A scope holds at most 500 items in `open` or `snoozed`. A write that would make the 501st (an `add`, a `created` or `reopened` upsert, or a `reopen`) is refused as `inbox_full` (`details.scope`, `details.limit`) and changes nothing; resolve some items first. Only the newest 200 `done` or `dismissed` items per scope are kept: every write drops the older ones, oldest `resolved_at` first (an item without one counts as oldest). Items are dropped without an event, and a dropped item forgets its `dedupe_key`: a poster that repeats an alert resolved more than 200 resolutions ago creates a new item.

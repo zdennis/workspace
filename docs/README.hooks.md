@@ -26,6 +26,8 @@ The file is backed up first (`hooks.json.workspace-backup-<timestamp>`, see [`in
 
 `workspace init`, `start` and `doctor --fix` install the hooks again when Codex is on `PATH`; run `init --no-install-hooks` to skip that step. To stop `start` from touching the file, run `workspace config set codex.hooks.install false` (see [`start`](README.start.md)); `init` and `doctor --fix` are explicit and still install.
 
+The hooks workspace installs for Claude Code cover `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`, `SubagentStop` and `Notification` (`workspace init --install-hooks` lists them). `StopFailure` is the one that tells the agent daemon a turn ended on an API error, so it can [recover the agent](README.agentd.md#recovering-from-an-api-error). `hooks uninstall` removes it with the rest.
+
 ### Other checkouts (`--name`, `--project`)
 
 Without them, `claude` works on the checkout of the current directory. `--name WS` works on that workspace's checkout and `--project` on every checkout of the project; each gets its own file, backup and result. A checkout whose directory is gone is `skipped`; one whose file can't be read is `failed` and the others still go. Codex's file is user-level, so `--agent codex` with `--name` or `--project` (or both flags together) is a `usage` error. Unknown names fail with `unknown_workspace`, `not_in_workspace` or an uncoded `error` when no project is found.

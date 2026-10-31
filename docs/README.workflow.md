@@ -382,6 +382,8 @@ A step's attempt is stored, running and bound to its pane, before its line is ty
 
 A run waiting for a lock needs no `resume`: the workspace's agent daemon asks again every 15 seconds.
 
+A turn that ends on an API error does not end the step: while the pane's agent shows `turn_failed` in [`sessions --json`](README.sessions.md), `workflow resume` (without `--pane`) leaves the run as it is, and the step stays running. The agent daemon [recovers the agent](README.agentd.md#recovering-from-an-api-error) and the step goes on when a turn completes. A new prompt typed in the pane clears the failed turn too, and so does `workflow resume --pane PANE`, which sends the step to that pane again. While the failed agent is gone and the pane shows a shell (the daemon stopped it to restart it), that send is refused as `pane_busy`: wait for the resumed agent.
+
 A run file in `runs/` that can't be read as a run (not JSON, not readable, naming another id than its file's, or with a name that is not a run id, which no verb can name) is not shown; `status` names the file in `warnings`. The lock store still counts that run as going, so what it held stays held: free a lock with `workspace lock clear NAME`, or delete the file. So is one without a state for every step of its definition. Naming such a run to any verb answers `unknown_run` with the file in `details.path`.
 
 ## JSON output

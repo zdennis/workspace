@@ -57,6 +57,8 @@ These commands take `--json` and print one action document: `add`, `launch`, `st
 
 ## Snapshot
 
+The agent daemon's pane list (`sessions --json`) carries a boolean `turn_failed` per pane, `true` while the agent's last turn stands as ended by an API error (see [`sessions`](README.sessions.md), and [`agentd`](README.agentd.md#recovering-from-an-api-error) for the recovery). The panes of `snapshot --json` don't list it.
+
 `snapshot --json` prints one read-only document of everything a UI polls (see [`snapshot`](README.snapshot.md)). `--json` is required; a source that can't answer is reported as unavailable (null fields, `daemons_unavailable` rows, `warnings`) rather than as clean, and the command still succeeds. Its `cursor` is `ev:<inode>:<byte offset>` of the event log.
 
 ## Goal

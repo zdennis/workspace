@@ -92,6 +92,7 @@ module Workspace
         "plan_review_pack" => 1,
         "agent_status" => 1,
         "agent_queue" => 1,
+        "agent_recovery" => 1,
         "agent_send_interrupt" => 1,
         "plan_tasks" => 3,
         "agent_hooks" => 1,
