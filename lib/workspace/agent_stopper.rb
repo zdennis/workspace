@@ -33,11 +33,12 @@ module Workspace
     # @param pane_pid [Integer] the pane's process (its shell)
     # @param detector [Workspace::AgentDetector] finds the agent with the workspace's configured names
     # @param tree [Workspace::ProcessTree::Snapshot]
-    # @return [Hash, nil] +{pid:, started:}+ for the Claude process under the pane, or nil
+    # @return [Hash, nil] +{pid:, started:, flags:}+ for the Claude process under the pane, or nil; +flags+
+    #   is {AgentResumeCommand.carried_flags} of that process, never of a wrapper above it
     def find_agent(pane_pid:, detector:, tree:)
       found = detector.call(command: "", pid: pane_pid, tree: tree, providers: [AgentProvider.find("claude")])
       process = found && tree.find(found[:pid])
-      process && {pid: process[:pid], started: process[:lstart]}
+      process && {pid: process[:pid], started: process[:lstart], flags: AgentResumeCommand.carried_flags(process[:args])}
     end
 
     # @return [Boolean] whether every process from the agent's parent up to and including +pane_pid+ is a

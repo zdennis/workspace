@@ -157,8 +157,8 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       },
       spawn: spawn).tap do |built|
       if stub_attempts
-        allow(built).to receive(:typed_attempt) { |id, answer| attempts << [:typed, id, answer] }
-        allow(built).to receive(:restart_attempt) { |id, answer| attempts << [:restart, id, answer] }
+        allow(built).to receive(:typed_attempt) { |id| attempts << [:typed, id] }
+        allow(built).to receive(:restart_attempt) { |id| attempts << [:restart, id] }
       end
     end
   end
@@ -204,7 +204,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   def due_entry(**fields)
     store.put("%5", {"session_id" => sid, "transcript_path" => transcript_path, "cwd" => "/work", "error" => "server_error",
                      "attempts" => 1, "phase" => "waiting", "stopped" => false, "failed_at" => stamp(t0),
-                     "next_attempt_at" => stamp(t0 + 60), "agent_pid" => 20, "agent_started" => started,
+                     "next_attempt_at" => stamp(t0 + 60), "agent_pid" => 20, "agent_started" => started, "agent_flags" => [],
                      "last_turn_uuid" => "u-err"}.merge(fields.transform_keys(&:to_s)))
     now[0] = t0 + 61
   end
@@ -1275,8 +1275,9 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(marker.marked?(sid)).to be(false)
       expect(entry).to include("phase" => "waiting", "stopped" => true)
       now[0] += 300
+      expect(desk.check("%5", entry)).to have_attributes(answer: :go, mode: :resume_only)
       desk.scan
-      expect(attempts.first[2]).to have_attributes(answer: :go, mode: :resume_only)
+      expect(attempts.map(&:first)).to eq([:restart])
     end
 
     it "gives up with nothing typed when the ledger shows a new agent came and went while the daemon was down" do
@@ -1532,7 +1533,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         store.update("%5") { |e| e["cwd"] = nil }
         start_session(sid, cwd: nil)
       },
-      "a config that can't be read" => -> { allow(report).to receive(:show).and_raise(Workspace::Error, "no config") },
+      "no stored flags and args ps can't give" => lambda {
+        store.update("%5") { |e| e["agent_flags"] = nil }
+        processes.find { |process| process[:pid] == 20 }[:args] = "(claude)"
+      },
       "the ledger with no open session" => -> { ledger.record("event" => "session_end", "session_id" => sid) },
       "a transcript that can't be read" => -> { File.delete(transcript_path) },
       "pane start commands that can't be read" => -> { tmux.start_commands = [] },
@@ -1846,7 +1850,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(answer).to eq(:defer)
 
       store.update("%5") { |e| e["cwd"] = "/work" }
-      allow(report).to receive(:show).and_raise(Workspace::Error, "no config")
+      store.update("%5") { |e| e["agent_flags"] = nil }
       expect(answer).to eq(:defer)
     end
 
@@ -2646,6 +2650,213 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       end
     end
 
+    describe "the flags a resume carries" do
+      let(:skip) { "--dangerously-skip-permissions" }
+
+      def config_flags(*flags)
+        allow(report).to receive(:show).and_return({"windows" => [{"panes" => [{"kind" => "claude", "flags" => flags}]}]})
+      end
+
+      # The failure comes through the hook, so the flags are what intake read.
+      def failed_agent(args)
+        processes.find { |process| process[:pid] == 20 }[:args] = args
+        failed
+        store.update("%5") do |e|
+          e.merge!("attempts" => 1, "cwd" => "/work", "last_turn_uuid" => "u-err", "next_attempt_at" => stamp(t0 + 60))
+        end
+        now[0] = t0 + 61
+      end
+
+      def unreadable_args = processes.find { |process| process[:pid] == 20 }[:args] = "(claude)"
+
+      it "stores nil for a process whose args ps can't give, defers, and types nothing" do
+        config_flags(skip)
+        failed_agent("(claude)")
+        expect(entry).to include("agent_pid" => 20, "agent_flags" => nil)
+
+        desk.scan
+
+        expect(signals).to eq([])
+        expect(tmux.sent_keys).to eq([])
+        expect(entry).to include("phase" => "waiting", "attempts" => 1)
+        expect(entry["defer_since"]).not_to be_nil
+      end
+
+      it "keeps the flags when a read of the same process gives none" do
+        due_entry(phase: "watching", agent_flags: [skip])
+        unreadable_args
+        failed
+
+        expect(entry).to include("agent_pid" => 20, "agent_flags" => [skip])
+      end
+
+      it "fills absent flags from a read of the same process that has them" do
+        due_entry(phase: "watching", agent_flags: nil)
+        processes.find { |process| process[:pid] == 20 }[:args] = "claude #{skip}"
+        failed
+
+        expect(entry["agent_flags"]).to eq([skip])
+      end
+
+      it "never leaves the old agent's flags beside a different agent read with none" do
+        due_entry(phase: "watching", agent_pid: 19, agent_flags: [skip])
+        unreadable_args
+        event("session_start", source: "resume")
+
+        expect(entry).to include("agent_pid" => 20, "agent_flags" => nil)
+      end
+
+      describe "a pid left blank, filled by the settle read" do
+        before { due_entry(agent_pid: nil, agent_started: nil, agent_flags: [skip]) }
+
+        it "drops the flags when the read gives none: it may not be the same process" do
+          unreadable_args
+          desk.scan
+
+          expect(entry).to include("agent_pid" => 20, "agent_flags" => nil)
+        end
+
+        it "takes the flags the read gives" do
+          desk.scan
+
+          expect(entry).to include("agent_pid" => 20, "agent_flags" => [])
+        end
+      end
+
+      it "drops the flags at check's blank-pid fill too" do
+        due_entry(agent_pid: nil, agent_started: nil, agent_flags: [skip])
+        unreadable_args
+
+        expect(desk.check("%5", entry).answer).to eq(:defer)
+        expect(entry).to include("agent_pid" => 20, "agent_flags" => nil)
+      end
+
+      it "fills flags at check for a matching pid, and goes on with them" do
+        config_flags
+        due_entry(agent_flags: nil)
+        processes.find { |process| process[:pid] == 20 }[:args] = "claude #{skip}"
+
+        expect(desk.check("%5", entry)).to have_attributes(answer: :go, mode: :restart,
+          command: "cd -- /work && claude #{skip} --resume #{sid}")
+        expect(entry["agent_flags"]).to eq([skip])
+      end
+
+      it "resumes a plain agent without the flag, under a config whose claude pane has it" do
+        config_flags(skip)
+        failed_agent("claude")
+        healthy_run
+        desk.scan
+
+        expect(resumes).to eq(["cd -- /work && claude --resume #{sid}"])
+      end
+
+      it "resumes a flagged agent with the flag, under a config without it" do
+        config_flags
+        failed_agent("claude #{skip}")
+        healthy_run
+        desk.scan
+
+        expect(resumes).to eq(["cd -- /work && claude #{skip} --resume #{sid}"])
+      end
+
+      it "never asks the config" do
+        allow(resume_command).to receive(:flags_for)
+        failed_agent("claude #{skip}")
+        healthy_run
+        desk.scan
+
+        expect(resume_command).not_to have_received(:flags_for)
+      end
+
+      it "reads the real claude under a shell wrapper, never the wrapper" do
+        processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(15, 10, "/bin/sh /Users/z/bin/claude-dev #{skip}"),
+          proc_entry(20, 15, "claude")])
+        failed_agent("claude")
+        expect(entry["agent_flags"]).to eq([])
+
+        processes.find { |process| process[:pid] == 15 }[:args] = "/bin/sh /Users/z/bin/claude-dev"
+        store.delete("%5")
+        failed_agent("/Users/z/.local/bin/claude #{skip}")
+        expect(entry["agent_flags"]).to eq([skip])
+      end
+
+      it "keeps the flags in a resume_only, once the agent they came from is gone" do
+        config_flags
+        due_entry(stopped: true, agent_pid: nil, agent_started: nil, agent_flags: [skip])
+        ledger.record("event" => "session_end", "session_id" => sid)
+        gone!
+        hooks[:deliver] = -> { agent_resumes }
+        desk.scan
+
+        expect(resumes).to eq(["cd -- /work && claude #{skip} --resume #{sid}"])
+      end
+
+      it "keeps them through a failure read with no agent in the pane" do
+        due_entry(phase: "watching", agent_flags: [skip])
+        gone!
+        failed
+
+        expect(entry).to include("phase" => "waiting", "agent_pid" => nil, "agent_flags" => [skip])
+      end
+
+      it "keeps them through an attempt's failure when the last read fails" do
+        due_entry(attempts: 0, agent_flags: [skip])
+        hooks[:enter] = lambda {
+          failed
+          tree_broken[0] = true
+        }
+        desk.scan
+
+        expect(entry).to include("phase" => "waiting", "agent_flags" => [skip])
+      end
+
+      it "stores the flags of an agent we resumed, so the next attempt carries them" do
+        due_entry(agent_flags: [skip])
+        hooks[:signal] = -> { agent_exits }
+        hooks[:deliver] = lambda {
+          agent_resumes
+          processes.last[:args] = "claude #{skip} --resume #{sid}"
+        }
+        desk.scan
+
+        expect(resumes.size).to eq(1)
+        expect(entry).to include("agent_pid" => 21, "agent_flags" => [skip])
+      end
+
+      it "replaces the flags with a person's agent's" do
+        due_entry(stopped: true, phase: "watching", agent_pid: 19, agent_flags: [skip])
+        event("session_start", source: "resume")
+
+        expect(entry).to include("agent_pid" => 20, "agent_flags" => [])
+      end
+
+      it "defers a restart with nothing typed or signalled when no flags were stored" do
+        config_flags(skip)
+        due_entry(agent_flags: nil)
+        unreadable_args
+        desk.scan
+
+        expect(desk.check("%5", entry).answer).to eq(:defer)
+        expect(signals).to eq([])
+        expect(tmux.sent_keys).to eq([])
+        expect(entry).to include("phase" => "waiting", "attempts" => 1)
+        expect(entry["defer_since"]).not_to be_nil
+      end
+
+      it "defers a resume_only with nothing typed when no flags were stored" do
+        config_flags(skip)
+        store.delete("%5")
+        due_entry(stopped: true)
+        store.update("%5") { |e| e.delete("agent_flags") }
+        ledger.record("event" => "session_end", "session_id" => sid)
+        gone!
+        desk.scan
+
+        expect(tmux.sent_keys).to eq([])
+        expect(entry).to include("phase" => "waiting", "attempts" => 1, "stopped" => true)
+      end
+    end
+
     describe "resume_only" do
       def shell_left(**fields)
         due_entry(attempts: 2, stopped: true, **fields)
@@ -3216,13 +3427,16 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(entry).to include("phase" => "waiting", "attempts" => 1)
       end
 
-      it "types the flags read in step 1" do
-        due_entry
-        healthy_run
-        allow(resume_command).to receive(:flags_for).and_return(["--scan"], ["--model", "x"], nil)
+      it "types the flags step 1 read, whatever the entry says by then" do
+        due_entry(agent_flags: ["--dangerously-skip-permissions"])
+        hooks[:signal] = lambda {
+          store.update("%5") { |e| e["agent_flags"] = [] }
+          agent_exits
+        }
+        hooks[:deliver] = -> { agent_resumes }
         desk.scan
 
-        expect(resumes).to eq(["cd -- /work && claude --model x --resume #{sid}"])
+        expect(resumes).to eq(["cd -- /work && claude --dangerously-skip-permissions --resume #{sid}"])
       end
 
       describe ":stale, a pid reused after step 1's read" do
@@ -3250,7 +3464,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
           stale_stop
           allow(desk).to receive(:check).and_return(described_class::Verdict.new(answer: :go, mode: :restart, command: "resume"))
           allow(desk).to receive(:confirmed_error)
-          desk.send(:restart_attempt, "%5", nil)
+          desk.send(:restart_attempt, "%5")
 
           expect(entry).to be_nil
           expect(signals).to eq([])

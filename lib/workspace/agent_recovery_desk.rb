@@ -278,7 +278,7 @@ module Workspace
     end
 
     # Reads the pane as it is now and answers what may happen to the entry. It
-    # costs no attempt, and it changes nothing but a missing pid.
+    # costs no attempt, and it changes nothing but a missing pid or missing flags.
     #
     # @param pane_id [String]
     # @param entry [Hash] the pane's stored entry
@@ -441,11 +441,25 @@ module Workspace
     # A pid that was never read proves nothing.
     def other_agent?(entry, live)
       return false unless live && !entry["agent_pid"].nil?
-      live[:pid] != entry["agent_pid"] || live[:started] != entry["agent_started"]
+      !same_process?(entry, live)
     end
 
+    def same_process?(entry, live)
+      !entry["agent_pid"].nil? && live[:pid] == entry["agent_pid"] && live[:started] == entry["agent_started"]
+    end
+
+    # `agent_flags` describes the stored agent. A read of the same process
+    # replaces them, and one that gave nil keeps them; any other process, or a
+    # pid left blank, which can't be called the same process, gets exactly what
+    # the read gave. No agent leaves them, for a `resume_only` once the process
+    # is gone.
     def store_agent(entry, live)
-      entry.merge!("agent_pid" => live&.fetch(:pid), "agent_started" => live&.fetch(:started))
+      if live
+        kept = entry["agent_flags"] if same_process?(entry, live)
+        entry["agent_flags"] = live[:flags] || kept
+      end
+      entry["agent_pid"] = live&.fetch(:pid)
+      entry["agent_started"] = live&.fetch(:started)
     end
 
     def next_attempt(entry)
@@ -650,10 +664,7 @@ module Workspace
         end
         found["last_turn_uuid"] = record["uuid"] if record
       end
-      unless entry["agent_pid"]
-        live = live_agent(pane_id)
-        store_agent(found, live) if live
-      end
+      live = live_agent(pane_id) unless entry["agent_pid"]
       unless entry["cwd"]
         opened = open_record(pane_id)
         if opened.is_a?(Hash)
@@ -665,8 +676,12 @@ module Workspace
         end
       end
       found.compact!
-      return entry if found.empty?
-      @store.update(pane_id) { |current| current.merge!(found) if same_wait?(current, entry) }
+      return entry if found.empty? && !live
+      @store.update(pane_id) do |current|
+        next unless same_wait?(current, entry)
+        current.merge!(found)
+        store_agent(current, live) if live && current["agent_pid"].nil?
+      end
     end
 
     def attempt_if_due(pane_id, entry)
@@ -701,16 +716,16 @@ module Workspace
     end
 
     def start_attempt(pane_id, answer)
-      (answer.mode == :typed) ? typed_attempt(pane_id, answer) : restart_attempt(pane_id, answer)
+      (answer.mode == :typed) ? typed_attempt(pane_id) : restart_attempt(pane_id)
     end
 
     # The attempt for `attempts` 0: the message typed at the live prompt.
-    def typed_attempt(pane_id, _answer)
+    def typed_attempt(pane_id)
       @spawn.call { run_claimed(pane_id, method(:begin_typed), method(:typed_steps)) }
     end
 
     # The attempt for `attempts` above 0: stop, resume, wait, type.
-    def restart_attempt(pane_id, _answer)
+    def restart_attempt(pane_id)
       @spawn.call { run_claimed(pane_id, method(:begin_restart), method(:restart_steps)) }
     end
 
@@ -1156,7 +1171,7 @@ module Workspace
 
       apply_read(entry, live)
       entry["phase"] = "watching"
-      known = (live == :unread) ? {pid: entry["agent_pid"], started: entry["agent_started"]} : live
+      known = (live == :unread) ? {pid: entry["agent_pid"], started: entry["agent_started"], flags: entry["agent_flags"]} : live
       return :gave_up if intake(entry, entry["session_id"], entry["error"], entry["transcript_path"], known)
       return :rescheduled unless agent_gone?(entry, live)
 
@@ -1405,11 +1420,22 @@ module Workspace
       end
       return verdict(:clear) unless agent[:pid] == entry["agent_pid"] && agent[:started] == entry["agent_started"]
 
+      entry = fill_flags(pane_id, entry, agent)
       confirmed = confirmed_error(pane_id, entry)
       return verdict(confirmed) if confirmed
       return verdict(:go, mode: :typed) if entry["attempts"].to_i.zero?
 
       restart_verdict(pane_id, entry, detail, tree, agent)
+    end
+
+    # Flags an earlier read couldn't give, from a read of the same process.
+    #
+    # @return [Hash] the entry to go on with
+    def fill_flags(pane_id, entry, agent)
+      return entry unless entry["agent_flags"].nil? && agent[:flags]
+
+      @store.update(pane_id) { |current| store_agent(current, agent) if same_wait?(current, entry) && same_process?(current, agent) }
+      entry.merge("agent_flags" => agent[:flags])
     end
 
     def held_off?(pane_id, entry, screen)
@@ -1487,10 +1513,12 @@ module Workspace
       (@tmux.capture_screen(pane_id) == before) ? before : nil
     end
 
+    # The flags are the pane's own agent's, stored with its pid. The config's
+    # first `claude` pane says nothing about this one, so with none stored there
+    # is no line, and {#check} defers.
     def resume_line(entry)
       return nil unless entry["cwd"].is_a?(String)
-      @resume_command.call(workspace: @workspace, cwd: entry["cwd"], session_id: entry["session_id"],
-        flags: @resume_command.flags_for(@workspace))
+      @resume_command.call(workspace: @workspace, cwd: entry["cwd"], session_id: entry["session_id"], flags: entry["agent_flags"])
     end
 
     def signalled_lately?(entry)

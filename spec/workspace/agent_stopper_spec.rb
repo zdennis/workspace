@@ -24,7 +24,16 @@ RSpec.describe Workspace::AgentStopper do
 
   describe "#find_agent" do
     it "finds the agent below the shell in an unwrapped pane" do
-      expect(stopper.find_agent(pane_pid: 10, detector: detector, tree: unwrapped)).to eq(pid: 20, started: "Mon Oct 26 10:00:00 2026")
+      expect(stopper.find_agent(pane_pid: 10, detector: detector, tree: unwrapped)).to eq(pid: 20, started: "Mon Oct 26 10:00:00 2026", flags: [])
+    end
+
+    it "reads the flags from the agent's own process, not a wrapper's" do
+      flag = "--dangerously-skip-permissions"
+      flagged = snapshot(proc_entry(10, 1, "-zsh"), proc_entry(15, 10, "/bin/sh /Users/z/bin/claude-dev"), proc_entry(20, 15, "claude #{flag}"))
+      plain = snapshot(proc_entry(10, 1, "-zsh"), proc_entry(15, 10, "/bin/sh /Users/z/bin/claude-dev #{flag}"), proc_entry(20, 15, "claude"))
+
+      expect(stopper.find_agent(pane_pid: 10, detector: detector, tree: flagged)[:flags]).to eq([flag])
+      expect(stopper.find_agent(pane_pid: 10, detector: detector, tree: plain)[:flags]).to eq([])
     end
 
     it "finds the agent, not the wrapper, in a wrapper pane" do
@@ -98,7 +107,7 @@ RSpec.describe Workspace::AgentStopper do
     it "never signals the pane's shell and sends only INT" do
       allow(process_tree).to receive(:snapshot).and_return(wrapper)
       agent = stopper.find_agent(pane_pid: 10, detector: detector, tree: wrapper)
-      stopper.stop(**agent, pane_pid: 10)
+      stopper.stop(pid: agent[:pid], started: agent[:started], pane_pid: 10)
       expect(signals.map(&:first).uniq).to eq(["INT"])
       expect(signals.map(&:last)).not_to include(10, 15)
     end

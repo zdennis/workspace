@@ -14,7 +14,7 @@ module Workspace
   # `stopped` (our SIGINT went out and no new agent has come back),
   # `attempt_session_id`, `last_signal_at`, `last_subagent_at`, `failed_at`,
   # `next_attempt_at`, `defer_since`, `agent_pid`, `agent_started`,
-  # `last_turn_uuid`, `draft_text`, `failed_during_attempt`,
+  # `agent_flags`, `last_turn_uuid`, `draft_text`, `failed_during_attempt`,
   # `turn_completed`, `give_up_reason`, `prompt_seen`, `item_open`,
   # `item_error` and `resumed_elsewhere`. The store keeps
   # them as given; {AgentRecoveryDesk} decides what they mean.
