@@ -113,7 +113,7 @@ module Workspace
     # The stored state, except that a hidden turn_ended_incomplete leaves the run running.
     def shown_state(run, reason, shown)
       return "waiting" if reason && run["state"] == "running"
-      return "running" if reason.nil? && hidden_incomplete?(run["reason"], shown)
+      return "running" if reason.nil? && hidden_reason?(run["reason"], shown)
       run["state"]
     end
 
@@ -167,11 +167,14 @@ module Workspace
     # A turn that ended while a background sub-agent ran reads turn_ended_incomplete; once the
     # pane is working again the agent is still on it, so nobody has to act.
     def hide_while_working(stored, shown)
-      hidden_incomplete?(stored, shown) ? nil : stored
+      hidden_reason?(stored, shown) ? nil : stored
     end
 
-    def hidden_incomplete?(reason, shown)
-      !!reason && reason["code"] == "turn_ended_incomplete" && !!shown && shown["state"] == "working"
+    # A held turn (background tasks listed) is hidden whatever the pane reads; an incomplete one only while the pane works.
+    def hidden_reason?(stored, shown)
+      return false unless stored
+      return true if stored["code"] == "turn_ended_background"
+      stored["code"] == "turn_ended_incomplete" && !!shown && shown["state"] == "working"
     end
 
     def lost_delivery(run, pane, shown)
@@ -221,9 +224,10 @@ module Workspace
       delivering = WorkflowEngine.delivery(state["attempts"].last, @clock.call) == :delivering
       flags << "delivering" if delivering
       # The agent is idle on a step that still reads as being worked on: its turn ended unseen.
-      if state["state"] == "running" && reason.nil? && !delivering && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
+      if state["state"] == "running" && reason.nil? && !delivering && !hidden_reason?(run["reason"], shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
         flags << "idle"
       end
+      flags << "background_work" if run.dig("reason", "code") == "turn_ended_background"
       flags
     end
 

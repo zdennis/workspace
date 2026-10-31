@@ -123,6 +123,14 @@ RSpec.describe Workspace::GoalState do
     expect(goal(run: run(reason: {"code" => "failed_check"}), turn_state: "working").state).to eq("waiting")
   end
 
+  it "reads a hold on background work as working on the agent, but stuck with no daemon or past the timeout" do
+    held = run(flags: ["background_work"])
+
+    expect(goal(run: held, turn_state: "idle")).to have_attributes(state: "working", waiting_on: "agent")
+    expect(goal(member: member_row(daemon_up: false), run: held)).to have_attributes(state: "stuck")
+    expect(goal(run: run(flags: ["background_work", "timed_out"]), turn_state: "idle").state).to eq("stuck")
+  end
+
   it "reads an idle pane as stuck only once the run flags it idle" do
     expect(goal(run: run(flags: []), turn_state: "idle").state).not_to eq("stuck")
     expect(goal(run: run(flags: ["idle"]), turn_state: "idle")).to have_attributes(state: "stuck", waiting_on: "person")

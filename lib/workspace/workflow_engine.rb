@@ -14,12 +14,13 @@ module Workspace
   # run's `max_attempts` last; after that the run waits for a person.
   #
   # A run that is not moving has a `reason` that says why, one of
-  # `waiting_lock`, `waiting_you`, `turn_ended_incomplete` and
-  # `failed_check`. {WorkflowStatus} adds `pane_gone`, which is read from
-  # tmux rather than stored. The one case with no reason is a turn that
-  # ended without the daemon seeing it (an interrupted turn, a daemon that
-  # was down): the step still reads `running`, {WorkflowStatus} flags it
-  # `idle`, and {#resume} looks at it.
+  # `waiting_lock`, `waiting_you`, `turn_ended_incomplete`,
+  # `turn_ended_background` (a turn that ended with background tasks listed;
+  # {WorkflowStatus} hides it) and `failed_check`. {WorkflowStatus} adds
+  # `pane_gone`, which is read from tmux rather than stored. The one case
+  # with no reason is a turn that ended without the daemon seeing it (an
+  # interrupted turn, a daemon that was down): the step still reads
+  # `running`, {WorkflowStatus} flags it `idle`, and {#resume} looks at it.
   #
   # Resources a step `uses:` are held by the run, taken before the step's
   # prompt is typed and given up at a gate, on a failure that stops the run,
@@ -187,16 +188,19 @@ module Workspace
     #   A turn that began before the step's attempt did was already under way when the
     #   step's line was typed (a person talking to the agent at a gate), and its end
     #   decides nothing. Without it every end of a turn in the pane counts
+    # @param background [Array<Hash>] the background tasks (`"id"`, `"type"`) the agent still listed when
+    #   its turn ended. A step the files do not yet complete is then held (`turn_ended_background`) and
+    #   not reported as stopped, since each task that ends starts another turn
     # @return [Hash{String=>Object}] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, pane: nil, turn_started: nil)
+    def turn_ended(run_id, pane: nil, turn_started: nil, background: [])
       check = nil
       run = transition(run_id) do |stored|
         state = step_state(stored)
         next unless state["state"] == "running"
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
-        check = evaluate(stored, turn_started: turn_started)
+        check = evaluate(stored, turn_started: turn_started, background: background)
       end
       check ? finish_check(run_id, check) : run
     end
@@ -439,7 +443,7 @@ module Workspace
     # What `workflow status` shows of a run's progress; a change in it is announced.
     def fingerprint(run)
       state = step_state(run)
-      [run["state"], run["current"], run["reason"], state["state"], state["attempts"].size, state.dig("gate", "state")]
+      [run["state"], run["current"], run["reason"]&.except("seen_at"), state["state"], state["attempts"].size, state.dig("gate", "state")]
     end
 
     def changed(run)
@@ -817,7 +821,7 @@ module Workspace
     # A stop the daemon sees again (the same code, step and attempt) keeps its `since`, so a
     # repeat raises no second notice; a turn that began after the stop was recorded is a new stop.
     # The stored `since` is whole seconds, so a turn that began in the same second is the same stop.
-    def evaluate(run, turn_started: nil)
+    def evaluate(run, turn_started: nil, background: [])
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
@@ -843,7 +847,13 @@ module Workspace
       if missing.any? || stale.any?
         state["state"] = "running"
         run["state"] = "waiting"
-        run["reason"] = stop_reason(run["reason"], turn_started, "turn_ended_incomplete", "step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale)
+        details = {"step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale}
+        run["reason"] = if background.any?
+          # Every notification starts a new turn and a hold is hidden, so its `since` stays.
+          stop_reason(run["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
+        else
+          stop_reason(run["reason"], turn_started, "turn_ended_incomplete", details)
+        end
         return nil
       end
       unless step["status"]

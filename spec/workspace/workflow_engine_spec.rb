@@ -756,6 +756,67 @@ RSpec.describe Workspace::WorkflowEngine do
       end
     end
 
+    describe "a turn that ended with background tasks listed" do
+      let(:tasks) { [{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k12345678", "type" => "subagent"}] }
+
+      before do
+        start
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: tasks)
+      end
+
+      it "holds the step as turn_ended_background with the tasks and when they were seen" do
+        expect(store.find("wr_1")["reason"]).to eq("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:01:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "missing" => [File.join(worktree, ".workflow", "wr_1", "plan.md")], "stale" => [], "tasks" => tasks})
+        expect(store.find("wr_1")["state"]).to eq("waiting")
+      end
+
+      it "announces one workflow_changed across three Stops that list the same tasks" do
+        events.clear
+        2.times do
+          now[0] += 60
+          engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+        end
+
+        reason = store.find("wr_1")["reason"]
+        expect(reason).to include("since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:03:00Z")
+        expect(events).to eq([])
+      end
+
+      it "shows turn_ended_incomplete once, with a since of its own, on a Stop with no tasks" do
+        events.clear
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: [])
+        engine.turn_ended("wr_1", pane: "%5", background: [])
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(events.map(&:first).count("workflow_changed")).to eq(1)
+      end
+
+      it "keeps the since when the turn began after it" do
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 30), background: tasks)
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
+      end
+
+      it "passes the step when its files exist, whatever is listed" do
+        artifact("plan.md")
+        now[0] += 60
+        run = engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(run["steps"]["plan"]["state"]).to eq("passed")
+        expect(run["reason"]).not_to include("code" => "turn_ended_background")
+      end
+
+      it "fails the step on a reported fail, whatever is listed" do
+        engine.report("wr_1", status: "fail", summary: "no")
+        run = engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(run["reason"]).not_to include("code" => "turn_ended_background")
+      end
+    end
+
     it "ignores a turn that ends while the run waits for a lock" do
       locked = definition("steps:\n  verify:\n    prompt: P\n    uses: [test-db]\n")
       start(locked, inputs: {}, pane: "%5", workspace: "app.worktree-a")

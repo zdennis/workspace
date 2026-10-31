@@ -151,6 +151,30 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(run["current"]["reason"]).to be_nil
   end
 
+  describe "a stored turn_ended_background" do
+    let(:hold) do
+      {"code" => "turn_ended_background", "since" => "2026-10-04T12:50:00Z", "seen_at" => "2026-10-04T12:55:00Z",
+       "details" => {"step" => "plan", "attempt" => 2, "missing" => [], "stale" => [], "tasks" => [{"id" => "k12345678", "type" => "subagent"}]}}
+    end
+
+    it "reads running with no reason and only background_work whatever the idle pane shows" do
+      create(state: "waiting", reason: hold)
+      snapshot["panes"].first["state"] = "idle"
+      now[0] = Time.utc(2026, 10, 4, 13, 30, 0)
+
+      result = status.run("wr_1")["runs"].first
+
+      expect(result["state"]).to eq("running")
+      expect(result["current"]).to include("reason" => nil, "flags" => ["background_work"])
+    end
+
+    it "still says pane_gone when the pane is closed" do
+      create(state: "waiting", reason: hold, bound: false)
+
+      expect(current["reason"]).to include("code" => "pane_gone")
+    end
+  end
+
   describe "a stored turn_ended_incomplete" do
     let(:incomplete) do
       {"code" => "turn_ended_incomplete", "since" => "2026-10-04T12:50:00Z",
