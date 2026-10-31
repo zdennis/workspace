@@ -186,7 +186,9 @@ module Workspace
         next unless workspaces.include?(run["workspace"])
         current = run["current"] || {}
         reason = current["reason"]
-        next unless reason && reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
+        next unless reason
+        next undelivered_row(run, current, reason) if undelivered?(reason)
+        next unless reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
         step = Array(run["steps"]).find { |each| each["id"] == current["step"] }
         next unless step && step["gate"] == "waiting"
         row(id: "workflow:waiting_you:#{run["id"]}", kind: "workflow_waiting_you", fingerprint: "#{current["step"]}:#{reason["since"]}",
@@ -194,6 +196,20 @@ module Workspace
           body: nil, since: reason["since"],
           links: {"run_id" => run["id"], "step" => current["step"], "attempt" => current["attempt"]})
       end
+    end
+
+    # A step whose line never reached an agent: a stored `pane_gone` or `waiting_you` of kind `dispatch`
+    # (`not_started`, `parked_timeout`). Status hides a live park and a `pane_busy` wait, so they never reach here,
+    # and a `pane_gone` it works out itself has no kind.
+    def undelivered?(reason)
+      %w[waiting_you pane_gone].include?(reason["code"]) && reason.dig("details", "kind") == "dispatch"
+    end
+
+    def undelivered_row(run, current, reason)
+      row(id: "workflow:undelivered:#{run["id"]}", kind: "workflow_undelivered", fingerprint: "#{current["step"]}:#{reason["since"]}",
+        scope: workspace_scope(run["workspace"]), title: "Workflow #{run["title"] || run["workflow"]}: step #{current["step"]} was not started",
+        body: reason.dig("details", "message"), since: reason["since"],
+        links: {"run_id" => run["id"], "step" => current["step"], "attempt" => current["attempt"]})
     end
 
     # As workspace-ui's `staleLocks`: a held lock with a live waiter whose holder is dead, or an
