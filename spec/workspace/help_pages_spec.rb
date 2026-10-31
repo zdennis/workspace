@@ -61,6 +61,7 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["inbox"].keys).to match_array(%w[add list show edit done dismiss reopen snooze ack])
       expect(pages["agent-run"].keys).to eq(["command", "inject", "restart", "send", "queue", "queue list", "queue cancel", "examples"])
       expect(pages["handoff"].keys).to eq(%w[check new])
+      expect(pages["skills"].keys).to eq(%w[install uninstall])
     end
 
     it "name the verbs of lock and dev, the hidden dev __run apart" do
@@ -118,7 +119,7 @@ RSpec.describe Workspace::HelpPages do
       "plan" => :plan_parser, "daemon" => :daemon_parser, "workflow" => :workflow_parser, "library" => :library_parser,
       "spine" => :spine_parser, "binding" => :binding_parser, "step" => :step_parser, "review" => :review_parser,
       "pr" => :pr_parser, "ticket" => :ticket_parser, "goal" => :goal_parser, "notes" => :notes_parser,
-      "instructions" => :instructions_parser, "ui" => :ui_parser, "event-log" => :event_log_show_parser,
+      "instructions" => :instructions_parser, "ui" => :ui_parser, "skills" => :skills_parser, "event-log" => :event_log_show_parser,
       # `projects list` parses inline, so it has no factory to check.
       "projects" => {"show" => :projects_show_parser, "members" => :projects_members_parser,
                      "stop" => :projects_stop_parser, "kill" => :projects_kill_parser}

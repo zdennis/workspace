@@ -35,7 +35,11 @@ module Workspace
       "status" => {
         usage: ["plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]"],
         summary: "Count the plan and report its state",
-        about: ["A workspace with no plan is a row, not an error."],
+        about: [
+          "A workspace with no plan is a row, not an error. With no scope flag it is the current workspace's row",
+          "(outside any workspace: not_in_workspace). Give at most one of --name, --project, --all, --file and",
+          "--group."
+        ],
         options: [NAME_OPT,
           ["--project [NAME]", "Every workspace of a project (NAME, or the project of the current workspace)"],
           ["--all", "Every workspace"],
@@ -45,6 +49,7 @@ module Workspace
         examples: [
           ["workspace plan status", "the plan of the workspace you are in: state, counts and the current task"],
           ["workspace plan status --name api.worktree-x", "one workspace by name"],
+          ["workspace plan status --project", "the plans of the main checkout and its worktrees, such as to see which one is stalled"],
           ["workspace plan status --all", "every workspace, one line each (no plan reads \"no plan\")"],
           ["workspace plan status --group billing", "every workspace of every repository in the billing group"],
           ["workspace plan status --file IMPLEMENTATION_PLAN.md", "a plan file in the current directory, with no workspace"],
@@ -415,7 +420,8 @@ module Workspace
           ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],
           ["workspace workflow start pr-feedback '#123'", "work through the review feedback on pull request 123 (needs gh)"],
           ["workspace workflow start rpiv PROJ-101 --note \"Keep the change small.\"", "tell every step something extra"],
-          ["workspace workflow start rpiv PROJ-101 --headless", "run in plain tmux, with no iTerm window"]
+          ["workspace workflow start rpiv PROJ-101 --headless", "run in plain tmux, with no iTerm window"],
+          ["workspace workflow start rpiv-auto-approve --prompt \"add a hello script\"", "a run no person watches: three reviewer sub-agents approve the plan in place of the gate"]
         ]
       },
       "status" => {
@@ -423,7 +429,9 @@ module Workspace
         summary: "Show the runs still going, each with its step and why it is stuck",
         about: [
           RUN_ID + " With RUN, shows that one run.",
-          "Without RUN: this workspace's runs still going; --name another workspace's; --project the main checkout and its worktrees, finished runs too; --all every workspace, finished runs too.",
+          "RUN names its own workspace, so it takes no --name, --project or --all. Without RUN, give at most one of",
+          "them: no flag shows this workspace's runs still going, --name another workspace's, --project the main",
+          "checkout's and its worktrees' runs, finished ones too, and --all every workspace's, finished ones too.",
           "",
           "A run that is not moving says why: waiting_lock, waiting_you, turn_ended_incomplete, failed_check or",
           "pane_gone, with the commands that resolve it."
@@ -556,9 +564,9 @@ module Workspace
           ["--turn-started AT", "When that turn began (ISO 8601)"],
           ["--background-task TYPE:ID", "A background task still going when the turn ended (repeatable)"]],
         examples: [
-          ["workspace workflow advance RUN", "look at a run waiting on a lock, or a check that never reported back, and move it on if it can go"],
-          ["workspace workflow advance RUN --turn-ended --pane %19", "what the daemon runs when an agent's turn ends in the run's pane"],
-          ["workspace workflow advance RUN --turn-ended --pane %19 --turn-started \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"", "the same, with the time that turn began"]
+          ["workspace workflow advance RUN", "nudge a stuck run: it waits on a lock, or its check never finished; it moves on if it can"],
+          ["workspace workflow advance RUN --turn-ended --pane %19", "what the agent daemon runs when the agent in pane %19 finishes answering, so the run can go to its next step"],
+          ["workspace workflow advance RUN --turn-ended --pane %19 --turn-started \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"", "the same, saying when that answer began"]
         ]
       }
     }.freeze
@@ -1274,8 +1282,10 @@ module Workspace
           "A pack is a library play. The built-in ones are binding (how to work in a bound pane), orchestrator",
           "(delegate to sub-agents), commits (how to commit), review (review a diff with reviewer sub-agents),",
           "notes (where working notes go), handoff (run 'workspace handoff check' after every task), dev (queue",
-          "for the shared dev environment before testing, release it when done) and implementation-plan (keep",
-          "the counted task list in IMPLEMENTATION_PLAN.md); `workspace library list --builtin` lists them all.",
+          "for the shared dev environment before testing, release it when done), implementation-plan (keep",
+          "the counted task list in IMPLEMENTATION_PLAN.md), plan-review (review the plan with reviewer",
+          "sub-agents and post a verdict) and report (post a finished note to the inbox);",
+          "`workspace library list --builtin` lists them all.",
           "With no --pack, binding, orchestrator and commits are composed, in that order, unless the config key",
           "workflows.defaults.include lists others. Each pack is printed under a heading that names where it",
           "came from.",
@@ -2416,6 +2426,13 @@ module Workspace
           "When the notes directory can't be worked out, the agent picks a path; when it is over the threshold, check makes the",
           "notes directory first.",
           "",
+          "A Claude Code pane in hook mode is then watched by its agent daemon: if the agent goes quiet without running",
+          "`handoff new`, a follow-up prompt is typed (handoff.followup_interval, handoff.followup_max and",
+          "handoff.followup_prompt tune or turn that off). A prompt of your own, a /clear or a paused plan ends the",
+          "watch. No watch starts (the result says `watching: false` and why) when the follow-ups are turned off, for a",
+          "pane bound to a run or review, when the prompt text is too long, or when the daemon is old or does not",
+          "answer; the save-state prompt is sent anyway. See docs/README.handoff.md.",
+          "",
           "Exit codes: 0 under the threshold, 1 at or over it (a save-state prompt was sent) or when the run was refused or failed,",
           "2 when context usage can't be determined (nothing was sent)."
         ],
@@ -2441,7 +2458,8 @@ module Workspace
         about: [
           "Clears one Claude Code or Codex pane's conversation and types the resume prompt, the same flow as",
           "`workspace agent-run restart`. It returns once the restart has started; --wait waits for it to finish.",
-          "Any conversation not saved in the doc is lost.",
+          "Any conversation not saved in the doc is lost. If /clear is typed but no new conversation shows within 30s,",
+          "it stops with clear_not_confirmed and types no resume prompt.",
           "",
           "Without --pane it restarts the first Claude Code pane the daemon lists, else the first Codex pane, which may not be",
           "yours: to restart your own pane, pass --pane \"$TMUX_PANE\".",
@@ -2460,7 +2478,7 @@ module Workspace
           ["--wait", "Wait for the restart to finish and report how it went (don't use this from the agent being restarted)"],
           ["--json", "Print the result as JSON"]],
         examples: [
-          ["workspace handoff new", "restart the first Claude Code pane (else Codex) of this project, which may not be yours"],
+          ["workspace handoff new", "restart this project's coding agent in a fresh conversation (it loses the current one, so save its state first); it picks the first Claude Code pane, else Codex, which may not be yours"],
           ["workspace handoff new myapp --pane \"$TMUX_PANE\"", "an agent restarting its own pane"],
           ["workspace handoff new myapp --pane 0.1 --handoff-doc /tmp/myapp-handoff.md", "one pane as window.pane, resuming from this doc"],
           ["workspace handoff new myapp --handoff-prompt \"Continue with the failing specs\"", "resume with this text instead of a doc"],
@@ -2731,13 +2749,65 @@ module Workspace
       }
     }.freeze
 
+    SKILLS_DRY_RUN = ["--dry-run", "Print what would happen; write nothing"].freeze
+
+    SKILLS = {
+      "install" => {
+        usage: ["skills install [--install-all] [--dry-run] [--json] [--no-input]"],
+        summary: "Link the four workspace skills into your coding agents' skill directories",
+        about: [
+          "Links the four workspace skills (workspace, workspace-agent-run, workspace-inbox, workspace-lifecycle),",
+          "each as a link to its whole directory, into the skills directory of the coding agents found on this",
+          "machine (Claude Code ~/.claude/skills, Codex ~/.codex/skills, Pi ~/.pi/agent/skills, OpenCode",
+          "~/.config/opencode/skills) and into ~/.agents/skills when it exists.",
+          "",
+          "It asks once which of the harnesses found to install for; the ones left out are remembered and not",
+          "asked again (end of input installs nothing and records nothing). All four skills are linked in a directory, or none: a path",
+          "already there that is not our link (a real directory with other content, a file, someone else's link)",
+          "is never replaced, it is refused and the mv to clear it is printed. A real directory identical to ours",
+          "is moved to the state directory's skill-backups and linked. A re-run refreshes links and says what",
+          "changed.",
+          "",
+          "From a linked git worktree it refuses (skill_source_worktree): run it from the main checkout or a",
+          "Homebrew install. Exit status: 0 done or already current; 1 something was refused or failed, no harness",
+          "found, or the install has no skills; a usage error exits 1 too. Without --install-all it fails with confirmation_required",
+          "under --no-input (or WORKSPACE_NO_INPUT) when it would have to ask."
+        ],
+        options: [["--install-all", "Every harness found, no question; clears recorded declines"],
+          SKILLS_DRY_RUN,
+          ["--json", "Print one JSON document (see docs/README.skills.md); questions go to stderr"]],
+        examples: [
+          ["workspace skills install", "first time on this machine: link the skills for the coding agents found, after asking which to include"],
+          ["workspace skills install --install-all --dry-run", "see which links would be made and which paths would be refused for every coding agent found, asking nothing and writing nothing"],
+          ["workspace skills install --install-all", "after an update, or to take back an agent you left out before: all of them, no question"],
+          ["workspace skills install --install-all --no-input --json", "from a script that cannot answer: no question, one JSON document, exit 1 when a path was refused"]
+        ]
+      },
+      "uninstall" => {
+        usage: ["skills uninstall [--dry-run] [--json]"],
+        summary: "Remove the links skills install made",
+        about: [
+          "Removes our links (one of the four names, pointing at a lib/skills/<name> of this tool, dangling ones",
+          "too) from every known skills directory. Real directories and other links stay and are reported. It",
+          "records no decline, works from a linked worktree and never asks."
+        ],
+        options: [SKILLS_DRY_RUN, ["--json", "Print one JSON document (see docs/README.skills.md)"]],
+        examples: [
+          ["workspace skills uninstall --dry-run", "see which links would go, and which paths are not ours and stay, before removing any"],
+          ["workspace skills uninstall", "stop offering the skills to your coding agents, such as before removing this tool"],
+          ["workspace skills uninstall --json", "for a script: each directory's links and what was left, as one JSON document"]
+        ]
+      }
+    }.freeze
+
     # The tables by command; the specs and the routing tests read them.
     COMMANDS = {
       "plan" => PLAN, "daemon" => DAEMON, "workflow" => WORKFLOW, "library" => LIBRARY, "spine" => SPINE,
       "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL,
       "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "event-log" => EVENT_LOG, "projects" => PROJECTS,
       "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT, "ask" => ASK, "inbox" => INBOX,
-      "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV, "pipeline" => PIPELINE
+      "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV, "pipeline" => PIPELINE,
+      "skills" => SKILLS
     }.freeze
 
     # The page for the leading verb words of +args+, longest match first; failing that, the one

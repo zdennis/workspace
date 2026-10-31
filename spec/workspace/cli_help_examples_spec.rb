@@ -46,7 +46,7 @@ module HelpExamplesSpec
     "promote", "prune", "push", "reactivate", "rebase", "relaunch", "remove", "repair", "resize", "restore",
     "run", "run-and-report", "report-run-status", "session-event", "sessions", "set-command", "snapshot",
     "review", "review show", "review list",
-    "skills",
+    "skills", "skills install", "skills uninstall",
     "spine", "spine show", "spine init", "spine set", "spine check", "spine verify", "spine start", "spine goal",
     "spine goal set",
     "start", "status", "statusline", "step", "step done", "step status", "stop",
@@ -149,6 +149,9 @@ RSpec.describe "help pages end with examples" do
     # Commands with no verb constant (inbox, plan, lock...) have their verbs listed by hand above.
     missing = Workspace::CLI::SUBCOMMANDS - aliases.keys - pages
     expect(missing).to eq([])
+
+    unlisted = Workspace::HelpPages::COMMANDS.flat_map { |command, table| table.keys.map { |key| "#{command} #{key}" } } - pages
+    expect(unlisted).to eq([])
 
     {
       "daemon" => Workspace::CLI::DAEMON_SUBCOMMANDS,

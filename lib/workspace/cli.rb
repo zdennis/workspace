@@ -5419,8 +5419,9 @@ module Workspace
           "default follows the same rule as 'workspace launch'") do |v|
           headless = v
         end
-        opts.on("--fix", "Route Claude's statusLine through 'workspace statusline' (backs up",
-          "settings.json first); the only fix this performs today") do
+        opts.on("--fix", "Link the workspace skills that are missing or dangling, route Claude's statusLine",
+          "through 'workspace statusline' (backs up settings.json first), install Codex's hooks,",
+          "and rewrite stale agent panes; everything else it reports is fixed by hand") do
           fix = true
         end
         opts.on("--json", "Print one JSON document with a row per check (see docs/README.doctor.md);",
@@ -5429,7 +5430,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace doctor    # check the current machine's setup"
         opts.separator "  workspace doctor --json    # the same checks as one document"
-        opts.separator "  workspace doctor --fix    # also route Claude's statusLine through workspace statusline"
+        opts.separator "  workspace doctor --fix    # also fix what can be fixed: link the missing skills, set up Claude's status line and Codex's hooks, and update stale agent panes"
         opts.separator "  workspace doctor --headless    # check for a headless setup (skips iTerm2 and window-tool)"
       end
       parser.parse!(args)
@@ -7192,43 +7193,29 @@ module Workspace
 
     def skills_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace skills install [--install-all] [--dry-run] [--json] [--no-input]\n       workspace skills uninstall [--dry-run] [--json]"
+        opts.banner = HelpPages.overview_usage(HelpPages::SKILLS)
         opts.separator ""
-        opts.separator "install: link the four workspace skills (workspace, workspace-agent-run, workspace-inbox,"
-        opts.separator "workspace-lifecycle), each as a link to its whole directory, into the skills directory of the"
-        opts.separator "coding agents found on this machine (Claude Code ~/.claude/skills, Codex ~/.codex/skills,"
-        opts.separator "Pi ~/.pi/agent/skills, OpenCode ~/.config/opencode/skills) and into ~/.agents/skills when it"
-        opts.separator "exists. It asks once which of the harnesses found to install for; the ones left out are"
-        opts.separator "remembered and not asked again (end of input means none). All four skills are linked in a"
-        opts.separator "directory, or none: a path already there that is not our link (a real directory with other"
-        opts.separator "content, a file, someone else's link) is never replaced, it is refused and the mv to clear it"
-        opts.separator "is printed. A real directory identical to ours is moved to the state directory's"
-        opts.separator "skill-backups and linked. A re-run refreshes links and says what changed. From a linked git"
-        opts.separator "worktree it refuses (skill_source_worktree): run it from the main checkout or a Homebrew install."
+        opts.separator "Link the four workspace skills that ship with this tool into the skills directory of each"
+        opts.separator "coding agent on your machine, or remove those links. The skills teach an agent to use the"
+        opts.separator "`workspace` CLI."
         opts.separator ""
-        opts.separator "uninstall: remove our links (one of the four names, pointing at a lib/skills/<name> of this"
-        opts.separator "tool, dangling ones too) from every known skills directory. Real directories and other links"
-        opts.separator "stay and are reported. It records no decline."
-        opts.separator ""
-        opts.separator "Exit status: 0 done or already current; 1 something was refused or failed, no harness found,"
-        opts.separator "or the install has no skills; 2 usage."
+        opts.separator "Subcommands:"
+        HelpPages.overview_verbs(HelpPages::SKILLS).each { |line| opts.separator line }
+        opts.separator "Run `workspace skills VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--install-all", "install: every harness found, no question; clears recorded declines") { options[:install_all] = true }
         opts.on("--dry-run", "Print what would happen; write nothing") { options[:dry_run] = true }
-        opts.on("--json", "Print one JSON document (see docs/README.json.md); questions go to stderr") { options[:json] = true }
+        opts.on("--json", "Print one JSON document (see docs/README.skills.md); questions go to stderr") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
-        opts.separator "Without --install-all, install fails with confirmation_required under --no-input (or"
-        opts.separator "WORKSPACE_NO_INPUT) when it would have to ask; a re-run with nothing to ask is fine."
-        opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace skills install    # link the workspace skills into the coding agents found here, asking which"
-        opts.separator "  workspace skills install --install-all --no-input --json    # a script: every harness found, no question"
-        opts.separator "  workspace skills uninstall --dry-run    # list the links that would be removed, and remove none"
+        HelpPages.overview_examples(HelpPages::SKILLS, per_verb: 2).each { |line| opts.separator line }
       end
     end
 
     def cmd_skills(args)
+      return if verb_help_shown?(HelpPages::SKILLS, args)
+
       options = {json: false, dry_run: false, install_all: false}
       parser = skills_parser(options)
       parser.parse!(args)

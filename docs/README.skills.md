@@ -66,8 +66,7 @@ A failure while writing undoes what was done in that directory and reports `skil
 | Code | Meaning |
 |------|---------|
 | 0 | Done, or already current |
-| 1 | A path was refused or a write failed; no harness found; `skill_source_worktree`; the install has no skills; or a question under `--no-input` |
-| 2 | Usage: a missing or unknown subcommand, an extra argument, or `--install-all` with `uninstall` |
+| 1 | A path was refused or a write failed; no harness found; `skill_source_worktree`; the install has no skills; or a question under `--no-input`. Also a usage error: a missing or unknown subcommand, an extra argument, or `--install-all` with `uninstall` |
 
 `--dry-run` exits 1 when the real run would refuse.
 
@@ -111,12 +110,21 @@ The capability is `skills` in [`capabilities --json`](README.capabilities.md). T
 ## Examples
 
 ```sh
-# Pick which harnesses to link
+# Pick which coding agents to link
 workspace skills install
 
-# Unattended: every harness found, one JSON document
+# See which links would be made, and which paths would be refused, for every coding agent found: asks nothing, writes nothing
+workspace skills install --install-all --dry-run
+
+# After an update, or to take back a coding agent you left out: all of them, no question
+workspace skills install --install-all
+
+# Unattended: every coding agent found, one JSON document
 workspace skills install --install-all --no-input --json
 
 # See what an uninstall would remove
 workspace skills uninstall --dry-run
+
+# Stop offering the skills to your coding agents
+workspace skills uninstall
 ```

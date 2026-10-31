@@ -7733,6 +7733,19 @@ RSpec.describe Workspace::CLI do
       expect(skills_command).not_to have_received(:install)
     end
 
+    %w[install uninstall].each do |verb|
+      it "prints the #{verb} page for skills #{verb} --help and calls nothing" do
+        cli.run(["skills", verb, "--help"])
+
+        other = (verb == "install") ? "uninstall" : "install"
+        expect(built[1].string).to include("Usage: workspace skills #{verb}")
+        expect(built[1].string).to include(Workspace::HelpPages::SKILLS.fetch(verb)[:summary])
+        expect(built[1].string).not_to include("workspace skills #{other}")
+        expect(skills_command).not_to have_received(:install)
+        expect(skills_command).not_to have_received(:uninstall)
+      end
+    end
+
     it "lists skills in the main help" do
       built[1].truncate(0)
       cli.run(["help"])
