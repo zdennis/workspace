@@ -597,6 +597,13 @@ RSpec.describe Workspace::SessionMonitor do
         expect(pane("%2")["waiting_input"].bytesize).to be <= Workspace::ToolInputSummary::MAX_BYTES
       end
 
+      it "reports a null input with the tool set for a tool with no summary" do
+        request(tool: "mcp__x__y", input: nil)
+        prompt
+
+        expect(pane("%2")).to include("waiting_tool" => "mcp__x__y", "waiting_input" => nil)
+      end
+
       it "puts a replaced request last" do
         request(agent_id: "sub-1")
         request(agent_id: "sub-2")
@@ -897,6 +904,42 @@ RSpec.describe Workspace::SessionMonitor do
     it "reports null for both fields on every pane with no wait, shell panes included" do
       expect(pane("%1")).to include("waiting_tool" => nil, "waiting_input" => nil)
       expect(pane("%2")).to include("waiting_tool" => nil, "waiting_input" => nil)
+    end
+
+    describe "reporting the fields of a wait" do
+      before do
+        request
+        prompt
+      end
+
+      it "sets both during the wait" do
+        expect(pane("%2")).to include("waiting_tool" => "Bash", "waiting_input" => "rm -rf build")
+      end
+
+      {
+        "PostToolUse" => ["tool_use", {tool: "Bash"}],
+        "Stop" => ["stop", {}],
+        "a user prompt" => ["user_prompt", {}]
+      }.each do |name, (type, fields)|
+        it "nulls both after #{name}" do
+          event(type, **fields)
+
+          expect_null_fields
+        end
+      end
+
+      it "doesn't report a stale request from an earlier call on a later wait" do
+        tool_done
+        prompt
+
+        expect_null_fields
+      end
+
+      it "keeps the main wait's fields when a sub-agent's request arrives" do
+        request(tool: "Write", input: "notes.txt", agent_id: "sub-1")
+
+        expect(pane("%2")).to include("waiting_tool" => "Bash", "waiting_input" => "rm -rf build")
+      end
     end
   end
 

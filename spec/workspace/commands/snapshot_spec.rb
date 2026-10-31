@@ -226,7 +226,7 @@ RSpec.describe Workspace::Commands::Snapshot do
       expect(row["daemon"]).to eq("up" => true, "pid" => nil, "log_path" => "/logs/workspace-app.worktree-fix.log")
       expect(row["panes"]).to eq([{
         "pane_id" => "%19", "index" => 1, "kind" => "claude", "title" => "Claude Code", "display_label" => "Fix login", "state" => "waiting",
-        "state_since" => "2026-10-02T20:00:00Z", "stop_reason" => nil, "waiting_message" => "Allow Bash?", "context_pct" => 71,
+        "state_since" => "2026-10-02T20:00:00Z", "stop_reason" => nil, "waiting_message" => "Allow Bash?", "waiting_tool" => nil, "waiting_input" => nil, "context_pct" => 71,
         "agents" => [{"name" => "reviewer", "state" => "working"}], "lock" => "edit", "lock_state" => "held", "open_questions" => 1
       }])
       expect(row["task"]).to eq("id" => "t1")
@@ -247,6 +247,17 @@ RSpec.describe Workspace::Commands::Snapshot do
 
       expect(project["locks"]).to eq([{"name" => "edit", "holder" => {"workspace" => "app", "path" => "/src/app", "pid" => 9, "stale" => false}, "queue" => []}])
       expect(project["dev"]).to eq("running" => true, "ready" => true, "holder_workspace" => "app")
+    end
+
+    context "with a permission wait that names its tool" do
+      let(:daemon_replies) do
+        super().merge("app.worktree-fix" => {"workspace" => "app-wt-fix", "task" => {"id" => "t1"},
+                                             "panes" => [pane("%19", "waiting", "waiting_tool" => "Bash", "waiting_input" => "rm -rf build")]})
+      end
+
+      it "carries waiting_tool and waiting_input into the pane row" do
+        expect(member_row(parsed, "app.worktree-fix")["panes"].first).to include("waiting_tool" => "Bash", "waiting_input" => "rm -rf build")
+      end
     end
 
     it "never includes an actions map" do
