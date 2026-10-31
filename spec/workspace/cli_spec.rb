@@ -7236,6 +7236,63 @@ RSpec.describe Workspace::CLI do
         spawner: ->(argv, _log) { cli.run(argv.drop(2)) })
     end
 
+    describe "a parked resume made by the command" do
+      let(:definition) { Workspace::WorkflowDefinition.parse("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n", id: "flow", source: "global", path: "/defs/flow.yml") }
+      let(:dispatched) { store.events(run["id"])["events"].select { |entry| entry["type"] == "step_dispatched" } }
+      let(:run) { engine.start(definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5") }
+      let(:out) { StringIO.new }
+      let(:status) do
+        instance_double(Workspace::WorkflowStatus).tap do |double|
+          allow(double).to receive(:run) do |id|
+            {"runs" => [{"id" => id, "workflow" => "flow", "workspace" => "app", "state" => "running",
+                         "current" => {"step" => "a", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => []}}]}
+          end
+        end
+      end
+      let(:parking) do
+        Workspace::Commands::Workflow.new(catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
+          status: status, store: store, panes: panes, files: nil, run_files: nil,
+          tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: out)
+      end
+
+      before do
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with("TMUX_PANE").and_return("%5")
+      end
+
+      it "parks from the run's own pane, keeps the note off the screen, and dispatches once the turn is over" do
+        run
+        kicks_before = panes.kicks.size
+
+        row = parking.resume(run: run["id"], from: "a", note: "Again.", caller_pane: "%5")
+
+        expect(row["outcome"]).to eq("parked")
+        expect(store.find(run["id"])["parked"]["note"]).to eq("Again.")
+        expect(row.to_s + out.string).not_to include("Again.")
+        expect(panes.kicks.size).to eq(kicks_before)
+        expect(store.events(run["id"])["events"].count { |entry| entry["type"] == "step_dispatched" }).to eq(1)
+
+        allow(ENV).to receive(:[]).with("TMUX_PANE").and_return(nil)
+        panes.turn_over << "%5"
+        nudger.turn_ended("app", "%5")
+
+        expect(store.events(run["id"])["events"].count { |entry| entry["type"] == "step_dispatched" }).to eq(2)
+        expect(store.find(run["id"])).not_to include("parked")
+      end
+
+      it "answers --json with the parked pane and expiry, exit 0" do
+        cli, output = build_test_cli(workflow_command: parking)
+
+        cli.run(["workflow", "resume", run["id"], "--from", "a", "--note", "Again.", "--json"])
+
+        document = JSON.parse(output.string.lines.last)
+        expect(document).to include("ok" => true)
+        expect(document["results"].first).to include("outcome" => "parked")
+        expect(document["results"].first["parked"]).to include("pane" => "%5", "expires_at" => anything)
+        expect(output.string).not_to include("Again.")
+      end
+    end
+
     describe "a parked resume" do
       let(:definition) { Workspace::WorkflowDefinition.parse("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n", id: "flow", source: "global", path: "/defs/flow.yml") }
       let(:dispatched) { store.events(run["id"])["events"].select { |entry| entry["type"] == "step_dispatched" } }

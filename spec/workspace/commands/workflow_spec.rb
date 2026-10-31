@@ -612,7 +612,7 @@ RSpec.describe Workspace::Commands::Workflow do
     before do
       allow(status).to receive(:run).with("wr_1").and_return("runs" => [shown], "warnings" => [])
       allow(store).to receive(:find).with("wr_1") { stored }
-      allow(panes).to receive_messages(alive?: true, pane_of: "%5", idle?: false)
+      allow(panes).to receive_messages(alive?: true, pane_of: "%5", idle?: false, parkable?: false)
       allow(engine).to receive(:refuse_resume)
       allow(engine).to receive(:resume).and_return("id" => "wr_1", "workspace" => "app")
     end
@@ -725,6 +725,112 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil)
       expect(row).to include("outcome" => "unchanged", "reason" => nil, "message" => "Nothing was done: an agent is working on step plan.")
       expect(output.string.lines.last).to eq("Nothing was done: an agent is working on step plan.\n")
+    end
+
+    describe "from the run's own pane" do
+      let(:parked_run) { {"id" => "wr_1", "workspace" => "app", "parked" => {"pane" => nil, "expires_at" => "2026-10-04T14:00:00Z"}} }
+      let(:own_message) do
+        "Run from the run's own pane, so nothing was typed. Once this turn ends, the agent daemon will carry out the resume in " \
+          "pane %5, at most 1 hour from now. End your turn now; a sub-agent should finish and let the main agent end its turn."
+      end
+
+      before do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil}]}
+        allow(panes).to receive(:run_on).and_return(nil)
+        allow(panes).to receive(:parkable?).with("app", "%5").and_return(true)
+        allow(engine).to receive(:park).and_return(parked_run)
+      end
+
+      it "parks instead of typing when $TMUX_PANE names the pane" do
+        row = command.resume(run: "wr_1", note: "say \"hi\"\nplease", caller_pane: "%5")
+
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: "say \"hi\"\nplease", pane: nil, turn_over: nil)
+        expect(engine).not_to have_received(:resume)
+        expect(row).to include("outcome" => "parked", "reason" => nil, "message" => own_message,
+          "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"})
+        expect(output.string).not_to include("please")
+      end
+
+      it "parks when only the process table puts the caller under the pane" do
+        allow(tmux).to receive(:pane_details).with("app", window: nil).and_return([{id: "%5", window: 0, index: 1, pid: 200}])
+        allow(process_tree).to receive(:snapshot).and_return(instance_double(Workspace::ProcessTree::Snapshot, ancestors: [{pid: 4242}, {pid: 200}]))
+
+        command.resume(run: "wr_1")
+
+        expect(engine).to have_received(:park)
+      end
+
+      it "runs as today for --pane elsewhere, and parks for --pane naming the caller's pane" do
+        allow(panes).to receive(:locate).with("app", "0.2").and_return("%8")
+        command.resume(run: "wr_1", pane: "0.2", caller_pane: "%5")
+        expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil)
+        expect(engine).not_to have_received(:park)
+
+        allow(panes).to receive(:locate).with("app", "0.1").and_return("%5")
+        command.resume(run: "wr_1", pane: "0.1", caller_pane: "%5")
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil)
+      end
+
+      it "parks when the old pane is gone and the default pane is the caller's" do
+        allow(panes).to receive(:alive?).with("wr_1").and_return(false)
+        allow(panes).to receive(:default_pane).with("app").and_return("%5")
+        allow(panes).to receive(:pane_of).with("wr_1").and_return("%2")
+
+        command.resume(run: "wr_1", caller_pane: "%5")
+
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil)
+      end
+
+      it "keeps today's path when the pane cannot be parked on" do
+        allow(panes).to receive(:parkable?).and_return(false)
+
+        command.resume(run: "wr_1", caller_pane: "%5")
+
+        expect(engine).to have_received(:resume)
+        expect(engine).not_to have_received(:park)
+      end
+
+      it "still refuses a guarded step from its own pane" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => "unchanged", "status" => nil}]}
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+
+        expect { command.resume(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("bound_pane") }
+        expect(engine).not_to have_received(:park)
+      end
+
+      it "reports unchanged when the engine stores nothing" do
+        allow(engine).to receive(:park).and_return(parked_run.merge("unchanged" => "an agent is working on step plan"))
+
+        row = command.resume(run: "wr_1", caller_pane: "%5")
+
+        expect(row).to include("outcome" => "unchanged", "message" => "Nothing was done: an agent is working on step plan.")
+        expect(row).not_to have_key("parked")
+      end
+
+      it "tells a repeated call to end its turn, and what was not kept" do
+        stored["parked"] = {"id" => "p1", "expires_at" => "2026-10-04T14:00:00Z"}
+        allow(engine).to receive(:park).and_return(parked_run.merge("unchanged" => "a resume is already parked for pane %5"))
+
+        plain = command.resume(run: "wr_1", caller_pane: "%5")
+        given = command.resume(run: "wr_1", note: "more", caller_pane: "%5")
+
+        expect(plain["message"]).to eq("Nothing was done: a resume is already parked for pane %5. End your turn now.")
+        expect(given["message"]).to eq("Nothing was done: a resume is already parked for pane %5. End your turn now. " \
+          "The --from, --note or --pane given to this call was not kept.")
+      end
+
+      it "shows no reason and no resume action over a stored pane_busy while parked" do
+        live = shown("current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => ["parked"],
+                                   "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})
+        allow(status).to receive(:run).with("wr_1").and_return("runs" => [live], "warnings" => [])
+        stored["reason"] = {"code" => "waiting_you", "details" => {"kind" => "dispatch", "error" => "pane_busy"}}
+
+        row = command.resume(run: "wr_1", caller_pane: "%5")
+
+        expect(row).to include("outcome" => "parked", "reason" => nil)
+        expect(output.string).not_to match(/waiting_you|workspace workflow resume/)
+        expect(Workspace::JsonEnvelope::FAILED_OUTCOMES).not_to include("parked")
+      end
     end
 
     it "leaves a finished run to the engine, which refuses it, and looks nothing up for it" do

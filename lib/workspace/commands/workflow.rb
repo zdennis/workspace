@@ -304,6 +304,11 @@ module Workspace
             turn_over = {"step" => stored["current"], "attempt" => state["attempts"].last&.fetch("n", nil)}
           end
         end
+        target = pane_id || @panes.pane_of(run) || stored["pane"]
+        if !WorkflowRunStore::TERMINAL_STATES.include?(stored["state"]) && caller_in_pane?(stored["workspace"], caller_pane, target) &&
+            @panes.parkable?(stored["workspace"], target)
+          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over)
+        end
         resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over)
         row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
       end
@@ -578,6 +583,25 @@ module Workspace
       def checked_step?(run)
         step = Array(run.dig("definition", "steps")).find { |each| each["id"] == run["current"] }
         !!(step && (step["guard"] || step["status"]))
+      end
+
+      # The caller is in the pane the resume would type into, so nothing is typed:
+      # the resume is stored and the daemon carries it out once this turn ends.
+      def park_resume(stored, from:, note:, pane:, target:, turn_over:)
+        existing = WorkflowEngine.parked(stored, @clock.call) == :waiting
+        parked = @engine.park(stored["id"], from: from, note: note, pane: pane, turn_over: turn_over)
+        if parked["unchanged"]
+          message = "Nothing was done: #{parked["unchanged"]}."
+          if existing
+            message += " End your turn now."
+            message += " The --from, --note or --pane given to this call was not kept." if from || note || pane
+          end
+          return row(parked, "unchanged", message: message)
+        end
+        message = "Run from the run's own pane, so nothing was typed. Once this turn ends, the agent daemon will carry out " \
+          "the resume in pane #{target}, at most 1 hour from now. End your turn now; a sub-agent should finish and let " \
+          "the main agent end its turn."
+        row(parked, "parked", message: message).merge("parked" => {"pane" => target, "expires_at" => parked.dig("parked", "expires_at")})
       end
 
       def resume_pane(stored, pane)
