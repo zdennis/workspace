@@ -240,7 +240,7 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
-  describe "#main_turn_over_since" do
+  describe "#main_turn_evidence" do
     let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
     let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
 
@@ -256,12 +256,10 @@ RSpec.describe Workspace::SessionMonitor do
     it "is the time of the main Stop, with the transcript" do
       hook("stop")
 
-      expect(monitor.main_turn_over_since("%2")).to eq(times[0])
       expect(monitor.main_turn_evidence("%2")).to eq(since: times[0], transcript_path: "/t.jsonl")
     end
 
     it "is nil for a pane not seen, a shell and a pane with no Stop heard" do
-      expect(monitor.main_turn_over_since("%9")).to be_nil
       expect(monitor.main_turn_evidence("%9")[:missing]).to eq("pane_unknown")
       expect(monitor.main_turn_evidence("%1")[:missing]).to eq("not_claude")
       hook("user_prompt")
@@ -291,11 +289,11 @@ RSpec.describe Workspace::SessionMonitor do
         hook("stop")
         hook(event, "tool" => "Bash")
 
-        expect(monitor.main_turn_over_since("%2")).to be_nil
+        expect(monitor.main_turn_evidence("%2")[:since]).to be_nil
         expect(missing).to eq(name)
 
         hook("stop")
-        expect(monitor.main_turn_over_since("%2")).to eq(times[0])
+        expect(monitor.main_turn_evidence("%2")[:since]).to eq(times[0])
       end
     end
 
@@ -306,7 +304,7 @@ RSpec.describe Workspace::SessionMonitor do
       hook("tool_use", "agent_id" => "a1", "tool" => "Bash")
       hook("stop", "agent_id" => "a1")
 
-      expect(monitor.main_turn_over_since("%2")).to eq(stopped)
+      expect(monitor.main_turn_evidence("%2")[:since]).to eq(stopped)
     end
 
     it "counts a sub-agent start from a sub-agent, which takes the done mark too" do

@@ -343,16 +343,6 @@ module Workspace
       end
     end
 
-    # When a hook-mode Claude Code pane's main agent ended its turn, if nothing
-    # since says otherwise.
-    #
-    # @param pane_id [String] tmux pane id
-    # @return [Time, nil] the main Stop this monitor heard; nil when any part
-    #   of {#main_turn_evidence} is missing
-    def main_turn_over_since(pane_id)
-      main_turn_evidence(pane_id)[:since]
-    end
-
     # What the monitor knows of the main agent's turn being over: a main Stop
     # from hook-mode Claude Code, with no main tool, sub-agent start, prompt or
     # session event since, no wait, no open tool and no failed turn. Stopped

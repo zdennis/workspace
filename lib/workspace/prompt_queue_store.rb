@@ -31,9 +31,6 @@ module Workspace
     # What a claim writes into an entry, removed when it goes back to `queued`.
     CLAIM_KEYS = %w[claim_id daemon_pid claimed_at claimed_fresh_since paste_started_at].freeze
 
-    # What a refused delivery leaves in an entry so a list can say why it waits.
-    # They survive going back to `queued` and go only with the entry.
-
     # @param path [String] the workspace's `prompt-queue.json`
     # @param clock [#now] time source
     # @param id_generator [#call] returns a new entry id

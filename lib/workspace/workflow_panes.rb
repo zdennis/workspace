@@ -219,7 +219,7 @@ module Workspace
       false
     end
 
-    # Binds the pane to a step of a run, replacing  its earlier binding. The
+    # Binds the pane to a step of a run, replacing its earlier binding. The
     # paths are left out when they are longer than a binding field may be.
     #
     # @param workspace [String]
@@ -255,7 +255,9 @@ module Workspace
     # @param text [String] one line
     # @param fresh [Boolean] start a new conversation first
     # @param run_id [String, nil] the run the line is for; the daemon types nothing
-    #   more once the pane is no longer bound to it
+    #   more once the pane is no longer bound to it. It applies only to a fresh
+    #   step: a `context: continue` line is typed without the daemon's restart,
+    #   so this does not stop it
     # @return [Hash] :ok, and :warning when the daemon gave one; when false, :code
     #   (an error code) and :message, with :reason and :proof_missing when the daemon gave them
     def kick(workspace:, pane:, text:, fresh:, run_id: nil)
@@ -329,7 +331,7 @@ module Workspace
       unknown
     end
 
-    # Whether the daemon shows the pane's agent working or waiting at a prompt , or a
+    # Whether the daemon shows the pane's agent working or waiting at a prompt, or a
     # shell where an agent's turn failed (nothing to type a step's line to); false when it can't say.
     def busy?(workspace, pane)
       shown = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)

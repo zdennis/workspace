@@ -160,6 +160,10 @@ module Workspace
     # Whether nothing is left to report the current step's check: its process
     # died, or a park threw its result away (a park that ended left a reason
     # on the step, or one past its limit is still stored).
+    #
+    # @param run [Hash] the run file
+    # @param now [Time]
+    # @return [Boolean]
     def self.lost_check?(run, now)
       state = run["steps"].fetch(run["current"])
       return false unless state["state"] == "checking"
@@ -169,7 +173,6 @@ module Workspace
       timeout = step.dig("status", "timeout") || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
       started.nil? || now - Time.iso8601(started) > timeout + 60
     end
-    private_class_method :lost_check?
 
     # A hold with no readable `seen_at` has nothing to measure it by, so it counts as expired.
     def self.background_expired?(reason, now)
@@ -852,7 +855,7 @@ module Workspace
         over = turn_over && turn_over["step"] == run["current"] && turn_over["attempt"] == state["attempts"].last&.fetch("n", nil)
         "an agent is working on step #{run["current"]}" unless pane || run["reason"] || over
       when "checking"
-        "the check of step #{run["current"]} is still running" unless self.class.send(:lost_check?, run, @clock.call)
+        "the check of step #{run["current"]} is still running" unless self.class.lost_check?(run, @clock.call)
       end
     end
 
