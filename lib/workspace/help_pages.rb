@@ -599,7 +599,7 @@ module Workspace
           ["--json", "Print one action document (see docs/README.json.md) instead of text"]],
         examples: [
           ["workspace pipeline advance myapp --work-item WC-42", "push WC-42 past a stage that is done but did not say so"],
-          ["workspace pipeline advance myapp --work-item WC-42 --body \"done by hand\"", "leave a reason after the sentinel"],
+          ["workspace pipeline advance myapp --work-item WC-42 --body \"done by hand\"", "record why you pushed it on, e.g. a stage you finished by hand"],
           ["workspace pipeline advance myapp --work-item WC-42 --json", "for a script: one action document"]
         ]
       },
@@ -907,10 +907,10 @@ module Workspace
           ["--by LABEL", "The checked_by label (default: the agent and pane id of $TMUX_PANE, else person)"],
           SPINE_IF_REVISION, JSON_OPT],
         examples: [
-          ["workspace spine verify verify --pass --note \"CI green, all 4 items met\"", "record that the completed verify stage passed its check"],
-          ["workspace spine verify verify --fail --note \"item 2 is not in the diff\"", "record that it failed its check; the note says why"],
+          ["workspace spine verify implement --pass --note \"CI green, all 4 items met\"", "record that the completed implement stage passed its check"],
+          ["workspace spine verify implement --fail --note \"item 2 is not in the diff\"", "record that it failed its check; the note says why"],
           ["workspace spine verify api.worktree-login review --pass --note \"2 nits, fixed\" --by \"claude %27\"", "check a stage of one workspace by name, under your own label"],
-          ["workspace spine verify verify --pass --note \"CI green\" --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the stage file is still at that revision (from spine show --json)"]
+          ["workspace spine verify implement --pass --note \"CI green\" --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the stage file is still at that revision (from spine show --json)"]
         ]
       },
       "goal set" => {

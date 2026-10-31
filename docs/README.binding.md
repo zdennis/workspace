@@ -5,7 +5,7 @@ Bind a tmux pane to a workflow run, a PR review or a library play, so the agent 
 ## Usage
 
 ```sh
-workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--json]
+workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]
 workspace binding show [--pane %ID] [--json]
 workspace binding clear [--pane %ID] [--json]
 ```

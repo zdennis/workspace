@@ -4621,7 +4621,7 @@ RSpec.describe Workspace::CLI do
     it "prints the verb's own Usage line for a stray argument to lock and dev verbs" do
       verbs = {
         %w[lock acquire] => %w[edit extra], %w[lock release] => %w[edit extra], %w[lock clear] => %w[edit extra],
-        %w[lock instructions] => %w[a b], %w[dev up] => %w[a b], %w[dev down] => %w[a b], %w[dev wait] => %w[a b],
+        %w[lock status] => %w[a b], %w[lock instructions] => %w[a b], %w[dev up] => %w[a b], %w[dev down] => %w[a b], %w[dev wait] => %w[a b],
         %w[dev leave] => %w[a b], %w[dev status] => %w[a b], %w[dev __run] => %w[extra]
       }
       verbs.each do |(command, verb), stray|

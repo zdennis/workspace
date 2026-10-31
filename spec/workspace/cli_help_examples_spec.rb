@@ -2,9 +2,7 @@ require "stringio"
 require "tmpdir"
 
 # Every help page must end with an `Examples:` section of 3 to 10 commented
-# examples. PAGES is the one list of pages; KNOWN_GAPS holds the pages that
-# fail today. A page in KNOWN_GAPS must still fail, so fixing one forces its
-# removal and the list only shrinks.
+# examples. PAGES is the one list of pages; every page must pass.
 #
 # The real CLI is built and run in a throwaway HOME, in a throwaway working
 # directory, with PATH holding only Ruby's directory, so tmux, git, osascript
@@ -66,16 +64,11 @@ module HelpExamplesSpec
     "add-project" => "add",
     "list-projects" => "list"
   }.freeze
-
-  # Pages that fail today, grouped by the plan task that fixes them: a task
-  # deletes its block. Each must still fail, so a fixed page cannot stay here.
-  KNOWN_GAPS = [].freeze
 end
 
 RSpec.describe "help pages end with examples" do
   pages = HelpExamplesSpec::PAGES
   aliases = HelpExamplesSpec::ALIASES
-  known_gaps = HelpExamplesSpec::KNOWN_GAPS
   def run_help(argv)
     out = StringIO.new
     err = StringIO.new
@@ -151,10 +144,6 @@ RSpec.describe "help pages end with examples" do
     expect(pages.uniq).to eq(pages)
   end
 
-  it "keeps known gaps to listed pages" do
-    expect(known_gaps - pages).to eq([])
-  end
-
   it "covers every subcommand and every verb table, so a new command cannot skip it" do
     # Commands with no verb constant (inbox, plan, lock...) have their verbs listed by hand above.
     missing = Workspace::CLI::SUBCOMMANDS - aliases.keys - pages
@@ -170,15 +159,8 @@ RSpec.describe "help pages end with examples" do
   end
 
   pages.each do |page|
-    gap = known_gaps.include?(page)
-    it "#{gap ? "still lacks" : "has"} a good page for 'workspace #{page} --help'" do
-      found = problems(argv_for(page))
-      if gap
-        expect(found).not_to be_empty, "now passes: remove #{page.inspect} from known_gaps"
-        expect(run_help(argv_for(page)).last).not_to be_empty, "#{page.inspect} printed nothing"
-      else
-        expect(found).to eq([])
-      end
+    it "has a good page for 'workspace #{page} --help'" do
+      expect(problems(argv_for(page))).to eq([])
     end
   end
 

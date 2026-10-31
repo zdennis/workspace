@@ -3891,11 +3891,7 @@ module Workspace
         #{HelpPages.overview_verbs(HelpPages::PIPELINE).join("\n")}
 
         Examples:
-          workspace pipeline status myapp    # what is myapp working on?
-          workspace pipeline status myapp --json    # the same, for a script
-          workspace pipeline start myapp --work-item WC-42 --body "/build add OAuth support"    # hand a work item to myapp's running agent
-          workspace pipeline advance myapp --work-item WC-42    # push a work item past its running stage by hand
-          workspace pipeline reset myapp    # clear leftover state after stopping the agent
+        #{HelpPages.overview_examples(HelpPages::PIPELINE).join("\n")}
           workspace pipeline start --help    # read the page of one subcommand
       HELP
     end
@@ -7360,7 +7356,7 @@ module Workspace
         opts.separator "  workspace spine set verify --status in_progress    # mark a stage started"
         opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\"    # record who works it and a note"
         opts.separator "  workspace spine check verify --item 2 --done    # tick item 2 of the stage's Done when list"
-        opts.separator "  workspace spine verify verify --pass --note \"CI green, all 4 items met\"    # a checker records a pass (not the agent that did the stage)"
+        opts.separator "  workspace spine verify implement --pass --note \"CI green, all 4 items met\"    # a checker records a pass (not the agent that did the stage)"
         opts.separator "  workspace spine goal set \"Fix the OAuth refresh race\"    # write the goal's title"
         opts.separator "  workspace spine start verify    # type the stage's brief into its owner pane, else the main agent pane"
         opts.separator "  workspace spine start implement --fan-out --max 2    # one new agent pane per ready sub-stage, at most two"
