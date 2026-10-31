@@ -655,4 +655,82 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(status.run("wr_1")["runs"].first["steps"].last["gate"]).to eq("rejected")
     end
   end
+
+  describe "#in_project" do
+    let(:ids) { %w[wr_1 wr_2 wr_3 wr_4 wr_5 wr_6 wr_7] }
+    let(:member) { Workspace::ProjectCatalog::Member }
+    let(:project) do
+      Workspace::ProjectCatalog::Project.new(name: "app", id: "/src/app/.git", path: "/src/app", vcs: "git",
+        members: [member.new(workspace: "app", kind: "main"), member.new(workspace: "app.worktree-x", kind: "worktree")])
+    end
+
+    def finish(id, ended_at)
+      store.update(id) { |run| run.merge!("state" => "completed", "ended_at" => ended_at) }
+    end
+
+    def ids_in(project)
+      status.in_project(project)["runs"].map { |run| run["id"] }
+    end
+
+    before do
+      allow(snapshot_client).to receive(:fetch).and_return("panes" => [])
+    end
+
+    it "lists a member's active runs, then its finished runs, leaving out another project's" do
+      create(workspace: "app", project: "renamed-since", bound: false)
+      create(workspace: "app.worktree-x", bound: false)
+      create(workspace: "other", project: "other", bound: false)
+      finish("wr_1", "2026-10-04T12:50:00Z")
+
+      expect(ids_in(project)).to eq(%w[wr_2 wr_1])
+    end
+
+    it "keeps the finished run of a worktree that is no longer a member" do
+      create(workspace: "app.worktree-gone", project: "app", bound: false)
+      create(workspace: "other.worktree-z", project: "other", bound: false)
+      finish("wr_1", "2026-10-04T12:50:00Z")
+      finish("wr_2", "2026-10-04T12:51:00Z")
+
+      expect(ids_in(project)).to eq(%w[wr_1])
+    end
+
+    it "matches a run by its stored project when the workspace name is not a member's" do
+      create(workspace: "renamed", project: "app", bound: false)
+
+      expect(ids_in(project)).to eq(["wr_1"])
+    end
+
+    it "matches the name prefix of a worktree workspace when the stored project differs" do
+      create(workspace: "Notes.worktree-y", project: "notes", bound: false)
+      notes = Workspace::ProjectCatalog::Project.new(name: "Notes", id: "/src/n/.git", path: "/src/n", vcs: "git", members: [])
+
+      expect(ids_in(notes)).to eq(["wr_1"])
+      expect(ids_in(project)).to eq([])
+    end
+
+    it "names a malformed run in a warning and shows the rest" do
+      create(workspace: "app", bound: false)
+      create(workspace: "app", bound: false)
+      path = File.join(@dir, "runs", "wr_2.json")
+      run = JSON.parse(File.read(path))
+      run["steps"]["plan"]["attempts"].last["started_at"] = "yesterday"
+      run["definition"]["steps"].last["timeout"] = 60
+      File.write(path, JSON.generate(run))
+      allow(panes).to receive(:alive?).and_return(true)
+
+      result = status.in_project(project)
+
+      expect(result["runs"].map { |each| each["id"] }).to eq(["wr_1"])
+      expect(result["warnings"].join).to include("Workflow run wr_2 can't be shown")
+    end
+
+    it "leaves #runs for a workspace on the runs still going, oldest first" do
+      create(workspace: "app", bound: false, created_at: "2026-10-04T12:10:00Z")
+      create(workspace: "app", bound: false, created_at: "2026-10-04T12:05:00Z")
+      create(workspace: "app", bound: false)
+      finish("wr_3", "2026-10-04T12:50:00Z")
+
+      expect(status.runs(workspace: "app")["runs"].map { |run| run["id"] }).to eq(%w[wr_2 wr_1])
+    end
+  end
 end
