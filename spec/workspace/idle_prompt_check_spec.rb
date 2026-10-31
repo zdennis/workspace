@@ -18,6 +18,10 @@ RSpec.describe Workspace::IdlePromptCheck do
     expect(check.refusal(facts, screen(input: "\e[2msend the reply\e[0m"))).to be_nil
   end
 
+  it "refuses a draft that starts on the second row of the box" do
+    expect(check.refusal(facts, screen(input: "\n  please keep this draft"))[:reason]).to eq("input_not_empty")
+  end
+
   it "refuses a nil capture" do
     expect(check.refusal(facts, nil)).to include(reason: "no_input_prompt")
   end

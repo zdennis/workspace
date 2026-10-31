@@ -154,6 +154,18 @@ RSpec.describe Workspace::TypingSafety do
     expect(safety.check(facts, "────────\n❯ my draft [Pasted text #1 +80 lines]\n", pasted: pasted)).to include(reason: "input_changed")
   end
 
+  it "passes a plain-text placeholder, which has no styling to go by" do
+    expect(safety.check(facts, "────────\n❯ Try \"write a test\"\n────────\n")).to be_nil
+  end
+
+  it "refuses a multi-line draft whose first row is blank, on a plain screen" do
+    expect(safety.check(facts, "────────\n❯ \n  please keep this draft\n────────\n")).to include(reason: "input_not_empty")
+  end
+
+  it "passes a blank box with blank continuation rows, on a plain screen" do
+    expect(safety.check(facts, "────────\n❯ \n  \n────────\n")).to be_nil
+  end
+
   describe "with a styled screen" do
     let(:rule) { "\e[38;5;244m────────\e[39m\n" }
     let(:status) { "  \e[36m[Model]\e[39m status\n" }
@@ -190,8 +202,20 @@ RSpec.describe Workspace::TypingSafety do
       expect(safety.check(facts, styled("\e[39m❯ 1. Yes"))).to include(reason: "input_not_empty")
     end
 
-    it "still passes the placeholder" do
-      expect(safety.check(facts, styled("\e[39m❯ Try \"write a test\""))).to be_nil
+    it "reads Claude Code's live placeholder as empty" do
+      expect(safety.check(facts, fixture("placeholder_fresh"))).to be_nil
+    end
+
+    it "refuses a typed draft that starts with Try, which is not faint" do
+      expect(safety.check(facts, styled("\e[39m❯ Try \"write a test\""))).to include(reason: "input_not_empty")
+    end
+
+    it "refuses a multi-line draft whose first row is blank" do
+      expect(safety.check(facts, styled("\e[39m❯ \n  please keep this draft"))).to include(reason: "input_not_empty")
+    end
+
+    it "passes a blank box with blank continuation rows" do
+      expect(safety.check(facts, styled("\e[39m❯ \n  \n"))).to be_nil
     end
 
     it "reads a wrapped suggestion as empty only when every line is faint" do

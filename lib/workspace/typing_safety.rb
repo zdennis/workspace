@@ -16,13 +16,16 @@ module Workspace
   #    {AgentReadiness} waits for). A dialog replaces Claude Code's input box,
   #    so this also catches a permission prompt whose Notification hook
   #    hasn't arrived yet. `no_input_prompt` otherwise.
-  # 5. The input line is empty, or shows only the agent's placeholder, so the
+  # 5. The input box is empty (no text on the prompt row or on any row down to
+  #    its closing rule, when that rule is on screen), or shows only the
+  #    agent's placeholder, so the
   #    text isn't appended to a person's draft (`input_not_empty`). For the
   #    check made after the text is pasted, the whole input box must instead
   #    equal that text, or be exactly one Claude Code `[Pasted text #N]`
   #    placeholder for a long or multi-line paste (`input_changed` otherwise):
   #    a menu row or a draft there means Enter would answer or send something else.
-  #    Given a {StyledScreen}, text drawn entirely faint (SGR 2) on every
+  #    Given a {StyledScreen}, `Try "` is no placeholder (typed text can start
+  #    with it); text drawn entirely faint (SGR 2) on every
   #    line of the input, with every one of those lines proven, is Claude
   #    Code's suggestion and counts as empty. Only the empty check reads
   #    styling; `pasted:` and `exact:` use the plain text, so faint text
@@ -86,7 +89,7 @@ module Workspace
         unless pasted_shown?(pattern, screen, pasted)
           return refusal("input_changed", "#{provider.label}'s input box doesn't hold exactly the pasted text")
         end
-      elsif !(input.empty? || input.match?(PLACEHOLDER) || suggestion?(pattern, styled))
+      elsif !empty_input?(pattern, screen, styled, input)
         return refusal("input_not_empty", "#{provider.label}'s input line already holds text (a draft)")
       end
       nil
@@ -147,6 +150,22 @@ module Workspace
         index += 1
       end
       seen
+    end
+
+    # Whether the input box is empty. A suggestion drawn faint counts. Text on
+    # any row between the prompt row and the closing rule is a draft, though
+    # only when that rule is on screen; without one the prompt row decides.
+    # `Try "` is the placeholder only on a plain String, which has no styling
+    # to tell it from a typed draft.
+    def empty_input?(pattern, screen, styled, input)
+      return true if suggestion?(pattern, styled)
+
+      last = screen.to_enum(:scan, pattern).map { Regexp.last_match }.last
+      rows = last.post_match.lines.drop(1)
+      if rows.any? { |row| closing_rule?(row) }
+        return false if rows.take_while { |row| !closing_rule?(row) }.any? { |row| row.match?(/\S/) }
+      end
+      input.empty? || (!styled && input.match?(PLACEHOLDER))
     end
 
     # Everything from the last input prompt down to the rule that closes the box.
