@@ -8,6 +8,9 @@ module Workspace
     # Seconds a `ps` call may take; `check` runs it on the monitor scan and under the delivery lock.
     PS_TIMEOUT = 5
 
+    # The flags that name the session a Claude Code process resumes.
+    RESUME_FLAGS = %w[--resume -r].freeze
+
     # Reads `pgid` and `tpgid` of a process through `ps`, as +[pgid, tpgid]+, or nil when it can't be read.
     DEFAULT_GROUP_READER = lambda do |pid|
       out, _err, ok = TimedProcess.run(["ps", "-o", "pgid=,tpgid=", "-p", pid.to_i.to_s], chdir: "/", timeout: PS_TIMEOUT)
@@ -48,15 +51,20 @@ module Workspace
       false
     end
 
-    # Sends SIGINT to +pid+ once, after checking against a fresh snapshot that it is the same process.
+    # Sends SIGINT to +pid+ once, after checking against a fresh snapshot that it is the same process and
+    # that it holds the pane's terminal: a `claude -p &` is found ahead of a wrapper's agent and must not
+    # get the signal. A group that can't be read counts as not holding it.
     #
     # @param pid [Integer]
     # @param started [String] the +lstart+ recorded by {#find_agent}
-    # @return [Symbol] +:not_running+, +:stale+ or +:signalled+
-    def stop(pid:, started:)
+    # @param pane_pid [Integer] the pane's process (its shell)
+    # @return [Symbol] +:not_running+, +:stale+, +:background+ or +:signalled+
+    # @raise [Workspace::Error] when the process table can't be read; nothing was sent
+    def stop(pid:, started:, pane_pid:)
       process = @process_tree.snapshot.find(pid)
       return :not_running unless process
       return :stale unless process[:lstart] == started
+      return :background unless foreground?(pid, pane_pid)
       @signaller.call("INT", pid)
       :signalled
     rescue Errno::ESRCH
@@ -73,7 +81,27 @@ module Workspace
       false
     end
 
+    # @param session_id [String]
+    # @param tree [Workspace::ProcessTree::Snapshot]
+    # @return [Boolean] whether any process, in this pane or elsewhere, was started to resume the session, so
+    #   another resume would give the conversation a second process. The id counts only as a resume flag's
+    #   whole argument: a `tail -f <id>.jsonl` or a path holding it doesn't hold the session.
+    def session_held?(session_id:, tree:)
+      tree.processes.any? { |process| resumes?(process[:args].to_s.split, session_id) }
+    end
+
     private
+
+    def resumes?(words, session_id)
+      words.include?("--resume=#{session_id}") ||
+        words.each_cons(2).any? { |flag, value| RESUME_FLAGS.include?(flag) && value == session_id }
+    end
+
+    def foreground?(pid, pane_pid)
+      pgid, = @group_reader.call(pid)
+      _, tpgid = @group_reader.call(pane_pid)
+      !pgid.nil? && pgid == tpgid
+    end
 
     def shell?(process)
       shell_name?(process[:args].to_s.split.first || process[:command])

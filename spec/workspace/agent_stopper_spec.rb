@@ -73,34 +73,86 @@ RSpec.describe Workspace::AgentStopper do
 
     it "sends INT once to the agent pid" do
       allow(process_tree).to receive(:snapshot).and_return(wrapper)
-      expect(stopper.stop(pid: 20, started: started)).to eq(:signalled)
+      expect(stopper.stop(pid: 20, started: started, pane_pid: 10)).to eq(:signalled)
       expect(signals).to eq([["INT", 20]])
     end
 
     it "refuses a reused pid" do
       allow(process_tree).to receive(:snapshot).and_return(wrapper)
-      expect(stopper.stop(pid: 20, started: "Tue Oct 27 09:00:00 2026")).to eq(:stale)
+      expect(stopper.stop(pid: 20, started: "Tue Oct 27 09:00:00 2026", pane_pid: 10)).to eq(:stale)
       expect(signals).to be_empty
     end
 
     it "answers not_running for a gone pid" do
       allow(process_tree).to receive(:snapshot).and_return(snapshot(proc_entry(10, 1, "-zsh")))
-      expect(stopper.stop(pid: 20, started: started)).to eq(:not_running)
+      expect(stopper.stop(pid: 20, started: started, pane_pid: 10)).to eq(:not_running)
       expect(signals).to be_empty
     end
 
     it "answers not_running when the process exits before the signal" do
       allow(process_tree).to receive(:snapshot).and_return(wrapper)
-      gone = described_class.new(process_tree: process_tree, signaller: ->(*) { raise Errno::ESRCH })
-      expect(gone.stop(pid: 20, started: started)).to eq(:not_running)
+      gone = described_class.new(process_tree: process_tree, signaller: ->(*) { raise Errno::ESRCH }, group_reader: group_reader)
+      expect(gone.stop(pid: 20, started: started, pane_pid: 10)).to eq(:not_running)
     end
 
     it "never signals the pane's shell and sends only INT" do
       allow(process_tree).to receive(:snapshot).and_return(wrapper)
       agent = stopper.find_agent(pane_pid: 10, detector: detector, tree: wrapper)
-      stopper.stop(**agent)
+      stopper.stop(**agent, pane_pid: 10)
       expect(signals.map(&:first).uniq).to eq(["INT"])
       expect(signals.map(&:last)).not_to include(10, 15)
+    end
+
+    it "sends nothing to a background claude, whose group isn't the pane's foreground one" do
+      tree = snapshot(proc_entry(10, 1, "-zsh"), proc_entry(20, 10, "claude -p"), proc_entry(15, 10, "/bin/sh claude-dev"))
+      allow(process_tree).to receive(:snapshot).and_return(tree)
+      reader = ->(pid) { (pid == 20) ? [20, 15] : [10, 15] }
+      background = described_class.new(process_tree: process_tree, signaller: signaller, group_reader: reader)
+
+      expect(background.stop(pid: 20, started: started, pane_pid: 10)).to eq(:background)
+      expect(signals).to be_empty
+    end
+
+    it "signals a wrapper's agent in the foreground group" do
+      allow(process_tree).to receive(:snapshot).and_return(wrapper)
+      reader = ->(pid) { (pid == 20) ? [15, 15] : [10, 15] }
+      foreground = described_class.new(process_tree: process_tree, signaller: signaller, group_reader: reader)
+
+      expect(foreground.stop(pid: 20, started: started, pane_pid: 10)).to eq(:signalled)
+    end
+
+    it "sends nothing when a group can't be read" do
+      allow(process_tree).to receive(:snapshot).and_return(wrapper)
+      [->(_pid) {}, ->(pid) { (pid == 20) ? [15, 15] : nil }].each do |reader|
+        unread = described_class.new(process_tree: process_tree, signaller: signaller, group_reader: reader)
+        expect(unread.stop(pid: 20, started: started, pane_pid: 10)).to eq(:background)
+      end
+      expect(signals).to be_empty
+    end
+
+    it "raises when the process table can't be read, sending nothing" do
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "could not read the process table")
+
+      expect { stopper.stop(pid: 20, started: started, pane_pid: 10) }.to raise_error(Workspace::Error)
+      expect(signals).to be_empty
+    end
+  end
+
+  describe "#session_held?" do
+    def held?(args) = stopper.session_held?(session_id: "abc-1", tree: snapshot(proc_entry(10, 1, "-zsh"), proc_entry(40, 1, args)))
+
+    ["claude --resume abc-1", "/bin/sh /Users/z/bin/claude-dev --resume abc-1", "claude --model x -r abc-1",
+      "claude --resume=abc-1 --verbose"].each do |args|
+      it "is true for `#{args}`" do
+        expect(held?(args)).to be true
+      end
+    end
+
+    ["bundle exec rspec --out /tmp/abc-1/scratchpad/out.txt", "tail -f /tmp/abc-1.jsonl", "rg abc-1", "claude --resume abc-12",
+      "claude --resume=abc-12", "claude --resume"].each do |args|
+      it "is false for `#{args}`" do
+        expect(held?(args)).to be false
+      end
     end
   end
 

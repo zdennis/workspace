@@ -30,7 +30,15 @@ module Workspace
   #
   # Whatever can't be read leaves the agent alone. That includes an agent in a
   # pane outside window 0, which always defers, because the monitor scans
-  # window 0 only and so has no facts for it. This class sends no signal.
+  # window 0 only and so has no facts for it.
+  #
+  # A restart runs on its own thread, inside a claim on the pane: it stops the
+  # agent, types the resume command, waits for the agent and types a message,
+  # then one {AgentRecoveryStore#update} ends the attempt. A failed attempt
+  # counts toward {AgentRecoveryStore::MAX_ATTEMPTS}, so nothing repeats
+  # without bound. The only signal is one SIGINT per attempt, through
+  # {AgentStopper#stop}. There is no escalation: any other signal starts a new,
+  # empty conversation in a `claude ... || claude` pane.
   class AgentRecoveryDesk
     # The `error` kinds that go on the attempt schedule; any other gives up at once.
     RETRYABLE_ERRORS = %w[server_error overloaded rate_limit unknown].freeze
@@ -53,6 +61,30 @@ module Workspace
     # What Claude Code shows while it is retrying by itself, or still working.
     BUSY_SCREEN = /Retrying in|esc to interrupt/
 
+    # Seconds a stopped agent has to leave the pane, read once a second.
+    STOP_WAIT = 15
+
+    # Reads in a row that must find the pane clear: on one, the wrapper may
+    # have only just exited, or the `||` branch may be about to start.
+    CLEAR_READS = 2
+
+    # Seconds to wait for the SessionStart that names an agent's session.
+    SESSION_WAIT = 10
+
+    # Seconds a resumed agent has to show its prompt.
+    READY_WAIT = 60
+
+    # How many times the message is tried while the pane's state is unknown.
+    TYPE_TRIES = 20
+
+    # Seconds between polls and between typing tries.
+    POLL_INTERVAL = 1
+
+    # What the agent is told once it has been resumed.
+    RESUMED_MESSAGE = "An API error stopped your last turn (%<error>s), so workspace restarted Claude Code and resumed this " \
+      "conversation. Locks your old process held were released, so take them again before you use them. A dev server " \
+      "started with `workspace dev up` is still running and keeps its lock. Continue where you left off."
+
     # Event log line for a finished attempt.
     ATTEMPT_EVENT = "agent_recovery_attempt"
 
@@ -65,6 +97,29 @@ module Workspace
     # * +mode+ — with +:go+, +:typed+, +:restart+ or +:resume_only+
     # * +command+ — with +:go+ and a restart, the resume line to type
     Verdict = Struct.new(:answer, :mode, :command, keyword_init: true)
+
+    # One attempt under way.
+    #
+    # * +mode+ — the event line's mode, "typed" or "restart"
+    # * +number+ — the entry's `attempts` once this one is counted
+    # * +pid+, +started+ — the agent the attempt began with, nil when it is gone
+    # * +command+ — the resume line {#check} answered in step 1, flags included
+    # * +message+ — the text typed to the agent
+    # * +resume_only+ — no agent to stop, so no signal and no wait for an exit
+    Attempt = Struct.new(:pane_id, :session_id, :number, :mode, :pid, :started, :command, :message, :resume_only, keyword_init: true)
+    private_constant :Attempt
+
+    # Outcomes that say what is in the pane, so step 6 takes no last read.
+    SETTLED_OUTCOMES = %w[resumed typed person_resumed fresh_agent].freeze
+    private_constant :SETTLED_OUTCOMES
+
+    # Outcomes that may leave our text in the agent's input line.
+    DRAFT_OUTCOMES = %w[not_submitted no_response].freeze
+    private_constant :DRAFT_OUTCOMES
+
+    # What hooks and step 3 leave on an entry for the end of an attempt.
+    ATTEMPT_FIELDS = %w[turn_completed failed_during_attempt resumed_elsewhere attempt_session_id prompt_seen].freeze
+    private_constant :ATTEMPT_FIELDS
 
     HANDLED_EVENTS = %w[turn_failed stop user_prompt tool_start tool_use subagent_start session_start session_end].freeze
     private_constant :HANDLED_EVENTS
@@ -91,19 +146,22 @@ module Workspace
     # @param session_monitor [Workspace::SessionMonitor] pane facts
     # @param store [Workspace::AgentRecoveryStore] the workspace's recovery entries
     # @param transcript [Workspace::TranscriptSummary] reads the last turn record
-    # @param stopper [Workspace::AgentStopper] finds the agent's process
+    # @param stopper [Workspace::AgentStopper] finds the agent's process and sends the SIGINT
     # @param detector [Workspace::AgentDetector] the workspace's way to name the agent
     # @param process_tree [Workspace::ProcessTree] reads the fresh snapshots the process checks use
     # @param ledger [Workspace::SessionLedger] the session open in a pane, and its directory
     # @param resume_command [Workspace::AgentResumeCommand] builds the resume line
-    # @param prompt_typer [Workspace::PromptTyper] the input line check
+    # @param prompt_typer [Workspace::PromptTyper] the input line check, and the message's typing
     # @param readiness [Workspace::AgentReadiness] waits for a resumed agent
     # @param marker [Workspace::RecoveryStopMarker] says a stop is ours
     # @param inbox [#call] answers the workspace's {InboxStore}
     # @param event_log [Workspace::EventLog, nil] where attempts and give-ups are recorded
     # @param delivery_lock [Mutex] held while typing, shared with the daemon's other deliveries
-    # @param restarting [#call] given a pane id, whether a restart holds the pane
-    # @param claim_restart [#call] given a pane id, claims it; returns a token, or nil when it is held
+    # @param restarting [#call] given a pane id, whether a restart holds the pane. Claims are released
+    #   by token and refused while held, so during an attempt a true answer is the attempt's own claim.
+    #   That holds while every write to the claim is guarded by `key?` or replaces its own `:starting`
+    # @param claim_restart [#call] given a pane id, claims it; returns a token, or nil when it is held.
+    #   Called on the attempt's own thread, so it can register +Thread.current+ for shutdown
     # @param release_restart [#call] given a pane id and a token, releases that claim
     # @param rebind_queue [#call] given a pane id and the monitor's agent pid, moves the pane's
     #   queued prompts to that agent
@@ -192,15 +250,17 @@ module Workspace
     #
     # @param pane_id [String]
     # @param entry [Hash] the pane's stored entry
+    # @param screen [String, nil] the screen a quiet wait already gave, compared
+    #   with one capture so the delivery lock isn't held across that wait
     # @return [Verdict]
-    def check(pane_id, entry)
+    def check(pane_id, entry, screen: nil)
       detail = pane_detail(pane_id)
       return verdict(:defer) unless detail.is_a?(Hash)
       tree = read_tree
       return verdict(:defer) unless tree
 
       agent = @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
-      agent ? check_live(pane_id, entry, detail, tree, agent) : check_gone(pane_id, entry, detail, tree)
+      agent ? check_live(pane_id, entry, detail, tree, agent, screen) : check_gone(pane_id, entry, detail, tree, screen)
     end
 
     private
@@ -551,11 +611,16 @@ module Workspace
       return unless due && @clock.now >= due && !@restarting.call(pane_id)
 
       answer = safe_check(pane_id, entry)
+      return refuse(pane_id, entry, answer) unless answer.answer == :go
+
+      # The screen wait gave a hook time to change the entry.
+      current = @store.get(pane_id)
+      start_attempt(pane_id, answer) if current && same_wait?(current, entry)
+    end
+
+    # Acts on any {#check} answer but `:go`.
+    def refuse(pane_id, entry, answer)
       case answer.answer
-      when :go
-        # The screen wait gave a hook time to change the entry.
-        current = @store.get(pane_id)
-        start_attempt(pane_id, answer) if current && same_wait?(current, entry)
       when :defer then defer(pane_id, entry)
       when :clear then clear(pane_id, entry)
       when :never then give_up(pane_id, entry, "cannot_restart")
@@ -564,8 +629,8 @@ module Workspace
 
     # A check that raises has read nothing, so it defers like any other unread
     # condition and the defer limit ends it.
-    def safe_check(pane_id, entry)
-      check(pane_id, entry)
+    def safe_check(pane_id, entry, **options)
+      check(pane_id, entry, **options)
     rescue => e
       @logger.debug { "agent recovery: check of #{pane_id} failed (#{e.class}: #{e.message})" }
       verdict(:defer)
@@ -582,12 +647,387 @@ module Workspace
       nil
     end
 
-    # The attempt for `attempts` above 0: stop, resume, wait, type. Not built
-    # yet. As {#typed_attempt} for `defer_since`. With `resumed_elsewhere` set,
-    # step 3 must type nothing and step 6 must delete the entry and resolve the
-    # session's item, as {#reconcile} does.
-    def restart_attempt(_pane_id, _answer)
+    # The attempt for `attempts` above 0: stop, resume, wait, type.
+    def restart_attempt(pane_id, _answer)
+      @spawn.call { run_claimed(pane_id, method(:open_restart), method(:restart_steps)) }
+    end
+
+    # Runs one attempt inside a claim on the pane. An attempt that raises or is
+    # killed stays `attempting` with no claim, for {#reconcile} to pick up, and
+    # keeps its marker until then: the agent may be exiting right now.
+    #
+    # @param open [#call] given the pane id, step 1: answers an {Attempt}, or nil when none began
+    # @param steps [#call] given the attempt, answers an outcome and any agent that outcome names
+    def run_claimed(pane_id, open, steps)
+      token = @claim_restart.call(pane_id)
+      return unless token
+
+      attempt = outcome = nil
+      begin
+        attempt = open.call(pane_id)
+        return unless attempt
+        outcome, agent = steps.call(attempt)
+        finish(attempt, outcome, agent: agent)
+      rescue => e
+        quiet_debug { "agent recovery: attempt in #{pane_id} failed (#{e.class}: #{e.message})" }
+      ensure
+        @marker.clear(attempt.session_id) if outcome && outcome != "not_stopped"
+        @release_restart.call(pane_id, token)
+      end
+    end
+
+    # Step 1. A refusal costs no attempt and writes no line.
+    def open_restart(pane_id)
+      seen = @store.get(pane_id)
+      return nil unless seen && seen["phase"] == "waiting"
+
+      quiet = still_screen(pane_id)
+      return refuse(pane_id, seen, verdict(:defer)) unless quiet
+
+      opened = @delivery_lock.synchronize { begin_restart(pane_id, seen, quiet) }
+      return opened if opened.is_a?(Attempt)
+      refuse(pane_id, seen, opened) if opened
       nil
+    end
+
+    # @return [Attempt, Verdict, nil] the attempt under way; the answer to act
+    #   on; or nil when a hook changed the entry and there is nothing to do
+    def begin_restart(pane_id, seen, quiet)
+      answer = safe_check(pane_id, seen, screen: quiet)
+      return answer unless answer.answer == :go
+      return nil if answer.mode == :typed
+      return mark_attempting(pane_id, seen, answer) if answer.mode == :resume_only
+
+      unconfirmed = confirmed_error(pane_id, seen)
+      return verdict(unconfirmed) if unconfirmed
+      detail = pane_detail(pane_id)
+      return verdict(:defer) unless detail.is_a?(Hash)
+      # The transcript and ledger reads above gave a prompt time to arrive.
+      return verdict(:defer) if prompt_since_failure?(pane_id, seen)
+
+      attempt = mark_attempting(pane_id, seen, answer, "stopped" => true, "last_signal_at" => stamp)
+      attempt && signal_agent(attempt, seen, detail)
+    end
+
+    # Writes `attempting`. `defer_since` goes here and nowhere earlier, so a
+    # scan's `:go` and step 1's `:defer` can't repeat without bound.
+    def mark_attempting(pane_id, seen, answer, fields = {})
+      number = seen["attempts"].to_i + 1
+      opened = false
+      @store.update(pane_id) do |entry|
+        next unless same_wait?(entry, seen) && entry["attempts"] == seen["attempts"]
+        entry.merge!(fields, "attempts" => number, "phase" => "attempting", "attempt_session_id" => nil, "defer_since" => nil)
+        opened = true
+      end
+      return nil unless opened
+
+      Attempt.new(pane_id: pane_id, session_id: seen["session_id"], number: number, mode: "restart", pid: seen["agent_pid"],
+        started: seen["agent_started"], command: answer.command, message: format(RESUMED_MESSAGE, error: seen["error"]),
+        resume_only: answer.mode == :resume_only)
+    end
+
+    # The marker and `stopped` are written before the signal, because the
+    # SessionEnd it causes can arrive at once, and with no marker it would stop
+    # the dev server. A stop that raises sent nothing.
+    def signal_agent(attempt, seen, detail)
+      return take_back(attempt, seen, :defer) unless @marker.mark(attempt.session_id)
+
+      result = begin
+        @stopper.stop(pid: attempt.pid, started: attempt.started, pane_pid: detail[:pid])
+      rescue => e
+        @logger.debug { "agent recovery: no signal for #{attempt.pane_id} (#{e.class}: #{e.message})" }
+        :unread
+      end
+      case result
+      when :signalled, :not_running then attempt
+      when :stale then take_back(attempt, seen, :clear)
+      else take_back(attempt, seen, :defer)
+      end
+    end
+
+    # No signal went out, so the attempt never happened: the entry goes back to
+    # how step 1 found it, `defer_since` included, so the defer limit still
+    # runs. What a hook wrote meanwhile is honoured as step 6 would.
+    #
+    # @return [Verdict] the answer to act on; it finds a changed entry and does nothing
+    def take_back(attempt, seen, answer)
+      @marker.clear(attempt.session_id)
+      live = last_read(attempt.pane_id)
+      row = nil
+      restored = %w[phase attempts stopped last_signal_at defer_since].to_h { |key| [key, seen[key]] }
+      stored = @store.update(attempt.pane_id) do |entry|
+        next unless attempt_current?(entry, attempt)
+        entry.merge!(restored)
+        row = hook_row(entry, live)
+      end
+      close_row(attempt, row, stored)
+      verdict(answer)
+    end
+
+    # Steps 2 to 5. Each step answers nil to go on.
+    def restart_steps(attempt)
+      ended = attempt.resume_only ? nil : await_exit(attempt)
+      ended ||= resume_in_pane(attempt) || await_agent(attempt)
+      return ended if ended
+
+      typed = type_message(attempt)
+      return typed if typed.is_a?(Array)
+      [(typed == "submitted") ? "resumed" : typed]
+    end
+
+    # Step 2.
+    def await_exit(attempt)
+      deadline = @clock.now + STOP_WAIT
+      clear_reads = 0
+      loop do
+        look, agent = pane_look(attempt)
+        return identify(attempt, agent) if look == :other
+        clear_reads = (look == :clear) ? clear_reads + 1 : 0
+        return nil if clear_reads >= CLEAR_READS
+        return ["not_stopped"] if @clock.now >= deadline
+        @sleeper.call(POLL_INTERVAL)
+      end
+    end
+
+    # @return [Array] +:same+ (the agent we stopped), +:other+ with the agent,
+    #   +:clear+ (a shell holding the terminal), or +:none+ when the pane is
+    #   neither or can't be read
+    def pane_look(attempt)
+      detail = pane_detail(attempt.pane_id)
+      tree = detail.is_a?(Hash) ? read_tree : nil
+      return [:none] unless tree
+
+      agent = @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
+      return ours?(agent, attempt) ? [:same] : [:other, agent] if agent
+      clear = @stopper.pane_clear?(pane_pid: detail[:pid], command: detail[:command], detector: @detector, tree: tree)
+      clear ? [:clear] : [:none]
+    end
+
+    def ours?(agent, attempt)
+      agent[:pid] == attempt.pid && agent[:started] == attempt.started
+    end
+
+    # An agent we didn't start. The monitor keeps the old session id until a
+    # new SessionStart, so only `attempt_session_id` can say a person resumed
+    # this conversation.
+    def identify(attempt, agent)
+      (await_session(attempt) == attempt.session_id) ? ["person_resumed", agent] : ["fresh_agent"]
+    end
+
+    # @return [String, nil] the session a SessionStart reported since step 1
+    def await_session(attempt)
+      deadline = @clock.now + SESSION_WAIT
+      loop do
+        session = @store.get(attempt.pane_id)&.fetch("attempt_session_id", nil)
+        return session if session || @clock.now >= deadline
+        @sleeper.call(POLL_INTERVAL)
+      end
+    end
+
+    # Step 3. The wait in {#identify} runs outside the lock.
+    def resume_in_pane(attempt)
+      typed, agent = @delivery_lock.synchronize { type_resume(attempt) }
+      (typed == :other) ? identify(attempt, agent) : typed && [typed]
+    end
+
+    # The shell's line is emptied first, in its own call: Enter would otherwise
+    # run whatever already sits there, our own leftover or a person's half-typed
+    # text. That text is lost, the accepted cost in a pane we stopped.
+    #
+    # @return [Array, nil] a refusal, or nil once the command landed. Through
+    #   {Tmux#deliver}, because {PromptTyper} refuses a shell.
+    def type_resume(attempt)
+      pane_id = attempt.pane_id
+      return ["resumed_elsewhere"] if @store.get(pane_id)&.fetch("resumed_elsewhere", false) == true
+      return ["claim_lost"] unless @restarting.call(pane_id)
+
+      # Read first, so the clear look is the last read before `C-u`, and acted
+      # on after it, so a person's resume in this pane still reads as `:other`.
+      held = session_held?(attempt.session_id)
+      look, agent = pane_look(attempt)
+      return [:other, agent] if look == :other
+      return ["pane_not_clear"] unless look == :clear && !held
+      return ["not_delivered"] unless @tmux.send_key(@session_name, pane_id, "C-u")
+
+      @tmux.deliver(@session_name, pane_id, attempt.command).landed? ? nil : ["not_delivered"]
+    end
+
+    # A tree that can't be read counts as held.
+    def session_held?(session_id)
+      tree = read_tree
+      tree.nil? || @stopper.session_held?(session_id: session_id, tree: tree)
+    end
+
+    # Step 4. The agent's pid is stored as soon as it is seen, whatever happens
+    # next, so {#check} doesn't read our own agent as someone else's.
+    def await_agent(attempt)
+      pane_id = attempt.pane_id
+      @readiness.wait(@session_name, deadline: @readiness.deadline_in(READY_WAIT), only_pane: pane_id, detector: @detector)
+      @session_monitor.rescan_pane(pane_id)
+      @marker.clear(attempt.session_id)
+      agent = live_agent(pane_id)
+      return ["not_ready"] unless agent
+
+      attempt.pid, attempt.started = agent.values_at(:pid, :started)
+      @store.update(pane_id) do |entry|
+        next unless attempt_current?(entry, attempt)
+        store_agent(entry, agent)
+        entry["stopped"] = false
+      end
+      session = await_session(attempt)
+      return ["fresh_agent"] if session && session != attempt.session_id
+      rebind(pane_id)
+      session ? nil : ["not_ready"]
+    end
+
+    # Step 5. The lock is held for one try, so the workspace's other deliveries
+    # aren't held up. Text that may have landed is never typed again.
+    #
+    # @return [String, Array] "submitted", "not_submitted" or "not_typed"; or,
+    #   when the pane isn't the attempt's any more, the outcome and any agent
+    def type_message(attempt)
+      TYPE_TRIES.times do |try|
+        @sleeper.call(POLL_INTERVAL) unless try.zero?
+        typed = @delivery_lock.synchronize { typing_refusal(attempt) || type_once(attempt) }
+        return (typed.first == :other) ? identify(attempt, typed.last) : typed if typed.is_a?(Array)
+        return typed unless typed == :retry
+      end
+      "not_typed"
+    end
+
+    # Each try's identity check, under the lock: nothing is typed unless the
+    # claim holds and the pane still has the attempt's agent.
+    #
+    # @return [Array, nil] the refusal; +:other+ with an agent we didn't start
+    def typing_refusal(attempt)
+      return ["claim_lost"] unless @restarting.call(attempt.pane_id)
+
+      look, agent = pane_look(attempt)
+      case look
+      when :same then nil
+      when :other then [:other, agent]
+      else ["pane_not_clear"]
+      end
+    end
+
+    def type_once(attempt)
+      pane_id = attempt.pane_id
+      typed = @prompt_typer.type(session_name: @session_name, target: pane_id, pane_id: pane_id, text: attempt.message)
+      case typed.outcome
+      when :submitted then "submitted"
+      when :not_submitted then press_enter(pane_id, attempt.message) ? "submitted" : "not_submitted"
+      when :refused then (typed.reason == "unknown") ? :retry : "not_typed"
+      else "not_typed"
+      end
+    end
+
+    def press_enter(pane_id, message)
+      @prompt_typer.check(pane_id, pasted: message).nil? && @tmux.deliver(@session_name, pane_id, "", enter: true).ok?
+    end
+
+    # Step 6: one update, so it can't overwrite a hook's write, then the line.
+    # The queue moves before the update ends the hold, so no prune sees the old
+    # pid. An entry that isn't this attempt's any more was picked up by
+    # {#reconcile}, which wrote the line. A kill waits for the end of the span,
+    # so a `gave_up` entry always gets its line and inbox item.
+    #
+    # @param attempt [Attempt]
+    # @param outcome [String]
+    # @param agent [Hash, nil] with `person_resumed`, the agent found
+    # @return [void]
+    def finish(attempt, outcome, agent: nil)
+      pane_id = attempt.pane_id
+      live = agent || (SETTLED_OUTCOMES.include?(outcome) ? :unread : last_read(pane_id))
+      rebind(pane_id) if live.is_a?(Hash) && !ours?(live, attempt)
+
+      Thread.handle_interrupt(Object => :never) do
+        seen = row = nil
+        stored = @store.update(pane_id) do |entry|
+          next unless attempt_current?(entry, attempt)
+          seen = entry.dup
+          row = close_attempt(entry, attempt, outcome, live)
+        end
+        next unless seen
+
+        record(ATTEMPT_EVENT, "attempt" => attempt.number, "session_id" => attempt.session_id, "pane_id" => pane_id,
+          "error" => seen["error"], "mode" => attempt.mode, "outcome" => outcome)
+        close_row(attempt, row, stored)
+      end
+    end
+
+    # @return [Symbol, nil] +:resolved+, +:gave_up+, or nil when there is nothing to report
+    def close_attempt(entry, attempt, outcome, live)
+      row = hook_row(entry, live)
+      return row if row
+
+      case outcome
+      when "resumed" then entry.merge!("phase" => "watching", "last_signal_at" => nil, "draft_text" => nil)
+      when "typed"
+        entry["phase"] = "watching"
+        entry["draft_text"] = nil
+      when "person_resumed"
+        entry.merge!("phase" => "watching", "stopped" => false, "last_signal_at" => nil)
+        store_agent(entry, live)
+      when "fresh_agent"
+        give_up_in(entry, "fresh_conversation")
+        return :gave_up
+      else
+        apply_read(entry, live)
+        entry["draft_text"] = attempt.message if DRAFT_OUTCOMES.include?(outcome)
+        return :gave_up if schedule_next(entry)
+      end
+      nil
+    end
+
+    # What hooks left for the end of the attempt, ahead of its outcome. Clears
+    # the attempt's fields either way.
+    #
+    # @return [Symbol, nil] +:resolved+, +:gave_up+, +:rescheduled+, or nil when no hook decides
+    def hook_row(entry, live)
+      finished = entry["turn_completed"] == true || entry["resumed_elsewhere"] == true
+      failed = entry["failed_during_attempt"] == true
+      opened = entry["attempt_session_id"]
+      ATTEMPT_FIELDS.each { |key| entry.delete(key) }
+      if finished
+        entry.clear
+        return :resolved
+      end
+      if opened && opened != entry["session_id"]
+        give_up_in(entry, "fresh_conversation")
+        return :gave_up
+      end
+      return nil unless failed
+
+      apply_read(entry, live)
+      entry["phase"] = "watching"
+      known = (live == :unread) ? {pid: entry["agent_pid"], started: entry["agent_started"]} : live
+      intake(entry, entry["session_id"], entry["error"], entry["transcript_path"], known) ? :gave_up : :rescheduled
+    end
+
+    # From the last read: an agent is ours to stop next time, and none means
+    # the next attempt is `resume_only`. A read that failed changes nothing.
+    def apply_read(entry, live)
+      return if live == :unread
+      entry["stopped"] = live.nil?
+      store_agent(entry, live) if live
+    end
+
+    def close_row(attempt, row, stored)
+      resolve(attempt.session_id) if row == :resolved
+      report_give_up(attempt.pane_id, stored) if row == :gave_up
+    end
+
+    def attempt_current?(entry, attempt)
+      entry["phase"] == "attempting" && entry["session_id"] == attempt.session_id && entry["attempts"] == attempt.number
+    end
+
+    # @return [Hash, nil, Symbol] the agent in the pane, nil when there is none
+    #   or the pane is gone, or :unread when tmux or the process table can't be read
+    def last_read(pane_id)
+      detail = pane_detail(pane_id)
+      tree = read_tree
+      return :unread if detail == :unknown || tree.nil?
+      detail && @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
     end
 
     def defer(pane_id, seen)
@@ -710,7 +1150,8 @@ module Workspace
       return unless seen
 
       record_interrupted(pane_id, seen)
-      @marker.clear(seen["session_id"])
+      # A live agent may still exit from our signal: its marker is left to expire.
+      @marker.clear(seen["session_id"]) unless agent
       resolve(seen["session_id"]) if finished
       report_give_up(pane_id, stored) if gave_up
     end
@@ -752,7 +1193,7 @@ module Workspace
 
     # No agent in the pane. With `stopped` the agent is already gone and
     # nothing can be killed, so the checks that read a live agent don't apply.
-    def check_gone(pane_id, entry, detail, tree)
+    def check_gone(pane_id, entry, detail, tree, screen)
       unless entry["stopped"] == true
         return verdict(signalled_lately?(entry) ? :defer : :clear)
       end
@@ -761,14 +1202,15 @@ module Workspace
       command = resume_line(entry)
       return verdict(:defer) unless command && entry["session_id"].to_s.match?(AgentResumeCommand::SESSION_ID)
       clear = @stopper.pane_clear?(pane_pid: detail[:pid], command: detail[:command], detector: @detector, tree: tree)
-      return verdict(:defer) unless clear && still_screen(pane_id)
+      return verdict(:defer) if !clear || @stopper.session_held?(session_id: entry["session_id"], tree: tree)
+      return verdict(:defer) unless still_screen(pane_id, screen)
       verdict(:go, mode: :resume_only, command: command)
     end
 
     # What may clear comes first, so an agent at work is deferred and never
     # read as a transcript that moved on.
-    def check_live(pane_id, entry, detail, tree, agent)
-      return verdict(:defer) if entry["stopped"] == true || held_off?(pane_id, entry)
+    def check_live(pane_id, entry, detail, tree, agent, screen)
+      return verdict(:defer) if entry["stopped"] == true || held_off?(pane_id, entry, screen)
 
       unless entry["agent_pid"]
         @store.update(pane_id) { |current| store_agent(current, agent) if same_wait?(current, entry) }
@@ -783,9 +1225,9 @@ module Workspace
       restart_verdict(pane_id, entry, detail, tree, agent)
     end
 
-    def held_off?(pane_id, entry)
+    def held_off?(pane_id, entry, screen)
       !input_free?(pane_id, entry) || prompt_since_failure?(pane_id, entry) || subagents_running?(pane_id, entry) ||
-        screen_busy?(pane_id)
+        screen_busy?(pane_id, screen)
     end
 
     # @return [Symbol, nil] +:defer+ or +:clear+ unless the transcript and the
@@ -838,16 +1280,18 @@ module Workspace
       latest.nil? || @clock.now - latest < SUBAGENT_QUIET
     end
 
-    def screen_busy?(pane_id)
-      screen = still_screen(pane_id)
+    def screen_busy?(pane_id, quiet)
+      screen = still_screen(pane_id, quiet)
       screen.nil? || BUSY_SCREEN.match?(screen)
     end
 
+    # @param quiet [String, nil] a screen that already stood still, compared
+    #   with one capture in place of the wait
     # @return [String, nil] the screen, when it stayed unchanged for {QUIET_FOR}
-    def still_screen(pane_id)
-      before = @tmux.capture_screen(pane_id)
+    def still_screen(pane_id, quiet = nil)
+      before = quiet || @tmux.capture_screen(pane_id)
       return nil unless before
-      @sleeper.call(QUIET_FOR)
+      @sleeper.call(QUIET_FOR) unless quiet
       (@tmux.capture_screen(pane_id) == before) ? before : nil
     end
 
