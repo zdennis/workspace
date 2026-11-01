@@ -143,6 +143,27 @@ RSpec.describe Workspace::WorkflowCatalog do
     end
   end
 
+  describe "#known? and #known_ids" do
+    it "is true for a preset, a user file and a file that fails its checks" do
+      write(global_dir, "mine", "steps:\n  a:\n    prompt: P\n")
+      write(global_dir, "broken", "title: [\n")
+
+      expect(%w[rpiv mine broken].map { |id| catalog.known?(id) }).to eq([true, true, true])
+    end
+
+    it "is false for an unknown id, a ticket key, an issue number and a URL" do
+      expect(["nope", "PROJ-101", "#12", "https://example.com/o/r/issues/1"].map { |id| catalog.known?(id) }).to eq([false] * 4)
+    end
+
+    it "lists ids but leaves out a .yml entry no id can find" do
+      write(global_dir, "mine", "steps:\n  a:\n    prompt: P\n")
+      write(global_dir, "Bad Name", "x: 1\n")
+      FileUtils.mkdir_p(File.join(global_dir, "dir.yml"))
+
+      expect(catalog.known_ids).to eq(%w[mine rpiv])
+    end
+  end
+
   describe "#global_path" do
     it "names the user's file for an id" do
       expect(catalog.global_path("ship")).to eq(File.join(global_dir, "ship.yml"))
