@@ -1,6 +1,6 @@
 module Workspace
-  # Reads the workflow `workflow start` and `go` use when none is named:
-  # `workflows.by_ref.<kind>`, then `workflows.default`.
+  # Reads the workflow to use when none is named: `workflows.by_ref.<kind>`,
+  # then `workflows.default`.
   class WorkflowDefaults
     # @param config_resolver [Workspace::ConfigResolver]
     def initialize(config_resolver:)

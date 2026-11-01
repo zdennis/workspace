@@ -93,6 +93,7 @@ module Workspace
         prompt = nil if prompt.empty?
         id, ref = split(id, ref, positional, prompt)
         warnings = []
+        # A named id's unknown_workflow outranks the usage errors; a default is read only after they pass.
         if id
           definition = @catalog.find(id)
           check_usage!(ref, prompt, branch)
