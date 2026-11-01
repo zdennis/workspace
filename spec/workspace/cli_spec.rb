@@ -12679,6 +12679,13 @@ RSpec.describe Workspace::CLI do
         expect(hooks.runs.map { |r| r[:event] }).to eq(["post_focus"])
       end
 
+      it "names focus.chain and the way to plain focus in its help" do
+        cli, = action_cli
+        help = a_string_including("focus.chain", "workspace config set focus.chain focus", "a warning, not an error")
+
+        expect { cli.run(["focus", "--help"]) }.to raise_error(SystemExit).and output(help).to_stdout
+      end
+
       it "answers a missing window with the error envelope" do
         focus = Workspace::Commands::Focus.new(state: CLITestHelpers::FakeState.new, window_manager: CLITestHelpers::FakeWindowManager.new, output: StringIO.new)
         cli, raw, = action_cli(focus_command: focus)
@@ -12705,6 +12712,186 @@ RSpec.describe Workspace::CLI do
         expect(windows).to have_received(:center_window).with(77)
         expect(parse_one(raw)["results"].first).to include("workspace" => "api", "outcome" => "focused")
         expect(err.string).to include("Focusing api...")
+      end
+
+      describe "focus chain warnings" do
+        let(:state) { CLITestHelpers::FakeState.new.tap { |s| s["api"] = {"iterm_window_id" => 77} } }
+        let(:failure) { Workspace::WindowManager::StepFailure.new("dim", 2, "error: Unknown command 'dim'\n") }
+        let(:windows) do
+          double("window_manager", focus_by_id: true, run_focus_steps: failure, highlight_by_id: true).tap do |w|
+            allow(w).to receive(:center_window).and_return(false)
+          end
+        end
+        let(:config_reading) { Workspace::FocusConfig::Reading.new([["dim"]], "focus.chain is bad; using the default focus.chain.") }
+        let(:hooks) { CLITestHelpers::FakeHookRunner.new }
+
+        def chain_cli
+          action_cli(state: state, hook_runner: hooks) do |out|
+            focus_config = double("focus_config", read: config_reading)
+            {focus_command: Workspace::Commands::Focus.new(state: state, window_manager: windows, focus_config: focus_config, output: out, error_output: StringIO.new)}
+          end
+        end
+
+        it "lists the warnings in the document, exits 0, runs post_focus, and keeps stdout to one document" do
+          cli, raw, = chain_cli
+
+          expect(exit_status { cli.run(["focus", "api", "--json"]) }).to eq(0)
+
+          document = parse_one(raw)
+          expect(document["status"]).to eq("ok")
+          expect(document["warnings"]).to eq([
+            "focus.chain is bad; using the default focus.chain.",
+            "The window is in front, but this window-tool has no 'dim' command: error: Unknown command 'dim'. Update window-tool, or change focus.chain."
+          ])
+          expect(hooks.runs.map { |r| r[:event] }).to eq(["post_focus"])
+        end
+
+        it "lists the warnings for --cycle" do
+          liveness = double("liveness", call: {"api" => true})
+          allow(windows).to receive(:window_ids_front_to_back).and_return([])
+          cli, raw, = action_cli(state: state, hook_runner: hooks) do |out|
+            focus_config = double("focus_config", read: config_reading)
+            {focus_command: Workspace::Commands::Focus.new(state: state, window_manager: windows, window_liveness: liveness, focus_config: focus_config, output: out, error_output: StringIO.new)}
+          end
+
+          cli.run(["focus", "--cycle", "--json"])
+
+          expect(parse_one(raw)["warnings"].size).to eq(2)
+        end
+
+        it "prints the warnings to stderr in text mode" do
+          raw = StringIO.new
+          err = StringIO.new
+          focus_config = double("focus_config", read: config_reading)
+          focus = Workspace::Commands::Focus.new(state: state, window_manager: windows, focus_config: focus_config, output: raw, error_output: err)
+          cli, = build_test_cli(output: raw, error_output: err, state: state, focus_command: focus, hook_runner: hooks)
+
+          expect(exit_status { cli.run(["focus", "api"]) }).to eq(0)
+
+          expect(err.string).to include("Warning: focus.chain is bad").and include("Warning: The window is in front, but this window-tool has no 'dim' command")
+          expect(raw.string).not_to include("Warning")
+        end
+
+        it "carries the warnings in the no_screen_geometry error document" do
+          cli, raw, = chain_cli
+
+          expect(exit_status { cli.run(["focus", "api", "--center", "--json"]) }).to eq(1)
+
+          document = parse_one(raw)
+          expect(document).to include("code" => "no_screen_geometry")
+          expect(document["details"]["warnings"].size).to eq(2)
+        end
+      end
+
+      describe "focus against a fake window-tool" do
+        it "prints exactly one document under --json and warns on stderr" do
+          Dir.mktmpdir("workspace-focus-e2e") do |dir|
+            bin = File.join(dir, "bin")
+            FileUtils.mkdir_p(bin)
+            File.write(File.join(dir, "log"), "")
+            tool = File.join(bin, "window-tool")
+            File.write(tool, <<~SH)
+              #!/bin/sh
+              echo "$@" >> "#{dir}/log"
+              if [ "$1" = "dim" ]; then echo "error: Unknown command 'dim'" >&2; exit 2; fi
+              exit 0
+            SH
+            File.chmod(0o755, tool)
+            File.write(File.join(dir, ".workspace-state.json"), JSON.generate("api" => {"unique_id" => "u", "iterm_window_id" => 77}))
+            saved = ENV.to_h
+            raw = StringIO.new
+            err = StringIO.new
+            begin
+              ENV.replace("HOME" => dir, "PATH" => "#{bin}:/usr/bin:/bin")
+              cli = Workspace.build_cli(output: raw, error_output: err, input: StringIO.new, env: {})
+              cli.run(["focus", "api", "--json"])
+            ensure
+              ENV.replace(saved)
+            end
+
+            document = parse_one(raw)
+            expect(document["results"].first).to include("workspace" => "api", "outcome" => "focused")
+            expect(document["warnings"].size).to eq(1)
+            expect(document["warnings"].first).to include("this window-tool has no 'dim' command")
+            expect(err.string).to include("Warning: The window is in front")
+            expect(File.read(File.join(dir, "log")).lines.map { |l| l.split.first }).to eq(%w[focus center dim])
+          end
+        end
+      end
+
+      it "wires a FocusConfig into the focus command in build_cli" do
+        Dir.mktmpdir("workspace-focus-wire") do |dir|
+          saved = ENV.to_h
+          begin
+            ENV.replace("HOME" => dir, "PATH" => File.dirname(RbConfig.ruby))
+            cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
+            focus = cli.instance_variable_get(:@focus_command)
+            expect(focus.instance_variable_get(:@focus_config)).to be_a(Workspace::FocusConfig)
+          ensure
+            ENV.replace(saved)
+          end
+        end
+      end
+
+      describe "--color" do
+        let(:state) do
+          CLITestHelpers::FakeState.new.tap { |s| s["api"] = {"iterm_window_id" => 77} }
+        end
+        let(:windows) do
+          double("window_manager").tap do |w|
+            allow(w).to receive(:focus_by_id).and_return(true)
+            allow(w).to receive(:highlight_by_id).and_return(true)
+            allow(w).to receive(:window_ids_front_to_back).and_return([77])
+          end
+        end
+
+        def color_cli
+          action_cli(state: state) do |out|
+            {focus_command: Workspace::Commands::Focus.new(state: state, window_manager: windows, output: out)}
+          end
+        end
+
+        it "refuses an unknown color before focusing, with or without --highlight" do
+          [["focus", "api", "--color", "pink"], ["focus", "api", "--highlight", "--color", "pink"]].each do |argv|
+            cli, _, err = color_cli
+
+            expect(exit_status { cli.run(argv) }).to eq(1)
+
+            expect(err.string).to include("pink")
+            expect(err.string).to include(Workspace::ConfigSchema::WINDOW_TOOL_COLORS.join(", "))
+          end
+          expect(windows).not_to have_received(:focus_by_id)
+        end
+
+        it "refuses an unknown color with --cycle before anything moves" do
+          cli, _, err = color_cli
+
+          expect(exit_status { cli.run(["focus", "--cycle", "--color", "pink"]) }).to eq(1)
+
+          expect(err.string).to include("Unknown --color")
+          expect(windows).not_to have_received(:focus_by_id)
+        end
+
+        it "accepts a color in any case, and random" do
+          %w[BLUE random].each do |color|
+            cli, = color_cli
+
+            expect(exit_status { cli.run(["focus", "api", "--highlight", "--color", color]) }).to eq(0)
+          end
+          expect(windows).to have_received(:focus_by_id).twice
+          expect(windows).to have_received(:highlight_by_id).with(77, "BLUE")
+          expect(windows).to have_received(:highlight_by_id).with(77, "random")
+        end
+
+        it "answers an unknown color with the usage error document under --json" do
+          cli, raw, = color_cli
+
+          expect(exit_status { cli.run(["focus", "api", "--color", "pink", "--json"]) }).to eq(1)
+
+          expect(parse_one(raw)).to include("ok" => false, "code" => "usage")
+          expect(parse_one(raw)["error"]).to include("Unknown --color \"pink\"")
+          expect(windows).not_to have_received(:focus_by_id)
+        end
       end
     end
 
@@ -13190,7 +13377,7 @@ RSpec.describe Workspace::CLI do
     end
 
     describe "focus" do
-      let(:focus) { double("focus", call: nil) }
+      let(:focus) { double("focus", call: nil, warnings: []) }
 
       it "uses the detected workspace, --name, or the positional" do
         cli, = build_test_cli(focus_command: focus, project_detector: detector)

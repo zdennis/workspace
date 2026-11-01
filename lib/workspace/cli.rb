@@ -649,7 +649,7 @@ module Workspace
           event-log       Show or compact the event log (state changes and agent activity)
           events          Read or follow the event log and every agent's hook events as one stream
           finish          Verify a worktree is clean and pushed, then remove it (default: the current one; optionally opens a PR)
-          focus           Bring a project's iTerm window to the front (not for headless projects)
+          focus           Bring a project's iTerm window to the front, centered and dimmed by focus.chain (not for headless projects)
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
@@ -1383,7 +1383,10 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace focus [options] [project]"
         opts.separator ""
-        opts.separator "Bring the project's iTerm window to the front."
+        opts.separator "Bring the project's iTerm window to the front, then run the window-tool steps of the"
+        opts.separator "global focus.chain (default: center the window, dim the others for 3 seconds)."
+        opts.separator "A failed step is a warning, not an error. `workspace config set focus.chain focus` gives"
+        opts.separator "plain focus. See docs/README.focus.md."
         opts.separator "Auto-detects the project from the current directory if not specified."
         opts.separator ""
         opts.separator "Options:"
@@ -1418,6 +1421,9 @@ module Workspace
       end
       parser.parse!(args)
 
+      unless ConfigSchema::WINDOW_TOOL_COLORS.include?(highlight_color.downcase)
+        raise UsageError, "Unknown --color #{highlight_color.inspect}. Colors: #{ConfigSchema::WINDOW_TOOL_COLORS.join(", ")}\n\n#{parser.help}"
+      end
       raise UsageError, "--reverse needs --cycle\n\n#{parser.help}" if reverse && !cycle
       if cycle
         raise UsageError, "--cycle takes no project; it picks one\n\n#{parser.help}" if args.any? || name_opt
@@ -1427,9 +1433,9 @@ module Workspace
           @hook_runner.run(project, "post_focus")
           if json
             @state.load
-            {results: [action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))]}
+            {results: [action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))], warnings: @focus_command.warnings}
           else
-            {}
+            {warnings: @focus_command.warnings}
           end
         end
       end
@@ -1444,9 +1450,9 @@ module Workspace
           @state.load
           row = action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))
           row["pane"] = focused_pane if pane
-          {results: [row]}
+          {results: [row], warnings: @focus_command.warnings}
         else
-          {}
+          {warnings: @focus_command.warnings}
         end
       end
     end

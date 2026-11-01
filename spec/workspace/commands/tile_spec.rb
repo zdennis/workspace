@@ -96,6 +96,17 @@ RSpec.describe Workspace::Commands::Tile do
 
       expect(focused_ids).to contain_exactly(100, 200)
     end
+
+    it "never runs the focus chain" do
+      state["myproject"] = {"iterm_window_id" => 100}
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new([100]) }
+      wm.define_singleton_method(:run_focus_steps) { |*| raise "tile must not run focus steps" }
+      wl = CLITestHelpers::FakeWindowLayout.new
+      wl.define_singleton_method(:tile) { |_| }
+
+      expect { described_class.new(state: state, window_manager: wm, window_layout: wl, output: output).call("myproject") }.not_to raise_error
+    end
   end
 
   describe "#call_all" do

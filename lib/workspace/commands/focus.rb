@@ -20,15 +20,23 @@ module Workspace
       #   selects the pane for `pane:`
       # @param pane_locator [Workspace::PaneLocator, nil] validates `pane:`
       # @param window_liveness [Workspace::WindowLiveness, nil] tells which tracked windows iTerm still has; needed for `cycle`
+      # @param focus_config [Workspace::FocusConfig, nil] the `focus.chain` reader; nil runs no chain
       # @param output [IO] output stream for user-facing messages
-      def initialize(state:, window_manager:, tmux: nil, pane_locator: nil, window_liveness: nil, output: $stdout)
+      # @param error_output [IO] stream for warnings
+      def initialize(state:, window_manager:, tmux: nil, pane_locator: nil, window_liveness: nil, focus_config: nil, output: $stdout, error_output: $stderr)
         @state = state
         @window_manager = window_manager
         @tmux = tmux
         @pane_locator = pane_locator
         @window_liveness = window_liveness
+        @focus_config = focus_config
         @output = output
+        @error_output = error_output
+        @warnings = []
       end
+
+      # @return [Array<String>] what the last {#call} warned about, also printed as `Warning: ...`
+      attr_reader :warnings
 
       # Focuses the given project's iTerm window, optionally shaking or highlighting it.
       #
@@ -46,6 +54,7 @@ module Workspace
       #   couldn't select it (the window is already in front);
       #   with +center+, `no_screen_geometry` when the screens could not be read
       def call(project, shake: false, highlight: nil, pane: nil, center: false)
+        @warnings = []
         @state.load
         raise Workspace::Error, Focus.headless_message(project, @tmux) if @state.dig(project, "headless")
         located = pane && locate_pane(project, pane)
@@ -60,7 +69,7 @@ module Workspace
         end
 
         @output.puts(located ? "Focusing #{project}, pane #{located[:id]}..." : "Focusing #{project}...")
-        unless @window_manager.focus_by_id(window_id, highlight: highlight)
+        unless @window_manager.focus_by_id(window_id)
           raise Workspace::Error.new(
             "iTerm window #{window_id} no longer exists for '#{project}'\n" \
             "Run 'workspace launch #{project}' to relaunch.",
@@ -68,12 +77,14 @@ module Workspace
           )
         end
 
+        run_chain(window_id)
+        warn_step("The window is in front, but the highlight failed.") if highlight && !@window_manager.highlight_by_id(window_id, highlight)
         @window_manager.shake_by_id(window_id) if shake
         if center && !@window_manager.center_window(window_id)
           raise Workspace::Error.new(
             "The window could not be centered: its bounds or the connected screens could not be read, or the move did not complete.\n" \
             "Is window-tool up to date? Run 'workspace doctor' to check it.",
-            code: "no_screen_geometry", details: {"workspace" => project, "iterm_window_id" => window_id}
+            code: "no_screen_geometry", details: with_warnings({"workspace" => project, "iterm_window_id" => window_id})
           )
         end
         select_pane(project, located) if located
@@ -112,6 +123,37 @@ module Workspace
 
       private
 
+      def run_chain(window_id)
+        return unless @focus_config
+        reading = @focus_config.read
+        warn_step(reading.warning) if reading.warning
+        failure = @window_manager.run_focus_steps(window_id, reading.steps)
+        warn_step(failure_message(failure)) if failure
+      end
+
+      def failure_message(failure)
+        line = failure.stderr.to_s.lines.map(&:strip).find { |l| !l.empty? }
+        detail = line ? ": #{line}" : ""
+        prefix = "The window is in front, but"
+        step = failure.step
+        if failure.exit_status.nil?
+          "#{prefix} window-tool step '#{step}' could not be run#{detail}."
+        elsif line&.match?(/unknown command/i)
+          "#{prefix} this window-tool has no '#{step}' command#{detail}. Update window-tool, or change focus.chain."
+        else
+          "#{prefix} window-tool step '#{step}' failed (exit #{failure.exit_status})#{detail}. Check focus.chain."
+        end
+      end
+
+      def warn_step(message)
+        @warnings << message
+        @error_output.puts "Warning: #{message}"
+      end
+
+      def with_warnings(details)
+        @warnings.empty? ? details : details.merge("warnings" => @warnings.dup)
+      end
+
       def front_project(names)
         by_window = names.to_h { |name| [@state.dig(name, "iterm_window_id").to_i, name] }
         @window_manager.window_ids_front_to_back.each do |id|
@@ -131,7 +173,7 @@ module Workspace
       def select_pane(project, located)
         return if @tmux.select_pane(located[:session], located)
         raise Workspace::Error.new("tmux couldn't select pane #{located[:id]} of '#{project}'; its window is in front.",
-          code: "focus_failed", details: {"pane" => located[:id], "workspace" => project})
+          code: "focus_failed", details: with_warnings({"pane" => located[:id], "workspace" => project}))
       end
     end
   end

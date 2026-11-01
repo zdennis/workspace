@@ -295,6 +295,7 @@ require_relative "workspace/handoff_watcher"
 require_relative "workspace/hooks_config"
 require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
+require_relative "workspace/focus_config"
 require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_catalog"
 require_relative "workspace/workflow_files"
@@ -475,7 +476,7 @@ module Workspace
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: ticket_source, output: output, error_output: error_output)
     agent_snapshot_client = AgentSnapshotClient.new(config: config)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, client: agent_snapshot_client, output: output)
-    focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, window_liveness: WindowLiveness.new(window_manager: window_manager), output: output)
+    focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, window_liveness: WindowLiveness.new(window_manager: window_manager), focus_config: FocusConfig.new(config_resolver: config_resolver), output: output, error_output: error_output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)

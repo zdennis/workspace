@@ -928,6 +928,22 @@ RSpec.describe Workspace::Commands::Config do
       expect { command.set("launch.headless", "yes") }.to raise_error(Workspace::UsageError, /Invalid launch.headless/)
     end
 
+    it "stores focus.chain globally, prints it, drops it on unset and refuses id=" do
+      output = StringIO.new
+      command, project_settings = build_command(output: output)
+      command.set("focus.chain", "focus + center")
+      output.truncate(0)
+      output.rewind
+
+      expect(project_settings.load_global.dig("focus", "chain")).to eq("focus + center")
+      expect(command.get("focus.chain")).to be(true)
+      expect(output.string).to eq("focus + center\n")
+      command.unset("focus.chain")
+      expect(project_settings.load_global.dig("focus", "chain")).to be_nil
+      expect(Workspace::ConfigSchema.default("focus.chain")).to eq(Workspace::ConfigSchema::DEFAULT_FOCUS_CHAIN)
+      expect { command.set("focus.chain", "focus + center id=3") }.to raise_error(Workspace::UsageError, /Invalid focus.chain/)
+    end
+
     it "requires context.pattern to have exactly one capture group" do
       command, = build_command
       expect { command.set("context.pattern", '(\d+)% ctx') }.not_to raise_error

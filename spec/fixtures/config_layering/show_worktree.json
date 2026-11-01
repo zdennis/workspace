@@ -1540,6 +1540,34 @@
       "max": 100
     },
     {
+      "key": "focus.chain",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": "focus + center + dim --opacity 0.5 --duration 3",
+      "effective": "focus + center + dim --opacity 0.5 --duration 3",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "The window-tool steps `focus` runs on the window, joined by `+` (default `focus + center + dim --opacity 0.5 --duration 3`). The first step is a bare `focus`; the others are `center`, `dim`, `highlight`, `flash`, `shake`, `snap` or `maximize` with their options. `dim` and `highlight` run in the background, so they must be last. `workspace config set focus.chain focus` gives plain focus",
+      "problems": []
+    },
+    {
       "key": "workflows.defaults.include",
       "scope": "global",
       "type": "text",
