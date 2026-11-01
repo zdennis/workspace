@@ -6,9 +6,11 @@ module Workspace
   # The inbox rows the CLI works out from state it already owns, for
   # `inbox list --include-derived`: open questions, agent panes waiting on a
   # person, blocked or stalled plans, workflow gates waiting for approval, and
-  # held locks someone waits on whose holder is dead or idle past the grace.
-  # The rules follow workspace-ui's needs-you queue (`queue.ts`) and its
-  # `staleLocks`, so the app can read these rows instead.
+  # held locks someone waits on whose holder is dead or idle past the grace, and workflow runs with a failed
+  # check, a lock wait past {WorkflowNeedsMe::LOCK_WAIT_LIMIT} or a stall.
+  # The rules for questions, panes, plans, gates and locks follow workspace-ui's needs-you queue (`queue.ts`) and its
+  # `staleLocks`, so the app can read these rows instead; the failed check, lock wait and stall rows follow
+  # {WorkflowNeedsMe}, which the app does not mirror.
   #
   # Every row has `"derived": true`, `state` `open`, a stable `id` naming what
   # it is about, and a `fingerprint` that changes with each new episode (a
@@ -26,6 +28,10 @@ module Workspace
     # The plan states that need a person on their own (`waiting` is its pane's wait or question, already a row).
     PLAN_STATES = %w[blocked stalled].freeze
 
+    # The {WorkflowNeedsMe} codes that get their own row here: the others are a gate, an undelivered step,
+    # or a prompt or question (each already a row).
+    ATTENTION_CODES = %w[failed_check waiting_lock stalled idle].freeze
+
     # The longest derived title, as for a posted item.
     TITLE_MAX = 200
 
@@ -37,12 +43,13 @@ module Workspace
     # @param plan_state [Workspace::PlanState] works out each plan's state from these reads
     # @param plan_config [Workspace::PlanConfig] reads `plan.stall_seconds`
     # @param workflow_status [Workspace::WorkflowStatus] the runs and the reason each one waits
+    # @param needs_me [Workspace::WorkflowNeedsMe] says which runs wait for a person (and so which failed checks, lock waits and stalls get a row)
     # @param lock_namespace [Workspace::LockNamespace] locates a project's lock store
     # @param lock_store_for [#call] given a lock store directory, returns its {Workspace::LockStore}
     # @param lock_config [Workspace::LockConfig] reads `locks.idle_grace`
     # @param clock [#call] returns the current Time
     # @param agent_timeout [Numeric] seconds to wait for each agent daemon
-    def initialize(snapshot_client:, tmux:, ask_store_for:, plan:, plan_state:, plan_config:, workflow_status:, lock_namespace:,
+    def initialize(snapshot_client:, tmux:, ask_store_for:, plan:, plan_state:, plan_config:, workflow_status:, needs_me:, lock_namespace:,
       lock_store_for:, lock_config:, clock: -> { Time.now }, agent_timeout: DEFAULT_AGENT_TIMEOUT)
       @snapshot_client = snapshot_client
       @tmux = tmux
@@ -51,6 +58,7 @@ module Workspace
       @plan_state = plan_state
       @plan_config = plan_config
       @workflow_status = workflow_status
+      @needs_me = needs_me
       @lock_namespace = lock_namespace
       @lock_store_for = lock_store_for
       @lock_config = lock_config
@@ -182,8 +190,15 @@ module Workspace
         return []
       end
       reply[:runs]["warnings"].each { |message| warnings << {"code" => "workflow_unreadable", "message" => message} }
+      attention = begin
+        attention_by_run(reply[:runs]["runs"], workspaces)
+      rescue => e
+        warnings << {"code" => "workflow_unreadable", "message" => "Failed checks, lock waits and stalls could not be worked out, so they are not shown: #{first_line(e)}"}
+        {}
+      end
       reply[:runs]["runs"].filter_map do |run|
         next unless workspaces.include?(run["workspace"])
+        next attention_row(run, attention[run["id"]]) if attention.key?(run["id"])
         current = run["current"] || {}
         reason = current["reason"]
         next unless reason
@@ -196,6 +211,35 @@ module Workspace
           body: nil, since: reason["since"],
           links: {"run_id" => run["id"], "step" => current["step"], "attempt" => current["attempt"]})
       end
+    end
+
+    # The runs {WorkflowNeedsMe} lists for a failed check, a lock wait or a stall, keyed by run id. Its rule
+    # decides what waits for a person (a lock wait counts past its 30 minutes), so this holds no second opinion;
+    # the other codes it lists have a row above or are not derived yet.
+    def attention_by_run(runs, workspaces)
+      scoped = runs.select { |run| workspaces.include?(run["workspace"]) }
+      @needs_me.rows(scoped).select { |each| ATTENTION_CODES.include?(each["code"]) }.to_h { |each| [each["run"], each] }
+    end
+
+    # The row id names the run and the cause, the fingerprint the step, attempt and start, so a
+    # later failure, lock wait or stall of the same run is a new episode and shows again after an ack.
+    # The first suggested command is data in `links.next_action` (`action`, `args`, `needs`, as
+    # {WorkflowStatus} gives it), never command text in the title or body: a program must not run it, and
+    # run-file text is not a safe thing to put on a command line. Title text is escaped for a terminal.
+    def attention_row(run, found)
+      code = found["code"]
+      title = TerminalText.escape(run["title"] || run["workflow"])
+      step = TerminalText.escape(found["step"])
+      detail = found["detail"] && " (#{TerminalText.escape(found["detail"])})"
+      summary = {
+        "failed_check" => "Workflow #{title}: the check of step #{step} failed#{detail}",
+        "waiting_lock" => "Workflow #{title}: step #{step} has waited for a lock",
+        "stalled" => "Workflow #{title}: step #{step} stalled#{detail}",
+        "idle" => "Workflow #{title}: step #{step} is idle, its turn is over"
+      }.fetch(code)
+      row(id: "workflow:#{code}:#{run["id"]}", kind: "workflow_#{code}", fingerprint: "#{found["step"]}:#{found["attempt"]}:#{found["since"]}",
+        scope: workspace_scope(run["workspace"]), title: one_line(summary), body: nil, since: found["since"],
+        links: {"run_id" => run["id"], "step" => found["step"], "attempt" => found["attempt"], "next_action" => found["next_action"]})
     end
 
     # A step whose line never reached an agent: a stored `pane_gone` or `waiting_you` of kind `dispatch`

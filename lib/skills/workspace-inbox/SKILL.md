@@ -78,7 +78,7 @@ workspace ui open notes --path payment-retries.md --print
 |---|---|
 | Open items here, in the project and global | `inbox list --json` |
 | Every scope, all states | `inbox list --all --state open,snoozed,done,dismissed --json` |
-| Also what needs a person right now (open asks, waiting panes, blocked plans, gates, stuck locks) | `inbox list --include-derived --json` |
+| Also what needs a person right now (open asks, waiting panes, blocked plans, gates, failed checks, lock waits and stalls of workflow runs, stuck locks) | `inbox list --include-derived --json` |
 | One item | `inbox show ID --json` |
 | Done | `inbox done ID...` |
 | Nobody will act | `inbox dismiss ID...` (say that you did it) |

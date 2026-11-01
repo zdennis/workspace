@@ -640,6 +640,7 @@ module Workspace
       end,
       source: SkillSource.new(workspace_dir: config.workspace_dir), ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
     workflow_catalog = WorkflowCatalog.new(config: config)
+    workflow_needs_me = WorkflowNeedsMe.new
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
@@ -648,7 +649,7 @@ module Workspace
       audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
       sweep: workflow_sweep,
       schedule: sweep_schedule,
-      needs_me: WorkflowNeedsMe.new,
+      needs_me: workflow_needs_me,
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,
@@ -766,7 +767,7 @@ module Workspace
     inbox_store_factory = ->(path:, scope:, error_output:) { InboxStore.new(path: path, scope: scope, error_output: error_output) }
     inbox_derived = InboxDerived.new(snapshot_client: agent_snapshot_client, tmux: tmux,
       ask_store_for: ->(workspace, sink) { AskStore.new(path: config.ask_state_path(workspace), error_output: sink) }, plan: plan_command,
-      plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, lock_namespace: lock_namespace,
+      plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, needs_me: workflow_needs_me, lock_namespace: lock_namespace,
       lock_store_for: ->(dir) { LockStore.new(dir: dir, liveness: lock_holder) }, lock_config: lock_config)
     inbox_acks = InboxAcks.new(path: config.inbox_acks_path)
     inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
