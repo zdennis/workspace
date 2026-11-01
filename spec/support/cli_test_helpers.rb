@@ -907,6 +907,23 @@ module CLITestHelpers
     end
   end
 
+  # Records each `go` call and answers with a canned row.
+  class FakeGoCommand
+    attr_reader :calls
+    attr_accessor :error, :row
+
+    def initialize
+      @calls = []
+      @row = {"workspace" => "app.worktree-x", "outcome" => "started", "decision" => {"workflow" => "rpiv", "route" => "start"}, "warnings" => []}
+    end
+
+    def call(**kw)
+      @calls << kw
+      raise @error if @error
+      @row
+    end
+  end
+
   class FakeReviewCommand
     attr_reader :calls
     attr_accessor :result

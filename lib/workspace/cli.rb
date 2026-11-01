@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go
       capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
@@ -102,6 +102,7 @@ module Workspace
     # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs `launch` sends with the first prompt
     # @param workflow_command [Workspace::Commands::Workflow, nil] pre-built `workflow` and `step` command
     # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] pre-built `workflow start` command
+    # @param go_command [Workspace::Commands::Go, nil] pre-built `go` command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
     # @param events_command [Workspace::Commands::Events, nil] pre-built events command
@@ -127,7 +128,7 @@ module Workspace
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
     # @param sleeper [#call] sleeps the given seconds, injected for fast tests
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, go_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -205,6 +206,7 @@ module Workspace
       @library_command = library_command
       @workflow_command = workflow_command
       @workflow_start_command = workflow_start_command
+      @go_command = go_command
       @library = library
       @instructions_command = instructions_command
       @instruction_composer = instruction_composer
@@ -312,6 +314,8 @@ module Workspace
         cmd_push(args)
       when "promote"
         cmd_promote(args)
+      when "go"
+        cmd_go(args)
       when "projects"
         cmd_projects(args)
       when "capabilities"
@@ -652,6 +656,7 @@ module Workspace
           events          Read or follow the event log and every agent's hook events as one stream
           finish          Verify a worktree is clean and pushed, then remove it (default: the current one; optionally opens a PR)
           focus           Bring a project's iTerm window to the front, centered and dimmed by focus.chain (not for headless projects)
+          go              Start a workflow on a ticket, pull request, branch or free text; says which and why
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
@@ -7878,6 +7883,55 @@ module Workspace
         opts.separator "  workspace promote fix-login --title \"Fix the login bug\" --spine --plan --carry-note research-login.md --json    # move it, make a spine and plan, copy one note, scripted"
         opts.separator "  workspace promote --name api --launch    # move the branch the \"api\" checkout is on, from any directory, then launch the new workspace"
       end
+    end
+
+    def go_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace go [REF | \"TEXT\"] [--workflow ID] [--input KEY=VALUE]... [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "Start a workflow with one argument. A ticket, pull request, issue or branch is the ref; text with a space"
+        opts.separator "is free text that names a new branch. In a linked worktree workspace off the default branch, go runs the"
+        opts.separator "workflow here (bare `workspace go` does too); anywhere else it makes or reuses a worktree workspace, as `workflow start`"
+        opts.separator "does. go never runs on the default branch or the main checkout's branch. It prints the workflow it chose"
+        opts.separator "and why (--workflow, then workflows.by_ref.KIND, workflows.default, then built in: pr-feedback for a pull"
+        opts.separator "request, else rpiv) before it acts."
+        opts.separator ""
+        opts.on("--workflow ID", "Use this workflow instead of the configured one") { |v| options[:workflow] = v }
+        opts.on("--input KEY=VALUE", "Set a workflow input; repeatable") { |v| options[:inputs] << v }
+        opts.on("--dry-run", "Check everything and create nothing") { options[:dry_run] = true }
+        opts.on("--json", "Print one JSON document; other output goes to stderr") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace go PROJ-123    # a ticket: make or reuse its worktree workspace and start the chosen workflow"
+        opts.separator "  workspace go \"try the thing\"    # free text: a new branch named from it, in a new worktree workspace"
+        opts.separator "  workspace go    # in a worktree workspace off the default branch: run the workflow here"
+        opts.separator "  workspace go fix-login --workflow investigate --dry-run    # check a branch with a named workflow, create nothing"
+        opts.separator "  workspace go \"try the thing\" --input task=\"Try the thing\" --json    # scripted, with a workflow input"
+      end
+    end
+
+    def cmd_go(args)
+      options = {json: false, inputs: [], dry_run: false}
+      given = args.dup
+      parser = go_parser(options)
+      refuse_bad_bytes!(args)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      if args.size > 1
+        raise UsageError, "go takes one argument, got #{args.size}. Quote free text, as in workspace go \"try the thing\". Run 'workspace go --help'."
+      end
+      raise Error, "go is not available: no go command was wired" unless @go_command
+
+      inputs = workflow_inputs(options[:inputs])
+      workflow_action("go", options) do
+        @go_command.call(argument: args.first, workflow: options[:workflow], inputs: inputs, headless: @launch_mode.resolve(nil).headless?,
+          dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"])
+      end
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_promote(args)
