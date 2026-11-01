@@ -81,13 +81,9 @@ module Workspace
     end
 
     # @param window_id [String, Integer] window ID (CGWindowID)
-    # @param highlight [String, nil] color to highlight the window after focusing
     # @return [Boolean] whether the window was focused
-    def focus_by_id(window_id, highlight: nil)
+    def focus_by_id(window_id)
       args = [@config.window_tool, "focus", "id=#{window_id}"]
-      if highlight
-        args += ["+", "highlight", "id=#{window_id}", "--color", highlight]
-      end
       @logger.debug { "window_manager: focus #{args.join(" ")}" }
       _, _, status = window_tool(*args.drop(1))
       @logger.debug { "window_manager: focus result=#{status.success?}" }

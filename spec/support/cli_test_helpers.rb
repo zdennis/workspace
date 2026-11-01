@@ -134,7 +134,7 @@ module CLITestHelpers
     def find_window_by_title(_title) = nil
     def find_window_for_project(_project) = nil
     def iterm_windows = {}
-    def focus_by_id(_wid, highlight: nil) = true
+    def focus_by_id(_wid) = true
     def run_focus_steps(_wid, _steps) = nil
     def highlight_by_id(_wid, _color) = true
     def shake_by_id(_wid) = true

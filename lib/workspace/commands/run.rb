@@ -155,7 +155,7 @@ module Workspace
         @state.load
         window_id = @state.dig(project, "iterm_window_id")
         return unless window_id && window_id != 0
-        @window_manager.focus_by_id(window_id, highlight: nil)
+        @window_manager.focus_by_id(window_id)
       end
     end
   end

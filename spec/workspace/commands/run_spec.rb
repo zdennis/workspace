@@ -197,7 +197,7 @@ RSpec.describe Workspace::Commands::Run do
 
         command.call("myproject", "echo hi", focus: true)
 
-        expect(window_manager).to have_received(:focus_by_id).with(42, highlight: nil)
+        expect(window_manager).to have_received(:focus_by_id).with(42)
         expect(window_manager).not_to have_received(:run_focus_steps)
       end
 
