@@ -21,7 +21,7 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 | `--agent NAME` | Copy a [library](README.library.md) agent into the worktree's `.claude/agents/` (or `library.install.agents_dir`); repeatable. See [Agents and skills](#agents-and-skills) |
 | `--skill NAME` | Copy a library skill directory into the worktree's `.claude/skills/` (or `library.install.skills_dir`); repeatable |
 | `--agent-kind KIND` | The coding agent the main agent pane runs: `claude` (the default), `codex`, `opencode` or `pi`; with no flag, `agent.kind`, and the pane runs the command `agent.commands.<kind>` sets (see [Agent commands](README.config.md#agent-commands)). Named `-kind` because `--agent` copies a library agent. See [Agent kind and `--no-launch`](#agent-kind-and---no-launch) |
-| `--recipe NAME` | Apply a library recipe: its plays, packs, agents, skills, agent kind and prompt fill in whatever the matching flags did not give. See [Recipes](#recipes) |
+| `--recipe NAME` | Apply a library recipe: its plays, packs, agents, skills, agent kind and prompt fill in whatever the matching flags did not give, or, for a recipe with a `workflow`, run that workflow. See [Recipes](#recipes) |
 | `--no-launch` | Create the worktree, config and task and start nothing. See [Agent kind and `--no-launch`](#agent-kind-and---no-launch) |
 | `--plan[=TITLE]` | Run [`plan init`](README.plan.md) for the new workspace and send the agent the `implementation-plan` play so it drafts the plan's tasks. `TITLE` is the plan's title (default: the task's title). Not with `--play`. See [Plan](#plan) |
 | `--spine[=NAME]` / `--no-spine` | Run, or never run, [`spine init`](README.spine.md#spine-init) for the new workspace, whatever `spine.auto` says. `NAME` is the template (default: `spine.template`). See [Spine](#spine) |
@@ -148,7 +148,17 @@ A linked entry is copied too, from the file it points to: change the library ent
 
 ### Recipes
 
-`--recipe NAME` (or `recipe/NAME`) applies a [library](README.library.md#recipes) recipe: a saved set of `plays`, `packs`, `agents`, `skills`, `agent_kind` and `prompt`. It is looked up from the parent project, then global, like plays. A flag you pass wins: `--play`, `--pack`, `--agent`, `--skill` replace the recipe's list of that name (they are not added to it), and `--agent-kind` and `--prompt` replace its value. An unknown recipe is `unknown_library_entry`, an invalid one `invalid_recipe`, and either fails before anything is created. A flag can replace a recipe field but not empty it, and a list is never extended; to drop or add to a field, copy the recipe. With `--no-launch` the recipe's plays, packs and prompt are left out, with `--plan` its plays are (`--plan` sends its own play; the prompt becomes the plan's goal), and with `--no-packs` its packs are; a warning says so. Its agents, skills and agent kind still apply.
+`--recipe NAME` (or `recipe/NAME`) applies a [library](README.library.md#recipes) recipe: a saved set of `plays`, `packs`, `agents`, `skills`, `agent_kind` and `prompt`, or a `workflow` to run ([below](#a-recipe-with-a-workflow)). It is looked up from the parent project, then global, like plays. A flag you pass wins: `--play`, `--pack`, `--agent`, `--skill` replace the recipe's list of that name (they are not added to it), and `--agent-kind` and `--prompt` replace its value. An unknown recipe is `unknown_library_entry`, an invalid one `invalid_recipe`, and either fails before anything is created. A flag can replace a recipe field but not empty it, and a list is never extended; to drop or add to a field, copy the recipe. With `--no-launch` the recipe's plays, packs and prompt are left out, with `--plan` its plays are (`--plan` sends its own play; the prompt becomes the plan's goal), and with `--no-packs` its packs are; a warning says so. Its agents, skills and agent kind still apply.
+
+#### A recipe with a workflow
+
+A recipe that sets `workflow` does not take the rest of `start`'s path. `start` makes the same call as [`workflow start`](README.workflow.md) for that workflow id, with the recipe's `workflow_inputs` as its inputs. The ref is read the same way and can be a ticket, a pull request or a branch. `--base`, `--slug`, `--headless`/`--no-headless`, `--prompt-timeout` and `--agent-kind` pass through. `--yes` and `--no-spine` are accepted and change nothing, because the workflow call already answers for them. `start` then does not prompt for a base: without `--base`, the branch starts from the default.
+
+`--prompt`, `--play`, `--pack`, `--no-packs`, `--handoff`, `--no-handoff`, `--agent`, `--skill`, `--no-launch`, `--spine`, `--plan`, `--title` and `--title-from-ticket` are refused with `recipe_workflow_conflict`, every one named in `details.flags`, before anything is created. The recipe's fields are described in [Recipes in the library](README.library.md#running-a-workflow).
+
+`--json` prints a different document here: the action document `workflow start` prints (see [README.json.md](README.json.md)), with `action` `"start"` and `recipe: {"ref", "scope"}` on the row. It is not the `start --json` document described below. `capabilities` reports `"library_recipes": 2` when `start` can do this.
+
+A branch ref carries no ticket text, so a workflow that requires `task` fails with `input_required` unless the recipe sets `task`. To give inputs on the command line, run `workspace workflow start ID REF --input task=TEXT`.
 
 ### Ticket titles and `--slug`
 
@@ -196,7 +206,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   `delivered` is whether the prompt carrying it was sent, and `pane` is the tmux
   pane id (`%5`) bound to the play, or `null` when it was not delivered or the
   pane could not be bound
-- `recipe` — present only with `--recipe`: `{"ref", "scope"}` of the recipe applied. What it filled in shows in the fields below (`play`, `plays`, `packs`, `agents`, `skills`, `agent_kind`)
+- `recipe` — present only with `--recipe` (a recipe with a `workflow` prints [the workflow document](#a-recipe-with-a-workflow) instead of this one): `{"ref", "scope"}` of the recipe applied. What it filled in shows in the fields below (`play`, `plays`, `packs`, `agents`, `skills`, `agent_kind`)
 - `plays` — present only with `--play` or a recipe with plays: an array with one object of the same shape as `play` for each play, in the order sent. `play` is the first of them. Both are absent when no play was given
 - `spine` — present only when `spine init` ran: `{"outcome", "template"}`. `outcome` is `created`, `exists` or `failed`; `template` is `{"name", "scope", "source"}` as in [`spine init`](README.spine.md#spine-init) (on `failed`, `{"name", "source"}` when known, plus `error`, the error code). A failure is also in `warnings`
 - `plan` — present only with `--plan`: `{"path", "outcome", "title", "drafting"}`. `outcome` is `created`, `exists` or `failed` (then `path` is `null` and `error` is the error code). `title` is left out when the plan has none. `drafting` is whether the draft request was sent with the first prompt (`false` with `--no-launch`, a plan that has tasks, or a failed init). The play it sent is the `play` object. A failure is also in `warnings`

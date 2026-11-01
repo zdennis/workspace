@@ -1023,7 +1023,8 @@ module Workspace
         opts.on("--recipe NAME", "Apply a library recipe: its plays, packs, agents, skills, agent kind and prompt fill in",
           "whatever --play, --pack, --agent, --skill, --agent-kind and --prompt don't give (a flag you pass",
           "replaces that recipe field). Make one with 'workspace library add - --kind recipe --as NAME'.",
-          "An unknown or invalid recipe fails before the worktree is created") do |v|
+          "An unknown or invalid recipe fails before the worktree is created. A recipe with a 'workflow'",
+          "runs `workspace workflow start` instead and refuses the flags that run can't use (docs/README.library.md)") do |v|
           recipe = v
         end
         opts.on("--no-launch", "Create the worktree, config and task and start nothing; run",
@@ -1090,7 +1091,7 @@ module Workspace
         opts.separator "  workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"    # point the agent at a library play"
         opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
         opts.separator "  workspace start PROJ-123 --slug    # give the branch a readable name from the ticket title"
-        opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
+        opts.separator "  workspace start PROJ-123 --recipe rpiv-task    # apply a saved recipe, or run the workflow it names"
         opts.separator "  workspace start PROJ-123 --plan --prompt \"Add SSO login\"    # the agent drafts a plan for that goal first"
         opts.separator "  workspace start PROJ-123 --base main --headless --yes --json    # non-interactive, e.g. from CI, branching from main"
       end
@@ -4793,7 +4794,7 @@ module Workspace
         opts.separator "Run `workspace library VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--kind KIND", "agent, play, prompt, recipe, skill or spine (add: required; list: a filter);",
-          "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt (for 'start --recipe');",
+          "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start --recipe');",
           "add --kind skill takes a directory holding SKILL.md;",
           "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }

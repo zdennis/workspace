@@ -44,7 +44,7 @@ These create or bring back work. Do them when the task calls for it and say what
 
 - `--no-launch` makes the worktree and config and starts nothing.
 - `--prompt TEXT` sends the agent a first prompt once it is ready; exit 1 if it could not be sent.
-- `--play NAME` points the agent at a library play. `--pack NAME` adds a library pack to the first prompt. `--recipe NAME` fills in plays, packs, agents, skills, agent kind and prompt you did not give.
+- `--play NAME` points the agent at a library play. `--pack NAME` adds a library pack to the first prompt. `--recipe NAME` fills in plays, packs, agents, skills, agent kind and prompt you did not give. A recipe with a `workflow` runs that workflow instead, as `workflow start` does: it refuses `--prompt`, `--play`, `--pack`, `--agent`, `--skill`, `--no-launch`, `--plan` and the other flags that shape a start with `recipe_workflow_conflict`, and `--json` prints the workflow action document. A branch REF has no ticket text, so a workflow needing `task` requires the recipe to set it, or use `workflow start --input`.
 - `--agent NAME` and `--skill NAME` copy a library agent or skill into the worktree's `.claude/`.
 - `--agent-kind claude|codex|opencode|pi`, `--title`, `--slug`, `--spine`, `--plan`, `--headless`.
 - `--json` for one action document; progress goes to stderr.
