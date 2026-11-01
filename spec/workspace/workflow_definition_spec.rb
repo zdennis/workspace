@@ -16,6 +16,21 @@ RSpec.describe Workspace::WorkflowDefinition do
 
   let(:minimal) { "steps:\n  build:\n    prompt: Build it.\n" }
 
+  describe "redeliver" do
+    it "defaults to 3 in a new definition, reads a number from 0 to 10, and reads 0 from a definition without the key" do
+      expect(parse(minimal).to_h["redeliver"]).to eq(3)
+      expect(parse("redeliver: 0\n#{minimal}").to_h["redeliver"]).to eq(0)
+      expect(described_class.redeliver({"steps" => []})).to eq(0)
+      expect(described_class.redeliver({"redeliver" => 99})).to eq(0)
+      expect(described_class.redeliver(nil)).to eq(0)
+    end
+
+    it "refuses anything else" do
+      expect(problems("redeliver: 11\n#{minimal}")).to include(a_string_matching(/redeliver must be a whole number from 0 to 10/))
+      expect(problems("redeliver: soon\n#{minimal}")).to include(a_string_matching(/redeliver/))
+    end
+  end
+
   describe "stall and on_timeout" do
     it "reads stall as seconds and on_timeout as a word, with warn and unset as defaults" do
       definition = parse("stall: 20m\nsteps:\n  a:\n    prompt: P\n    timeout: 2h\n    on_timeout: interrupt\n  b:\n    prompt: P\n")
@@ -162,7 +177,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(definition.sha256).to eq(Digest::SHA256.hexdigest(minimal))
     expect(definition.to_h).to eq(
       "id" => "demo", "title" => "demo", "description" => nil, "inputs" => {}, "include" => [], "instructions" => nil,
-      "max_attempts" => 6, "stall" => nil,
+      "max_attempts" => 6, "stall" => nil, "redeliver" => 3,
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
                    "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn"}]
     )
@@ -273,7 +288,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, stall, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, stall, redeliver, steps)",
       "schema_version must be 1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",

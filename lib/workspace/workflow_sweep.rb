@@ -37,6 +37,13 @@ module Workspace
   #   `failed`, `details.code` `step_timed_out`); `warn` does nothing, and writes
   #   nothing, as before
   #
+  # For a run whose step waits on a line that was never delivered (`not_delivered`, a failure a later try can
+  # get past), see {WorkflowEngine.redelivery}: once the backoff (1, 5, then 15 minutes after the failed attempt
+  # ended) is over, the daemon is running and the pane shows an idle agent, the line is typed again
+  # (`step_stalled` cause `undelivered`, `step_recovered` action `redelivered`, `redeliver` times at most, the
+  # definition's key). A retried attempt does not count against `max_attempts`. When the retries run out the
+  # run stays as it was, waiting for a person, and the sweep records `redelivery_exhausted` once.
+  #
   # A run with a live park, a step that is checking, or no step being worked
   # on is left alone, except that a missing daemon is started for it. Every
   # change goes through {WorkflowEngine} under the run's own lock, and only
@@ -75,7 +82,8 @@ module Workspace
     #   returns nil to go on or a sentence to leave the run alone
     # @return [Array<Hash>] one row per run looked at, and one `failed` row (`unreadable_run`) for each run file
     #   that can't be read when no run or workspace is named: "workspace", "outcome" (`nothing`, `recorded`,
-    #   `evaluated`, `interrupted`, `timed_out`, `respawned`, `failed`, `dry_run`), "reason", "message", "run_id",
+    #   `evaluated`, `interrupted`, `timed_out`, `respawned`, `redelivered`, `failed`, `dry_run`), "reason" (for a retry also `backoff`, `pane_busy`,
+    #   `not_delivered`, `waiting_lock`), "message", "run_id",
     #   "step", "attempt", "cause", "action"
     # @raise [Workspace::Error] code `unknown_run` for a +run+ that does not exist
     def call(run: nil, workspace: nil, dry_run: false, allow: nil)
@@ -112,6 +120,8 @@ module Workspace
         pane = run["pane"]
         return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run["id"]}`) or cancelled.", "pane" => pane)
       end
+      redelivery = WorkflowEngine.redelivery(run, @clock.call)
+      return sweep_undelivered(run, redelivery, pass) if redelivery
       return respawn(run, pass) if daemon_needed && daemon_down?(run["workspace"], pass)
       return row(run, "nothing", reason: "parked", message: "a resume is parked; it is carried out when the pane's turn ends") if run["parked"]
       return row(run, "nothing", reason: "checking", message: "the step's check is running") if state["state"] == "checking"
@@ -125,6 +135,39 @@ module Workspace
     rescue SystemCallError => e
       program = e.message[/ - (\S+)/, 1]
       row(run, "failed", reason: "tool_unavailable", message: "could not run #{program || "a program the sweep needs"}: #{e.message.lines.first.to_s.strip}. Put it on PATH.")
+    end
+
+    # The step waits on a line that was not delivered, and {WorkflowEngine.redelivery} says where a retry stands.
+    def sweep_undelivered(run, info, pass)
+      pane = run["pane"]
+      what = "step #{run["current"]}'s line was not delivered to pane #{pane} (#{info[:code]})"
+      case info[:state]
+      when :exhausted
+        return note(run, pass, "redelivery_exhausted", "#{what}, and it was retried #{info[:retries]} time#{"s" unless info[:retries] == 1}; resume the run (`workspace workflow resume #{run["id"]}`) once the pane is ready", "code" => info[:code], "retries" => info[:retries])
+      when :waiting
+        return row(run, "nothing", reason: "backoff", cause: "undelivered", message: "#{what}; retry #{info[:retries] + 1} of #{info[:limit]} in #{info[:wait]} seconds")
+      end
+      unless @panes.alive?(run["id"])
+        return note(run, pass, "pane_gone", "pane #{pane} is gone, so #{what} cannot be retried. The run keeps its checkout until it is resumed (`workspace workflow resume #{run["id"]}`) or cancelled.", "pane" => pane)
+      end
+      return respawn(run, pass) if daemon_down?(run["workspace"], pass)
+      shown = pane && @panes.pane_row(run["workspace"], pane)
+      return row(run, "nothing", reason: "unknown", cause: "undelivered", message: "#{what}; the agent daemon did not say what pane #{pane} shows") unless shown
+      unless WorkflowPanes.turn_over?(shown, @clock.call) && shown["idle_seconds"].to_i >= IDLE_FLOOR
+        return row(run, "nothing", reason: "pane_busy", cause: "undelivered", message: "#{what}; pane #{pane} is not idle, so nothing is typed. The next pass looks again")
+      end
+      message = "#{what}; typing it again (retry #{info[:retries] + 1} of #{info[:limit]})"
+      return row(run, "dry_run", message: message, cause: "undelivered", action: "redeliver") if pass[:dry_run]
+      refusal = pass[:allow]&.call(run)
+      return row(run, "nothing", reason: "refused", message: refusal, cause: "undelivered") if refusal
+      outcome = @engine.redeliver(run["id"], step: run["current"], attempt: attempt_of(run))
+      case outcome
+      when :not_delivered
+        row(run, "nothing", reason: "not_delivered", cause: "undelivered", action: "redeliver", message: "#{message}, but it was not delivered again; the next retry waits out a longer backoff")
+      when :waiting_lock
+        row(run, "nothing", reason: "waiting_lock", cause: "undelivered", action: "redeliver", message: "#{message}, but the step is waiting for a lock it uses; it is typed when the lock is free")
+      else engine_row(run, outcome, "redelivered", cause: "undelivered", message: message, action: "redeliver")
+      end
     end
 
     # The step reads `running` and its pane is there.

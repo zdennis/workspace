@@ -775,6 +775,278 @@ RSpec.describe Workspace::WorkflowSweep do
     end
   end
 
+  describe "a step whose line was not delivered" do
+    let(:busy) { {ok: false, code: "pane_busy", message: "pane %5 is busy"} }
+
+    before do
+      panes.kick_result = busy
+      begin_run
+      pane_shows("idle", idle_seconds: 600)
+    end
+
+    def attempts = store.find("wr_1")["steps"]["build"]["attempts"]
+
+    it "waits out the backoff, then types the line again and marks the failed attempt" do
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "backoff")
+      expect(panes.kicks.size).to eq(1)
+
+      advance(61)
+      panes.kick_result = {ok: true}
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "redelivered", "cause" => "undelivered", "action" => "redeliver")
+      expect(panes.kicks.size).to eq(2)
+      expect(attempts.map { |each| each["redelivered"] }).to eq([true, nil])
+      expect(store.find("wr_1")).to include("state" => "running", "reason" => nil)
+      expect(events.find { |each| each["type"] == "step_stalled" }).to include("cause" => "undelivered", "retry" => 1, "of" => 3, "code" => "pane_busy")
+      expect(events.find { |each| each["type"] == "step_recovered" }).to include("action" => "redelivered")
+    end
+
+    it "backs off longer after each failed retry and stops after the definition's limit" do
+      [60, 300, 900].each_with_index do |wait, index|
+        advance(wait - 1)
+        expect(only_row(sweep.call)).to include("reason" => "backoff")
+        advance(1)
+        expect(only_row(sweep.call)).to include("reason" => "not_delivered", "action" => "redeliver")
+        expect(attempts.size).to eq(index + 2)
+      end
+
+      advance(10_000)
+      first = only_row(sweep.call)
+      expect(first).to include("outcome" => "recorded", "cause" => "redelivery_exhausted")
+      expect(only_row(sweep.call)).to include("reason" => "already_recorded")
+      expect(panes.kicks.size).to eq(4)
+      expect(store.find("wr_1")["reason"]).to include("code" => "waiting_you")
+    end
+
+    it "does not count retried attempts against max_attempts" do
+      engine.cancel("wr_1")
+      ids.replace(%w[wr_2])
+      panes.kick_result = busy
+      definition = Workspace::WorkflowDefinition.parse(<<~YAML, id: "tight", source: "global", path: "/defs/tight.yml")
+        max_attempts: 3
+        steps:
+          plan:
+            prompt: Plan it.
+            context: continue
+          build:
+            prompt: Build it.
+            context: continue
+            on_fail: {goto: plan, max: 1, context: continue}
+      YAML
+      begin_run(definition)
+      advance(61)
+      panes.kick_result = {ok: true}
+      sweep.call
+
+      expect(store.find("wr_2")["steps"]["plan"]["attempts"].map { |each| each["redelivered"] }).to eq([true, nil])
+      engine.turn_ended("wr_2", pane: "%5")
+      engine.report("wr_2", status: "fail")
+      engine.turn_ended("wr_2", pane: "%5")
+
+      expect(store.find("wr_2")).to include("current" => "plan", "state" => "running")
+      expect(store.find("wr_2")["steps"]["plan"]["attempts"].size).to eq(3)
+    end
+
+    it "leaves a pane that is not idle alone" do
+      advance(61)
+      pane_shows("working")
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "pane_busy")
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "leaves a pane that has not been idle for the floor alone" do
+      advance(61)
+      pane_shows("idle", idle_seconds: 1)
+
+      expect(only_row(sweep.call)).to include("reason" => "pane_busy")
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "starts a daemon that is not running and retries on the next pass" do
+      advance(61)
+      panes.daemon = false
+
+      expect(only_row(sweep.call)).to include("outcome" => "respawned")
+      expect(panes.kicks.size).to eq(1)
+
+      panes.kick_result = {ok: true}
+      expect(only_row(sweep.call)).to include("outcome" => "redelivered")
+    end
+
+    it "changes nothing under --dry-run" do
+      advance(61)
+
+      expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "dry_run", "action" => "redeliver")
+      expect(panes.kicks.size).to eq(1)
+      expect(attempts.size).to eq(1)
+    end
+
+    it "leaves the run alone when allow refuses" do
+      advance(61)
+
+      expect(only_row(sweep.call(allow: ->(_run) { "own pane" }))).to include("reason" => "refused")
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "does not retry when a resume got there first" do
+      advance(61)
+      panes.kick_result = {ok: true}
+      engine.resume("wr_1")
+
+      expect(engine.redeliver("wr_1", step: "build", attempt: 1)).to eq(:moved_on)
+      expect(attempts.size).to eq(2)
+    end
+
+    it "does not retry beside a live park" do
+      advance(61)
+      engine.park("wr_1")
+
+      expect(only_row(sweep.call)).to include("reason" => "parked")
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "does not retry a gone pane, a daemon's unconfirmed prompt, or a code a retry cannot help" do
+      advance(61)
+      %w[pane_gone run_unbound error not_delivered connection_failed unreadable_reply].each do |code|
+        store.update("wr_1") { |stored| stored["reason"]["details"]["error"] = code }
+        run = store.find("wr_1")
+        expect(Workspace::WorkflowEngine.redelivery(run, now.first)).to be_nil
+      end
+      store.update("wr_1") { |stored| stored["reason"]["details"].merge!("error" => "pane_busy", "reason" => "prompt_unconfirmed") }
+      run = store.find("wr_1")
+      expect(Workspace::WorkflowEngine.redelivery(run, now.first)).to be_nil
+    end
+
+    it "retries a no_daemon failure, which is raised before anything is sent" do
+      store.update("wr_1") { |stored| stored["reason"]["details"]["error"] = "no_daemon" }
+      run = store.find("wr_1")
+      advance(61)
+
+      expect(Workspace::WorkflowEngine.redelivery(run, now.first)).to include(state: :due)
+    end
+
+    it "reports a retry whose line is refused again as not delivered, with no step_recovered" do
+      advance(61)
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "not_delivered", "action" => "redeliver")
+      expect(types).not_to include("step_recovered")
+      expect(attempts.map { |each| each["redelivery"] }).to eq([nil, 1])
+      expect(store.find("wr_1")["reason"]["details"]).to include("error" => "pane_busy")
+    end
+
+    it "counts again from zero after a person's resume whose line is also not delivered" do
+      [60, 300, 900].each do |wait|
+        advance(wait)
+        expect(only_row(sweep.call)).to include("reason" => "not_delivered")
+      end
+      advance(10_000)
+      expect(only_row(sweep.call)).to include("cause" => "redelivery_exhausted")
+
+      engine.resume("wr_1")
+      expect(store.find("wr_1")["reason"]["code"]).to eq("waiting_you")
+      expect(attempts.last["redelivery"]).to be_nil
+      advance(59)
+      expect(only_row(sweep.call)).to include("reason" => "backoff")
+      advance(2)
+      expect(only_row(sweep.call)).to include("reason" => "not_delivered", "action" => "redeliver")
+    end
+
+    context "when the retry lands in a lock wait" do
+      let(:lock_busy) { [false] }
+      let(:locked) do
+        Workspace::WorkflowDefinition.parse(<<~YAML, id: "locked", source: "global", path: "/defs/locked.yml")
+          steps:
+            build:
+              prompt: Build it.
+              context: continue
+              uses: [test-db]
+        YAML
+      end
+
+      before do
+        engine.cancel("wr_1")
+        ids.replace(%w[wr_2])
+        allow(resources).to receive(:acquire).and_wrap_original do |original, **args|
+          next original.call(**args) unless lock_busy.first
+          {status: :ok, released: [], acquired: [], handed_over: [], waiting: {name: "test-db", position: 1, total: 1, holder: {}}}
+        end
+        begin_run(locked)
+      end
+
+      def attempts2 = store.find("wr_2")["steps"]["build"]["attempts"]
+
+      it "reports waiting_lock without step_recovered, keeps the count for the ticked attempt, and stops at the limit" do
+        [60, 300, 900].each_with_index do |wait, index|
+          advance(wait)
+          lock_busy[0] = true
+          expect(only_row(sweep.call)).to include("reason" => "waiting_lock", "cause" => "undelivered")
+          expect(types("wr_2")).not_to include("step_recovered")
+          expect(store.find("wr_2")["steps"]["build"]["redelivery_pending"]).to eq(index + 1)
+
+          lock_busy[0] = false
+          engine.tick("wr_2")
+          expect(attempts2.last["redelivery"]).to eq(index + 1)
+          expect(store.find("wr_2")["steps"]["build"]).not_to have_key("redelivery_pending")
+        end
+
+        advance(10_000)
+        expect(only_row(sweep.call)).to include("cause" => "redelivery_exhausted")
+        expect(panes.kicks.size).to eq(5)
+      end
+
+      it "starts the count again after a person's resume during the wait" do
+        advance(60)
+        lock_busy[0] = true
+        sweep.call
+        engine.resume("wr_2")
+
+        expect(store.find("wr_2")["steps"]["build"]).not_to have_key("redelivery_pending")
+        lock_busy[0] = false
+        engine.tick("wr_2")
+        expect(attempts2.last["redelivery"]).to be_nil
+      end
+    end
+
+    it "does not retry a connection_failed raised after the request was sent" do
+      engine.cancel("wr_1")
+      ids.replace(%w[wr_2])
+      panes.kick_result = {ok: false, code: "connection_failed", message: "no reply"}
+      begin_run
+      advance(10_000)
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "not_running")
+      expect(panes.kicks.size).to eq(2)
+    end
+
+    it "records a gone pane and retries nothing" do
+      advance(61)
+      panes.stale << "wr_1"
+
+      expect(only_row(sweep.call)).to include("outcome" => "recorded", "cause" => "pane_gone")
+      expect(only_row(sweep.call)).to include("reason" => "already_recorded")
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "does nothing for a run stored with redeliver: 0" do
+      advance(61)
+      store.update("wr_1") { |stored| stored["definition"]["redeliver"] = 0 }
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "not_running")
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "does nothing for a run stored without the key" do
+      advance(61)
+      store.update("wr_1") { |stored| stored["definition"].delete("redeliver") }
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "not_running")
+      expect(panes.kicks.size).to eq(1)
+    end
+  end
+
   describe "a resume landing between the read and the change" do
     before do
       flow_with(on_timeout: "fail")

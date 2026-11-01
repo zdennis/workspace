@@ -399,23 +399,31 @@ module Workspace
        proof_missing: reply.dig("details", "proof_missing"), warning: reply["warning"]}.compact
     end
 
+    # `no_daemon` means nothing was sent (no socket to open); once the request is on the wire, a failure is
+    # `connection_failed`, which does not say whether the daemon typed the line.
     def request(workspace, message)
-      socket = @connector.call(@config.agent_socket_path(workspace))
+      socket = begin
+        @connector.call(@config.agent_socket_path(workspace))
+      rescue SystemCallError, IOError
+        raise Workspace::Error.new("No agent daemon answered for '#{workspace}'.", code: "no_daemon")
+      end
       begin
-        socket.puts(JSON.generate(message))
-        # A step's dispatch waits for this, so it never waits for good.
-        unless socket.wait_readable(@reply_timeout)
-          raise Workspace::Error.new("The agent daemon for '#{workspace}' did not answer within #{@reply_timeout.round}s.", code: "connection_failed")
+        begin
+          socket.puts(JSON.generate(message))
+          # A step's dispatch waits for this, so it never waits for good.
+          unless socket.wait_readable(@reply_timeout)
+            raise Workspace::Error.new("The agent daemon for '#{workspace}' did not answer within #{@reply_timeout.round}s.", code: "connection_failed")
+          end
+          line = socket.gets
+        ensure
+          socket.close
         end
-        line = socket.gets
-      ensure
-        socket.close
+      rescue SystemCallError, IOError
+        raise Workspace::Error.new("The connection to the agent daemon for '#{workspace}' failed after the request was sent.", code: "connection_failed")
       end
       reply = line && JSON.parse(line)
       return reply if reply.is_a?(Hash)
       raise Workspace::Error.new("The agent daemon for '#{workspace}' closed the connection without replying.", code: "connection_failed")
-    rescue SystemCallError, IOError
-      raise Workspace::Error.new("No agent daemon answered for '#{workspace}'.", code: "no_daemon")
     rescue JSON::ParserError
       raise Workspace::Error.new("Unreadable reply from the agent daemon for '#{workspace}'.", code: "unreadable_reply")
     end

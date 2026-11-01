@@ -49,6 +49,16 @@ RSpec.describe "workspace workflow sweep through build_cli" do
     expect(events.count { |each| each["type"] == "step_stalled" }).to eq(1)
   end
 
+  it "prints a line for a gone pane on the first pass only" do
+    cli.run(["workflow", "sweep"])
+    out.truncate(0)
+    out.rewind
+    cli.run(["workflow", "sweep"])
+
+    expect(out.string).not_to include("already_recorded")
+    expect(out.string).to include("Looked at 1 run; nothing to report.")
+  end
+
   it "changes nothing with --dry-run, and says so in the status" do
     cli.run(["workflow", "sweep", "--dry-run", "--json"])
 

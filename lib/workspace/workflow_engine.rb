@@ -55,6 +55,19 @@ module Workspace
     # Delivery failures that a later try can get past.
     PARK_AGAIN_CODES = %w[pane_busy restart_in_progress].freeze
 
+    # Seconds the sweep waits after an undelivered attempt ended before retrying it; retry n uses entry n
+    # (the last entry again past the end).
+    REDELIVER_BACKOFF = [60, 300, 900].freeze
+
+    # Delivery failures that prove the line never reached the pane, so typing it again cannot type it twice: the
+    # pane was busy or the screen refused before anything was typed, a restart was already under way, or no daemon
+    # socket could be opened. Not among them: `not_delivered` (a paste may have landed slowly), `connection_failed`
+    # and `unreadable_reply` (the daemon may have typed it), a gone pane, a missing checkout or an unreadable pack.
+    REDELIVER_CODES = %w[pane_busy restart_in_progress no_daemon].freeze
+
+    # The daemon's `reason` for a failure that may have left the line in the input box; retrying could type it twice.
+    REDELIVER_NEVER_REASONS = %w[prompt_unconfirmed].freeze
+
     # Where the line that starts an attempt stands. An attempt is stored as
     # `delivering` before its line is typed, outside the run's lock, and the
     # mark is cleared once the daemon answers or a turn's end shows the agent
@@ -69,6 +82,36 @@ module Workspace
       (now - Time.iso8601(attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
     rescue ArgumentError, TypeError
       :unknown
+    end
+
+    # Where the sweep's retry of an undelivered line stands. The step must wait on a failed delivery (reason
+    # `waiting_you`, kind `dispatch`, a code in {REDELIVER_CODES}), with no park, its last attempt ended
+    # `not_delivered`, and the definition's `redeliver` above 0. Attempts the sweep already retried carry
+    # `redelivered: true`, and do not count against `max_attempts`.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Hash, nil] nil when no retry applies; else :state (`:due`, `:waiting` for the backoff, `:exhausted`),
+    #   :retries (done), :limit, :wait (seconds left), :code
+    def self.redelivery(run, now)
+      limit = WorkflowDefinition.redeliver(run["definition"])
+      return nil if limit.zero? || run["parked"] || run["state"] != "waiting"
+      reason = run["reason"]
+      details = reason.is_a?(Hash) ? reason["details"] : nil
+      return nil unless reason.is_a?(Hash) && reason["code"] == "waiting_you" && details.is_a?(Hash) && details["kind"] == "dispatch"
+      return nil unless REDELIVER_CODES.include?(details["error"]) && !REDELIVER_NEVER_REASONS.include?(details["reason"])
+      state = run.dig("steps", run["current"])
+      attempts = state.is_a?(Hash) ? state["attempts"] : nil
+      last = attempts.is_a?(Array) ? attempts.last : nil
+      return nil unless state["state"] == "waiting" && last.is_a?(Hash) && last["outcome"] == "not_delivered" && !last["redelivered"]
+      # `redelivery` is set on an attempt the sweep started: a person's resume starts the count again.
+      retries = last["redelivery"].is_a?(Integer) ? last["redelivery"] : 0
+      info = {retries: retries, limit: limit, code: details["error"]}
+      return info.merge(state: :exhausted, wait: 0) if retries >= limit
+      wait = Time.iso8601(last["ended_at"].to_s) + REDELIVER_BACKOFF[[retries, REDELIVER_BACKOFF.size - 1].min] - now
+      (wait > 0) ? info.merge(state: :waiting, wait: wait.ceil) : info.merge(state: :due, wait: 0)
+    rescue ArgumentError, TypeError, NoMethodError
+      nil
     end
 
     # Where a run's parked resume stands.
@@ -670,6 +713,41 @@ module Workspace
       end
     end
 
+    # Types a step's line again after a delivery that failed, as the sweep's retry. Does nothing unless the run is
+    # still on that step and attempt and {.redelivery} says a retry is due, so a resume, a park or a cancel that got
+    # there first stands. The failed attempt is marked `redelivered` (it no longer counts against `max_attempts`),
+    # the cause `undelivered` is recorded once for it, and a new attempt starts exactly as a resume starts one; the
+    # typing itself goes through {WorkflowPanes#kick}, which refuses a pane that is not idle.
+    #
+    # @param run_id [String]
+    # @param step [String]
+    # @param attempt [Integer, nil] the failed attempt the sweep saw
+    # @return [Symbol] :redelivered, :moved_on or :busy
+    def redeliver(run_id, step:, attempt:)
+      outcome = :moved_on
+      info = nil
+      run = transition(run_id, nonblocking: true) do |stored|
+        next unless sweep_target?(stored, step, attempt, false)
+        info = self.class.redelivery(stored, @clock.call)
+        next unless info && info[:state] == :due
+        mark_stall(stored, "undelivered", {"code" => info[:code], "retry" => info[:retries] + 1, "of" => info[:limit]})
+        step_state(stored)["attempts"].last["redelivered"] = true
+        # Stamped on the next attempt by {#dispatch}, which may be one `tick` starts after a lock wait.
+        step_state(stored)["redelivery_pending"] = info[:retries] + 1
+        dispatch(stored)
+        outcome = :started
+      end
+      return :busy unless run
+      return outcome unless outcome == :started
+      # The line has been typed (or refused) by now: say what became of it.
+      state = run.dig("steps", step)
+      last = state["attempts"].last
+      return :waiting_lock if run.dig("reason", "code") == "waiting_lock"
+      return :not_delivered if last["outcome"] == "not_delivered"
+      @store.record_event(run_id, "step_recovered", "step" => step, "attempt" => attempt, "action" => "redelivered")
+      :redelivered
+    end
+
     # Takes the right to interrupt a step past its `timeout:`, as a pending mark, so two sweeps at once press the
     # keys once. A pending mark older than {INTERRUPT_CLAIM_SECONDS} can be taken over. Follow it with
     # {#interrupt_sent}, with the lock given up while the keys are pressed.
@@ -796,6 +874,8 @@ module Workspace
       # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
       unchanged = from ? nil : left_alone(stored, state, pane, turn_over)
       return [nil, unchanged] if unchanged
+      # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
+      stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
       drop_park(stored, "taken_over")
       add_resume_note(stored, note)
@@ -1132,6 +1212,8 @@ module Workspace
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
       attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
                  "delivery" => "delivering"}
+      pending = state.delete("redelivery_pending")
+      attempt["redelivery"] = pending if pending
       run["pending_context"] = []
       attempt["prompt_file"], composed = write_prompt(run, step, attempt)
       @attempt_record.start(run: run, attempt: attempt, composed: composed)
@@ -1612,7 +1694,7 @@ module Workspace
       event(run, "step_failed", {"step" => step["id"], "attempt" => attempt["n"]}.merge(failure.slice("cause", "exit_code")))
       on_fail = step["on_fail"]
       edge = on_fail && "#{step["id"]}->#{on_fail["goto"]}"
-      attempts = run["steps"].values.sum { |each| each["attempts"].size }
+      attempts = run["steps"].values.sum { |each| each["attempts"].count { |earlier| !earlier["redelivered"] } }
       spent = attempts >= run["definition"]["max_attempts"]
       if on_fail && run["loops"].fetch(edge, 0) < on_fail["max"] && !spent
         run["loops"][edge] = run["loops"].fetch(edge, 0) + 1

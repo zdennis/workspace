@@ -21,7 +21,7 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts stall steps].freeze
+    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts stall redeliver steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
@@ -38,6 +38,12 @@ module Workspace
 
     # Attempts a run may make across all its steps before a failure stops it.
     DEFAULT_MAX_ATTEMPTS = 6
+
+    # Times `workflow sweep` retries a step's undelivered line when the definition says nothing.
+    DEFAULT_REDELIVER = 3
+
+    # The most `redeliver` may be.
+    MAX_REDELIVER = 10
 
     # Seconds a `status:` check may run when it names no timeout.
     DEFAULT_CHECK_TIMEOUT = 20 * 60
@@ -154,6 +160,15 @@ module Workspace
       (value.is_a?(Numeric) && value.finite? && value > 0) ? value : nil
     end
 
+    # The `redeliver` of a definition hash: how many times `workflow sweep` retries a step's undelivered line.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Integer] 0 (no retry) in a definition stored before the key existed or holding a bad value
+    def self.redeliver(definition)
+      value = definition.is_a?(Hash) ? definition["redeliver"] : nil
+      (value.is_a?(Integer) && value.between?(0, MAX_REDELIVER)) ? value : 0
+    end
+
     private
 
     # What makes a step's pass mean something: a file it must write, a command that must
@@ -196,6 +211,10 @@ module Workspace
       unless max_attempts.is_a?(Integer) && max_attempts >= 1
         problem "max_attempts must be a whole number of 1 or more, got #{max_attempts.inspect}"
       end
+      redeliver = raw.fetch("redeliver", DEFAULT_REDELIVER)
+      unless redeliver.is_a?(Integer) && redeliver.between?(0, MAX_REDELIVER)
+        problem "redeliver must be a whole number from 0 to #{MAX_REDELIVER}, got #{redeliver.inspect}"
+      end
       instructions = text_or_nil(raw["instructions"], "instructions")
       placeholders(instructions, inputs, "instructions")
       {
@@ -207,6 +226,7 @@ module Workspace
         "instructions" => instructions,
         "max_attempts" => max_attempts,
         "stall" => duration_from(raw["stall"], "stall"),
+        "redeliver" => redeliver,
         "steps" => steps_from(raw["steps"], inputs)
       }
     end

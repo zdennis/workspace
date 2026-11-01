@@ -1698,6 +1698,15 @@ RSpec.describe Workspace::Commands::Workflow do
                          "steps" => {"plan" => {"attempts" => []}, "implement" => {"state" => "running", "attempts" => [attempt_one, {"n" => 2, "started_at" => "2026-11-01T09:05:00Z"}]}}}.merge(extra))
     end
 
+    it "marks an attempt the sweep typed again, in the table and as redelivered in json" do
+      create_run
+      real_store.update("wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][0].merge!("outcome" => "not_delivered", "redelivered" => true) }
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines[1]).to include("not_delivered (retried)")
+    end
+
     it "prints one table row per attempt" do
       create_run
 
@@ -1818,7 +1827,7 @@ RSpec.describe Workspace::Commands::Workflow do
         "steps" => {"a" => {"attempts" => [{"n" => 1}, {"n" => 2, "check" => "x"}]}})
       rows = json_attempts
       expect(rows[0].except("step", "attempt").values).to all(be_nil)
-      expect(rows[0].keys).to include("agent", "session", "head", "definition_sha256", "prompt_sha256", "packs", "outputs", "check", "usage", "evidence", "reasons", "reported", "proofs", "code", "outcome")
+      expect(rows[0].keys).to include("agent", "session", "head", "definition_sha256", "prompt_sha256", "packs", "outputs", "check", "usage", "evidence", "reasons", "reported", "proofs", "code", "outcome", "redelivered")
       expect(rows[1]["check"]).to be_nil
 
       stored = real_store.find("wr_2611010900abcd")

@@ -49,7 +49,8 @@ module Workspace
        "agent" => attempt["agent"], "session" => attempt["session"], "head" => attempt["head"],
        "definition_sha256" => attempt["definition_sha256"], "prompt_sha256" => attempt["prompt_sha256"],
        "packs" => attempt["packs"], "outputs" => attempt["outputs"], "check" => check,
-       "reported" => attempt["reported"], "proofs" => attempt["proofs"], "usage" => attempt["usage"], "evidence" => attempt["evidence"], "reasons" => attempt["reasons"]}
+       "reported" => attempt["reported"], "proofs" => attempt["proofs"], "usage" => attempt["usage"], "evidence" => attempt["evidence"], "reasons" => attempt["reasons"],
+       "redelivered" => (attempt["redelivered"] == true) ? true : nil}
     end
   end
 end

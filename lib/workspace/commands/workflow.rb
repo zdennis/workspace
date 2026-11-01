@@ -594,7 +594,7 @@ module Workspace
         heads = [head["before"], head["after"]].map { |sha| sha.is_a?(String) ? sha[0, 7] : "-" }
         usage = row["usage"].is_a?(Hash) ? row["usage"] : nil
         tokens = usage ? "#{usage["input_tokens"]}/#{usage["output_tokens"]}" : "-"
-        [row["step"], row["attempt"] || "-", row["outcome"] || "-", attempt_code(row["code"]), heads.join(">"), attempt_duration(row), tokens].map { |cell| TerminalText.escape(cell) }
+        [row["step"], row["attempt"] || "-", (row["outcome"] || "-") + ((row["redelivered"] == true) ? " (retried)" : ""), attempt_code(row["code"]), heads.join(">"), attempt_duration(row), tokens].map { |cell| TerminalText.escape(cell) }
       end
 
       # The code as the table shows it: an agent-reported code has no length limit.
@@ -611,7 +611,7 @@ module Workspace
         "-"
       end
 
-      QUIET_SWEEP_REASONS = %w[healthy parked checking not_running finished held idle delivering prompt timed_out].freeze
+      QUIET_SWEEP_REASONS = %w[healthy parked checking not_running finished held idle delivering prompt timed_out backoff pane_busy already_recorded].freeze
 
       def print_sweep(rows, summary:)
         shown = rows.reject { |each| each["outcome"] == "nothing" && QUIET_SWEEP_REASONS.include?(each["reason"]) }
