@@ -567,7 +567,8 @@ module Workspace
     capabilities_command = Commands::Capabilities.new(config: config, output: output)
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
       process_tree: ProcessTree.new(logger: logger), output: output)
-    ui_command = Commands::Ui.new(output: output, notes: notes_command)
+    ui_app_probe = UiAppProbe.new(osascript: OsascriptRunner.new(command: ["osascript", "-l", "JavaScript"]))
+    ui_command = Commands::Ui.new(output: output, notes: notes_command, app_probe: ui_app_probe)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log,
       installer: library_installer, checkout: workspace_checkout)

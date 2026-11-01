@@ -195,5 +195,174 @@ RSpec.describe Workspace::Commands::Ui do
       expect(result).to have_attributes(outcome: "failed", reason: "open_unavailable")
       expect(result.message).to include("open")
     end
+
+    describe "#status" do
+      require "tmpdir"
+      require "fileutils"
+
+      let(:tmp) { Dir.mktmpdir }
+      let(:probe) { instance_double(Workspace::UiAppProbe) }
+      let(:command) { described_class.new(opener: opener, output: output, notes: notes, app_probe: probe) }
+      let(:handler_id) { "com.zdennis.workspace-ui" }
+
+      after { FileUtils.remove_entry(tmp) }
+
+      def bundle(name = "WorkspaceUI.app", mtime: Time.at(1_700_000_000))
+        dir = File.join(tmp, name)
+        FileUtils.mkdir_p(File.join(dir, "Contents"))
+        plist = File.join(dir, "Contents", "Info.plist")
+        File.write(plist, "x")
+        File.utime(mtime, mtime, plist)
+        dir
+      end
+
+      def answer(handler: nil, running: [], problem: nil)
+        allow(probe).to receive(:call).and_return(Workspace::UiAppProbe::Answer.new(handler, running, problem))
+      end
+
+      def handler_at(path, id: handler_id, revision: 2)
+        Workspace::UiAppProbe::Handler.new(path, id, "0.30.1", revision)
+      end
+
+      def running_at(path, launched_at: Time.at(1_800_000_000), pid: 41)
+        Workspace::UiAppProbe::Running.new(pid, path, launched_at)
+      end
+
+      it "reports a revision with no reason when the handler is the declaring bundle and nothing runs" do
+        answer(handler: handler_at(bundle))
+
+        doc = command.status
+        expect(doc).to include("running" => false, "pids" => [], "probe" => nil, "warnings" => [])
+        expect(doc["handler"]).to eq("path" => File.join(tmp, "WorkspaceUI.app"), "id" => handler_id, "version" => "0.30.1")
+        expect(doc["links"]).to eq("revision" => 2, "reason" => nil)
+      end
+
+      it "keeps the revision when the running copy is the handler through a symlink and started after the bundle" do
+        real = bundle
+        link = File.join(tmp, "Link.app")
+        File.symlink(real, link)
+        answer(handler: handler_at(link), running: [running_at(real)])
+
+        doc = command.status
+        expect(doc).to include("running" => true, "pids" => [41])
+        expect(doc["links"]).to eq("revision" => 2, "reason" => nil)
+      end
+
+      it "answers probe_failed with null running, pids and handler for each probe problem" do
+        %i[timed_out unavailable bad_answer].each do |problem|
+          answer(problem: problem)
+
+          expect(command.status).to include("running" => nil, "pids" => nil, "handler" => nil, "probe" => problem.to_s,
+            "links" => {"revision" => nil, "reason" => "probe_failed"})
+        end
+      end
+
+      it "answers no_handler" do
+        answer(handler: nil, running: [running_at("/x")])
+
+        expect(command.status).to include("handler" => nil, "running" => true, "links" => {"revision" => nil, "reason" => "no_handler"})
+      end
+
+      it "answers foreign_handler for another bundle id, before looking at the files" do
+        answer(handler: handler_at("/nonexistent", id: "com.example.other"))
+
+        expect(command.status["links"]["reason"]).to eq("foreign_handler")
+      end
+
+      it "answers handler_unreadable for a nil path, a removed bundle and a bundle with no Info.plist" do
+        empty = File.join(tmp, "Empty.app")
+        FileUtils.mkdir_p(empty)
+        [nil, File.join(tmp, "Gone.app"), empty].each do |path|
+          answer(handler: handler_at(path))
+
+          expect(command.status["links"]).to eq("revision" => nil, "reason" => "handler_unreadable")
+        end
+      end
+
+      it "answers handler_unreadable ahead of handler_differs" do
+        answer(handler: handler_at(File.join(tmp, "Gone.app")), running: [running_at(bundle)])
+
+        expect(command.status["links"]["reason"]).to eq("handler_unreadable")
+      end
+
+      it "answers handler_differs for a running copy elsewhere, with a nil path or gone, even if another copy matches" do
+        here = bundle
+        other = bundle("Other.app")
+        [other, nil, File.join(tmp, "Gone.app")].each do |path|
+          answer(handler: handler_at(here), running: [running_at(here), running_at(path, pid: 42)])
+
+          expect(command.status["links"]).to eq("revision" => nil, "reason" => "handler_differs")
+        end
+      end
+
+      it "answers launch_unknown for a running copy with no launch time, ahead of app_older_than_bundle" do
+        here = bundle
+        answer(handler: handler_at(here), running: [running_at(here, launched_at: nil), running_at(here, launched_at: Time.at(1), pid: 42)])
+
+        expect(command.status["links"]["reason"]).to eq("launch_unknown")
+      end
+
+      it "answers app_older_than_bundle when a running copy started before Info.plist changed" do
+        here = bundle(mtime: Time.at(1_800_000_000))
+        answer(handler: handler_at(here), running: [running_at(here, launched_at: Time.at(1_700_000_000))])
+
+        expect(command.status["links"]).to eq("revision" => nil, "reason" => "app_older_than_bundle")
+      end
+
+      it "answers not_declared when the bundle has no link revision" do
+        answer(handler: handler_at(bundle, revision: nil))
+
+        expect(command.status["links"]).to eq("revision" => nil, "reason" => "not_declared")
+      end
+
+      it "applies no launch check when nothing runs" do
+        answer(handler: handler_at(bundle(mtime: Time.at(4_000_000_000))))
+
+        expect(command.status["links"]["revision"]).to eq(2)
+      end
+
+      it "never calls open" do
+        answer(handler: handler_at(bundle))
+        command.status
+
+        expect(opener.calls).to be_empty
+      end
+
+      describe "#status_lines" do
+        it "prints three lines for a running handler" do
+          here = bundle
+          answer(handler: handler_at(here), running: [running_at(here)])
+
+          expect(command.status_lines(command.status)).to eq([
+            "running: yes (pid 41)",
+            "handler: #{here} (#{handler_id} 0.30.1)",
+            "links: revision 2"
+          ])
+        end
+
+        it "prints the absent handler and the reason" do
+          answer(handler: nil)
+
+          expect(command.status_lines(command.status)).to eq([
+            "running: no", "handler: none (no app takes workspace-ui:// links)", "links: no revision (no_handler)"
+          ])
+        end
+
+        it "prints unknown when the probe has no answer" do
+          answer(problem: :timed_out)
+
+          expect(command.status_lines(command.status)).to eq([
+            "running: unknown (timed_out)", "handler: unknown", "links: no revision (probe_failed)"
+          ])
+        end
+
+        it "escapes control characters in values read from macOS" do
+          doc = {"pids" => [], "probe" => nil, "links" => {"revision" => nil, "reason" => "not_declared"},
+                 "handler" => {"path" => "/a\e[2Jb", "id" => handler_id, "version" => "1\n2"}}
+
+          expect(command.status_lines(doc)[1]).to eq("handler: /a\\e[2Jb (#{handler_id} 1\\n2)")
+        end
+      end
+    end
   end
 end

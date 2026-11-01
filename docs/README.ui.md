@@ -11,6 +11,7 @@ workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]
 workspace ui open plan [WORKSPACE] [--print] [--json]
 workspace ui open pane [WORKSPACE] PANE [--print] [--json]
 workspace ui open inbox [--print] [--json]
+workspace ui status [--json]
 ```
 
 | View | Link |
@@ -54,6 +55,47 @@ The link is passed to the system `open` as a single argument (no shell). The wor
 `action` is `ui open`, like `dev up` and `lock release`. `reason` is the stable machine field; `message` is for people and its text may change. `outcome` is `opened`, `printed` or `failed`. `reason` on a failure is `open_failed` (`open` exited non-zero; `message` is its first line of stderr, with a reminder to use `--print` appended) or `open_unavailable` (`open` could not be run). `workspace` is `null` for `inbox`. A `pane` row also carries `pane`, and a row opened with `--path` carries `path`. These are `usage` errors: an unknown view, a missing workspace, a workspace given to `inbox`, a pane given to any view but `pane`, and a missing or malformed pane id (exit 1; with `--json` the error envelope).
 
 Run `workspace ui open VIEW --help` for the task, notes and inbox views, each with its own page and examples.
+
+## status
+
+```sh
+workspace ui status [--json]
+```
+
+Asks macOS which app would take a `workspace-ui://` link, and which copies of the UI app run. It is read-only: nothing is opened or launched, no `open` is run, and no link is built. It takes `--json` only; a positional, `--name`, `--path` or `--print` is a usage error (the error envelope under `--json`). It always exits 0 once it parses: not getting an answer from macOS is data, not an error.
+
+Text output is three lines:
+
+```
+running: yes (pid 4121)
+handler: /Applications/Workspace UI.app (com.zdennis.workspace-ui 0.30.1)
+links: revision 2
+```
+
+`--json` prints one read document (a read document, not an action: `schema_version`, `ok`, no `results`):
+
+```json
+{"schema_version":1,"ok":true,"running":false,"pids":[],
+ "handler":{"path":"/Applications/Workspace UI.app","id":"com.zdennis.workspace-ui","version":"0.30.1"},
+ "links":{"revision":null,"reason":"not_declared"},
+ "probe":null,"warnings":[]}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `running`, `pids` | Whether a copy of the app (bundle id `com.zdennis.workspace-ui`) runs, and its process ids. Null when the probe could not answer |
+| `handler` | The app macOS would hand a link to: `path`, `id`, `version`. Null when none is registered, or when the probe could not answer |
+| `links.revision` | An integer only when the app that would take a link is the bundle that declares it (`WorkspaceUILinkRevision` in its `Info.plist`). Otherwise null. The CLI never derives it from the app's version |
+| `links.reason` | Null when `revision` is a number, else the first that applies: `probe_failed`, `no_handler`, `foreign_handler` (the handler's id is not ours), `handler_unreadable` (its path is missing, or its real path or `Info.plist` cannot be read, for example the bundle was removed), `handler_differs` (a running copy has a different real path from the handler's, or no path, or is gone), `launch_unknown` (a running copy has no launch time to compare), `app_older_than_bundle` (a running copy started before the handler's `Info.plist` was last changed), `not_declared` (the bundle declares no revision). With nothing running, the launch checks do not apply |
+| `probe` | Null, or `timed_out`, `unavailable` or `bad_answer` when macOS could not be asked (5 seconds) |
+| `warnings` | An array, empty unless there is something to report |
+
+The rule for an agent: `handler: null`, or a `foreign_handler` reason, means no UI app would take the link, so print it (`ui open ... --print`) instead of opening it. `running: false` does not mean that, since macOS launches the app to take a link.
+
+Known limit of `app_older_than_bundle`: it compares a running copy's launch time with the modification time of the handler's `Info.plist`. A Finder or `cp -p` install keeps the `Info.plist` time of the build, so an old app launched after that build but before the install can still report the new revision. A harmless copy can also read as older; that only gives a null revision.
+
+Values read from macOS (a bundle path or version) are escaped in the text output.
+
 
 ## Examples
 

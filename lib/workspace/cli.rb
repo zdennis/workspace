@@ -699,7 +699,7 @@ module Workspace
           ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show), or list yours (list), in this workspace's project
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
-          ui              Open a workspace-ui:// link: a task, a review, notes or the inbox
+          ui              Open a workspace-ui:// link (open), or see which app would take one (status)
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
           workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; manage your own definitions (validate, add, update, remove); read a run's history (events, files)
@@ -4563,23 +4563,40 @@ module Workspace
       end
     end
 
+    UI_SUBCOMMANDS = %w[open status].freeze
+
+    # `ui status`: a read document (or three lines), never an action. The probe's lack of an answer is data, so it exits 0.
+    def ui_status(args, options)
+      extra = [("--name" if options[:name]), ("--path" if options[:path]), ("--print" if options[:print])].compact
+      raise UsageError, "ui status takes only --json: #{extra.join(", ")} is not accepted. Run 'workspace ui status --help'." if extra.any?
+      raise UsageError, "ui status takes no argument: '#{args.first}'. Run 'workspace ui status --help'." if args.any?
+
+      doc = @ui_command.status
+      if options[:json]
+        @output.puts JSON.generate({"schema_version" => ACTION_JSON_SCHEMA_VERSION, "ok" => true}.merge(doc))
+      else
+        @ui_command.status_lines(doc).each { |line| @output.puts line }
+      end
+    end
+
     def cmd_ui(args)
       return if verb_help_shown?(HelpPages::UI, args)
 
       options = {json: false, print: false}
       given = args.dup
       parser = ui_parser(options)
-      subcommand = args.shift if args.first == "open"
+      subcommand = args.shift if UI_SUBCOMMANDS.include?(args.first)
       parser.parse!(args)
-      subcommand ||= args.shift if args.first == "open"
+      subcommand ||= args.shift if UI_SUBCOMMANDS.include?(args.first)
       return @output.puts(parser.help) if options[:help]
 
       if !subcommand && args.any?
         hint = " Did you mean: workspace ui open #{args.join(" ")}?" if Commands::Ui::VIEWS.key?(args.first)
         raise UsageError, "Unknown ui subcommand: #{args.first}.#{hint} Run 'workspace ui --help'."
       end
-      raise UsageError, "Missing subcommand: open.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Missing subcommand: open or status.\n\n#{parser.help}" unless subcommand
       raise Error, "ui is not available: no ui command was wired" unless @ui_command
+      return ui_status(args, options) if subcommand == "status"
 
       view = nil
       name = nil

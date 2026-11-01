@@ -51,7 +51,7 @@ module HelpExamplesSpec
     "spine goal set",
     "start", "status", "statusline", "step", "step done", "step status", "stop",
     "ticket", "ticket show", "ticket list", "tile", "tmux", "tmux show",
-    "ui", "ui open", "ui open task", "ui open notes", "ui open inbox",
+    "ui", "ui open", "ui open task", "ui open notes", "ui open inbox", "ui status",
     "wait-until-content", "whereis",
     "workflow", "workflow show", "workflow validate", "workflow add", "workflow update", "workflow remove",
     "workflow run", "workflow start", "workflow status", "workflow events", "workflow files", "workflow resume",

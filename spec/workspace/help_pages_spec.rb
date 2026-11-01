@@ -52,7 +52,7 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["pipeline"].keys).to match_array(%w[start advance status reset])
       expect(pages["notes"].keys).to eq(["dir"])
       expect(pages["instructions"].keys).to eq(["compose"])
-      expect(pages["ui"].keys).to eq(["open", "open task", "open notes", "open inbox"])
+      expect(pages["ui"].keys).to eq(["open", "open task", "open notes", "open inbox", "status"])
       expect(pages["event-log"].keys).to eq(%w[show compact])
       expect(pages["projects"].keys).to eq(%w[list show members stop kill])
       expect(pages["projects group"].keys).to match_array(%w[create add list show])
@@ -379,6 +379,18 @@ RSpec.describe Workspace::HelpPages do
         out.rewind
         cli.run(%w[ui open task --help])
         expect(out.string).to eq(described_class.render(described_class::UI.fetch("open task")).join("\n") + "\n")
+      end
+    end
+
+    it "lists ui status in the ui overview and prints its own page" do
+      with_cli do |cli, out, *|
+        cli.run(%w[ui --help])
+        expect(out.string).to include("workspace ui status [--json]")
+
+        out.truncate(0)
+        out.rewind
+        cli.run(%w[ui status --help])
+        expect(out.string).to eq(described_class.render(described_class::UI.fetch("status")).join("\n") + "\n")
       end
     end
 

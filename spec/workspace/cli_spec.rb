@@ -8942,6 +8942,52 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "ui status" do
+      it "prints three lines and calls no open" do
+        cli.run(["ui", "status"])
+
+        expect(output.string.lines.size).to eq(3)
+        expect(ui_command.calls).to eq([{status: true}])
+      end
+
+      it "prints one read document with --json before or after the verb" do
+        [["ui", "status", "--json"], ["ui", "--json", "status"]].each do |argv|
+          output.truncate(0)
+          output.rewind
+          cli.run(argv)
+
+          doc = JSON.parse(output.string)
+          expect(doc).to include("schema_version" => 1, "ok" => true, "running" => false, "probe" => nil, "warnings" => [])
+          expect(doc["links"]).to eq("revision" => nil, "reason" => "no_handler")
+          expect(doc).not_to have_key("results")
+        end
+      end
+
+      it "exits 0 when the probe had no answer" do
+        ui_command.status_doc = {"running" => nil, "pids" => nil, "handler" => nil,
+                                 "links" => {"revision" => nil, "reason" => "probe_failed"}, "probe" => "timed_out", "warnings" => []}
+
+        expect { cli.run(["ui", "status", "--json"]) }.not_to raise_error
+        expect(JSON.parse(output.string)).to include("ok" => true, "probe" => "timed_out", "running" => nil)
+      end
+
+      it "refuses a positional, --name, --path and --print as a usage error, in the envelope under --json" do
+        [%w[extra], %w[--name x], %w[--path a.md], %w[--print]].each do |extra|
+          output.truncate(0)
+          output.rewind
+          expect { cli.run(["ui", "status", "--json"] + extra) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+          expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+        end
+        expect(ui_command.calls).to eq([])
+      end
+
+      it "names open and status when the subcommand is missing" do
+        expect { cli.run(["ui"]) }.to raise_error(FakeSystemExit)
+
+        expect(error_output.string).to include("Missing subcommand: open or status.")
+      end
+    end
+
     it "routes notes with a workspace, --name, or the detected workspace" do
       cli.run(["ui", "open", "notes", "app", "--print"])
       cli.run(["ui", "open", "notes", "--name", "other"])

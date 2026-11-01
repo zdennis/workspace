@@ -1440,6 +1440,27 @@ module Workspace
           ["workspace ui open inbox --print", "learn the inbox link and open nothing"],
           ["workspace ui open inbox --json", "open from a script; on failure exits 1 with reason open_failed or open_unavailable"]
         ]
+      },
+      "status" => {
+        usage: ["ui status [--json]"],
+        summary: "Show which app would take a workspace-ui:// link, and whether it is running",
+        about: [
+          "Asks macOS, and only asks: nothing is opened or launched, and no link is built. Prints three lines",
+          "(running, handler, links), or with --json one read document: running, pids, handler (path, id, version),",
+          "links (revision, reason), probe and warnings. When macOS cannot be asked, running, pids and handler are",
+          "null and probe says why (timed_out, unavailable, bad_answer); that is still exit 0.",
+          "",
+          "The rule for an agent: `handler: null`, or links.reason `foreign_handler`, means no UI app would take a",
+          "link, so print it (`ui open ... --print`) rather than open it. `running: false` does not mean that:",
+          "macOS launches the app for a link. links.revision is a number only when the handler is the shipped app",
+          "and its bundle declares the links it takes; otherwise it is null and links.reason says why."
+        ],
+        options: [["--json", "Print one JSON read document (see docs/README.ui.md)"]],
+        examples: [
+          ["workspace ui status", "see whether the UI app is installed and running"],
+          ["workspace ui status --json", "read the same from a script"],
+          ["workspace ui status --json | jq .links.reason", "learn why links may not reach the running app (null when they will)"]
+        ]
       }
     }.freeze
 
