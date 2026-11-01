@@ -2,7 +2,7 @@ require "json"
 
 module Workspace
   module Commands
-    # `workspace skills install` and `skills uninstall`: link the four workspace
+    # `workspace skills install` and `skills uninstall`: link the five workspace
     # skills (whole directories, never files) into the skills directory of each
     # harness the person picks, and into `~/.agents/skills` when it exists. See
     # {Workspace::SkillLinks} for what is never replaced.
@@ -103,7 +103,7 @@ module Workspace
       end
 
       # What `doctor` reports: one entry per harness found and not declined. `status` is `ok`
-      # (all four links resolve, whichever install they point at), `missing`, `dangling` (a link
+      # (all five links resolve, whichever install they point at), `missing`, `dangling` (a link
       # of ours to nothing; wins over missing) or `conflict` (a real file or directory, or
       # someone else's link, in our spot; wins over both). Reads only.
       #

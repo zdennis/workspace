@@ -192,7 +192,7 @@ RSpec.describe Workspace::Commands::Skills do
       cmd.install(install_all: true, json: true)
 
       codex = document["harnesses"].find { |h| h["key"] == "codex" }
-      expect(codex["skills"].size).to eq(4)
+      expect(codex["skills"].size).to eq(5)
     end
 
     it "raises no_harness_found when none is there" do
@@ -263,6 +263,27 @@ RSpec.describe Workspace::Commands::Skills do
     end
   end
 
+  describe "an upgrade that ships one more skill" do
+    let(:dir) { skills_dir(".claude") }
+
+    before do
+      FileUtils.rm_rf(File.join(home, ".codex"))
+      FileUtils.mkdir_p(dir)
+      SkillsFixture::NAMES.first(4).each { |name| File.symlink(File.join(root, name), File.join(dir, name)) }
+    end
+
+    it "reads as missing, and repair links the new skill and leaves the others alone" do
+      before = SkillsFixture::NAMES.first(4).to_h { |name| [name, File.lstat(File.join(dir, name)).ino] }
+
+      expect(command.health.map { |entry| entry["status"] }).to eq(["missing"])
+      expect(command.repair).to eq("fixed" => ["Claude Code"], "warnings" => [])
+
+      expect(File.readlink(File.join(dir, "workspace-workflow"))).to eq(File.join(root, "workspace-workflow"))
+      expect(before.keys.to_h { |name| [name, File.lstat(File.join(dir, name)).ino] }).to eq(before)
+      expect(command.health.map { |entry| entry["status"] }).to eq(["ok"])
+    end
+  end
+
   describe "state" do
     it "reads a corrupt file as empty" do
       FileUtils.mkdir_p(state_dir)
@@ -316,7 +337,7 @@ RSpec.describe Workspace::Commands::Skills do
       command.uninstall(dry_run: true)
 
       expect(linked?(skills_dir(".claude"))).to be(true)
-      expect(output.string).to include("Would remove 8")
+      expect(output.string).to include("Would remove 10")
     end
 
     it "prints one document with --json" do

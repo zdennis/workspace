@@ -2,8 +2,8 @@ require "fileutils"
 require "shellwords"
 
 module Workspace
-  # Reads, plans and writes the symlinks of the four workspace skills in one
-  # skills directory. Only the four named paths are touched; each is a symlink to
+  # Reads, plans and writes the symlinks of the five workspace skills in one
+  # skills directory. Only the five named paths are touched; each is a symlink to
   # the skill's whole directory. A path that exists and is not our link is never
   # replaced: an identical real directory is moved to the state directory's
   # `skill-backups`, anything else is refused with the `mv` that would clear it.
@@ -150,7 +150,7 @@ module Workspace
 
     private
 
-    # A dangling link counts as ours when all four names in the directory point into the same
+    # A dangling link counts as ours when all five names in the directory point into the same
     # lib/skills root: a checkout that was deleted or moved away, whatever it was called.
     def whole_set?(dir, root)
       SkillSource::NAMES.all? do |name|
