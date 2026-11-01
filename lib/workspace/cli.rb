@@ -5253,7 +5253,7 @@ module Workspace
           row = @workflow_start_command.call(id: start_ref && subject, ref: options[:ref] || start_ref, positional: (start_ref || options[:ref]) ? nil : subject, route: !options[:ref].nil?, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
             note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
             prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run], force: options[:force] == true)
-          Array(row && row["warnings"]).each { |warning| @error_output.puts "warning: #{TerminalText.escape(warning.to_s)}" } unless options[:json]
+          Array(row && row["warnings"]).each { |warning| @error_output.puts "Warning: #{TerminalText.escape(warning.to_s)}" } unless options[:json]
           row
         end
       when "resume"

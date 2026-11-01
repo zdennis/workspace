@@ -6881,7 +6881,7 @@ RSpec.describe Workspace::CLI do
         start_command.row = start_command.row.merge("warnings" => ["Could not read X: \e[31mred\e[0m\rgone"])
         cli.run(["workflow", "start", "rpiv", "x"])
 
-        expect(error_output.string).to include('warning: Could not read X: \e[31mred\e[0m\rgone')
+        expect(error_output.string).to include('Warning: Could not read X: \e[31mred\e[0m\rgone')
         expect(error_output.string).not_to include("\e")
       end
 
@@ -6896,7 +6896,7 @@ RSpec.describe Workspace::CLI do
         start_command.row = start_command.row.merge("warnings" => ["rpiv applies to jira, not branch. Continuing because of --force."])
         cli.run(["workflow", "start", "rpiv", "x", "--force"])
         expect(start_command.calls.last).to include(force: true)
-        expect(error_output.string).to include("warning: rpiv applies to jira, not branch. Continuing because of --force.")
+        expect(error_output.string).to include("Warning: rpiv applies to jira, not branch. Continuing because of --force.")
 
         error_output.truncate(0)
         error_output.rewind
