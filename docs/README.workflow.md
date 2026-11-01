@@ -22,10 +22,10 @@ workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
-workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--json]
+workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--json]
 workspace workflow cancel RUN [--json]
 workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
-workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--json]
+workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--json]
 
 workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
 workspace step status [--json]
@@ -98,6 +98,7 @@ A step is done when the agent's turn ends in the bound pane, every file the step
 - A step that fails (its check exits non-zero or runs past its time limit, or the agent reported `fail`) goes back to the step its `on_fail: {goto, max}` names, at most `max` times, and never once the run has made `max_attempts` attempts across all its steps. The step it goes back to is told what failed, and, with `log_tail`, shown the end of the check's log. With `backoff` the retry starts after a wait instead of at once ([Retrying a failed step](#retrying-a-failed-step)). After that the run stops and waits for you.
 
 `workflow resume` and `workflow reject` hold to the same budget: one that would start an attempt (a failed or undelivered step run again, `--from`, a retry's wait ended, a `--pane` resume of a running step, any reject) is refused with `attempts_spent` (`details`: `attempts`, `max_attempts`, `step`) once the run has made `max_attempts` attempts, and nothing changes. Pass `--extra-attempts N` (a whole number from 1 up) to add N to that run's allowance and go on; N must cover the overrun (the attempt about to start has to fit), and the refusal names the least that does (`details.needed`, also in its message); the run file keeps it as `extra_attempts`, the event log records `attempts_extended`, the definition is not rewritten, and a later `on_fail` check counts against the raised total (`failed_check` `details.max_attempts` shows it). It also applies when the budget is not spent yet. A resume parked from the run's own pane is checked when it is parked and again when it is carried out, but not when it is typed again after a busy pane (that attempt was already counted); the flag is applied once, on release. A resume that starts no attempt (it only reports `unchanged`, decides a running step from a turn that is over, looks at a check, moves a passed step on, or asks for a lock again) is never refused and ignores the flag, as do `tick` and `workflow sweep`; attempts the sweep typed again (`redelivered`) do not count. Runs stored before this check get the same refusal. `workflow status` marks every action that would start an attempt (a plain resume only for a step that a resume would run again; resume `--from`; a gate's reject) with the `extra_attempts` need while the run has spent its attempts, read from the run as it is now. The need is `{"name":"extra_attempts","flag":"--extra-attempts","min":N}`: pass at least `min` (the same number as `details.needed`).
+- With a `budget:` the run also stops before an attempt it can no longer afford ([Token budgets](#token-budgets)).
 - When the last step passes, the run is `completed`, its locks are released and its pane is unbound.
 - A check still running when its run is cancelled, killed or moved to another step is stopped within a few seconds, so it doesn't go on using the test database beside the lock's next holder.
 
@@ -297,6 +298,7 @@ Top-level keys:
 | `include` | Pack names composed after the default packs, for every step |
 | `instructions` | Text for every step |
 | `max_attempts` | Attempts the run may make across all its steps before a failure stops it (default 6) |
+| `budget` | `{tokens: N, action: stop}`, or left out (the default, no budget): the tokens the run may use before the next attempt is held. `tokens` is a whole number from 1 up; `stop` is the only `action`. See [Token budgets](#token-budgets) |
 | `stall` | A duration such as `20m`, or left out (the default): how long a step's pane may sit idle, its agent's turn over, before `workflow sweep` decides the step. Only the sweep reads it; left out, the sweep never decides a step for being idle |
 | `redeliver` | A whole number from 0 to 10 (default 3): how many times `workflow sweep` types a step's line again when it was not delivered (see [Sweeping stopped runs](#sweeping-stopped-runs)). `0` turns the retry off. A run stored before the key existed reads as `0` and is never retried |
 | `deny` | A list of shell-glob patterns (at most 50, each at most 200 characters with at most 8 `*` or `?`) for Bash commands the run's agent may not run; see [Denying commands](#denying-commands). A run stored before the key existed has none |
@@ -413,6 +415,46 @@ Each file must lie under the run's artifacts directory once links in its parent 
 
 An agent under the same account can still change a file before it is copied, or the copy itself. The evidence makes a later change visible by comparing against the copy and its hash; it does not prevent one, and the prompt is the only file copied before the agent could touch it. A check log is whole when a check passes or fails; a cancel or kill that stops a running check records the log as it stood, and what the stopped check writes afterwards is not copied. A run stored before this has no `evidence` (`null` in `workflow attempts`).
 
+### Token budgets
+
+`budget: {tokens: 4000000, action: stop}` holds a run to a token total across all its steps. It is off unless a definition declares it; a run stored before the key, or with a bad stored value, has no budget. It is checked where a new attempt would start and never interrupts a turn under way, so a run can finish an attempt past its budget: the budget stops the next one.
+
+In the text status the run reads:
+
+```console
+  budget_spent: step build was not started: 4,120,000 of 4,000,000 tokens  (resume --extra-tokens 1000000)
+    workspace workflow resume wr_2611... --extra-tokens EXTRA_TOKENS
+```
+
+The figure after `resume --extra-tokens` is `suggested`; with uncounted attempts the line adds `(at least; N ended attempts not counted)`.
+
+What is counted. The sum of the `usage` each ended attempt recorded ([What an attempt records](#what-an-attempt-records)): `input_tokens`, `output_tokens` and `cache_creation_input_tokens`. Cache reads are left out: they re-read context already paid for, and counting them would make any long turn look huge. Two things are never counted, so the total is always a **minimum**, and `status` says so (`budget.minimum` is always `true`):
+
+- Sub-agents. The recorded `usage` is the main thread's.
+- An attempt that was replaced without ending (a `resume --from` or `--pane` over a running attempt) counts with its `usage` when it has one, and as uncounted when it has none. The attempt a run is working on right now is left out until it ends, and is not uncounted.
+- An attempt whose `usage` is `null`: another agent than Claude Code, or a heavy attempt whose last 4 MiB of transcript does not reach back to its start. These are counted in `budget.uncounted`, never read as zero. An attempt that was never delivered ran nothing and is neither counted nor uncounted.
+
+Claude Code is the only agent measured. A run whose ended attempts are all uncounted (a Codex run, say) has a total of 0, which is under any budget, so its budget never stops it; `budget.measured` is `false` and `budget.counted` is 0. The alternative, stopping on an unknown figure, would end every such run after its first attempt for a number nobody can check. A run with some counted and some uncounted attempts stops as soon as the counted ones alone reach the budget, since the real total is at least that.
+
+Where it stops. A run is held when the budget is used (`used` has reached `tokens` plus `extra_tokens`) at each point an attempt would start:
+
+| Where an attempt starts | With the budget used |
+|---|---|
+| A step passes and the next one starts, an `approve` | Held: the run waits, `budget_spent`, with the next step left as it was |
+| An `on_fail` retry straight away | Held: the loop count is spent, the failure text and `context: fresh` are kept for the resume |
+| An `on_fail` retry after its `backoff` (a tick or `workflow sweep`) | Held when the wait is over |
+| `workflow resume`, `resume --from`, a `--pane` resume of a running step, `workflow reject`, a resume over a retry's wait | Refused with `budget_spent` unless `--extra-tokens N` covers it; nothing changes |
+| A resume parked from the run's own pane | Refused when it is parked and when it is released; not when it is typed again after a busy pane (that attempt was already counted) |
+| `workflow sweep` typing an undelivered line again | Not held: the attempt spent nothing new |
+| A lock wait that ends | Not held: the attempt was allowed when the step was reached |
+| `unchanged` answers, a running check, a turn left to decide | Not an attempt, never refused |
+
+A held run reads `waiting` with the reason `budget_spent` (`details`: `step`, `used`, `allowance`, `tokens`, `extra_tokens`, `counted`, `uncounted`, `needed`, `suggested`), holds no lock, and keeps its pane binding. It is listed by `workflow status --needs-me` and has an inbox row (`workflow_budget_spent`). A hold sends the `failed` alert of `alerts.workflow` (once, when the hold begins; `WORKSPACE_ALERT_REASON` is `budget_spent` and the text says the token budget is used), since no sweep or status look would tell an unattended run's owner. It keeps the pane it had (`budget_hold` in the run file holds the pane and its identity, and the pane stays claimed against other runs like a retry's wait), so `resume --extra-tokens` is held with a sentence, writing nothing, when that pane is now another run's, gone, or looks reused; `resume --pane PANE` is the proof, as for a retry's wait. `resume --from STEP` drops the text that sent the run back to the held step, as it does for a retry's wait. `workflow sweep` reports a held run as `nothing` with the reason `budget_spent` (a hold is not a failure, so the exit status is 0).
+
+`--extra-tokens N` (a whole number from 1 up) on `resume` and `reject` adds N to the run's allowance and goes on. N must cover the overrun (`used` minus the allowance plus one, `details.needed`, also in the message); `details.suggested` rounds that up to the next 100,000 so one more attempt has room. The run file keeps the total as `extra_tokens`, the event log records `budget_extended`, and the definition is not rewritten. The flag also applies when the budget is not used yet, and is ignored by a resume that starts no attempt and by a run without a budget. The event log records `budget_spent` when a run is held.
+
+`workflow status --json` gives a run with a budget a top-level `budget`: `tokens`, `action`, `extra_tokens`, `allowance`, `used`, `counted`, `uncounted`, `measured`, `spent`, `minimum`. Each action that would start an attempt gets the need `{"name":"extra_tokens","flag":"--extra-tokens","min":N,"suggested":M}` while the budget is used.
+
 ### Reading a run's attempts
 
 `workflow attempts RUN [--attempt-of STEP] [--json]` prints what the run file recorded for each attempt (see [What an attempt records](#what-an-attempt-records)), going or finished, in the order the attempts began. It reads the run file and writes nothing. An unknown run is refused with `unknown_run`; `--attempt-of` with a step the run's definition doesn't have is refused with `unknown_step` (`details.steps` lists the real ones). `--attempt-of` is the flag's name because `--step` is for `approve` and `reject`; it is refused on any other verb.
@@ -447,7 +489,7 @@ Needs `workflow` 14 in `capabilities`.
 
 ### Alerts
 
-`alerts.workflow` makes the project's `alerts.notify` command run for a run's events, which nothing else tells a person about. It is a comma-separated list of `gate` (a step waits at a gate), `failed` (a step failed, or its check did: `failed_check`), `stalled` (the sweep found a stall and recorded it) and `finished` (the run completed). Unknown names are refused by `config set`. Unset means none, so nothing new runs.
+`alerts.workflow` makes the project's `alerts.notify` command run for a run's events, which nothing else tells a person about. It is a comma-separated list of `gate` (a step waits at a gate), `failed` (a step failed, or its check did: `failed_check`; or a run was held by its [token budget](#token-budgets), `budget_spent`), `stalled` (the sweep found a stall and recorded it) and `finished` (the run completed). Unknown names are refused by `config set`. Unset means none, so nothing new runs.
 
 ```console
 $ workspace config set alerts.notify 'say "$WORKSPACE_ALERT_TEXT"'
@@ -728,7 +770,7 @@ Every refusal leaves the run file as it was.
 A run that is not moving has a `reason`: a `code`, `since`, `details`, and `actions`, the commands that resolve it. Every entry has `action`, `args` and `needs`:
 
 - `needs: []`: run `workspace <action> <args...>` as written.
-- Otherwise the caller supplies one value per entry of `needs` (`name`, `flag`) and appends it after `args`: the flag then the value, or `--` then the value when `flag` is `null`. `workflow reject` needs `{"name":"note","flag":"--note"}`; an action that would be refused with `attempts_spent` also lists `{"name":"extra_attempts","flag":"--extra-attempts","min":N}`, where the value must be a whole number of at least `min` (`min` is only on this need) and `ask answer` needs `{"name":"answer","flag":null}`. No placeholder is ever in `args`; the text output shows one for a person (`workspace workflow reject RUN --note NOTE`).
+- Otherwise the caller supplies one value per entry of `needs` (`name`, `flag`) and appends it after `args`: the flag then the value, or `--` then the value when `flag` is `null`. `workflow reject` needs `{"name":"note","flag":"--note"}`; an action that would be refused with `attempts_spent` also lists `{"name":"extra_attempts","flag":"--extra-attempts","min":N}`, where the value must be a whole number of at least `min` (`min` is only on this need); one refused with `budget_spent` lists `{"name":"extra_tokens","flag":"--extra-tokens","min":N,"suggested":M}` the same way; and `ask answer` needs `{"name":"answer","flag":null}`. No placeholder is ever in `args`; the text output shows one for a person (`workspace workflow reject RUN --note NOTE`).
 
 | Code | Meaning | `details` |
 |---|---|---|
@@ -737,6 +779,7 @@ A run that is not moving has a `reason`: a `code`, `since`, `details`, and `acti
 | `turn_ended_incomplete` | The turn ended and a file the step produces is missing, is not a non-empty regular file (a symlink, a directory or an empty file), or was left by an earlier attempt and not written again. The next turn's end, or `workflow resume`, looks again. A fresh one is hidden for its first 10 seconds and while the pane is working (the run reads `running`, with no reason), so a real stop can show up to 10 seconds late: a task that settled just before the turn ended starts a new turn on its own. After 90 minutes of a hold (below) it is stored in place of `turn_ended_background`, with `background_tasks` | `step`, `attempt`, `missing`, `stale`, `invalid` (only when a file broke a rule: a list of `{file, rule}`, `rule` being `symlink`, `not_regular_file` or `empty`); `background_tasks` (`id`, `type`) after a hold ran out |
 | `turn_ended_background` | The turn ended with background tasks still listed (sub-agents, shells, monitors) and a file the step produces is missing, is not a non-empty regular file, or is stale. Each task that ends starts another turn, so this is not a stop. `workflow status` never shows it: the run reads `running` with no reason and `flags: ["background_work"]`. Only the event log's `workflow_changed` carries the code | `step`, `attempt`, `missing`, `stale`, `invalid` (as for `turn_ended_incomplete`), `tasks` (`id`, `type`) |
 | `failed_check` | The step failed and has no loop left | `step`, `attempt`, `cause` (`check`, `reported`, `guard` or `require`), `require`, `detail`, `unproven`, `required`, `found`, `base`, `reason` (`history_rewritten`), `exit_code` and `log` (`command`), `before` and `after` (`remote_unchanged`) (a `require` failure; `error` also names a proof that raised), `code`, `code_source`, `guard` and `paths` (a guard failure), `exit_code`, `timed_out`, `log`, `error` (a check that could not be run, or was stopped), `summary`, `loops`, `attempts`, `max_attempts` |
+| `budget_spent` | The next attempt would start with the run's token budget used; it was not started (see [Token budgets](#token-budgets)) | `kind: "budget"`, `step`, `used`, `allowance`, `tokens`, `extra_tokens`, `counted`, `uncounted`, `needed`, `suggested` |
 | `retry_backoff` | A failed step's `on_fail` retry waits out its `backoff`; a tick, `workflow sweep` or `workflow resume` starts it | `step`, `attempt`, `to` (the step the retry goes back to), `until`, `seconds`, `loops` |
 | `pane_gone` | The run's pane, or its workspace, is not running | `step`, `pane`, `workspace`; when it was found while starting a step (stored), also `kind: "dispatch"`, `error` and `message` |
 
@@ -850,7 +893,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, `problem` (`symlink`, `not_regular_file` or `empty`, else `null`; always `null` for a run started before the rules existed) and `current`: written during this attempt and passing the rules), `check` (whether the step has one), `reported` (`status` and `summary`, or `null`) and, once a proof has run outside the run's lock, `proofs` (the attempt's rows, see [What an attempt records](#what-an-attempt-records)).
 
-Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `no_default_workflow` (`workflow start` with no ID and no default for the ref's kind), `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `invalid_input`, `dirty_worktree` (`workflow run`, `run --dry-run`, and `workflow start` into a reused workspace, for a `guard: unchanged` step), `fork_pull_request` (`workflow start`), `no_agent_pane`, `pane_has_run`, `checkout_has_run`, `no_daemon`, `unknown_run`, `unknown_step` (`workflow attempts`), `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
+Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `no_default_workflow` (`workflow start` with no ID and no default for the ref's kind), `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `invalid_input`, `dirty_worktree` (`workflow run`, `run --dry-run`, and `workflow start` into a reused workspace, for a `guard: unchanged` step), `fork_pull_request` (`workflow start`), `no_agent_pane`, `pane_has_run`, `checkout_has_run`, `no_daemon`, `unknown_run`, `unknown_step` (`workflow attempts`), `run_not_active`, `attempts_spent` and `budget_spent` (`workflow resume`, `reject`, `--extra-attempts` and `--extra-tokens`), `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
 
 ## Events
 

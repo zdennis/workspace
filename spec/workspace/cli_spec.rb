@@ -7223,9 +7223,9 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "reject", "wr_1", "--note", "Too big.", "--to", "research"])
 
       expect(workflow_command.calls).to eq([
-        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, caller_pane: nil}],
+        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, extra_tokens: nil, caller_pane: nil}],
         [:cancel, {run: "wr_1"}],
-        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, extra_attempts: nil, caller_pane: nil}]
+        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil}]
       ])
     end
 
@@ -7235,7 +7235,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["workflow", "resume", "wr_1", "--json"])
 
-      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, caller_pane: "%5"}]])
+      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: "%5"}]])
       expect(JSON.parse(output.string)).to include("ok" => true, "status" => "ok", "summary" => {"unchanged" => 1})
     end
 
@@ -7257,9 +7257,23 @@ RSpec.describe Workspace::CLI do
 
       expect(workflow_command.calls).to eq([
         [:approve, {run: "wr_1", note: nil, step: "triage", attempt: 2, note_sha256: sha, caller_pane: "%5"}],
-        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, extra_attempts: nil, caller_pane: "%5"}],
+        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, extra_attempts: nil, extra_tokens: nil, caller_pane: "%5"}],
         [:approve, {run: "wr_1", note: nil, step: "triage", attempt: nil, note_sha256: nil, caller_pane: "%5"}]
       ])
+    end
+
+    it "passes --extra-tokens to resume and reject, and refuses a bad one or another verb" do
+      cli.run(["workflow", "resume", "wr_1", "--extra-tokens", "250000"])
+      cli.run(["workflow", "reject", "wr_1", "--note", "No.", "--extra-tokens=3"])
+
+      expect(workflow_command.calls.map { |call| [call.first, call.last[:extra_tokens]] }).to eq([[:resume, 250_000], [:reject, 3]])
+      {["workflow", "resume", "wr_1", "--extra-tokens", "0"] => /--extra-tokens must be a whole number from 1 up, got "0"/,
+       ["workflow", "resume", "wr_1", "--extra-tokens", "1e6"] => /--extra-tokens must be a whole number/,
+       ["workflow", "approve", "wr_1", "--extra-tokens", "1"] => /--extra-tokens is for `workflow resume` and `workflow reject`/}.each do |argv, message|
+        cli, _, error_output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+      end
     end
 
     it "passes --extra-attempts to resume and reject, and refuses a bad one or another verb" do

@@ -41,6 +41,12 @@ RSpec.describe Workspace::WorkflowRunHealth do
       end
     end
 
+    it "does not call a run held by its token budget orphaned while its checkout exists" do
+      write_run("wr_1", state: "waiting")
+
+      expect(health.call[:orphans]).to be_empty
+    end
+
     %w[queued running waiting].each do |state|
       it "calls a #{state} run whose checkout is gone orphaned" do
         write_run("wr_1", state: state, worktree: File.join(root, "gone"))

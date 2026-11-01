@@ -180,7 +180,16 @@ module Workspace
         "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
         "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
         "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
-      }
+      }.merge(budget_row(run))
+    end
+
+    # The token budget as it stands, only for a run whose definition declares one. `used` is a minimum: it leaves
+    # out sub-agents and any ended attempt whose `usage` is null (`uncounted`), and `minimum` says so.
+    def budget_row(run)
+      reading = WorkflowBudget.reading(run)
+      return {} unless reading
+      {"budget" => reading.slice("tokens", "action", "extra_tokens", "allowance", "used", "counted", "uncounted", "measured", "spent")
+        .merge("minimum" => true)}
     end
 
     # A step that reads running with no reason but is not moving: the sweep noted a stall on this attempt and
@@ -400,6 +409,8 @@ module Workspace
       # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
       spent = WorkflowEngine.attempts_spent?(run)
       extra = spent ? [need("extra_attempts", "--extra-attempts").merge("min" => WorkflowEngine.extra_attempts_needed(run))] : []
+      budget = WorkflowBudget.reading(run)
+      extra += [need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"])] if budget && budget["spent"]
       plain = WorkflowEngine.starts_attempt?(run, from: nil, pane: nil) ? extra : []
       with_pane = WorkflowEngine.starts_attempt?(run, from: nil, pane: "%0") ? extra : []
       resume = action("workflow resume", id, needs: plain)
@@ -428,6 +439,7 @@ module Workspace
       when "turn_ended_incomplete" then [focus, resume, cancel]
       # A resume skips the wait and starts the retry now.
       when "retry_backoff" then [resume, cancel]
+      when "budget_spent" then [resume, cancel]
       when "failed_check"
         # A moved HEAD or changed config can't pass again, and base_sha is never re-recorded: only a new run goes on.
         if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))

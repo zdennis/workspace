@@ -392,13 +392,14 @@ module Workspace
       # @param from [String, nil] start again at this step
       # @param note [String, nil] added to the next attempt's instructions
       # @param pane [String, nil] move the run to this pane of its workspace
-      # @param extra_attempts [Integer, nil] add this to the run's attempt allowance (see {Workspace::WorkflowEngine#resume})
+      # @param extra_attempts [Integer, nil] add this to the run's attempt allowance
+      # @param extra_tokens [Integer, nil] add this to the run's token budget (see {Workspace::WorkflowEngine#resume})
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [Hash{String=>Object}] the action row; `outcome` is "unchanged" when an agent
       #   is working on the step or its check is still running
       # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate from a pane
       #   bound to a run, or see {Workspace::WorkflowEngine#resume}
-      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, caller_pane: nil)
+      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil)
         stored = @store.find(run)
         pane_id = nil
         turn_over = nil
@@ -416,9 +417,9 @@ module Workspace
         target = pane_id || @panes.pane_of(run) || stored["pane"]
         if !WorkflowRunStore::TERMINAL_STATES.include?(stored["state"]) && caller_in_pane?(stored["workspace"], caller_pane, target) &&
             @panes.parkable?(stored["workspace"], target)
-          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts)
+          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
         end
-        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts)
+        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
         row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
       end
 
@@ -456,9 +457,9 @@ module Workspace
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#reject}
-      def reject(run:, note:, to: nil, step: nil, attempt: nil, extra_attempts: nil, caller_pane: nil)
+      def reject(run:, note:, to: nil, step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil)
         guard = ->(stored) { refuse_caller!(stored, caller_pane, "workflow reject") }
-        row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts), "rejected")
+        row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens), "rejected")
       end
 
       # What the agent daemon runs when a turn ends in a bound pane, and on
@@ -828,9 +829,9 @@ module Workspace
 
       # The caller is in the pane the resume would type into, so nothing is typed:
       # the resume is stored and the daemon carries it out once this turn ends.
-      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil)
+      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil)
         existing = WorkflowEngine.parked(stored, @clock.call) == :waiting
-        parked = @engine.park(stored["id"], from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts)
+        parked = @engine.park(stored["id"], from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
         if parked["unchanged"]
           message = "Nothing was done: #{parked["unchanged"]}."
           if existing
@@ -994,6 +995,15 @@ module Workspace
         action["needs"].flat_map { |need| [need["flag"] || "--", need["name"].upcase] }
       end
 
+      def budget_sentence(details)
+        minimum = details["uncounted"].to_i.positive? ? " (at least; #{details["uncounted"]} ended attempt#{"s" unless details["uncounted"] == 1} not counted)" : ""
+        "#{delimit(details["used"])} of #{delimit(details["allowance"])} tokens#{minimum}  (resume --extra-tokens #{details["suggested"]})"
+      end
+
+      def delimit(number)
+        number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
+      end
+
       def reason_text(reason)
         details = reason["details"]
         case reason["code"]
@@ -1031,6 +1041,8 @@ module Workspace
           else
             "step #{details["step"]}'s check #{details["timed_out"] ? "ran past its time limit" : "exited #{details["exit_code"].inspect}"}; log: #{details["log"]}"
           end
+        when "budget_spent"
+          "step #{details["step"]} was not started: #{budget_sentence(details)}"
         when "retry_backoff"
           "step #{details["step"]} failed; step #{details["to"]} starts again at #{details["until"]} (after #{details["seconds"].to_f.round} seconds), or sooner with a resume"
         when "pane_gone" then "pane #{details["pane"]} of #{details["workspace"]} is not running#{": #{details["message"]}" if details["message"]}"

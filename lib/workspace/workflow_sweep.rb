@@ -122,6 +122,7 @@ module Workspace
       backoff = WorkflowEngine.backoff(run, @clock.call)
       return sweep_backoff(run, backoff, pass) if backoff
       return blocked_row(run) if run.dig("backoff", "blocked") && run["state"] == "waiting"
+      return budget_row(run) if run["budget_hold"] && run["state"] == "waiting"
       daemon_needed = running || state["state"] == "checking" || run["parked"] || run.dig("reason", "code") == "waiting_lock"
       if running && !@panes.alive?(run["id"])
         pane = run["pane"]
@@ -156,8 +157,14 @@ module Workspace
       refusal = pass[:allow]&.call(run)
       return row(run, "nothing", reason: "refused", message: refusal, cause: "retry_backoff") if refusal
       outcome = @engine.retry_backoff(run["id"], step: run["current"], attempt: attempt_of(run))
-      return engine_row(run, outcome, "retried", cause: "retry_backoff", message: message, action: "retry") unless outcome == :blocked
-      blocked_row(run)
+      return blocked_row(run) if outcome == :blocked
+      return budget_row(run, cause: "retry_backoff", action: "retry") if outcome == :held
+      engine_row(run, outcome, "retried", cause: "retry_backoff", message: message, action: "retry")
+    end
+
+    # The retry's wait is over but the token budget is used: not a failure, and the sweep cannot raise the budget.
+    def budget_row(run, **rest)
+      row(run, "nothing", reason: "budget_spent", message: "step #{run["current"]} was not started: the run's token budget is used. Resume it with --extra-tokens N (see `workspace workflow status #{run["id"]}`) or cancel it", **rest)
     end
 
     # The pane the retry would type into is no longer the run's. Not a failure: the sweep cannot fix it, and a person can.

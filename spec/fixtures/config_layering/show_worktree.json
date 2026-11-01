@@ -466,7 +466,7 @@
         "worktree"
       ],
       "layers": [],
-      "doc": "Workflow events `alerts.notify` also runs for, as names separated by commas: `gate` (a step waits for you), `failed` (a step or its check failed), `stalled` (the sweep found a stall) and `finished` (the run completed). Unset: none. Read each time, so no restart; see [`workspace workflow`](README.workflow.md#alerts)",
+      "doc": "Workflow events `alerts.notify` also runs for, as names separated by commas: `gate` (a step waits for you), `failed` (a step or its check failed, or its token budget held the run), `stalled` (the sweep found a stall) and `finished` (the run completed). Unset: none. Read each time, so no restart; see [`workspace workflow`](README.workflow.md#alerts)",
       "problems": []
     },
     {

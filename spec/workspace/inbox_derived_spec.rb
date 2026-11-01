@@ -395,6 +395,18 @@ RSpec.describe Workspace::InboxDerived do
       ))
     end
 
+    it "adds a row for a run held by its token budget, with the --extra-tokens it needs as data" do
+      run = workflow_run("r-1", workspace: "api.worktree-c", code: "budget_spent", kind: "budget")
+      need = {"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}
+      run["current"]["reason"]["actions"] = [{"action" => "workflow resume", "args" => ["r-1"], "needs" => [need]}]
+      workflow_reply["runs"] = [run]
+
+      expect(attention).to contain_exactly(a_hash_including(
+        "id" => "workflow:budget_spent:r-1", "kind" => "workflow_budget_spent", "title" => "Workflow Fix login: step plan was not started, the token budget is used",
+        "body" => nil, "links" => a_hash_including("run_id" => "r-1", "next_action" => {"action" => "workflow resume", "args" => ["r-1"], "needs" => [need]})
+      ))
+    end
+
     it "keeps command text out of the title and body, and escapes run text in the title" do
       run = failed_run("r-1")
       run["title"] = "x\e[31m; rm -rf ~\nsecond"

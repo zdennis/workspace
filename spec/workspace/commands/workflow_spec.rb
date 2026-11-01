@@ -260,6 +260,10 @@ RSpec.describe Workspace::Commands::Workflow do
           "waiting_lock: queued for devenv, 2 of 3, held by the dev environment in /src/app-tax (pid 4242)",
         reason("waiting_lock", {"resource" => "test-db", "position" => 1, "total" => 1, "holder" => {"pid" => 77, "kind" => "agent", "worktree" => "/src/app"}}) =>
           "waiting_lock: queued for test-db, 1 of 1, held by an agent in /src/app (pid 77)",
+        reason("budget_spent", {"step" => "build", "used" => 4_120_000, "allowance" => 4_000_000, "uncounted" => 0, "suggested" => 1_000_000}) =>
+          "budget_spent: step build was not started: 4,120,000 of 4,000,000 tokens  (resume --extra-tokens 1000000)",
+        reason("budget_spent", {"step" => "build", "used" => 950, "allowance" => 900, "uncounted" => 2, "suggested" => 100_000}) =>
+          "budget_spent: step build was not started: 950 of 900 tokens (at least; 2 ended attempts not counted)  (resume --extra-tokens 100000)",
         reason("retry_backoff", {"step" => "verify", "to" => "build", "until" => "2026-10-04T12:02:00Z", "seconds" => 120.0}) =>
           "retry_backoff: step verify failed; step build starts again at 2026-10-04T12:02:00Z (after 120 seconds), or sooner with a resume",
         reason("waiting_you", {"kind" => "prompt", "pane" => "%5", "message" => "Claude needs your permission"}) =>
@@ -634,14 +638,20 @@ RSpec.describe Workspace::Commands::Workflow do
     it "resumes a run whose pane is still there, in that pane" do
       row = command.resume(run: "wr_1", from: "plan", note: "Again.")
 
-      expect(engine).to have_received(:resume).with("wr_1", from: "plan", note: "Again.", pane: nil, turn_over: nil, extra_attempts: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: "plan", note: "Again.", pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       expect(row).to include("outcome" => "resumed", "message" => nil, "run" => shown)
     end
 
     it "hands --extra-attempts to the engine" do
       command.resume(run: "wr_1", extra_attempts: 2)
 
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: 2)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: 2, extra_tokens: nil)
+    end
+
+    it "hands --extra-tokens to the engine" do
+      command.resume(run: "wr_1", extra_tokens: 500)
+
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: 500)
     end
 
     it "moves a run whose pane is gone to the workspace's Claude pane, or to the pane the caller names" do
@@ -652,8 +662,8 @@ RSpec.describe Workspace::Commands::Workflow do
       command.resume(run: "wr_1")
       command.resume(run: "wr_1", pane: "0.2")
 
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%9", turn_over: nil, extra_attempts: nil).ordered
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil).ordered
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%9", turn_over: nil, extra_attempts: nil, extra_tokens: nil).ordered
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil, extra_tokens: nil).ordered
     end
 
     it "moves a run whose step could not be started because its pane was gone" do
@@ -663,7 +673,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.resume(run: "wr_1")
 
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%9", turn_over: nil, extra_attempts: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%9", turn_over: nil, extra_attempts: nil, extra_tokens: nil)
     end
 
     it "keeps a run that was never bound (it waits for its first lock) in the pane it was started in, and starts no daemon" do
@@ -675,7 +685,7 @@ RSpec.describe Workspace::Commands::Workflow do
       command.resume(run: "wr_1")
 
       expect(panes).not_to have_received(:default_pane)
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
     end
 
     it "refuses what the engine would refuse before it looks for a pane or starts a daemon" do
@@ -696,7 +706,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.resume(run: "wr_1")
 
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1}, extra_attempts: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1}, extra_attempts: nil, extra_tokens: nil)
     end
 
     it "leaves a step running, deciding nothing, on a failed idle pane, and decides it once the flag clears" do
@@ -704,11 +714,11 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(panes).to receive(:idle?) { Workspace::WorkflowPanes.turn_over?(shown_pane, Time.now) }
 
       command.resume(run: "wr_1")
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
 
       shown_pane["turn_failed"] = false
       command.resume(run: "wr_1")
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1}, extra_attempts: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1}, extra_attempts: nil, extra_tokens: nil)
     end
 
     it "asks about the pane the run is bound to now, wherever `restore` moved it, and the pane it was started in when it is bound to none" do
@@ -742,7 +752,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       # The daemon was asked about the run's pane, said its agent is working, and the engine was not told the turn is over.
       expect(panes).to have_received(:idle?).with("app", "%5")
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       expect(row).to include("outcome" => "unchanged", "reason" => nil, "message" => "Nothing was done: an agent is working on step plan.")
       expect(output.string.lines.last).to eq("Nothing was done: an agent is working on step plan.\n")
     end
@@ -764,7 +774,7 @@ RSpec.describe Workspace::Commands::Workflow do
       it "parks instead of typing when $TMUX_PANE names the pane" do
         row = command.resume(run: "wr_1", note: "say \"hi\"\nplease", caller_pane: "%5")
 
-        expect(engine).to have_received(:park).with("wr_1", from: nil, note: "say \"hi\"\nplease", pane: nil, turn_over: nil, extra_attempts: nil)
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: "say \"hi\"\nplease", pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
         expect(engine).not_to have_received(:resume)
         expect(row).to include("outcome" => "parked", "reason" => nil, "message" => own_message,
           "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"})
@@ -783,12 +793,12 @@ RSpec.describe Workspace::Commands::Workflow do
       it "runs as today for --pane elsewhere, and parks for --pane naming the caller's pane" do
         allow(panes).to receive(:locate).with("app", "0.2").and_return("%8")
         command.resume(run: "wr_1", pane: "0.2", caller_pane: "%5")
-        expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil)
+        expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil, extra_tokens: nil)
         expect(engine).not_to have_received(:park)
 
         allow(panes).to receive(:locate).with("app", "0.1").and_return("%5")
         command.resume(run: "wr_1", pane: "0.1", caller_pane: "%5")
-        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil, extra_attempts: nil)
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       end
 
       it "parks when the old pane is gone and the default pane is the caller's" do
@@ -798,7 +808,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         command.resume(run: "wr_1", caller_pane: "%5")
 
-        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil, extra_attempts: nil)
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       end
 
       it "keeps today's path when the pane cannot be parked on" do
@@ -892,11 +902,19 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "cancels and rejects, handing the engine the step and attempt the caller saw" do
       allow(engine).to receive(:cancel).with("wr_1").and_return("id" => "wr_1", "workspace" => "app")
-      allow(engine).to receive(:reject).with("wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2, guard: kind_of(Proc), extra_attempts: 3)
+      allow(engine).to receive(:reject).with("wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2, guard: kind_of(Proc), extra_attempts: 3, extra_tokens: nil)
         .and_return("id" => "wr_1", "workspace" => "app")
 
       expect(command.cancel(run: "wr_1")).to include("outcome" => "cancelled")
       expect(command.reject(run: "wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2, extra_attempts: 3)).to include("outcome" => "rejected")
+    end
+
+    it "hands --extra-tokens of a reject to the engine" do
+      allow(engine).to receive(:reject).and_return("id" => "wr_1", "workspace" => "app")
+
+      command.reject(run: "wr_1", note: "No.", extra_tokens: 9)
+
+      expect(engine).to have_received(:reject).with("wr_1", hash_including(extra_tokens: 9))
     end
 
     it "approves a gate from a terminal, or from a pane bound to nothing, handing the engine what the caller saw" do

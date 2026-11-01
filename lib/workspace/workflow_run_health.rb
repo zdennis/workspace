@@ -6,7 +6,7 @@ module Workspace
   # - An orphaned run is one still going (its state is not completed, failed or
   #   cancelled) whose checkout (`worktree`) is missing (gone, or on a volume
   #   that is not mounted) or was never recorded, so no step can run. A run
-  #   that waits for a gate, a lock, a backoff or a stopped session is not
+  #   that waits for a gate, a lock, a backoff, a token budget (`budget_spent`) or a stopped session is not
   #   orphaned while its checkout exists: `restore` or `workflow resume` can
   #   still move it.
   # - An unreadable run file is a file in the runs directory that can't be read

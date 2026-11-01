@@ -673,6 +673,66 @@ RSpec.describe Workspace::WorkflowStatus do
       end
     end
 
+    describe "a token budget" do
+      let(:steps) { [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}] }
+
+      def budgeted(used, state: "waiting", reason: nil, extra: nil, usage: {"input_tokens" => used}, **rest)
+        create(state: state, step_state: "pending", reason: reason, bound: false, extra_tokens: extra,
+          definition: {"max_attempts" => 6, "budget" => {"tokens" => 1000, "action" => "stop"}, "steps" => steps},
+          steps: {"research" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed", "usage" => usage}]}, "plan" => {"state" => "pending", "attempts" => []}},
+          **rest)
+      end
+
+      let(:held) { {"code" => "budget_spent", "since" => "2026-10-04T12:30:00Z", "details" => {"kind" => "budget", "step" => "plan", "used" => 1500, "allowance" => 1000}} }
+
+      it "shows the budget as a minimum, and offers resume only with --extra-tokens" do
+        budgeted(1500, reason: held, budget_hold: {})
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["budget"]).to eq("tokens" => 1000, "action" => "stop", "extra_tokens" => 0, "allowance" => 1000, "used" => 1500, "counted" => 1, "uncounted" => 0,
+          "measured" => true, "spent" => true, "minimum" => true)
+        need = [{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}]
+        expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
+      end
+
+      it "stops asking once --extra-tokens was recorded" do
+        budgeted(1500, reason: held, budget_hold: {}, extra: 600)
+
+        expect(status.run("wr_1")["runs"].first["current"]["reason"]["actions"].first).to eq(action("workflow resume", "wr_1"))
+        expect(status.run("wr_1")["runs"].first["budget"]).to include("allowance" => 1600, "spent" => false, "extra_tokens" => 600)
+      end
+
+      it "asks for --extra-tokens on a failed step's resume too, and reports uncounted attempts" do
+        budgeted(0, state: "waiting", usage: nil, reason: {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check"}})
+        store.update("wr_1") { |stored| stored["steps"]["plan"] = {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 2000}}]} }
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["budget"]).to include("used" => 2000, "counted" => 1, "uncounted" => 1, "spent" => true)
+        expect(row["current"]["reason"]["actions"].first["needs"].map { |need| need["name"] }).to eq(["extra_tokens"])
+      end
+
+      it "says a budget is not measured when no attempt could be counted, and asks for nothing" do
+        budgeted(0, usage: nil, state: "running", reason: nil)
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["budget"]).to include("used" => 0, "counted" => 0, "uncounted" => 1, "measured" => false, "spent" => false, "minimum" => true)
+      end
+
+      it "leaves the key out for a run without a budget" do
+        create
+
+        expect(status.run("wr_1")["runs"].first).not_to have_key("budget")
+      end
+
+      it "is listed by --needs-me with the resume that needs --extra-tokens" do
+        budgeted(1500, reason: held, budget_hold: {})
+        rows = Workspace::WorkflowNeedsMe.new.rows(status.run("wr_1")["runs"])
+
+        expect(rows.map { |row| [row["code"], row["step"]] }).to eq([["budget_spent", "plan"]])
+        expect(rows.first["next_action"]["needs"]).to eq([{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}])
+      end
+    end
+
     describe "once the run has made all its attempts" do
       let(:extra) { [{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 1}] }
 

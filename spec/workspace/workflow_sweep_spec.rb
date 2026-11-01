@@ -1154,6 +1154,42 @@ RSpec.describe Workspace::WorkflowSweep do
     end
   end
 
+  describe "a retry whose wait is over while the token budget is used" do
+    let(:budgeted) do
+      Workspace::WorkflowDefinition.parse(<<~YAML, id: "back", source: "global", path: "/defs/back.yml")
+        budget: {tokens: 1000}
+        steps:
+          plan:
+            prompt: Plan it.
+            context: continue
+          build:
+            prompt: Build it.
+            context: continue
+            on_fail: {goto: plan, max: 2, context: continue, backoff: 5m}
+      YAML
+    end
+
+    before do
+      begin_run(budgeted)
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.report("wr_1", status: "fail", summary: "no")
+      engine.turn_ended("wr_1", pane: "%5")
+      store.update("wr_1") { |run| run["steps"]["build"]["attempts"].first["usage"] = {"input_tokens" => 5000} }
+      advance(300)
+    end
+
+    it "says the budget held the retry, as no failure, and the next pass says so too" do
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "budget_spent", "cause" => "retry_backoff", "action" => "retry", "step" => "build")
+      expect(row["message"]).to include("token budget is used", "--extra-tokens")
+      expect(store.find("wr_1")).to include("state" => "waiting").and(satisfy { |run| run["reason"]["code"] == "budget_spent" })
+      expect(types).not_to include("step_stalled")
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "budget_spent")
+      expect(types.count("budget_spent")).to eq(1)
+    end
+  end
+
   describe "a failed step waiting out an on_fail backoff" do
     let(:backing_off) do
       Workspace::WorkflowDefinition.parse(<<~YAML, id: "back", source: "global", path: "/defs/back.yml")

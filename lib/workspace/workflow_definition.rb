@@ -21,7 +21,7 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts stall redeliver deny steps].freeze
+    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts stall redeliver budget deny steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
@@ -48,6 +48,11 @@ module Workspace
 
     # The most `redeliver` may be.
     MAX_REDELIVER = 10
+
+    # What a `budget:` may hold, and the most tokens it may name.
+    BUDGET_KEYS = %w[tokens action].freeze
+    BUDGET_ACTIONS = %w[stop].freeze
+    MAX_BUDGET_TOKENS = 1_000_000_000_000
 
     # Limits on a `deny:` list: patterns, their length, and `*` or `?` in one (a long run of wildcards makes a glob slow).
     MAX_DENY = 50
@@ -179,6 +184,17 @@ module Workspace
       (value.all? { |pattern| pattern.is_a?(String) && !pattern.strip.empty? }) ? value : []
     end
 
+    # The `budget` of a definition hash: the tokens a run may use before the next attempt is held.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Hash{String=>Object}, nil] "tokens" and "action"; nil for a definition that declares none, one
+    #   stored before the key existed, or a bad stored value
+    def self.budget(definition)
+      value = definition.is_a?(Hash) ? definition["budget"] : nil
+      return nil unless value.is_a?(Hash) && value["tokens"].is_a?(Integer) && value["tokens"].between?(1, MAX_BUDGET_TOKENS)
+      {"tokens" => value["tokens"], "action" => BUDGET_ACTIONS.first}
+    end
+
     # The `redeliver` of a definition hash: how many times `workflow sweep` retries a step's undelivered line.
     #
     # @param definition [Hash] {#to_h}, or a stored run's definition
@@ -254,6 +270,7 @@ module Workspace
       end
       instructions = text_or_nil(raw["instructions"], "instructions")
       placeholders(instructions, inputs, "instructions")
+      budget = budget_from(raw["budget"])
       {
         "id" => id,
         "title" => text_or_nil(raw["title"], "title") || id,
@@ -266,12 +283,28 @@ module Workspace
         "redeliver" => redeliver,
         "deny" => deny_from(raw["deny"]),
         "steps" => steps_from(raw["steps"], inputs)
-      }
+      }.merge(budget ? {"budget" => budget} : {})
     end
 
     def unknown_keys(mapping, allowed, where)
       extra = mapping.keys.map(&:to_s) - allowed
       problem "#{where} has unknown key#{"s" if extra.size > 1} #{extra.join(", ")} (known: #{allowed.join(", ")})" if extra.any?
+    end
+
+    def budget_from(value)
+      return nil if value.nil?
+      unless value.is_a?(Hash)
+        problem "budget must be a mapping like {tokens: 4000000, action: stop}, got #{value.inspect[0, 60]}"
+        return nil
+      end
+      unknown_keys(value, BUDGET_KEYS, "budget")
+      tokens = value["tokens"]
+      unless tokens.is_a?(Integer) && tokens.between?(1, MAX_BUDGET_TOKENS)
+        problem "budget tokens must be a whole number from 1 to #{MAX_BUDGET_TOKENS}, got #{tokens.inspect[0, 40]}"
+      end
+      action = value.fetch("action", BUDGET_ACTIONS.first)
+      problem "budget action must be #{BUDGET_ACTIONS.join(" or ")}, got #{action.inspect[0, 40]}" unless BUDGET_ACTIONS.include?(action)
+      (tokens.is_a?(Integer) && BUDGET_ACTIONS.include?(action)) ? {"tokens" => tokens, "action" => action} : nil
     end
 
     def deny_from(value)

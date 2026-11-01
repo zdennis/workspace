@@ -5038,6 +5038,7 @@ module Workspace
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
         opts.on("--extra-attempts N", "resume, reject: add N to the run's attempt allowance when it has spent max_attempts (ignored by a resume that starts no attempt)") { |v| options[:extra_attempts] = v }
+        opts.on("--extra-tokens N", "resume, reject: add N to the run's token budget when it has used budget.tokens (ignored by a resume that starts no attempt)") { |v| options[:extra_tokens] = v }
         opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
         opts.on("--step STEP", "approve, reject: the gated step you saw (current.step in status --json); refused unless the run waits there") { |v| options[:step] = v }
         opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
@@ -5126,6 +5127,7 @@ module Workspace
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
       gate_options = workflow_gate_options(subcommand, options)
       extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
+      extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
 
       start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout}
       if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
@@ -5201,7 +5203,7 @@ module Workspace
             prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run])
         end
       when "resume"
-        workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, caller_pane: ENV["TMUX_PANE"]) }
+        workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, caller_pane: ENV["TMUX_PANE"]) }
       when "cancel" then workflow_action("workflow cancel", options) { @workflow_command.cancel(run: subject) }
       when "approve"
         workflow_action("workflow approve", options) do
@@ -5210,7 +5212,7 @@ module Workspace
       when "reject"
         raise UsageError, "workflow reject needs --note TEXT: the step runs again with it." if options[:note].to_s.strip.empty?
         workflow_action("workflow reject", options) do
-          @workflow_command.reject(run: subject, note: options[:note], to: options[:to], **gate_options, extra_attempts: extra_attempts, caller_pane: ENV["TMUX_PANE"])
+          @workflow_command.reject(run: subject, note: options[:note], to: options[:to], **gate_options, extra_attempts: extra_attempts, extra_tokens: extra_tokens, caller_pane: ENV["TMUX_PANE"])
         end
       end
     rescue OptionParser::ParseError, UsageError => e
@@ -5223,6 +5225,14 @@ module Workspace
       return nil if text.nil?
       raise UsageError, "--extra-attempts is for `workflow resume` and `workflow reject`." unless %w[resume reject].include?(subcommand)
       raise UsageError, "--extra-attempts must be a whole number from 1 up, got #{text.to_s[0, 20].inspect}." unless text.match?(/\A[1-9]\d{0,5}\z/)
+      text.to_i
+    end
+
+    # `--extra-tokens` of resume and reject, checked: a whole number from 1 up.
+    def workflow_extra_tokens(subcommand, text)
+      return nil if text.nil?
+      raise UsageError, "--extra-tokens is for `workflow resume` and `workflow reject`." unless %w[resume reject].include?(subcommand)
+      raise UsageError, "--extra-tokens must be a whole number from 1 up, got #{text.to_s[0, 20].inspect}." unless text.match?(/\A[1-9]\d{0,11}\z/)
       text.to_i
     end
 

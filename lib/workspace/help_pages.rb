@@ -280,6 +280,8 @@ module Workspace
     WORKFLOW_NOTE = ["--note TEXT", "Added to the next attempt's instructions"].freeze
     EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
 
+    EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
+
     WORKFLOW = {
       "show" => {
         usage: ["workflow show [ID] [--source] [--json]"],
@@ -446,7 +448,8 @@ module Workspace
           "checkout's and its worktrees' runs, finished ones too, and --all every workspace's, finished ones too.",
           "",
           "A run that is not moving says why: waiting_lock, waiting_you, turn_ended_incomplete, failed_check,",
-          "retry_backoff (a failed step's retry is waiting out its on_fail backoff) or pane_gone, with the",
+          "budget_spent (the definition's token budget is used up), retry_backoff (a failed step's retry is waiting",
+          "out its on_fail backoff) or pane_gone, with the",
           "commands that resolve it. A parked resume shows as the flag `parked`.",
           "",
           "--needs-me lists only the runs that wait for you, in every workspace, longest wait first: a gate, an open",
@@ -587,7 +590,7 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--json]"],
+        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--json]"],
         summary: "Get a run going again",
         about: [
           RUN_ID,
@@ -608,9 +611,13 @@ module Workspace
           "",
           "A resume that would start an attempt is refused (attempts_spent) when the run has made all its",
           "max_attempts; --extra-attempts N adds N to the run's allowance and goes on. N must cover the overrun",
-          "(1 for a run exactly spent; the refusal names the least). It is ignored when the resume starts no attempt."
+          "(1 for a run exactly spent; the refusal names the least). It is ignored when the resume starts no attempt.",
+          "",
+          "A run held by its definition's budget (reason budget_spent) is refused the same way (budget_spent)",
+          "until --extra-tokens N adds N to its token budget; the total counted is a minimum, since sub-agents",
+          "and attempts with no usage are left out."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, JSON_OPT],
+        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, JSON_OPT],
         examples: [
           ["workspace workflow resume RUN", "pick a stuck run up again: its lock is asked for again, a failed step runs again"],
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
@@ -652,7 +659,7 @@ module Workspace
         ]
       },
       "reject" => {
-        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--json]"],
+        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--json]"],
         summary: "Turn a run's gate down",
         about: [
           RUN_ID,
@@ -660,12 +667,13 @@ module Workspace
           "The gated step (or --to an earlier one) runs again with the note. Refused from a pane a run is bound",
           "to and from a process under the run's own pane, as approve is. It is refused (attempts_spent) when",
           "the run has made all its max_attempts, unless --extra-attempts N adds to the allowance; N must cover the",
-          "overrun (1 for a run exactly spent)."
+          "overrun (1 for a run exactly spent). The same goes for a spent token budget (budget_spent) and",
+          "--extra-tokens N."
         ],
         options: [["--note TEXT", "Why; given to the next attempt"],
           ["--to STEP", "The step to run again (the gated step, or one before it)"],
           ["--step STEP", "The gated step you saw (current.step in status --json); refused unless the run waits there"],
-          ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], JSON_OPT],
+          ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, JSON_OPT],
         examples: [
           ["workspace workflow reject RUN --note \"Too big; split it.\"", "send the gated step back; it runs again with the note"],
           ["workspace workflow reject RUN --note \"Research the API first.\" --to research", "go back to an earlier step of rpiv instead"],

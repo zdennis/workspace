@@ -30,7 +30,7 @@ module Workspace
 
     # The {WorkflowNeedsMe} codes that get their own row here: the others are a gate, an undelivered step,
     # or a prompt or question (each already a row).
-    ATTENTION_CODES = %w[failed_check waiting_lock stalled idle].freeze
+    ATTENTION_CODES = %w[failed_check waiting_lock budget_spent stalled idle].freeze
 
     # The longest derived title, as for a posted item.
     TITLE_MAX = 200
@@ -234,6 +234,7 @@ module Workspace
       summary = {
         "failed_check" => "Workflow #{title}: the check of step #{step} failed#{detail}",
         "waiting_lock" => "Workflow #{title}: step #{step} has waited for a lock",
+        "budget_spent" => "Workflow #{title}: step #{step} was not started, the token budget is used",
         "stalled" => "Workflow #{title}: step #{step} stalled#{detail}",
         "idle" => "Workflow #{title}: step #{step} is idle, its turn is over"
       }.fetch(code)

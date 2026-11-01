@@ -31,6 +31,31 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "budget" do
+    it "is absent unless declared, and read as nil from a definition without it" do
+      expect(parse(minimal).to_h).not_to have_key("budget")
+      expect(described_class.budget(parse(minimal).to_h)).to be_nil
+      expect(described_class.budget(nil)).to be_nil
+      expect(described_class.budget({"budget" => "lots"})).to be_nil
+      expect(described_class.budget({"budget" => {"tokens" => -3}})).to be_nil
+    end
+
+    it "keeps tokens, with the stop action by default" do
+      expect(parse("budget: {tokens: 4000000, action: stop}\n#{minimal}").to_h["budget"]).to eq("tokens" => 4_000_000, "action" => "stop")
+      expect(parse("budget: {tokens: 5}\n#{minimal}").to_h["budget"]).to eq("tokens" => 5, "action" => "stop")
+      expect(described_class.budget({"budget" => {"tokens" => 7, "action" => "other"}})).to eq("tokens" => 7, "action" => "stop")
+    end
+
+    it "refuses a non-mapping, a missing or bad tokens, an unknown key and another action" do
+      expect(problems("budget: 5\n#{minimal}")).to include(a_string_matching(/budget must be a mapping/))
+      expect(problems("budget: {action: stop}\n#{minimal}")).to include(a_string_matching(/budget tokens must be a whole number from 1/))
+      expect(problems("budget: {tokens: 0}\n#{minimal}")).to include(a_string_matching(/budget tokens must be a whole number from 1/))
+      expect(problems("budget: {tokens: 1.5}\n#{minimal}")).to include(a_string_matching(/budget tokens/))
+      expect(problems("budget: {tokens: 5, dollars: 2}\n#{minimal}")).to include(a_string_matching(/budget has unknown key dollars \(known: tokens, action\)/))
+      expect(problems("budget: {tokens: 5, action: pause}\n#{minimal}")).to include(a_string_matching(/budget action must be stop, got "pause"/))
+    end
+  end
+
   describe "deny" do
     it "is an empty list by default and keeps a list of patterns" do
       expect(parse(minimal).to_h["deny"]).to eq([])
@@ -346,7 +371,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, stall, redeliver, deny, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
       "schema_version must be 1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
