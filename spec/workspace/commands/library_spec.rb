@@ -45,6 +45,11 @@ RSpec.describe Workspace::Commands::Library do
       expect { command.add(kind: "recipe", body: "workflow: w\nplays: [a]\n", name: "wf2", cwd: cwd) }
         .to raise_error(Workspace::Error) { |e| expect([e.code, e.details["problems"]]).to match(["invalid_recipe", [/workflow can't be combined with plays/]]) }
       expect(File.exist?(File.join(@dir, "library/global/recipe/wf2.md"))).to be(false)
+
+      expect(command.update("recipe/wf", body: "workflow: other\n", cwd: cwd).outcome).to eq("updated")
+      expect { command.update("recipe/wf", body: "workflow: w\nprompt: x\n", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_recipe") }
+      expect(File.read(File.join(@dir, "library/global/recipe/wf.md"))).to eq("workflow: other\n")
     end
 
     it "refuses an invalid recipe on add and on update, writing nothing" do

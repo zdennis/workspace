@@ -2425,6 +2425,11 @@ RSpec.describe Workspace::CLI do
           expect(built[2].string).to include("recipe/r runs workflow rpiv, which cannot take --play")
         end
 
+        it "passes --headless through" do
+          cli.run(["start", "--recipe", "r", "PROJ-1", "--headless"])
+          expect(workflow_start.calls.first).to include(headless: true)
+        end
+
         it "accepts --no-headless, --yes and --no-spine" do
           cli.run(["start", "--recipe", "r", "PROJ-1", "--no-headless", "--yes", "--no-spine"])
           expect(workflow_start.calls.size).to eq(1)

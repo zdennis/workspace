@@ -251,9 +251,9 @@ agent_kind: claude
 - `workflow` can't be combined with `plays`, `packs`, `agents`, `skills` or `prompt`, and `agent_kind` beside it can only be `claude`. `description` is fine. Every clash is listed in `details.problems` of `invalid_recipe`.
 - `agent_kind: claude` in the recipe skips the check on a reused worktree, as `start --agent-kind claude` does.
 - A `task` in `workflow_inputs` wins over the ticket's text for every kind of ref.
-- A branch ref has no ticket text, so a workflow that requires `task` fails with `input_required` unless the recipe sets `task`. For inputs you give per run, use `workspace workflow start ID REF --input NAME=VALUE`.
+- A branch ref has no ticket text, so a workflow that requires `task` fails with `input_required` unless the recipe sets `task`. For inputs you give per run, use `workspace workflow start ID REF --input NAME=VALUE`; add `--dry-run` there to preview a workflow, which `start` can't do.
 
-`start --recipe` passes `--base`, `--slug`, `--headless`, `--prompt-timeout` and `--agent-kind` through, accepts `--yes` and `--no-spine` with no effect, and refuses the other options that shape a start with `recipe_workflow_conflict`. [The `start` page](README.start.md#a-recipe-with-a-workflow) lists them and describes the `--json` document, which is the workflow action document with a `recipe` entry.
+`start --recipe` passes `--base`, `--slug`, `--headless`, `--prompt-timeout` and `--agent-kind` through (a workflow runs on Claude Code only, so any other kind is `workflow_needs_claude`), accepts `--yes` and `--no-spine` with no effect, and refuses the other options that shape a start with `recipe_workflow_conflict`. [The `start` page](README.start.md#a-recipe-with-a-workflow) lists them and describes the `--json` document, which is the workflow action document with a `recipe` entry.
 
 ## Examples
 
