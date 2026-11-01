@@ -55,8 +55,9 @@ module Workspace
       # @param agent_commands [Workspace::AgentCommands] finds the agent in a pane
       # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
       # @param ssh_hosts [Workspace::SshHostResolver] names the real host behind an ssh remote's host alias
+      # @param router [Workspace::WorkflowRouter] picks the workflow for `--ref`
       # @param output [IO]
-      def initialize(catalog:, workflow_defaults:, engine:, start_ref:, ticket_source:, git:, project_config:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, ssh_hosts:, output: $stdout)
+      def initialize(catalog:, workflow_defaults:, engine:, start_ref:, ticket_source:, git:, project_config:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, ssh_hosts:, router:, output: $stdout)
         @catalog = catalog
         @workflow_defaults = workflow_defaults
         @engine = engine
@@ -71,10 +72,11 @@ module Workspace
         @agent_commands = agent_commands
         @excludes = excludes
         @ssh_hosts = ssh_hosts
+        @router = router
         @output = output
       end
 
-      # @param id [String, nil] the workflow; nil takes it from config (`workflows.by_ref.<kind>`, then `workflows.default`)
+      # @param id [String, nil] the workflow; nil takes it from config (`workflows.by_ref.<kind>`, then `workflows.default`), or from the router with +route+
       # @param ref [String, nil] a JIRA key or URL, pull request, issue or branch; with a nil +id+ it is never read as an id
       # @param positional [String, nil] the lone argument whose meaning is not settled: a known workflow id is the id,
       #   else it is the ref (a branch-shaped one with a prompt stays an unknown id)
@@ -89,21 +91,30 @@ module Workspace
       # @param prompt_timeout [Numeric, nil] seconds to wait for the agent
       # @param dry_run [Boolean] check everything and create nothing
       # @param here [Here, nil] run in this checkout instead of making one; the ref's checkout must be the same directory
+      # @param force [Boolean] start although the workflow's `applies_to:` leaves out the ref's kind
+      # @param route [Boolean] +id+ is not given: {Workspace::WorkflowRouter} picks it from the ref's kind (`--ref`); the row
+      #   then has "routed" ("ref", "kind", "workflow", "source", "scope", "key")
       # @return [Hash{String=>Object}] the action row: outcome "dry_run" with "workflow", "step", "project",
       #   "branch", "path", "would_create", "inputs", "packs", "warnings" and, "ticket" (nil when none was read)
       # @raise [Workspace::UsageError] no ref and no prompt, both a ref and a branch, an empty slug, or an invalid branch name
-      # @raise [Workspace::Error] code `unknown_workflow`, `no_default_workflow`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
+      # @raise [Workspace::Error] code `unknown_workflow`, `no_default_workflow`, `invalid_workflow_default` (`--ref`), `workflow_not_for_ref`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
       #   request), `fork_pull_request`, `branch_exists`, or {Workspace::WorkflowEngine#preflight}'s (`input_required`,
       #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout); with +here+,
       #   `branch_exists` when the ref's checkout is not the one it runs in
       def call(id: nil, ref: nil, positional: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
-        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false)
+        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false, route: false)
         prompt = prompt.to_s.strip
         prompt = nil if prompt.empty?
         id, ref = split(id, ref, positional, prompt)
         warnings = []
+        routed = nil
         # A named id's unknown_workflow outranks the usage errors; a default is read only after they pass.
-        if id
+        if route
+          check_usage!(ref, prompt, branch)
+          where = locate_project
+          id, routed = route_ref(ref, where, force: force, dry_run: dry_run)
+          definition = @catalog.find(id)
+        elsif id
           definition = @catalog.find(id)
           check_usage!(ref, prompt, branch)
           where = locate_project
@@ -115,10 +126,14 @@ module Workspace
           warnings = read_as_branch(ref, id) if positional
         end
         plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, force: force, **where)
-        return run_here(plan, here, note: note, dry_run: dry_run) if here
-        return dry_run_row(id, plan) if dry_run
-
-        start_workspace(plan, note: note, base: base, headless: headless, agent_kind: agent_kind, prompt_timeout: prompt_timeout, slug: slug)
+        row = if here
+          run_here(plan, here, note: note, dry_run: dry_run)
+        elsif dry_run
+          dry_run_row(id, plan)
+        else
+          start_workspace(plan, note: note, base: base, headless: headless, agent_kind: agent_kind, prompt_timeout: prompt_timeout, slug: slug)
+        end
+        routed ? row.merge("routed" => routed) : row
       end
 
       # The checkout's root, the project it belongs to and the project's workspace name.
@@ -176,6 +191,20 @@ module Workspace
         [positional, nil]
       end
 
+      # The workflow for a ref's kind, and the line saying so. The line goes through the output gate, so
+      # `--json` keeps it off stdout; the same facts are the row's "routed".
+      def route_ref(ref, where, force:, dry_run:)
+        kind = @start_ref.call(ref).kind
+        registered = !@project_config.existing_name(where[:project].name).nil?
+        route = @router.route(kind: kind, workspace: where[:project_workspace], ref: ref, force: force, registered: registered)
+        why = if route["source"] != "default" then "the only workflow that fits #{kind}"
+        elsif route["scope"] == "global" then "your global default for #{kind}"
+        else "this project's default for #{kind}"
+        end
+        @output.puts "Routing #{TerminalText.escape(ref)} (#{kind}) to #{route["workflow"]}, #{why}.#{" Use --dry-run to see the steps." unless dry_run}"
+        [route["workflow"], route.merge("ref" => ref).slice("ref", "kind", "workflow", "source", "scope", "key")]
+      end
+
       def check_usage!(ref, prompt, branch)
         raise Workspace::UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." unless ref || prompt
         raise Workspace::UsageError, "--branch names the branch for a --prompt; with a REF the branch comes from the ref." if ref && branch
@@ -202,7 +231,7 @@ module Workspace
         raise Workspace::Error.new("#{read_as}No default workflow is set for a #{kind} start. Name one (workspace workflow start ID ...), " \
           "or set one with `workspace config set workflows.default ID` (add `--scope project` for this project only; " \
           "`workflows.by_ref.#{kind}` sets it for #{kind} starts alone). Known: #{known.join(", ")}.",
-          code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known})
+          code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known}.merge(@router.unrouted(kind)))
       end
 
       def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:, force: false)

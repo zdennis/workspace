@@ -44,12 +44,14 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   let(:tmux) { instance_double(Workspace::Tmux) }
   let(:agent_commands) { instance_double(Workspace::AgentCommands, detector: :detector, kind: "claude") }
   let(:excludes) { instance_double(Workspace::GitExclude, add: true) }
+  let(:unrouted) { {"key" => "workflows.by_ref.jira", "reason" => "several", "candidates" => [{"id" => "rpiv", "use_when" => nil}], "broken" => []} }
+  let(:router) { instance_double(Workspace::WorkflowRouter, unrouted: unrouted) }
   let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.0", pane_id: "%7", label: "Claude Code") }
   subject(:command) { build_command(engine) }
 
   def build_command(engine)
     described_class.new(catalog: catalog, workflow_defaults: workflow_defaults, engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git, project_config: project_config, start: start,
-      workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
+      workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, router: router, output: output)
   end
 
   def real_engine(active: [])
@@ -86,6 +88,78 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     expect(git).not_to receive(:root)
 
     expect { command.call(id: "nope", ref: "PROJ-1") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+  end
+
+  describe "routing a ref" do
+    let(:route) { {"workflow" => "flow", "kind" => "jira", "source" => "default", "scope" => "project", "key" => "workflows.by_ref.jira"} }
+
+    it "starts the routed workflow through the normal checks and reports routed in the row" do
+      expect(router).to receive(:route).with(kind: "jira", workspace: "app", ref: "PROJ-1", force: false, registered: false).and_return(route)
+
+      row = command.call(ref: "PROJ-1", route: true, dry_run: true)
+
+      expect(row).to include("workflow" => "flow", "outcome" => "dry_run")
+      expect(row["routed"]).to eq("ref" => "PROJ-1", "kind" => "jira", "workflow" => "flow", "source" => "default", "scope" => "project", "key" => "workflows.by_ref.jira")
+      expect(output.string).to include("Routing PROJ-1 (jira) to flow, this project's default for jira.\n")
+      expect(output.string).not_to include("Use --dry-run")
+    end
+
+    it "says how to preview when not a dry run, and names an only fit" do
+      allow(router).to receive(:route).and_return(route.merge("source" => "only_fit"))
+      allow(start).to receive(:payload).and_raise(Workspace::Error.new("stop", code: "stop"))
+
+      expect { command.call(ref: "PROJ-1", route: true) }.to raise_error(Workspace::Error)
+
+      expect(output.string).to include("the only workflow that fits jira. Use --dry-run to see the steps.")
+    end
+
+    it "prints no Routing line when the config does not parse" do
+      allow(router).to receive(:route).and_raise(Workspace::ConfigParseError.new("/x/app.yml", "bad"))
+
+      expect { command.call(ref: "PROJ-1", route: true, dry_run: true) }.to raise_error(Workspace::ConfigParseError)
+      expect(output.string).not_to include("Routing")
+    end
+
+    it "says a global default is global" do
+      allow(router).to receive(:route).and_return(route.merge("scope" => "global"))
+
+      command.call(ref: "PROJ-1", route: true, dry_run: true)
+
+      expect(output.string).to include("to flow, your global default for jira.")
+    end
+
+    it "escapes control characters of the ref in the line" do
+      allow(router).to receive(:route).and_return(route)
+
+      begin
+        command.call(ref: "PROJ-1\e[31m", route: true, dry_run: true)
+      rescue
+        nil
+      end
+
+      expect(output.string.lines.first).to start_with("Routing PROJ-1\\e[31m (")
+    end
+
+    it "still runs the applies_to check after routing" do
+      allow(router).to receive(:route).and_return(route)
+      allow(catalog).to receive(:find).with("flow").and_return(Workspace::WorkflowDefinition.parse("applies_to: [github_pr]\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml"))
+
+      expect { command.call(ref: "PROJ-1", route: true, dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_not_for_ref") }
+    end
+
+    it "lets the router's refusal through before anything is read" do
+      allow(router).to receive(:route).and_raise(Workspace::Error.new("Several", code: "no_default_workflow"))
+      expect(ticket_source).not_to receive(:fetch)
+
+      expect { command.call(ref: "PROJ-1", route: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_default_workflow") }
+    end
+
+    it "passes force to the router and uses the project the ref would join" do
+      allow(project_config).to receive(:existing_name).with("app").and_return("app")
+      expect(router).to receive(:route).with(kind: "jira", workspace: "app", ref: "PROJ-1", force: true, registered: true).and_return(route)
+
+      command.call(ref: "PROJ-1", route: true, dry_run: true, force: true)
+    end
   end
 
   describe "applies_to" do
@@ -518,7 +592,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     {"#12" => nil, "o/r#12" => "o/r", "https://github.com/o/r/pull/12" => "o/r"}.each do |ref, viewed_with|
       it "is the same for #{ref}" do
         command = described_class.new(catalog: catalog, workflow_defaults: workflow_defaults, engine: engine, start_ref: start_ref, ticket_source: real_source, git: git, project_config: project_config,
-          start: start, workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
+          start: start, workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, router: router, output: output)
 
         expect { command.call(id: "flow", ref: ref) }.to raise_error(Workspace::Error, /stop here/)
 
@@ -1235,9 +1309,10 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       error = error_of { command.call(positional: "PROJ-1") }
 
       expect(error.code).to eq("no_default_workflow")
-      expect(error.details).to eq({"kind" => "jira", "ref" => "PROJ-1", "known" => %w[flow rpiv]})
+      expect(error.details).to eq({"kind" => "jira", "ref" => "PROJ-1", "known" => %w[flow rpiv]}.merge(unrouted))
       expect(error.message).to include("flow, rpiv", "workspace config set workflows.default ID", "--scope project")
       expect(ticket_source).not_to have_received(:fetch)
+      expect(error.details).to include("key" => "workflows.by_ref.jira", "reason" => "several", "candidates" => [{"id" => "rpiv", "use_when" => nil}], "broken" => [])
     end
 
     it "refuses a lone unknown branch with no_default_workflow, kind branch" do

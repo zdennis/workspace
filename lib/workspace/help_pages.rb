@@ -397,7 +397,7 @@ module Workspace
         ]
       },
       "start" => {
-        usage: ["workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
+        usage: ["workflow start --ref REF [--force] [--dry-run] [--json]", "workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",
         about: [
           "Run it inside the project's git checkout; the main agent must be Claude Code.",
@@ -414,9 +414,16 @@ module Workspace
           "fork_pull_request before anything is made.",
           "",
           "Without --dry-run this makes things for real: a worktree and its workspace (as `workspace start`",
-          "does), then the first step is typed into the new workspace's agent pane."
+          "does), then the first step is typed into the new workspace's agent pane.",
+          "",
+          "--ref REF takes the place of ID: the workflow comes from a table, not a guess. The config key",
+          "workflows.by_ref.<kind> (jira, github_pr, github_issue or branch), then workflows.default, names it; with no",
+          "default, the one workflow whose applies_to: lists the kind (or has none) is used. Several fit: refused with",
+          "no_default_workflow, listing them. A default that names no workflow, or one whose applies_to: leaves out the",
+          "kind, is refused with invalid_workflow_default (--force starts the second kind anyway). The rest is a normal start."
         ],
-        options: [["--prompt TEXT", "The task as free text (the workflow's task input, and the branch's name when there is no REF)"],
+        options: [["--ref REF", "Route REF to a workflow by its kind instead of naming an ID; not with an ID, a REF or --prompt"],
+          ["--prompt TEXT", "The task as free text (the workflow's task input, and the branch's name when there is no REF)"],
           ["--branch BRANCH", "The branch for a --prompt (default: the prompt's words); refused with a REF"],
           ["--slug", "Add the ticket title's words to a JIRA or issue branch, as `workspace start --slug`"],
           ["--base REF", "The branch or ref a new branch starts from"],
@@ -431,6 +438,7 @@ module Workspace
           ["workspace workflow start PROJ-101", "use the workflow config names for a JIRA key (workflows.by_ref.jira, else workflows.default)"],
           ["workspace workflow start --prompt \"add a hello script\"", "no ID and no ticket: the configured prompt workflow, started from a sentence"],
           ["workspace workflow start rpiv PROJ-101", "make a workspace for the ticket and run rpiv in it"],
+          ["workspace workflow start --ref PROJ-101", "run the workflow set for JIRA tickets (workflows.by_ref.jira, or workflows.default)"],
           ["workspace workflow start rpiv PROJ-101 --dry-run", "read the ticket and check everything, making nothing"],
           ["workspace workflow start rpiv --prompt \"add a hello script\"", "no ticket: start from a sentence, with the branch named from its words"],
           ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],

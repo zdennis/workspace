@@ -8,6 +8,10 @@ RSpec.describe Workspace::ConfigSchema do
     expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt events.rotate_size codex.hooks.install])
   end
 
+  it "has a workflows.by_ref key for each ref kind, and one for a prompt" do
+    expect(Workspace::ConfigSchema::WORKFLOW_REF_KINDS - ["prompt"]).to eq(Workspace::WorkflowDefinition::REF_KINDS)
+  end
+
   it "names the keys a running daemon only reads at startup" do
     expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi events.rotate_size])
   end

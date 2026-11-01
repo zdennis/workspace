@@ -2388,7 +2388,7 @@ RSpec.describe Workspace::CLI do
           from_start, from_workflow = workflow_start.calls
           expect(from_start).to eq(id: "rpiv", ref: "PROJ-1", slug: true, inputs: {"task" => "do it"}, base: "main", headless: false, agent_kind: "claude", prompt_timeout: 120)
           expect(from_start).to eq(from_workflow.slice(*from_start.keys))
-          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false, force: false)
+          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false, force: false, route: false)
           expect(start_command).not_to have_received(:call)
         end
 
@@ -6769,7 +6769,42 @@ RSpec.describe Workspace::CLI do
         cli.run(["workflow", "start", "rpiv", "PROJ-1", "--branch", "b", "--slug", "--base", "main", "--input", "task=x", "--note", "n", "--agent-kind", "codex", "--prompt-timeout", "2m", "--no-headless", "--dry-run"])
 
         expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", positional: nil, prompt: nil, branch: "b", slug: true, inputs: {"task" => "x"}, note: "n", base: "main",
-                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true, force: false}])
+                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true, force: false, route: false}])
+      end
+
+      it "routes --ref with no ID, and refuses it beside an ID, a REF or --prompt" do
+        cli.run(["workflow", "start", "--ref", "#123", "--dry-run", "--force"])
+        expect(start_command.calls.last).to include(id: nil, ref: "#123", route: true, dry_run: true, force: true)
+
+        [["rpiv", "--ref", "PROJ-1"], ["--ref", "PROJ-1", "rpiv"], ["--ref", "PROJ-1", "--prompt", "x"], ["--ref", " "]].each do |args|
+          expect { cli.run(["workflow", "start", *args]) }.to raise_error(FakeSystemExit)
+        end
+        expect(start_command.calls.size).to eq(1)
+        expect(error_output.string).to include("--ref takes the place of", "--prompt has no kind", "--ref needs a REF")
+      end
+
+      it "keeps the routing line off stdout under --ref --json: one document" do
+        raw = StringIO.new
+        gate = Workspace::OutputGate.new(raw)
+        err = StringIO.new
+        routing = CLITestHelpers::FakeWorkflowStartCommand.new
+        routing.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would.", "routed" => {"ref" => "PROJ-1", "kind" => "jira", "workflow" => "rpiv", "source" => "default", "scope" => "project", "key" => "workflows.by_ref.jira"}}
+        routing.define_singleton_method(:call) do |**kw|
+          gate.puts "Routing PROJ-1 (jira) to rpiv, this project's default for jira."
+          super(**kw)
+        end
+        json_cli, = build_test_cli(workflow_command: workflow_command, workflow_start_command: routing, project_config: project_config, project_detector: detector, working_dir: "/some/dir", output: gate, error_output: err)
+
+        json_cli.run(["workflow", "start", "--ref", "PROJ-1", "--dry-run", "--json"])
+
+        doc = JSON.parse(raw.string)
+        expect(doc["results"].first["routed"]).to include("workflow" => "rpiv", "scope" => "project")
+        expect(err.string).to include("Routing PROJ-1")
+      end
+
+      it "refuses --ref with another subcommand" do
+        expect { cli.run(["workflow", "run", "rpiv", "--ref", "PROJ-1"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--ref is for `workflow start")
       end
 
       it "takes --prompt with no REF, and headless from the launch mode" do
