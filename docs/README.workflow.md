@@ -119,6 +119,10 @@ Killing a workspace ([`kill`](README.kill.md), [`finish`](README.finish.md), `pr
 
 ## Which runs `status` shows
 
+**Run history.** There is no separate history command. `status --project`, `--all` and `--table` include finished runs, and `status RUN`, `events RUN` and `files RUN` read a run after it has been archived.
+
+**Across workspaces.** `workflow status --needs-me` lists the runs waiting for you; `workspace goal list` shows each workspace's goal in one line, with `stuck` for an idle, timed-out or pane-gone run (see [goal](README.goal.md)).
+
 `workflow status` takes one scope. At most one of `RUN`, `--name`, `--project` and `--all` may be given; two of them are a `usage` error, and so is a scope flag with a `RUN`, which used to be ignored. An empty value (`--name ""`, `--project=""`) counts as not given.
 
 | You give | You get |
@@ -979,6 +983,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 ```
 
 - A run's `state` is `running`, `waiting`, `completed` or `cancelled` (`cancelled_by` is `cancel` or `kill`). A run with a reason reads `waiting`; a stored `turn_ended_incomplete` hidden by a working pane or by its 10-second hold-back, and a `turn_ended_background` hold, leave `state` `running` with no reason.
+- `current.flags` lists what `status` read about the step now: `timed_out` (past its `timeout`), `delivering` (its line is still on its way to the agent), `parked` (a resume is stored for later), `idle` (the turn ended unseen and the pane is quiet; `workflow resume` decides it) and `background_work` (a `turn_ended_background` hold). It is `[]` when none applies.
 - A step's `state` is `pending`, `waiting` (not started: a lock, or a line that could not be typed), `running`, `checking` (its check, or a `require:` proof that runs outside the run's lock, is running), `passed` or `failed`. `gate` is `waiting`, `approved`, `rejected` or `null`. `gate_file` is `{path, sha256}` as approve recorded it, or `null`; `note_changed` is true when that note's bytes differ now (see [Passing a gate](#passing-a-gate)).
 - `warnings` are strings: a workspace's agent daemon did not answer, so a permission prompt would not show; a run will not move because its workspace has no agent daemon; a run file can't be read or shown.
 - `events_path` is the run's own history, one JSON line per transition (`run_started`, `resume_parked` and `resume_parked_ended` (a resume stored for later and how it ended), `step_dispatching` (the attempt is stored and its line about to be typed), `step_dispatched` (the daemon answered; `delivered` says whether the line landed, `warning` when background work may have been lost to the `/clear` (a moving screen, or a running sub-agent), `proof_missing` when a moving screen wasn't accepted), `step_reported`, `check_finished`, `proof_finished` (a `require:` proof run outside the lock: `proof`, `passed`), `step_passed`, `step_failed`, `step_looped` (`backoff` in seconds when the retry waits), `step_retry_started` (the wait ended; `from`, `to`), `step_retry_blocked` (the wait ended but its pane is no longer the run's, so nothing was started; `from`, `to`, `code`), `gate_waiting`, `gate_approved` and `gate_rejected` (with `note` when the person gave one; `gate_approved` with `sha256` when it recorded a note), `run_resumed`, `run_completed`, `run_cancelled`), each with `ts` and `type`.

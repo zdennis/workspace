@@ -313,7 +313,11 @@ module Workspace
           "turn end, so it is named with what to add. It also warns of an include: pack the library can't find, a status or",
           "require command the project has no `commands.test`/`commands.lint` for, and an on_fail max that max_attempts can't",
           "fit. The library and the commands are read for the project of the current directory; outside a git checkout they",
-          "are listed as \"not checked\" instead. --json lists warnings (code, step, message) and not_checked (same shape)."
+          "are listed as \"not checked\" instead. --json lists warnings (code, step, message) and not_checked (same shape).",
+          "",
+          "A step's guard: (unchanged or config) checks the checkout when the turn ends, on_fail's context: (fresh or continue)",
+          "sets the conversation of the step it goes back to, and a status: check gets WORKSPACE_RUN_ID,",
+          "WORKSPACE_RUN_ARTIFACTS and WORKSPACE_RUN_BASE_SHA. See docs/README.workflow.md."
         ],
         options: [["--id ID", "Check the text as this workflow id"], JSON_OPT],
         examples: [
@@ -467,7 +471,7 @@ module Workspace
           "",
           "REF is a JIRA key or URL, a pull request, an issue or a branch. Waits for the workspace's agent, then",
           "runs ID in it. A workflow that lists the kinds of REF it is for (applies_to:) refuses another kind with",
-          "workflow_not_for_ref unless --force; a --prompt has no REF and is not checked. A fork's pull request, or a branch tracking another repository, is refused with",
+          "workflow_not_for_ref unless --force; a --prompt has no REF and is not checked. `workflow show ID` lists the workflow's inputs (--input KEY=VALUE); --dry-run checks them. A fork's pull request, or a branch tracking another repository, is refused with",
           "fork_pull_request before anything is made.",
           "",
           "Without --dry-run this makes things for real: a worktree and its workspace (as `workspace start`",
@@ -1501,7 +1505,7 @@ module Workspace
       "list" => {
         usage: ["goal list [--all] [--json]"],
         summary: "List goals, one line each",
-        about: ["Each line has the workspace, state, stage, step and agent state."],
+        about: ["Each line has the workspace, state, stage, step and agent state. It reads every workspace at once, so a state of", "stuck (an idle or timed-out run, a gone pane, a stalled plan) shows which goals need you."],
         options: [["--all", "Include workspaces with no plan, run or spine (state none)"], JSON_OPT],
         examples: [
           ["workspace goal list", "one line per goal"],
