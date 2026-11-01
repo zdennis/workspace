@@ -36,12 +36,13 @@ module Workspace
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
+      # @param lint [Workspace::WorkflowLint] the checks `validate` makes against the library and the project's commands
       # @param pid [Integer] this process
       # @param clock [#call] returns the current Time
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, compare: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, compare: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -50,6 +51,7 @@ module Workspace
         @catalog = catalog
         @files = files
         @run_files = run_files
+        @lint = lint
         @attempts = attempts
         @audit = audit
         @sweep = sweep
@@ -108,19 +110,23 @@ module Workspace
       # @raise [Workspace::UsageError] when PATH can't be read
       # @raise [Workspace::Error] code `invalid_workflow`, with `details.problems` listing every problem
       #
-      # A valid definition also prints its +warnings+ (text lines, or the `warnings` array in JSON); they never change the exit code.
+      # A valid definition also prints its +warnings+ (text lines, or the `warnings` array in JSON) and what it could not check
+      # (+not_checked+); neither changes the exit code.
       def validate(path:, id: nil, json: false)
         stdin = path == "-"
         text = read_text(path, stdin)
         id ||= claimed_id(text) || (stdin ? STDIN_ID : file_id(path))
         definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
           path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil)
+        found = @lint.call(definition, cwd: Dir.pwd)
+        warnings = definition.warnings + found["warnings"]
         if json
           document("workflow" => definition.to_h.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256),
-            "warnings" => definition.warnings)
+            "warnings" => warnings, "not_checked" => found["not_checked"])
         else
           @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)"
-          definition.warnings.each { |warning| @output.puts "warning: #{warning["message"]}" }
+          warnings.each { |warning| @output.puts "warning: #{TerminalText.escape(warning["message"])}" }
+          found["not_checked"].each { |each| @output.puts "not checked: #{TerminalText.escape(each["message"])}" }
         end
       end
 

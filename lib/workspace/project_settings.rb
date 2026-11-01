@@ -31,7 +31,7 @@ module Workspace
       path = global_config_path
       return {} unless File.exist?(path)
       YAML.safe_load_file(path) || {}
-    rescue Psych::SyntaxError
+    rescue Psych::Exception
       {}
     end
 

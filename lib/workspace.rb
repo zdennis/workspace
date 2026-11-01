@@ -301,6 +301,7 @@ require_relative "workspace/focus_config"
 require_relative "workspace/workflow_defaults"
 require_relative "workspace/workflow_log_tail"
 require_relative "workspace/workflow_definition"
+require_relative "workspace/workflow_lint"
 require_relative "workspace/workflow_catalog"
 require_relative "workspace/workflow_router"
 require_relative "workspace/workflow_files"
@@ -659,6 +660,8 @@ module Workspace
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
       run_files: WorkflowRunFiles.new,
+      lint: WorkflowLint.new(library: library, commands_config: commands_config, lineage: lineage, project_config: project_config,
+        workflow_config: WorkflowConfig.new(config_resolver: config_resolver)),
       attempts: WorkflowAttempts.new,
       audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
       sweep: workflow_sweep,

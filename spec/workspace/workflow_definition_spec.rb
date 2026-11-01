@@ -139,6 +139,39 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "on_fail_exceeds_max_attempts" do
+    def retry_warnings(attempts, *steps)
+      body = steps.map { |id, extra| "  #{id}:\n    prompt: P\n    produces: [#{id}.md]\n#{extra}" }.join
+      parse("max_attempts: #{attempts}\nsteps:\n#{body}").warnings.select { |w| w["code"] == "on_fail_exceeds_max_attempts" }
+    end
+
+    let(:loop_back) { "    on_fail: {goto: a, max: 3}\n" }
+
+    it "counts the attempts a retry runs again, as the engine does" do
+      # a=1, b=2 fails first on attempt 2; each retry reruns a and b (2 attempts): retry 3 needs 2 + 2 * 2 = 6 made
+      expect(retry_warnings(6, ["a"], ["b", loop_back]).first["message"]).to match(/lets only 2 of those retries start.*attempt 2.*2 steps.*Raise max_attempts to 7/)
+      expect(retry_warnings(7, ["a"], ["b", loop_back])).to eq([])
+    end
+
+    it "is quiet when every retry fits and the default max is 1" do
+      expect(retry_warnings(6, ["a"], ["b", "    on_fail: {goto: a}\n"])).to eq([])
+    end
+
+    it "reports no retry at all when the step itself is past the limit" do
+      found = retry_warnings(2, ["a"], ["b", "    on_fail: {goto: a, max: 1}\n"])
+      expect(found.first["message"]).to match(/lets only 0 of those retries start/)
+    end
+
+    it "warns for a step that loops to an earlier step only" do
+      found = retry_warnings(4, ["a"], ["b"], ["c", "    on_fail: {goto: b, max: 2}\n"])
+      expect(found).to match([include("step" => "c", "message" => /2 steps/)])
+    end
+
+    it "is never an error, so the definition still parses" do
+      expect { retry_warnings(1, ["a"], ["b", loop_back]) }.not_to raise_error
+    end
+  end
+
   describe "#warnings" do
     def warnings(yaml) = parse(yaml).warnings
 

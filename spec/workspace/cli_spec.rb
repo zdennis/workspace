@@ -6750,7 +6750,7 @@ RSpec.describe Workspace::CLI do
         File.write(File.join(dir, "global", "bad.yml"), bad)
         catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: File.join(dir, "global"), builtin_workflows_dir: File.join(dir, "none")))
         out = StringIO.new
-        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: out))[0]
+        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: out))[0]
 
         real_cli.run(["workflow", "show", "bad", "--source", "--json"])
         doc = JSON.parse(out.string)
@@ -6918,7 +6918,7 @@ RSpec.describe Workspace::CLI do
         config = instance_double(Workspace::Config, workflows_dir: File.join(dir, "home", "workflows"), builtin_workflows_dir: File.join(dir, "builtin"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
-        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
           engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
 
@@ -6958,7 +6958,7 @@ RSpec.describe Workspace::CLI do
         File.write(File.join(home, "ship.yml"), old_text)
         config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
-        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
           engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
         old_sha = Digest::SHA256.hexdigest(old_text)
@@ -7008,7 +7008,7 @@ RSpec.describe Workspace::CLI do
         File.write(File.join(home, "ship.yml"), "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n")
         config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
-        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
           engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new("n\n"))
         real_cli, out = build_test_cli(workflow_command: command)
 
@@ -7238,7 +7238,7 @@ RSpec.describe Workspace::CLI do
         File.write(File.join(dir, "runs", "wr_bad.json"), "{not json")
         real_status = Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes), snapshot_client: instance_double(Workspace::AgentSnapshotClient),
           ask_store_for: ->(_) {}, gate_note: instance_double(Workspace::WorkflowGateNote))
-        real = Workspace::Commands::Workflow.new(catalog: nil, engine: nil, status: real_status, store: store, panes: nil, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new,
+        real = Workspace::Commands::Workflow.new(lint: nil, catalog: nil, engine: nil, status: real_status, store: store, panes: nil, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new,
           tmux: nil, process_tree: nil, lock_holder: nil, output: output)
         real_cli, = build_test_cli(workflow_command: real)
 
@@ -7547,7 +7547,7 @@ RSpec.describe Workspace::CLI do
       )
     end
     let(:command) do
-      Workspace::Commands::Workflow.new(catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
+      Workspace::Commands::Workflow.new(lint: nil, catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
         status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, files: nil, run_files: nil,
         tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: StringIO.new)
     end
@@ -7572,7 +7572,7 @@ RSpec.describe Workspace::CLI do
         end
       end
       let(:parking) do
-        Workspace::Commands::Workflow.new(catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
+        Workspace::Commands::Workflow.new(lint: nil, catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
           status: status, store: store, panes: panes, files: nil, run_files: nil,
           tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: out)
       end
@@ -7627,7 +7627,7 @@ RSpec.describe Workspace::CLI do
         end
       end
       let(:parking) do
-        Workspace::Commands::Workflow.new(catalog: catalog, engine: engine,
+        Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: engine,
           status: status, store: store, panes: panes, files: nil, run_files: nil,
           tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: StringIO.new)
       end
@@ -7700,7 +7700,7 @@ RSpec.describe Workspace::CLI do
         tmux = instance_double(Workspace::Tmux, session_name_for: "app", pane_details: [{id: "%5", window: 0, index: 1, pid: 200}])
         tree = instance_double(Workspace::ProcessTree)
         allow(tree).to receive(:snapshot).and_return(instance_double(Workspace::ProcessTree::Snapshot, ancestors: [{pid: 4242}, {pid: 200}]))
-        under = Workspace::Commands::Workflow.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes,
+        under = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes,
           files: nil, run_files: nil, tmux: tmux, process_tree: tree, lock_holder: nil, pid: 4242, output: StringIO.new)
 
         row = under.run(id: "flow", workspace: "app", worktree: @dir, pane: "%5")

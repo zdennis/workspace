@@ -1325,11 +1325,7 @@ module Workspace
 
     # Every step's `status: command:` and every `require: command:` that isn't optional, each unset one listed.
     def check_commands(data, project)
-      wanted = data["steps"].flat_map do |step|
-        roles = [[step.dig("status", "command"), "status"]]
-        roles += Array(step["require"]).reject { |entry| entry["optional"] == true }.map { |entry| [entry["command"], "require"] }
-        roles.select(&:first).map { |role, via| {"step" => step["id"], "command" => role, "via" => via} }
-      end
+      wanted = WorkflowDefinition.command_needs(data)
       return if wanted.empty?
       set = @commands_config.for_project(project)
       unset = wanted.reject { |each| set[each["command"].to_sym] }

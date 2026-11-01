@@ -4900,7 +4900,7 @@ RSpec.describe Workspace::WorkflowEngine do
         let(:shown_status) { instance_double(Workspace::WorkflowStatus) }
         let(:out) { StringIO.new }
         let(:command) do
-          Workspace::Commands::Workflow.new(catalog: nil, engine: engine, status: shown_status, store: store, panes: panes, files: nil, run_files: nil,
+          Workspace::Commands::Workflow.new(lint: nil, catalog: nil, engine: engine, status: shown_status, store: store, panes: panes, files: nil, run_files: nil,
             tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: out)
         end
 

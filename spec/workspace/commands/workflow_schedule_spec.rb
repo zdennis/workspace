@@ -5,7 +5,7 @@ RSpec.describe Workspace::Commands::Workflow, "#schedule" do
   let(:schedule) { instance_double(Workspace::SweepSchedule) }
 
   def build(schedule)
-    described_class.new(catalog: nil, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, tmux: nil,
+    described_class.new(lint: nil, catalog: nil, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, tmux: nil,
       process_tree: nil, lock_holder: nil, schedule: schedule, output: output)
   end
 

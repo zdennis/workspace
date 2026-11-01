@@ -159,7 +159,19 @@ module Workspace
         {"code" => "on_timeout_without_timeout", "step" => step["id"],
          "message" => "step #{step["id"]} sets on_timeout: #{step["on_timeout"]} but has no timeout:, so it never applies. Add timeout: (such as 2h) or remove on_timeout."}
       end
-      missing + idle
+      missing + idle + retry_warnings
+    end
+
+    # Every project command a definition checks with: each step's `status: command:` and each `require: command:` not marked optional.
+    #
+    # @param data [Hash] {#to_h}
+    # @return [Array<Hash{String=>String}>] each with "step" (the step id), "command" (`test` or `lint`) and "via" (`status` or `require`)
+    def self.command_needs(data)
+      data["steps"].flat_map do |step|
+        roles = [[step.dig("status", "command"), "status"]]
+        roles += Array(step["require"]).reject { |entry| entry["optional"] == true }.map { |entry| [entry["command"], "require"] }
+        roles.select(&:first).map { |role, via| {"step" => step["id"], "command" => role, "via" => via} }
+      end
     end
 
     # The `on_timeout` of a step hash. A definition stored before the key existed has none and reads as `warn`.
@@ -248,6 +260,27 @@ module Workspace
     end
 
     private
+
+    # An `on_fail` whose retries can never all start. The run spends one attempt per step it
+    # delivers, so step N (1-based) fails for the first time on attempt N, and each retry
+    # delivers the steps from `goto` to it again. Retry M starts only while the attempts made
+    # are fewer than `max_attempts`, which happens at the earliest after N + (M - 1) * span
+    # attempts. Other steps and their loops only add attempts, so this count is a floor.
+    def retry_warnings
+      ids = steps.map { |step| step["id"] }
+      steps.each_with_index.filter_map do |step, index|
+        on_fail = step["on_fail"] or next
+        first = index + 1
+        span = index - ids.index(on_fail["goto"]) + 1
+        wanted = on_fail["max"]
+        needed = first + (wanted - 1) * span
+        allowed = @data["max_attempts"]
+        next if needed < allowed
+        fits = (first < allowed) ? (allowed - first - 1) / span + 1 : 0
+        {"code" => "on_fail_exceeds_max_attempts", "step" => step["id"],
+         "message" => "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the step fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."}
+      end
+    end
 
     # What makes a step's pass mean something: a file it must write, a command that must
     # pass, or a person's gate.

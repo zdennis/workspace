@@ -310,7 +310,10 @@ module Workspace
           "problem at once; writes nothing. The id is --id, else its id: key, else the file's name (stdin:",
           "\"stdin\"); a relative prompt_file: is read from the file's directory (stdin: the current directory).",
           "A valid definition can still get warnings (exit 0): a step with no produces, status, require or gate passes on any",
-          "turn end, so it is named with what to add. --json lists them in warnings (code, step, message)."
+          "turn end, so it is named with what to add. It also warns of an include: pack the library can't find, a status or",
+          "require command the project has no `commands.test`/`commands.lint` for, and an on_fail max that max_attempts can't",
+          "fit. The library and the commands are read for the project of the current directory; outside a git checkout they",
+          "are listed as \"not checked\" instead. --json lists warnings (code, step, message) and not_checked (same shape)."
         ],
         options: [["--id ID", "Check the text as this workflow id"], JSON_OPT],
         examples: [
