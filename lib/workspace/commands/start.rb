@@ -109,11 +109,10 @@ module Workspace
       #   empty plan also gets the draft request ({PlanDispatch::DRAFT_PROMPT}) ahead of +prompt+, which becomes the goal. Refused
       #   with +play+; with +no_launch+ the plan is made and nothing is sent. A plan that exists is kept; a failed init is a warning
       #   and sends no play. The JSON payload reports it as `plan`
-      # @param recipe [String, nil] a library recipe (`name` or `recipe/name`) whose plays, packs, agents, skills,
+      # @param recipe [Hash, nil] a library recipe entry as {#recipe_entry} returns it, whose plays, packs, agents, skills,
       #   agent kind and prompt fill in whichever of +plays+, +packs+, +agents+, +skills+, +agent_kind+ and
       #   +prompt+ were not given (a given list replaces the recipe's, it is not added to it). With +no_launch+ its
-      #   plays, packs and prompt are left out with a warning. An unknown or invalid recipe fails before anything
-      #   is created; the JSON payload reports it as `recipe`
+      #   plays, packs and prompt are left out with a warning. The JSON payload reports it as `recipe`
       # @param promoted [Boolean] the worktree at `.worktrees/<branch>` was just made by `promote`: the `worktree_started` event
       #   says `created: true, promoted: true` and the "already exists" line is not printed
       # @param root [String, nil] the main checkout to start in, in place of the working directory's repository
@@ -147,6 +146,20 @@ module Workspace
         start!(input_string, quiet: true, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, **options)
       end
 
+      # Reads a library recipe from the parent project, like plays, so the caller can look at it before
+      # anything is created and pass the entry to {#call} as +recipe+.
+      #
+      # @param name [String] a recipe name (`name` or `recipe/name`)
+      # @return [Hash] "ref", "scope", "path" and "fields" (see {Library#recipe})
+      # @raise [Workspace::Error] when not in a git repository, no library was wired, or the recipe is unknown or invalid
+      # @raise [Workspace::UsageError] for an entry of another kind
+      def recipe_entry(name)
+        root = @git.root
+        raise Workspace::Error, "Not inside a git repository." unless root
+        raise Workspace::Error, "--recipe is not available: no library was wired." unless @library
+        @library.recipe(name, cwd: @start_ref.project(root).root)
+      end
+
       private
 
       def call_json(input_string, **options)
@@ -166,7 +179,7 @@ module Workspace
         @recipe = nil
         recipe_warnings = []
         if recipe
-          @recipe = resolve_recipe(recipe, root)
+          @recipe = recipe
           fields = @recipe["fields"]
           reasons = {}
           %w[plays packs prompt].each { |key| reasons[key] = "--no-launch sends nothing" } if no_launch
@@ -482,13 +495,6 @@ module Workspace
       def configured_program(config_name)
         command = @agent_commands&.command_for(config_name, @effective_kind)
         (command && AgentCommands.program_for(command)) || AgentProvider.find(@effective_kind)&.executable
-      end
-
-      # The recipe is looked up from the parent project, like plays, and checked
-      # before anything is created.
-      def resolve_recipe(ref, root)
-        raise Workspace::Error, "--recipe is not available: no library was wired." unless @library
-        @library.recipe(ref, cwd: @start_ref.project(root).root)
       end
 
       # The play is checked before anything is created, so an unknown name or an

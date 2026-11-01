@@ -2323,6 +2323,47 @@ RSpec.describe Workspace::CLI do
         base: nil, yes: false, json: false)
     end
 
+    describe "start --recipe" do
+      let(:entry) { {"ref" => "recipe/r", "scope" => "global", "path" => "/x", "fields" => {"plays" => ["a"]}} }
+
+      it "reads the recipe once and passes that entry to call" do
+        start_command = double("start", call: {exit_code: 0, prompt_failures: {}}, recipe_entry: entry)
+        cli, = build_test_cli(start_command: start_command)
+
+        cli.run(["start", "--recipe", "r", "PROJ-1"])
+
+        expect(start_command).to have_received(:recipe_entry).with("r").once
+        expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+          base: nil, yes: false, json: false, recipe: entry)
+      end
+
+      it "prints exactly one error document for an unknown recipe under --json" do
+        start_command = double("start", call: nil)
+        allow(start_command).to receive(:recipe_entry).and_raise(Workspace::Error.new("No recipe 'nope'.", code: "unknown_library_entry"))
+        cli, output = build_test_cli(start_command: start_command)
+
+        expect { cli.run(["start", "--recipe", "nope", "--json", "PROJ-1"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        lines = output.string.lines
+        expect(lines.size).to eq(1)
+        doc = JSON.parse(lines.first)
+        expect(doc).to include("schema_version" => 1, "ok" => false, "code" => "unknown_library_entry")
+        expect(start_command).not_to have_received(:call)
+      end
+
+      it "keeps an entry of another kind a usage error document under --json" do
+        start_command = double("start", call: nil)
+        allow(start_command).to receive(:recipe_entry).and_raise(Workspace::UsageError, "--recipe takes a recipe, and 'play/x' is a play.")
+        cli, output = build_test_cli(start_command: start_command)
+
+        expect { cli.run(["start", "--recipe", "play/x", "--json", "PROJ-1"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        lines = output.string.lines
+        expect(lines.size).to eq(1)
+        expect(JSON.parse(lines.first)).to include("ok" => false, "code" => "usage")
+      end
+    end
+
     it "passes --play through to start" do
       start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
       cli, = build_test_cli(start_command: start_command)

@@ -1117,7 +1117,7 @@ module Workspace
       start_options[:spine] = spine if spine
       start_options[:plan] = plan if plan
       start_options[:agent_kind] = agent_kind if agent_kind
-      start_options[:recipe] = recipe if recipe
+      start_options[:recipe] = @start_command.recipe_entry(recipe) if recipe
       start_options[:title_from_ticket] = true if title_from_ticket
       start_options[:slug] = true if slug
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?

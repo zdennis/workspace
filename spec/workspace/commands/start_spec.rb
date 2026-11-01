@@ -603,7 +603,7 @@ RSpec.describe Workspace::Commands::Start do
         it "sends the recipe's play and prompt and reports the recipe in --json" do
           recipe("plays: [kickoff]\nprompt: Start at step 2.\n")
 
-          play_command.call("PROJ-123", recipe: "review-pass", json: true)
+          play_command.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"), json: true)
 
           expect(launch_command).to have_received(:call).with([name], quiet: true,
             prompts: {name => "Read \"#{global_path}\" and follow it.\n\nStart at step 2."}, bindings: anything)
@@ -617,7 +617,7 @@ RSpec.describe Workspace::Commands::Start do
           other_path = library.global_store.path_for("play", "other")
           recipe("plays: [kickoff]\nprompt: From the recipe.\n")
 
-          play_command.call("PROJ-123", recipe: "review-pass", plays: ["other"], prompt: "Mine.")
+          play_command.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"), plays: ["other"], prompt: "Mine.")
 
           expect(launch_command).to have_received(:call).with([name],
             prompts: {name => "Read \"#{other_path}\" and follow it.\n\nMine."}, bindings: anything)
@@ -627,10 +627,10 @@ RSpec.describe Workspace::Commands::Start do
           recipe("agent_kind: codex\n")
           allow(project_config).to receive(:check_agent_kind!)
 
-          play_command.call("PROJ-123", recipe: "review-pass")
+          play_command.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"))
           expect(project_config).to have_received(:create_worktree).with(anything, anything, anything, anything, quiet: false, agent_kind: "codex")
 
-          play_command.call("PROJ-123", recipe: "review-pass", agent_kind: "claude")
+          play_command.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"), agent_kind: "claude")
           expect(project_config).to have_received(:create_worktree).with(anything, anything, anything, anything, quiet: false, agent_kind: "claude")
         end
 
@@ -643,7 +643,7 @@ RSpec.describe Workspace::Commands::Start do
             launch_command: launch_command, library: library, library_installer: copier, output: output, error_output: error_output, input: input)
           allow(copier).to receive(:copy).and_return({"ref" => "agent/reviewer", "outcome" => "copied"})
 
-          installing.call("PROJ-123", recipe: "review-pass", json: true)
+          installing.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"), json: true)
 
           expect(copier).to have_received(:copy).with(hash_including("ref" => "agent/reviewer"), worktree: anything, project: anything)
         end
@@ -652,7 +652,7 @@ RSpec.describe Workspace::Commands::Start do
           recipe("plays: [kickoff]\nprompt: Hi\nagent_kind: codex\n")
           allow(project_config).to receive(:check_agent_kind!)
 
-          play_command.call("PROJ-123", recipe: "review-pass", no_launch: true, json: true)
+          play_command.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"), no_launch: true, json: true)
 
           doc = JSON.parse(output.string)
           expect(doc).to include("ok" => true, "launched" => false)
@@ -663,7 +663,7 @@ RSpec.describe Workspace::Commands::Start do
         it "leaves the recipe's packs out under --no-packs and its plays out under --plan, with a warning" do
           recipe("plays: [kickoff]\npacks: [review]\n")
 
-          play_command.call("PROJ-123", recipe: "review-pass", no_packs: true, json: true)
+          play_command.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"), no_packs: true, json: true)
 
           expect(JSON.parse(output.string)["warnings"]).to include(/left out packs \(--no-packs was given\)/)
         end
@@ -675,24 +675,32 @@ RSpec.describe Workspace::Commands::Start do
           planning = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, library: library, plan_command: plan_command, output: output, error_output: error_output, input: input)
 
-          expect { planning.call("PROJ-123", recipe: "review-pass", plan: true, no_launch: true, json: true) }.not_to raise_error
+          expect { planning.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"), plan: true, no_launch: true, json: true) }.not_to raise_error
           expect(JSON.parse(output.string)["warnings"].join).to include("--plan sends its own play")
         end
 
-        it "fails an unknown recipe with nothing created" do
-          expect { play_command.call("PROJ-123", recipe: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
-          expect(project_config).not_to have_received(:create_worktree)
+        it "fails an unknown recipe" do
+          expect { play_command.recipe_entry("nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
         end
 
-        it "fails an invalid recipe with nothing created" do
+        it "fails an invalid recipe" do
           recipe("plays: 3\nbogus: 1\n")
 
-          expect { play_command.call("PROJ-123", recipe: "review-pass") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_recipe") }
-          expect(project_config).not_to have_received(:create_worktree)
+          expect { play_command.recipe_entry("review-pass") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_recipe") }
         end
 
         it "refuses a recipe when no library was wired" do
-          expect { command.call("PROJ-123", recipe: "x") }.to raise_error(Workspace::Error, /no library was wired/)
+          expect { command.recipe_entry("x") }.to raise_error(Workspace::Error, /no library was wired/)
+        end
+
+        it "refuses a recipe outside a git repository" do
+          allow(git).to receive(:root).and_return(nil)
+
+          expect { play_command.recipe_entry("review-pass") }.to raise_error(Workspace::Error, "Not inside a git repository.")
+        end
+
+        it "refuses an entry of another kind as a usage error" do
+          expect { play_command.recipe_entry("play/kickoff") }.to raise_error(Workspace::UsageError, /takes a recipe/)
         end
       end
 
