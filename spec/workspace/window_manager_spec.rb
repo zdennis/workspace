@@ -56,6 +56,192 @@ RSpec.describe Workspace::WindowManager do
     end
   end
 
+  describe "#run_focus_steps" do
+    def status(ok, code = ok ? 0 : 1) = instance_double(Process::Status, success?: ok, exitstatus: code)
+
+    it "runs nothing for no steps" do
+      expect(Open3).not_to receive(:capture3)
+      expect(Process).not_to receive(:spawn)
+
+      expect(manager.run_focus_steps(42, [])).to be_nil
+    end
+
+    it "runs each foreground step with the id after its first word" do
+      allow(Open3).to receive(:capture3).and_return(["", "", status(true)])
+
+      expect(manager.run_focus_steps(42, [["focus"], ["center"], ["shake", "--x", "1"]])).to be_nil
+      expect(Open3).to have_received(:capture3).with(config.window_tool, "focus", "id=42").ordered
+      expect(Open3).to have_received(:capture3).with(config.window_tool, "center", "id=42").ordered
+      expect(Open3).to have_received(:capture3).with(config.window_tool, "shake", "id=42", "--x", "1").ordered
+    end
+
+    it "stops at the first failure" do
+      allow(Open3).to receive(:capture3).with(config.window_tool, "center", "id=42").and_return(["", "boom", status(false, 3)])
+
+      failure = manager.run_focus_steps(42, [["center"], ["shake"]])
+
+      expect(failure).to eq(described_class::StepFailure.new("center", 3, "boom"))
+      expect(Open3).to have_received(:capture3).once
+    end
+
+    it "reads a window-tool that vanished as a nil exit status" do
+      allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT, "window-tool")
+
+      failure = manager.run_focus_steps(42, [["center"]])
+
+      expect(failure.step).to eq("center")
+      expect(failure.exit_status).to be_nil
+      expect(failure.stderr).to match(/window-tool/)
+    end
+
+    it "returns valid UTF-8 from a foreground step that wrote bad bytes" do
+      bad = "bad \xFF Unknown command"
+      allow(Open3).to receive(:capture3).and_return(["", bad, status(false, 1)])
+
+      failure = manager.run_focus_steps(42, [["center"]])
+
+      expect(failure.stderr).to be_valid_encoding
+      expect { failure.stderr =~ /unknown command/i }.not_to raise_error
+      expect(failure.stderr).to match(/unknown command/i)
+    end
+
+    context "with a fake window-tool" do
+      let(:dir) { Dir.mktmpdir }
+      let(:pidfile) { File.join(dir, "pid") }
+      let(:tool) { File.join(dir, "window-tool") }
+      let(:config) { instance_double(Workspace::Config, window_tool: tool) }
+
+      def install(body)
+        File.write(tool, "#!/bin/sh\n#{body}\n")
+        File.chmod(0o755, tool)
+      end
+
+      def read_when_written(path)
+        200.times do
+          text = File.exist?(path) ? File.read(path) : ""
+          return text if text.end_with?("\n")
+          sleep 0.01
+        end
+        ""
+      end
+
+      after do
+        if @sleeper
+          pid = read_when_written(pidfile).to_i
+          begin
+            Process.kill("KILL", pid) if pid > 0
+          rescue Errno::ESRCH
+            nil
+          end
+        end
+        FileUtils.rm_rf(dir)
+      end
+
+      it "starts a dim with its arguments" do
+        install(%(echo "$@" > "#{dir}/argv"))
+
+        expect(manager.run_focus_steps(42, [["dim", "--opacity", "0.5", "--duration", "3"]])).to be_nil
+        expect(read_when_written(File.join(dir, "argv")).strip).to eq("dim id=42 --opacity 0.5 --duration 3")
+      end
+
+      it "returns within a second and leaves a slow dim running" do
+        @sleeper = true
+        install(%(echo $$ > "#{pidfile}"\nexec sleep 5))
+
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        result = manager.run_focus_steps(42, [["dim"]])
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+        expect(result).to be_nil
+        expect(elapsed).to be < 1
+        expect(Process.kill(0, read_when_written(pidfile).to_i)).to eq(1)
+      end
+
+      it "returns early when the step exits 0 at once" do
+        stub_const("Workspace::WindowManager::DETACHED_WAIT", 3)
+        install("exit 0")
+
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        expect(manager.run_focus_steps(42, [["highlight", "--color", "red"]])).to be_nil
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 2
+      end
+
+      it "reads a wait that cannot observe the child as started" do
+        install("exit 0")
+        allow(Process).to receive(:wait2).and_raise(Errno::ECHILD)
+
+        expect(manager.run_focus_steps(42, [["dim"]])).to be_nil
+      end
+
+      it "returns valid UTF-8 from a detached step that wrote bad bytes" do
+        stub_const("Workspace::WindowManager::DETACHED_WAIT", 3)
+        install(%(printf 'bad \\377 Unknown command\\n' >&2\nexit 1))
+
+        failure = manager.run_focus_steps(42, [["dim"]])
+
+        expect(failure.stderr).to be_valid_encoding
+        expect { failure.stderr =~ /unknown command/i }.not_to raise_error
+        expect(failure.stderr).to match(/unknown command/i)
+      end
+
+      it "reports the exit 1 unknown-command form" do
+        stub_const("Workspace::WindowManager::DETACHED_WAIT", 3)
+        install(%(echo "Unknown command: dim" >&2\nexit 1))
+
+        failure = manager.run_focus_steps(42, [["dim"]])
+
+        expect(failure.step).to eq("dim")
+        expect(failure.exit_status).to eq(1)
+        expect(failure.stderr).to include("Unknown command: dim")
+      end
+
+      it "reports the exit 2 unknown-command form" do
+        stub_const("Workspace::WindowManager::DETACHED_WAIT", 3)
+        install(%(echo "Unknown command 'dim'" >&2\nexit 2))
+
+        failure = manager.run_focus_steps(42, [["dim"]])
+
+        expect(failure.exit_status).to eq(2)
+        expect(failure.stderr).to include("Unknown command 'dim'")
+      end
+
+      it "reports a failure with nothing on stderr" do
+        stub_const("Workspace::WindowManager::DETACHED_WAIT", 3)
+        install("exit 4")
+
+        failure = manager.run_focus_steps(42, [["dim"]])
+
+        expect(failure.exit_status).to eq(4)
+        expect(failure.stderr).to eq("")
+      end
+
+      it "reports a window-tool that vanished at spawn" do
+        FileUtils.rm_f(tool)
+
+        failure = manager.run_focus_steps(42, [["dim"]])
+
+        expect(failure.step).to eq("dim")
+        expect(failure.exit_status).to be_nil
+      end
+    end
+  end
+
+  describe "#highlight_by_id" do
+    it "runs highlight in the foreground and answers whether it succeeded" do
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(config.window_tool, "highlight", "id=42", "--color", "green").and_return(["", "", status])
+
+      expect(manager.highlight_by_id(42, "green")).to be true
+    end
+
+    it "answers false on failure" do
+      status = instance_double(Process::Status, success?: false)
+      allow(Open3).to receive(:capture3).and_return(["", "", status])
+
+      expect(manager.highlight_by_id(42, "green")).to be false
+    end
+  end
+
   describe "#shake_by_id" do
     it "returns true on success" do
       status = instance_double(Process::Status, success?: true)

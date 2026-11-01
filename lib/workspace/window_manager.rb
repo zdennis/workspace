@@ -1,9 +1,19 @@
 require "open3"
+require "tempfile"
 
 module Workspace
   # Manages iTerm2 window operations: finding, focusing, positioning, and closing windows.
   # Separated from session/pane lifecycle (handled by ITerm).
   class WindowManager
+    # One focus step that did not run to success.
+    #
+    # `step` is the step's first word, `exit_status` the process's exit code
+    # (nil when it could not be run), `stderr` what it wrote.
+    StepFailure = Struct.new(:step, :exit_status, :stderr)
+
+    DETACHED_STEPS = %w[dim highlight].freeze
+    DETACHED_WAIT = 0.25
+
     # @param config [Workspace::Config] configuration for window_tool path
     # @param logger [Workspace::Logger] debug logger
     # @param osascript [#call] runs an AppleScript with a time limit
@@ -81,6 +91,33 @@ module Workspace
       @logger.debug { "window_manager: focus #{args.join(" ")}" }
       _, _, status = window_tool(*args.drop(1))
       @logger.debug { "window_manager: focus result=#{status.success?}" }
+      status.success?
+    end
+
+    # Runs window-tool steps on a window, in order, stopping at the first failure.
+    # `dim` and `highlight` start detached and are counted as started once they
+    # have run 0.25s or exited 0; every other step runs to its end.
+    #
+    # @param window_id [String, Integer] window ID (CGWindowID)
+    # @param steps [Array<Array<String>>] token arrays, e.g. `[["center"], ["dim", "--duration", "3"]]`
+    # @return [StepFailure, nil] the first failure, nil when every step ran
+    def run_focus_steps(window_id, steps)
+      steps.each do |tokens|
+        args = [tokens.first, "id=#{window_id}", *tokens.drop(1)]
+        @logger.debug { "window_manager: step #{args.join(" ")}" }
+        failure = DETACHED_STEPS.include?(tokens.first) ? run_detached(tokens.first, args) : run_foreground(tokens.first, args)
+        return failure if failure
+      end
+      nil
+    end
+
+    # Highlights a window and waits for the highlight to end.
+    #
+    # @param window_id [String, Integer] window ID (CGWindowID)
+    # @param color [String] highlight color
+    # @return [Boolean] whether window-tool succeeded
+    def highlight_by_id(window_id, color)
+      _, _, status = window_tool("highlight", "id=#{window_id}", "--color", color)
       status.success?
     end
 
@@ -236,7 +273,43 @@ module Workspace
       width * height
     end
 
-    FailedStatus = Struct.new(:success?)
+    FailedStatus = Struct.new(:success?, :exitstatus)
+
+    def run_foreground(step, args)
+      _, err, status = window_tool(*args)
+      return nil if status.success?
+      StepFailure.new(step, status.exitstatus, err.to_s.scrub)
+    end
+
+    def run_detached(step, args)
+      errfile = Tempfile.new("window-tool-err")
+      pid = Process.spawn(@config.window_tool, *args, pgroup: true, in: File::NULL,
+        out: File::NULL, err: errfile.path, chdir: "/")
+      status = wait_briefly(pid)
+      if status.nil?
+        Process.detach(pid)
+        return nil
+      end
+      return nil if status.success?
+      StepFailure.new(step, status.exitstatus, File.read(errfile.path, 4096).to_s.dup.force_encoding("UTF-8").scrub)
+    rescue SystemCallError => e
+      @logger.debug { "window_manager: could not run window-tool: #{e.message}" }
+      StepFailure.new(step, nil, e.message)
+    ensure
+      errfile&.close!
+    end
+
+    def wait_briefly(pid)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + DETACHED_WAIT
+      loop do
+        reaped = Process.wait2(pid, Process::WNOHANG)
+        return reaped[1] if reaped
+        return nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        sleep 0.01
+      end
+    rescue Errno::ECHILD
+      nil
+    end
 
     # Runs window-tool. A missing window-tool (e.g. on a headless machine)
     # reads as a failed run instead of raising, so callers report it the way
