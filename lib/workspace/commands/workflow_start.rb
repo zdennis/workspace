@@ -35,6 +35,7 @@ module Workspace
       Plan = Struct.new(:definition, :ref, :branch, :project, :path, :would_create, :inputs, :ticket, :spec_path, :checked, :warnings, :prompt, :checkout, keyword_init: true)
 
       # @param catalog [Workspace::WorkflowCatalog]
+      # @param workflow_defaults [Workspace::WorkflowDefaults] the id to use when none is named
       # @param engine [Workspace::WorkflowEngine] checks the run would pass, through #preflight
       # @param start_ref [Workspace::StartRef]
       # @param ticket_source [Workspace::TicketSource]
@@ -48,8 +49,9 @@ module Workspace
       # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
       # @param ssh_hosts [Workspace::SshHostResolver] names the real host behind an ssh remote's host alias
       # @param output [IO]
-      def initialize(catalog:, engine:, start_ref:, ticket_source:, git:, project_config:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, ssh_hosts:, output: $stdout)
+      def initialize(catalog:, workflow_defaults:, engine:, start_ref:, ticket_source:, git:, project_config:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, ssh_hosts:, output: $stdout)
         @catalog = catalog
+        @workflow_defaults = workflow_defaults
         @engine = engine
         @start_ref = start_ref
         @ticket_source = ticket_source
@@ -65,8 +67,10 @@ module Workspace
         @output = output
       end
 
-      # @param id [String] the workflow
-      # @param ref [String, nil] a JIRA key or URL, pull request, issue or branch
+      # @param id [String, nil] the workflow; nil takes it from config (`workflows.by_ref.<kind>`, then `workflows.default`)
+      # @param ref [String, nil] a JIRA key or URL, pull request, issue or branch; with a nil +id+ it is never read as an id
+      # @param positional [String, nil] the lone argument whose meaning is not settled: a known workflow id is the id,
+      #   else it is the ref (a branch-shaped one with a prompt stays an unknown id)
       # @param prompt [String, nil] free text: the task, and the branch's name when there is no ref
       # @param branch [String, nil] the branch to use with a prompt and no ref
       # @param slug [Boolean] add the ticket title's words to a JIRA or issue branch, as `start --slug`
@@ -80,13 +84,29 @@ module Workspace
       # @return [Hash{String=>Object}] the action row: outcome "dry_run" with "workflow", "step", "project",
       #   "branch", "path", "would_create", "inputs", "packs", "warnings" and, "ticket" (nil when none was read)
       # @raise [Workspace::UsageError] no ref and no prompt, both a ref and a branch, an empty slug, or an invalid branch name
-      # @raise [Workspace::Error] code `unknown_workflow`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
+      # @raise [Workspace::Error] code `unknown_workflow`, `no_default_workflow`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
       #   request), `fork_pull_request`, `branch_exists`, or {Workspace::WorkflowEngine#preflight}'s (`input_required`,
       #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout)
-      def call(id:, ref: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
+      def call(id: nil, ref: nil, positional: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
         agent_kind: nil, prompt_timeout: nil, dry_run: false)
-        definition = @catalog.find(id)
-        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind)
+        prompt = prompt.to_s.strip
+        prompt = nil if prompt.empty?
+        id, ref = split(id, ref, positional, prompt)
+        warnings = []
+        # A named id's unknown_workflow outranks the usage errors; a default is read only after they pass.
+        if id
+          definition = @catalog.find(id)
+          check_usage!(ref, prompt, branch)
+          where = locate_project
+        else
+          check_usage!(ref, prompt, branch)
+          where = locate_project
+          id = default_id(ref, where[:project_workspace])
+          definition = @catalog.find(id)
+          warnings = read_as_branch(ref, id) if positional
+          warnings.each { |warning| @output.puts "Warning: #{warning}" }
+        end
+        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, **where)
         return dry_run_row(id, plan) if dry_run
 
         start_workspace(plan, note: note, base: base, headless: headless, agent_kind: agent_kind, prompt_timeout: prompt_timeout, slug: slug)
@@ -94,17 +114,54 @@ module Workspace
 
       private
 
-      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:)
-        prompt = prompt.to_s.strip
-        prompt = nil if prompt.empty?
-        raise Workspace::UsageError, "workflow start needs a REF or --prompt." unless ref || prompt
-        raise Workspace::UsageError, "--branch names the branch for a --prompt; with a REF the branch comes from the ref." if ref && branch
+      # A lone positional that is a known workflow is the id. Otherwise it is the ref, except that
+      # a branch-shaped one beside a prompt stays an id (a mistyped one, `unknown_workflow`).
+      def split(id, ref, positional, prompt)
+        return [id, ref] unless positional
+        return [positional, nil] if @catalog.known?(positional)
+        return [nil, positional] if prompt.nil? || @start_ref.call(positional).kind != "branch"
 
+        [positional, nil]
+      end
+
+      def check_usage!(ref, prompt, branch)
+        raise Workspace::UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." unless ref || prompt
+        raise Workspace::UsageError, "--branch names the branch for a --prompt; with a REF the branch comes from the ref." if ref && branch
+      end
+
+      def locate_project
         root = @git.root or raise Workspace::Error, "workflow start must run inside a git repository."
         project = @start_ref.project(root)
         project_workspace = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
+        {root: root, project: project, project_workspace: project_workspace}
+      end
+
+      # The workflow config names for this kind of ref, read for the project's workspace (the
+      # worktree isn't known yet).
+      def default_id(ref, project_workspace)
+        kind = ref ? @start_ref.call(ref).kind : "prompt"
+        @workflow_defaults.id_for(kind, workspace: project_workspace) || raise_no_default(kind, ref)
+      end
+
+      # A word that names no workflow reads as a branch, so a mistyped id would otherwise start the
+      # configured workflow on a new branch with nothing said.
+      def read_as_branch(ref, id)
+        return [] unless @start_ref.call(ref).kind == "branch"
+
+        ["#{ref.inspect} is not a known workflow, so it was read as a branch and #{id} comes from config. Known: #{@catalog.known_ids.join(", ")}."]
+      end
+
+      def raise_no_default(kind, ref)
+        known = @catalog.known_ids
+        read_as = ref ? "#{ref.inspect} is not a known workflow, so it was read as a #{kind} ref. " : ""
+        raise Workspace::Error.new("#{read_as}No default workflow is set for a #{kind} start. Name one (workspace workflow start ID ...), " \
+          "or set one with `workspace config set workflows.default ID` (add `--scope project` for this project only; " \
+          "`workflows.by_ref.#{kind}` sets it for #{kind} starts alone). Known: #{known.join(", ")}.",
+          code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known})
+      end
+
+      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, root:, project:, project_workspace:)
         require_claude!(agent_kind || @agent_commands.kind(project_workspace))
-        warnings = []
         resolved = ref && @start_ref.call(ref)
         ticket = read_ticket(resolved, root, definition, inputs: inputs, prompt: prompt, slug: slug, warnings: warnings)
         allowed = tracked_repositories(root)

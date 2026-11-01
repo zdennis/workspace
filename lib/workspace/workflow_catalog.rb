@@ -38,6 +38,22 @@ module Workspace
       nil
     end
 
+    # Whether a file has this id, valid or not, so `find` reaches it (and its
+    # `invalid_workflow`). A ticket key, `#12` or a URL is never an id.
+    #
+    # @param id [String]
+    # @return [Boolean]
+    def known?(id)
+      !locate(id.to_s).nil?
+    end
+
+    # Every id a file answers to, sorted; leaves out a `.yml` entry no id finds.
+    #
+    # @return [Array<String>]
+    def known_ids
+      ids.select { |each| locate(each) }
+    end
+
     # Where a user's file of this id is (or would be) written.
     #
     # @param id [String]
@@ -118,7 +134,7 @@ module Workspace
     end
 
     def raise_unknown(id)
-      known = ids.select { |each| locate(each) }
+      known = known_ids
       raise Workspace::Error.new("No workflow named #{id.to_s[0, 60].inspect}. Known: #{known.join(", ")}.",
         code: "unknown_workflow", details: {"workflow" => id.to_s[0, 60], "known" => known})
     end

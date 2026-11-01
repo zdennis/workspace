@@ -296,6 +296,7 @@ require_relative "workspace/hooks_config"
 require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
 require_relative "workspace/focus_config"
+require_relative "workspace/workflow_defaults"
 require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_catalog"
 require_relative "workspace/workflow_files"
@@ -647,8 +648,9 @@ module Workspace
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog, groups: project_groups,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, hooks_config: hooks_config, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, agent_commands: agent_commands, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, excluder: bookkeeping_exclude, output: output, input: input)
+    workflow_defaults = WorkflowDefaults.new(config_resolver: config_resolver)
     workflow_start_command = Commands::WorkflowStart.new(
-      catalog: workflow_catalog, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
+      catalog: workflow_catalog, workflow_defaults: workflow_defaults, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
       project_config: project_config, start: start_command, workflow: workflow_command, readiness: agent_readiness, tmux: tmux, agent_commands: agent_commands,
       excludes: GitExclude.new(git: git), ssh_hosts: SshHostResolver.new, output: output
     )
@@ -686,7 +688,7 @@ module Workspace
       state: state, tmux: tmux, git: git, lock_namespace: lock_namespace, lock_holder: lock_holder,
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, agent_command_check: AgentCommandCheck.new, project_detector: project_detector, config_resolver: config_resolver, output: output, error_output: error_output)
-    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library)
+    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library, catalog: workflow_catalog)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
     agent_resume_command = AgentResumeCommand.new(tmuxinator_report: tmuxinator_report, agent_commands: agent_commands)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,

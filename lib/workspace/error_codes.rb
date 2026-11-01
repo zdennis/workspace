@@ -209,6 +209,7 @@ module Workspace
       "path_tracked" => "library install or uninstall would touch a path the repo tracks; it is never overwritten or deleted.",
       "path_linked" => "library install or uninstall would act through a symlinked install directory (or one above it), where git can't tell what it tracks.",
       "unknown_workflow" => "No workflow definition has that id.",
+      "no_default_workflow" => "`workflow start` was given no workflow id and none is configured for that kind of ref. `details.kind`, `details.ref`, `details.known`.",
       "inbox_store_unreadable" => "An inbox scope's file (or `acks`, the derived rows' acks) can't be read, so nothing was written to it. `details.scope`.",
       "inbox_full" => "An inbox scope already holds 500 open or snoozed items, so nothing was added. `details.scope`, `details.limit`.",
       "unknown_inbox_item" => "No inbox item has that id. `details.id`.",

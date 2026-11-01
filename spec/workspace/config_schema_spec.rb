@@ -5,7 +5,7 @@ RSpec.describe Workspace::ConfigSchema do
 
   it "lists the settable keys in the order `config set` has always reported them" do
     expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include events.rotate_size codex.hooks.install])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt events.rotate_size codex.hooks.install])
   end
 
   it "names the keys a running daemon only reads at startup" do
@@ -261,6 +261,16 @@ RSpec.describe Workspace::ConfigSchema do
       expect { described_class.parse("context.pattern", "[(]x(a)(b)") }.to raise_error(ArgumentError, /exactly one/)
     end
 
+    it "reads the default-workflow keys as a workflow id, and refuses anything else" do
+      expect(described_class::WORKFLOW_REF_KINDS).to eq(%w[jira github_pr github_issue branch prompt]).and be_frozen
+      expect(described_class.parse("workflows.default", "rpiv")).to eq("rpiv")
+      expect(described_class.parse("workflows.by_ref.jira", "rpiv-auto-approve")).to eq("rpiv-auto-approve")
+      ["Bad Id", "", "-x", "a" * 41].each do |bad|
+        expect { described_class.parse("workflows.default", bad) }.to raise_error(ArgumentError, /must be a workflow id/)
+      end
+      expect(described_class.default("workflows.default")).to be_nil
+    end
+
     it "reads workflows.defaults.include as pack names separated by commas or spaces, or as a list" do
       expect(described_class.parse("workflows.defaults.include", "binding, commits")).to eq(%w[binding commits])
       expect(described_class.parse("workflows.defaults.include", "binding play/house-rules")).to eq(%w[binding play/house-rules])
@@ -313,6 +323,8 @@ RSpec.describe Workspace::ConfigSchema, "layers and limits" do
     expect(project_only.map { |n| described_class.key(n).overridable_in }).to all(eq(%i[project]))
     expect(global_only.map { |n| described_class.key(n).overridable_in }).to all(eq(%i[global]))
     expect(described_class.key("workflows.defaults.include").overridable_in).to eq(%i[global project worktree])
+    default_workflow_keys = %w[workflows.default] + described_class::WORKFLOW_REF_KINDS.map { |kind| "workflows.by_ref.#{kind}" }
+    expect(default_workflow_keys.map { |n| described_class.key(n).overridable_in }).to all(eq(%i[global project worktree]))
   end
 
   it "declares choices for closed sets, seconds for durations, and limits where the parser has them" do

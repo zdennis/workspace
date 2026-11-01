@@ -331,6 +331,18 @@ module Workspace
     end
     private_constant :SPINE_TEMPLATE
 
+    # The kinds of start reference that `workflows.by_ref.<kind>` can pick a workflow for.
+    WORKFLOW_REF_KINDS = %w[jira github_pr github_issue branch prompt].freeze
+
+    WORKFLOW_ID = lambda do |value|
+      return value if value.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(value)
+      raise ArgumentError, "must be a workflow id: #{WorkflowDefinition::ID_RULE}"
+    end
+    private_constant :WORKFLOW_ID
+
+    WORKFLOW_REF_LABELS = {"jira" => "a Jira ticket", "github_pr" => "a GitHub pull request", "github_issue" => "a GitHub issue", "branch" => "a branch name", "prompt" => "`--prompt` text"}.freeze
+    private_constant :WORKFLOW_REF_LABELS
+
     # The instruction packs every composed set of instructions starts with, unless `workflows.defaults.include` names others.
     DEFAULT_PACKS = %w[binding orchestrator commits].freeze
 
@@ -513,6 +525,12 @@ module Workspace
       Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["binding, commits"], default: DEFAULT_PACKS, parser: PACK_LIST,
         doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \
           "as names separated by commas (default `binding, orchestrator, commits`)"),
+      Key.new(name: "workflows.default", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["rpiv"], parser: WORKFLOW_ID,
+        doc: "Id of the workflow `workflow start` runs when it is given no id and no `workflows.by_ref.*` key matches the reference (no default)"),
+      *WORKFLOW_REF_KINDS.map do |kind|
+        Key.new(name: "workflows.by_ref.#{kind}", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["rpiv"], parser: WORKFLOW_ID,
+          doc: "Id of the workflow `workflow start` runs when it is given no id and the reference is #{WORKFLOW_REF_LABELS.fetch(kind)}; it wins over `workflows.default` (no default)")
+      end,
       Key.new(name: "events.rotate_size", scope: :global, type: :size, unit: "bytes", settable: true, examples: ["512KB", "5MB"], default: 5 * 1024 * 1024, restart: true, min: MIN_EVENTS_ROTATE_SIZE, parser: EVENTS_ROTATE_SIZE,
         doc: "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)"),
       Key.new(name: "codex.hooks.install", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,

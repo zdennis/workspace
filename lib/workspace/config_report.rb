@@ -31,8 +31,10 @@ module Workspace
     # @param project_config [Workspace::ProjectConfig] lists the workspaces a change reaches and finds a checkout's root
     # @param notes_dir [Workspace::NotesDir] computes the `effective_path` of the notes keys
     # @param library [Workspace::Library, nil] finds the spine templates `spine.template` names; nil checks none
-    def initialize(project_settings:, project_config:, notes_dir:, library: nil)
+    # @param catalog [Workspace::WorkflowCatalog, nil] finds the workflows `workflows.default` and `workflows.by_ref.*` name; nil checks none
+    def initialize(project_settings:, project_config:, notes_dir:, library: nil, catalog: nil)
       @library = library
+      @catalog = catalog
       @project_settings = project_settings
       @project_config = project_config
       @notes_dir = notes_dir
@@ -342,7 +344,7 @@ module Workspace
       scope = (file.layer == "global") ? :global : :project
       declared = declared_keys(file.layer, scope)
       read_here = declared.reject { |key| unread_here?(key, file) }
-      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
+      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + default_workflow_problems(file, read_here) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
     end
 
     # The keys a file of this layer holds: those of its scope, plus any layered key that may be set in the layer.
@@ -415,6 +417,20 @@ module Workspace
       raise unless e.code == "unknown_template"
       [located(file, "warning", "unknown_spine_template", "spine.template",
         "spine.template names '#{name}', and no spine template has that name. List them with: workspace library list --kind spine")]
+    end
+
+    # A `workflows.default` or `workflows.by_ref.<kind>` that names no workflow: `workflow start` would answer
+    # `unknown_workflow`. A value that fails the id rule is left to `value_problems`.
+    def default_workflow_problems(file, declared)
+      return [] unless @catalog
+      declared.filter_map do |key|
+        next unless key.name == "workflows.default" || key.name.start_with?("workflows.by_ref.")
+        id = dig(file.data, key.name.split("."))
+        next unless id.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(id)
+        next if @catalog.known?(id)
+        located(file, "warning", "unknown_default_workflow", key.name,
+          "#{key.name} names '#{id}', and no workflow has that id. List them with: workspace workflow show")
+      end
     end
 
     def worktrees?(scan)
