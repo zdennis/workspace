@@ -306,7 +306,7 @@ module Workspace
           "Checks a definition (a file, or - for stdin) the way a definition on disk is checked, listing every",
           "problem at once; writes nothing. The id is --id, else its id: key, else the file's name (stdin:",
           "\"stdin\"); a relative prompt_file: is read from the file's directory (stdin: the current directory).",
-          "A valid definition can still get warnings (exit 0): a step with no produces, status or gate passes on any",
+          "A valid definition can still get warnings (exit 0): a step with no produces, status, require or gate passes on any",
           "turn end, so it is named with what to add. --json lists them in warnings (code, step, message)."
         ],
         options: [["--id ID", "Check the text as this workflow id"], JSON_OPT],

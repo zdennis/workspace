@@ -22,7 +22,7 @@ module Workspace
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
     TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts steps].freeze
-    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard uses on_fail context timeout].freeze
+    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout].freeze
     INPUT_PATTERN_LIMIT = 300
     INPUT_KEYS = %w[description required pattern].freeze
     ON_FAIL_KEYS = %w[goto max context].freeze
@@ -105,7 +105,7 @@ module Workspace
     #   "title", "description", "inputs" (name to "description" and "required"), "include",
     #   "instructions", "max_attempts" and "steps", an ordered list where each step has "id",
     #   "title", "prompt", "include", "produces", "status" (nil, or "command" or "run" with
-    #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "uses", "on_fail" (nil, or "goto", "max", "context"),
+    #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "require" (a list of one-key proofs such as `{"commits" => 1}`), "uses", "on_fail" (nil, or "goto", "max", "context"),
     #   "context" and "timeout" (seconds or nil)
     def to_h
       @data
@@ -123,7 +123,7 @@ module Workspace
     def warnings
       steps.reject { |step| proof?(step) }.map do |step|
         {"code" => "step_without_proof", "step" => step["id"],
-         "message" => "step #{step["id"]} has no produces, status or gate, so it passes on any turn end, even one that did nothing. Add produces: (a file it must write), status: (a command that must pass) or gate: approve (a person approves it)."}
+         "message" => "step #{step["id"]} has no produces, status, require or gate, so it passes on any turn end, even one that did nothing. Add produces: (a file it must write), require: (proofs about the repository), status: (a command that must pass) or gate: approve (a person approves it)."}
       end
     end
 
@@ -131,10 +131,10 @@ module Workspace
 
     # What makes a step's pass mean something: a file it must write, a command that must
     # pass, or a person's gate.
-    PROOF_KEYS = %w[status gate].freeze
+    PROOF_KEYS = %w[status gate require].freeze
 
     def proof?(step)
-      step["produces"].to_a.any? || PROOF_KEYS.any? { |key| step[key] }
+      step["produces"].to_a.any? || PROOF_KEYS.any? { |key| Array(step[key]).any? }
     end
 
     # Definitions are UTF-8, whatever the locale of the process reading them.
@@ -267,6 +267,7 @@ module Workspace
         "status" => status_from(raw["status"], where),
         "gate" => gate_from(raw["gate"], where),
         "guard" => guard_from(raw["guard"], where),
+        "require" => require_from(raw["require"], where),
         "uses" => uses_from(raw["uses"], where),
         "on_fail" => on_fail_from(raw["on_fail"], earlier, where),
         "context" => context_from(raw.fetch("context", "fresh"), "#{where}: context"),
@@ -339,6 +340,49 @@ module Workspace
       return nil if value.nil?
       return value if GUARDS.include?(value)
       problem "#{where}: guard must be #{GUARDS.join(" or ")}, got #{value.inspect}"
+    end
+
+    # A list of single-key mappings, each one proof of WorkflowRequire::PROOFS, kept as written.
+    def require_from(value, where)
+      return [] if value.nil?
+      return problem("#{where}: require must be a list of proofs such as - commits: 1, got #{value.inspect[0, 60]}") || [] unless value.is_a?(Array)
+      seen = []
+      value.filter_map do |entry|
+        unless entry.is_a?(Hash) && entry.size == 1
+          problem "#{where}: each require entry must be one proof such as commits: 1, got #{entry.inspect[0, 60]}"
+          next
+        end
+        name, wanted = entry.first
+        unless WorkflowRequire::PROOFS.include?(name)
+          problem "#{where}: require #{name.inspect} is not a proof (known: #{WorkflowRequire::PROOFS.join(", ")})"
+          next
+        end
+        problem "#{where}: require #{name} is listed twice" if seen.include?(name)
+        seen << name
+        entry if require_value_ok?(name, wanted, where)
+      end
+    end
+
+    def require_value_ok?(name, wanted, where)
+      ok = case name
+      when "commits" then wanted.is_a?(Integer) && wanted.between?(1, 1000)
+      when "nonempty" then plain_relative_path?(wanted)
+      when "plan_status" then PlanFile::STATUSES.include?(wanted)
+      else wanted == true
+      end
+      return true if ok
+      expected = {"commits" => "a whole number from 1 to 1000", "nonempty" => "a path under the run's artifacts directory",
+                  "plan_status" => PlanFile::STATUSES.join(", "), "tracked_clean" => "true"}.fetch(name)
+      problem "#{where}: require #{name} must be #{expected}, got #{wanted.inspect[0, 60]}"
+      false
+    end
+
+    # A normal relative path: no control character (NUL included), no empty, `.` or `..` part (so no `a//b`,
+    # `./x`, a leading or trailing `/`), no part with a leading or trailing space, and not starting with `~`.
+    def plain_relative_path?(path)
+      return false unless path.is_a?(String) && path.valid_encoding? && !path.empty?
+      return false if path.match?(/[[:cntrl:]]/) || path.start_with?("~")
+      path.split("/", -1).none? { |part| part.empty? || part == "." || part == ".." || part != part.strip }
     end
 
     def uses_from(value, where)

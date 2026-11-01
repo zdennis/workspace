@@ -37,7 +37,7 @@ module Workspace
 
     # Restart errors that mean there is no pane to type into.
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
-    ENGINE_CODES = (WorkflowGuard::CODES + %w[check_failed check_timed_out check_error reported]).freeze
+    ENGINE_CODES = (WorkflowGuard::CODES + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_unknown check_failed check_timed_out check_error reported]).freeze
 
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
 
@@ -113,9 +113,11 @@ module Workspace
     # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
     # @param attempt_record [Workspace::WorkflowAttemptRecord, nil] records what each attempt started from and ended with
     #   (default: one reading HEAD through `guard`)
+    # @param require_check [Workspace::WorkflowRequire, nil] checks a step's `require:` proofs
+    #   (default: one over `guard` and `gate_note`)
     # @param clock [#call] returns the current Time
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-      env_stopper: nil, event_log: nil, task_store: nil, attempt_record: nil, clock: -> { Time.now })
+      env_stopper: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, clock: -> { Time.now })
       @store = store
       @resources = resources
       @composer = composer
@@ -131,6 +133,7 @@ module Workspace
       @event_log = event_log
       @task_store = task_store
       @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard)
+      @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) })
       @clock = clock
       @delivery = nil
     end
@@ -1148,6 +1151,13 @@ module Workspace
         end
         return nil
       end
+      if step["require"].to_a.any?
+        unmet = @require_check.check(run: run, step: step, attempt: attempt)
+        if unmet
+          fail_step(run, require_failure(unmet))
+          return nil
+        end
+      end
       unless step["status"]
         pass_step(run)
         return nil
@@ -1338,6 +1348,13 @@ module Workspace
         "Its files are in #{run["artifacts_dir"]}. Fix what it found."
     end
 
+    def require_failure(unmet)
+      {"cause" => "require", "require" => unmet["proof"], "detail" => unmet["detail"], "unproven" => unmet["unproven"],
+       "required" => unmet["required"], "found" => unmet["found"], "base" => unmet["base"], "paths" => unmet["paths"],
+       "reason" => unmet["reason"], "error" => unmet["error"]}
+        .compact.merge(code_for(unmet["code"], nil))
+    end
+
     def guard_check(run, step)
       found = @guard.check(run["worktree"], run, step["guard"])
       return nil unless found
@@ -1367,6 +1384,8 @@ module Workspace
         when "tracked_changed" then "tracked files changed since the run started (#{Array(failure["paths"]).join(", ")})"
         else GUARD_TEXT.fetch(failure["guard"], "the guard failed (#{failure["guard"]})")
         end
+      elsif failure["cause"] == "require"
+        "a required proof failed (#{failure["require"]}): #{failure["detail"]}"
       elsif failure["cause"] == "reported"
         "its agent reported failure#{": #{failure["summary"]}" if failure["summary"]}"
       elsif failure["timed_out"]

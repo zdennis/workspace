@@ -799,6 +799,8 @@ module Workspace
         when "failed_check"
           if details["cause"] == "reported"
             "step #{details["step"]} was reported failed#{": #{details["summary"]}" if details["summary"]}"
+          elsif details["cause"] == "require"
+            "step #{details["step"]} failed #{details["code"]}: #{TerminalText.escape(details["detail"].to_s)}"
           else
             "step #{details["step"]}'s check #{details["timed_out"] ? "ran past its time limit" : "exited #{details["exit_code"].inspect}"}; log: #{details["log"]}"
           end

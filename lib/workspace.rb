@@ -305,6 +305,7 @@ require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_guard"
+require_relative "workspace/workflow_require"
 require_relative "workspace/workflow_produced"
 require_relative "workspace/workflow_attempt_record"
 require_relative "workspace/workflow_panes"
@@ -596,6 +597,7 @@ module Workspace
       git: git,
       guard: workflow_guard,
       attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard),
+      require_check: WorkflowRequire.new(guard: workflow_guard, notes_dir_of: workflow_gate_note.method(:notes_dir_of)),
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },

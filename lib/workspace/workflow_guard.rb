@@ -99,7 +99,7 @@ module Workspace
         return failure("#{part}_changed") if now.nil? || now != base.dig("base_guard", "#{part}_sha256")
       end
       return nil unless scope == "unchanged"
-      paths = tracked_changes(worktree)
+      paths = dirty_paths(worktree)
       return failure("tracked_changed", "paths" => paths || []) if paths.nil? || paths.any?
       nil
     end
@@ -112,6 +112,99 @@ module Workspace
     def head(worktree)
       out, ok = run_git(worktree, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", timeout: HEAD_TIMEOUT)
       ok ? out.strip : nil
+    end
+
+    # Counts the commits made on HEAD's first-parent line since `base`, merges left out, under {HEAD_TIMEOUT}
+    # (`rev-list --count --first-parent --no-merges`), leaving out any commit reachable from another local or
+    # remote-tracking branch (this branch aside, and its upstream when that is a remote-tracking branch that is not the
+    # remote's default branch under another name), so a merge, fast-forward or rebase onto
+    # another branch brings nothing in. When `base` is
+    # not an ancestor of HEAD (history was rewritten) nothing is counted. An empty commit still counts. Never raises.
+    #
+    # @param worktree [String] a checkout
+    # @param base [String, nil] a full commit id (hex only, so it can't be read as an option)
+    # @return [Integer, Symbol, nil] the count; `:history_rewritten` when `base` is not an ancestor of HEAD; nil when
+    #   `base` is not a commit id git knows here, or git can't answer in time
+    def commits_since(worktree, base)
+      return nil unless base.is_a?(String) && base.match?(/\A\h{40}(\h{24})?\z/)
+      _, ancestor, code = run_git(worktree, "merge-base", "--is-ancestor", base, "HEAD", timeout: HEAD_TIMEOUT)
+      return :history_rewritten if !ancestor && code == 1
+      return nil unless ancestor
+      excludes = own_ref_excludes(worktree)
+      return nil unless excludes
+      out, ok = run_git(worktree, "rev-list", "--count", "--first-parent", "--no-merges", "#{base}..HEAD", "--not",
+        *excludes[:branches], "--branches", *excludes[:remotes], "--remotes", timeout: HEAD_TIMEOUT)
+      (ok && out.strip.match?(/\A\d+\z/)) ? out.strip.to_i : nil
+    end
+
+    # The `--exclude` options that keep this branch, and its upstream when that holds this branch's work, in the
+    # count (`rev-list` matches them without the `refs/heads/` or `refs/remotes/` prefix). A detached HEAD excludes nothing.
+    #
+    # @return [Hash{Symbol=>Array<String>}, nil] nil when git can't answer
+    def own_ref_excludes(worktree)
+      ref, ok, code = run_git(worktree, "symbolic-ref", "-q", "HEAD", timeout: HEAD_TIMEOUT)
+      return {branches: [], remotes: []} if !ok && code == 1
+      return nil unless ok
+      ref = ref.strip
+      return nil unless ref.start_with?("refs/heads/")
+      name = ref.delete_prefix("refs/heads/")
+      upstream = own_upstream_name(worktree, ref, name)
+      return nil unless upstream
+      {branches: ["--exclude=#{name}"], remotes: upstream.empty? ? [] : ["--exclude=#{upstream}"]}
+    end
+    private :own_ref_excludes
+
+    # The upstream of `ref` as a `rev-list --exclude` name, only when it is a remote-tracking branch that holds this
+    # branch's work. A local upstream, or the remote's default branch under another name, is a shared base and is not
+    # exempt; neither is an upstream whose remote can't be read (that undercounts, which is the safe direction).
+    #
+    # @return [String, nil] the name, "" for none; nil when git can't answer
+    def own_upstream_name(worktree, ref, name)
+      out, ok = run_git(worktree, "for-each-ref", "--format=%(upstream)%0a%(upstream:remotename)%0a%(upstream:remoteref)",
+        ref, timeout: HEAD_TIMEOUT)
+      return nil unless ok
+      upstream, remote, remote_ref = out.split("\n", 3).map(&:strip)
+      return "" unless upstream.to_s.start_with?("refs/remotes/")
+      return "" if remote.to_s.empty? || remote == "." || !remote_ref.to_s.start_with?("refs/heads/")
+      branch = remote_ref.delete_prefix("refs/heads/")
+      return "" if branch != name && default_branch?(worktree, remote, branch)
+      upstream.delete_prefix("refs/remotes/")
+    end
+    private :own_upstream_name
+
+    # @return [Boolean] whether `branch` is `remote`'s default branch: what `refs/remotes/<remote>/HEAD` names, or
+    #   `main` or `master` when that is not set; true when git can't say (not exempt)
+    def default_branch?(worktree, remote, branch)
+      out, ok, code = run_git(worktree, "symbolic-ref", "-q", "refs/remotes/#{remote}/HEAD", timeout: HEAD_TIMEOUT)
+      return out.strip == "refs/remotes/#{remote}/#{branch}" if ok
+      (code == 1) ? %w[main master].include?(branch) : true
+    end
+    private :default_branch?
+
+    # @param worktree [String] a checkout
+    # @return [Array<String>, nil] up to {MAX_PATHS} changed tracked paths (staged or not; untracked files,
+    #   submodules and `assume-unchanged`/`skip-worktree` files are not seen); nil when git can't answer
+    def dirty_paths(worktree)
+      out, ok = git(worktree, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all")
+      return nil unless ok
+      fields = out.split("\0")
+      paths = []
+      until fields.empty?
+        entry = fields.shift
+        paths << entry[3..].to_s
+        fields.shift if entry.start_with?("R", "C") || entry[1].to_s.match?(/[RC]/)
+      end
+      paths.first(MAX_PATHS)
+    end
+
+    # @param worktree [String] a checkout
+    # @return [Boolean] whether a rebase, merge, cherry-pick, revert or bisect is under way; true when git can't say
+    def operation_in_progress?(worktree)
+      names = Workspace::Git::OPERATION_FILES.keys + REBASE_DIRS
+      names.any? do |name|
+        path = git_path(worktree, name)
+        path.nil? || File.exist?(path)
+      end
     end
 
     private
@@ -221,28 +314,6 @@ module Workspace
       digest.hexdigest
     rescue
       nil
-    end
-
-    def operation_in_progress?(worktree)
-      names = Workspace::Git::OPERATION_FILES.keys + REBASE_DIRS
-      names.any? do |name|
-        path = git_path(worktree, name)
-        path.nil? || File.exist?(path)
-      end
-    end
-
-    # @return [Array<String>, nil] the changed tracked paths, nil when git can't answer
-    def tracked_changes(worktree)
-      out, ok = git(worktree, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all")
-      return nil unless ok
-      fields = out.split("\0")
-      paths = []
-      until fields.empty?
-        entry = fields.shift
-        paths << entry[3..].to_s
-        fields.shift if entry.start_with?("R", "C") || entry[1].to_s.match?(/[RC]/)
-      end
-      paths.first(MAX_PATHS)
     end
 
     # Git 2.41 can read attributes from HEAD only, so a `.gitattributes` or `info/attributes`

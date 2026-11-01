@@ -1001,6 +1001,113 @@ RSpec.describe Workspace::WorkflowEngine do
       end
     end
 
+    describe "a step with require:" do
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            prep:
+              prompt: Prepare.
+            build:
+              prompt: Build it.
+              produces: [build.md]
+              require:
+                - commits: 1
+                - tracked_clean: true
+              status: {run: "true"}
+              on_fail: {goto: prep, max: 1}
+        YAML
+      end
+      let(:commit_counts) { [1] }
+
+      before do
+        allow(guard).to receive(:commits_since) { commit_counts.first }
+        allow(guard).to receive(:dirty_paths).and_return([])
+        allow(guard).to receive(:operation_in_progress?).and_return(false)
+        start(flow, inputs: {})
+        engine.turn_ended("wr_1", pane: "%5")
+        artifact("build.md")
+      end
+
+      it "passes to the status check once every proof holds, counting from the attempt's recorded HEAD" do
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(guard).to have_received(:commits_since).with(worktree, "1" * 40)
+        expect(run["steps"]["build"]["state"]).to eq("passed")
+        expect(check_calls.size).to eq(1)
+      end
+
+      it "fails the step as require_commits from the engine, sends it along on_fail and skips the status check" do
+        commit_counts[0] = 0
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run).to include("current" => "prep", "loops" => {"build->prep" => 1})
+        expect(run["steps"]["build"]["attempts"].last).to include("outcome" => "failed")
+        expect(run["steps"]["prep"]["attempts"].last["context"].join).to include("a required proof failed (commits): required 1 commit since 1111111, found 0")
+        expect(check_calls).to eq([])
+      end
+
+      it "stops the run with the code, source and what was found when no loop is left" do
+        store.update("wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
+        commit_counts[0] = 0
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]["details"]).to include("code" => "require_commits", "code_source" => "engine", "cause" => "require", "require" => "commits",
+          "required" => 1, "found" => 0, "detail" => "required 1 commit since 1111111, found 0")
+      end
+
+      it "fails as unproven when the attempt has no recorded starting commit" do
+        store.update("wr_1") do |stored|
+          stored["definition"]["steps"][1]["on_fail"] = nil
+          stored["steps"]["build"]["attempts"].last.delete("head")
+        end
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]["details"]).to include("code" => "require_commits", "unproven" => true)
+        expect(guard).not_to have_received(:commits_since)
+      end
+
+      it "fails on a dirty tracked tree with the paths" do
+        store.update("wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
+        allow(guard).to receive(:dirty_paths).and_return(["a.rb"])
+
+        expect(engine.turn_ended("wr_1", pane: "%5")["reason"]["details"]).to include("code" => "require_tracked_clean", "paths" => ["a.rb"])
+      end
+
+      it "lets a reported failure win and checks no proof" do
+        engine.report("wr_1", status: "fail", summary: "gave up")
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(guard).not_to have_received(:commits_since)
+        expect(run["steps"]["build"]["attempts"].last["outcome"]).to eq("failed")
+      end
+
+      it "holds on a missing produces file before looking at any proof" do
+        FileUtils.rm(File.join(worktree, ".workflow", "wr_1", "build.md"))
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(guard).not_to have_received(:commits_since)
+      end
+
+      it "does not apply to a run stored before require existed" do
+        store.update("wr_1") { |stored| stored["definition"]["steps"][1].delete("require") }
+        commit_counts[0] = 0
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(guard).not_to have_received(:commits_since)
+        expect(check_calls.size).to eq(1)
+      end
+
+      it "reserves the require codes so step done --code can't forge them" do
+        expect(described_class::ENGINE_CODES).to include("require_commits", "require_nonempty", "require_plan_status", "require_tracked_clean")
+      end
+    end
+
     describe "a produces file that is not a non-empty regular file" do
       let(:plan) { File.join(worktree, ".workflow", "wr_1", "plan.md") }
 

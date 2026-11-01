@@ -19,8 +19,8 @@ RSpec.describe Workspace::WorkflowDefinition do
   describe "#warnings" do
     def warnings(yaml) = parse(yaml).warnings
 
-    it "names a step with no produces, status or gate" do
-      expect(warnings(minimal)).to match([include("code" => "step_without_proof", "step" => "build", "message" => /step build has no produces, status or gate.*Add produces/)])
+    it "names a step with no produces, status, require or gate" do
+      expect(warnings(minimal)).to match([include("code" => "step_without_proof", "step" => "build", "message" => /step build has no produces, status, require or gate.*Add produces/)])
     end
 
     it "is quiet for a step with produces, a status command or a gate" do
@@ -105,7 +105,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "id" => "demo", "title" => "demo", "description" => nil, "inputs" => {}, "include" => [], "instructions" => nil,
       "max_attempts" => 6,
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
-                   "gate" => nil, "guard" => nil, "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil}]
+                   "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil}]
     )
   end
 
@@ -223,7 +223,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, uses, on_fail, context, timeout)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",
@@ -319,6 +319,54 @@ RSpec.describe Workspace::WorkflowDefinition do
       text = described_class.render("Do {{inputs.task}} in {{ workspace }}; {{unknown}} stays.", "inputs.task" => "X-1", "workspace" => "app")
 
       expect(text).to eq("Do X-1 in app; {{unknown}} stays.")
+    end
+  end
+  describe "require" do
+    def step_require(text)
+      parse("steps:\n  build:\n    prompt: Build it.\n    require:\n#{text.lines.map { |l| "      #{l}" }.join}").steps.first["require"]
+    end
+
+    it "reads the four proofs as one-key entries, kept in order" do
+      list = step_require("- commits: 1\n- nonempty: implement.md\n- plan_status: done\n- tracked_clean: true\n")
+      expect(list).to eq([{"commits" => 1}, {"nonempty" => "implement.md"}, {"plan_status" => "done"}, {"tracked_clean" => true}])
+    end
+
+    it "defaults to an empty list" do
+      expect(parse(minimal).steps.first["require"]).to eq([])
+    end
+
+    it "counts as proof, so the step is not warned about" do
+      expect(parse("steps:\n  build:\n    prompt: B.\n    require: [{tracked_clean: true}]\n").warnings).to eq([])
+      expect(parse("steps:\n  build:\n    prompt: B.\n    require: []\n").warnings.size).to eq(1)
+    end
+
+    it "lists every bad entry at once" do
+      yaml = "steps:\n  build:\n    prompt: B.\n    require:\n      - commits: 0\n      - commits: 2\n      - nonempty: ../x\n      - nonempty: /abs\n" \
+             "      - plan_status: finished\n      - tracked_clean: false\n      - bogus: 1\n      - {commits: 1, nonempty: a}\n      - just\n"
+      expect(problems(yaml)).to include(
+        "step build: require commits must be a whole number from 1 to 1000, got 0",
+        "step build: require commits is listed twice",
+        "step build: require nonempty must be a path under the run's artifacts directory, got \"../x\"",
+        "step build: require nonempty must be a path under the run's artifacts directory, got \"/abs\"",
+        "step build: require plan_status must be active, paused, done, got \"finished\"",
+        "step build: require tracked_clean must be true, got false",
+        "step build: require \"bogus\" is not a proof (known: commits, nonempty, plan_status, tracked_clean)",
+        /each require entry must be one proof/
+      )
+    end
+
+    it "refuses a nonempty path with a control character or a non-normal form" do
+      ["a//b", "./x", "a/./x", "x/", " x", "x ", "a/ b", "a\u0000b", "a\nb", "~x", "a/..", " "].each do |path|
+        yaml = "steps:\n  build:\n    prompt: B.\n    require:\n      - nonempty: #{path.to_json}\n"
+        expect(problems(yaml)).to include(/require nonempty must be a path under the run's artifacts directory/), "expected #{path.inspect} refused"
+      end
+      ["x.md", "sub/x.md", "a b/c.md"].each do |path|
+        expect(problems("steps:\n  build:\n    prompt: B.\n    require:\n      - nonempty: #{path.to_json}\n")).to eq([])
+      end
+    end
+
+    it "refuses a require that is not a list" do
+      expect(problems("steps:\n  build:\n    prompt: B.\n    require: {commits: 1}\n")).to eq(["step build: require must be a list of proofs such as - commits: 1, got {\"commits\" => 1}"])
     end
   end
 end
