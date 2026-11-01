@@ -60,9 +60,15 @@ steps:
       Implement the workspace plan (`workspace plan path`) one task at a time, marking
       each task as the instructions say. Run the relevant tests before each commit. If the
       plan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.
-      Write {{artifacts}}/implement.md listing the commits you made before you set the
-      plan's `status: done`; the run is waiting on that file.
+      Write {{artifacts}}/implement.md listing the commits you made, then set the plan's
+      `status: done`; the run is waiting on that file and on that status. Make at least one commit.
+      On a rerun (after a failed verify, or a resume), make a new commit for the fix and never
+      amend or rebase, which the run's commit check can't follow. If no code change is needed,
+      run `git commit --allow-empty -m '<why>'`.
     produces: [implement.md]
+    require:
+      - commits: 1
+      - plan_status: done
     timeout: 3h
 
   verify:
@@ -70,7 +76,7 @@ steps:
     include: [review]
     prompt: |
       Verify the work against the workspace plan (`workspace plan path`). Run the full test suite and the
-      linter, then review the branch's diff against its base.
+      linter (the project's lint command, when it has one, must pass: the run checks it), then review the branch's diff against its base.
       Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
       If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
       and end your turn.
@@ -78,6 +84,9 @@ steps:
     uses: [test-db]
     status:
       command: test
+    require:
+      - command: lint
+        optional: true
     timeout: 90m
     on_fail:
       goto: implement

@@ -342,24 +342,36 @@ module Workspace
       problem "#{where}: guard must be #{GUARDS.join(" or ")}, got #{value.inspect}"
     end
 
-    # A list of single-key mappings, each one proof of WorkflowRequire::PROOFS, kept as written.
+    # A list of single-key mappings, each one proof of WorkflowRequire::PROOFS, kept as written, except that `command:` (which may carry `optional:`) is stored first, so every reader can take an entry's first pair as the proof.
     def require_from(value, where, inputs)
       return [] if value.nil?
       return problem("#{where}: require must be a list of proofs such as - commits: 1, got #{value.inspect[0, 60]}") || [] unless value.is_a?(Array)
       seen = []
       value.filter_map do |entry|
-        unless entry.is_a?(Hash) && entry.size == 1
-          problem "#{where}: each require entry must be one proof such as commits: 1, got #{entry.inspect[0, 60]}"
+        one_proof = entry.is_a?(Hash) && (entry.size == 1 || entry.keys.sort == %w[command optional])
+        unless one_proof
+          problem "#{where}: each require entry must be one proof such as commits: 1 (only command: may take optional: true beside it), got #{entry.inspect[0, 60]}"
           next
         end
-        name, wanted = entry.first
+        optional = entry.key?("optional")
+        if optional && ![true, false].include?(entry["optional"])
+          problem "#{where}: require command optional must be true or false, got #{entry["optional"].inspect[0, 60]}"
+          next
+        end
+        if entry.keys == ["optional"]
+          problem "#{where}: optional: goes only beside command:, got #{entry.inspect[0, 60]}"
+          next
+        end
+        name = optional ? "command" : entry.first.first
+        wanted = entry[name]
         unless WorkflowRequire::PROOFS.include?(name)
           problem "#{where}: require #{name.inspect} is not a proof (known: #{WorkflowRequire::PROOFS.join(", ")})"
           next
         end
         problem "#{where}: require #{name} is listed twice" if seen.include?(name)
         seen << name
-        entry if require_value_ok?(name, wanted, where, inputs)
+        next unless require_value_ok?(name, wanted, where, inputs)
+        optional ? {"command" => wanted, "optional" => entry["optional"]} : entry
       end
     end
 

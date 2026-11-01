@@ -275,6 +275,13 @@ RSpec.describe Workspace::WorkflowRequire do
       expect(checker).not_to have_received(:call)
     end
 
+    it "reads an optional command written before its command: key, as the definition stores it" do
+      yaml = "steps:\n  build:\n    prompt: B.\n    require:\n      - optional: true\n        command: lint\n"
+      step = Workspace::WorkflowDefinition.parse(yaml, id: "demo", source: "global", path: "/defs/demo.yml").steps.first
+
+      expect(requirer.check(run: run, step: step, attempt: {"n" => 1})).to eq("skipped" => {"proof" => "command", "role" => "lint", "skipped" => "command_unset", "optional" => true, "index" => 0})
+    end
+
     it "is unproven on a timeout or a check that could not run" do
       allow(checker).to receive(:call).and_return({exit_code: nil, timed_out: true})
       expect(proven({"command" => "test"}, attempt: {"n" => 1})).to include("unproven" => true, "detail" => /ran past 300 seconds/)

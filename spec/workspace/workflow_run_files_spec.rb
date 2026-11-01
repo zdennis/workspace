@@ -42,6 +42,12 @@ RSpec.describe Workspace::WorkflowRunFiles do
     ])
   end
 
+  it "lists nothing for a skipped optional proof, which has no log" do
+    skipped = {"proof" => "command", "role" => "lint", "skipped" => "command_unset", "optional" => true, "index" => 0}
+
+    expect(files.list(run_for(attempts: [{"n" => 1, "proofs" => [skipped]}]))).to eq([])
+  end
+
   it "lists a proof log, and nothing for a proof with none" do
     log = write("steps/research.1.require-test.log", "ok\n")
 

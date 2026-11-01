@@ -35,7 +35,7 @@ steps:
       {{artifacts}}/triage.md saying in its first lines which one it is and that the run
       stopped, with no `note:` line. Then post a short inbox item as the report pack says:
       title `PR feedback stopped: number mismatch` or `PR feedback stopped: fork pull request`,
-      type `review_request`, `--link-run {{run}} --dedupe-key pr-feedback:{{run}} --expires 168h`
+      type `review_request`, `--link-run {{run}} --dedupe-key pr-feedback:{{run}} --reopen --expires 168h`
       (add `--link-pr <n>`), and end your turn. The person should reject the gate.
       Otherwise read the code at each thread's `path:line`. For each failing check with a
       `run_id` (a number), read the tail of `gh run view RUN --log-failed`; with a null
@@ -55,8 +55,10 @@ steps:
       then the counts. Change no repository files and make no commits.
       Post last, after triage.md is written, as the report pack says: title
       `PR #<n> feedback: <counts>`, type `review_request`, `--link-pr <n> --link-run {{run}}
-      --dedupe-key pr-feedback:{{run}} --expires 168h`.
+      --dedupe-key pr-feedback:{{run}} --reopen --expires 168h`.
     produces: [triage.md]
+    require:
+      - inbox_item: "pr-feedback:{{run}}"
     gate: approve
     timeout: 30m
 
@@ -92,7 +94,9 @@ steps:
       Write {{artifacts}}/fix.md listing the commits and the items not done.
       Run `workspace inbox done --dedupe-key pr-feedback:{{run}} --name {{workspace}}`, then post
       as the report pack says: title `PR #<n>: fixes committed, replies drafted`, type
-      `review_request`, `--link-pr <n> --link-run {{run}} --dedupe-key pr-feedback-fix:{{run}}`.
+      `review_request`, `--link-pr <n> --link-run {{run}} --dedupe-key pr-feedback-fix:{{run}} --reopen`.
       Your final message names `workspace push` as the person's next step.
     produces: [fix.md]
+    require:
+      - inbox_item: "pr-feedback-fix:{{run}}"
     timeout: 2h

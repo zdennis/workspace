@@ -139,8 +139,10 @@ steps:
       Post last, after diagnosis.md is written, as the report pack says, naming the note: title
       `Investigation: <cause>, <plan>` where cause is the verdict, `cause found` or `not reproduced`
       and plan is `fix planned` or `no code change`, type `review_request`, `--link-run {{run}}
-      --dedupe-key investigate:{{run}} --expires 168h`, plus `--link-pr <n>` when there is a pull request.
+      --dedupe-key investigate:{{run}} --reopen --expires 168h`, plus `--link-pr <n>` when there is a pull request.
     produces: [diagnosis.md]
+    require:
+      - inbox_item: "investigate:{{run}}"
     gate: approve
     guard: unchanged
     timeout: 60m
@@ -176,9 +178,11 @@ steps:
       Write {{artifacts}}/fix.md.
       Run `workspace inbox done --dedupe-key investigate:{{run}} --name {{workspace}}`, then post as
       the report pack says, naming the note: title `Investigation: fix committed` or `Investigation: no
-      code fix`, type `review_request`, `--link-run {{run}} --dedupe-key investigate-fix:{{run}}`, plus
+      code fix`, type `review_request`, `--link-run {{run}} --dedupe-key investigate-fix:{{run}} --reopen`, plus
       `--link-pr <n>` when there is a pull request. Your final message names the regression test file
       and `workspace push` (or `workspace pr create`) as the person's next step.
     produces: [fix.md]
+    require:
+      - inbox_item: "investigate-fix:{{run}}"
     guard: config
     timeout: 2h

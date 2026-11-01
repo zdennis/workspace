@@ -336,6 +336,21 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(list).to eq([{"command" => "lint"}, {"inbox_item" => "verify:{{run}}"}, {"remote_unchanged" => true}])
     end
 
+    it "reads optional: beside command, in either order, storing command first" do
+      expect(step_require("- command: lint\n  optional: true\n")).to eq([{"command" => "lint", "optional" => true}])
+      reversed = step_require("- optional: true\n  command: lint\n")
+      expect(reversed).to eq([{"command" => "lint", "optional" => true}])
+      expect(reversed.first.keys).to eq(%w[command optional])
+    end
+
+    it "refuses optional: on its own, beside another proof, or with a value that is not true or false" do
+      yaml = ->(entry) { "steps:\n  build:\n    prompt: B.\n    require:\n#{entry}" }
+      expect(problems(yaml.call("      - optional: true\n"))).to include(a_string_matching(/optional/))
+      expect(problems(yaml.call("      - commits: 1\n        optional: true\n"))).to include(a_string_matching(/may take optional: true beside it/))
+      expect(problems(yaml.call("      - command: lint\n        optional: yes please\n"))).to include(a_string_matching(/optional must be true or false/))
+      expect(problems(yaml.call("      - command: lint\n        optional: true\n        extra: 1\n"))).to include(a_string_matching(/each require entry/))
+    end
+
     it "lists every bad value of the new proofs" do
       yaml = "inputs:\n  task: {}\nsteps:\n  build:\n    prompt: B.\n    require:\n      - command: deploy\n      - inbox_item: \"a b\"\n      - remote_unchanged: false\n"
       expect(problems(yaml)).to include(

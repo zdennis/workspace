@@ -29,8 +29,10 @@ steps:
       the ranked gaps, one line each.
       Post last, after survey.md is written, as the report pack says, naming the note: title
       `Survey: <topic>`, type `review_request`, `--link-run {{run}} --dedupe-key explore:{{run}}
-      --expires 168h`.
+      --reopen --expires 168h`.
     produces: [survey.md]
+    require:
+      - inbox_item: "explore:{{run}}"
     guard: unchanged
     gate: approve
     timeout: 90m
@@ -47,7 +49,9 @@ steps:
       check every claim against the code and fix what it finds.
       Write the note's file name to {{artifacts}}/report.md and run
       `workspace inbox done --dedupe-key explore:{{run}} --name {{workspace}}`, then hand the
-      note back with the title `Report: <topic>`.
+      note back with the title `Report: <topic>`, `--dedupe-key explore-report:{{run}} --reopen`.
     produces: [report.md]
+    require:
+      - inbox_item: "explore-report:{{run}}"
     guard: config
     timeout: 90m

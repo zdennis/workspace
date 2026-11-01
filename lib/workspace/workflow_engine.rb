@@ -780,16 +780,22 @@ module Workspace
       false
     end
 
+    # Every step's `status: command:` and every `require: command:` that isn't optional, each unset one listed.
     def check_commands(data, project)
-      roles = data["steps"].filter_map { |step| step.dig("status", "command") }.uniq
-      return if roles.empty?
+      wanted = data["steps"].flat_map do |step|
+        roles = [[step.dig("status", "command"), "status"]]
+        roles += Array(step["require"]).reject { |entry| entry["optional"] == true }.map { |entry| [entry["command"], "require"] }
+        roles.select(&:first).map { |role, via| {"step" => step["id"], "command" => role, "via" => via} }
+      end
+      return if wanted.empty?
       set = @commands_config.for_project(project)
-      unset = roles.reject { |role| set[role.to_sym] }
+      unset = wanted.reject { |each| set[each["command"].to_sym] }
       return if unset.empty?
+      roles = unset.map { |each| each["command"] }.uniq
+      lines = unset.map { |each| "step #{each["step"]} (#{each["via"]}: command: #{each["command"]}): workspace config set commands.#{each["command"]} \"COMMAND\" --name #{project}" }
       raise Workspace::Error.new(
-        "Workflow #{data["id"]} checks a step with the project's #{unset.join(" and ")} command, and #{project} has none. " \
-        "Set it with: workspace config set commands.#{unset.first} \"COMMAND\" --name #{project}",
-        code: "workflow_command_unset", details: {"workflow" => data["id"], "project" => project, "commands" => unset}
+        "Workflow #{data["id"]} checks steps with the project's #{roles.join(" and ")} command, and #{project} has none. Set each:\n  #{lines.join("\n  ")}",
+        code: "workflow_command_unset", details: {"workflow" => data["id"], "project" => project, "commands" => roles, "steps" => unset}
       )
     end
 
@@ -1182,6 +1188,12 @@ module Workspace
     def require_and_status(run, step, state, attempt, from: 0)
       if step["require"].to_a.any?
         unmet = @require_check.check(run: run, step: step, attempt: attempt, from: from)
+        while unmet&.key?("skipped")
+          skipped = unmet["skipped"]
+          (attempt["proofs"] ||= []).reject! { |each| each["skipped"] && each["index"] == skipped["index"] }
+          attempt["proofs"] << skipped.merge("started_at" => now_iso, "ended_at" => now_iso)
+          unmet = @require_check.check(run: run, step: step, attempt: attempt, from: skipped["index"] + 1)
+        end
         return start_proof(run, step, state, attempt, unmet["outside"]) if unmet&.key?("outside")
         if unmet
           fail_step(run, require_failure(unmet))

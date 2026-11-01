@@ -370,11 +370,75 @@ RSpec.describe Workspace::WorkflowEngine do
     it "refuses a workflow whose check names a command the project has not set" do
       commands[:test] = nil
 
-      expect { start }.to raise_error(Workspace::Error, /checks a step with the project's test command, and app has none\. Set it with: workspace config set commands\.test "COMMAND" --name app/) { |error|
+      expect { start }.to raise_error(Workspace::Error, /checks steps with the project's test command, and app has none\..*workspace config set commands\.test "COMMAND" --name app/m) { |error|
         expect(error.code).to eq("workflow_command_unset")
-        expect(error.details).to eq("workflow" => "flow", "project" => "app", "commands" => ["test"])
+        expect(error.details).to eq("workflow" => "flow", "project" => "app", "commands" => ["test"],
+          "steps" => [{"step" => "verify", "command" => "test", "via" => "status"}])
       }
       expect(store.active).to eq([])
+    end
+
+    describe "a require: command" do
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            build:
+              prompt: Build it.
+              status: {command: test}
+              require:
+                - command: lint
+                  optional: #{optional}
+            ship:
+              prompt: Ship it.
+              require:
+                - command: test
+        YAML
+      end
+      let(:optional) { false }
+
+      it "refuses when only a require: command is unset, naming its step and listing the others" do
+        commands[:test] = "rake"
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error, /step build \(require: command: lint\): workspace config set commands\.lint "COMMAND" --name app/) { |error|
+          expect(error.code).to eq("workflow_command_unset")
+          expect(error.details).to include("commands" => ["lint"], "steps" => [{"step" => "build", "command" => "lint", "via" => "require"}])
+        }
+        expect(store.active).to eq([])
+      end
+
+      it "lists every unset command, each with its step" do
+        commands[:test] = nil
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.details["steps"]).to eq([
+            {"step" => "build", "command" => "test", "via" => "status"},
+            {"step" => "build", "command" => "lint", "via" => "require"},
+            {"step" => "ship", "command" => "test", "via" => "require"}
+          ])
+          expect(error.message).to include("commands.test").and include("commands.lint").and include("step ship")
+        }
+      end
+
+      it "refuses when only the status: command is unset" do
+        commands[:test] = nil
+        commands[:lint] = "standardrb"
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.details["steps"]).to include("step" => "build", "command" => "test", "via" => "status")
+          expect(error.details["commands"]).to eq(["test"])
+        }
+      end
+
+      context "with optional: true" do
+        let(:optional) { true }
+
+        it "does not count an unset optional command" do
+          commands[:test] = "rake"
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+
+        it "still counts the status: command" do
+          commands[:test] = nil
+          expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error| expect(error.details["commands"]).to eq(["test"]) }
+        end
+      end
     end
 
     it "refuses a pane that already runs a workflow, and takes it once that run has ended" do
@@ -2325,6 +2389,60 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(seen).to eq(%w[running checking])
       expect(guard).to have_received(:commits_since).once
       expect(run["state"]).to eq("completed")
+    end
+
+    context "with an optional command" do
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            build:
+              prompt: Build it.
+              require:
+                - command: lint
+                  optional: true
+                - commits: 1
+              status: {run: "true"}
+        YAML
+      end
+
+      it "passes the proof, records the skip on the attempt and goes on to the next proof" do
+        start(flow, inputs: {})
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["state"]).to eq("completed")
+        expect(attempt["proofs"]).to match([hash_including("proof" => "command", "role" => "lint", "optional" => true, "skipped" => "command_unset", "index" => 0, "started_at" => String, "ended_at" => String)])
+        expect(check_calls.map { |call| call[:command] }).to eq(["true"])
+        expect(guard).to have_received(:commits_since).once
+      end
+
+      it "proves a set optional command like any other" do
+        commands[:lint] = "standardrb"
+        start(flow, inputs: {})
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["state"]).to eq("completed")
+        expect(check_calls.map { |call| call[:command] }).to eq(["standardrb", "true"])
+        expect(attempt["proofs"]).to match([hash_including("proof" => "command", "role" => "lint", "exit_code" => 0)])
+        expect(attempt["proofs"].first).not_to include("skipped")
+      end
+
+      it "fails a set optional command that exits non-zero" do
+        commands[:lint] = "standardrb"
+        start(flow, inputs: {})
+        check_results << {exit_code: 1, timed_out: false}
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]["details"]).to include("code" => "require_command", "exit_code" => 1)
+      end
+
+      it "behaves as before for a run stored without the optional key" do
+        commands[:lint] = nil
+        start(flow, inputs: {})
+        store.update("wr_1") { |stored| stored["definition"]["steps"][0]["require"][0].delete("optional") }
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]["details"]).to include("code" => "require_command", "unproven" => true)
+      end
     end
 
     it "does not hold the run's lock while the command runs" do

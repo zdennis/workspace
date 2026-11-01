@@ -23,6 +23,9 @@ module Workspace
   # branch on its remote is as it was when the attempt began, `attempt["remote"]`, which the engine reads after
   # {#remote_baseline?} says so, before the agent is typed to).
   #
+  # `command` takes `optional: true` beside it: an unset command then passes, answered as `{"skipped" => record}` for the
+  # engine to keep in the attempt's `proofs` and go on from the next entry (a set command is proved as usual).
+  #
   # {OUTSIDE_LOCK} proofs are too slow for the run's lock, which {#check} is called under: it stops at one and
   # answers `{"outside" => pending}`, the engine runs {#run_outside} with the lock given up and comes back with
   # `from:` the next entry. Only a failure found before anything runs (the command isn't set, no recorded remote
@@ -78,7 +81,7 @@ module Workspace
     # @param step [Hash{String=>Object}] the step's definition; a step without "require" passes
     # @param attempt [Hash{String=>Object}] the attempt that ended
     # @param from [Integer] the index of the `require` entry to start at
-    # @return [Hash{String=>Object}, nil] nil when every proof passes; `{"outside" => pending}` when the next proof
+    # @return [Hash{String=>Object}, nil] nil when every proof passes; `{"skipped" => record}` for an optional `command` that is unset (go on from "index" + 1); `{"outside" => pending}` when the next proof
     #   is one to give to {#run_outside} (pending: "proof", "token" (this run of it), "index", "timeout", and "role", "command", "log" or
     #   "before"); else "proof" (the name), "code" (`require_<name>`, or the proof's own such as
     #   `require_remote_unreachable`), "detail" (what was required and found), "unproven" (true when it could not be
@@ -87,8 +90,9 @@ module Workspace
       Array(step["require"]).each_with_index do |entry, index|
         next if index < from
         name, value = entry.first
-        found = prove(name, value, run, attempt)
+        found = prove(name, value, run, attempt, optional: entry["optional"] == true)
         next unless found
+        return {"skipped" => found["skipped"].merge("index" => index)} if found["skipped"]
         return {"outside" => found["outside"].merge("index" => index)} if found["outside"]
         return {"proof" => name, "code" => "require_#{name}"}.merge(found)
       end
@@ -117,13 +121,13 @@ module Workspace
 
     private
 
-    def prove(name, value, run, attempt)
+    def prove(name, value, run, attempt, optional: false)
       case name
       when "commits" then commits(value, run, attempt)
       when "nonempty" then nonempty(value, run)
       when "plan_status" then plan_status(value, run)
       when "tracked_clean" then tracked_clean(run)
-      when "command" then command(value, run, attempt)
+      when "command" then command(value, run, attempt, optional)
       when "inbox_item" then inbox_item(value, run, attempt)
       when "remote_unchanged" then remote_unchanged(attempt)
       else unproven("unknown proof #{name.inspect}")
@@ -187,8 +191,9 @@ module Workspace
       {"detail" => "required no changed tracked files, found #{"at least " if paths.size >= WorkflowGuard::MAX_PATHS}#{paths.size} (#{paths.first(5).join(", ")})", "paths" => paths}
     end
 
-    def command(role, run, attempt)
+    def command(role, run, attempt, optional = false)
       configured = @commands_config&.for_project(run["project"])&.[](role.to_s.to_sym)
+      return {"skipped" => {"proof" => "command", "role" => role, "skipped" => "command_unset", "optional" => true}} if optional && !configured
       return unproven("required the project's #{role} command to exit 0, but #{@checker ? "it is not set" : "no checker is available"}") unless configured && @checker
       token = SecureRandom.hex(4)
       log = File.join(run["artifacts_dir"].to_s, "steps", "#{run["current"]}.#{attempt["n"]}.require-#{role}.#{token}.log")

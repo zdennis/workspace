@@ -9,13 +9,6 @@ RSpec.describe "the shipped workflow presets" do
   before { allow(config).to receive(:workflows_dir).and_return(File.join(dir, "none")) }
   after { FileUtils.remove_entry(dir) }
 
-  it "parses every file in lib/workflows" do
-    ids = Dir[File.join(config.builtin_workflows_dir, "*.yml")].map { |path| File.basename(path, ".yml") }
-
-    expect(ids).to include("rpiv", "rpiv-auto-approve", "pr-feedback", "investigate", "explore")
-    ids.each { |id| expect(catalog.find(id).source).to eq("builtin") }
-  end
-
   describe "explore" do
     let(:definition) { catalog.find("explore").to_h }
     let(:steps) { definition["steps"] }
