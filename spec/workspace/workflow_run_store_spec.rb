@@ -226,6 +226,14 @@ RSpec.describe Workspace::WorkflowRunStore do
       File.write(File.join(runs_dir, "wr_2.json"), JSON.generate({"id" => "wr_3", "state" => "waiting", "workspace" => "app"}.merge(whole)))
     end
 
+    it "lists an unreadable archived file only when asked for the archive too" do
+      FileUtils.mkdir_p(archive_dir)
+      File.write(File.join(archive_dir, "wr_9.json"), "{not json")
+
+      expect(store.unreadable).not_to include(File.join(archive_dir, "wr_9.json"))
+      expect(store.unreadable(archived: true)).to include(File.join(archive_dir, "wr_9.json"), File.join(runs_dir, "wr_1.json"))
+    end
+
     it "is listed by path, and is not among the runs" do
       expect(store.unreadable).to eq([File.join(runs_dir, "wr_1.json"), File.join(runs_dir, "wr_2.json")])
       expect(store.active).to eq([])
@@ -365,6 +373,47 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(store.active.map { |run| run["id"] }).to eq(["wr_1"])
   end
 
+  it "runs the check under a lock shared by every creator, so of two concurrent creations only one passes it" do
+    checker = lambda do |store_for_child|
+      lambda do
+        raise Workspace::Error.new("taken", code: "checkout_has_run") if store_for_child.active.any?
+        sleep 0.2
+      end
+    end
+    results = 2.times.map do
+      reader, writer = IO.pipe
+      pid = fork do
+        child = described_class.new(dir: runs_dir, archive_dir: archive_dir)
+        outcome = begin
+          child.create(whole.merge("state" => "running", "created_at" => "t"), checker.call(child))["id"]
+          "created"
+        rescue Workspace::Error => e
+          e.code
+        end
+        writer.puts outcome
+        exit!(0)
+      end
+      writer.close
+      [pid, reader]
+    end
+    outcomes = results.map do |pid, reader|
+      Process.wait(pid)
+      reader.read.strip
+    end
+
+    expect(outcomes.sort).to eq(%w[checkout_has_run created])
+    expect(store.active.size).to eq(1)
+  end
+
+  it "reports an unusable create lock as a store error, and runs no check" do
+    FileUtils.mkdir_p(File.join(File.dirname(runs_dir), ".create.lock"))
+    called = false
+
+    expect { store.create(whole.merge("state" => "running", "created_at" => "t"), -> { called = true }) }
+      .to raise_error(Workspace::Error, /Could not access the workflow run store/)
+    expect(called).to be(false)
+  end
+
   it "returns nil from a nonblocking update while another process changes the run" do
     create
     reader, writer = IO.pipe
@@ -412,6 +461,34 @@ RSpec.describe Workspace::WorkflowRunStore do
     end
 
     expect(Dir.children(archive_dir).sort).to eq(%w[wr_2.events.jsonl wr_2.json wr_3.events.jsonl wr_3.json])
+  end
+
+  it "removes the evidence of a run it prunes and of no other" do
+    stub_const("#{described_class}::ARCHIVE_LIMIT", 1)
+    evidence = Workspace::WorkflowEvidence.new(dir: File.join(@dir, "ev"))
+    pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence)
+    3.times do |n|
+      pruning.create({"state" => "running"}.merge(whole))
+      FileUtils.mkdir_p(File.join(@dir, "ev", "wr_#{n + 1}"))
+    end
+    FileUtils.mkdir_p(File.join(@dir, "ev", "wr_other"))
+    pruning.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+    pruning.update("wr_2") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:02Z") }
+
+    expect(Dir.children(File.join(@dir, "ev")).sort).to eq(%w[wr_2 wr_3 wr_other])
+  end
+
+  it "removes a pruned run's evidence before its archive file, so a crash leaves it prunable" do
+    stub_const("#{described_class}::ARCHIVE_LIMIT", 0)
+    seen = []
+    archive = archive_dir
+    evidence = Object.new
+    evidence.define_singleton_method(:remove) { |id| seen << File.exist?(File.join(archive, "#{id}.json")) }
+    pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence)
+    pruning.create({"state" => "running"}.merge(whole))
+    pruning.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+
+    expect(seen).to eq([true])
   end
 
   it "reports a store it can't write as an error" do

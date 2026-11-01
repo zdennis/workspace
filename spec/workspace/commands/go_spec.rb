@@ -16,12 +16,13 @@ RSpec.describe Workspace::Commands::Go do
   let(:local_names) { names }
   let(:held) { {} }
   let(:stored_default) { nil }
+  let(:tied) { "app" }
   let(:yaml) { "inputs:\n  task: {required: true}\nsteps:\n  plan:\n    prompt: Plan.\n" }
   let(:definition) { Workspace::WorkflowDefinition.parse(yaml, id: "rpiv", source: "global", path: "/defs/rpiv.yml") }
   let(:project) { Workspace::StartRef::Project.new(root: project_root, name: "app", from_worktree: from_worktree) }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
   let(:start_ref) { Workspace::StartRef.new(git: git) }
-  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, check_agent!: nil, locate_project: {root: root, project: project, project_workspace: "app"}) }
+  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: tied, check_agent!: nil, locate_project: {root: root, project: project, project_workspace: "app"}) }
   let(:workflow) { instance_double(Workspace::Commands::Workflow) }
   let(:workflow_defaults) { instance_double(Workspace::WorkflowDefaults) }
   let(:catalog) { instance_double(Workspace::WorkflowCatalog, known_ids: %w[pr-feedback rpiv], find: definition) }
@@ -115,7 +116,7 @@ RSpec.describe Workspace::Commands::Go do
     it "runs a bare go here with kind prompt" do
       row = command.call(caller_pane: "%3")
 
-      expect(workflow).to have_received(:run).with(id: "rpiv", workspace: detected, worktree: root, inputs: {}, dry_run: false, caller_pane: "%3")
+      expect(workflow).to have_received(:run).with(id: "rpiv", workspace: detected, worktree: root, inputs: {}, dry_run: false, caller_pane: "%3", project: "app")
       expect(workflow_start).not_to have_received(:call)
       expect(row["decision"]).to include("kind" => "prompt", "route" => "run")
     end
@@ -384,6 +385,16 @@ RSpec.describe Workspace::Commands::Go do
       end
     end
 
+    context "in a clone that only shares a project's name" do
+      let(:tied) { nil }
+
+      it "reads no project key, as workflow start does" do
+        allow(workflow_defaults).to receive(:lookup).with("branch", workspace: nil, project: nil).and_return({id: "flow", key: "workflows.default"})
+
+        expect(command.call(argument: "feature")["decision"]).to include("workflow" => "flow")
+      end
+    end
+
     it "reads the worktree's own layers when it runs in place, for a ref too" do
       allow(workflow_defaults).to receive(:lookup).with("branch", workspace: detected, project: "app").and_return({id: "flow", key: "workflows.default"})
 
@@ -403,7 +414,7 @@ RSpec.describe Workspace::Commands::Go do
     end
 
     it "refuses an unknown workflow before anything prints" do
-      allow(catalog).to receive(:find).with("nope").and_raise(Workspace::Error.new("No workflow.", code: "unknown_workflow"))
+      allow(catalog).to receive(:find).with("nope", project: "app").and_raise(Workspace::Error.new("No workflow.", code: "unknown_workflow"))
 
       expect(refusal(argument: "free text", workflow: "nope").code).to eq("unknown_workflow")
       expect(output.string).to eq("")

@@ -92,6 +92,7 @@ module Workspace
       return "done" if done?(spine)
       return "waiting" if (@reason && WAITING_REASONS.include?(@reason["code"]) && !incomplete_while_working?) || @plan_state == "waiting" || @turn&.dig("state") == "waiting"
       return "waiting_lock" if @reason && @reason["code"] == "waiting_lock"
+      return "working" if @reason && @reason["code"] == "retry_backoff"
       return "working" if @turn&.dig("state") == "working" || @plan_state == "working"
       return "stuck" if flags.intersect?(%w[idle timed_out]) || @reason&.dig("code") == "pane_gone" || @plan_state == "stalled" || run_without_daemon?
       return "working" if flags.include?("background_work")

@@ -290,7 +290,7 @@ RSpec.describe Workspace::WorkflowFiles do
     end
 
     it "deletes the file and leaves the lock file" do
-      expect(files.remove("flow")).to eq("path" => target, "preset" => false)
+      expect(files.remove("flow")).to eq("path" => target, "project_path" => nil, "preset" => false)
       expect(File.exist?(target)).to be(false)
       expect(File.exist?(lock_path)).to be(true)
       expect(strays).to eq([])
@@ -303,7 +303,7 @@ RSpec.describe Workspace::WorkflowFiles do
     end
 
     it "deletes nothing for a dry run" do
-      expect(files.remove("flow", dry_run: true)).to eq("path" => target, "preset" => false)
+      expect(files.remove("flow", dry_run: true)).to eq("path" => target, "project_path" => nil, "preset" => false)
       expect(File.read(target)).to eq(text)
     end
 
@@ -392,6 +392,80 @@ RSpec.describe Workspace::WorkflowFiles do
 
       expect(threads.map { |thread| joined(thread).value }).to contain_exactly(:removed, "unknown_workflow")
       expect(File.exist?(target)).to be(false)
+    end
+  end
+
+  describe "with a project that has its own definition of the id" do
+    let(:project_dir) { File.join(dir, "projects", "app", "workflows") }
+    let(:project_file) { File.join(project_dir, "flow.yml") }
+    let(:project_text) { "title: Project\nsteps:\n  plan:\n    prompt: Project.\n" }
+    let(:project_sha) { Digest::SHA256.hexdigest(project_text) }
+
+    before do
+      allow(config).to receive(:project_workflows_dir) { |name| (name == "app") ? project_dir : nil }
+      FileUtils.mkdir_p([project_dir, global_dir, File.join(dir, "builtin")])
+      File.write(project_file, project_text)
+    end
+
+    it "refuses update and remove of a project-only id, saying where the project's file is and what these commands edit" do
+      {update: ->(id) { files.update(id, text, if_sha256: project_sha, project: "app") }, remove: ->(id) { files.remove(id, project: "app") }}.each do |verb, call|
+        expect { call.call("flow") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("unknown_workflow")
+          expect(e.message).to include("definition of the project app at #{project_file}", "`workflow #{verb}` edits only #{global_dir}")
+          expect(e.details).to include("scope" => "project", "project" => "app", "path" => project_file)
+        }
+      end
+      expect(File.read(project_file)).to eq(project_text)
+    end
+
+    it "keeps the old answer for a project with no definition of the id, and for no project" do
+      expect { files.update("flow", text, if_sha256: project_sha, project: "other") }.to raise_error(Workspace::Error, /No workflow named "flow"/)
+      expect { files.remove("flow") }.to raise_error(Workspace::Error, /No workflow named "flow"/)
+    end
+
+    it "checks present through the same refusal" do
+      expect { files.ensure_present("flow", project: "app") }.to raise_error(Workspace::Error, /definition of the project app/)
+    end
+
+    context "and the user has one too" do
+      before { File.write(target, "title: User\nsteps:\n  plan:\n    prompt: User.\n") }
+
+      it "names both files and both shas when the sha is the project file's" do
+        expect { files.update("flow", text, if_sha256: project_sha, project: "app") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("stale_workflow")
+          expect(e.message).to include("The project's own file #{project_file} (sha256 #{project_sha}) hides this one in app", "this command edits only #{target}")
+          expect(e.details).to include("path" => target, "project_path" => project_file, "project_sha256" => project_sha)
+          expect(e.details["sha256"]).to eq(Digest::SHA256.hexdigest(File.binread(target)))
+        }
+      end
+
+      it "adds nothing about a project file for a stale sha outside the project" do
+        expect { files.update("flow", text, if_sha256: "0" * 64, project: "other") }.to raise_error(Workspace::Error) { |e|
+          expect(e.message).not_to include("project's own file")
+          expect(e.details).not_to include("project_path")
+        }
+      end
+
+      it "updates the user's file on the user's sha and leaves the project's alone" do
+        sha = Digest::SHA256.hexdigest(File.binread(target))
+
+        files.update("flow", text, if_sha256: sha, project: "app")
+
+        expect(File.read(target)).to eq(text)
+        expect(File.read(project_file)).to eq(project_text)
+      end
+
+      it "reports the project file as staying in effect after remove, and no preset in effect" do
+        File.write(File.join(dir, "builtin", "flow.yml"), text)
+
+        expect(files.remove("flow", project: "app")).to eq("path" => target, "project_path" => project_file, "preset" => false)
+      end
+
+      it "reports the preset as in effect when the project has no file of the id" do
+        File.write(File.join(dir, "builtin", "flow.yml"), text)
+
+        expect(files.remove("flow", project: "other")).to eq("path" => target, "project_path" => nil, "preset" => true)
+      end
     end
   end
 end

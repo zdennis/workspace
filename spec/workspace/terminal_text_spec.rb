@@ -30,6 +30,24 @@ RSpec.describe Workspace::TerminalText do
       expect(described_class.escape(text)).to eq(text.each_char.map { |c| format("\\u%04X", c.ord) }.join)
     end
 
+    it "escapes hidden-text carriers: tag characters, annotation marks, the grapheme joiner and variation selectors" do
+      expect(described_class.escape([0x61, 0xe0041, 0xe007f, 0xfff9, 0xfffb, 0x34f, 0xfe00, 0xe0100, 0x62].pack("U*")))
+        .to eq("a\\u{E0041}\\u{E007F}\\uFFF9\\uFFFB\\u034F\\uFE00\\u{E0100}b")
+    end
+
+    it "leaves the emoji selector U+FE0F alone" do
+      emoji = [0x2764, 0xfe0f].pack("U*")
+      expect(described_class.escape(emoji)).to eq(emoji)
+    end
+
+    it "prints an astral character unescaped, and U+FE0F after an astral base" do
+      face = [0x1f600].pack("U")
+      heart = [0x1f9e1, 0xfe0f].pack("U*")
+
+      expect(described_class.escape(face)).to eq(face)
+      expect(described_class.escape(heart)).to eq(heart)
+    end
+
     it "turns invalid UTF-8 into the replacement character without raising" do
       expect(described_class.escape((+"ok\xff\xfe!").force_encoding("UTF-8"))).to eq("ok��!")
     end

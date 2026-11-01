@@ -151,6 +151,7 @@ RSpec.describe Workspace::Commands::Agent do
   def wait_until(timeout: 2)
     deadline = Time.now + timeout
     sleep(0.01) until yield || Time.now > deadline
+    raise "timed out waiting after #{timeout}s" unless yield
   end
 
   describe "starting the agent for a workspace" do
@@ -556,7 +557,7 @@ RSpec.describe Workspace::Commands::Agent do
       YAML
 
       run_agent do
-        sleep 0.05
+        wait_until { File.exist?(agent_socket_path) }
         send_command
 
         wait_until { tmux.sent_keys.any? }

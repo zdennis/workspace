@@ -33,26 +33,41 @@ RSpec.describe Workspace::AlertConfig do
       FileUtils.mkdir_p(File.join(dir, "projects"))
       File.write(File.join(dir, "projects", "app.yml"), "a: [\n")
 
-      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600)
+      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600, workflow: [])
       expect(error_output.string).to include("Cannot parse", "app.yml", "No alerts will be sent")
     end
   end
 
   describe "#for_workspace" do
     it "sends no alerts and uses the default idle threshold when unset" do
-      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600)
+      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600, workflow: [])
     end
 
     it "reads alerts.notify and alerts.idle_after" do
       project_settings.save("app", {"alerts" => {"notify" => " say hi ", "idle_after" => "15m"}})
 
-      expect(alert_config.for_workspace("app")).to eq(notify: "say hi", idle_after: 900.0)
+      expect(alert_config.for_workspace("app")).to eq(notify: "say hi", idle_after: 900.0, workflow: [])
+    end
+
+    it "reads alerts.workflow as a list of event names, from text or a YAML list" do
+      project_settings.save("app", {"alerts" => {"workflow" => "gate, failed,gate"}})
+      expect(alert_config.for_workspace("app")[:workflow]).to eq(%w[gate failed])
+
+      project_settings.save("app", {"alerts" => {"workflow" => %w[finished]}})
+      expect(alert_config.for_workspace("app")[:workflow]).to eq(%w[finished])
+    end
+
+    it "warns and sends no workflow alerts when alerts.workflow names an unknown event" do
+      project_settings.save("app", {"alerts" => {"workflow" => "gate,exploded"}})
+
+      expect(alert_config.for_workspace("app")[:workflow]).to eq([])
+      expect(error_output.string).to include("invalid alerts.workflow for 'app'", "gate, failed, stalled, finished")
     end
 
     it "warns and falls back when a hand-edited value is invalid" do
       project_settings.save("app", {"alerts" => {"notify" => "", "idle_after" => "soon"}})
 
-      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600)
+      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600, workflow: [])
       expect(error_output.string).to include("invalid alerts.notify for 'app'", "no alerts will be sent")
       expect(error_output.string).to include("invalid alerts.idle_after for 'app'", "using 600s")
     end
@@ -60,7 +75,7 @@ RSpec.describe Workspace::AlertConfig do
     it "ignores an alerts block that is not a mapping" do
       project_settings.save("app", {"alerts" => "say hi"})
 
-      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600)
+      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600, workflow: [])
     end
 
     context "for a worktree workspace" do
@@ -105,7 +120,7 @@ RSpec.describe Workspace::AlertConfig do
       project_settings.save("app", {"alerts" => {"notify" => "notify-project", "idle_after" => "2m"}})
       project_settings.save("app.worktree-x", {"alerts" => {"idle_after" => "9m"}})
 
-      expect(alert_config.for_workspace("app.worktree-x")).to eq(notify: "notify-project", idle_after: 540.0)
+      expect(alert_config.for_workspace("app.worktree-x")).to eq(notify: "notify-project", idle_after: 540.0, workflow: [])
     end
   end
 end

@@ -107,6 +107,7 @@ RSpec.describe Workspace::InboxDerived do
       workflow_run("r-other", workspace: "elsewhere", code: "waiting_you", kind: "gate")],
      "warnings" => []}
   end
+  let(:needs_me) { Workspace::WorkflowNeedsMe.new(clock: -> { now }) }
   let(:workflow_status) do
     reply = workflow_reply
     Class.new do
@@ -165,7 +166,7 @@ RSpec.describe Workspace::InboxDerived do
 
   subject(:derived) do
     described_class.new(snapshot_client: snapshot_client, tmux: tmux, ask_store_for: ask_store_for, plan: plan, plan_state: plan_state,
-      plan_config: plan_config, workflow_status: workflow_status, lock_namespace: lock_namespace, lock_store_for: lock_store_for,
+      plan_config: plan_config, workflow_status: workflow_status, needs_me: needs_me, lock_namespace: lock_namespace, lock_store_for: lock_store_for,
       lock_config: lock_config, clock: -> { now }, agent_timeout: 0.25)
   end
 
@@ -234,7 +235,7 @@ RSpec.describe Workspace::InboxDerived do
         end
       end.new
       reader = described_class.new(snapshot_client: gate, tmux: tmux, ask_store_for: ask_store_for, plan: plan, plan_state: plan_state,
-        plan_config: plan_config, workflow_status: workflow_status, lock_namespace: lock_namespace, lock_store_for: lock_store_for,
+        plan_config: plan_config, workflow_status: workflow_status, needs_me: needs_me, lock_namespace: lock_namespace, lock_store_for: lock_store_for,
         lock_config: lock_config, clock: -> { now })
       opener = Thread.new do
         3.times { arrived.pop(timeout: 2) }
@@ -302,7 +303,7 @@ RSpec.describe Workspace::InboxDerived do
     it "warns questions_unreadable and adds no question rows when the store raises" do
       broken = ->(_workspace, _sink) { raise Workspace::Error, "locked out" }
       reader = described_class.new(snapshot_client: snapshot_client, tmux: tmux, ask_store_for: broken, plan: plan,
-        plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, lock_namespace: lock_namespace,
+        plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, needs_me: needs_me, lock_namespace: lock_namespace,
         lock_store_for: lock_store_for, lock_config: lock_config, clock: -> { now })
 
       result = reader.rows(workspaces: ["api"], projects: [])
@@ -357,6 +358,144 @@ RSpec.describe Workspace::InboxDerived do
         expect(result[:rows].map { |r| r["kind"] }).not_to include("workflow_waiting_you")
         expect(result[:warnings]).to include(a_hash_including("code" => "workflow_unreadable"))
       end
+    end
+  end
+
+  describe "failed checks, lock waits and stalls" do
+    def attention
+      read[:rows].select { |r| r["kind"].start_with?("workflow_") && !%w[workflow_waiting_you workflow_undelivered].include?(r["kind"]) }
+    end
+
+    def failed_run(id, since: "2026-10-16T11:00:00Z", attempt: 1)
+      run = workflow_run(id, workspace: "api.worktree-c", code: "failed_check", kind: nil, since: since)
+      run["current"]["attempt"] = attempt
+      run["current"]["reason"]["details"] = {"code" => "tests_failed"}
+      run["current"]["reason"]["actions"] = [{"action" => "workflow resume", "args" => [id], "needs" => []}]
+      run
+    end
+
+    def stuck_run(id, code: "stalled", since: "2026-10-16T11:10:00Z")
+      run = workflow_run(id, workspace: "api.worktree-c", code: "x", kind: nil)
+      run["state"] = "running"
+      run["current"].delete("reason")
+      run["current"]["stuck"] = {"code" => code, "cause" => "no_output", "since" => since,
+                                 "actions" => [{"action" => "workflow resume", "args" => [id], "needs" => []}]}
+      run
+    end
+
+    it "adds a row for a failed check with the suggestion in the body" do
+      workflow_reply["runs"] = [failed_run("r-1")]
+
+      expect(attention).to contain_exactly(a_hash_including(
+        "id" => "workflow:failed_check:r-1", "kind" => "workflow_failed_check", "derived" => true, "state" => "open",
+        "fingerprint" => "plan:1:2026-10-16T11:00:00Z", "title" => "Workflow Fix login: the check of step plan failed (tests_failed)",
+        "body" => nil, "created_at" => "2026-10-16T11:00:00Z",
+        "links" => a_hash_including("run_id" => "r-1", "step" => "plan", "attempt" => 1,
+          "next_action" => {"action" => "workflow resume", "args" => ["r-1"], "needs" => []})
+      ))
+    end
+
+    it "adds a row for a run held by its token budget, with the --extra-tokens it needs as data" do
+      run = workflow_run("r-1", workspace: "api.worktree-c", code: "budget_spent", kind: "budget")
+      need = {"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}
+      run["current"]["reason"]["actions"] = [{"action" => "workflow resume", "args" => ["r-1"], "needs" => [need]}]
+      workflow_reply["runs"] = [run]
+
+      expect(attention).to contain_exactly(a_hash_including(
+        "id" => "workflow:budget_spent:r-1", "kind" => "workflow_budget_spent", "title" => "Workflow Fix login: step plan was not started, the token budget is used",
+        "body" => nil, "links" => a_hash_including("run_id" => "r-1", "next_action" => {"action" => "workflow resume", "args" => ["r-1"], "needs" => [need]})
+      ))
+    end
+
+    it "keeps command text out of the title and body, and escapes run text in the title" do
+      run = failed_run("r-1")
+      run["title"] = "x\e[31m; rm -rf ~\nsecond"
+      run["current"]["reason"]["actions"] = [{"action" => "workflow resume", "args" => ["r-1", "--from", "a; b\n"], "needs" => [{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 2}]}]
+      workflow_reply["runs"] = [run]
+
+      row = attention.first
+      expect(row["title"]).not_to match(/[\e\n]/)
+      expect(row["body"]).to be_nil
+      expect(row["links"]["next_action"]["needs"]).to eq([{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 2}])
+    end
+
+    it "gives a new fingerprint when only the attempt changes" do
+      workflow_reply["runs"] = [failed_run("r-1", attempt: 1)]
+      first = attention.first["fingerprint"]
+      workflow_reply["runs"] = [failed_run("r-1", attempt: 2)]
+
+      expect(attention.first["fingerprint"]).not_to eq(first)
+    end
+
+    it "adds no row for a lock wait with no since" do
+      run = workflow_run("r-1", workspace: "api.worktree-c", code: "waiting_lock", kind: nil)
+      run["current"]["reason"].delete("since")
+      workflow_reply["runs"] = [run]
+
+      expect(attention).to be_empty
+    end
+
+    it "reads a stored run with no current, title or attempt without failing" do
+      bare = {"id" => "r-9", "workflow" => "rpiv", "workspace" => "api.worktree-c", "state" => "running"}
+      stuck = stuck_run("r-8")
+      stuck.delete("title")
+      stuck["current"].delete("attempt")
+      workflow_reply["runs"] = [bare, stuck]
+
+      result = read
+      expect(result[:warnings]).to be_empty
+      expect(result[:rows].map { |r| r["id"] }).to include("workflow:stalled:r-8")
+    end
+
+    it "gives a new failure of the same run a new fingerprint" do
+      workflow_reply["runs"] = [failed_run("r-1")]
+      first = attention.first["fingerprint"]
+      workflow_reply["runs"] = [failed_run("r-1", since: "2026-10-16T11:20:00Z", attempt: 2)]
+
+      expect(attention.first["fingerprint"]).not_to eq(first)
+    end
+
+    it "adds a lock wait row only past the thirty minutes WorkflowNeedsMe uses" do
+      workflow_reply["runs"] = [workflow_run("r-1", workspace: "api.worktree-c", code: "waiting_lock", kind: nil, since: "2026-10-16T11:30:00Z")]
+      expect(attention).to be_empty
+
+      workflow_reply["runs"] = [workflow_run("r-1", workspace: "api.worktree-c", code: "waiting_lock", kind: nil, since: "2026-10-16T11:29:00Z")]
+      expect(attention.map { |r| r["id"] }).to eq(["workflow:waiting_lock:r-1"])
+    end
+
+    it "adds rows for a stalled run and an idle run" do
+      workflow_reply["runs"] = [stuck_run("r-1"), stuck_run("r-2", code: "idle")]
+
+      expect(attention.map { |r| [r["id"], r["kind"]] }).to contain_exactly(
+        ["workflow:stalled:r-1", "workflow_stalled"], ["workflow:idle:r-2", "workflow_idle"]
+      )
+    end
+
+    it "leaves a run in another workspace, a finished run and a gate to their own rows" do
+      finished = failed_run("r-3").merge("state" => "completed")
+      workflow_reply["runs"] = [failed_run("r-1").merge("workspace" => "elsewhere"), finished,
+        workflow_run("r-4", workspace: "api.worktree-c", code: "waiting_you", kind: "gate")]
+
+      expect(attention).to be_empty
+      expect(read[:rows].map { |r| r["id"] }).to include("workflow:waiting_you:r-4")
+    end
+
+    it "gives one row for a run, never a second for its gate, undelivered or prompt reason" do
+      workflow_reply["runs"] = [failed_run("r-1")]
+
+      expect(read[:rows].count { |r| r.dig("links", "run_id") == "r-1" }).to eq(1)
+    end
+
+    it "warns workflow_unreadable and still shows the gates when the rule can't read a run" do
+      broken = Class.new { def rows(_runs) = raise("odd run") }.new
+      reader = described_class.new(snapshot_client: snapshot_client, tmux: tmux, ask_store_for: ask_store_for, plan: plan,
+        plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, needs_me: broken,
+        lock_namespace: lock_namespace, lock_store_for: lock_store_for, lock_config: lock_config, clock: -> { now })
+
+      result = reader.rows(workspaces: workspaces, projects: [])
+
+      expect(result[:warnings]).to include(a_hash_including("code" => "workflow_unreadable"))
+      expect(result[:rows].map { |r| r["id"] }).to include("workflow:waiting_you:r-gate")
     end
   end
 

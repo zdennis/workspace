@@ -2388,7 +2388,7 @@ RSpec.describe Workspace::CLI do
           from_start, from_workflow = workflow_start.calls
           expect(from_start).to eq(id: "rpiv", ref: "PROJ-1", slug: true, inputs: {"task" => "do it"}, base: "main", headless: false, agent_kind: "claude", prompt_timeout: 120)
           expect(from_start).to eq(from_workflow.slice(*from_start.keys))
-          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false)
+          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false, force: false, route: false)
           expect(start_command).not_to have_received(:call)
         end
 
@@ -6731,16 +6731,22 @@ RSpec.describe Workspace::CLI do
 
     before { stub_const("ENV", ENV.to_h.except("TMUX_PANE")) }
 
+    it "hands workflow check the --name workspace's checkout" do
+      cli.run(["workflow", "check", "rpiv", "verify", "--name", "api", "--artifacts", "fixture"])
+
+      expect(workflow_command.calls).to eq([[:check, {id: "rpiv", step: "verify", worktree: "/work/api", artifacts: "/some/dir/fixture", json: false, project: nil}]])
+    end
+
     it "shows every definition, or one" do
       cli.run(["workflow", "show"])
       cli.run(["workflow", "show", "rpiv", "--json"])
 
-      expect(workflow_command.calls).to eq([[:show, {id: nil, json: false, source: false}], [:show, {id: "rpiv", json: true, source: false}]])
+      expect(workflow_command.calls).to eq([[:show, {id: nil, json: false, source: false, project: nil}], [:show, {id: "rpiv", json: true, source: false, project: nil}]])
     end
 
     it "passes --source to show" do
       cli.run(["workflow", "show", "rpiv", "--source", "--json"])
-      expect(workflow_command.calls).to eq([[:show, {id: "rpiv", json: true, source: true}]])
+      expect(workflow_command.calls).to eq([[:show, {id: "rpiv", json: true, source: true, project: nil}]])
     end
 
     it "answers an invalid global file with --source --json and exit 0, end to end" do
@@ -6750,7 +6756,7 @@ RSpec.describe Workspace::CLI do
         File.write(File.join(dir, "global", "bad.yml"), bad)
         catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: File.join(dir, "global"), builtin_workflows_dir: File.join(dir, "none")))
         out = StringIO.new
-        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: out))[0]
+        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: out))[0]
 
         real_cli.run(["workflow", "show", "bad", "--source", "--json"])
         doc = JSON.parse(out.string)
@@ -6769,7 +6775,42 @@ RSpec.describe Workspace::CLI do
         cli.run(["workflow", "start", "rpiv", "PROJ-1", "--branch", "b", "--slug", "--base", "main", "--input", "task=x", "--note", "n", "--agent-kind", "codex", "--prompt-timeout", "2m", "--no-headless", "--dry-run"])
 
         expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", positional: nil, prompt: nil, branch: "b", slug: true, inputs: {"task" => "x"}, note: "n", base: "main",
-                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true}])
+                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true, force: false, route: false}])
+      end
+
+      it "routes --ref with no ID, and refuses it beside an ID, a REF or --prompt" do
+        cli.run(["workflow", "start", "--ref", "#123", "--dry-run", "--force"])
+        expect(start_command.calls.last).to include(id: nil, ref: "#123", route: true, dry_run: true, force: true)
+
+        [["rpiv", "--ref", "PROJ-1"], ["--ref", "PROJ-1", "rpiv"], ["--ref", "PROJ-1", "--prompt", "x"], ["--ref", " "]].each do |args|
+          expect { cli.run(["workflow", "start", *args]) }.to raise_error(FakeSystemExit)
+        end
+        expect(start_command.calls.size).to eq(1)
+        expect(error_output.string).to include("--ref takes the place of", "--prompt has no kind", "--ref needs a REF")
+      end
+
+      it "keeps the routing line off stdout under --ref --json: one document" do
+        raw = StringIO.new
+        gate = Workspace::OutputGate.new(raw)
+        err = StringIO.new
+        routing = CLITestHelpers::FakeWorkflowStartCommand.new
+        routing.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would.", "routed" => {"ref" => "PROJ-1", "kind" => "jira", "workflow" => "rpiv", "source" => "default", "scope" => "project", "key" => "workflows.by_ref.jira"}}
+        routing.define_singleton_method(:call) do |**kw|
+          gate.puts "Routing PROJ-1 (jira) to rpiv, this project's default for jira."
+          super(**kw)
+        end
+        json_cli, = build_test_cli(workflow_command: workflow_command, workflow_start_command: routing, project_config: project_config, project_detector: detector, working_dir: "/some/dir", output: gate, error_output: err)
+
+        json_cli.run(["workflow", "start", "--ref", "PROJ-1", "--dry-run", "--json"])
+
+        doc = JSON.parse(raw.string)
+        expect(doc["results"].first["routed"]).to include("workflow" => "rpiv", "scope" => "project")
+        expect(err.string).to include("Routing PROJ-1")
+      end
+
+      it "refuses --ref with another subcommand" do
+        expect { cli.run(["workflow", "run", "rpiv", "--ref", "PROJ-1"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--ref is for `workflow start")
       end
 
       it "takes --prompt with no REF, and headless from the launch mode" do
@@ -6781,7 +6822,7 @@ RSpec.describe Workspace::CLI do
       it "refuses --project after --prompt TEXT as a flag of another subcommand" do
         expect { cli.run(["workflow", "start", "rpiv", "--prompt", "add a script", "--project"]) }.to raise_error(FakeSystemExit)
 
-        expect(error_output.string).to include("--project is for `workflow status`.")
+        expect(error_output.string).to include("--project is for `workflow status`, `workflow stats` and `workflow compare`.")
         expect(start_command.calls).to be_empty
       end
 
@@ -6835,6 +6876,45 @@ RSpec.describe Workspace::CLI do
         expect(error_output.string).to include("--slug is for `workflow start")
         expect(workflow_command.calls).to be_empty
       end
+
+      it "escapes control characters in a printed warning" do
+        start_command.row = start_command.row.merge("warnings" => ["Could not read X: \e[31mred\e[0m\rgone"])
+        cli.run(["workflow", "start", "rpiv", "x"])
+
+        expect(error_output.string).to include('Warning: Could not read X: \e[31mred\e[0m\rgone')
+        expect(error_output.string).not_to include("\e")
+      end
+
+      it "refuses --force with workflow run and remove" do
+        expect { cli.run(["workflow", "run", "rpiv", "--force"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--force is for `workflow start")
+        expect { cli.run(["workflow", "remove", "rpiv", "--force"]) }.to raise_error(FakeSystemExit)
+        expect(workflow_command.calls).to be_empty
+      end
+
+      it "prints a refusal's warnings once on stderr in text mode, and leaves them to the document under --json" do
+        start_command.error = Workspace::Error.new("Needs task.", code: "input_required", details: {"warnings" => ["\"rpvi\" is not a known workflow"]})
+
+        expect { cli.run(["workflow", "start", "rpvi", "--dry-run"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string.scan("Warning: \"rpvi\" is not a known workflow").size).to eq(1)
+
+        error_output.truncate(0)
+        expect { cli.run(["workflow", "start", "rpvi", "--dry-run", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).not_to include("Warning:")
+      end
+
+      it "passes --force on, and prints the row's warnings on stderr in text mode only" do
+        start_command.row = start_command.row.merge("warnings" => ["rpiv applies to jira, not branch. Continuing because of --force."])
+        cli.run(["workflow", "start", "rpiv", "x", "--force"])
+        expect(start_command.calls.last).to include(force: true)
+        expect(error_output.string).to include("Warning: rpiv applies to jira, not branch. Continuing because of --force.")
+
+        error_output.truncate(0)
+        error_output.rewind
+        cli.run(["workflow", "start", "rpiv", "x", "--force", "--json"])
+        expect(error_output.string).not_to include("warning:")
+        expect(JSON.parse(output.string.lines.last)["results"].first["warnings"]).not_to be_empty
+      end
     end
 
     it "parses add ID PATH, with --dry-run, as an action document" do
@@ -6844,7 +6924,7 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["workflow", "add", "ship", "draft.yml", "--dry-run", "--json"]) }.not_to raise_error
       cli.run(["workflow", "add", "--dry-run", "ship", "-"])
 
-      expect(workflow_command.calls).to eq([[:add, {id: "ship", path: "draft.yml", dry_run: true}], [:add, {id: "ship", path: "-", dry_run: true}]])
+      expect(workflow_command.calls).to eq([[:add, {id: "ship", path: "draft.yml", dry_run: true, project: nil}], [:add, {id: "ship", path: "-", dry_run: true, project: nil}]])
       doc = JSON.parse(output.string.lines.first)
       expect(doc).to include("ok" => true, "action" => "workflow add", "status" => "dry_run")
       expect(doc["results"]).to eq([workflow_command.row])
@@ -6852,10 +6932,10 @@ RSpec.describe Workspace::CLI do
 
     it "adds a definition from stdin end to end, then refuses a second add with workflow_exists" do
       Dir.mktmpdir do |dir|
-        config = instance_double(Workspace::Config, workflows_dir: File.join(dir, "home", "workflows"), builtin_workflows_dir: File.join(dir, "builtin"))
+        config = instance_double(Workspace::Config, workflows_dir: File.join(dir, "home", "workflows"), builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "no-projects"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
-        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
           engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
 
@@ -6880,8 +6960,8 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "update", "ship", "draft.yml", "--if-sha256", "abc123", "--dry-run", "--json"])
       cli.run(["workflow", "update", "--if-sha256", "abc123", "ship", "-"])
 
-      expect(workflow_command.calls).to eq([[:update, {id: "ship", path: "draft.yml", if_sha256: "abc123", dry_run: true}],
-        [:update, {id: "ship", path: "-", if_sha256: "abc123", dry_run: false}]])
+      expect(workflow_command.calls).to eq([[:update, {id: "ship", path: "draft.yml", if_sha256: "abc123", dry_run: true, project: nil}],
+        [:update, {id: "ship", path: "-", if_sha256: "abc123", dry_run: false, project: nil}]])
       doc = JSON.parse(output.string.lines.first)
       expect(doc).to include("ok" => true, "action" => "workflow update", "status" => "dry_run")
     end
@@ -6893,9 +6973,9 @@ RSpec.describe Workspace::CLI do
         old_text = "title: Old\nsteps:\n  plan:\n    prompt: Old.\n"
         text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
         File.write(File.join(home, "ship.yml"), old_text)
-        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
+        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "no-projects"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
-        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
           engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
         old_sha = Digest::SHA256.hexdigest(old_text)
@@ -6920,7 +7000,7 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "remove", "ship", "--yes", "--json"])
       cli.run(["workflow", "remove", "ship", "--dry-run"])
 
-      expect(workflow_command.calls.select { |call| call.first == :remove }).to eq([[:remove, {id: "ship", yes: true, dry_run: false}], [:remove, {id: "ship", yes: nil, dry_run: true}]])
+      expect(workflow_command.calls.select { |call| call.first == :remove }).to eq([[:remove, {id: "ship", yes: true, dry_run: false, project: nil}], [:remove, {id: "ship", yes: nil, dry_run: true, project: nil}]])
       expect(JSON.parse(output.string.lines.first)).to include("ok" => true, "action" => "workflow remove")
       output.truncate(0)
       cli.run(["workflow", "--help"])
@@ -6930,7 +7010,7 @@ RSpec.describe Workspace::CLI do
     it "answers a declined prompt as status cancelled and exit 0" do
       workflow_command.row = nil
       expect { cli.run(["workflow", "remove", "ship"]) }.not_to raise_error
-      expect(workflow_command.calls.last).to eq([:remove, {id: "ship", yes: nil, dry_run: false}])
+      expect(workflow_command.calls.last).to eq([:remove, {id: "ship", yes: nil, dry_run: false, project: nil}])
     end
 
     it "treats --json without --yes or --dry-run as a usage error that never prompts" do
@@ -6943,9 +7023,9 @@ RSpec.describe Workspace::CLI do
         home = File.join(dir, "home", "workflows")
         FileUtils.mkdir_p(home)
         File.write(File.join(home, "ship.yml"), "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n")
-        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
+        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "no-projects"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
-        command = Workspace::Commands::Workflow.new(catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
           engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new("n\n"))
         real_cli, out = build_test_cli(workflow_command: command)
 
@@ -6994,6 +7074,12 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls).to eq([])
     end
 
+    it "lists a run's attempts, of one step" do
+      cli.run(["workflow", "attempts", "wr_1", "--attempt-of", "plan", "--json"])
+
+      expect(workflow_command.calls).to eq([[:attempts, {run: "wr_1", step: "plan", json: true}]])
+    end
+
     it "lists a run's files" do
       cli.run(["workflow", "files", "wr_1", "--json"])
 
@@ -7004,14 +7090,14 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "validate", "a.yml", "--json"])
       cli.run(["workflow", "validate", "-", "--id", "ship"])
 
-      expect(workflow_command.calls).to eq([[:validate, {path: "a.yml", id: nil, json: true}], [:validate, {path: "-", id: "ship", json: false}]])
+      expect(workflow_command.calls).to eq([[:validate, {path: "a.yml", id: nil, json: true, project: nil}], [:validate, {path: "-", id: "ship", json: false, project: nil}]])
     end
 
     it "starts a run in the detected workspace, from its working directory" do
       cli.run(["workflow", "run", "rpiv", "--input", "task=PROJ-1 export=pdf", "--input", "spec=", "--note", "Keep it small."])
 
       expect(workflow_command.calls).to eq([[:run, {id: "rpiv", workspace: "detected-ws", worktree: "/some/dir",
-                                                    inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"]}]])
+                                                    inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"], project: nil}]])
     end
 
     it "starts a run in a named workspace from its root, in a named pane, or only checks with --dry-run" do
@@ -7121,7 +7207,7 @@ RSpec.describe Workspace::CLI do
 
     it "refuses --project on the other subcommands, and lists it in the help beside --prompt" do
       expect { cli.run(["workflow", "show", "rpiv", "--project"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("--project is for `workflow status`.")
+      expect(error_output.string).to include("--project is for `workflow status`, `workflow stats` and `workflow compare`.")
 
       cli.run(["workflow", "--help"])
       expect(output.string).to include("--project [NAME]").and include("--prompt TEXT")
@@ -7136,6 +7222,51 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["workflow", "status", "--help"])
       expect(output.string).to include("--project [NAME] | --all] [--table] [--json]").and include("--table")
+    end
+
+    it "passes --needs-me through as the needs_me scope, narrowed by --name, and refuses what it can't combine with" do
+      cli.run(["workflow", "status", "--needs-me", "--json"])
+      cli.run(["workflow", "status", "--needs-me", "--name", "api"])
+
+      expect(workflow_command.calls.map { |_, kw| [kw[:scope].kind, kw[:scope].workspace, kw[:json]] }).to eq([[:needs_me, nil, true], [:needs_me, "api", false]])
+
+      [%w[--needs-me --all], %w[--needs-me --table], %w[--needs-me wr_1], %w[--needs-me --name api --project]].each do |flags|
+        expect { cli.run(["workflow", "status", *flags]) }.to raise_error(FakeSystemExit)
+      end
+      expect { cli.run(["workflow", "show", "rpiv", "--needs-me"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--needs-me is for `workflow status`.")
+      expect(workflow_command.calls.size).to eq(2)
+    end
+
+    it "exits with the code the status command returns, and with none for no code, 0 or a non-hash" do
+      workflow_command.status_result = {exit_code: 3}
+      expect { cli.run(["workflow", "status", "--needs-me"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+
+      [nil, {exit_code: 0}, "text", 3, {}].each do |result|
+        workflow_command.status_result = result
+        expect { cli.run(["workflow", "status", "--needs-me"]) }.not_to raise_error
+      end
+    end
+
+    it "exits 3 for a list with an unreadable run file, through the real status and command" do
+      Dir.mktmpdir("cli-needs-me") do |dir|
+        store = Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive"))
+        FileUtils.mkdir_p(File.join(dir, "runs"))
+        File.write(File.join(dir, "runs", "wr_bad.json"), "{not json")
+        real_status = Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes), snapshot_client: instance_double(Workspace::AgentSnapshotClient),
+          ask_store_for: ->(_) {}, gate_note: instance_double(Workspace::WorkflowGateNote))
+        real = Workspace::Commands::Workflow.new(lint: nil, catalog: nil, engine: nil, status: real_status, store: store, panes: nil, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new,
+          tmux: nil, process_tree: nil, lock_holder: nil, output: output)
+        real_cli, = build_test_cli(workflow_command: real)
+
+        expect { real_cli.run(["workflow", "status", "--needs-me", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+        expect(JSON.parse(output.string)).to include("status" => "partial", "unreadable" => 1)
+      end
+    end
+
+    it "lists --needs-me on the status help page" do
+      cli.run(["workflow", "status", "--help"])
+      expect(output.string).to include("workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]")
     end
 
     it "refuses --table on the other subcommands, and with a RUN and a scope flag" do
@@ -7172,9 +7303,9 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "reject", "wr_1", "--note", "Too big.", "--to", "research"])
 
       expect(workflow_command.calls).to eq([
-        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", caller_pane: nil}],
+        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, extra_tokens: nil, caller_pane: nil}],
         [:cancel, {run: "wr_1"}],
-        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, caller_pane: nil}]
+        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil}]
       ])
     end
 
@@ -7184,7 +7315,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["workflow", "resume", "wr_1", "--json"])
 
-      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, caller_pane: "%5"}]])
+      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: "%5"}]])
       expect(JSON.parse(output.string)).to include("ok" => true, "status" => "ok", "summary" => {"unchanged" => 1})
     end
 
@@ -7206,9 +7337,37 @@ RSpec.describe Workspace::CLI do
 
       expect(workflow_command.calls).to eq([
         [:approve, {run: "wr_1", note: nil, step: "triage", attempt: 2, note_sha256: sha, caller_pane: "%5"}],
-        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, caller_pane: "%5"}],
+        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, extra_attempts: nil, extra_tokens: nil, caller_pane: "%5"}],
         [:approve, {run: "wr_1", note: nil, step: "triage", attempt: nil, note_sha256: nil, caller_pane: "%5"}]
       ])
+    end
+
+    it "passes --extra-tokens to resume and reject, and refuses a bad one or another verb" do
+      cli.run(["workflow", "resume", "wr_1", "--extra-tokens", "250000"])
+      cli.run(["workflow", "reject", "wr_1", "--note", "No.", "--extra-tokens=3"])
+
+      expect(workflow_command.calls.map { |call| [call.first, call.last[:extra_tokens]] }).to eq([[:resume, 250_000], [:reject, 3]])
+      {["workflow", "resume", "wr_1", "--extra-tokens", "0"] => /--extra-tokens must be a whole number from 1 up, got "0"/,
+       ["workflow", "resume", "wr_1", "--extra-tokens", "1e6"] => /--extra-tokens must be a whole number/,
+       ["workflow", "approve", "wr_1", "--extra-tokens", "1"] => /--extra-tokens is for `workflow resume` and `workflow reject`/}.each do |argv, message|
+        cli, _, error_output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+      end
+    end
+
+    it "passes --extra-attempts to resume and reject, and refuses a bad one or another verb" do
+      cli.run(["workflow", "resume", "wr_1", "--extra-attempts", "2"])
+      cli.run(["workflow", "reject", "wr_1", "--note", "No.", "--extra-attempts=3"])
+
+      expect(workflow_command.calls.map { |call| [call.first, call.last[:extra_attempts]] }).to eq([[:resume, 2], [:reject, 3]])
+      {["workflow", "resume", "wr_1", "--extra-attempts", "0"] => /--extra-attempts must be a whole number from 1 up, got "0"/,
+       ["workflow", "resume", "wr_1", "--extra-attempts", "x"] => /--extra-attempts must be a whole number/,
+       ["workflow", "approve", "wr_1", "--extra-attempts", "1"] => /--extra-attempts is for `workflow resume` and `workflow reject`/}.each do |argv, message|
+        cli, _, error_output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+      end
     end
 
     it "refuses a bad --step, --attempt or --note-sha256 as a usage error, and moves nothing" do
@@ -7324,11 +7483,13 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "files"] => /workflow files needs a RUN id/,
+        ["workflow", "attempts"] => /workflow attempts needs a RUN id/,
+        ["workflow", "files", "wr_1", "--attempt-of", "plan"] => /--attempt-of is for `workflow attempts RUN`/,
         ["workflow", "show", "--source"] => /workflow show --source needs an ID/,
         ["workflow", "status", "--source"] => /--source is for `workflow show ID`/,
         ["workflow", "run"] => /workflow run needs an ID/,
@@ -7403,7 +7564,7 @@ RSpec.describe Workspace::CLI do
       )
     end
     let(:command) do
-      Workspace::Commands::Workflow.new(catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
+      Workspace::Commands::Workflow.new(lint: nil, catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
         status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, files: nil, run_files: nil,
         tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: StringIO.new)
     end
@@ -7428,7 +7589,7 @@ RSpec.describe Workspace::CLI do
         end
       end
       let(:parking) do
-        Workspace::Commands::Workflow.new(catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
+        Workspace::Commands::Workflow.new(lint: nil, catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
           status: status, store: store, panes: panes, files: nil, run_files: nil,
           tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: out)
       end
@@ -7483,7 +7644,7 @@ RSpec.describe Workspace::CLI do
         end
       end
       let(:parking) do
-        Workspace::Commands::Workflow.new(catalog: catalog, engine: engine,
+        Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: engine,
           status: status, store: store, panes: panes, files: nil, run_files: nil,
           tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: StringIO.new)
       end
@@ -7556,7 +7717,7 @@ RSpec.describe Workspace::CLI do
         tmux = instance_double(Workspace::Tmux, session_name_for: "app", pane_details: [{id: "%5", window: 0, index: 1, pid: 200}])
         tree = instance_double(Workspace::ProcessTree)
         allow(tree).to receive(:snapshot).and_return(instance_double(Workspace::ProcessTree::Snapshot, ancestors: [{pid: 4242}, {pid: 200}]))
-        under = Workspace::Commands::Workflow.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes,
+        under = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes,
           files: nil, run_files: nil, tmux: tmux, process_tree: tree, lock_holder: nil, pid: 4242, output: StringIO.new)
 
         row = under.run(id: "flow", workspace: "app", worktree: @dir, pane: "%5")

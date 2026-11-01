@@ -1,0 +1,147 @@
+schema_version: 1
+id: rpiv-auto-approve
+title: Research, Plan, Implement, Verify (auto-approve)
+description: One feature end to end with no person, three reviewer agents voting on the plan, and a test-backed verify loop.
+
+use_when: A feature or change to build end to end when no person will review the plan.
+
+inputs:
+  task:
+    description: What to build. A ticket key with a sentence, or a path to a spec in the worktree.
+    required: true
+  spec:
+    description: Optional spec or ticket file to read first.
+
+instructions: |
+  You are working on {{inputs.task}} in workspace {{workspace}}, branch {{branch}}.
+  Spec (may be empty): {{inputs.spec}}
+  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
+  inputs; read them before you start.
+
+# Five steps, nine plan rejections and three trips back from verify fit in twenty-nine;
+# three more cover a step run again for a file it didn't write.
+max_attempts: 32
+
+steps:
+  research:
+    title: Research
+    prompt: |
+      Research {{inputs.task}}. Read the code it touches, the tests that cover it, and
+      related docs. Don't change code or commit.
+      Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
+      constraints, open questions, risks.
+    produces: [research.md]
+    guard: unchanged
+    timeout: 45m
+
+  plan:
+    title: Plan
+    include: [notes, implementation-plan]
+    prompt: |
+      If {{artifacts}}/plan-approval.md exists, reviewers turned the last plan down. Read every
+      reviewer's reasons, including the ones that approved. Don't just patch the objection or
+      argue with it: rethink what it takes, and find an approach that meets the concerns of all
+      the reviewers, changing the design if the current one can't. Keep what is sound, and say
+      in plan.md how each objection was answered.
+      Using {{artifacts}}/research.md, write the plan as the workspace plan: the
+      IMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title "<title>"` first if it does not exist), in the syntax the
+      implementation-plan instructions give, so `workspace plan status` shows it.
+      One task per commit, in order, with the files touched, tests to add and how you'll
+      know it works under that task in Task details. Call out anything that needs the
+      dev environment or the test database. Set `status: active` and leave every task `[ ]`.
+      You only write the plan here; do not start any task, and do not set `status: done`.
+      Then write {{artifacts}}/plan.md: the approach, the risks, and
+      the path of the plan file. Do not copy the task list into it. The step is not
+      finished until plan.md exists.
+      Don't change code.
+    produces: [plan.md]
+    guard: unchanged
+    # Done only when the workspace plan exists and has at least one task.
+    status:
+      run: |
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 ? 0 : 1)'
+    timeout: 45m
+
+  plan_review:
+    title: Plan review
+    # The conversation stays the planner's, so a rejection goes back to the agent that wrote
+    # the plan. The reviewers are sub-agents, so they read it fresh all the same.
+    context: continue
+    prompt: |
+      Decide whether the workspace plan (`workspace plan path`) may go ahead. No person will
+      look at it, so this review is the only approval it gets.
+      Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
+      {{artifacts}}/research.md. Do not edit the plan or change code.
+      Start three reviewer sub-agents in one message, each with its own fresh context, giving each
+      the paths and this task, and none of the others' answers from this round:
+      - supportive: look for what makes the plan sound, and approve unless something would
+        really stop it working.
+      - skeptical: assume the plan is wrong and try to prove it: missing cases, wrong order,
+        steps that can't be undone, requirements of the task it doesn't meet. Approve only
+        if you can't find a blocking problem.
+      - implementer: you will have to build this. Check each task is small, ordered, testable
+        and says enough to start, and approve unless something would really stop you.
+      If {{artifacts}}/plan-approval.md exists, give all three its path: it is the last round's
+      result, there to show what was objected to, and no one's vote carries over. Each checks
+      the objections were answered, and rejects for a new problem only if
+      it blocks the plan.
+      Each answers approve or reject, with its reasons. Don't resolve a disagreement yourself and
+      don't run a reviewer again. The plan is approved when the skeptical reviewer and at least
+      one other approve; the check works that out from the lines below.
+      Write {{artifacts}}/plan-approval.md with exactly these four lines first, in this order and
+      with no other formatting, then each reviewer's reasons:
+      plan_revision: REV
+      supportive: approve or reject
+      skeptical: approve or reject
+      implementer: approve or reject
+    produces: [plan-approval.md]
+    guard: unchanged
+    # Done only when the skeptic and one other approved the plan as it stands now. A rejection goes back to plan.
+    status:
+      run: |
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; revision, supportive, skeptical, implementer = File.readlines(File.join(ENV.fetch("WORKSPACE_RUN_ARTIFACTS"), "plan-approval.md"), chomp: true); exit(plan && plan["revision"] && revision == "plan_revision: #{plan["revision"]}" && skeptical == "skeptical: approve" && (supportive == "supportive: approve" || implementer == "implementer: approve") ? 0 : 1)'
+    on_fail:
+      goto: plan
+      max: 9
+      context: continue
+    timeout: 30m
+
+  implement:
+    title: Implement
+    include: [notes, implementation-plan]
+    prompt: |
+      Implement the workspace plan (`workspace plan path`) one task at a time, marking
+      each task as the instructions say. Run the relevant tests before each commit. If the
+      plan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.
+      Write {{artifacts}}/implement.md listing the commits you made, then set the plan's
+      `status: done`; the run is waiting on that file and on that status. Make at least one commit.
+      On a rerun (after a failed verify, or a resume), make a new commit for the fix and never
+      amend or rebase, which the run's commit check can't follow. If no code change is needed,
+      run `git commit --allow-empty -m '<why>'`.
+    produces: [implement.md]
+    require:
+      - commits: 1
+      - plan_status: done
+    timeout: 3h
+
+  verify:
+    title: Verify
+    include: [review]
+    prompt: |
+      Verify the work against the workspace plan (`workspace plan path`). Run the full test suite and the
+      linter (the project's lint command, when it has one, must pass: the run checks it), then review the branch's diff against its base.
+      Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    uses: [test-db]
+    status:
+      command: test
+    require:
+      - command: lint
+        optional: true
+    timeout: 90m
+    on_fail:
+      goto: implement
+      max: 3
+      context: continue

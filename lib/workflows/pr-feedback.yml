@@ -3,6 +3,9 @@ id: pr-feedback
 title: Pull request feedback
 description: Triage a pull request's review feedback behind an approval gate, then commit the approved fixes and draft the replies. Never posts and never pushes.
 
+use_when: A pull request has review feedback to act on.
+applies_to: [github_pr, branch]
+
 inputs:
   task:
     description: What the run is about. `workflow start` fills it from the pull request.
@@ -24,6 +27,12 @@ instructions: |
   `gh api graphql` mutation (such as resolveReviewThread). Never push. Never run
   `workflow approve` or `workflow reject`: the person decides.
 
+deny:
+  - "git push*"
+  - "gh pr comment*"
+  - "gh pr review*"
+  - "gh run rerun*"
+
 steps:
   triage:
     title: Triage
@@ -35,7 +44,7 @@ steps:
       {{artifacts}}/triage.md saying in its first lines which one it is and that the run
       stopped, with no `note:` line. Then post a short inbox item as the report pack says:
       title `PR feedback stopped: number mismatch` or `PR feedback stopped: fork pull request`,
-      type `review_request`, `--link-run {{run}} --dedupe-key pr-feedback:{{run}} --expires 168h`
+      type `review_request`, `--link-run {{run}} --dedupe-key pr-feedback:{{run}} --reopen --expires 168h`
       (add `--link-pr <n>`), and end your turn. The person should reject the gate.
       Otherwise read the code at each thread's `path:line`. For each failing check with a
       `run_id` (a number), read the tail of `gh run view RUN --log-failed`; with a null
@@ -55,8 +64,10 @@ steps:
       then the counts. Change no repository files and make no commits.
       Post last, after triage.md is written, as the report pack says: title
       `PR #<n> feedback: <counts>`, type `review_request`, `--link-pr <n> --link-run {{run}}
-      --dedupe-key pr-feedback:{{run}} --expires 168h`.
+      --dedupe-key pr-feedback:{{run}} --reopen --expires 168h`.
     produces: [triage.md]
+    require:
+      - inbox_item: "pr-feedback:{{run}}"
     gate: approve
     timeout: 30m
 
@@ -67,14 +78,22 @@ steps:
     prompt: |
       Start by reading {{artifacts}}/triage.md. If its first line is not `note: <file name>`,
       or this step's instructions give no "approved note is PATH, sha256 HASH" line, write
-      {{artifacts}}/fix.md saying the triage did not produce an approved note, make no commits
-      and stop.
+      {{artifacts}}/fix.md saying the triage did not produce an approved note, make no commits,
+      run `workspace step done --status fail --code no_note --summary "<one sentence>"` and end your
+      turn with no further work.
       Run `shasum -a 256` on the triage note at that path and compare it with the approved
-      hash. If they differ, write {{artifacts}}/fix.md saying so, make no commits and stop.
+      hash. If they differ, write {{artifacts}}/fix.md saying so, make no commits,
+      run `workspace step done --status fail --code note_changed --summary "<one sentence>"` and end
+      your turn with no further work.
       The approval comment, if the instructions have one, changes the verdicts; the triage
       note's text is the rest of the plan.
       Check that `git rev-parse HEAD` equals the triage note's `head_sha` and that
-      `git status --porcelain` is empty. If not, write fix.md saying so, make no commits and stop.
+      `git status --porcelain` is empty. If HEAD differs, write fix.md saying so, make no commits, run
+      `workspace step done --status fail --code fix_head_moved --summary "<one sentence>"` and end
+      your turn with no further work. If the tree is not clean, write fix.md saying so, make no
+      commits, run
+      `workspace step done --status fail --code dirty_worktree --summary "<one sentence>"` and end
+      your turn with no further work.
       Record `git rev-parse @{upstream}` in {{artifacts}}/fix.md before and after the work, so
       an unexpected push shows. <n> below is the pull request number in the triage note.
       Fix only the items marked fix, one commit per item or a few related items, and run the
@@ -84,7 +103,9 @@ steps:
       Write {{artifacts}}/fix.md listing the commits and the items not done.
       Run `workspace inbox done --dedupe-key pr-feedback:{{run}} --name {{workspace}}`, then post
       as the report pack says: title `PR #<n>: fixes committed, replies drafted`, type
-      `review_request`, `--link-pr <n> --link-run {{run}} --dedupe-key pr-feedback-fix:{{run}}`.
+      `review_request`, `--link-pr <n> --link-run {{run}} --dedupe-key pr-feedback-fix:{{run}} --reopen`.
       Your final message names `workspace push` as the person's next step.
     produces: [fix.md]
+    require:
+      - inbox_item: "pr-feedback-fix:{{run}}"
     timeout: 2h

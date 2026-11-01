@@ -32,7 +32,7 @@ module Workspace
       # @!attribute warnings [Array<String>]
       # @!attribute prompt [String, nil] the --prompt text
       # @!attribute checkout [String, nil] the ref `start` is given; a bare `#N` names the repository `gh pr view` read
-      Plan = Struct.new(:definition, :ref, :branch, :project, :path, :would_create, :inputs, :ticket, :spec_path, :checked, :warnings, :prompt, :checkout, keyword_init: true)
+      Plan = Struct.new(:definition, :catalog_project, :ref, :branch, :project, :path, :would_create, :inputs, :ticket, :spec_path, :checked, :warnings, :prompt, :checkout, keyword_init: true)
 
       # Where `workflow start` was called from, when the ref is to run in that checkout.
       #
@@ -48,6 +48,7 @@ module Workspace
       # @param ticket_source [Workspace::TicketSource]
       # @param git [Workspace::Git]
       # @param project_config [Workspace::ProjectConfig] names the project's and its worktrees' workspaces, as `start` does
+      # @param workflow_project [Workspace::WorkflowProject] says which project's workflow definitions a checkout reads
       # @param start [Workspace::Commands::Start] makes the workspace, through #payload
       # @param workflow [Workspace::Commands::Workflow] starts the run
       # @param readiness [Workspace::AgentReadiness] waits for the new workspace's agent
@@ -55,8 +56,9 @@ module Workspace
       # @param agent_commands [Workspace::AgentCommands] finds the agent in a pane
       # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
       # @param ssh_hosts [Workspace::SshHostResolver] names the real host behind an ssh remote's host alias
+      # @param router [Workspace::WorkflowRouter] picks the workflow for `--ref`
       # @param output [IO]
-      def initialize(catalog:, workflow_defaults:, engine:, start_ref:, ticket_source:, git:, project_config:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, ssh_hosts:, output: $stdout)
+      def initialize(catalog:, workflow_defaults:, engine:, start_ref:, ticket_source:, git:, project_config:, workflow_project:, start:, workflow:, readiness:, tmux:, agent_commands:, excludes:, ssh_hosts:, router:, output: $stdout)
         @catalog = catalog
         @workflow_defaults = workflow_defaults
         @engine = engine
@@ -64,6 +66,7 @@ module Workspace
         @ticket_source = ticket_source
         @git = git
         @project_config = project_config
+        @workflow_project = workflow_project
         @start = start
         @workflow = workflow
         @readiness = readiness
@@ -71,10 +74,11 @@ module Workspace
         @agent_commands = agent_commands
         @excludes = excludes
         @ssh_hosts = ssh_hosts
+        @router = router
         @output = output
       end
 
-      # @param id [String, nil] the workflow; nil takes it from config (`workflows.by_ref.<kind>`, then `workflows.default`)
+      # @param id [String, nil] the workflow; nil takes it from config (`workflows.by_ref.<kind>`, then `workflows.default`), or from the router with +route+
       # @param ref [String, nil] a JIRA key or URL, pull request, issue or branch; with a nil +id+ it is never read as an id
       # @param positional [String, nil] the lone argument whose meaning is not settled: a known workflow id is the id,
       #   else it is the ref (a branch-shaped one with a prompt stays an unknown id)
@@ -89,37 +93,60 @@ module Workspace
       # @param prompt_timeout [Numeric, nil] seconds to wait for the agent
       # @param dry_run [Boolean] check everything and create nothing
       # @param here [Here, nil] run in this checkout instead of making one; the ref's checkout must be the same directory
+      # @param force [Boolean] start although the workflow's `applies_to:` leaves out the ref's kind
+      # @param route [Boolean] +id+ is not given: {Workspace::WorkflowRouter} picks it from the ref's kind (`--ref`); the row
+      #   then has "routed" ("ref", "kind", "workflow", "source", "scope", "key")
       # @return [Hash{String=>Object}] the action row: outcome "dry_run" with "workflow", "step", "project",
       #   "branch", "path", "would_create", "inputs", "packs", "warnings" and, "ticket" (nil when none was read)
       # @raise [Workspace::UsageError] no ref and no prompt, both a ref and a branch, an empty slug, or an invalid branch name
-      # @raise [Workspace::Error] code `unknown_workflow`, `no_default_workflow`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
+      # @raise [Workspace::Error] code `unknown_workflow`, `no_default_workflow`, `invalid_workflow_default` (`--ref`), `workflow_not_for_ref`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
       #   request), `fork_pull_request`, `branch_exists`, or {Workspace::WorkflowEngine#preflight}'s (`input_required`,
       #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout); with +here+,
       #   `branch_exists` when the ref's checkout is not the one it runs in
       def call(id: nil, ref: nil, positional: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
-        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil)
+        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false, route: false)
         prompt = prompt.to_s.strip
         prompt = nil if prompt.empty?
-        id, ref = split(id, ref, positional, prompt)
+        project = catalog_project
+        id, ref = split(id, ref, positional, prompt, project)
         warnings = []
+        routed = nil
         # A named id's unknown_workflow outranks the usage errors; a default is read only after they pass.
-        if id
-          definition = @catalog.find(id)
+        if route
+          check_usage!(ref, prompt, branch)
+          where = locate_project
+          id, routed = route_ref(ref, force: force, dry_run: dry_run)
+          definition = @catalog.find(id, project: project)
+        elsif id
+          definition = @catalog.find(id, project: project)
           check_usage!(ref, prompt, branch)
           where = locate_project
         else
           check_usage!(ref, prompt, branch)
           where = locate_project
-          id = default_id(ref, where[:project_workspace])
-          definition = @catalog.find(id)
-          warnings = read_as_branch(ref, id) if positional
-          warnings.each { |warning| @output.puts "Warning: #{warning}" }
+          id = default_id(ref, project)
+          definition = @catalog.find(id, project: project)
+          warnings = read_as_branch(ref, id, project) if positional
         end
-        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, **where)
-        return run_here(plan, here, note: note, dry_run: dry_run) if here
-        return dry_run_row(id, plan) if dry_run
+        plan = keeping_warnings(warnings) { plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, force: force, catalog_project: project, **where) }
+        row = if here
+          run_here(plan, here, note: note, dry_run: dry_run)
+        elsif dry_run
+          dry_run_row(id, plan)
+        else
+          start_workspace(plan, note: note, base: base, headless: headless, agent_kind: agent_kind, prompt_timeout: prompt_timeout, slug: slug)
+        end
+        routed ? row.merge("routed" => routed) : row
+      end
 
-        start_workspace(plan, note: note, base: base, headless: headless, agent_kind: agent_kind, prompt_timeout: prompt_timeout, slug: slug)
+      # The project whose definitions and project config keys are read: the one the checkout joins, the same answer every
+      # other `workflow` reader gets (see {Workspace::WorkflowProject}). nil outside a git checkout (the later checks refuse that).
+      #
+      # @return [String, nil]
+      def catalog_project
+        root = @git.root
+        return nil unless root
+        @workflow_project.for_directory(root)&.project
       end
 
       # The checkout's root, the project it belongs to and the project's workspace name.
@@ -150,7 +177,7 @@ module Workspace
       def run_here(plan, here, note:, dry_run:)
         refuse_other_checkout!(plan, here) unless same_checkout?(plan.path, here.path)
         write_ticket(plan, plan.spec_path, here.path) unless dry_run
-        row = @workflow.run(id: plan.definition.to_h["id"], workspace: here.workspace, worktree: here.path, inputs: plan.inputs, note: note, dry_run: dry_run, caller_pane: here.caller_pane)
+        row = @workflow.run(id: plan.definition.to_h["id"], workspace: here.workspace, worktree: here.path, inputs: plan.inputs, note: note, dry_run: dry_run, caller_pane: here.caller_pane, project: plan.catalog_project)
         row.merge("project" => plan.project.name, "branch" => plan.branch, "path" => here.path, "would_create" => false,
           "ticket" => plan.ticket&.slice("key", "title", "url"), "warnings" => plan.warnings)
       end
@@ -169,12 +196,28 @@ module Workspace
 
       # A lone positional that is a known workflow is the id. Otherwise it is the ref, except that
       # a branch-shaped one beside a prompt stays an id (a mistyped one, `unknown_workflow`).
-      def split(id, ref, positional, prompt)
+      def split(id, ref, positional, prompt, project)
         return [id, ref] unless positional
-        return [positional, nil] if @catalog.known?(positional)
+        return [positional, nil] if @catalog.known?(positional, project: project)
         return [nil, positional] if prompt.nil? || @start_ref.call(positional).kind != "branch"
 
         [positional, nil]
+      end
+
+      # The workflow for a ref's kind, and the line saying so. The line goes through the output gate, so
+      # `--json` keeps it off stdout; the same facts are the row's "routed".
+      def route_ref(ref, force:, dry_run:)
+        root = @git.root or raise Workspace::Error, "workflow start must run inside a git repository."
+        resolved = @workflow_project.for_directory(root)
+        kind = @start_ref.call(ref).kind
+        route = @router.route(kind: kind, workspace: resolved&.project, ref: ref, force: force, registered: !resolved.nil?)
+        from = (route["definition_source"] == "project") ? " (this project's definition)" : ""
+        why = if route["source"] != "default" then "the only workflow that fits #{kind}"
+        elsif route["scope"] == "global" then "your global default for #{kind}"
+        else "this project's default for #{kind}"
+        end
+        @output.puts "Routing #{TerminalText.escape(ref)} (#{kind}) to #{route["workflow"]}#{from}, #{why}.#{" Use --dry-run to see the steps." unless dry_run}"
+        [route["workflow"], route.merge("ref" => ref).slice("ref", "kind", "workflow", "source", "scope", "key", "definition_source")]
       end
 
       def check_usage!(ref, prompt, branch)
@@ -184,35 +227,38 @@ module Workspace
 
       # The workflow config names for this kind of ref, read for the project's workspace (the
       # worktree isn't known yet).
-      def default_id(ref, project_workspace)
+      # Config is read from the project the checkout is tied to, as `--ref` does: a clone that only shares a
+      # project's directory name gets the global keys.
+      def default_id(ref, project)
         kind = ref ? @start_ref.call(ref).kind : "prompt"
-        @workflow_defaults.id_for(kind, workspace: project_workspace) || raise_no_default(kind, ref)
+        @workflow_defaults.id_for(kind, workspace: project) || raise_no_default(kind, ref, project)
       end
 
       # A word that names no workflow reads as a branch, so a mistyped id would otherwise start the
       # configured workflow on a new branch with nothing said.
-      def read_as_branch(ref, id)
+      def read_as_branch(ref, id, project)
         return [] unless @start_ref.call(ref).kind == "branch"
 
-        ["#{ref.inspect} is not a known workflow, so it was read as a branch and #{id} comes from config. Known: #{@catalog.known_ids.join(", ")}."]
+        ["#{ref.inspect} is not a known workflow, so it was read as a branch and #{id} comes from config. Known: #{@catalog.known_ids(project: project).join(", ")}."]
       end
 
-      def raise_no_default(kind, ref)
-        known = @catalog.known_ids
+      def raise_no_default(kind, ref, project)
+        known = @catalog.known_ids(project: project)
         read_as = ref ? "#{ref.inspect} is not a known workflow, so it was read as a #{kind} ref. " : ""
         raise Workspace::Error.new("#{read_as}No default workflow is set for a #{kind} start. Name one (workspace workflow start ID ...), " \
-          "or set one with `workspace config set workflows.default ID` (add `--scope project` for this project only; " \
+          "or set one with `workspace config set workflows.default ID` (#{"add `--scope project --name #{project}` for this project only; " if project}" \
           "`workflows.by_ref.#{kind}` sets it for #{kind} starts alone). Known: #{known.join(", ")}.",
-          code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known})
+          code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known}.merge(@router.unrouted(kind, workspace: project)))
       end
 
-      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:)
+      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:, force: false, catalog_project: nil)
         if here && !agent_kind
           check_agent!(here.workspace, project: project_workspace)
         else
           require_claude!(agent_kind || @agent_commands.kind(project_workspace))
         end
         resolved = ref && @start_ref.call(ref)
+        check_applies_to!(definition, resolved, ref, warnings, force: force)
         ticket = read_ticket(resolved, root, definition, inputs: inputs, prompt: prompt, slug: slug, warnings: warnings)
         allowed = tracked_repositories(root)
         checked = check_pull_request!(definition, resolved, ticket, allowed, "'#{resolved.key}'") if resolved&.kind == "github_pr"
@@ -236,8 +282,27 @@ module Workspace
         seeded = seed(definition, ticket, prompt, inputs, spec_path, resolved)
         # A checkout that is already there is the one the agent starts in, so its tree is checked; a new one starts clean.
         checked = @engine.preflight(definition: definition, workspace: here&.workspace || project.name, worktree: here&.path || project.root, inputs: seeded, pane: nil, tree: exists ? path : nil, checkout: path)
-        Plan.new(definition: definition, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
+        Plan.new(definition: definition, catalog_project: catalog_project, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
           ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt, checkout: checkout_ref(resolved, ticket))
+      end
+
+      # Refuses a ref of a kind the definition's `applies_to` does not list, unless +force+ (then a
+      # warning). Checked from the ref's text alone, before the ticket is read, so a mismatch costs no
+      # `gh` or `jira` call and nothing is made. A prompt has no ref kind and is not checked.
+      def check_applies_to!(definition, resolved, ref, warnings, force:)
+        return unless resolved
+
+        applies = WorkflowDefinition.applies_to(definition.to_h)
+        return if applies.empty? || applies.include?(resolved.kind)
+
+        id = definition.to_h["id"]
+        message = "#{id} applies to #{applies.join(", ")}, not #{resolved.kind}."
+        if force
+          warnings << "#{message} Continuing because of --force."
+          return
+        end
+        raise Workspace::Error.new("#{message} Pass --force to continue.", code: "workflow_not_for_ref",
+          details: {"workflow" => id, "kind" => resolved.kind, "applies_to" => applies})
       end
 
       # The ticket's fields, nil for a prompt or a plain branch; a pull request's also has
@@ -482,7 +547,7 @@ module Workspace
           end
           write_ticket(plan, spec_file, path)
           pane_id = wait_for_agent(workspace, prompt_timeout)
-          row = @workflow.run(id: plan.definition.to_h["id"], workspace: workspace, worktree: path, inputs: inputs, note: note, pane: pane_id)
+          row = @workflow.run(id: plan.definition.to_h["id"], workspace: workspace, worktree: path, inputs: inputs, note: note, pane: pane_id, project: plan.catalog_project)
         rescue => e
           raise with_next(e, plan, inputs, note, workspace, path, warnings)
         end
@@ -509,7 +574,19 @@ module Workspace
 
       # A UsageError stays one; any other class becomes a plain Workspace::Error, as in promote, because
       # the subclasses do not share a constructor.
+      # A refusal from the checks keeps the warnings gathered so far, so a mistyped id still gets said.
+      def keeping_warnings(warnings)
+        yield
+      rescue Workspace::Error => e
+        raise if warnings.empty?
+        klass = e.is_a?(Workspace::UsageError) ? Workspace::UsageError : Workspace::Error
+        raise klass.new(e.message, code: e.code, details: e.details.merge("warnings" => warnings), retry_with: e.retry)
+      end
+
       def with_next(error, plan, inputs, note, workspace, path, warnings)
+        # A refusal that already names its own next command (checkout_has_run's cancel) keeps it and its message.
+        return error if error.respond_to?(:details) && error.details.is_a?(Hash) && error.details["next"]
+
         run = ["workspace workflow run", Shellwords.escape(plan.definition.to_h["id"])]
         run.push("--name", Shellwords.escape(workspace)) if workspace
         inputs.each { |name, value| run.push("--input", "#{name}=#{Shellwords.escape(value)}") unless value.to_s.empty? }

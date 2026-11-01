@@ -205,16 +205,71 @@ module Workspace
     # @return [Boolean] whether the pane has shown a shell for {AGENT_GONE_AFTER}
     #   seconds; false when the daemon does not answer
     def agent_gone?(workspace, pane)
-      row = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
-      !row.nil? && row["kind"] == "shell" && row["idle_seconds"].to_i >= AGENT_GONE_AFTER
+      self.class.agent_gone_row?(row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane))
     rescue Workspace::Error
       false
+    end
+
+    # @param row [Hash{String=>Object}, nil] a pane's entry in the daemon's snapshot
+    # @return [Boolean] whether the pane has shown a shell for {AGENT_GONE_AFTER} seconds
+    def self.agent_gone_row?(row)
+      !row.nil? && row["kind"] == "shell" && row["idle_seconds"].to_i >= AGENT_GONE_AFTER
+    end
+
+    # @param workspace [String]
+    # @param pane [String] a pane id
+    # @return [Hash{String=>Object}, nil] the pane's entry in the daemon's snapshot; nil when the daemon does
+    #   not answer or does not list the pane
+    def pane_row(workspace, pane)
+      row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+    rescue Workspace::Error
+      nil
+    end
+
+    # @param workspace [String]
+    # @return [Boolean] whether the workspace has a tmux session
+    def session_live?(workspace)
+      @tmux.session_exists?(@tmux.session_name_for(workspace))
+    end
+
+    # Starts the workspace's agent daemon when none runs (it answers at once when one does).
+    #
+    # @param workspace [String]
+    # @return [Hash] `:ok`, and `:detail` (why it could not be started) when not
+    def respawn_daemon(workspace)
+      result = @agent_ensurer.call(name: workspace)
+      {ok: result.ok?, detail: result.detail}
+    rescue Workspace::Error => e
+      {ok: false, detail: e.message.lines.first.to_s.strip}
     end
 
     # @param pane [String] a pane id
     # @return [Boolean] whether tmux no longer has the pane; false when tmux can't be read
     def pane_gone?(pane)
       @tmux.session_name_for_pane(pane).nil?
+    rescue SystemCallError
+      false
+    end
+
+    # What identifies the pane a run is bound to: the session and window slot the binding recorded, the facts
+    # {#same_pane?} compares later, once the binding is gone.
+    #
+    # @param run_id [String]
+    # @return [Hash{String=>String}, nil] nil when the run has no binding or the binding recorded no session
+    def identity(run_id)
+      pane = pane_of(run_id)
+      entry = pane && @bindings.binding_for(pane)
+      return nil unless entry && entry["session"].is_a?(String)
+      entry.slice("session", "pane_slot")
+    end
+
+    # @param pane [String] a pane id
+    # @param identity [Hash, nil] from {#identity}
+    # @return [Boolean] whether +pane+ is still in the session (and slot) the identity names, by the rule of a
+    #   binding's stale check; false for no identity, a pane tmux does not have, or a pane id reused elsewhere
+    def same_pane?(pane, identity)
+      return false unless identity.is_a?(Hash) && identity["session"].is_a?(String)
+      !@bindings.stale?(identity, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane))
     rescue SystemCallError
       false
     end
@@ -367,23 +422,31 @@ module Workspace
        proof_missing: reply.dig("details", "proof_missing"), warning: reply["warning"]}.compact
     end
 
+    # `no_daemon` means nothing was sent (no socket to open); once the request is on the wire, a failure is
+    # `connection_failed`, which does not say whether the daemon typed the line.
     def request(workspace, message)
-      socket = @connector.call(@config.agent_socket_path(workspace))
+      socket = begin
+        @connector.call(@config.agent_socket_path(workspace))
+      rescue SystemCallError, IOError
+        raise Workspace::Error.new("No agent daemon answered for '#{workspace}'.", code: "no_daemon")
+      end
       begin
-        socket.puts(JSON.generate(message))
-        # A step's dispatch waits for this, so it never waits for good.
-        unless socket.wait_readable(@reply_timeout)
-          raise Workspace::Error.new("The agent daemon for '#{workspace}' did not answer within #{@reply_timeout.round}s.", code: "connection_failed")
+        begin
+          socket.puts(JSON.generate(message))
+          # A step's dispatch waits for this, so it never waits for good.
+          unless socket.wait_readable(@reply_timeout)
+            raise Workspace::Error.new("The agent daemon for '#{workspace}' did not answer within #{@reply_timeout.round}s.", code: "connection_failed")
+          end
+          line = socket.gets
+        ensure
+          socket.close
         end
-        line = socket.gets
-      ensure
-        socket.close
+      rescue SystemCallError, IOError
+        raise Workspace::Error.new("The connection to the agent daemon for '#{workspace}' failed after the request was sent.", code: "connection_failed")
       end
       reply = line && JSON.parse(line)
       return reply if reply.is_a?(Hash)
       raise Workspace::Error.new("The agent daemon for '#{workspace}' closed the connection without replying.", code: "connection_failed")
-    rescue SystemCallError, IOError
-      raise Workspace::Error.new("No agent daemon answered for '#{workspace}'.", code: "no_daemon")
     rescue JSON::ParserError
       raise Workspace::Error.new("Unreadable reply from the agent daemon for '#{workspace}'.", code: "unreadable_reply")
     end

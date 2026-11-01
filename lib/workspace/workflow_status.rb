@@ -81,12 +81,18 @@ module Workspace
     # @param project [#name, #members] a {Workspace::ProjectCatalog::Project}
     # @return [Hash] "runs" and "warnings", as {#runs}
     def in_project(project)
-      names = project.members.filter_map(&:workspace)
-      stored = (@store.active + @store.archived).select do |run|
-        names.include?(run["workspace"]) || run["project"] == project.name ||
-          WorkspaceLineage.split_worktree_name(run["workspace"])&.first == project.name
-      end
+      stored = (@store.active + @store.archived).select { |run| in_project?(run, project) }
       present_all(stored)
+    end
+
+    # Whether a stored run belongs to a project, by the rules {#in_project} lists.
+    #
+    # @param run [Hash] a stored run
+    # @param project [#name, #members] a {Workspace::ProjectCatalog::Project}
+    # @return [Boolean]
+    def in_project?(run, project)
+      project.members.filter_map(&:workspace).include?(run["workspace"]) || run["project"] == project.name ||
+        WorkspaceLineage.split_worktree_name(run["workspace"])&.first == project.name
     end
 
     # @param id [String] a run id
@@ -105,19 +111,56 @@ module Workspace
     private
 
     # Warns of unreadable run files, then shows each stored run; a malformed one is a warning.
+    # "unreadable" counts the run files and runs left out.
     def present_all(stored)
-      warnings = @store.unreadable.map do |path|
+      paths = @store.unreadable
+      warnings = paths.map do |path|
         "The run file #{path} can't be read, so its run is not shown. What it held stays held: " \
           "free a lock with `workspace lock clear NAME`, or delete the file."
       end
+      malformed = 0
+      # One daemon answer (or silence) per workspace for the whole list, asked in parallel under one deadline.
+      @snapshots = prefetch_snapshots(stored)
       shown = stored.filter_map do |run|
         present(run, warnings)
       rescue KeyError, NoMethodError, TypeError, ArgumentError
+        malformed += 1
         warnings << "Workflow run #{run["id"]} can't be shown: its run file is malformed. What it holds stays held: " \
           "free a lock with `workspace lock clear NAME`, or delete the file."
         nil
       end
-      {"runs" => shown, "warnings" => warnings.uniq}
+      @snapshots = nil
+      {"runs" => shown, "warnings" => warnings.uniq, "unreadable" => paths.size + malformed}
+    end
+
+    # Seconds all the daemon reads of one list share, past SNAPSHOT_TIMEOUT.
+    LIST_GRACE = 0.25
+
+    # Each workspace with a run whose pane will be looked at, read in its own thread; a daemon that has not
+    # answered by the shared deadline reads as an error, as a refused connection would.
+    def prefetch_snapshots(stored)
+      names = stored.filter_map do |run|
+        next if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
+        run["workspace"] if run["parked"] || %w[running checking].include?(run.dig("steps", run["current"], "state"))
+      end.uniq
+      clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+      deadline = clock.call + SNAPSHOT_TIMEOUT + LIST_GRACE
+      threads = names.to_h do |name|
+        thread = Thread.new do
+          [:ok, @snapshot_client.fetch(name, timeout: SNAPSHOT_TIMEOUT)]
+        rescue Workspace::Error => e
+          [:error, e]
+        rescue
+          [:error, Workspace::Error.new("The agent daemon for '#{name}' failed", code: "connection_failed")]
+        end
+        thread.report_on_exception = false
+        [name, thread]
+      end
+      threads.to_h do |name, thread|
+        finished = thread.join([deadline - clock.call, 0].max)
+        thread.kill unless finished
+        [name, finished ? thread.value : [:error, Workspace::Error.new("The agent daemon for '#{name}' did not answer in time", code: "connection_failed")]]
+      end
     end
 
     def present(run, warnings)
@@ -138,11 +181,46 @@ module Workspace
         "cancelled_by" => run["cancelled_by"],
         "current" => {"step" => run["current"], "attempt" => state["attempts"].last&.fetch("n", nil), "state" => state["state"],
                       "reason" => reason&.merge("actions" => actions(run, reason, pane)),
-                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)),
+                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
+            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)),
         "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
         "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
         "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
-      }
+      }.merge(budget_row(run))
+    end
+
+    # The token budget as it stands, only for a run whose definition declares one. `used` is a minimum: it leaves
+    # out sub-agents and any ended attempt whose `usage` is null (`uncounted`), and `minimum` says so.
+    def budget_row(run)
+      reading = WorkflowBudget.reading(run)
+      return {} unless reading
+      {"budget" => reading.slice("tokens", "action", "extra_tokens", "allowance", "used", "counted", "uncounted", "measured", "spent")
+        .merge("minimum" => true)}
+    end
+
+    # A step that reads running with no reason but is not moving: the sweep noted a stall on this attempt and
+    # nothing has put it right (`code` `stalled`, `cause` the first cause, `since` its time), or its turn ended
+    # unseen (`code` `idle`, `since` the turn's end, which the daemon must have given). Only for a running step
+    # with no reason, no live park, no line still on its way and no hidden hold; a stall also only while the
+    # pane is not working (a pane that can't be read leaves the stall standing). `actions` are a resume or a
+    # cancel. Absent otherwise, and in runs stored before the sweep existed.
+    def stuck_row(run, state, reason, shown, pane)
+      return {} if reason || live_park?(run) || run["parked"] || state["state"] != "running"
+      return {} if hidden_reason?(run["reason"], shown) || WorkflowEngine.delivery(state["attempts"].last, @clock.call) == :delivering
+      marks = WorkflowEngine.sweep_marks(run)
+      recovered = marks["recovered"].is_a?(Hash) ? marks["recovered"] : {}
+      open = marks["stalled"].is_a?(Hash) ? marks["stalled"].reject { |cause, _| recovered.key?(cause) } : {}
+      cause, since = open.min_by { |_, time| time.to_s }
+      if cause && !(shown && shown["state"] == "working")
+        code = "stalled"
+      elsif !cause && flags(run, state, reason, shown).include?("idle") && shown["main_turn_over_since"].is_a?(String)
+        code = "idle"
+        since = shown["main_turn_over_since"]
+      else
+        return {}
+      end
+      {"stuck" => {"code" => code, "cause" => cause, "since" => since.is_a?(String) ? since : nil,
+                   "actions" => actions(run, {"code" => code, "details" => {}}, pane)}}
     end
 
     # A live park, as `current` shows it; never its note.
@@ -162,11 +240,12 @@ module Workspace
       run["state"]
     end
 
-    # An approved gate's note, as recorded, and whether its bytes changed since.
+    # An approved gate's note file, as recorded, and whether its bytes changed since; `gate_note` is the text the person
+    # gave to approve or reject (null when none, and for a run stored before it was shown).
     def step_row(step, state, run)
       file = state.dig("gate", "file")
       {"id" => step["id"], "title" => step["title"], "state" => state["state"], "attempts" => state["attempts"].size,
-       "gate" => state.dig("gate", "state"), "gate_file" => file,
+       "gate" => state.dig("gate", "state"), "gate_note" => state.dig("gate", "note"), "gate_file" => file,
        "note_changed" => file ? WorkflowGateNote.sha256(file["path"]) != file["sha256"] : false}
     end
 
@@ -190,7 +269,7 @@ module Workspace
     # is seen and no lock is asked for again, while it keeps what it holds.
     def daemon_warning(run, working, warnings)
       # A run that waits for a person needs no daemon until that person acts.
-      return unless working || run["parked"] || run.dig("reason", "code") == "waiting_lock"
+      return unless working || run["parked"] || %w[waiting_lock retry_backoff].include?(run.dig("reason", "code"))
       return if @panes.daemon_running?(run["workspace"])
       warnings << "Workflow run #{run["id"]} will not move: '#{run["workspace"]}' has no agent daemon running. It keeps the locks it holds " \
         "and its place in a queue. Launch the workspace and run `workspace workflow resume #{run["id"]}`, or end it with " \
@@ -212,6 +291,12 @@ module Workspace
                 "details" => {"step" => run["current"], "pane" => pane, "workspace" => run["workspace"]}}
       end
       waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || hide_while_working(stored, shown)
+    end
+
+    # The current attempt's `require:` proofs that ran outside the run's lock, with their results and logs.
+    def proofs_row(state)
+      proofs = state["attempts"].last&.fetch("proofs", nil)
+      proofs ? {"proofs" => proofs} : {}
     end
 
     def gate_waiting?(run)
@@ -269,11 +354,19 @@ module Workspace
     end
 
     def pane_state(workspace, pane, warnings)
-      snapshot = @snapshot_client.fetch(workspace, timeout: SNAPSHOT_TIMEOUT)
+      snapshot = snapshot_for(workspace)
       Array(snapshot["panes"]).find { |each| each["pane_id"] == pane }
     rescue Workspace::Error
       warnings << "The agent daemon for '#{workspace}' did not answer, so a permission prompt in its panes would not show here."
       nil
+    end
+
+    # The daemon's snapshot of a workspace; while a list is built, the one read ahead (an error raised again).
+    def snapshot_for(workspace)
+      cached = @snapshots && @snapshots[workspace]
+      return @snapshot_client.fetch(workspace, timeout: SNAPSHOT_TIMEOUT) unless cached
+      raise cached.last if cached.first == :error
+      cached.last
     end
 
     # A question store that can't be read costs the `ask` reason, never the document.
@@ -312,35 +405,57 @@ module Workspace
     end
 
     def actions(run, reason, pane)
+      build_actions(run, reason, pane).compact
+    end
+
+    # A `focus` needs a pane to name: with none it is left out.
+    def build_actions(run, reason, pane)
       id = run["id"]
       cancel = action("workflow cancel", id)
-      resume = action("workflow resume", id)
-      focus = action("focus", run["workspace"], "--pane", pane.to_s)
+      # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
+      # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
+      spent = WorkflowEngine.attempts_spent?(run)
+      extra = spent ? [need("extra_attempts", "--extra-attempts").merge("min" => WorkflowEngine.extra_attempts_needed(run))] : []
+      budget = WorkflowBudget.reading(run)
+      extra += [need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"])] if budget && budget["spent"]
+      plain = WorkflowEngine.starts_attempt?(run, from: nil, pane: nil) ? extra : []
+      with_pane = WorkflowEngine.starts_attempt?(run, from: nil, pane: "%0") ? extra : []
+      resume = action("workflow resume", id, needs: plain)
+      from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra) }
+      focus = action("focus", run["workspace"], "--pane", pane) if pane
+      # A held retry would block again on the same pane: the resume has to name another one.
+      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra), cancel] if run.dig("backoff", "blocked") && run["state"] == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}
+        resource = reason.dig("details", "resource")
         [(action("workflow status", holder["run_id"]) if holder["run_id"]),
-          (action("dev down", "--name", run["workspace"]) if holder["kind"] == "process"), cancel].compact
+          (action("dev down", "--name", run["workspace"]) if holder["kind"] == "process"),
+          (action("lock status", resource, "--name", run["workspace"]) if resource.is_a?(String) && resource.match?(/\A[A-Za-z0-9][\w.-]*\z/)), cancel].compact
       when "waiting_you"
         case reason.dig("details", "kind")
         when "gate"
           at = ["--step", run["current"], "--attempt", run["steps"].fetch(run["current"])["attempts"].last&.fetch("n", nil).to_s]
-          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")]), cancel]
+          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")] + extra), cancel]
         when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run["workspace"], needs: [need("answer", nil)]), focus]
         when "prompt" then [focus]
         # Resume decides the step as a turn's end would; --from types the line again.
-        when "delivery" then [focus, resume, action("workflow resume", id, "--from", reason.dig("details", "step").to_s), cancel]
+        when "delivery" then [focus, resume, from.call(reason.dig("details", "step")), cancel]
         else [resume, cancel]
         end
       when "turn_ended_incomplete" then [focus, resume, cancel]
+      # A resume skips the wait and starts the retry now.
+      when "retry_backoff" then [resume, cancel]
+      when "budget_spent" then [resume, cancel]
       when "failed_check"
         # A moved HEAD or changed config can't pass again, and base_sha is never re-recorded: only a new run goes on.
         if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))
           [cancel]
         else
-          [resume, action("workflow resume", id, "--from", reason.dig("details", "step").to_s), cancel]
+          [resume, from.call(reason.dig("details", "step")), cancel]
         end
-      when "pane_gone" then [action("launch", run["workspace"]), resume, cancel]
+      when "stalled", "idle" then [resume, cancel]
+      when "pane_gone" then [action("launch", run["workspace"]), action("workflow resume", id, needs: with_pane), cancel]
       else [cancel]
       end
     end

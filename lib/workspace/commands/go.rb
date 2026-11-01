@@ -77,7 +77,9 @@ module Workspace
         in_place = here && (reading.ref.nil? || same_name?(resolved(reading.ref.branch, project), resolved(@git.worktree_branch(root), project)))
         # In place the worktree is known, so its own setting counts; a new checkout has none yet.
         project_workspace = @workflow_start.locate_project[:project_workspace]
-        id, source, definition = choose(workflow, reading.kind, in_place ? here.workspace : project_workspace, project_workspace)
+        # A project's keys count only where the user's config ties it to this checkout, as for `workflow start`.
+        tied = @workflow_start.catalog_project
+        id, source, definition = choose(workflow, reading.kind, tied && (in_place ? here.workspace : tied), tied)
         route = in_place ? "run" : "start"
         reason = reason_for(source, reading.kind)
         warnings = unused_text_warnings(reading, definition, inputs, id, route)
@@ -184,7 +186,7 @@ module Workspace
       end
 
       def raise_unknown_ref(message, ref, extra = {})
-        raise Workspace::Error.new(message, code: "unknown_ref", details: {"ref" => ref.input, "known" => @catalog.known_ids}.merge(extra))
+        raise Workspace::Error.new(message, code: "unknown_ref", details: {"ref" => ref.input, "known" => @catalog.known_ids(project: @workflow_start.catalog_project)}.merge(extra))
       end
 
       # `start` would adopt the main checkout, or put the run on the default branch in a worktree.
@@ -276,11 +278,11 @@ module Workspace
       end
 
       # @return [Array] the id, its source and the definition; `Catalog#find` refuses before anything prints
-      def choose(flag, kind, workspace, project_workspace)
-        found = @workflow_defaults.lookup(kind, workspace: workspace, project: project_workspace) unless flag
+      def choose(flag, kind, workspace, tied)
+        found = @workflow_defaults.lookup(kind, workspace: workspace, project: tied) unless flag
         id = flag || found&.fetch(:id) || BUILT_IN.fetch(kind, BUILT_IN_OTHERWISE)
         source = flag ? "flag" : found&.fetch(:key) || "built_in"
-        [id, source, @catalog.find(id)]
+        [id, source, @catalog.find(id, project: tied)]
       end
 
       def reason_for(source, kind)
@@ -317,7 +319,7 @@ module Workspace
       def run_here(text, definition, here, project_workspace, id:, inputs:, dry_run:)
         @workflow_start.check_agent!(here.workspace, project: project_workspace)
         inputs = inputs.merge("task" => text) if text && declares_task?(definition) && !inputs.key?("task")
-        @workflow.run(id: id, workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane)
+        @workflow.run(id: id, workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane, project: @workflow_start.catalog_project)
       end
 
       def start_from_text(text, project, definition, **options)

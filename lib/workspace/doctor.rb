@@ -64,10 +64,11 @@ module Workspace
     # @param main_agent [Workspace::MainAgent, nil] says which agent a config's pane runs; nil skips the stale pane check
     # @param file_backup [Workspace::FileBackup, nil] copies a config aside before `--fix` rewrites it; nil builds one
     # @param skills [Workspace::Commands::Skills, nil] reads and repairs the skill links of each harness found; nil skips that check
+    # @param run_health [Workspace::WorkflowRunHealth, nil] reads orphaned workflow runs and leaked run locks; nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -89,6 +90,7 @@ module Workspace
       @main_agent = main_agent
       @event_log = event_log
       @skills = skills
+      @run_health = run_health
       @skills_fixed = []
       @skills_notes = []
       @file_backup = file_backup || FileBackup.new(output: output)
@@ -142,6 +144,7 @@ module Workspace
       check_session_monitoring
       check_agent_panes(stale - fixed)
       check_skills
+      check_workflow_runs
       # A failed --fix is a `fix` row, so `doctor --fix` still exits non-zero
       # when there was nothing it could actually do.
       issues = @rows.count { |row| row[:status] == "fail" }
@@ -335,6 +338,57 @@ module Workspace
         end
       end
       @skills_notes.each { |note| add_row("skills", "warn", "--fix: #{note}") }
+    end
+
+    ROW_LIMIT = 20
+    private_constant :ROW_LIMIT
+
+    # Warns about workflow runs nothing can move on and run locks whose run is over. Read only, and `--fix`
+    # leaves all of it: ending a run or freeing a lock is the person's call. Every value read from a run or
+    # lock file is escaped before it reaches a row, and a lock name goes into a command only when it is a
+    # valid lock name.
+    def check_workflow_runs
+      return unless @run_health
+      found = @run_health.call
+      pending = found[:orphans].map { |run| -> { orphan_row(run) } } +
+        found[:unreadable].map { |path| -> { unreadable_row(path) } } +
+        found[:leaked].map { |leak| -> { leaked_row(leak) } }
+      pending.first(ROW_LIMIT).each(&:call)
+      add_row("workflow-runs", "warn", "#{pending.size - ROW_LIMIT} more orphaned runs, unreadable run files or leaked run locks not shown") if pending.size > ROW_LIMIT
+      found[:warnings].each { |text| add_row("workflow-runs", "warn", TerminalText.escape(text)) }
+      add_row("workflow-runs", "ok", "workflow runs: none orphaned, no leaked run locks") if pending.empty? && found[:warnings].empty?
+    end
+
+    def orphan_row(run)
+      add_row("workflow-run-orphaned", "warn",
+        "workflow run #{TerminalText.escape(run["id"])} (#{TerminalText.escape(run["workflow"])}, #{TerminalText.escape(run["state"])}) is orphaned: #{TerminalText.escape(run["why"])}",
+        fix: "check that the path is really gone (an unmounted volume comes back), then #{cancel_advice(run["id"].to_s)}; cancelling cannot be undone",
+        project: TerminalText.escape(run["workspace"]))
+    end
+
+    def cancel_advice(id)
+      return "cancel the run (its id is not a valid run id, so delete its file instead)" unless RunLiveness::ID_PATTERN.match?(id)
+      "run 'workspace workflow cancel #{Shellwords.escape(id)}'"
+    end
+
+    def unreadable_row(path)
+      add_row("workflow-run-unreadable", "warn", "workflow run file #{TerminalText.escape(path)} can't be read as a run; the locks it holds stay held while it is there",
+        fix: "this file needs a person to read it; nothing here can tell whether the run is over")
+    end
+
+    # Informational. A dead run's record blocks nobody: acquire, release and the daemon's sweep reap it before they decide.
+    # The exception is a dev process working under the run (its delegate): the lock then goes to that process, which holds it
+    # until it exits; a delegate that is already dead is removed with the record.
+    def leaked_row(leak)
+      subject = "lock #{TerminalText.escape(leak["lock"])} still records #{(leak["role"] == "holder") ? "run" : "a waiting run"} #{TerminalText.escape(leak["run_id"])}, " \
+        "which is over (lock store #{TerminalText.escape(leak["namespace"])}); "
+      outcome = if leak["role"] == "holder" && leak["delegate_pid"]
+        "a dev process (pid #{leak["delegate_pid"].to_i}) was working under the run: if it still runs, the next lock operation that takes or gives up a lock " \
+          "in that repository hands the lock to it and it stays held until that process exits; if not, the record is removed then"
+      else
+        "it blocks nothing, and the next lock operation that takes or gives up a lock in that repository, or the agent daemon's sweep, removes it"
+      end
+      add_row("workflow-run-lock-leaked", "ok", subject + outcome)
     end
 
     # Fix text for a missing or dangling link; when `--fix` was refused (a linked worktree, an install

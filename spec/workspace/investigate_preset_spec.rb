@@ -23,6 +23,10 @@ RSpec.describe "the investigate preset" do
      "inputs.spec" => "/w/.workflow/tickets/o-r-7.md", "inputs.pr" => "7", "inputs.ci_run" => "55"}
   end
 
+  it "denies pushing, comments, reviews and CI reruns" do
+    expect(Workspace::WorkflowDefinition.deny(definition.to_h)).to eq(["git push*", "gh pr comment*", "gh pr review*", "gh run rerun*"])
+  end
+
   before do
     allow(config).to receive(:workflows_dir).and_return(File.join(dir, "none"))
     allow(project_config).to receive(:exists?).and_return(true)
@@ -225,9 +229,9 @@ RSpec.describe "the investigate preset" do
     let(:agent_commands) { instance_double(Workspace::AgentCommands, detector: :detector, kind: "claude") }
     let(:command) do
       Workspace::Commands::WorkflowStart.new(catalog: catalog, workflow_defaults: instance_double(Workspace::WorkflowDefaults), engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
-        project_config: project_config, start: instance_double(Workspace::Commands::Start), workflow: instance_double(Workspace::Commands::Workflow),
+        project_config: project_config, workflow_project: instance_double(Workspace::WorkflowProject, for_directory: nil), start: instance_double(Workspace::Commands::Start), workflow: instance_double(Workspace::Commands::Workflow),
         readiness: instance_double(Workspace::AgentReadiness, deadline_in: 99.0), tmux: instance_double(Workspace::Tmux), agent_commands: agent_commands,
-        excludes: instance_double(Workspace::GitExclude, add: true), ssh_hosts: instance_double(Workspace::SshHostResolver, hostname: nil), output: StringIO.new)
+        excludes: instance_double(Workspace::GitExclude, add: true), ssh_hosts: instance_double(Workspace::SshHostResolver, hostname: nil), router: instance_double(Workspace::WorkflowRouter), output: StringIO.new)
     end
 
     before do

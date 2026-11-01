@@ -239,6 +239,7 @@ require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/notifier"
 require_relative "workspace/alert_config"
+require_relative "workspace/workflow_alerts"
 require_relative "workspace/agent_recovery_config"
 require_relative "workspace/agentd_config"
 require_relative "workspace/handoff_config"
@@ -298,17 +299,40 @@ require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
 require_relative "workspace/focus_config"
 require_relative "workspace/workflow_defaults"
+require_relative "workspace/workflow_log_tail"
+require_relative "workspace/workflow_extends"
 require_relative "workspace/workflow_definition"
+require_relative "workspace/workflow_lint"
 require_relative "workspace/workflow_catalog"
+require_relative "workspace/workflow_router"
 require_relative "workspace/workflow_files"
+require_relative "workspace/workflow_project"
 require_relative "workspace/workflow_run_store"
+require_relative "workspace/workflow_deny"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
+require_relative "workspace/workflow_step_check"
 require_relative "workspace/workflow_guard"
+require_relative "workspace/workflow_require"
+require_relative "workspace/workflow_produced"
+require_relative "workspace/workflow_attempt_record"
+require_relative "workspace/workflow_budget"
+require_relative "workspace/workflow_evidence"
+require_relative "workspace/workflow_attempts"
+require_relative "workspace/workflow_audit"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
+require_relative "workspace/workflow_needs_me"
+require_relative "workspace/workflow_run_loader"
+require_relative "workspace/workflow_stats"
+require_relative "workspace/workflow_compare"
+require_relative "workspace/workflow_sim_script"
+require_relative "workspace/workflow_simulator"
+require_relative "workspace/workflow_run_health"
+require_relative "workspace/workflow_sweep"
+require_relative "workspace/sweep_schedule"
 require_relative "workspace/workflow_workspace_facts"
 require_relative "workspace/workflow_nudger"
 require_relative "workspace/bookkeeping_exclude"
@@ -407,8 +431,9 @@ module Workspace
   # @param input [IO] input stream for interactive prompts
   # @param env [Hash] environment; `WORKSPACE_NO_INPUT` makes every prompt fail instead of waiting
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
+  # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -535,6 +560,9 @@ module Workspace
       project_config: project_config, snapshot_client: agent_snapshot_client, output: output, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
+    bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
+    workflow_deny = WorkflowDeny.new(bound_run: bound_run, logger: logger, event_log: event_log,
+      run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir))
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
     delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
@@ -542,10 +570,9 @@ module Workspace
       on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
       workspace_for_session: workspace_for_session, delivery_log: delivery_log,
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
-    bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
       bound_run: bound_run, output: output, error_output: error_output)
@@ -578,35 +605,79 @@ module Workspace
       installer: library_installer, checkout: workspace_checkout)
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
-    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
+    workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
+    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence)
+    workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
+    workflow_guard = WorkflowGuard.new(git_path: Which.path("git") || "git")
+    workflow_checker = WorkflowCheck.new
+    alert_config = AlertConfig.new(config_resolver: config_resolver, project_config: project_config,
+      lineage: lineage, error_output: error_output)
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
       composer: instruction_composer,
       panes: workflow_panes,
-      checker: WorkflowCheck.new,
+      checker: workflow_checker,
       commands_config: commands_config,
+      workspace_known: ->(name) { project_config.existing_name(name) },
       lineage: lineage,
       git: git,
-      guard: WorkflowGuard.new(git_path: Which.path("git") || "git"),
+      guard: workflow_guard,
+      attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard, ledger: session_ledger, evidence: workflow_evidence,
+        session_names: ->(workspace) { [workspace, tmux.session_name_for(workspace)].uniq },
+        # nil is also what a pane that is gone gives (a cancel or a kill), so the record never takes it as
+        # proof of anything; its transcript test guards that case. Under the run's lock: 2s at most.
+        server_for: ->(pane) do
+          tmux.server_pid_for_pane(pane, timeout: 2)
+        rescue
+          nil
+        end),
+      require_check: WorkflowRequire.new(guard: workflow_guard, notes_dir_of: workflow_gate_note.method(:notes_dir_of),
+        commands_config: commands_config, checker: workflow_checker,
+        # `inbox_item` reads under the run's lock, so the inbox's flock is taken inside it. Nothing takes them the other way round.
+        inbox_for: ->(workspace) { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) }),
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
       event_log: event_log,
-      task_store: task_store
+      task_store: task_store,
+      alerts: WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output)
     )
     workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
       gate_note: workflow_gate_note)
     workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
       agents: ProjectAgents.new(client: agent_snapshot_client))
+    workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
+      interrupter: ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) })
+    sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
+      launchctl: launchctl || ->(args) do
+        out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)
+        [out + err, ok ? 0 : 1]
+      rescue SystemCallError, Timeout::Error => e
+        [e.message, nil]
+      end,
+      source: SkillSource.new(workspace_dir: config.workspace_dir), ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
     workflow_catalog = WorkflowCatalog.new(config: config)
+    workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
+    workflow_needs_me = WorkflowNeedsMe.new
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
       run_files: WorkflowRunFiles.new,
+      lint: WorkflowLint.new(library: library, commands_config: commands_config, lineage: lineage, project_config: project_config,
+        workflow_config: WorkflowConfig.new(config_resolver: config_resolver)),
+      attempts: WorkflowAttempts.new,
+      audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
+      sweep: workflow_sweep,
+      schedule: sweep_schedule,
+      needs_me: workflow_needs_me,
+      stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader),
+      compare: WorkflowCompare.new(loader: workflow_run_loader),
+      step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
+      simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { WorkflowEngine.new(**parts) }),
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,
@@ -653,8 +724,8 @@ module Workspace
     workflow_defaults = WorkflowDefaults.new(config_resolver: config_resolver)
     workflow_start_command = Commands::WorkflowStart.new(
       catalog: workflow_catalog, workflow_defaults: workflow_defaults, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
-      project_config: project_config, start: start_command, workflow: workflow_command, readiness: agent_readiness, tmux: tmux, agent_commands: agent_commands,
-      excludes: GitExclude.new(git: git), ssh_hosts: SshHostResolver.new, output: output
+      project_config: project_config, workflow_project: workflow_project, start: start_command, workflow: workflow_command, readiness: agent_readiness, tmux: tmux, agent_commands: agent_commands,
+      excludes: GitExclude.new(git: git), ssh_hosts: SshHostResolver.new, router: WorkflowRouter.new(catalog: workflow_catalog, workflow_defaults: workflow_defaults), output: output
     )
     workspace_at = lambda do |path|
       real = CheckoutMove.real_path(path)
@@ -672,7 +743,7 @@ module Workspace
       plan_command: plan_command, plan_dispatch: plan_dispatch_command, workspace_at: workspace_at, locks: held_locks, event_log: event_log, env: env,
       output: output, error_output: error_output
     )
-    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, event_log: event_log, skills: skills_command, output: output)
+    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, event_log: event_log, skills: skills_command, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), output: output)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )
@@ -713,8 +784,6 @@ module Workspace
       project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
       lock_holder: lock_holder)
 
-    alert_config = AlertConfig.new(config_resolver: config_resolver, project_config: project_config,
-      lineage: lineage, error_output: error_output)
     agent_recovery_config = AgentRecoveryConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
     agentd_config = AgentdConfig.new(config_resolver: config_resolver, project_config: project_config,
@@ -724,7 +793,7 @@ module Workspace
     inbox_store_factory = ->(path:, scope:, error_output:) { InboxStore.new(path: path, scope: scope, error_output: error_output) }
     inbox_derived = InboxDerived.new(snapshot_client: agent_snapshot_client, tmux: tmux,
       ask_store_for: ->(workspace, sink) { AskStore.new(path: config.ask_state_path(workspace), error_output: sink) }, plan: plan_command,
-      plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, lock_namespace: lock_namespace,
+      plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, needs_me: workflow_needs_me, lock_namespace: lock_namespace,
       lock_store_for: ->(dir) { LockStore.new(dir: dir, liveness: lock_holder) }, lock_config: lock_config)
     inbox_acks = InboxAcks.new(path: config.inbox_acks_path)
     inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
@@ -867,6 +936,7 @@ module Workspace
       workflow_command: workflow_command,
       workflow_start_command: workflow_start_command,
       go_command: go_command,
+      workflow_project: workflow_project,
       review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,

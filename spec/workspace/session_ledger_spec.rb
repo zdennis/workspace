@@ -342,4 +342,16 @@ RSpec.describe Workspace::SessionLedger, "#entries_for" do
       File.chmod(0o600, path)
     end
   end
+
+  describe "#recent_entries" do
+    it "reads only the tail, skipping a line it starts inside, and gives [] without a ledger" do
+      path = File.join(tmpdir, "recent.jsonl")
+      ledger = described_class.new(path: path)
+      expect(ledger.recent_entries(max_bytes: 100)).to eq([])
+
+      File.write(path, %({"n":1,"pad":"#{"x" * 50}"}\n{"n":2}\n{"n":3}\n))
+      expect(ledger.recent_entries(max_bytes: 20).map { |e| e["n"] }).to eq([2, 3]).or eq([3])
+      expect(ledger.recent_entries(max_bytes: 10_000).map { |e| e["n"] }).to eq([1, 2, 3])
+    end
+  end
 end

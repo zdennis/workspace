@@ -16,6 +16,188 @@ RSpec.describe Workspace::WorkflowDefinition do
 
   let(:minimal) { "steps:\n  build:\n    prompt: Build it.\n" }
 
+  describe "redeliver" do
+    it "defaults to 3 in a new definition, reads a number from 0 to 10, and reads 0 from a definition without the key" do
+      expect(parse(minimal).to_h["redeliver"]).to eq(3)
+      expect(parse("redeliver: 0\n#{minimal}").to_h["redeliver"]).to eq(0)
+      expect(described_class.redeliver({"steps" => []})).to eq(0)
+      expect(described_class.redeliver({"redeliver" => 99})).to eq(0)
+      expect(described_class.redeliver(nil)).to eq(0)
+    end
+
+    it "refuses anything else" do
+      expect(problems("redeliver: 11\n#{minimal}")).to include(a_string_matching(/redeliver must be a whole number from 0 to 10/))
+      expect(problems("redeliver: soon\n#{minimal}")).to include(a_string_matching(/redeliver/))
+    end
+  end
+
+  describe "budget" do
+    it "is absent unless declared, and read as nil from a definition without it" do
+      expect(parse(minimal).to_h).not_to have_key("budget")
+      expect(described_class.budget(parse(minimal).to_h)).to be_nil
+      expect(described_class.budget(nil)).to be_nil
+      expect(described_class.budget({"budget" => "lots"})).to be_nil
+      expect(described_class.budget({"budget" => {"tokens" => -3}})).to be_nil
+    end
+
+    it "keeps tokens, with the stop action by default" do
+      expect(parse("budget: {tokens: 4000000, action: stop}\n#{minimal}").to_h["budget"]).to eq("tokens" => 4_000_000, "action" => "stop")
+      expect(parse("budget: {tokens: 5}\n#{minimal}").to_h["budget"]).to eq("tokens" => 5, "action" => "stop")
+      expect(described_class.budget({"budget" => {"tokens" => 7, "action" => "other"}})).to eq("tokens" => 7, "action" => "stop")
+    end
+
+    it "refuses a non-mapping, a missing or bad tokens, an unknown key and another action" do
+      expect(problems("budget: 5\n#{minimal}")).to include(a_string_matching(/budget must be a mapping/))
+      expect(problems("budget: {action: stop}\n#{minimal}")).to include(a_string_matching(/budget tokens must be a whole number from 1/))
+      expect(problems("budget: {tokens: 0}\n#{minimal}")).to include(a_string_matching(/budget tokens must be a whole number from 1/))
+      expect(problems("budget: {tokens: 1.5}\n#{minimal}")).to include(a_string_matching(/budget tokens/))
+      expect(problems("budget: {tokens: 5, dollars: 2}\n#{minimal}")).to include(a_string_matching(/budget has unknown key dollars \(known: tokens, action\)/))
+      expect(problems("budget: {tokens: 5, action: pause}\n#{minimal}")).to include(a_string_matching(/budget action must be stop, got "pause"/))
+    end
+  end
+
+  describe "deny" do
+    it "is an empty list by default and keeps a list of patterns" do
+      expect(parse(minimal).to_h["deny"]).to eq([])
+      expect(parse("deny:\n  - 'git push*'\n  - 'gh pr comment*'\n#{minimal}").to_h["deny"]).to eq(["git push*", "gh pr comment*"])
+    end
+
+    it "reads nothing from a missing or bad stored value" do
+      expect(described_class.deny(nil)).to eq([])
+      expect(described_class.deny({"steps" => []})).to eq([])
+      expect(described_class.deny({"deny" => "git push"})).to eq([])
+      expect(described_class.deny({"deny" => ["git push*", 3]})).to eq([])
+      expect(described_class.deny({"deny" => ["git push*"]})).to eq(["git push*"])
+    end
+
+    it "collects every problem" do
+      expect(problems("deny: git push\n#{minimal}")).to include(a_string_matching(/deny must be a list/))
+      expect(problems("deny: ['', 5]\n#{minimal}")).to include(a_string_matching(/deny entry 1 must be a non-empty/), a_string_matching(/deny entry 2/))
+      expect(problems("deny: ['#{"a" * 201}']\n#{minimal}")).to include(a_string_matching(/longer than 200/))
+      expect(problems("deny: ['#{"*" * 9}']\n#{minimal}")).to include(a_string_matching(/more than 8 wildcards/))
+      many = (1..51).map { |n| "'c#{n}'" }.join(", ")
+      expect(problems("deny: [#{many}]\n#{minimal}")).to include(a_string_matching(/at most 50/))
+    end
+  end
+
+  describe "stall and on_timeout" do
+    it "reads stall as seconds and on_timeout as a word, with warn and unset as defaults" do
+      definition = parse("stall: 20m\nsteps:\n  a:\n    prompt: P\n    timeout: 2h\n    on_timeout: interrupt\n  b:\n    prompt: P\n")
+      expect(definition.to_h["stall"]).to eq(1200.0)
+      expect(definition.steps.map { |step| described_class.on_timeout(step) }).to eq(%w[interrupt warn])
+      expect(described_class.stall(parse(minimal).to_h)).to be_nil
+    end
+
+    it "reads an old stored definition without the keys as warn and unset" do
+      expect(described_class.on_timeout({"id" => "a"})).to eq("warn")
+      expect(described_class.stall({"steps" => []})).to be_nil
+    end
+
+    it "reads nil, an old hash or an invalid stored value as the default" do
+      expect(described_class.on_timeout(nil)).to eq("warn")
+      expect(described_class.on_timeout({"on_timeout" => "stop"})).to eq("warn")
+      expect(described_class.on_timeout({"on_timeout" => 5})).to eq("warn")
+      expect(described_class.stall(nil)).to be_nil
+      expect(described_class.stall({"stall" => 0})).to be_nil
+      expect(described_class.stall({"stall" => -3})).to be_nil
+      expect(described_class.stall({"stall" => "20m"})).to be_nil
+      expect(described_class.stall({"stall" => 30.0})).to eq(30.0)
+    end
+
+    {"stall: 0" => /\Astall: /, "stall: -1" => /\Astall: /, "stall: 20" => nil, "stall: ~" => nil}.each do |line, bad|
+      it "treats #{line} as #{bad ? "a problem" : "valid"}" do
+        found = problems("#{line}\nsteps:\n  a:\n    prompt: P\n")
+        if bad
+          expect(found.grep(bad).size).to eq(1)
+        else
+          expect(found).to eq([])
+        end
+      end
+    end
+
+    {"on_timeout: ~" => "nil", "on_timeout: 5" => "5"}.each do |line, shown|
+      it "refuses #{line}" do
+        expect(problems("steps:\n  a:\n    prompt: P\n    timeout: 1h\n    #{line}\n"))
+          .to eq(["step a: on_timeout must be warn, interrupt, fail, got #{shown}"])
+      end
+    end
+
+    it "warns for interrupt with no timeout and not for fail with one" do
+      expect(parse("steps:\n  a:\n    prompt: P\n    gate: approve\n    on_timeout: interrupt\n").warnings.map { |w| w["code"] }).to eq(["on_timeout_without_timeout"])
+      expect(parse("steps:\n  a:\n    prompt: P\n    gate: approve\n    timeout: 1h\n    on_timeout: fail\n").warnings).to eq([])
+    end
+
+    it "lists bad values as problems" do
+      found = problems("stall: soon\nsteps:\n  a:\n    prompt: P\n    timeout: 1h\n    on_timeout: stop\n")
+      expect(found).to include("step a: on_timeout must be warn, interrupt, fail, got \"stop\"")
+      expect(found.grep(/\Astall: expected a duration/).size).to eq(1)
+    end
+
+    it "warns when on_timeout is interrupt or fail and the step has no timeout" do
+      yaml = "steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    on_timeout: fail\n  b:\n    prompt: P\n    produces: [b.md]\n    on_timeout: warn\n"
+      expect(parse(yaml).warnings).to match([include("code" => "on_timeout_without_timeout", "step" => "a")])
+    end
+  end
+
+  describe "on_fail_exceeds_max_attempts" do
+    def retry_warnings(attempts, *steps)
+      body = steps.map { |id, extra| "  #{id}:\n    prompt: P\n    produces: [#{id}.md]\n#{extra}" }.join
+      parse("max_attempts: #{attempts}\nsteps:\n#{body}").warnings.select { |w| w["code"] == "on_fail_exceeds_max_attempts" }
+    end
+
+    let(:loop_back) { "    on_fail: {goto: a, max: 3}\n" }
+
+    it "counts the attempts a retry runs again, as the engine does" do
+      # a=1, b=2 fails first on attempt 2; each retry reruns a and b (2 attempts): retry 3 needs 2 + 2 * 2 = 6 made
+      expect(retry_warnings(6, ["a"], ["b", loop_back]).first["message"]).to match(/lets only 2 of those retries start.*attempt 2.*2 steps.*Raise max_attempts to 7/)
+      expect(retry_warnings(7, ["a"], ["b", loop_back])).to eq([])
+    end
+
+    it "is quiet when every retry fits and the default max is 1" do
+      expect(retry_warnings(6, ["a"], ["b", "    on_fail: {goto: a}\n"])).to eq([])
+    end
+
+    it "reports no retry at all when the step itself is past the limit" do
+      found = retry_warnings(2, ["a"], ["b", "    on_fail: {goto: a, max: 1}\n"])
+      expect(found.first["message"]).to match(/lets only 0 of those retries start/)
+    end
+
+    it "warns for a step that loops to an earlier step only" do
+      found = retry_warnings(4, ["a"], ["b"], ["c", "    on_fail: {goto: b, max: 2}\n"])
+      expect(found).to match([include("step" => "c", "message" => /2 steps/)])
+    end
+
+    it "is never an error, so the definition still parses" do
+      expect { retry_warnings(1, ["a"], ["b", loop_back]) }.not_to raise_error
+    end
+  end
+
+  describe "#warnings" do
+    def warnings(yaml) = parse(yaml).warnings
+
+    it "names a step with no produces, status, require or gate" do
+      expect(warnings(minimal)).to match([include("code" => "step_without_proof", "step" => "build", "message" => /step build has no produces, status, require or gate.*Add produces/)])
+    end
+
+    it "is quiet for a step with produces, a status command or a gate" do
+      yaml = "steps:\n  a:\n    prompt: A.\n    produces: [a.md]\n  b:\n    prompt: B.\n    status: {run: \"true\"}\n  c:\n    prompt: C.\n    gate: approve\n"
+      expect(warnings(yaml)).to eq([])
+    end
+
+    it "names only the steps without proof, in order" do
+      yaml = "steps:\n  a:\n    prompt: A.\n  b:\n    prompt: B.\n    produces: [b.md]\n  c:\n    prompt: C.\n"
+      expect(warnings(yaml).map { |w| w["step"] }).to eq(%w[a c])
+    end
+
+    it "warns for no shipped preset" do
+      presets = File.expand_path("../../lib/workflows", __dir__)
+      lookup = ->(id, below: nil) { {"text" => File.read(File.join(presets, "#{id}.yml")), "path" => File.join(presets, "#{id}.yml"), "source" => "builtin"} }
+      Dir[File.join(presets, "*.yml")].each do |file|
+        expect(described_class.parse(File.read(file), id: File.basename(file, ".yml"), source: "builtin", path: file, parent_lookup: lookup).warnings).to eq([])
+      end
+    end
+  end
+
   describe "input pattern" do
     def with_pattern(pattern)
       "inputs:\n  pr: {pattern: #{pattern}}\nsteps:\n  build:\n    prompt: Build it.\n"
@@ -78,10 +260,10 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(definition.source).to eq("global")
     expect(definition.sha256).to eq(Digest::SHA256.hexdigest(minimal))
     expect(definition.to_h).to eq(
-      "id" => "demo", "title" => "demo", "description" => nil, "inputs" => {}, "include" => [], "instructions" => nil,
-      "max_attempts" => 6,
+      "id" => "demo", "title" => "demo", "description" => nil, "use_when" => nil, "applies_to" => [], "inputs" => {}, "include" => [], "instructions" => nil,
+      "max_attempts" => 6, "stall" => nil, "redeliver" => 3, "deny" => [],
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
-                   "gate" => nil, "guard" => nil, "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil}]
+                   "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn"}]
     )
   end
 
@@ -154,12 +336,80 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(step["on_fail"]).to eq("goto" => "a", "max" => 1, "context" => nil)
   end
 
+  describe "on_fail log_tail and backoff" do
+    def on_fail(text) = parse("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: #{text}\n").steps.last["on_fail"]
+
+    it "stores a line count and a backoff in seconds, and leaves both out when unset" do
+      expect(on_fail("{goto: a, log_tail: 40, backoff: 2m}")).to eq("goto" => "a", "max" => 1, "context" => nil, "log_tail" => 40, "backoff" => 120.0)
+      expect(on_fail("{goto: a, backoff: 90}")).to include("backoff" => 90.0)
+      expect(on_fail("{goto: a}")).not_to include("log_tail", "backoff")
+    end
+
+    it "collects a problem for each bad value" do
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, log_tail: 0, backoff: soon}\n")).to eq([
+        "step b: on_fail log_tail must be a whole number from 1 to 200, got 0",
+        "step b: on_fail backoff: expected a duration like \"20\", \"20s\", \"5m\" or \"1h\", got \"soon\""
+      ])
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, log_tail: 201, backoff: 2d}\n").size).to eq(2)
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, log_tail: 2.5, backoff: 0}\n").size).to eq(2)
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, backoff: 25h}\n").first).to include("at most 86400")
+    end
+
+    it "reads both through class readers that take nil, a missing key and a bad stored value" do
+      expect(described_class.backoff(nil)).to be_nil
+      expect(described_class.backoff("goto" => "a")).to be_nil
+      expect(described_class.backoff("backoff" => "2m")).to be_nil
+      expect(described_class.backoff("backoff" => -1)).to be_nil
+      expect(described_class.backoff("backoff" => 10**9)).to be_nil
+      expect(described_class.backoff("backoff" => 120.0)).to eq(120.0)
+      expect(described_class.log_tail(nil)).to be_nil
+      expect(described_class.log_tail("log_tail" => "40")).to be_nil
+      expect(described_class.log_tail("log_tail" => 0)).to be_nil
+      expect(described_class.log_tail("log_tail" => 9999)).to be_nil
+      expect(described_class.log_tail("log_tail" => 40)).to eq(40)
+    end
+  end
+
   it "reads a prompt from prompt_file, beside the definition" do
     Dir.mktmpdir("wf-def") do |dir|
       File.write(File.join(dir, "build.md"), "Build from a file.\n")
       definition = parse("steps:\n  build:\n    prompt_file: build.md\n", path: File.join(dir, "demo.yml"))
 
       expect(definition.steps.first["prompt"]).to eq("Build from a file.\n")
+    end
+  end
+
+  describe "use_when and applies_to" do
+    it "reads both" do
+      data = parse("use_when: Review feedback to act on.\napplies_to: [github_pr, branch, github_pr]\n#{minimal}").to_h
+
+      expect(data).to include("use_when" => "Review feedback to act on.", "applies_to" => %w[github_pr branch])
+    end
+
+    it "collects every problem under one error" do
+      found = problems("use_when: \"two\\nlines\"\napplies_to: [jira, ticket, pr]\n#{minimal}")
+
+      expect(found).to include("use_when must be one line of at most 200 characters",
+        a_string_starting_with('applies_to has unknown kinds "ticket", "pr"'))
+    end
+
+    it "refuses an applies_to that is not a non-empty list, and a use_when over the limit" do
+      expect(problems("applies_to: jira\n#{minimal}")).to include(a_string_starting_with("applies_to must be a list of ref kinds"))
+      expect(problems("applies_to: []\n#{minimal}")).to include(a_string_starting_with("applies_to must be a list of ref kinds"))
+      expect(problems("use_when: #{"x" * 201}\n#{minimal}")).to include("use_when must be one line of at most 200 characters")
+    end
+
+    it "reads a stored definition that has none, or a bad value, as unset" do
+      expect(described_class.use_when({})).to be_nil
+      expect(described_class.use_when(nil)).to be_nil
+      expect(described_class.use_when("use_when" => 5)).to be_nil
+      expect(described_class.use_when("use_when" => "two\nlines")).to be_nil
+      expect(described_class.use_when("use_when" => "x" * 300)).to be_nil
+      expect(described_class.use_when("use_when" => "x" * 200)).to eq("x" * 200)
+      expect(described_class.applies_to({})).to eq([])
+      expect(described_class.applies_to(nil)).to eq([])
+      expect(described_class.applies_to("applies_to" => %w[jira bogus])).to eq([])
+      expect(described_class.applies_to("applies_to" => %w[jira])).to eq(%w[jira])
     end
   end
 
@@ -190,7 +440,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
       "schema_version must be 1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
@@ -199,7 +449,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, uses, on_fail, context, timeout)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, after)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",
@@ -295,6 +545,90 @@ RSpec.describe Workspace::WorkflowDefinition do
       text = described_class.render("Do {{inputs.task}} in {{ workspace }}; {{unknown}} stays.", "inputs.task" => "X-1", "workspace" => "app")
 
       expect(text).to eq("Do X-1 in app; {{unknown}} stays.")
+    end
+  end
+  describe "require" do
+    def step_require(text)
+      parse("steps:\n  build:\n    prompt: Build it.\n    require:\n#{text.lines.map { |l| "      #{l}" }.join}").steps.first["require"]
+    end
+
+    it "reads the four proofs as one-key entries, kept in order" do
+      list = step_require("- commits: 1\n- nonempty: implement.md\n- plan_status: done\n- tracked_clean: true\n")
+      expect(list).to eq([{"commits" => 1}, {"nonempty" => "implement.md"}, {"plan_status" => "done"}, {"tracked_clean" => true}])
+    end
+
+    it "reads command, inbox_item and remote_unchanged" do
+      list = step_require("- command: lint\n- inbox_item: \"verify:{{run}}\"\n- remote_unchanged: true\n")
+      expect(list).to eq([{"command" => "lint"}, {"inbox_item" => "verify:{{run}}"}, {"remote_unchanged" => true}])
+    end
+
+    it "reads optional: beside command, in either order, storing command first" do
+      expect(step_require("- command: lint\n  optional: true\n")).to eq([{"command" => "lint", "optional" => true}])
+      reversed = step_require("- optional: true\n  command: lint\n")
+      expect(reversed).to eq([{"command" => "lint", "optional" => true}])
+      expect(reversed.first.keys).to eq(%w[command optional])
+    end
+
+    it "refuses optional: on its own, beside another proof, or with a value that is not true or false" do
+      yaml = ->(entry) { "steps:\n  build:\n    prompt: B.\n    require:\n#{entry}" }
+      expect(problems(yaml.call("      - optional: true\n"))).to include(a_string_matching(/optional/))
+      expect(problems(yaml.call("      - commits: 1\n        optional: true\n"))).to include(a_string_matching(/may take optional: true beside it/))
+      expect(problems(yaml.call("      - command: lint\n        optional: yes please\n"))).to include(a_string_matching(/optional must be true or false/))
+      expect(problems(yaml.call("      - command: lint\n        optional: true\n        extra: 1\n"))).to include(a_string_matching(/each require entry/))
+    end
+
+    it "lists every bad value of the new proofs" do
+      yaml = "inputs:\n  task: {}\nsteps:\n  build:\n    prompt: B.\n    require:\n      - command: deploy\n      - inbox_item: \"a b\"\n      - remote_unchanged: false\n"
+      expect(problems(yaml)).to include(
+        "step build: require command must be test or lint, got \"deploy\"",
+        /step build: require inbox_item must be a dedupe key of 1 to 200 letters.*got "a b"/,
+        "step build: require remote_unchanged must be true, got false"
+      )
+      yaml = "steps:\n  build:\n    prompt: B.\n    require:\n      - inbox_item: \"x:{{branch}}:{{inputs.nope}}\"\n"
+      expect(problems(yaml)).to include(/require inbox_item uses \{\{branch\}\}, which it can't fill in/, /require inbox_item uses \{\{inputs.nope\}\}/)
+    end
+
+    it "accepts inputs in an inbox_item key" do
+      yaml = "inputs:\n  task: {}\nsteps:\n  build:\n    prompt: B.\n    require:\n      - inbox_item: \"k:{{inputs.task}}\"\n"
+      expect(parse(yaml).steps.first["require"]).to eq([{"inbox_item" => "k:{{inputs.task}}"}])
+    end
+
+    it "defaults to an empty list" do
+      expect(parse(minimal).steps.first["require"]).to eq([])
+    end
+
+    it "counts as proof, so the step is not warned about" do
+      expect(parse("steps:\n  build:\n    prompt: B.\n    require: [{tracked_clean: true}]\n").warnings).to eq([])
+      expect(parse("steps:\n  build:\n    prompt: B.\n    require: []\n").warnings.size).to eq(1)
+    end
+
+    it "lists every bad entry at once" do
+      yaml = "steps:\n  build:\n    prompt: B.\n    require:\n      - commits: 0\n      - commits: 2\n      - nonempty: ../x\n      - nonempty: /abs\n" \
+             "      - plan_status: finished\n      - tracked_clean: false\n      - bogus: 1\n      - {commits: 1, nonempty: a}\n      - just\n"
+      expect(problems(yaml)).to include(
+        "step build: require commits must be a whole number from 1 to 1000, got 0",
+        "step build: require commits is listed twice",
+        "step build: require nonempty must be a path under the run's artifacts directory, got \"../x\"",
+        "step build: require nonempty must be a path under the run's artifacts directory, got \"/abs\"",
+        "step build: require plan_status must be active, paused, done, got \"finished\"",
+        "step build: require tracked_clean must be true, got false",
+        "step build: require \"bogus\" is not a proof (known: commits, nonempty, plan_status, tracked_clean, command, inbox_item, remote_unchanged)",
+        /each require entry must be one proof/
+      )
+    end
+
+    it "refuses a nonempty path with a control character or a non-normal form" do
+      ["a//b", "./x", "a/./x", "x/", " x", "x ", "a/ b", "a\u0000b", "a\nb", "~x", "a/..", " "].each do |path|
+        yaml = "steps:\n  build:\n    prompt: B.\n    require:\n      - nonempty: #{path.to_json}\n"
+        expect(problems(yaml)).to include(/require nonempty must be a path under the run's artifacts directory/), "expected #{path.inspect} refused"
+      end
+      ["x.md", "sub/x.md", "a b/c.md"].each do |path|
+        expect(problems("steps:\n  build:\n    prompt: B.\n    require:\n      - nonempty: #{path.to_json}\n")).to eq([])
+      end
+    end
+
+    it "refuses a require that is not a list" do
+      expect(problems("steps:\n  build:\n    prompt: B.\n    require: {commits: 1}\n")).to eq(["step build: require must be a list of proofs such as - commits: 1, got {\"commits\" => 1}"])
     end
   end
 end

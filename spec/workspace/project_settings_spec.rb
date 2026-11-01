@@ -121,6 +121,12 @@ RSpec.describe Workspace::ProjectSettings do
 
       expect(settings.load_global).to eq({})
     end
+
+    it "returns empty hash for YAML safe_load refuses (a date)" do
+      File.write(File.join(tmpdir, "config.yml"), "when: 2026-01-01\n")
+
+      expect(settings.load_global).to eq({})
+    end
   end
 
   describe "#with_global_lock" do

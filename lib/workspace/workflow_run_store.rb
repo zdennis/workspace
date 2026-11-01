@@ -25,7 +25,9 @@ module Workspace
     # @param archive_dir [String] the directory of finished runs
     # @param clock [#call] returns the current Time
     # @param id_generator [#call] returns a candidate run id
-    def initialize(dir:, archive_dir:, clock: -> { Time.now }, id_generator: nil)
+    # @param evidence [#remove, nil] given the id of an archived run that is pruned, removes its evidence
+    def initialize(dir:, archive_dir:, clock: -> { Time.now }, id_generator: nil, evidence: nil)
+      @evidence = evidence
       @dir = dir
       @archive_dir = archive_dir
       @clock = clock
@@ -34,16 +36,26 @@ module Workspace
 
     # Writes a new run's file. The run gets its "id" here.
     #
+    # The store-wide create lock (`.create.lock` beside the runs directory) is held
+    # from +check+ to the write, so two creations can't both pass a check on
+    # the runs going. Nothing under it takes a run's own lock ({#update}), and
+    # {#update} never takes this one, so the two can't deadlock.
+    #
     # @param run [Hash{String=>Object}] the run, without an id
+    # @param check [#call, nil] (positional, so a run hash is never read as keywords) called under the lock before anything is written; it raises to refuse
     # @yieldparam run [Hash{String=>Object}] the run with its id, to fill in what depends on the id
     # @return [Hash{String=>Object}] the run as stored
     # @raise [Workspace::Error] if the store can't be written
-    def create(run)
+    def create(run, check = nil)
       FileUtils.mkdir_p(@dir, mode: 0o700)
-      run = {"id" => unused_id}.merge(run)
-      yield run if block_given?
-      write(run)
-      run
+      File.open(File.join(File.dirname(@dir), ".create.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        check&.call
+        run = {"id" => unused_id}.merge(run)
+        yield run if block_given?
+        write(run)
+        run
+      end
     rescue SystemCallError, JSON::GeneratorError, EncodingError => e
       raise store_error(e)
     end
@@ -70,10 +82,12 @@ module Workspace
     # steps every verb goes by. The lock store counts such a run as alive
     # (see {RunLiveness}), so what it held stays held.
     #
+    # @param archived [Boolean] also check the finished runs' files
     # @return [Array<String>] their paths, sorted
-    def unreadable
+    def unreadable(archived: false)
       # A run that finished between the listing and the read is gone, not unreadable.
-      Dir.glob(File.join(@dir, "*.json")).reject { |path| read(path) }.select { |path| File.exist?(path) }.sort
+      dirs = archived ? [@dir, @archive_dir] : [@dir]
+      dirs.flat_map { |dir| Dir.glob(File.join(dir, "*.json")) }.reject { |path| read(path) }.select { |path| File.exist?(path) }.sort
     end
 
     # Changes one run: yields it under the run's lock, then stores what the
@@ -259,6 +273,8 @@ module Workspace
       File.rename(File.join(@dir, "#{run["id"]}.json"), File.join(@archive_dir, "#{run["id"]}.json"))
       FileUtils.rm_f(lock_path)
       archived.drop(ARCHIVE_LIMIT).each do |old|
+        # Evidence first: a crash between the two leaves a run that is still pruned next time.
+        @evidence&.remove(old["id"])
         FileUtils.rm_f([File.join(@archive_dir, "#{old["id"]}.json"), File.join(@archive_dir, "#{old["id"]}.events.jsonl")])
       end
     end

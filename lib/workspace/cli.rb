@@ -103,6 +103,7 @@ module Workspace
     # @param workflow_command [Workspace::Commands::Workflow, nil] pre-built `workflow` and `step` command
     # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] pre-built `workflow start` command
     # @param go_command [Workspace::Commands::Go, nil] pre-built `go` command
+    # @param workflow_project [Workspace::WorkflowProject, nil] the one resolver for the project whose workflow definitions are read first
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
     # @param events_command [Workspace::Commands::Events, nil] pre-built events command
@@ -128,7 +129,7 @@ module Workspace
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
     # @param sleeper [#call] sleeps the given seconds, injected for fast tests
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, go_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, go_command: nil, workflow_project: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -207,6 +208,7 @@ module Workspace
       @workflow_command = workflow_command
       @workflow_start_command = workflow_start_command
       @go_command = go_command
+      @workflow_project = workflow_project
       @library = library
       @instructions_command = instructions_command
       @instruction_composer = instruction_composer
@@ -504,7 +506,7 @@ module Workspace
       if json_flag?(argv)
         @output.puts JSON.generate(JsonEnvelope.from_exception(JsonEnvelope::SCHEMA_VERSION, error, message: json_message))
       else
-        @error_output.puts human
+        @error_output.puts human.to_s.split("\n", -1).map { |line| TerminalText.escape(line, keep_tabs: true) }.join("\n")
       end
       @exit_handler.exit(exit_code)
     end
@@ -710,7 +712,7 @@ module Workspace
           ui              Open a workspace-ui:// link (open), or see which app would take one (status)
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
-          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; manage your own definitions (validate, add, update, remove); read a run's history (events, files)
+          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; print a step's composed instructions (render), run its status check (check) or play a workflow with a scripted fake agent (simulate), all without a run; manage your own definitions (validate, add, update, remove); read a run's history (events, files, attempts), check its evidence (audit) and act on runs that have stopped (sweep)
 
         Global options:
           --debug         Print detailed debug output to stderr
@@ -5000,7 +5002,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start status events files resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5010,12 +5012,12 @@ module Workspace
         opts.separator "workspace's Claude pane. A step gets its instructions in a file under .workflow/ in the"
         opts.separator "checkout and one typed line pointing at it, in a fresh conversation unless the step says"
         opts.separator "context: continue. A step is done when the agent's turn ends, every file it produces:"
-        opts.separator "exists, and its status: check passes; the agent daemon (agentd) sees the turn end and"
+        opts.separator "is there (a non-empty regular file, not a link), and its status: check passes; the agent daemon (agentd) sees the turn end and"
         opts.separator "moves the run on. A failed step goes back along its on_fail: {goto, max}; a step with"
         opts.separator "gate: approve waits for `workflow approve`. Resources a step uses: are locks the run"
         opts.separator "holds, in the same queue as `lock acquire` and `dev up`."
         opts.separator ""
-        opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml, then the presets that"
+        opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml (a project's own, in #{File.join(@config.workspace_projects_dir, "NAME", "workflows")}/ID.yml, are found first; never read from a repository), then the presets that"
         opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix; explore: read-only research, a gate, then a report note). See docs/README.workflow.md."
         opts.separator ""
         HelpPages.overview_verbs(HelpPages::WORKFLOW).each { |line| opts.separator line }
@@ -5032,22 +5034,35 @@ module Workspace
         opts.separator "`start` may leave out the ID: config names it (workflows.by_ref.<kind>, else workflows.default)."
         opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
         opts.separator ""
-        opts.on("--name WORKSPACE", "run: the workspace to run in; status: that workspace's runs still going (default: the current workspace)") { |v| options[:name] = v }
-        opts.on("--input KEY=VALUE", "run, start: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
+        opts.on("--name WORKSPACE", "run: the workspace to run in; render, check: the workspace whose packs and commands are read; show, validate, render, check, simulate, add, update, remove: the workspace whose project's definitions are read first (default: the current workspace); status: that workspace's runs still going (default: the current workspace); sweep: only that workspace's runs (default: every run going)") { |v| options[:name] = v }
+        opts.on("--input KEY=VALUE", "run, start, render, simulate: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
+        opts.on("--artifacts DIR", "check: an existing directory standing for the run's artifacts (WORKSPACE_RUN_ARTIFACTS); default an empty temporary one") { |v| options[:artifacts] = v }
         opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
+        opts.on("--extra-attempts N", "resume, reject: add N to the run's attempt allowance when it has spent max_attempts (ignored by a resume that starts no attempt)") { |v| options[:extra_attempts] = v }
+        opts.on("--extra-tokens N", "resume, reject: add N to the run's token budget when it has used budget.tokens (ignored by a resume that starts no attempt)") { |v| options[:extra_tokens] = v }
         opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
         opts.on("--step STEP", "approve, reject: the gated step you saw (current.step in status --json); refused unless the run waits there") { |v| options[:step] = v }
         opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
         opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
+        opts.on("--script FILE", "simulate: the YAML script of what the fake agent does on each attempt and how each check comes out") { |v| options[:script] = v }
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
+        opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
+        opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
+        opts.on("--last DURATION", "stats, compare: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
         opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
         opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
+        opts.on("--needs-me", "status: the runs still going, in every workspace, that wait for you (a gate, question, prompt, failed check, gone pane, stall), each with the next command; --name or --project narrows it") { options[:needs_me] = true }
         opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
-        opts.on("--dry-run", "run, start: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
+        opts.on("--ref REF", "start: run the workflow that fits REF's kind (workflows.by_ref.<kind>, then workflows.default, else the one that fits) instead of naming an ID") { |v| options[:ref] = v }
+        opts.on("--force", "start: start although the workflow's applies_to: does not list the REF's kind") { options[:force] = true }
+        opts.on("--dry-run", "run, start: report what would start and start nothing; sweep: report what would be done and do nothing (also --install and --uninstall); add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
+        opts.on("--install", "sweep: install the launchd entry that runs the sweep every 5 minutes (a per-user LaunchAgent; opt-in)") { options[:schedule_flags] << :install }
+        opts.on("--uninstall", "sweep: unload and remove that launchd entry") { options[:schedule_flags] << :uninstall }
+        opts.on("--installed", "sweep: say whether that launchd entry is installed and loaded") { options[:schedule_flags] << :status }
         opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
         opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
@@ -5083,7 +5098,7 @@ module Workspace
     def cmd_workflow(args)
       return if verb_help_shown?(HelpPages::WORKFLOW, args)
 
-      options = {json: false, inputs: [], background: [], all: false, dry_run: false, turn_ended: false, source: false}
+      options = {json: false, inputs: [], background: [], all: false, dry_run: false, turn_ended: false, source: false, schedule_flags: []}
       given = args.dup
       parser = workflow_parser(options)
       refuse_bad_bytes!(args)
@@ -5093,82 +5108,161 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
       source_path = args.shift if %w[add update].include?(subcommand)
       start_ref = args.shift if subcommand == "start"
+      render_step = args.shift if %w[render check].include?(subcommand)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
-      raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?))
+      raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
+      raise UsageError, "--script is for `workflow simulate ID`." if options[:script] && subcommand != "simulate"
+      raise UsageError, "workflow simulate needs --script FILE (what the fake agent does; see `workspace workflow simulate --help`)." if subcommand == "simulate" && options[:script].nil?
       raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
+      raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
-      raise UsageError, "--project is for `workflow status`." if options[:project] && subcommand != "status"
+      raise UsageError, "--last is for `workflow stats ID` and `workflow compare ID`." if options[:last] && !%w[stats compare].include?(subcommand)
+      raise UsageError, "--by is for `workflow compare ID`." if options[:compare_by] && subcommand != "compare"
+      raise UsageError, "--project is for `workflow status`, `workflow stats` and `workflow compare`." if options[:project] && !%w[status stats compare].include?(subcommand)
+      raise UsageError, "workflow #{subcommand} covers every workspace unless --name or --project narrows it; --all is not needed." if %w[stats compare].include?(subcommand) && options[:all]
+      raise UsageError, "workflow sweep takes a RUN or --name WORKSPACE, not both." if subcommand == "sweep" && subject && options[:name]
+      schedule = options[:schedule_flags].first
+      raise UsageError, "--install, --uninstall and --installed are for `workflow sweep`." if schedule && subcommand != "sweep"
+      raise UsageError, "workflow sweep takes one of --install, --uninstall and --installed, and no RUN or --name with it." if schedule && (options[:schedule_flags].size > 1 || subject || options[:name])
+      raise UsageError, "--dry-run does not apply to `workflow sweep --installed`: it changes nothing." if schedule == :status && options[:dry_run]
       raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
+      raise UsageError, "--needs-me is for `workflow status`." if options[:needs_me] && subcommand != "status"
+      raise UsageError, "--needs-me lists runs still going and takes no RUN or --table." if options[:needs_me] && (subject || options[:table])
+      raise UsageError, "workflow check runs a status: command, which takes no inputs: --input is for run, start and render." if subcommand == "check" && options[:inputs].any?
+      raise UsageError, "--artifacts is for `workflow check ID STEP`." if options[:artifacts] && subcommand != "check"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
       gate_options = workflow_gate_options(subcommand, options)
+      extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
+      extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
 
-      start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout}
+      start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout, "--force" => :force, "--ref" => :ref}
       if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
         raise UsageError, "#{flag.first} is for `workflow start [ID] [REF]`."
       end
       if subcommand == "start"
         raise UsageError, "workflow start makes its own workspace: --name is for `workflow run`." if options[:name]
         raise UsageError, "workflow start runs in the new workspace's pane: --pane is for `workflow run`." if options[:pane]
-        raise UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." if subject.nil? && options[:prompt].to_s.strip.empty?
+        if options[:ref]
+          raise UsageError, "--ref takes the place of the workflow ID and the REF: use `workflow start --ref REF`, or `workflow start ID REF`." if subject || start_ref
+          raise UsageError, "--ref is a REF to route; --prompt has no kind to route by. Name a workflow: `workflow start ID --prompt TEXT`." unless options[:prompt].nil?
+          raise UsageError, "--ref needs a REF." if options[:ref].strip.empty?
+        end
+        raise UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." if subject.nil? && options[:ref].nil? && options[:prompt].to_s.strip.empty?
         raise Error, "workflow start is not available: no workflow start command was wired" unless @workflow_start_command
       end
 
       case subcommand
-      when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source])
-      when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json])
-      when "add" then workflow_action("workflow add", options) { @workflow_command.add(id: subject, path: source_path, dry_run: options[:dry_run]) }
+      when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source], project: workflow_project(options))
+      when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json], project: workflow_project(options))
+      when "render"
+        name = workflow_workspace(options)
+        project = workflow_project(options)
+        root = name && (options[:name] ? working_dir_for(name) : @project_config.project_root_for(name))
+        @workflow_command.render(id: subject, step: render_step, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: workflow_inputs(options[:inputs]), json: options[:json], project: project)
+      when "check"
+        name = workflow_workspace(options)
+        project = workflow_project(options)
+        root = if name
+          options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
+        else
+          @git.root
+        end
+        artifacts = options[:artifacts]
+        artifacts = File.expand_path(artifacts, @working_dir) unless artifacts.to_s.empty?
+        result = @workflow_command.check(id: subject, step: render_step, worktree: root ? File.expand_path(root) : @working_dir,
+          artifacts: artifacts, json: options[:json], project: project)
+        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      when "simulate" then @workflow_command.simulate(id: subject, script: options[:script], inputs: workflow_inputs(options[:inputs]), json: options[:json], project: workflow_project(options))
+      when "add" then workflow_action("workflow add", options) { @workflow_command.add(id: subject, path: source_path, dry_run: options[:dry_run], project: workflow_project(options)) }
       when "update"
         raise UsageError, "workflow update needs --if-sha256 SHA (the sha256 from `workflow show ID --source`)." if options[:if_sha256].to_s.empty?
-        workflow_action("workflow update", options) { @workflow_command.update(id: subject, path: source_path, if_sha256: options[:if_sha256], dry_run: options[:dry_run]) }
+        workflow_action("workflow update", options) { @workflow_command.update(id: subject, path: source_path, if_sha256: options[:if_sha256], dry_run: options[:dry_run], project: workflow_project(options)) }
       when "remove"
-        @workflow_command.check_removable(id: subject)
+        project = workflow_project(options)
+        @workflow_command.check_removable(id: subject, project: project)
         unless options[:yes] || options[:dry_run]
           Prompt.refuse_if_no_input!(@input, "Remove workflow #{subject}?", retry_flags: ["--yes"], destructive: true)
           raise UsageError, "workflow remove --json never prompts: pass --yes to remove, or --dry-run to preview." if options[:json]
         end
-        workflow_action("workflow remove", options) { @workflow_command.remove(id: subject, yes: options[:yes], dry_run: options[:dry_run]) }
+        workflow_action("workflow remove", options) { @workflow_command.remove(id: subject, yes: options[:yes], dry_run: options[:dry_run], project: project) }
       when "files"
         @workflow_command.files(run: subject, json: options[:json])
+      when "attempts"
+        @workflow_command.attempts(run: subject, step: options[:attempt_of], json: options[:json])
+      when "stats"
+        last = workflow_last(options[:last])
+        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
+        result = @workflow_command.stats(workflow: subject, last: last, last_text: options[:last], scope: scope, json: options[:json])
+        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      when "compare"
+        last = workflow_last(options[:last])
+        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
+        result = @workflow_command.compare(workflow: subject, by: options[:compare_by] || "definition", last: last, last_text: options[:last], scope: scope, json: options[:json])
+        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      when "audit"
+        result = @workflow_command.audit(run: subject, step: options[:attempt_of], json: options[:json])
+        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      when "sweep"
+        if schedule
+          action = "workflow sweep --#{(schedule == :status) ? "installed" : schedule}"
+          workflow_action_rows(action, options) { @workflow_command.schedule(schedule, dry_run: options[:dry_run]) }
+          return
+        end
+        workflow_action_rows("workflow sweep", options) { @workflow_command.sweep(run: subject, name: options[:name], dry_run: options[:dry_run], json: options[:json], caller_pane: ENV["TMUX_PANE"]) }
       when "events"
         @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])
       when "status"
         if subject && (options[:name] || options[:project] || options[:all])
           raise UsageError, "workflow status RUN takes no --name, --project or --all: the run names its own workspace."
         end
-        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir) unless subject
-        @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name], table: options[:table] || false)
+        scope = if options[:needs_me]
+          @status_scope.resolve_needs_me(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
+        elsif !subject
+          @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
+        end
+        outcome = @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name], table: options[:table] || false)
+        code = outcome[:exit_code] if outcome.is_a?(Hash)
+        @exit_handler.exit(code) if code && !code.zero?
       when "advance"
         @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started], "--turn-started"),
           stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], caller_pane: ENV["TMUX_PANE"])
       when "run"
-        name = options[:name] || @project_detector.detect(@working_dir)
+        name = workflow_workspace(options)
         raise UsageError, "workflow run needs a workspace: pass --name, or run from inside a project." unless name
         inputs = workflow_inputs(options[:inputs])
         workflow_action("workflow run", options) do
+          project = workflow_project(options)
           # The checkout's root, where the run's files go: the named workspace's, or the detected one's.
           root = options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
           @workflow_command.run(id: subject, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: inputs,
-            pane: options[:pane], note: options[:note], dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"])
+            pane: options[:pane], note: options[:note], dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], project: project)
         end
       when "start"
         inputs = workflow_inputs(options[:inputs])
         workflow_action("workflow start", options) do
-          @workflow_start_command.call(id: start_ref && subject, ref: start_ref, positional: start_ref ? nil : subject, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
-            note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
-            prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run])
+          begin
+            row = @workflow_start_command.call(id: start_ref && subject, ref: options[:ref] || start_ref, positional: (start_ref || options[:ref]) ? nil : subject, route: !options[:ref].nil?, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
+              note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
+              prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run], force: options[:force] == true)
+          rescue Workspace::Error => e
+            print_start_warnings(e.details["warnings"], options)
+            raise
+          end
+          print_start_warnings(row && row["warnings"], options)
+          row
         end
       when "resume"
-        workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], caller_pane: ENV["TMUX_PANE"]) }
+        workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, caller_pane: ENV["TMUX_PANE"]) }
       when "cancel" then workflow_action("workflow cancel", options) { @workflow_command.cancel(run: subject) }
       when "approve"
         workflow_action("workflow approve", options) do
@@ -5177,12 +5271,42 @@ module Workspace
       when "reject"
         raise UsageError, "workflow reject needs --note TEXT: the step runs again with it." if options[:note].to_s.strip.empty?
         workflow_action("workflow reject", options) do
-          @workflow_command.reject(run: subject, note: options[:note], to: options[:to], **gate_options, caller_pane: ENV["TMUX_PANE"])
+          @workflow_command.reject(run: subject, note: options[:note], to: options[:to], **gate_options, extra_attempts: extra_attempts, extra_tokens: extra_tokens, caller_pane: ENV["TMUX_PANE"])
         end
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # The project whose workflow definitions every `workflow` reader looks in first, from {WorkflowProject}: the parent
+    # project of `--name`'s workspace (an unknown one is refused), else of the current directory; nil outside any
+    # project, or when a repository's marker is not tied to this checkout (the user directory and presets alone).
+    def workflow_workspace(options)
+      return options[:name] if options[:name]
+      @workflow_project ? @workflow_project.workspace(@working_dir) : @project_detector.detect(@working_dir)
+    end
+
+    def workflow_project(options)
+      return nil unless @workflow_project
+      resolved = options[:name] ? @workflow_project.for_workspace(options[:name]) : @workflow_project.for_directory(@working_dir)
+      resolved&.project
+    end
+
+    # `--extra-attempts` of resume and reject, checked: a whole number from 1 up.
+    def workflow_extra_attempts(subcommand, text)
+      return nil if text.nil?
+      raise UsageError, "--extra-attempts is for `workflow resume` and `workflow reject`." unless %w[resume reject].include?(subcommand)
+      raise UsageError, "--extra-attempts must be a whole number from 1 up, got #{text.to_s[0, 20].inspect}." unless text.match?(/\A[1-9]\d{0,5}\z/)
+      text.to_i
+    end
+
+    # `--extra-tokens` of resume and reject, checked: a whole number from 1 up.
+    def workflow_extra_tokens(subcommand, text)
+      return nil if text.nil?
+      raise UsageError, "--extra-tokens is for `workflow resume` and `workflow reject`." unless %w[resume reject].include?(subcommand)
+      raise UsageError, "--extra-tokens must be a whole number from 1 up, got #{text.to_s[0, 20].inspect}." unless text.match?(/\A[1-9]\d{0,11}\z/)
+      text.to_i
     end
 
     # The `--step`/`--attempt` pair of approve and reject, checked; `--note-sha256` is approve's.
@@ -5210,6 +5334,15 @@ module Workspace
       return unless index
       flag = (index.positive? && args[index - 1].start_with?("--")) ? args[index - 1] : "An argument"
       raise UsageError, "#{flag} holds bytes that are not valid UTF-8 text (was it cut in the middle of a character?)."
+    end
+
+    # `--last` of stats, in seconds: a Duration (`90m`, `12h`) or whole days or weeks (`30d`, `2w`).
+    def workflow_last(text)
+      return nil if text.nil?
+      Workspace::Duration.parse_window(text)
+    rescue ArgumentError => e
+      detail = e.message.start_with?("must be") ? e.message.sub(/, got .*/, "") : "needs a duration like 30d, 2w, 12h or 90m"
+      raise UsageError, "--last #{detail}, got #{text.to_s[0, 40].inspect}."
     end
 
     def workflow_since(text)
@@ -5241,11 +5374,25 @@ module Workspace
     end
 
     # Runs a workflow or step mutation under {#run_action}, with the command's row as the one result.
+    # `workflow start`'s warnings, on success or above its refusal; `--json` carries them in the document.
+    def print_start_warnings(warnings, options)
+      return if options[:json]
+      Array(warnings).each { |warning| @error_output.puts "Warning: #{TerminalText.escape(warning.to_s)}" }
+    end
+
     def workflow_action(action, options)
       run_action(action, json: options[:json]) do
         row = yield
         next {exit_code: 0, results: [], status: "cancelled"} unless row
         {exit_code: (row["outcome"] == "failed") ? 1 : 0, results: [row], status: (row["outcome"] == "dry_run") ? "dry_run" : nil}
+      end
+    end
+
+    # Like {#workflow_action}, for a command that answers many rows and its own exit code.
+    def workflow_action_rows(action, options)
+      run_action(action, json: options[:json]) do
+        outcome = yield
+        {exit_code: outcome[:exit_code], results: outcome[:results], status: outcome[:status]}
       end
     end
 

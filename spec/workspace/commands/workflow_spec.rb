@@ -15,7 +15,7 @@ RSpec.describe Workspace::Commands::Workflow do
   let(:lock_holder) { instance_double(Workspace::LockHolder) }
   let(:workspace_facts) { nil }
   subject(:command) do
-    described_class.new(catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, store: store, panes: panes, files: nil, run_files: nil,
+    described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, store: store, panes: panes, files: nil, run_files: nil,
       tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
       clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
   end
@@ -58,7 +58,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:unsafe) { Workspace::Error.new("unsafe", code: "unsafe_checkout_path") }
 
     before do
-      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
       allow(engine).to receive(:preflight).and_raise(unsafe)
     end
 
@@ -103,6 +103,15 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json).to eq("schema_version" => 1, "ok" => true, "workflows" => entries)
     end
 
+    it "prints use_when and applies_to of one definition" do
+      data = Workspace::WorkflowDefinition.parse("use_when: Feedback to act on.\napplies_to: [github_pr, branch]\nsteps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(data)
+
+      command.show(id: "flow")
+
+      expect(output.string).to include("Use when: Feedback to act on.\nApplies to: github_pr, branch\n")
+    end
+
     it "says so when there are none" do
       allow(catalog).to receive(:list).and_return([])
 
@@ -112,7 +121,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "prints one definition: where it came from, its inputs and what each step does" do
-      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
 
       command.show(id: "flow")
 
@@ -129,17 +138,33 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "prints one definition as a document, with its source, path and hash" do
-      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
 
       command.show(id: "flow", json: true)
 
       expect(json).to eq("schema_version" => 1, "ok" => true,
-        "workflow" => definition.to_h.merge("source" => "global", "path" => "/defs/flow.yml", "sha256" => definition.sha256))
+        "workflow" => definition.to_h.merge("source" => "global", "project" => nil, "path" => "/defs/flow.yml", "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256))
+    end
+  end
+
+  describe "#show of a project's definition" do
+    let(:project_definition) { Workspace::WorkflowDefinition.parse("title: Team\nsteps:\n  a:\n    prompt: P\n", id: "team", source: "project", path: "/cfg/projects/app/workflows/team.yml") }
+
+    it "names the project in the document, and the scope in the text" do
+      allow(catalog).to receive(:find).with("team", project: "app").and_return(project_definition)
+
+      command.show(id: "team", json: true, project: "app")
+      expect(json["workflow"]).to include("source" => "project", "project" => "app", "path" => "/cfg/projects/app/workflows/team.yml")
+
+      output.truncate(0)
+      output.rewind
+      command.show(id: "team", project: "app")
+      expect(output.string.lines.first).to eq("team: Team (project, /cfg/projects/app/workflows/team.yml)\n")
     end
   end
 
   describe "#run" do
-    before { allow(catalog).to receive(:find).with("flow").and_return(definition) }
+    before { allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition) }
 
     it "starts the run in the workspace's Claude pane and reports where it stands" do
       allow(panes).to receive(:default_pane).with("app").and_return("%5")
@@ -215,6 +240,76 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#render" do
+    let(:error_output) { StringIO.new }
+    let(:tty) { Class.new(StringIO) { def tty? = true } }
+    let(:rendered) do
+      {"workflow" => "flow", "step" => "plan", "workspace" => "app", "worktree" => "/w/app", "inputs" => {"task" => "x"}, "gate" => "approve",
+       "text" => "Plan x.\n\tdone\e[31m\n", "packs" => ["play/binding"], "run" => "wr_preview", "artifacts_dir" => "/w/app/.workflow/wr_preview",
+       "instructions" => "/w/app/.workflow/wr_preview/steps/plan.1.prompt.md", "in_checkout" => true}
+    end
+
+    def build(out)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+        tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: out, error_output: error_output)
+    end
+
+    before do
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
+      allow(engine).to receive(:render).and_return(rendered)
+    end
+
+    it "writes the text as it is to a pipe, and the preview values and the gate to the error output" do
+      build(output).render(id: "flow", step: "plan", workspace: "app", worktree: "/w/app", inputs: {"task" => "x"})
+
+      expect(output.string).to eq("Plan x.\n\tdone\e[31m\n")
+      expect(error_output.string).to include("{{run}} = wr_preview", "{{artifacts}} = /w/app/.workflow/wr_preview", "has gate: approve")
+      expect(error_output.string).not_to include("{{workspace}}")
+      expect(engine).to have_received(:render).with(definition: definition, step: "plan", workspace: "app", worktree: "/w/app", inputs: {"task" => "x"})
+    end
+
+    it "looks the workflow up in the project it is given, and in none without one" do
+      allow(catalog).to receive(:find).and_return(definition)
+
+      build(output).render(id: "flow", step: "plan", workspace: "app.worktree-fix", worktree: "/w/app", project: "app")
+      build(output).render(id: "flow", step: "plan", workspace: nil, worktree: "/w/app")
+
+      expect(catalog).to have_received(:find).with("flow", project: "app")
+      expect(catalog).to have_received(:find).with("flow", project: nil)
+    end
+
+    it "escapes control characters, keeping tabs and lines, when the output is a terminal" do
+      terminal = tty.new
+      build(terminal).render(id: "flow", step: "plan", workspace: "app", worktree: "/w/app")
+
+      expect(terminal.string).to eq("Plan x.\n\tdone\\e[31m\n")
+    end
+
+    it "shows the workspace as a preview and warns outside a checkout, when it has neither" do
+      allow(engine).to receive(:render).and_return(rendered.merge("workspace" => "<workspace>", "in_checkout" => false))
+      build(output).render(id: "flow", step: "plan", workspace: nil, worktree: "/w/x")
+
+      expect(engine).to have_received(:render).with(hash_including(workspace: "<workspace>"))
+      expect(error_output.string).to include("warning: /w/x is not in a git checkout", "{{workspace}} = <workspace>")
+    end
+
+    it "prints one document with the previews and warnings under --json, and nothing on the error output" do
+      build(output).render(id: "flow", step: "plan", workspace: nil, worktree: "/w/app", json: true)
+      doc = JSON.parse(output.string)
+
+      expect(doc).to include("ok" => true, "schema_version" => 1, "workflow" => "flow", "step" => "plan", "gate" => "approve", "text" => rendered["text"],
+        "packs" => ["play/binding"], "warnings" => [], "instructions_path" => rendered["instructions"])
+      expect(doc["previews"].map { |each| each["name"] }).to eq(%w[run workspace artifacts])
+      expect(error_output.string).to eq("")
+    end
+
+    it "lets an unknown workflow through as the catalog's error" do
+      allow(catalog).to receive(:find).with("nope", project: anything).and_raise(Workspace::Error.new("No workflow nope.", code: "unknown_workflow"))
+
+      expect { build(output).render(id: "nope", step: "plan", workspace: "app", worktree: "/w/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+    end
+  end
+
   describe "#status" do
     def workspace_scope(name) = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: name)
 
@@ -260,6 +355,12 @@ RSpec.describe Workspace::Commands::Workflow do
           "waiting_lock: queued for devenv, 2 of 3, held by the dev environment in /src/app-tax (pid 4242)",
         reason("waiting_lock", {"resource" => "test-db", "position" => 1, "total" => 1, "holder" => {"pid" => 77, "kind" => "agent", "worktree" => "/src/app"}}) =>
           "waiting_lock: queued for test-db, 1 of 1, held by an agent in /src/app (pid 77)",
+        reason("budget_spent", {"step" => "build", "used" => 4_120_000, "allowance" => 4_000_000, "uncounted" => 0, "suggested" => 1_000_000}) =>
+          "budget_spent: step build was not started: 4,120,000 of 4,000,000 tokens  (resume --extra-tokens 1000000)",
+        reason("budget_spent", {"step" => "build", "used" => 950, "allowance" => 900, "uncounted" => 2, "suggested" => 100_000}) =>
+          "budget_spent: step build was not started: 950 of 900 tokens (at least; 2 ended attempts not counted)  (resume --extra-tokens 100000)",
+        reason("retry_backoff", {"step" => "verify", "to" => "build", "until" => "2026-10-04T12:02:00Z", "seconds" => 120.0}) =>
+          "retry_backoff: step verify failed; step build starts again at 2026-10-04T12:02:00Z (after 120 seconds), or sooner with a resume",
         reason("waiting_you", {"kind" => "prompt", "pane" => "%5", "message" => "Claude needs your permission"}) =>
           "waiting_you: pane %5 is waiting for an answer: Claude needs your permission",
         reason("waiting_you", {"kind" => "ask", "ask" => "a1", "question" => "Postgres or sqlite?"}) =>
@@ -272,6 +373,8 @@ RSpec.describe Workspace::Commands::Workflow do
           "turn_ended_incomplete: the turn ended without /a/plan.md, /a/risks.md",
         reason("turn_ended_incomplete", {"missing" => [], "stale" => ["/a/plan.md"]}) =>
           "turn_ended_incomplete: the turn ended with /a/plan.md left by an earlier attempt and not written again",
+        reason("turn_ended_incomplete", {"missing" => ["/a/risks.md"], "invalid" => [{"file" => "/a/plan.md", "rule" => "empty"}, {"file" => "/a/l.md", "rule" => "symlink"}, {"file" => "/a/d", "rule" => "not_regular_file"}]}) =>
+  "turn_ended_incomplete: the turn ended without /a/risks.md with /a/plan.md (empty; write its content), /a/l.md (a link; write a regular file), /a/d (not a regular file)",
         reason("turn_ended_incomplete", {"missing" => ["/a/plan.md"], "background_tasks" => [{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k\e[31m1", "type" => "sub\nagent"}]}) =>
           "turn_ended_incomplete: the turn ended without /a/plan.md and background tasks were still listed after 90 minutes: shell b1a2c3d4e, sub\\nagent k\\e[31m1",
         reason("failed_check", {"step" => "verify", "cause" => "check", "exit_code" => 1, "log" => "/a/verify.1.check.log"}) =>
@@ -630,8 +733,20 @@ RSpec.describe Workspace::Commands::Workflow do
     it "resumes a run whose pane is still there, in that pane" do
       row = command.resume(run: "wr_1", from: "plan", note: "Again.")
 
-      expect(engine).to have_received(:resume).with("wr_1", from: "plan", note: "Again.", pane: nil, turn_over: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: "plan", note: "Again.", pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       expect(row).to include("outcome" => "resumed", "message" => nil, "run" => shown)
+    end
+
+    it "hands --extra-attempts to the engine" do
+      command.resume(run: "wr_1", extra_attempts: 2)
+
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: 2, extra_tokens: nil)
+    end
+
+    it "hands --extra-tokens to the engine" do
+      command.resume(run: "wr_1", extra_tokens: 500)
+
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: 500)
     end
 
     it "moves a run whose pane is gone to the workspace's Claude pane, or to the pane the caller names" do
@@ -642,8 +757,8 @@ RSpec.describe Workspace::Commands::Workflow do
       command.resume(run: "wr_1")
       command.resume(run: "wr_1", pane: "0.2")
 
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%9", turn_over: nil).ordered
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil).ordered
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%9", turn_over: nil, extra_attempts: nil, extra_tokens: nil).ordered
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil, extra_tokens: nil).ordered
     end
 
     it "moves a run whose step could not be started because its pane was gone" do
@@ -653,7 +768,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.resume(run: "wr_1")
 
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%9", turn_over: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%9", turn_over: nil, extra_attempts: nil, extra_tokens: nil)
     end
 
     it "keeps a run that was never bound (it waits for its first lock) in the pane it was started in, and starts no daemon" do
@@ -665,7 +780,7 @@ RSpec.describe Workspace::Commands::Workflow do
       command.resume(run: "wr_1")
 
       expect(panes).not_to have_received(:default_pane)
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
     end
 
     it "refuses what the engine would refuse before it looks for a pane or starts a daemon" do
@@ -686,7 +801,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.resume(run: "wr_1")
 
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1})
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1}, extra_attempts: nil, extra_tokens: nil)
     end
 
     it "leaves a step running, deciding nothing, on a failed idle pane, and decides it once the flag clears" do
@@ -694,11 +809,11 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(panes).to receive(:idle?) { Workspace::WorkflowPanes.turn_over?(shown_pane, Time.now) }
 
       command.resume(run: "wr_1")
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
 
       shown_pane["turn_failed"] = false
       command.resume(run: "wr_1")
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1})
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: {"step" => "plan", "attempt" => 1}, extra_attempts: nil, extra_tokens: nil)
     end
 
     it "asks about the pane the run is bound to now, wherever `restore` moved it, and the pane it was started in when it is bound to none" do
@@ -732,7 +847,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       # The daemon was asked about the run's pane, said its agent is working, and the engine was not told the turn is over.
       expect(panes).to have_received(:idle?).with("app", "%5")
-      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil)
+      expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       expect(row).to include("outcome" => "unchanged", "reason" => nil, "message" => "Nothing was done: an agent is working on step plan.")
       expect(output.string.lines.last).to eq("Nothing was done: an agent is working on step plan.\n")
     end
@@ -754,7 +869,7 @@ RSpec.describe Workspace::Commands::Workflow do
       it "parks instead of typing when $TMUX_PANE names the pane" do
         row = command.resume(run: "wr_1", note: "say \"hi\"\nplease", caller_pane: "%5")
 
-        expect(engine).to have_received(:park).with("wr_1", from: nil, note: "say \"hi\"\nplease", pane: nil, turn_over: nil)
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: "say \"hi\"\nplease", pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
         expect(engine).not_to have_received(:resume)
         expect(row).to include("outcome" => "parked", "reason" => nil, "message" => own_message,
           "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"})
@@ -773,12 +888,12 @@ RSpec.describe Workspace::Commands::Workflow do
       it "runs as today for --pane elsewhere, and parks for --pane naming the caller's pane" do
         allow(panes).to receive(:locate).with("app", "0.2").and_return("%8")
         command.resume(run: "wr_1", pane: "0.2", caller_pane: "%5")
-        expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil)
+        expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil, extra_tokens: nil)
         expect(engine).not_to have_received(:park)
 
         allow(panes).to receive(:locate).with("app", "0.1").and_return("%5")
         command.resume(run: "wr_1", pane: "0.1", caller_pane: "%5")
-        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil)
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       end
 
       it "parks when the old pane is gone and the default pane is the caller's" do
@@ -788,7 +903,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         command.resume(run: "wr_1", caller_pane: "%5")
 
-        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil)
+        expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       end
 
       it "keeps today's path when the pane cannot be parked on" do
@@ -882,11 +997,19 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "cancels and rejects, handing the engine the step and attempt the caller saw" do
       allow(engine).to receive(:cancel).with("wr_1").and_return("id" => "wr_1", "workspace" => "app")
-      allow(engine).to receive(:reject).with("wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2, guard: kind_of(Proc))
+      allow(engine).to receive(:reject).with("wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2, guard: kind_of(Proc), extra_attempts: 3, extra_tokens: nil)
         .and_return("id" => "wr_1", "workspace" => "app")
 
       expect(command.cancel(run: "wr_1")).to include("outcome" => "cancelled")
-      expect(command.reject(run: "wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2)).to include("outcome" => "rejected")
+      expect(command.reject(run: "wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2, extra_attempts: 3)).to include("outcome" => "rejected")
+    end
+
+    it "hands --extra-tokens of a reject to the engine" do
+      allow(engine).to receive(:reject).and_return("id" => "wr_1", "workspace" => "app")
+
+      command.reject(run: "wr_1", note: "No.", extra_tokens: 9)
+
+      expect(engine).to have_received(:reject).with("wr_1", hash_including(extra_tokens: 9))
     end
 
     it "approves a gate from a terminal, or from a pane bound to nothing, handing the engine what the caller saw" do
@@ -993,6 +1116,18 @@ RSpec.describe Workspace::Commands::Workflow do
         expect { command.resume(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
       end
 
+      it "is refused for a step with a command proof, which runs a shell" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil, "require" => [{"command" => "lint"}]}]}
+
+        expect { command.resume(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
+      end
+
+      it "is not refused for the other proofs, which use the guard's own git" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil, "require" => [{"commits" => 1}, {"remote_unchanged" => true}]}]}
+
+        expect { command.resume(run: "wr_1", caller_pane: "%5") }.not_to raise_error
+      end
+
       it "is allowed from another pane, and from the bound pane with --from" do
         command.resume(run: "wr_1", caller_pane: "%3")
         command.resume(run: "wr_1", from: "plan", caller_pane: "%5")
@@ -1013,7 +1148,7 @@ RSpec.describe Workspace::Commands::Workflow do
       let(:error_output) { StringIO.new }
       let(:now) { Time.utc(2026, 10, 4, 13, 0, 0) }
       subject(:command) do
-        described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+        described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
           tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output, error_output: error_output)
       end
 
@@ -1417,6 +1552,15 @@ RSpec.describe Workspace::Commands::Workflow do
       TEXT
     end
 
+    it "adds the attempt's proofs to the document once one has run" do
+      proofs = [{"proof" => "command", "log" => "/l", "exit_code" => 3}]
+      run["steps"]["plan"]["attempts"].last["proofs"] = proofs
+
+      command.step_status(pane: "%5", json: true)
+
+      expect(json["step"]["proofs"]).to eq(proofs)
+    end
+
     it "prints it as one document, the report as `step done` gives it" do
       File.write(File.join(@dir, "plan.md"), "plan\n")
       File.utime(Time.utc(2026, 10, 4, 12, 5), Time.utc(2026, 10, 4, 12, 5), File.join(@dir, "plan.md"))
@@ -1426,9 +1570,30 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json).to eq("schema_version" => 1, "ok" => true, "step" => {
         "run_id" => "wr_1", "workflow" => "flow", "workspace" => "app", "step" => "plan", "attempt" => 1, "state" => "running",
         "instructions" => "#{@dir}/steps/plan.1.prompt.md", "artifacts_dir" => @dir,
-        "produces" => [{"path" => "#{@dir}/plan.md", "exists" => true, "current" => true}], "check" => false,
+        "produces" => [{"path" => "#{@dir}/plan.md", "exists" => true, "problem" => nil, "current" => true}], "check" => false,
         "reported" => {"status" => "pass", "summary" => "Plan written."}
       })
+    end
+
+    it "says a symlink and a directory are not regular files" do
+      strict = run.merge("definition" => definition.to_h.merge("produces_check" => "strict"))
+      allow(store).to receive(:find).with("wr_1").and_return(strict)
+      File.write(File.join(@dir, "real.md"), "x")
+      File.symlink(File.join(@dir, "real.md"), File.join(@dir, "plan.md"))
+
+      command.step_status(pane: "%5")
+      expect(output.string).to include("#{@dir}/plan.md (a link; write a regular file)\n")
+
+      File.delete(File.join(@dir, "plan.md"))
+      Dir.mkdir(File.join(@dir, "plan.md"))
+      output.truncate(0)
+      output.rewind
+      command.step_status(pane: "%5", json: true)
+      expect(json["step"]["produces"]).to eq([{"path" => "#{@dir}/plan.md", "exists" => true, "problem" => "not_regular_file", "current" => false}])
+      output.truncate(0)
+      output.rewind
+      command.step_status(pane: "%5")
+      expect(output.string).to include("#{@dir}/plan.md (not a regular file)\n")
     end
 
     it "says a file an earlier attempt left has to be written again" do
@@ -1441,7 +1606,22 @@ RSpec.describe Workspace::Commands::Workflow do
       output.truncate(0)
       output.rewind
       command.step_status(pane: "%5", json: true)
-      expect(json["step"]["produces"]).to eq([{"path" => "#{@dir}/plan.md", "exists" => true, "current" => false}])
+      expect(json["step"]["produces"]).to eq([{"path" => "#{@dir}/plan.md", "exists" => true, "problem" => nil, "current" => false}])
+    end
+
+    it "names the rule an empty file or a link breaks in a strict run" do
+      run["definition"] = definition.to_h.merge("produces_check" => "strict")
+      File.write(File.join(@dir, "plan.md"), "")
+
+      command.step_status(pane: "%5")
+      expect(output.string).to include("plan.md (empty; write its content)\n")
+      output.truncate(0)
+      output.rewind
+      File.delete(File.join(@dir, "plan.md"))
+      File.symlink("/nowhere", File.join(@dir, "plan.md"))
+      command.step_status(pane: "%5", json: true)
+
+      expect(json["step"]["produces"]).to eq([{"path" => "#{@dir}/plan.md", "exists" => true, "problem" => "symlink", "current" => false}])
     end
 
     it "says a check will run for a step that has one" do
@@ -1460,11 +1640,11 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:builtin_dir) { File.join(dir, "builtin") }
     let(:dir) { Dir.mktmpdir }
     let(:real_catalog) do
-      Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir))
+      Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil))
     end
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, error_output: error_output)
+      described_class.new(lint: nil, catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, error_output: error_output)
     end
 
     before { FileUtils.mkdir_p([global_dir, builtin_dir]) }
@@ -1539,7 +1719,7 @@ RSpec.describe Workspace::Commands::Workflow do
       Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: File.join(@root, "archive"), id_generator: -> { "wr_2610250930abcd" })
     end
     let(:files_command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: Workspace::WorkflowRunFiles.new, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: Workspace::WorkflowRunFiles.new, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
     end
     let(:artifacts) { File.join(@root, "app", ".workflow", "wr_2610250930abcd") }
 
@@ -1554,7 +1734,7 @@ RSpec.describe Workspace::Commands::Workflow do
       real_store.create("workflow" => "rpiv", "workspace" => "app", "worktree" => File.join(@root, "app"), "state" => "running", "current" => "research",
         "artifacts_dir" => artifacts,
         "steps" => {"research" => {"state" => "running", "attempts" => [{"n" => 1, "prompt_file" => File.join(artifacts, "steps", "research.1.prompt.md"), "check" => {"log" => File.join(artifacts, "steps", "research.1.check.log")}}]}},
-        "definition" => {"steps" => [{"id" => "research", "produces" => ["research.md", "plan.md", "notes.md", "../../../outside.md"]}]})
+        "definition" => {"produces_check" => "strict", "steps" => [{"id" => "research", "produces" => ["research.md", "plan.md", "notes.md", "../../../outside.md"]}]})
     end
 
     it "prints the documented JSON for the fixture run" do
@@ -1614,6 +1794,202 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#attempts" do
+    around do |example|
+      Dir.mktmpdir("wf-attempts") do |dir|
+        @runs = File.join(dir, "runs")
+        @archive = File.join(dir, "archive")
+        example.run
+      end
+    end
+
+    let(:real_store) { Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: @archive, id_generator: -> { "wr_2611010900abcd" }) }
+    let(:attempts_command) do
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, attempts: Workspace::WorkflowAttempts.new, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+    end
+    let(:attempt_one) do
+      {"n" => 1, "started_at" => "2026-11-01T09:00:00Z", "ended_at" => "2026-11-01T09:02:05Z", "outcome" => "failed", "code" => "require_commits",
+       "head" => {"before" => "4f2a91c" + "0" * 33, "after" => "4f2a91c" + "0" * 33}, "usage" => {"input_tokens" => 412000, "output_tokens" => 18300},
+       "check" => {"command" => "bin/test", "log" => "/x.log", "exit_code" => 1}, "reasons" => [{"code" => "turn_ended_incomplete", "since" => "a", "until" => "b"}]}
+    end
+
+    def create_run(extra = {})
+      real_store.create({"workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "implement",
+                         "definition" => {"steps" => [{"id" => "plan"}, {"id" => "implement"}]},
+                         "steps" => {"plan" => {"attempts" => []}, "implement" => {"state" => "running", "attempts" => [attempt_one, {"n" => 2, "started_at" => "2026-11-01T09:05:00Z"}]}}}.merge(extra))
+    end
+
+    it "marks an attempt the sweep typed again, in the table and as redelivered in json" do
+      create_run
+      real_store.update("wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][0].merge!("outcome" => "not_delivered", "redelivered" => true) }
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines[1]).to include("not_delivered (retried)")
+    end
+
+    it "prints one table row per attempt" do
+      create_run
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines.map(&:rstrip)).to eq([
+        "STEP       ATTEMPT  OUTCOME  CODE             HEAD             DURATION  TOKENS",
+        "implement  1        failed   require_commits  4f2a91c>4f2a91c  125s      412000/18300",
+        "implement  2        -        -                ->-              -         -"
+      ])
+    end
+
+    it "prints the documented fields as JSON, with an old attempt's missing keys null" do
+      create_run
+
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("schema_version" => 1, "ok" => true, "run" => "wr_2611010900abcd", "unowned_reasons" => [])
+      expect(doc["attempts"][0]).to include("step" => "implement", "attempt" => 1, "outcome" => "failed", "code" => "require_commits",
+        "check" => {"command" => "bin/test", "log" => "/x.log", "exit_code" => 1}, "usage" => {"input_tokens" => 412000, "output_tokens" => 18300},
+        "reasons" => [{"code" => "turn_ended_incomplete", "since" => "a", "until" => "b"}])
+      expect(doc["attempts"][1]).to include("attempt" => 2, "outcome" => nil, "code" => nil, "agent" => nil, "session" => nil, "head" => nil, "packs" => nil, "outputs" => nil, "usage" => nil, "evidence" => nil, "reasons" => nil)
+    end
+
+    it "reads a run that finished and was archived" do
+      create_run
+      real_store.update("wr_2611010900abcd") { |run| run.merge!("state" => "completed", "ended_at" => "2026-11-01T10:00:00Z") }
+
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["attempts"].size).to eq(2)
+      expect(File.exist?(File.join(@archive, "wr_2611010900abcd.json"))).to be(true)
+    end
+
+    it "limits to one step and keeps that step's unowned reasons" do
+      create_run("reasons" => [{"step" => "plan", "code" => "waiting_lock", "since" => "s", "until" => "u"}, {"step" => "implement", "code" => "waiting_lock", "since" => "t", "until" => nil}])
+
+      attempts_command.attempts(run: "wr_2611010900abcd", step: "implement", json: true)
+
+      doc = JSON.parse(output.string)
+      expect(doc["unowned_reasons"]).to eq([{"step" => "implement", "code" => "waiting_lock", "since" => "t", "until" => nil}])
+      attempts_command.attempts(run: "wr_2611010900abcd", step: "plan")
+      expect(output.string).to include("No attempts recorded for wr_2611010900abcd step plan.", "Reason outside any attempt: plan  waiting_lock  s  u")
+    end
+
+    it "escapes stored text in the table" do
+      create_run
+      real_store.update("wr_2611010900abcd") { |run| run["steps"]["implement"]["attempts"][0]["code"] = "x\e[2Jy" }
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string).not_to include("\e")
+      expect(output.string).to include("x\\e[2Jy")
+    end
+
+    it "refuses an unknown step with unknown_step and an unknown run with unknown_run" do
+      create_run
+
+      expect { attempts_command.attempts(run: "wr_2611010900abcd", step: "nope") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_step")
+        expect(e.details).to include("steps" => %w[plan implement])
+      }
+      expect { attempts_command.attempts(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+
+    def json_attempts(run_id = "wr_2611010900abcd")
+      attempts_command.attempts(run: run_id, json: true)
+      JSON.parse(output.string)["attempts"]
+    end
+
+    it "orders interleaved attempts by start time, and a same-second tie by step then attempt number" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan",
+        "definition" => {"steps" => [{"id" => "plan"}, {"id" => "implement"}]},
+        "steps" => {"plan" => {"attempts" => [{"n" => 1, "started_at" => "2026-11-01T09:00:00Z"}, {"n" => 3, "started_at" => "2026-11-01T09:20:00Z"},
+          {"n" => 4, "started_at" => "2026-11-01T09:30:00Z"}]},
+                    "implement" => {"attempts" => [{"n" => 2, "started_at" => "2026-11-01T09:10:00Z"}, {"n" => 1, "started_at" => "2026-11-01T09:30:00Z"}]}})
+
+      expect(json_attempts.map { |row| [row["step"], row["attempt"]] }).to eq([["plan", 1], ["implement", 2], ["plan", 3], ["plan", 4], ["implement", 1]])
+    end
+
+    it "orders a same-second tie by step index, then attempt number" do
+      stamp = "2026-11-01T09:00:00Z"
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan",
+        "definition" => {"steps" => [{"id" => "plan"}, {"id" => "implement"}]},
+        "steps" => {"plan" => {"attempts" => [{"n" => 2, "started_at" => stamp}, {"n" => 1, "started_at" => stamp}]}, "implement" => {"attempts" => [{"n" => 1, "started_at" => stamp}]}})
+
+      expect(json_attempts.map { |row| [row["step"], row["attempt"]] }).to eq([["plan", 1], ["plan", 2], ["implement", 1]])
+    end
+
+    it "shows the end fields of a cancelled run's open attempt, and a resumed attempt's two reasons" do
+      create_run
+      real_store.update("wr_2611010900abcd") do |run|
+        run["steps"]["implement"]["attempts"][1].merge!("head" => {"before" => "a" * 40, "after" => "b" * 40}, "outputs" => [{"file" => "x.md", "sha256" => nil, "bytes" => nil}],
+          "reasons" => [{"code" => "waiting_lock", "since" => "s1", "until" => "u1"}, {"code" => "turn_ended_incomplete", "since" => "s2", "until" => nil}])
+        run.merge!("state" => "cancelled", "ended_at" => "2026-11-01T10:00:00Z")
+      end
+
+      row = json_attempts.last
+      expect(row).to include("attempt" => 2, "outcome" => nil, "ended_at" => nil, "head" => {"before" => "a" * 40, "after" => "b" * 40},
+        "outputs" => [{"file" => "x.md", "sha256" => nil, "bytes" => nil}])
+      expect(row["reasons"].map { |reason| reason["code"] }).to eq(%w[waiting_lock turn_ended_incomplete])
+    end
+
+    it "carries check.log, reported and proofs" do
+      create_run
+      real_store.update("wr_2611010900abcd") do |run|
+        run["steps"]["implement"]["attempts"][0].merge!("reported" => {"status" => "fail", "code" => "x"}, "proofs" => [{"proof" => "command", "exit_code" => 0}])
+      end
+
+      row = json_attempts.first
+      expect(row).to include("reported" => {"status" => "fail", "code" => "x"}, "proofs" => [{"proof" => "command", "exit_code" => 0}])
+      expect(row["check"]).to include("log" => "/x.log")
+    end
+
+    it "prints every key as null for a bare attempt, a non-hash check as null, and falls back to the stored steps without a definition" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "a", "definition" => {"steps" => [{"id" => "a"}]},
+        "steps" => {"a" => {"attempts" => [{"n" => 1}, {"n" => 2, "check" => "x"}]}})
+      rows = json_attempts
+      expect(rows[0].except("step", "attempt").values).to all(be_nil)
+      expect(rows[0].keys).to include("agent", "session", "head", "definition_sha256", "prompt_sha256", "packs", "outputs", "check", "usage", "evidence", "reasons", "reported", "proofs", "code", "outcome", "redelivered")
+      expect(rows[1]["check"]).to be_nil
+
+      stored = real_store.find("wr_2611010900abcd")
+      stored.delete("definition")
+      expect(Workspace::WorkflowAttempts.new.read(stored)["attempts"].map { |row| row["step"] }).to eq(%w[a a])
+    end
+
+    it "lists a step the definition no longer names, and accepts it for --attempt-of" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "a", "definition" => {"steps" => [{"id" => "a"}]},
+        "steps" => {"a" => {"attempts" => []}, "old" => {"attempts" => [{"n" => 1, "started_at" => "2026-11-01T09:00:00Z"}]}})
+
+      expect(json_attempts.map { |row| row["step"] }).to eq(["old"])
+      output.truncate(0)
+      output.rewind
+      attempts_command.attempts(run: "wr_2611010900abcd", step: "old", json: true)
+      expect(JSON.parse(output.string)["attempts"].size).to eq(1)
+    end
+
+    it "prints - for a missing attempt number and cuts a long code in the table only" do
+      long = "c" * 100
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "a", "definition" => {"steps" => [{"id" => "a"}]},
+        "steps" => {"a" => {"attempts" => [{"code" => long}]}})
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+      cells = output.string.lines.last.split
+      expect(cells[1]).to eq("-")
+      expect(cells[3]).to eq("#{"c" * 39}~")
+      output.truncate(0)
+      output.rewind
+      expect(json_attempts.first["code"]).to eq(long)
+    end
+
+    it "prints a run with a bare steps record without failing" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "a", "definition" => {"steps" => [{"id" => "a"}]}, "steps" => {"a" => {"attempts" => [{"n" => 1}]}})
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines.last.split).to eq(%w[a 1 - - ->- - -])
+    end
+  end
+
   describe "#events" do
     around do |example|
       Dir.mktmpdir("wf-events") do |dir|
@@ -1627,7 +2003,7 @@ RSpec.describe Workspace::Commands::Workflow do
         clock: -> { Time.utc(2026, 10, 25, 9, 30, 0) }, id_generator: -> { "wr_2610250930abcd" })
     end
     let(:events_command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
     end
 
     # The run the docs' example (docs/README.workflow.md, "workflow events --json") shows.
@@ -1699,8 +2075,10 @@ RSpec.describe Workspace::Commands::Workflow do
   describe "#validate" do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }
+    let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
+    before { allow(catalog).to receive(:scope_of).and_return(nil) }
     subject(:command) do
-      described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
+      described_class.new(lint: lint, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -1720,6 +2098,74 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json["workflow"]).to include("id" => "flow", "source" => "file", "path" => path, "sha256" => Digest::SHA256.hexdigest(valid))
       expect(json["workflow"]["steps"].map { |step| step["id"] }).to eq(["plan"])
       expect(Dir.children(dir)).to eq(["flow.yml"])
+    end
+
+    it "lists warnings in JSON and keeps the document ok" do
+      input.string = "steps:\n  plan:\n    prompt: Plan.\n"
+
+      command.validate(path: "-", json: true)
+
+      expect(json).to include("ok" => true)
+      expect(json["warnings"]).to match([include("code" => "step_without_proof", "step" => "plan", "message" => /plan/)])
+    end
+
+    context "with lint" do
+      before do
+        allow(lint).to receive(:call).and_return(
+          "warnings" => [{"code" => "unknown_pack", "step" => "plan", "message" => "step plan includes pack nope"}],
+          "not_checked" => [{"code" => "commands_not_checked", "step" => nil, "message" => "the steps use test"}]
+        )
+        input.string = "steps:\n  plan:\n    prompt: Plan.\n    gate: approve\n"
+      end
+
+      it "adds its warnings and not_checked to the JSON document" do
+        command.validate(path: "-", json: true)
+
+        expect(json).to include("ok" => true, "warnings" => [include("code" => "unknown_pack")], "not_checked" => [include("code" => "commands_not_checked")])
+      end
+
+      it "escapes control characters in warning and not checked lines" do
+        allow(lint).to receive(:call).and_return(
+          "warnings" => [{"code" => "unknown_pack", "step" => nil, "message" => "pack evil\e[31mX\a"}],
+          "not_checked" => [{"code" => "pack_not_checked", "step" => nil, "message" => "pack evil\e[31mY"}]
+        )
+
+        command.validate(path: "-")
+
+        expect(output.string).not_to match(/[\e\a]/)
+        expect(output.string).to include("warning: pack evil\\e[31mX\\u0007", "not checked: pack evil\\e[31mY")
+      end
+
+      it "prints them as warning and not checked lines" do
+        command.validate(path: "-")
+
+        expect(output.string).to include("warning: step plan includes pack nope", "not checked: the steps use test")
+      end
+    end
+
+    it "gives an empty warnings array for a definition with proof" do
+      input.string = "steps:\n  plan:\n    prompt: Plan.\n    gate: approve\n"
+
+      command.validate(path: "-", json: true)
+
+      expect(json["warnings"]).to eq([])
+    end
+
+    it "prints a warning line after valid in text" do
+      input.string = valid
+
+      command.validate(path: "-")
+
+      expect(output.string).to match(/\Astdin: valid \(1 steps\)\nwarning: step plan has no produces/)
+    end
+
+    it "prints one warning line per warned step in text" do
+      input.string = "steps:\n  a:\n    prompt: A.\n  b:\n    prompt: B.\n"
+
+      command.validate(path: "-")
+
+      expect(output.string.lines.grep(/\Awarning: /).size).to eq(2)
+      expect(output.string).to match(/warning: step a .*\nwarning: step b /)
     end
 
     it "reads stdin for -, checked as the placeholder id stdin" do
@@ -1743,7 +2189,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "prints a line for a person" do
-      command.validate(path: write("flow.yml", valid))
+      command.validate(path: write("flow.yml", "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n    gate: approve\n"))
 
       expect(output.string).to eq("flow: valid (1 steps)\n")
     end
@@ -1802,18 +2248,124 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "definitions that extend another" do
+    let(:input) { StringIO.new }
+    let(:error_output) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "global") }
+    let(:builtin_dir) { File.join(dir, "builtin") }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
+    let(:base_text) { "title: Base\nsteps:\n  plan:\n    prompt: Plan.\n" }
+    subject(:command) do
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux,
+        process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
+    end
+
+    before do
+      FileUtils.mkdir_p([global_dir, builtin_dir])
+      File.write(File.join(builtin_dir, "base.yml"), base_text)
+      File.write(File.join(global_dir, "kid.yml"), "extends: base\n")
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "shows each parent with where it came from, and the digest a run would store" do
+      command.show(id: "kid")
+      expect(output.string).to include("Extends: base (builtin, #{File.join(builtin_dir, "base.yml")})")
+
+      output.truncate(0)
+      output.rewind
+      command.show(id: "kid", json: true)
+      expect(json["workflow"]["extends"]).to eq([{"id" => "base", "source" => "builtin", "path" => File.join(builtin_dir, "base.yml"), "sha256" => Digest::SHA256.hexdigest(base_text)}])
+      expect(json["workflow"]).to include("sha256" => Digest::SHA256.hexdigest("extends: base\n"), "resolved_sha256" => real_catalog.find("kid").resolved_sha256)
+    end
+
+    it "shows a parent that is the user's own file as global" do
+      File.write(File.join(global_dir, "base.yml"), base_text)
+
+      command.show(id: "kid", json: true)
+
+      expect(json["workflow"]["extends"].first).to include("source" => "global")
+    end
+
+    it "warns on stderr and in the row, naming the children, when add, update or remove changes what they extend" do
+      draft = File.join(dir, "draft.yml")
+      File.write(draft, base_text)
+
+      added = command.add(id: "base", path: draft)
+      expect(added["extended_by"]).to eq(%w[kid])
+      expect(error_output.string).to eq("warning: kid extends base, directly or through another workflow, so this change affects it.\n")
+
+      File.write(draft, base_text.sub("Plan.", "Plan more."))
+      updated = command.update(id: "base", path: draft, if_sha256: Digest::SHA256.hexdigest(base_text))
+      expect(updated["extended_by"]).to eq(%w[kid])
+
+      removed = command.remove(id: "base", yes: true)
+      expect(removed["extended_by"]).to eq(%w[kid])
+      expect(error_output.string.scan("warning:").size).to eq(3)
+    end
+
+    it "refuses a draft that makes a cycle through the file it will be installed as, before writing, in add, update and validate" do
+      File.write(File.join(global_dir, "tail.yml"), "extends: base\n")
+      draft = File.join(dir, "draft.yml")
+      File.write(draft, "extends: tail\n")
+      File.write(File.join(global_dir, "other.yml"), base_text)
+
+      expect { command.add(id: "base", path: draft) }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details["problems"].last]).to match(["invalid_workflow", /extends makes a cycle: base -> tail -> base\z/]) }
+      expect { command.validate(path: draft, id: "base") }.to raise_error(Workspace::Error, /extends makes a cycle/)
+      expect(File.exist?(File.join(global_dir, "base.yml"))).to be(false)
+
+      File.write(File.join(global_dir, "tail.yml"), "extends: other\n")
+      File.write(draft, "extends: tail\n")
+      expect { command.update(id: "other", path: draft, if_sha256: Digest::SHA256.hexdigest(base_text)) }.to raise_error(Workspace::Error, /extends makes a cycle: other -> tail -> other\z/)
+      expect(File.read(File.join(global_dir, "other.yml"))).to eq(base_text)
+    end
+
+    it "accepts a draft that extends the preset it will shadow, reading the preset and not itself" do
+      draft = File.join(dir, "draft.yml")
+      File.write(draft, "extends: base\ntitle: Shadow\n")
+
+      row = command.add(id: "base", path: draft)
+
+      expect(row["outcome"]).to eq("added")
+      expect(real_catalog.find("base").parents).to contain_exactly(include("id" => "base", "source" => "builtin"))
+    end
+
+    it "warns before the remove question, not only after" do
+      File.write(File.join(global_dir, "base.yml"), base_text)
+      input.string = "n\n"
+
+      command.remove(id: "base")
+
+      expect(error_output.string).to include("kid extends base")
+      expect(output.string).to include("[y/N]")
+    end
+
+    it "adds no field and prints no warning when nothing extends the id" do
+      draft = File.join(dir, "draft.yml")
+      File.write(draft, base_text)
+
+      row = command.add(id: "alone", path: draft)
+
+      expect(row).not_to have_key("extended_by")
+      expect(error_output.string).to eq("")
+    end
+  end
+
   describe "#add" do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }
     let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
     let(:builtin_dir) { File.join(dir, "lib", "workflows") }
-    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
     let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
     let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     let(:target) { File.join(global_dir, "flow.yml") }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -1919,14 +2471,14 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:dir) { Dir.mktmpdir }
     let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
     let(:builtin_dir) { File.join(dir, "lib", "workflows") }
-    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
     let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
     let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
     let(:old_text) { "title: Old\nsteps:\n  plan:\n    prompt: Old.\n" }
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     let(:target) { File.join(global_dir, "flow.yml") }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
     end
 
     before do
@@ -2068,13 +2620,13 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:dir) { Dir.mktmpdir }
     let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
     let(:builtin_dir) { File.join(dir, "lib", "workflows") }
-    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
     let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
     let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
     let(:target) { File.join(global_dir, "flow.yml") }
     let(:body) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     before do
@@ -2120,7 +2672,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "refuses with confirmation_required under no-input, before touching anything" do
       guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
-      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
+      cmd = described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
       expect { cmd.remove(id: "flow") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("confirmation_required") }
       expect(File.exist?(target)).to be(true)
       expect(File.exist?(File.join(global_dir, ".flow.yml.lock"))).to be(false)
@@ -2137,7 +2689,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "names an unknown id or a lone preset before any prompt, even under no-input" do
       File.write(File.join(builtin_dir, "rpiv.yml"), body)
       guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
-      cmd = described_class.new(catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
+      cmd = described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
       expect { cmd.remove(id: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
       expect { cmd.remove(id: "rpiv") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("builtin_workflow") }
       expect(output.string).to eq("")
@@ -2146,6 +2698,239 @@ RSpec.describe Workspace::Commands::Workflow do
     it "removes a broken file" do
       File.write(target, "not: [valid")
       expect(command.remove(id: "flow", yes: true)).to include("outcome" => "removed")
+    end
+  end
+  describe "#audit" do
+    around do |example|
+      Dir.mktmpdir("wf-audit") do |dir|
+        @runs = File.join(dir, "runs")
+        @archive = File.join(dir, "archive")
+        example.run
+      end
+    end
+
+    let(:real_store) { Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: @archive, id_generator: -> { "wr_2611010900abcd" }) }
+    let(:audit_reader) { instance_double(Workspace::WorkflowAudit) }
+    let(:audit_command) do
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, audit: audit_reader, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+    end
+    let(:row) { {"step" => "plan", "attempt" => 1, "name" => "plan.1.check.log\e[2J", "kind" => "check_log", "status" => "changed", "recorded_sha256" => "a" * 64, "now_sha256" => "b" * 64, "source_status" => "differs"} }
+
+    before do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}, "steps" => {"plan" => {"attempts" => []}})
+    end
+
+    it "prints a row per file with both hashes, escapes stored text, and asks for exit 1 on a mismatch" do
+      allow(audit_reader).to receive(:read).and_return("files" => [row], "without_evidence" => [{"step" => "x", "attempt" => 2}], "counts" => {"changed" => 1}, "clean" => false, "directory" => "/e/wr_2611010900abcd")
+
+      result = audit_command.audit(run: "wr_2611010900abcd")
+
+      expect(result).to eq(exit_code: 1)
+      expect(output.string).not_to include("\e")
+      expect(output.string).to include("CHANGED", "recorded aaaaaaaaaaaa, now bbbbbbbbbbbb; checkout copy differs", "No evidence recorded (the attempt predates it): x 2", "Evidence kept in /e/wr_2611010900abcd/")
+    end
+
+    it "shows the reason, not a question mark, for a copy it could not hash" do
+      allow(audit_reader).to receive(:read).and_return("files" => [row.merge("now_sha256" => nil, "reason" => "too_large", "source_status" => nil)], "without_evidence" => [], "counts" => {"changed" => 1}, "clean" => false, "directory" => nil)
+
+      audit_command.audit(run: "wr_2611010900abcd")
+
+      expect(output.string).to include("too_large")
+      expect(output.string).not_to include("now ?")
+    end
+
+    it "prints a clean json document and exit 0" do
+      allow(audit_reader).to receive(:read).and_return("files" => [], "without_evidence" => [], "counts" => {}, "clean" => true, "directory" => nil)
+
+      expect(audit_command.audit(run: "wr_2611010900abcd", json: true)).to eq(exit_code: 0)
+      expect(JSON.parse(output.string)).to include("ok" => true, "clean" => true, "files" => [])
+    end
+
+    it "says so for a run with no attempts, and refuses an unknown run" do
+      allow(audit_reader).to receive(:read).and_return("files" => [], "without_evidence" => [], "counts" => {}, "clean" => true, "directory" => nil)
+
+      audit_command.audit(run: "wr_2611010900abcd")
+
+      expect(output.string).to include("No attempts recorded for wr_2611010900abcd.")
+      expect { audit_command.audit(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+  end
+  describe "#status --needs-me" do
+    around do |example|
+      Dir.mktmpdir("wf-needs-me") do |dir|
+        @dir = dir
+        example.run
+      end
+    end
+
+    let(:now) { Time.utc(2026, 10, 4, 13, 0, 0) }
+    let(:ids) { %w[wr_1 wr_2 wr_3 wr_4] }
+    let(:store) do
+      Workspace::WorkflowRunStore.new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, id_generator: -> { ids.shift })
+    end
+    let(:status) do
+      Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes, pane_of: "%5", alive?: true, daemon_running?: true),
+        snapshot_client: instance_double(Workspace::AgentSnapshotClient, fetch: {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]}),
+        ask_store_for: ->(_workspace) { instance_double(Workspace::AskStore, list: []) },
+        gate_note: instance_double(Workspace::WorkflowGateNote, find: nil), clock: -> { now })
+    end
+    subject(:command) do
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new(clock: -> { now }),
+        tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output)
+    end
+    let(:scope) { Workspace::StatusScope::Scope.new(kind: :needs_me) }
+
+    def create(workspace: "app", reason: nil, state: "waiting", gate: nil)
+      store.create({
+        "workflow" => "flow", "title" => "Flow", "workspace" => workspace, "project" => "app", "worktree" => @dir, "task" => "t",
+        "inputs" => {}, "state" => state, "created_at" => "2026-10-04T11:00:00Z", "started_at" => "2026-10-04T11:00:00Z", "ended_at" => nil,
+        "current" => "plan", "pane" => "%5", "loops" => {}, "reason" => reason, "artifacts_dir" => "#{@dir}/wr",
+        "definition" => {"steps" => [{"id" => "plan", "title" => "Plan", "timeout" => nil}]},
+        "steps" => {"plan" => {"state" => "passed", "gate" => gate, "attempts" => [{"n" => 1, "started_at" => "2026-10-04T11:00:00Z"}]}}
+      })
+    end
+
+    def failed(code, since) = {"code" => "failed_check", "since" => since, "details" => {"step" => "plan", "code" => code, "attempt" => 1}}
+
+    def lines = output.string.lines.map(&:chomp)
+
+    it "prints a table of the runs waiting for you in every workspace, longest wait first, and skips the rest" do
+      create(workspace: "web", reason: failed("test", "2026-10-04T12:22:00Z"))
+      create(workspace: "api", reason: {"code" => "waiting_you", "since" => "2026-10-04T10:46:00Z", "details" => {"kind" => "dispatch", "step" => "plan", "error" => "x", "message" => "m"}})
+      create(workspace: "lock", reason: {"code" => "waiting_lock", "since" => "2026-10-04T12:45:00Z", "details" => {"resource" => "r", "holder" => {"run_id" => "wr_9"}, "position" => 1, "total" => 1}})
+      create(workspace: "busy", state: "running")
+
+      command.status(scope: scope)
+
+      expect(lines.first).to match(/\ARUN +WORKSPACE +STEP +WAITING +WHY +DO\z/)
+      expect(lines[1]).to match(/\Awr_2 +api +plan +2h 14m +dispatch +workflow resume wr_2\z/)
+      expect(lines[2]).to match(/\Awr_1 +web +plan +38m +failed_check \(test\) +workflow resume wr_1\z/)
+      expect(lines.size).to eq(3)
+    end
+
+    it "shows - for a wait with no start, and the placeholder for a value the caller supplies" do
+      create(reason: {"code" => "waiting_you", "since" => nil, "details" => {"kind" => "dispatch", "step" => "plan", "error" => "x", "message" => "m"}})
+      command.status(scope: scope)
+      expect(lines.last).to match(/\Awr_1 +app +plan +- +dispatch +workflow resume wr_1\z/)
+    end
+
+    it "says plainly that nothing needs you, and exits normally" do
+      create(state: "running")
+      command.status(scope: scope)
+      expect(lines).to eq(["No workflow runs need you."])
+    end
+
+    it "prints the rows as a JSON document" do
+      create(reason: failed("test", "2026-10-04T12:22:00Z"))
+      command.status(scope: scope, json: true)
+
+      body = JSON.parse(output.string)
+      expect(body).to include("schema_version" => 1, "ok" => true, "generated_at" => "2026-10-04T13:00:00Z", "status" => "ok", "unreadable" => 0, "warnings" => [])
+      expect(body["runs"].size).to eq(1)
+      expect(body["runs"].first).to include("run" => "wr_1", "workspace" => "app", "step" => "plan", "code" => "failed_check", "detail" => "test",
+        "waiting_seconds" => 2280, "next_action" => {"action" => "workflow resume", "args" => ["wr_1"], "needs" => []})
+      expect(body["runs"].first.keys).to eq(%w[run workflow workspace step attempt code kind gate_file detail since waiting_seconds next_action actions])
+    end
+
+    it "prints an empty JSON list" do
+      command.status(scope: scope, json: true)
+      expect(JSON.parse(output.string)).to include("ok" => true, "runs" => [])
+    end
+
+    it "escapes control characters in agent-written fields" do
+      create(workspace: "api", reason: failed("te\e[31mst", "2026-10-04T12:22:00Z"))
+      command.status(scope: scope)
+      expect(output.string).not_to include("\e")
+      expect(output.string).to include('\e[31m')
+    end
+
+    it "narrows to one workspace" do
+      create(workspace: "web", reason: failed("a", "2026-10-04T12:22:00Z"))
+      create(workspace: "api", reason: failed("b", "2026-10-04T12:22:00Z"))
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :needs_me, workspace: "api"), json: true)
+      expect(JSON.parse(output.string)["runs"].map { |row| row["workspace"] }).to eq(["api"])
+    end
+
+    it "leaves a finished run of a project out" do
+      create(workspace: "app", reason: failed("a", "2026-10-04T12:22:00Z"))
+      create(workspace: "app", state: "completed", reason: failed("old", "2026-10-04T12:00:00Z"))
+      project = Struct.new(:name, :members).new("app", [Struct.new(:workspace).new("app")])
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :needs_me, project: project), json: true)
+      expect(JSON.parse(output.string)["runs"].map { |row| row["run"] }).to eq(["wr_1"])
+    end
+
+    it "names an unreadable run file in a warning and still lists the others" do
+      create(reason: failed("a", "2026-10-04T12:22:00Z"))
+      File.write(File.join(@dir, "runs", "wr_bad.json"), "{not json")
+      command.status(scope: scope)
+      expect(lines.first).to match(/\ARUN/)
+      expect(lines.last).to match(/\AWarning: .*wr_bad/)
+    end
+
+    it "words the wait in seconds, minutes, hours and days" do
+      {45 => "45s", 125 => "2m", 3700 => "1h 1m", 90_000 => "1d 1h"}.each do |seconds, text|
+        expect(command.send(:wait_text, seconds)).to eq(text)
+      end
+      expect(command.send(:wait_text, nil)).to eq("-")
+    end
+
+    it "writes a value the caller supplies as an upper-case placeholder" do
+      held = {"action" => "workflow resume", "args" => ["wr_1"], "needs" => [{"name" => "pane", "flag" => "--pane"}]}
+      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 60, "code" => "retry_backoff", "kind" => nil, "detail" => nil,
+             "gate_file" => nil, "next_action" => held}
+      expect(command.send(:needs_me_cells, row).last).to eq("workflow resume wr_1 --pane PANE")
+    end
+
+    it "shows a gate's note in WHY" do
+      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 60, "code" => "waiting_you", "kind" => "gate", "detail" => nil,
+             "gate_file" => {"name" => "plan.md"}, "next_action" => nil}
+      expect(command.send(:needs_me_cells, row)[4..]).to eq(["gate (plan.md)", "-"])
+    end
+
+    it "does not claim nothing is waiting when a run file could not be read, and exits 3" do
+      FileUtils.mkdir_p(File.join(@dir, "runs"))
+      File.write(File.join(@dir, "runs", "wr_bad.json"), "{not json")
+      expect(command.status(scope: scope)).to eq(exit_code: 3)
+      expect(lines.first).to eq("No readable workflow run needs you; 1 could not be read.")
+    end
+
+    it "counts a run file that is valid JSON of the wrong shape, text and JSON" do
+      create(reason: failed("a", "2026-10-04T12:22:00Z"))
+      File.write(File.join(@dir, "runs", "wr_odd.json"), JSON.generate("id" => "wr_odd", "state" => "running", "current" => "plan", "steps" => {}))
+
+      expect(command.status(scope: scope)).to eq(exit_code: 3)
+      expect(lines.first).to match(/\ARUN/)
+      expect(lines.grep(/\AWarning: .*wr_odd/)).not_to be_empty
+
+      output.truncate(0)
+      output.rewind
+      expect(command.status(scope: scope, json: true)).to eq(exit_code: 3)
+      expect(JSON.parse(output.string)).to include("status" => "partial", "unreadable" => 1)
+      expect(JSON.parse(output.string)["runs"].size).to eq(1)
+    end
+
+    it "prints - for a lock wait that offers only cancel" do
+      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 4000, "code" => "waiting_lock", "kind" => nil, "detail" => nil,
+             "gate_file" => nil, "next_action" => nil}
+      expect(command.send(:needs_me_cells, row).last).to eq("-")
+    end
+
+    it "says status partial in the JSON of an incomplete list" do
+      FileUtils.mkdir_p(File.join(@dir, "runs"))
+      File.write(File.join(@dir, "runs", "wr_bad.json"), "{not json")
+      expect(command.status(scope: scope, json: true)).to eq(exit_code: 3)
+      expect(JSON.parse(output.string)).to include("status" => "partial", "unreadable" => 1, "runs" => [])
+    end
+
+    it "exits 0 for a complete list" do
+      expect(command.status(scope: scope)).to eq(exit_code: 0)
+    end
+
+    it "reads a run stored without reasons history or sweep marks" do
+      create(reason: failed("a", "2026-10-04T12:22:00Z"))
+      store.update("wr_1") { |run| run.delete("sweep") && run.delete("reasons") }
+      command.status(scope: scope)
+      expect(lines.size).to eq(2)
     end
   end
 end

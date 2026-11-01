@@ -52,6 +52,14 @@ RSpec.describe Workspace::WorkflowStatus do
     {"action" => name, "args" => args, "needs" => needs}
   end
 
+  it "shows the current attempt's proofs, and no key for an attempt with none" do
+    create
+    expect(current).not_to have_key("proofs")
+    proofs = [{"proof" => "command", "log" => "/l", "exit_code" => 3}]
+    store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last["proofs"] = proofs }
+    expect(current["proofs"]).to eq(proofs)
+  end
+
   it "shows a run an agent is working on, with no reason" do
     create
 
@@ -62,8 +70,8 @@ RSpec.describe Workspace::WorkflowStatus do
       "id" => "wr_1", "workflow" => "rpiv", "title" => "RPIV", "workspace" => "app", "project" => "app", "worktree" => "/src/app", "state" => "running",
       "created_at" => "2026-10-04T12:00:00Z", "started_at" => "2026-10-04T12:00:00Z", "ended_at" => nil, "cancelled_by" => nil,
       "current" => {"step" => "plan", "attempt" => 2, "state" => "running", "reason" => nil, "flags" => []},
-      "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_file" => nil, "note_changed" => false},
-        {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil, "gate_file" => nil, "note_changed" => false}],
+      "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_note" => nil, "gate_file" => nil, "note_changed" => false},
+        {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil, "gate_note" => nil, "gate_file" => nil, "note_changed" => false}],
       "base_sha" => nil, "pane" => "%5", "task" => "t1", "inputs" => {"task" => "X-1"}, "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
       "events_path" => File.join(@dir, "runs", "wr_1.events.jsonl")
     }])
@@ -280,10 +288,28 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(current("wr_1")["reason"]).to eq(gate.merge("details" => gate["details"].merge("gate_file" => nil, "gate_file_error" => nil),
       "actions" => [action("workflow approve", "wr_1", *at),
         action("workflow reject", "wr_1", *at, needs: [{"name" => "note", "flag" => "--note"}]), action("workflow cancel", "wr_1")]))
-    expect(current("wr_2")["reason"]["actions"]).to eq([action("workflow status", "wr_9"), action("workflow cancel", "wr_2")])
+    expect(current("wr_2")["reason"]["actions"]).to eq([action("workflow status", "wr_9"), action("lock status", "test-db", "--name", "app"), action("workflow cancel", "wr_2")])
     expect(current("wr_3")["reason"]["actions"]).to eq([action("workflow resume", "wr_3"),
       action("workflow resume", "wr_3", "--from", "plan"), action("workflow cancel", "wr_3")])
     expect(snapshot_client).not_to have_received(:fetch)
+  end
+
+  it "offers a resume (which skips the wait) and a cancel for a retry waiting out its backoff, without looking at the pane" do
+    wait = {"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan", "to" => "plan", "until" => "2026-10-04T13:05:00Z", "seconds" => 300.0}}
+    create(state: "waiting", step_state: "failed", reason: wait, bound: false)
+
+    expect(current("wr_1")["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+    expect(snapshot_client).not_to have_received(:fetch)
+  end
+
+  it "offers a resume that names a pane for a retry held because its pane is no longer the run's" do
+    held = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "dispatch", "step" => "plan", "error" => "pane_has_run", "pane" => "%5"}}
+    create(state: "waiting", step_state: "failed", reason: held, bound: false)
+    store.update("wr_1") { |run| run["backoff"] = {"until" => "t", "to" => "plan", "blocked" => "pane_has_run"} }
+
+    expect(current("wr_1")["reason"]["actions"]).to eq(
+      [action("workflow resume", "wr_1", needs: [{"name" => "pane", "flag" => "--pane"}]), action("workflow cancel", "wr_1")]
+    )
   end
 
   it "offers `dev down` when the lock is held by a dev environment, which is what frees it" do
@@ -293,8 +319,8 @@ RSpec.describe Workspace::WorkflowStatus do
     create(state: "waiting", step_state: "waiting", reason: lock, bound: false)
     create(state: "waiting", step_state: "waiting", reason: agent, bound: false)
 
-    expect(current("wr_1")["reason"]["actions"]).to eq([action("dev down", "--name", "app"), action("workflow cancel", "wr_1")])
-    expect(current("wr_2")["reason"]["actions"]).to eq([action("workflow cancel", "wr_2")])
+    expect(current("wr_1")["reason"]["actions"]).to eq([action("dev down", "--name", "app"), action("lock status", "devenv", "--name", "app"), action("workflow cancel", "wr_1")])
+    expect(current("wr_2")["reason"]["actions"]).to eq([action("lock status", "test-db", "--name", "app"), action("workflow cancel", "wr_2")])
   end
 
   it "offers resume and cancel for a step that could not be started" do
@@ -459,6 +485,13 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(warnings.grep(/Workflow run wr_2 will not move/).size).to eq(1)
     end
 
+    it "warns for a retry waiting out its backoff, which only a timer or the sweep starts" do
+      create(state: "waiting", step_state: "failed", bound: false,
+        reason: {"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan", "to" => "plan", "until" => "2026-10-04T13:05:00Z", "seconds" => 300.0}})
+
+      expect(status.runs["warnings"].grep(/Workflow run wr_1 will not move/).size).to eq(1)
+    end
+
     it "does not warn for a run that waits for a person, or a finished one" do
       create(state: "waiting", step_state: "passed", bound: false, reason: {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "artifacts" => []}})
       create(pane: "%6")
@@ -539,6 +572,7 @@ RSpec.describe Workspace::WorkflowStatus do
         "Workflow run wr_4 can't be shown: its run file is malformed. What it holds stays held: #{way_out}"
       ])
       expect(result["warnings"].join).not_to include("cancel")
+      expect(result["unreadable"]).to eq(3)
       expect { status.run("wr_2") }.to raise_error(Workspace::Error) { |error|
         expect(error.code).to eq("unknown_run")
         expect(error.details).to eq("run_id" => "wr_2", "path" => no_steps)
@@ -597,6 +631,15 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(result["warnings"]).to eq(["The gate of step plan in run wr_1 has no note that can be read: 2026-10-29-pr-7-feedback.md no such file in the notes directory."])
     end
 
+    it "shows the text the person gave to approve a gate as gate_note, null for a run stored without one" do
+      gated("note: 2026-10-29-pr-7-feedback.md")
+      row = -> { status.run("wr_1")["runs"].first["steps"].find { |step| step["id"] == "plan" } }
+      store.update("wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved", "note" => "Cut gap 3.\nKeep the rest."} }
+      expect(row.call).to include("gate" => "approved", "gate_note" => "Cut gap 3.\nKeep the rest.", "gate_file" => nil)
+      store.update("wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved"} }
+      expect(row.call).to include("gate" => "approved", "gate_note" => nil)
+    end
+
     it "shows the hash approve recorded on the step's row, and note_changed once the note's bytes differ" do
       gated("note: 2026-10-29-pr-7-feedback.md")
       recorded = {"path" => note_path, "sha256" => Digest::SHA256.hexdigest("# Triage\n")}
@@ -636,6 +679,163 @@ RSpec.describe Workspace::WorkflowStatus do
         failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
 
         expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])
+      end
+    end
+
+    describe "a token budget" do
+      let(:steps) { [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}] }
+
+      def budgeted(used, state: "waiting", reason: nil, extra: nil, usage: {"input_tokens" => used}, **rest)
+        create(state: state, step_state: "pending", reason: reason, bound: false, extra_tokens: extra,
+          definition: {"max_attempts" => 6, "budget" => {"tokens" => 1000, "action" => "stop"}, "steps" => steps},
+          steps: {"research" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed", "usage" => usage}]}, "plan" => {"state" => "pending", "attempts" => []}},
+          **rest)
+      end
+
+      let(:held) { {"code" => "budget_spent", "since" => "2026-10-04T12:30:00Z", "details" => {"kind" => "budget", "step" => "plan", "used" => 1500, "allowance" => 1000}} }
+
+      it "shows the budget as a minimum, and offers resume only with --extra-tokens" do
+        budgeted(1500, reason: held, budget_hold: {})
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["budget"]).to eq("tokens" => 1000, "action" => "stop", "extra_tokens" => 0, "allowance" => 1000, "used" => 1500, "counted" => 1, "uncounted" => 0,
+          "measured" => true, "spent" => true, "minimum" => true)
+        need = [{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}]
+        expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
+      end
+
+      it "stops asking once --extra-tokens was recorded" do
+        budgeted(1500, reason: held, budget_hold: {}, extra: 600)
+
+        expect(status.run("wr_1")["runs"].first["current"]["reason"]["actions"].first).to eq(action("workflow resume", "wr_1"))
+        expect(status.run("wr_1")["runs"].first["budget"]).to include("allowance" => 1600, "spent" => false, "extra_tokens" => 600)
+      end
+
+      it "asks for --extra-tokens on a failed step's resume too, and reports uncounted attempts" do
+        budgeted(0, state: "waiting", usage: nil, reason: {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check"}})
+        store.update("wr_1") { |stored| stored["steps"]["plan"] = {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 2000}}]} }
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["budget"]).to include("used" => 2000, "counted" => 1, "uncounted" => 1, "spent" => true)
+        expect(row["current"]["reason"]["actions"].first["needs"].map { |need| need["name"] }).to eq(["extra_tokens"])
+      end
+
+      it "says a budget is not measured when no attempt could be counted, and asks for nothing" do
+        budgeted(0, usage: nil, state: "running", reason: nil)
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["budget"]).to include("used" => 0, "counted" => 0, "uncounted" => 1, "measured" => false, "spent" => false, "minimum" => true)
+      end
+
+      it "leaves the key out for a run without a budget" do
+        create
+
+        expect(status.run("wr_1")["runs"].first).not_to have_key("budget")
+      end
+
+      it "is listed by --needs-me with the resume that needs --extra-tokens" do
+        budgeted(1500, reason: held, budget_hold: {})
+        rows = Workspace::WorkflowNeedsMe.new.rows(status.run("wr_1")["runs"])
+
+        expect(rows.map { |row| [row["code"], row["step"]] }).to eq([["budget_spent", "plan"]])
+        expect(rows.first["next_action"]["needs"]).to eq([{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}])
+      end
+    end
+
+    describe "once the run has made all its attempts" do
+      let(:extra) { [{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 1}] }
+
+      def spent_run(max, reason)
+        steps = [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}]
+        create(state: "waiting", step_state: "failed", reason: reason, bound: false, definition: {"max_attempts" => max, "steps" => steps})
+      end
+
+      it "offers resume and resume --from for a failed check only with --extra-attempts, read live rather than from the details" do
+        spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check", "attempts" => 99, "max_attempts" => 99}})
+
+        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: extra),
+          action("workflow resume", "wr_1", "--from", "plan", needs: extra), action("workflow cancel", "wr_1")])
+      end
+
+      it "stops asking once the allowance was raised" do
+        run = spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check", "attempts" => 3, "max_attempts" => 3}})
+        store.update(run["id"]) { |stored| stored["extra_attempts"] = 1 }
+
+        expect(current["reason"]["actions"].first).to eq(action("workflow resume", "wr_1"))
+      end
+
+      {
+        "a delivery's resume and --from" => [{"code" => "waiting_you", "since" => "t", "details" => {"kind" => "delivery", "step" => "plan"}}, 2],
+        "a parked resume that ended" => [{"code" => "waiting_you", "since" => "t", "details" => {"kind" => "dispatch", "error" => "attempts_spent"}}, 1],
+        "a gone pane" => [{"code" => "pane_gone", "since" => "t", "details" => {}}, 1],
+        "a retry's backoff" => [{"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan"}}, 1]
+      }.each do |name, (reason, count)|
+        it "asks for it on #{name}" do
+          spent_run(3, reason)
+
+          resumes = current["reason"]["actions"].select { |each| each["action"] == "workflow resume" }
+          expect(resumes.size).to eq(count)
+          expect(resumes.map { |each| each["needs"] }).to all(eq(extra))
+        end
+      end
+
+      it "asks for it on a held retry, which also needs a pane" do
+        run = spent_run(3, {"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan"}})
+        store.update(run["id"]) { |stored| stored["backoff"] = {"blocked" => "pane_gone", "to" => "research"} }
+
+        expect(current["reason"]["actions"].first["needs"]).to eq([{"name" => "pane", "flag" => "--pane"}] + extra)
+      end
+
+      it "asks for it on a gate's reject, alongside the note" do
+        gate = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "plan", "artifacts" => []}}
+        steps = [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}]
+        create(state: "waiting", step_state: "passed", reason: gate, bound: false, definition: {"max_attempts" => 3, "steps" => steps})
+
+        actions = current["reason"]["actions"]
+        expect(actions.find { |each| each["action"] == "workflow reject" }["needs"]).to eq([{"name" => "note", "flag" => "--note"}] + extra)
+        expect(actions.find { |each| each["action"] == "workflow approve" }["needs"]).to eq([])
+      end
+
+      # The row replaces a stored reason for a step that reads running, so these read the actions of the stored run.
+      def actions_of(reason, step_state)
+        run = spent_run(3, reason)
+        store.update(run["id"]) { |stored| stored["steps"]["plan"]["state"] = step_state }
+        status.send(:actions, store.find(run["id"]), reason, "%5").select { |each| each["action"] == "workflow resume" }
+      end
+
+      it "leaves a plain resume unmarked for a running step, which it would only look at, but marks --from" do
+        delivery = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "delivery", "step" => "plan"}}
+
+        expect(actions_of(delivery, "running")).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan", needs: extra)])
+        expect(actions_of({"code" => "turn_ended_incomplete", "since" => "t", "details" => {}}, "running")).to eq([action("workflow resume", "wr_2")])
+      end
+
+      it "leaves a parked resume's plain resume over a checking step unmarked" do
+        reason = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "dispatch", "error" => "parked_timeout"}}
+
+        expect(actions_of(reason, "checking")).to eq([action("workflow resume", "wr_1")])
+        expect(actions_of(reason, "failed")).to eq([action("workflow resume", "wr_2", needs: extra)])
+      end
+
+      it "keeps a gone pane's resume marked over a running step, since it needs --pane" do
+        expect(actions_of({"code" => "pane_gone", "since" => "t", "details" => {}}, "running")).to eq([action("workflow resume", "wr_1", needs: extra)])
+      end
+
+      it "takes the minimum from the overrun and from a stored extra_attempts" do
+        run = spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check"}})
+        store.update(run["id"]) { |stored| stored["extra_attempts"] = 2 }
+        expect(current["reason"]["actions"].first["needs"]).to eq([])
+
+        store.update(run["id"]) { |stored| stored["steps"]["plan"]["attempts"] += [{"n" => 3}, {"n" => 4}, {"n" => 5}] }
+        # made 6 of 5: one below the minimum of 2 is refused by the engine, exactly at it is not
+        expect(current["reason"]["actions"].first["needs"].first).to include("min" => 2)
+        expect(Workspace::WorkflowEngine.extra_attempts_needed(store.find("wr_1"))).to eq(2)
+      end
+
+      it "does not ask while attempts are left" do
+        spent_run(6, {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "delivery", "step" => "plan"}})
+
+        expect(current["reason"]["actions"].flat_map { |each| each["needs"] }).to eq([])
       end
     end
 
@@ -833,6 +1033,18 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(result["warnings"].join).to include("Workflow run wr_2 can't be shown")
     end
 
+    it "says by #in_project? whether one stored run belongs, by member, stored project or worktree prefix" do
+      expect(status.in_project?({"workspace" => "app"}, project)).to be true
+      expect(status.in_project?({"workspace" => "elsewhere", "project" => "app"}, project)).to be true
+      expect(status.in_project?({"workspace" => "app.worktree-y"}, project)).to be true
+      expect(status.in_project?({"workspace" => "other", "project" => "other"}, project)).to be false
+    end
+
+    it "does not match a run with no workspace to a member with none" do
+      bare = Workspace::ProjectCatalog::Project.new(name: "app", id: "/src/app/.git", path: "/src/app", vcs: "git", members: [member.new(workspace: nil, kind: "main")])
+      expect(status.in_project?({"workspace" => nil}, bare)).to be false
+    end
+
     it "leaves #runs for a workspace on the runs still going, oldest first" do
       create(workspace: "app", bound: false, created_at: "2026-10-04T12:10:00Z")
       create(workspace: "app", bound: false, created_at: "2026-10-04T12:05:00Z")
@@ -841,5 +1053,147 @@ RSpec.describe Workspace::WorkflowStatus do
 
       expect(status.runs(workspace: "app")["runs"].map { |run| run["id"] }).to eq(%w[wr_2 wr_1])
     end
+  end
+  describe "current.stuck" do
+    def mark(stalled: {}, recovered: {}, step: "plan", attempt: 2)
+      store.update("wr_1") { |run| run["sweep"] = {"step" => step, "attempt" => attempt, "stalled" => stalled, "recovered" => recovered} }
+    end
+
+    let(:stall) { {"agent_gone" => "2026-10-04T12:41:00Z"} }
+
+    before { snapshot["panes"].first["state"] = "idle" }
+
+    it "is absent for a run stored without sweep marks" do
+      create
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "shows a stall the sweep noted, with its time and a resume" do
+      create
+      mark(stalled: stall)
+
+      expect(current["stuck"]).to eq("code" => "stalled", "cause" => "agent_gone", "since" => "2026-10-04T12:41:00Z",
+        "actions" => [action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+    end
+
+    it "is absent for a stale mark on a pane that is working again" do
+      create
+      snapshot["panes"].first["state"] = "working"
+      mark(stalled: stall)
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "keeps the stall listed when the pane can't be read" do
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::Error.new("down", code: "daemon_unavailable"))
+      create
+      mark(stalled: stall)
+      expect(current["stuck"]).to include("code" => "stalled")
+    end
+
+    it "is absent for a step that is checking, or a line still on its way" do
+      create(step_state: "checking")
+      mark(stalled: stall)
+      expect(current).not_to have_key("stuck")
+      store.update("wr_1") { |run| run["steps"]["plan"]["state"] = "running" }
+      allow(Workspace::WorkflowEngine).to receive(:delivery).and_return(:delivering)
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "is absent while a turn_ended_background hold stands" do
+      create(state: "waiting", reason: {"code" => "turn_ended_background", "since" => "2026-10-04T12:00:00Z", "details" => {}})
+      mark(stalled: stall)
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "leaves out a stall that was put right, and marks of another attempt" do
+      create
+      mark(stalled: stall, recovered: {"agent_gone" => "2026-10-04T12:42:00Z"})
+      expect(current).not_to have_key("stuck")
+      mark(stalled: stall, attempt: 1)
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "shows an idle pane on a running step as idle, once the turn's end is known" do
+      create
+      snapshot["panes"].first["main_turn_over_since"] = "2026-10-04T12:45:00Z"
+
+      expect(current["flags"]).to eq(["idle"])
+      expect(current["stuck"]).to include("code" => "idle", "cause" => nil, "since" => "2026-10-04T12:45:00Z")
+    end
+
+    it "is not stuck while the idle pane has no turn end yet" do
+      create
+      expect(current["flags"]).to eq(["idle"])
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "is absent for a live parked resume, whatever the marks say" do
+      create(parked: {"from" => "%9", "requested_at" => "2026-10-04T12:55:00Z", "expires_at" => "2026-10-04T13:30:00Z", "pane" => "%5"})
+      mark(stalled: stall)
+      expect(current["flags"]).to include("parked")
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "is absent while a reason shows" do
+      create(bound: false)
+      mark(stalled: stall)
+      expect(current["reason"]["code"]).to eq("pane_gone")
+      expect(current).not_to have_key("stuck")
+    end
+  end
+
+  it "leaves the focus action out when the run has no pane" do
+    create(pane: nil, bound: false, state: "waiting", step_state: "passed", reason: {"code" => "turn_ended_incomplete", "since" => "2026-10-04T12:00:00Z", "details" => {}})
+    snapshot["panes"] = []
+    expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+  end
+
+  it "asks every workspace's daemon at the same time, not one after another" do
+    started = Queue.new
+    gave_up = Queue.new
+    allow(snapshot_client).to receive(:fetch) do |_workspace, **|
+      started << 1
+      # Returns once all three have started: serial reads would wait here for the cap.
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      sleep 0.01 while started.size < 3 && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      gave_up << 1 if started.size < 3
+      snapshot
+    end
+    3.times { |i| create(workspace: "ws#{i}", pane: "%#{i}") }
+
+    result = status.runs
+
+    expect(gave_up.size).to eq(0)
+    expect(started.size).to eq(3)
+    expect(result).to include("unreadable" => 0)
+    expect(result["runs"].size).to eq(3)
+  end
+
+  it "reads a daemon that does not answer by the shared deadline as no answer, with a warning" do
+    stub_const("Workspace::WorkflowStatus::SNAPSHOT_TIMEOUT", 0.05)
+    stub_const("Workspace::WorkflowStatus::LIST_GRACE", 0.05)
+    allow(snapshot_client).to receive(:fetch) { |*, **| sleep 30 }
+    create
+
+    result = status.runs
+
+    expect(result["warnings"].join).to include("did not answer")
+    expect(result["runs"].size).to eq(1)
+  end
+
+  it "asks a workspace's daemon once for a whole list" do
+    create
+    create(pane: "%6", bound: false)
+    status.runs
+    expect(snapshot_client).to have_received(:fetch).with("app", timeout: 1.0).at_most(:once)
+  end
+
+  it "asks a daemon that did not answer once, and warns" do
+    allow(snapshot_client).to receive(:fetch).and_raise(Workspace::Error.new("down", code: "daemon_unavailable"))
+    create
+    create(pane: "%6", bound: true)
+    result = status.runs
+    expect(snapshot_client).to have_received(:fetch).once
+    expect(result["warnings"].size).to eq(1)
   end
 end

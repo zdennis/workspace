@@ -71,6 +71,35 @@ RSpec.describe Workspace::WorkflowGuard do
     end
   end
 
+  describe "#head" do
+    it "answers the full commit id, and nil when git can't answer" do
+      expect(guard.head(repo)).to eq(git("rev-parse", "HEAD").strip)
+      expect(guard.head(File.join(@dir, "nowhere"))).to be_nil
+    end
+
+    it "waits at most 5 seconds for git, and reads a timeout as nil" do
+      limits = []
+      slow = described_class.new(runner: lambda do |_argv, **options|
+        limits << options[:timeout]
+        raise Timeout::Error
+      end)
+
+      expect(slow.head(repo)).to be_nil
+      expect(limits).to eq([5])
+    end
+
+    it "leaves the other git calls at 30 seconds" do
+      limits = []
+      watching = described_class.new(runner: lambda do |argv, **options|
+        limits << options[:timeout]
+        Workspace::TimedProcess.run(argv, **options)
+      end)
+      watching.base(repo)
+
+      expect(limits.uniq.sort).to eq([5, 30])
+    end
+  end
+
   it "finds a commit as head_moved, naming both commits" do
     write("a.txt", "two\n")
     git("commit", "-q", "-am", "agent commit")
@@ -445,5 +474,392 @@ RSpec.describe Workspace::WorkflowGuard do
       ENV["PATH"] = saved
     end
     expect(File.exist?(marker)).to be(false)
+  end
+
+  describe "#remote_head" do
+    let(:remote) { File.join(@dir, "remote.git") }
+
+    before do
+      git("init", "-q", "--bare", "-b", "main", remote, path: @dir)
+      git("remote", "add", "origin", remote)
+      git("push", "-q", "origin", "main")
+    end
+
+    it "reads the current branch's sha on the remote it tracks, else origin" do
+      sha = git("rev-parse", "HEAD").strip
+      expect(guard.remote_head(repo)).to eq("remote" => "origin", "ref" => "refs/heads/main", "sha" => sha)
+      git("remote", "rename", "origin", "up")
+      git("config", "branch.main.remote", "up")
+      expect(guard.remote_head(repo)).to include("remote" => "up", "sha" => sha)
+    end
+
+    it "reads a nil sha for a branch the remote lacks" do
+      git("checkout", "-q", "-b", "topic")
+      expect(guard.remote_head(repo)).to eq("remote" => "origin", "ref" => "refs/heads/topic", "sha" => nil)
+    end
+
+    it "reads the ref the branch tracks, not its local name" do
+      sha = git("rev-parse", "HEAD").strip
+      git("checkout", "-q", "-b", "pr-12")
+      git("config", "branch.pr-12.remote", "origin")
+      git("config", "branch.pr-12.merge", "refs/heads/main")
+      expect(guard.remote_head(repo)).to eq("remote" => "origin", "ref" => "refs/heads/main", "sha" => sha)
+    end
+
+    it "says why it has no reading: unreachable, an option-like remote name, a detached HEAD" do
+      git("remote", "set-url", "origin", File.join(@dir, "nowhere.git"))
+      expect(guard.remote_head(repo)).to eq("unread" => "unreachable")
+      git("config", "branch.main.remote", "--upload-pack=x")
+      expect(guard.remote_head(repo)).to eq("unread" => "bad_remote")
+      git("checkout", "-q", "--detach")
+      expect(guard.remote_head(repo)).to eq("unread" => "detached_head")
+    end
+
+    it "does not look at origin for a branch whose upstream is local" do
+      git("config", "branch.main.remote", ".")
+      expect(guard.remote_head(repo)).to eq("unread" => "local_upstream")
+    end
+
+    it "says no_remote, not unreachable, when there is no such remote" do
+      git("remote", "remove", "origin")
+      expect(guard.remote_head(repo)).to eq("unread" => "no_remote")
+      git("config", "branch.main.remote", "gone")
+      expect(guard.remote_head(repo)).to eq("unread" => "no_remote")
+    end
+
+    describe "the remote a push would go to" do
+      let(:fork_remote) { File.join(@dir, "fork.git") }
+      let!(:sha) { git("rev-parse", "HEAD").strip }
+
+      before do
+        git("init", "-q", "--bare", "-b", "main", fork_remote, path: @dir)
+        git("remote", "add", "fork", fork_remote)
+        git("push", "-q", "fork", "main:refs/heads/topic", "main:refs/heads/head-x")
+        git("checkout", "-q", "-b", "topic")
+        git("config", "branch.topic.remote", "origin")
+        git("config", "branch.topic.merge", "refs/heads/main")
+      end
+
+      it "prefers branch.<b>.pushRemote, on the branch's own name" do
+        git("config", "remote.pushDefault", "origin")
+        git("config", "branch.topic.pushRemote", "fork")
+        expect(guard.remote_head(repo)).to eq("remote" => "fork", "ref" => "refs/heads/topic", "sha" => sha)
+      end
+
+      it "takes remote.pushDefault over the tracked remote" do
+        git("config", "remote.pushDefault", "fork")
+        expect(guard.remote_head(repo)).to include("remote" => "fork", "ref" => "refs/heads/topic")
+      end
+
+      it "keeps the merge ref when the push remote is the tracked one" do
+        git("config", "branch.topic.pushRemote", "origin")
+        expect(guard.remote_head(repo)).to include("remote" => "origin", "ref" => "refs/heads/main")
+      end
+
+      it "keeps a pr-N branch's refs/heads/ merge ref on another push remote, but not a pull ref" do
+        git("checkout", "-q", "-b", "pr-7")
+        git("config", "branch.pr-7.remote", "origin")
+        git("config", "branch.pr-7.merge", "refs/heads/head-x")
+        git("config", "branch.pr-7.pushRemote", "fork")
+        expect(guard.remote_head(repo)).to include("remote" => "fork", "ref" => "refs/heads/head-x", "sha" => sha)
+        git("config", "branch.pr-7.merge", "refs/pull/7/head")
+        expect(guard.remote_head(repo)).to include("remote" => "fork", "ref" => "refs/heads/pr-7", "sha" => nil)
+      end
+
+      it "reads a real push remote for a branch whose upstream is local" do
+        git("config", "branch.topic.remote", ".")
+        git("config", "branch.topic.pushRemote", "fork")
+        expect(guard.remote_head(repo)).to include("remote" => "fork")
+      end
+    end
+
+    it "runs hardened, with no prompt and a time limit" do
+      calls = []
+      runner = ->(command, **options) do
+        calls << [command, options]
+        ["main\n", "", true]
+      end
+      described_class.new(runner: runner, git_path: "/usr/bin/git").remote_head(repo)
+      command, options = calls.find { |(cmd, _)| cmd.include?("ls-remote") }
+      expect(command.first).to eq("/usr/bin/git")
+      expect(command).to include("ls-remote", "core.hooksPath=/dev/null")
+      expect(options[:timeout]).to eq(described_class::REMOTE_TIMEOUT)
+      expect(options[:env]).to include("GIT_TERMINAL_PROMPT" => "0", "GIT_CONFIG_GLOBAL" => "/dev/null", "GIT_ALLOW_PROTOCOL" => "https:ssh:git:file")
+    end
+  end
+
+  describe "#commits_since" do
+    it "counts the commits made after the base" do
+      expect(guard.commits_since(repo, base["base_sha"])).to eq(0)
+      write("c.txt")
+      git("add", "-A")
+      git("commit", "-q", "-m", "one")
+      git("commit", "-q", "--allow-empty", "-m", "two")
+      expect(guard.commits_since(repo, base["base_sha"])).to eq(2)
+    end
+
+    it "counts a merge's arrivals as nothing and its own commits as they are" do
+      git("checkout", "-q", "-b", "other")
+      write("o.txt")
+      git("add", "-A")
+      git("commit", "-q", "-m", "other")
+      git("checkout", "-q", "main")
+      git("merge", "-q", "--no-ff", "-m", "merge", "other")
+      expect(guard.commits_since(repo, base["base_sha"])).to eq(0)
+      git("commit", "-q", "--allow-empty", "-m", "own")
+      expect(guard.commits_since(repo, base["base_sha"])).to eq(1)
+    end
+
+    describe "with an upstream" do
+      let(:remote) { File.join(@dir, "remote.git") }
+      let(:other) { File.join(@dir, "other") }
+
+      def add_remote(name = "origin")
+        git("init", "-q", "--bare", "-b", "main", remote, path: @dir) unless File.exist?(remote)
+        git("remote", "add", name, remote)
+        git("push", "-q", name, "main")
+      end
+
+      def advance_remote_main
+        git("clone", "-q", remote, other, path: @dir) unless File.exist?(other)
+        git("commit", "-q", "--allow-empty", "-m", "arrived", path: other)
+        git("push", "-q", "origin", "main", path: other)
+      end
+
+      def count_from(sha)
+        guard.commits_since(repo, sha)
+      end
+
+      it "does not count a fast-forward onto origin/main for a branch tracking it" do
+        add_remote
+        git("checkout", "-q", "-b", "feat", "--track", "origin/main")
+        before = guard.head(repo)
+        advance_remote_main
+        git("fetch", "-q", "origin")
+        git("merge", "-q", "--ff-only", "origin/main")
+        expect(guard.head(repo)).not_to eq(before)
+        expect(count_from(before)).to eq(0)
+      end
+
+      it "does not count a fast-forward onto a local branch the branch tracks" do
+        git("checkout", "-q", "-b", "feat", "--track", "main")
+        before = guard.head(repo)
+        git("checkout", "-q", "main")
+        git("commit", "-q", "--allow-empty", "-m", "arrived")
+        git("checkout", "-q", "feat")
+        git("merge", "-q", "--ff-only", "main")
+        expect(count_from(before)).to eq(0)
+      end
+
+      it "counts an own unpushed commit of a branch tracking origin/main" do
+        add_remote
+        git("checkout", "-q", "-b", "feat", "--track", "origin/main")
+        before = guard.head(repo)
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        expect(count_from(before)).to eq(1)
+      end
+
+      it "counts an own commit pushed to the branch's own upstream" do
+        add_remote
+        git("checkout", "-q", "-b", "feat")
+        before = guard.head(repo)
+        git("push", "-q", "-u", "origin", "feat")
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        git("push", "-q")
+        expect(count_from(before)).to eq(1)
+      end
+
+      it "counts an own commit pushed to an upstream with another name (pr-12 tracking origin/other)" do
+        add_remote
+        git("checkout", "-q", "-b", "pr-12")
+        before = guard.head(repo)
+        git("push", "-q", "origin", "pr-12:other")
+        git("branch", "-q", "--set-upstream-to=origin/other")
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        git("push", "-q", "origin", "pr-12:other")
+        expect(count_from(before)).to eq(1)
+      end
+
+      it "counts an own commit main pushed to origin/main" do
+        add_remote
+        git("branch", "-q", "--set-upstream-to=origin/main", "main")
+        before = guard.head(repo)
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        git("push", "-q")
+        expect(count_from(before)).to eq(1)
+      end
+
+      it "reads the default branch from the remote's HEAD (up/HEAD is trunk)" do
+        git("init", "-q", "--bare", "-b", "trunk", remote, path: @dir)
+        git("remote", "add", "up", remote)
+        git("push", "-q", "up", "main:trunk")
+        git("remote", "set-head", "up", "trunk")
+        git("checkout", "-q", "-b", "feat", "--track", "up/trunk")
+        before = guard.head(repo)
+        git("clone", "-q", remote, other, path: @dir)
+        git("commit", "-q", "--allow-empty", "-m", "arrived", path: other)
+        git("push", "-q", "origin", "HEAD:trunk", path: other)
+        git("fetch", "-q", "up")
+        git("merge", "-q", "--ff-only", "up/trunk")
+        expect(guard.head(repo)).not_to eq(before)
+        expect(count_from(before)).to eq(0)
+      end
+
+      it "guesses main as the default branch when the remote has no HEAD set" do
+        add_remote
+        git("remote", "set-head", "origin", "-d")
+        expect { git("symbolic-ref", "-q", "refs/remotes/origin/HEAD") }.to raise_error(/failed/)
+        git("checkout", "-q", "-b", "feat", "--track", "origin/main")
+        before = guard.head(repo)
+        advance_remote_main
+        git("fetch", "-q", "origin")
+        git("merge", "-q", "--ff-only", "origin/main")
+        expect(count_from(before)).to eq(0)
+      end
+    end
+
+    it "is :history_rewritten when the base is not an ancestor of HEAD (amend, reset, rebase)" do
+      git("commit", "-q", "--allow-empty", "-m", "own")
+      git("reset", "-q", "--hard", "HEAD~1")
+      git("commit", "-q", "--amend", "--allow-empty", "-m", "start again")
+      expect(guard.commits_since(repo, base["base_sha"])).to eq(:history_rewritten)
+    end
+
+    it "is :history_rewritten after a rebase onto commits that arrived" do
+      git("checkout", "-q", "-b", "work")
+      git("commit", "-q", "--allow-empty", "-m", "own")
+      git("checkout", "-q", "main")
+      write("m.txt")
+      git("add", "-A")
+      git("commit", "-q", "-m", "arrived")
+      git("checkout", "-q", "work")
+      before = guard.head(repo)
+      git("rebase", "-q", "main")
+      expect(guard.head(repo)).not_to eq(before)
+      expect(guard.commits_since(repo, before)).to eq(:history_rewritten)
+    end
+
+    context "with commits that arrive from another branch" do
+      def main_two_ahead
+        git("checkout", "-q", "-b", "feat")
+        git("checkout", "-q", "main")
+        2.times { |i| git("commit", "-q", "--allow-empty", "-m", "main #{i}") }
+        git("checkout", "-q", "feat")
+      end
+
+      it "counts nothing for a --ff-only merge of main" do
+        main_two_ahead
+        git("merge", "-q", "--ff-only", "main")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(0)
+      end
+
+      it "counts nothing for a rebase onto main with no own commit" do
+        main_two_ahead
+        git("rebase", "-q", "main")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(0)
+      end
+
+      it "counts the own commit after a rebase onto main" do
+        main_two_ahead
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        git("rebase", "-q", "main")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(1)
+      end
+
+      it "counts an own commit and a merge of main as one" do
+        main_two_ahead
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        git("merge", "-q", "--no-ff", "-m", "merge", "main")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(1)
+      end
+
+      it "counts an own commit pushed to the branch's upstream" do
+        git("init", "-q", "--bare", File.join(@dir, "origin.git"))
+        git("remote", "add", "origin", File.join(@dir, "origin.git"))
+        git("checkout", "-q", "-b", "feat")
+        git("push", "-q", "-u", "origin", "feat")
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        git("push", "-q", "origin", "feat")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(1)
+      end
+
+      it "counts commits pulled from the branch's own upstream" do
+        git("init", "-q", "--bare", File.join(@dir, "origin.git"))
+        git("remote", "add", "origin", File.join(@dir, "origin.git"))
+        git("checkout", "-q", "-b", "feat")
+        git("push", "-q", "-u", "origin", "feat")
+        git("commit", "-q", "--allow-empty", "-m", "elsewhere")
+        git("push", "-q", "origin", "feat")
+        git("reset", "-q", "--hard", base["base_sha"])
+        git("pull", "-q", "--ff-only")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(1)
+      end
+
+      it "does not count a commit that is also on a sibling branch" do
+        git("checkout", "-q", "-b", "feat")
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        git("branch", "sibling")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(0)
+      end
+
+      it "counts a commit on a detached HEAD" do
+        git("checkout", "-q", "--detach")
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(1)
+      end
+
+      it "works on a branch with no upstream" do
+        git("checkout", "-q", "-b", "feat")
+        git("commit", "-q", "--allow-empty", "-m", "own")
+        expect(guard.commits_since(repo, base["base_sha"])).to eq(1)
+      end
+    end
+
+    it "is nil, not a pass or a rewrite, when git fails on the ancestor check" do
+      failing = ->(command, **_opts) { command.include?("merge-base") ? ["", "fatal: boom", false] : ["1\n", "", true] }
+      expect(described_class.new(runner: failing).commits_since(repo, base["base_sha"])).to be_nil
+      timing_out = ->(command, **_opts) { command.include?("merge-base") ? raise(Timeout::Error) : ["1\n", "", true] }
+      expect(described_class.new(runner: timing_out).commits_since(repo, base["base_sha"])).to be_nil
+    end
+
+    it "is nil for no base, a base git does not know, or a value that is not a full commit id" do
+      expect(guard.commits_since(repo, nil)).to be_nil
+      expect(guard.commits_since(repo, "f" * 40)).to be_nil
+      expect(guard.commits_since(repo, "--all")).to be_nil
+      expect(guard.commits_since(repo, "HEAD")).to be_nil
+    end
+
+    it "is nil for a path that is not a checkout" do
+      expect(guard.commits_since(File.join(@dir, "gone"), base["base_sha"])).to be_nil
+    end
+  end
+
+  describe "#operation_in_progress?" do
+    it "is false in a quiet checkout and true for a rebase, merge, cherry-pick, revert or bisect" do
+      expect(guard.operation_in_progress?(repo)).to be(false)
+      %w[rebase-merge rebase-apply].each do |dir|
+        FileUtils.mkdir_p(File.join(repo, ".git", dir))
+        expect(guard.operation_in_progress?(repo)).to be(true)
+        FileUtils.rmdir(File.join(repo, ".git", dir))
+      end
+      %w[MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG].each do |name|
+        File.write(File.join(repo, ".git", name), "x\n")
+        expect(guard.operation_in_progress?(repo)).to be(true)
+        File.delete(File.join(repo, ".git", name))
+      end
+    end
+  end
+
+  describe "#dirty_paths" do
+    it "lists changed tracked files and ignores untracked ones" do
+      expect(guard.dirty_paths(repo)).to eq([])
+      write("a.txt", "changed\n")
+      write("new.txt")
+      expect(guard.dirty_paths(repo)).to eq(["a.txt"])
+    end
+
+    it "is nil when git can't answer" do
+      expect(guard.dirty_paths(File.join(@dir, "gone"))).to be_nil
+    end
   end
 end

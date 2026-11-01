@@ -9,13 +9,6 @@ RSpec.describe "the shipped workflow presets" do
   before { allow(config).to receive(:workflows_dir).and_return(File.join(dir, "none")) }
   after { FileUtils.remove_entry(dir) }
 
-  it "parses every file in lib/workflows" do
-    ids = Dir[File.join(config.builtin_workflows_dir, "*.yml")].map { |path| File.basename(path, ".yml") }
-
-    expect(ids).to include("rpiv", "rpiv-auto-approve", "pr-feedback", "investigate", "explore")
-    ids.each { |id| expect(catalog.find(id).source).to eq("builtin") }
-  end
-
   describe "explore" do
     let(:definition) { catalog.find("explore").to_h }
     let(:steps) { definition["steps"] }
@@ -97,6 +90,10 @@ RSpec.describe "the shipped workflow presets" do
 
   describe "pr-feedback" do
     let(:definition) { catalog.find("pr-feedback") }
+
+    it "denies pushing, comments, reviews and CI reruns" do
+      expect(Workspace::WorkflowDefinition.deny(definition.to_h)).to eq(["git push*", "gh pr comment*", "gh pr review*", "gh run rerun*"])
+    end
     let(:steps) { definition.steps.to_h { |step| [step["id"], step] } }
     let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
     let(:project_config) { instance_double(Workspace::ProjectConfig) }
@@ -150,7 +147,21 @@ RSpec.describe "the shipped workflow presets" do
       expect(text).to include("is not `note: <file name>`").and include("approved note is PATH, sha256 HASH")
       expect(text).to include("workspace inbox done --dedupe-key pr-feedback:wr_abc123 --name app")
       expect(text).not_to include("origin/<head>")
+      %w[no_note note_changed fix_head_moved dirty_worktree].each do |code|
+        expect(text).to include("workspace step done --status fail --code #{code}")
+      end
       expect(text).to include("pr-feedback-fix:wr_abc123").and include("pr-feedback:wr_abc123").and include("workspace push")
+    end
+  end
+
+  it "never gives step done a code the engine reserves" do
+    Dir[File.join(config.builtin_workflows_dir, "*.yml")].sort.each do |path|
+      id = File.basename(path, ".yml")
+      catalog.find(id).to_h["steps"].each do |step|
+        step["prompt"].to_s.scan(/step done[^`]*?--code\s+([a-z][a-z0-9_]*)/m).flatten.each do |word|
+          expect(Workspace::WorkflowEngine::ENGINE_CODES).not_to include(word), "#{id}/#{step["id"]} uses reserved code #{word}"
+        end
+      end
     end
   end
 end

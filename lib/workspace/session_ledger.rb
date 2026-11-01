@@ -143,6 +143,27 @@ module Workspace
       nil
     end
 
+    # The entries in the last +max_bytes+ of the ledger, any workspace, oldest first, for a caller that
+    # must stay quick on a ledger that is never rotated. The first line is skipped when the read starts
+    # inside one. Never raises.
+    #
+    # @param max_bytes [Integer]
+    # @param matching [String, nil] a value a line must hold as a JSON string, checked before the line is parsed
+    # @return [Array<Hash>] empty when there is no ledger or it can't be read
+    def recent_entries(max_bytes:, matching: nil)
+      File.open(@path, File::RDONLY | File::NONBLOCK) do |file|
+        return [] unless file.stat.file?
+        start = [file.size - max_bytes, 0].max
+        file.seek(start)
+        lines = file.read.to_s.force_encoding(Encoding::UTF_8).scrub.split("\n")
+        lines.shift if start > 0
+        needle = matching && %("#{matching}")
+        lines.filter_map { |line| parse(line) if needle.nil? || line.include?(needle) }
+      end
+    rescue SystemCallError
+      []
+    end
+
     # @param session_id [String]
     # @return [String, nil] the `at` of the session's latest SessionStart, in any pane; nil when none is recorded
     # @raise [SystemCallError] if the ledger exists but can't be read

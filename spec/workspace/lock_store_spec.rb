@@ -15,6 +15,43 @@ RSpec.describe Workspace::LockStore do
     {kind: "agent", pid: pid, started: started, pane: pane, worktree: worktree}
   end
 
+  describe "#run_records" do
+    let(:path) { File.join(tmpdir, "locks.json") }
+
+    def snapshot = Dir.glob(File.join(tmpdir, "**", "*"), File::FNM_DOTMATCH).sort.to_h { |f| [f, [File.mtime(f), File.file?(f) ? File.binread(f) : nil]] }
+
+    it "is empty with no lock file, and creates nothing, not even the directory" do
+      missing = File.join(tmpdir, "not-made")
+
+      expect(described_class.new(dir: missing, liveness: liveness).run_records).to eq([])
+      expect(File.exist?(missing)).to be(false)
+    end
+
+    it "lists run holders and waiters and leaves process holders out" do
+      File.write(path, JSON.generate("edit" => {"holder" => {"kind" => "run", "run_id" => "wr_1"}, "queue" => [{"kind" => "run", "run_id" => "wr_2"}]},
+        "dev" => {"holder" => {"kind" => "process", "pid" => 1, "started" => "s", "waiter_pid" => 1, "waiter_started" => "s"}, "queue" => []}))
+
+      expect(store.run_records.map { |r| [r[:name], r[:role], r[:record]["run_id"]] }).to eq([["edit", "holder", "wr_1"], ["edit", "waiter", "wr_2"]])
+    end
+
+    it "raises on a corrupt file and on JSON that is not an object" do
+      File.write(path, "{nope")
+      expect { store.run_records }.to raise_error(Workspace::Error, /corrupt/)
+
+      File.write(path, "[1]")
+      expect { store.run_records }.to raise_error(Workspace::Error, /corrupt/)
+    end
+
+    it "writes nothing, even with the record of a dead run that has not been reaped" do
+      File.write(path, JSON.generate("edit" => {"holder" => {"kind" => "run", "run_id" => "wr_1"}, "queue" => []}))
+      liveness.end_run("wr_1")
+      before = snapshot
+
+      expect(store.run_records.size).to eq(1)
+      expect(snapshot).to eq(before)
+    end
+  end
+
   describe "#acquire" do
     it "acquires a free lock" do
       result = store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")

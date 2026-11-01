@@ -1,6 +1,20 @@
 require "spec_helper"
 
 RSpec.describe Workspace::Duration do
+  describe ".parse_window" do
+    it "takes days and weeks as well as the .parse forms" do
+      expect(described_class.parse_window("30d")).to eq(2_592_000)
+      expect(described_class.parse_window("2W")).to eq(1_209_600)
+      expect(described_class.parse_window("90m")).to eq(5400.0)
+    end
+
+    it "refuses zero and nonsense" do
+      expect { described_class.parse_window("0d") }.to raise_error(ArgumentError, /greater than 0/)
+      expect { described_class.parse_window("soon") }.to raise_error(ArgumentError)
+      expect { described_class.parse_window("1.5d") }.to raise_error(ArgumentError)
+    end
+  end
+
   describe ".parse" do
     it "parses a plain number of seconds" do
       expect(described_class.parse("20")).to eq(20.0)

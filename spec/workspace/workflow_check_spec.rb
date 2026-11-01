@@ -12,6 +12,25 @@ RSpec.describe Workspace::WorkflowCheck do
   let(:log) { File.join(@dir, "steps", "verify.1.check.log") }
   subject(:check) { described_class.new }
 
+  describe ".env_for" do
+    around do |example|
+      saved = ENV["GIT_DIR"]
+      ENV["GIT_DIR"] = "/elsewhere"
+      example.run
+    ensure
+      ENV["GIT_DIR"] = saved
+    end
+
+    it "removes an inherited GIT_ variable" do
+      env = described_class.env_for({"id" => "wr_1", "artifacts_dir" => "/a", "base_sha" => "abc"})
+      expect(env).to include("GIT_DIR" => nil, "WORKSPACE_RUN_ID" => "wr_1", "WORKSPACE_RUN_ARTIFACTS" => "/a", "WORKSPACE_RUN_BASE_SHA" => "abc")
+    end
+
+    it "gives an empty base for a run with no recorded commit" do
+      expect(described_class.env_for({"id" => "wr_1", "base_sha" => nil})).to include("WORKSPACE_RUN_BASE_SHA" => "", "WORKSPACE_RUN_ARTIFACTS" => "")
+    end
+  end
+
   it "runs the command through the shell in the checkout and reports a pass" do
     result = check.call(command: "pwd && echo to-stderr >&2", cwd: @dir, timeout: 30, log: log)
 
@@ -96,6 +115,42 @@ RSpec.describe Workspace::WorkflowCheck do
 
     expect(result).to eq(exit_code: nil, timed_out: true)
     expect(state_of_child).to satisfy("be gone or a zombie") { |value| value.empty? || value.start_with?("Z") }
+  end
+
+  it "stops the command's group when the caller is interrupted while it waits" do
+    pidfile = File.join(@dir, "pid")
+    caller_thread = Thread.new do
+      check.call(command: "echo $$ > #{pidfile}; exec sleep 30", cwd: @dir, timeout: 60, log: log)
+    rescue Interrupt
+      :interrupted
+    end
+    sleep 0.05 until File.size?(pidfile)
+    pid = Integer(File.read(pidfile))
+
+    caller_thread.raise(Interrupt)
+
+    expect(caller_thread.value).to eq(:interrupted)
+    expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
+  end
+
+  it "kills a command that traps TERM when the stop itself is interrupted" do
+    pidfile = File.join(@dir, "pid")
+    patient = described_class.new(kill_grace: 30)
+    caller_thread = Thread.new do
+      patient.call(command: "trap '' TERM; echo $$ > #{pidfile}; while :; do sleep 1; done", cwd: @dir, timeout: 60, log: log)
+    rescue Interrupt
+      :interrupted
+    end
+    sleep 0.05 until File.size?(pidfile)
+    pid = Integer(File.read(pidfile))
+
+    caller_thread.raise(Interrupt)
+    sleep 0.5
+    expect { Process.kill(0, pid) }.not_to raise_error
+    caller_thread.raise(Interrupt)
+    caller_thread.join(10)
+
+    expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
   end
 
   it "stops a command whose run moved on, with everything it started, asking only every stop_poll seconds" do

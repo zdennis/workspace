@@ -1,27 +1,31 @@
 module Workspace
   # Lists the files a workflow run keeps, from the run's own JSON: each
-  # attempt's prompt and check log (when recorded) and each step's `produces`
+  # attempt's prompt and check and proof logs (when recorded) and each step's `produces`
   # entries. Reads nothing but `File.lstat`: a symlink is reported as a link
   # and never followed, so its target's size and contents are never touched.
   # A path outside the run's artifacts directory is left out.
   class WorkflowRunFiles
     # @param run [Hash] a run as {WorkflowRunStore#find} returns it
     # @return [Array<Hash>] rows with "path" (absolute), "kind" (`prompt`,
-    #   `check_log` or `produces`), "step", "attempt" (nil for `produces`),
+    #   `check_log`, `proof_log` or `produces`), "step", "attempt" (nil for `produces`),
     #   "exists", "bytes" (nil when missing, a link or not a regular file)
-    #   and, for a symlink, "link" true
+    #   and, for a symlink, "link" true; a `produces` row also has "problem"
+    #   (the {WorkflowProduced} rule it breaks, else nil, always nil for a run
+    #   started before the rules)
     def list(run)
       dir = artifacts_dir(run)
       return [] unless dir
       artifacts = File.expand_path(dir)
       rows = []
+      strict = WorkflowProduced.strict?(run["definition"])
       Array(run.dig("definition", "steps")).each do |step|
         id = step["id"]
         Array(run.dig("steps", id, "attempts")).each do |attempt|
           rows << row(artifacts, attempt["prompt_file"], "prompt", id, attempt["n"])
           rows << row(artifacts, attempt.dig("check", "log"), "check_log", id, attempt["n"])
+          Array(attempt["proofs"]).each { |proof| rows << row(artifacts, proof["log"], "proof_log", id, attempt["n"]) }
         end
-        Array(step["produces"]).each { |file| rows << row(artifacts, File.join(artifacts, file.to_s), "produces", id, nil) }
+        Array(step["produces"]).each { |file| rows << row(artifacts, File.join(artifacts, file.to_s), "produces", id, nil, strict: strict) }
       end
       rows.compact
     end
@@ -34,11 +38,12 @@ module Workspace
 
     private
 
-    def row(artifacts, path, kind, step, attempt)
+    def row(artifacts, path, kind, step, attempt, strict: nil)
       return nil unless path.is_a?(String) && !path.empty?
       path = File.expand_path(path)
       return nil unless inside?(artifacts, path)
       base = {"path" => path, "kind" => kind, "step" => step, "attempt" => attempt}
+      base["problem"] = WorkflowProduced.inspect_file(path, strict: strict).rule if kind == "produces"
       stat = File.lstat(path)
       return base.merge("exists" => true, "bytes" => nil, "link" => true) if stat.symlink?
       base.merge("exists" => true, "bytes" => stat.file? ? stat.size : nil)

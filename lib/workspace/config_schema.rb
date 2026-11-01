@@ -413,6 +413,17 @@ module Workspace
     end
     private_constant :FOCUS_CHAIN
 
+    WORKFLOW_ALERT_EVENTS = %w[gate failed stalled finished].freeze
+
+    WORKFLOW_ALERTS = lambda do |value|
+      names = value.is_a?(Array) ? value : value.to_s.split(/[\s,]+/).reject(&:empty?)
+      unless names.any? && names.all? { |name| name.is_a?(String) && WORKFLOW_ALERT_EVENTS.include?(name) }
+        raise ArgumentError, "must be one or more of #{WORKFLOW_ALERT_EVENTS.join(", ")} separated by commas"
+      end
+      names.uniq
+    end
+    private_constant :WORKFLOW_ALERTS
+
     # Every key, settable ones first in the order `config set` lists them,
     # then keys that are documented but edited by hand.
     KEYS = [
@@ -445,7 +456,9 @@ module Workspace
         doc: "How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`)"),
       # alerts, agentd and handoff are per-person habits for a per-workspace daemon; a machine-wide default is the common case.
       Key.new(name: "alerts.notify", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :command, sensitive: true, settable: true, examples: ["say 'agent needs you'"], restart: true, parser: COMMAND,
-        doc: "Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts))"),
+        doc: "Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts)). It also runs for the workflow events named in `alerts.workflow`, with `WORKSPACE_ALERT=workflow` and none of the pane variables (`WORKSPACE_ALERT_PANE`, `_PANE_ID`, `_KIND`, `_SECONDS`, `_MESSAGE`): a script that treats every alert but `waiting` as idle must check for it"),
+      Key.new(name: "alerts.workflow", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["gate,failed,stalled,finished", "gate"], parser: WORKFLOW_ALERTS,
+        doc: "Workflow events `alerts.notify` also runs for, as names separated by commas: `gate` (a step waits for you), `failed` (a step or its check failed, or its token budget held the run), `stalled` (the sweep found a stall) and `finished` (the run completed). Unset: none. Read each time, so no restart; see [`workspace workflow`](README.workflow.md#alerts)"),
       Key.new(name: "alerts.idle_after", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["10m", "30m"], default: 600, restart: true, parser: POSITIVE_DURATION,
         doc: "How long an agent pane may sit idle before `alerts.notify` runs (default `10m`)"),
       Key.new(name: "agentd.poll_interval", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["10s", "30s"], default: 10, restart: true, parser: POSITIVE_DURATION,

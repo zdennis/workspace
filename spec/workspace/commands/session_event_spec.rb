@@ -661,6 +661,19 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(config).not_to have_received(:agent_socket_path)
     end
 
+    it "denies with exit 2 when the workflow deny check refuses a Bash command, and the lock check allows it" do
+      enforcer = instance_double(Workspace::LockEnforcer, check: nil)
+      deny = instance_double(Workspace::WorkflowDeny)
+      allow(deny).to receive(:check).with(tool_name: "Bash", tool_input: {"command" => "git push"}).and_return("denied by workflow x")
+      error_output = StringIO.new
+      payload = {"hook_event_name" => "PreToolUse", "tool_name" => "Bash", "tool_input" => {"command" => "git push"}}
+      result = described_class.new(config: config, tmux: tmux, env: env, error_output: error_output, lock_enforcer: enforcer, workflow_deny: deny,
+        input: StringIO.new(JSON.generate(payload))).call
+
+      expect(result).to eq(exit_code: 2)
+      expect(error_output.string).to include("denied by workflow x")
+    end
+
     context "events it must not forward" do
       it "ignores a hook event it does not subscribe to" do
         expect(Socket).not_to receive(:new)

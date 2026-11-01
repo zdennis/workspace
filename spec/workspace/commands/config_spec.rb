@@ -27,6 +27,20 @@ RSpec.describe Workspace::Commands::Config do
     end
   end
 
+  describe "alerts.workflow without alerts.notify" do
+    it "warns that nothing will be sent, and stays quiet once a notify command is set" do
+      error_output = StringIO.new
+      command, = build_command(error_output: error_output, with_resolver: true)
+
+      result = command.set("alerts.workflow", "gate,failed", project: "app", cwd: Dir.pwd)
+      expect(result.warnings.first).to include("does nothing until alerts.notify is set for 'app'")
+      expect(error_output.string).to include("Warning: alerts.workflow does nothing")
+
+      command.set("alerts.notify", "say hi", project: "app", cwd: Dir.pwd)
+      expect(command.set("alerts.workflow", "gate", project: "app", cwd: Dir.pwd).warnings).to eq([])
+    end
+  end
+
   describe "unparseable config" do
     def corrupt_project(project_settings, name)
       path = project_settings.project_config_path(name)

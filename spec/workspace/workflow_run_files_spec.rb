@@ -37,9 +37,23 @@ RSpec.describe Workspace::WorkflowRunFiles do
     expect(rows).to eq([
       {"path" => prompt, "kind" => "prompt", "step" => "research", "attempt" => 1, "exists" => true, "bytes" => 12},
       {"path" => log, "kind" => "check_log", "step" => "research", "attempt" => 1, "exists" => true, "bytes" => 3},
-      {"path" => File.join(artifacts, "research.md"), "kind" => "produces", "step" => "research", "attempt" => nil, "exists" => true, "bytes" => 11},
-      {"path" => File.join(artifacts, "plan.md"), "kind" => "produces", "step" => "research", "attempt" => nil, "exists" => false, "bytes" => nil}
+      {"path" => File.join(artifacts, "research.md"), "kind" => "produces", "step" => "research", "attempt" => nil, "exists" => true, "bytes" => 11, "problem" => nil},
+      {"path" => File.join(artifacts, "plan.md"), "kind" => "produces", "step" => "research", "attempt" => nil, "exists" => false, "bytes" => nil, "problem" => nil}
     ])
+  end
+
+  it "lists nothing for a skipped optional proof, which has no log" do
+    skipped = {"proof" => "command", "role" => "lint", "skipped" => "command_unset", "optional" => true, "index" => 0}
+
+    expect(files.list(run_for(attempts: [{"n" => 1, "proofs" => [skipped]}]))).to eq([])
+  end
+
+  it "lists a proof log, and nothing for a proof with none" do
+    log = write("steps/research.1.require-test.log", "ok\n")
+
+    rows = files.list(run_for(attempts: [{"n" => 1, "proofs" => [{"proof" => "command", "log" => log}, {"proof" => "remote_unchanged"}]}]))
+
+    expect(rows).to eq([{"path" => log, "kind" => "proof_log", "step" => "research", "attempt" => 1, "exists" => true, "bytes" => 3}])
   end
 
   it "leaves out the rows of a prompt or check that was not recorded" do
@@ -67,6 +81,19 @@ RSpec.describe Workspace::WorkflowRunFiles do
 
     expect(rows.map { |row| row.slice("exists", "bytes", "link") }).to eq([{"exists" => true, "bytes" => nil, "link" => true}] * 2)
     expect(rows.to_s).not_to include("5000")
+  end
+
+  it "reports the shared check's problem for produces entries of a strict run, and nil for an older run" do
+    write("empty.md", "")
+    write("ok.md", "x")
+    FileUtils.mkdir_p(File.join(artifacts, "dir.md"))
+    File.symlink(File.join(artifacts, "ok.md"), File.join(artifacts, "link.md"))
+    produces = %w[empty.md ok.md dir.md link.md none.md]
+    older = run_for(produces: produces)
+    strict = older.merge("definition" => older["definition"].merge("produces_check" => "strict"))
+
+    expect(files.list(strict).map { |row| row["problem"] }).to eq(["empty", nil, "not_regular_file", "symlink", nil])
+    expect(files.list(older).map { |row| row["problem"] }).to all(be_nil)
   end
 
   it "skips a path outside the artifacts directory, on a directory boundary" do
@@ -113,6 +140,6 @@ RSpec.describe Workspace::WorkflowRunFiles do
   it "lists a file as missing when its parent directory is missing" do
     rows = files.list(run_for(produces: ["no/such/dir/a.md"]))
 
-    expect(rows).to eq([{"path" => File.join(artifacts, "no/such/dir/a.md"), "kind" => "produces", "step" => "research", "attempt" => nil, "exists" => false, "bytes" => nil}])
+    expect(rows).to eq([{"path" => File.join(artifacts, "no/such/dir/a.md"), "kind" => "produces", "step" => "research", "attempt" => nil, "exists" => false, "bytes" => nil, "problem" => nil}])
   end
 end

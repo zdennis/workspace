@@ -129,6 +129,34 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(panes.alive?("wr_1")).to be false
     end
 
+    it "keeps what identifies the pane after the binding is gone, and tells that pane from a reused id" do
+      bind
+      identity = panes.identity("wr_1")
+      panes.unbind("wr_1")
+
+      expect(identity).to eq("session" => "app", "pane_slot" => "app:0.1")
+      expect(panes.same_pane?("%5", identity)).to be true
+      allow(tmux).to receive(:session_name_for_pane).with("%5").and_return("other")
+      expect(panes.same_pane?("%5", identity)).to be false
+      allow(tmux).to receive(:session_name_for_pane).with("%5").and_return("app")
+      allow(tmux).to receive(:pane_slot).with("%5").and_return("app:1.0")
+      expect(panes.same_pane?("%5", identity)).to be false
+    end
+
+    it "reads a tmux that can't be run as not the same pane, never an error" do
+      bind
+      identity = panes.identity("wr_1")
+      allow(tmux).to receive(:session_name_for_pane).and_raise(Errno::ENOENT)
+
+      expect(panes.same_pane?("%5", identity)).to be false
+      expect(panes.identity("wr_1")).to eq(identity)
+    end
+
+    it "has no identity for an unbound run, and proves no pane without one" do
+      expect(panes.identity("wr_9")).to be_nil
+      expect(panes.same_pane?("%5", nil)).to be false
+    end
+
     it "does not count a pane that is gone, or one bound to something other than a run" do
       bind
       allow(tmux).to receive(:session_name_for_pane).with("%5").and_return(nil)
@@ -678,6 +706,41 @@ RSpec.describe Workspace::WorkflowPanes do
 
       ensure_result.status = :failed
       expect(panes.parkable?("app", "%5")).to be(false)
+    end
+  end
+
+  describe "#pane_row" do
+    it "is the pane's entry in the daemon's snapshot, and nil for another pane or a daemon that doesn't answer" do
+      allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { {"panes" => [{"pane_id" => "%5", "state" => "idle"}]} }
+
+      expect(panes.pane_row("app", "%5")).to eq("pane_id" => "%5", "state" => "idle")
+      expect(panes.pane_row("app", "%9")).to be_nil
+
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no", reason: :no_daemon))
+      expect(panes.pane_row("app", "%5")).to be_nil
+    end
+  end
+
+  describe "#respawn_daemon" do
+    it "asks for the daemon to be running and says whether it is" do
+      expect(panes.respawn_daemon("app")).to eq(ok: true, detail: nil)
+      expect(ensured).to eq(["app"])
+    end
+
+    it "carries the reason a daemon could not be started" do
+      result = Workspace::Commands::EnsureAgent::Result.new(:failed, "no tmux session")
+      allow(snapshot_client).to receive(:fetch)
+      ensure_result.status = result.status
+      ensure_result.detail = result.detail
+
+      expect(panes.respawn_daemon("app")).to eq(ok: false, detail: "no tmux session")
+    end
+  end
+
+  describe ".agent_gone_row?" do
+    it "is true for a shell idle 30 seconds and false for no row" do
+      expect(described_class.agent_gone_row?({"kind" => "shell", "idle_seconds" => 30})).to be(true)
+      expect(described_class.agent_gone_row?(nil)).to be(false)
     end
   end
 

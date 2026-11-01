@@ -44,7 +44,7 @@ module Workspace
       end
 
       unless File.exist?(@config.project_template_path)
-        raise Workspace::Error, "Template not found: #{@config.project_template_path}"
+        raise Workspace::Error, "Template not found: #{@config.project_template_path}. Run `workspace init` first to install the templates."
       end
 
       template = File.read(@config.project_template_path)

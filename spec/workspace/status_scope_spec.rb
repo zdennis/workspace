@@ -159,4 +159,27 @@ RSpec.describe Workspace::StatusScope do
         .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_in_workspace") }
     end
   end
+  describe "#resolve_needs_me" do
+    def needs_me(**options) = scope.resolve_needs_me(name: nil, project: nil, all: nil, working_dir: working_dir, **options)
+
+    it "covers every workspace with no flag, and needs no current workspace" do
+      expect(needs_me).to have_attributes(kind: :needs_me, workspace: nil, project: nil)
+    end
+
+    it "narrows to a workspace with --name" do
+      expect(needs_me(name: "ghost")).to have_attributes(kind: :needs_me, workspace: "ghost", project: nil)
+    end
+
+    it "narrows to a project with --project NAME" do
+      expect(needs_me(project: "app").project.name).to eq("app")
+    end
+
+    it "refuses --all" do
+      expect { needs_me(all: true) }.to raise_error(Workspace::UsageError, /takes no --all/)
+    end
+
+    it "refuses --name with --project" do
+      expect { needs_me(name: "a", project: "app") }.to raise_error(Workspace::UsageError, /only one/)
+    end
+  end
 end

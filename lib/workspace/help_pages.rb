@@ -278,6 +278,9 @@ module Workspace
     }.freeze
 
     WORKFLOW_NOTE = ["--note TEXT", "Added to the next attempt's instructions"].freeze
+    EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
+
+    EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
 
     WORKFLOW = {
       "show" => {
@@ -287,10 +290,18 @@ module Workspace
           "--source gives the file's text, its sha256 and its problems even when it is invalid (exit 0), for",
           "an editor.",
           "",
-          "Definitions are YAML files: ~/.config/workspace/workflows/ID.yml, then the presets that ship with",
-          "workspace (rpiv, rpiv-auto-approve, pr-feedback, investigate, explore). See docs/README.workflow.md."
+          "Definitions are YAML files, found in this order: ~/.config/workspace/projects/NAME/workflows/ID.yml (the",
+          "project of the current workspace or --name; a worktree reads its parent project's), then",
+          "~/.config/workspace/workflows/ID.yml, then the presets that ship with workspace (rpiv, rpiv-auto-approve,",
+          "pr-feedback, investigate, explore). A file in an earlier place hides the same id in a later one; each row",
+          "says which (project, global or builtin). Nothing is read from a repository. See docs/README.workflow.md.",
+          "",
+          "A definition with extends: ID starts from another workflow's steps; show prints the result, with an",
+          "\"Extends:\" line for each parent (source and path). --json adds \"extends\" and \"resolved_sha256\", the digest",
+          "a run started now would record."
         ],
-        options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"], JSON_OPT],
+        options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"],
+          name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow show", "list the workflows you can run"],
           ["workspace workflow show rpiv", "see the inputs and steps of one before running it"],
@@ -305,14 +316,29 @@ module Workspace
         about: [
           "Checks a definition (a file, or - for stdin) the way a definition on disk is checked, listing every",
           "problem at once; writes nothing. The id is --id, else its id: key, else the file's name (stdin:",
-          "\"stdin\"); a relative prompt_file: is read from the file's directory (stdin: the current directory)."
+          "\"stdin\"); a relative prompt_file: is read from the file's directory (stdin: the current directory).",
+          "A valid definition can still get warnings (exit 0): a step with no produces, status, require or gate passes on any",
+          "turn end, so it is named with what to add. It also warns of an include: pack the library can't find, a status or",
+          "require command the project has no `commands.test`/`commands.lint` for, and an on_fail max that max_attempts can't",
+          "fit. An extends: ID is looked up as any workflow id (the project's file first, then your own, then the presets), so a draft that",
+          "extends another is checked against the ones you have; a missing parent, a cycle, a chain over 4, a replace: of a",
+          "step the parent lacks and an added step that the parent already has are problems. The library and the commands",
+          "are read for the project of the current directory; outside a git checkout they",
+          "are listed as \"not checked\" instead. --json lists warnings (code, step, message) and not_checked (same shape).",
+          "A PATH inside the project's workflows directory, the user's, or the presets is reported with its scope, and a",
+          "`shadowed` warning says when another file of that id is found first.",
+          "",
+          "A step's guard: (unchanged or config) checks the checkout when the turn ends, on_fail's context: (fresh or continue)",
+          "sets the conversation of the step it goes back to, and a status: check gets WORKSPACE_RUN_ID,",
+          "WORKSPACE_RUN_ARTIFACTS and WORKSPACE_RUN_BASE_SHA. See docs/README.workflow.md."
         ],
-        options: [["--id ID", "Check the text as this workflow id"], JSON_OPT],
+        options: [["--id ID", "Check the text as this workflow id"],
+          name_opt("The workspace whose project's definitions the scope and shadowed check read (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow validate draft.yml", "check a definition you are writing: prints valid, or exits 1 with an error listing every problem"],
           ["workspace workflow validate - < draft.yml", "check text read from stdin"],
           ["workspace workflow validate draft.yml --id ship", "check it as the workflow \"ship\" when the file is named otherwise"],
-          ["workspace workflow validate draft.yml --json", "the checked definition as one document, or an error document with the problems"]
+          ["workspace workflow validate draft.yml --json", "the checked definition and its warnings as one document, or an error document with the problems"]
         ]
       },
       "add" => {
@@ -322,9 +348,10 @@ module Workspace
           "Saves a definition (a file, or - for stdin) as ID.yml in ~/.config/workspace/workflows/, after the",
           "checks `workflow validate` makes; refused with workflow_exists when that file is there. A preset of",
           "the same id is left alone and the copy shadows it. A relative prompt_file: is read from that directory.",
-          "Without --dry-run it writes that file."
+          "Without --dry-run it writes that file. Only that directory is written, never a project's: when the",
+          "project has its own ID.yml, the message says it hides yours there."
         ],
-        options: [["--dry-run", "Check, and write no definition (the lock file may be created)"], JSON_OPT],
+        options: [["--dry-run", "Check, and write no definition (the lock file may be created)"], name_opt("The workspace whose project is told about when its own definition of the ID hides or replaces yours (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow add ship draft.yml", "save draft.yml as your workflow \"ship\""],
           ["workspace workflow add ship draft.yml --dry-run", "check it and see where it would go, saving nothing"],
@@ -340,10 +367,12 @@ module Workspace
           "Replaces your ID.yml (a file, or - for stdin) after the same checks as `workflow add`, only if the",
           "file's raw bytes still hash to --if-sha256 (from `workflow show ID --source`; a broken file can be",
           "replaced). Refused with stale_workflow when it changed, builtin_workflow for a preset with no file",
-          "of yours. Without --dry-run it overwrites that file."
+          "of yours. Without --dry-run it overwrites that file. Only your directory is edited: an id only the",
+          "project has is refused (unknown_workflow, naming the project's file); when both have it, `show ID",
+          "--source` reads the project's file, so a stale_workflow answer names both files and their shas."
         ],
         options: [["--if-sha256 SHA", "The sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches"],
-          ["--dry-run", "Check, and write no definition (the lock file may be created)"], JSON_OPT],
+          ["--dry-run", "Check, and write no definition (the lock file may be created)"], name_opt("The workspace whose project is told about when its own definition of the ID hides or replaces yours (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow update ship draft.yml --if-sha256 SHA", "replace your ship.yml; SHA is the sha256 that `workflow show ship --source --json` gave"],
           ["workspace workflow update ship draft.yml --if-sha256 SHA --dry-run", "check the replacement and write nothing"],
@@ -357,9 +386,10 @@ module Workspace
         about: [
           "Deletes your ID.yml (a link itself, never its target). Asks first unless --yes or --dry-run, and",
           "refuses with confirmation_required under --no-input. A preset of the same id is then in effect",
-          "again; unknown_workflow when you have no file, builtin_workflow for a preset alone."
+          "again, unless the project has its own ID.yml, which stays in effect there (it is never deleted);",
+          "unknown_workflow when you have no file, builtin_workflow for a preset alone."
         ],
-        options: [["--yes", "Do not ask before deleting the file"], ["--dry-run", "Check and delete nothing"], JSON_OPT],
+        options: [["--yes", "Do not ask before deleting the file"], ["--dry-run", "Check and delete nothing"], name_opt("The workspace whose project is told about when its own definition of the ID hides or replaces yours (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow remove ship", "delete your ship.yml after a y/N question"],
           ["workspace workflow remove ship --dry-run", "see which file would be deleted, deleting nothing"],
@@ -391,8 +421,96 @@ module Workspace
           ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --pane %19", "run in a pane other than the workspace's Claude pane"]
         ]
       },
+      "render" => {
+        usage: ["workflow render ID STEP [--input KEY=VALUE]... [--name WORKSPACE] [--json]"],
+        summary: "Print the instructions a step's agent would be sent, without a run",
+        about: [
+          "Composes the packs, the workflow's text and the step's prompt as a delivered attempt does (the same code),",
+          "for the step's first attempt, and prints them. Writes nothing: no run, event, binding, lock, worktree or",
+          "file, and no call to tmux or the agent daemon, so it works outside a tmux session. Packs and commands are",
+          "read from this workspace's checkout (--name picks another), and ID is looked up in that workspace's project first; outside a git checkout the project's own",
+          "packs and commands are not read, and a warning says so.",
+          "",
+          "Inputs are checked as `start` checks them: a required input you leave out is refused with input_required,",
+          "an unknown one is a usage error, a value that misses its pattern is invalid_input. An unknown step is",
+          "refused with unknown_step, listing the steps.",
+          "",
+          "A real run's values are not known yet, so {{run}} is wr_preview, {{artifacts}} is a path under it and,",
+          "outside any workspace, {{workspace}} is <workspace>; stderr lists them. What a run adds under \"For this attempt\"",
+          "is not added: its --note, retry text, and after a gate the approval's note and the line naming the gate's note",
+          "(also a resume --note). On a terminal control, bidi and zero-width",
+          "characters are shown escaped; piped, the text is written as it is."
+        ],
+        options: [["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable)"],
+          name_opt("The workspace whose packs and commands are read"), JSON_OPT],
+        examples: [
+          ["workspace workflow render rpiv plan --input task=\"add a hello script\"", "read the plan step's instructions before running rpiv"],
+          ["workspace workflow render rpiv plan --input task=x > plan-prompt.md", "write them to a file, with the preview note on stderr"],
+          ["workspace workflow render rpiv verify --input task=x --json", "one document: text, packs, the preview values and warnings"]
+        ]
+      },
+      "check" => {
+        usage: ["workflow check ID STEP [--artifacts DIR] [--name WORKSPACE] [--json]"],
+        summary: "Run one step's status: check once, without a run",
+        about: [
+          "Runs the step's `status:` command in this workspace's checkout (--name picks another) through the code a run's",
+          "check goes through: `sh -c` in the checkout's root, the step's timeout, and WORKSPACE_RUN_ID (wr_preview), WORKSPACE_RUN_ARTIFACTS and",
+          "WORKSPACE_RUN_BASE_SHA (the checkout's HEAD, so a BASE..HEAD check sees no commits) set. A `status:` command is never rendered, so it takes no inputs. The command is a shell command from the definition, so it has",
+          "the same trust as a run. It takes no lock (a step's `uses:` is not held) and writes no run file, event or",
+          "binding. Prints the last 40 lines of its output; the summary, the log path and the artifacts path go to stderr.",
+          "",
+          "--artifacts DIR is what WORKSPACE_RUN_ARTIFACTS is (a relative path is taken from here); it must exist and",
+          "workspace never writes to it. Without it an empty temporary directory is made and named. The log is always in",
+          "a new temporary directory, never in a run's area; one a day old is removed by the next check.",
+          "",
+          "A step with no `status:` is refused as step_without_status; `status: {command: test}` runs the project's",
+          "commands.test, and is workflow_command_unset when it is not set.",
+          "Exits 0 when the check passes, 1 when it fails or times out; --json prints `passed` with ok: true."
+        ],
+        options: [["--artifacts DIR", "An existing directory standing for the run's artifacts"],
+          name_opt("The workspace whose checkout the check runs in and whose commands are read"), JSON_OPT],
+        examples: [
+          ["workspace workflow check rpiv-auto-approve plan_review --artifacts ./fixture", "try the plan_review check against a fixture directory"],
+          ["workspace workflow check rpiv verify", "run verify's check in this checkout"],
+          ["workspace workflow check rpiv verify --json", "one document: passed, exit_code, log and artifacts"]
+        ]
+      },
+      "simulate" => {
+        usage: ["workflow simulate ID --script FILE [--input KEY=VALUE]... [--json]"],
+        summary: "Play a workflow through the real engine with a scripted fake agent and print the transitions",
+        about: [
+          "Tests a workflow's loops, gates, retries and token budget without spending a run. The real engine moves the",
+          "run; a fake agent acts when a step waits for it: it writes the step's `produces` files, reports if the script",
+          "says so, and ends its turn. A fake person approves or rejects each gate. The simulation ends when the run",
+          "finishes, when it waits for a person (a failed check, a spent budget, a missing file), or after 200 actions,",
+          "which it says.",
+          "",
+          "Nothing real is touched: the run, checkout and files live in a temporary directory that is removed, the pane",
+          "is only a name, and no tmux, agent daemon, lock, inbox, notification or event log is used. `status:` checks",
+          "and `require:` proofs are never run; the script states how each comes out. A stop is the answer, not an",
+          "error: the exit code is 0. Time moves a second per agent turn and when a retry's backoff is waited out.",
+          "",
+          "The script is YAML with `inputs:` (values for the workflow's inputs; --input wins) and `steps:`, a list per",
+          "step with one entry per attempt, in order. An attempt with no entry does the plain thing: writes every file,",
+          "passes its check and proofs, approves its gate, uses no tokens. Keys of an attempt:",
+          "  writes: [FILE]   the files written (default: all of the step's produces:)",
+          "  report: pass|fail, summary: TEXT, code: WORD   what `step done` says",
+          "  check: pass|fail|timeout|error, log: TEXT   how the `status:` check ends, and its log",
+          "  require: {NAME: pass|fail}   how each `require:` proof ends",
+          "  gate: approve|reject, note: TEXT   the person's decision at the step's gate",
+          "  tokens: N   the attempt's tokens, counted against `budget:`",
+          "A script with an unknown key, a step, input, file or proof the workflow lacks, or a bad value is refused with",
+          "invalid_script, listing every problem."
+        ],
+        options: [["--script FILE", "The script (required; at most 64 KiB)"], ["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable)"], JSON_OPT],
+        examples: [
+          ["workspace workflow simulate rpiv --script fail-verify-twice.yml", "see the verify loop send the run back to implement twice"],
+          ["workspace workflow simulate rpiv --script spend-tokens.yml --input task=x", "see a budget hold the run before an attempt"],
+          ["workspace workflow simulate explore --script gate-reject.yml --json", "one document: the outcome, each step's attempts and every transition"]
+        ]
+      },
       "start" => {
-        usage: ["workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]"],
+        usage: ["workflow start --ref REF [--force] [--dry-run] [--json]", "workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",
         about: [
           "Run it inside the project's git checkout; the main agent must be Claude Code.",
@@ -404,13 +522,23 @@ module Workspace
           "mistyped ID and is refused as unknown_workflow.",
           "",
           "REF is a JIRA key or URL, a pull request, an issue or a branch. Waits for the workspace's agent, then",
-          "runs ID in it. A fork's pull request, or a branch tracking another repository, is refused with",
+          "runs ID in it. A workflow that lists the kinds of REF it is for (applies_to:) refuses another kind with",
+          "workflow_not_for_ref unless --force; a --prompt has no REF and is not checked. `workflow show ID` lists the workflow's inputs (--input KEY=VALUE); --dry-run checks them. A fork's pull request, or a branch tracking another repository, is refused with",
           "fork_pull_request before anything is made.",
           "",
           "Without --dry-run this makes things for real: a worktree and its workspace (as `workspace start`",
-          "does), then the first step is typed into the new workspace's agent pane."
+          "does), then the first step is typed into the new workspace's agent pane.",
+          "",
+          "--ref REF takes the place of ID: the workflow comes from a table, not a guess. The config key",
+          "workflows.by_ref.<kind> (jira, github_pr, github_issue or branch), then workflows.default, names it; with no",
+          "default, the one workflow whose applies_to: lists the kind (or has none) is used. The project's own",
+          "definitions count first (a project file hides the same id elsewhere); the routing line and routed.definition_source",
+          "say where the one chosen was found. Several fit: refused with",
+          "no_default_workflow, listing them. A default that names no workflow, or one whose applies_to: leaves out the",
+          "kind, is refused with invalid_workflow_default (--force starts the second kind anyway). The rest is a normal start."
         ],
-        options: [["--prompt TEXT", "The task as free text (the workflow's task input, and the branch's name when there is no REF)"],
+        options: [["--ref REF", "Route REF to a workflow by its kind instead of naming an ID; not with an ID, a REF or --prompt"],
+          ["--prompt TEXT", "The task as free text (the workflow's task input, and the branch's name when there is no REF)"],
           ["--branch BRANCH", "The branch for a --prompt (default: the prompt's words); refused with a REF"],
           ["--slug", "Add the ticket title's words to a JIRA or issue branch, as `workspace start --slug`"],
           ["--base REF", "The branch or ref a new branch starts from"],
@@ -419,22 +547,23 @@ module Workspace
           ["--agent-kind KIND", "The coding agent the main agent pane runs: #{AGENT_KINDS}"],
           ["--[no-]headless", "Start the session in plain tmux, as `workspace start --headless`"],
           ["--prompt-timeout DURATION", "How long to wait for the coding agent to be ready (default 60s)"],
+          ["--force", "Start although the workflow's applies_to: does not list the REF's kind (workflow_not_for_ref otherwise)"],
           ["--dry-run", "Check everything and make nothing"], JSON_OPT],
         examples: [
           ["workspace workflow start PROJ-101", "use the workflow config names for a JIRA key (workflows.by_ref.jira, else workflows.default)"],
           ["workspace workflow start --prompt \"add a hello script\"", "no ID and no ticket: the configured prompt workflow, started from a sentence"],
           ["workspace workflow start rpiv PROJ-101", "make a workspace for the ticket and run rpiv in it"],
+          ["workspace workflow start --ref PROJ-101", "the same, and with no key set, the one workflow that fits a JIRA ref"],
           ["workspace workflow start rpiv PROJ-101 --dry-run", "read the ticket and check everything, making nothing"],
           ["workspace workflow start rpiv --prompt \"add a hello script\"", "no ticket: start from a sentence, with the branch named from its words"],
           ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],
           ["workspace workflow start pr-feedback '#123'", "work through the review feedback on pull request 123 (needs gh)"],
           ["workspace workflow start rpiv PROJ-101 --note \"Keep the change small.\"", "tell every step something extra"],
-          ["workspace workflow start rpiv PROJ-101 --headless", "run in plain tmux, with no iTerm window"],
           ["workspace workflow start rpiv-auto-approve --prompt \"add a hello script\"", "a run no person watches: three reviewer sub-agents approve the plan in place of the gate"]
         ]
       },
       "status" => {
-        usage: ["workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]"],
+        usage: ["workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]", "workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]"],
         summary: "Show the runs still going, each with its step and why it is stuck",
         about: [
           RUN_ID + " With RUN, shows that one run.",
@@ -442,14 +571,22 @@ module Workspace
           "them: no flag shows this workspace's runs still going, --name another workspace's, --project the main",
           "checkout's and its worktrees' runs, finished ones too, and --all every workspace's, finished ones too.",
           "",
-          "A run that is not moving says why: waiting_lock, waiting_you, turn_ended_incomplete, failed_check or",
-          "pane_gone, with the commands that resolve it. A parked resume shows as the flag `parked`.",
+          "A run that is not moving says why: waiting_lock, waiting_you, turn_ended_incomplete, failed_check,",
+          "budget_spent (the definition's token budget is used up), retry_backoff (a failed step's retry is waiting",
+          "out its on_fail backoff) or pane_gone, with the",
+          "commands that resolve it. A parked resume shows as the flag `parked`.",
+          "",
+          "--needs-me lists only the runs that wait for you, in every workspace, longest wait first: a gate, an open",
+          "question, a permission prompt, a failed check, a gone pane, or a stall (idle, or noted by `workflow sweep`),",
+          "each with the next command from the run's own actions. A run that is working, queued for a lock, waiting out a",
+          "backoff, parked or holding for background tasks is left out; so are finished runs. --name or --project narrows",
+          "it; --all, RUN and --table are refused. Nothing waiting prints a line and exits 0.",
           "",
           "--table shows one row per run, finished ones too at every scope, with its workspace as it is now: live, stopped",
           "or gone, and whether its config, tmux session, worktree and state directory exist (? when that could not be read).",
           "Stopped keeps its config with no tmux session; gone has no config left."
         ],
-        options: [name_opt("Only this workspace's runs (default: the current workspace)"), ["--project [NAME]", "All runs of a project, finished too (NAME, or the project of the current workspace)"], ["--all", "Every workspace's runs, finished too"], ["--table", "One row per run with its workspace's status and what still exists, finished runs too"], JSON_OPT],
+        options: [name_opt("Only this workspace's runs (default: the current workspace)"), ["--project [NAME]", "All runs of a project, finished too (NAME, or the project of the current workspace)"], ["--all", "Every workspace's runs, finished too"], ["--table", "One row per run with its workspace's status and what still exists, finished runs too"], ["--needs-me", "Only the runs still going that wait for you, in every workspace, with the next command"], JSON_OPT],
         examples: [
           ["workspace workflow status", "the runs still going in this workspace, each with its step and why it is stuck"],
           ["workspace workflow status RUN", "one run, going or finished"],
@@ -457,7 +594,163 @@ module Workspace
           ["workspace workflow status --project", "the main checkout's and its worktrees' runs, finished too"],
           ["workspace workflow status --all", "every workspace's runs, finished too"],
           ["workspace workflow status --all --table", "each run beside whether its workspace is live, stopped or gone"],
+          ["workspace workflow status --needs-me", "what is waiting for you across every workspace, with the command that moves each on"],
+          ["workspace workflow status --needs-me --json", "the same rows for a script: code, waiting_seconds and next_action"],
           ["workspace workflow status --json", "for a script: each run's state, reason and the commands that resolve it"]
+        ]
+      },
+      "attempts" => {
+        usage: ["workflow attempts RUN [--attempt-of STEP] [--json]"],
+        summary: "Show what a run recorded about each attempt",
+        about: [
+          RUN_ID,
+          "",
+          "A going or finished run, oldest attempt first: step, attempt, outcome, code, HEAD before>after, how long it",
+          "took and the main thread's tokens (in/out). --json adds the agent, session, hashes, packs, outputs, the",
+          "check that ran and each attempt's reasons. A field an older run never recorded is - (null). Waits that no",
+          "attempt owned are listed after the table (unowned_reasons). Reads the run file and writes nothing."
+        ],
+        options: [["--attempt-of STEP", "Only this step's attempts (an unknown step is refused as unknown_step)"], JSON_OPT],
+        examples: [
+          ["workspace workflow attempts RUN", "why a run took seven resumes: each attempt, how it ended and what it cost"],
+          ["workspace workflow attempts RUN --attempt-of implement", "only the implement step's attempts"],
+          ["workspace workflow attempts RUN --json", "for a script: one row per attempt, with sessions, hashes and reasons"]
+        ]
+      },
+      "audit" => {
+        usage: ["workflow audit RUN [--attempt-of STEP] [--json]"],
+        summary: "Check a run's kept evidence against the hashes recorded for it",
+        about: [
+          RUN_ID,
+          "",
+          "Compares each prompt, check log and output the engine copied to the state directory with the SHA-256 it",
+          "recorded, for a going or finished run. OK: the copy matches. CHANGED, MISSING, REPLACED: the copy no longer",
+          "holds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which",
+          "is not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a",
+          "cancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.",
+          "Reads the run file and the evidence directory and writes nothing."
+        ],
+        options: [["--attempt-of STEP", "Only this step's attempts (an unknown step is refused as unknown_step)"], JSON_OPT],
+        examples: [
+          ["workspace workflow audit RUN", "has anything the run kept been changed since it was copied?"],
+          ["workspace workflow audit RUN --attempt-of implement", "only the implement step's files"],
+          ["workspace workflow audit RUN --json", "for a script: one row per file, and clean true or false"]
+        ]
+      },
+      "stats" => {
+        usage: ["workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Show how each step of a workflow went across its runs",
+        about: [
+          "ID is a workflow definition id (see `workspace workflow show`); it need not exist now, only its runs do.",
+          "The runs of one id are counted together, even when two projects have each their own definition of it; with --name or",
+          "--project, --json `definition` and a text line say where that project's definition of the id is found now.",
+          "Covers the runs going and finished, in every workspace unless --name or --project narrows it. One row",
+          "per step, in the order the newest run ran them.",
+          "",
+          "ATTEMPTS is PASSED + FAILED: the attempts that reached the agent and ended. An attempt never delivered to the",
+          "agent did no work and is counted apart (not_delivered in --json), as is one that had not ended",
+          "(unfinished); neither is in PASSED, FAILED, MEDIAN or TOKENS/RUN. MEDIAN is the middle time of the ended",
+          "attempts. RESUMES counts `workflow resume` on the step (--from names the step it restarted at); a resume does not",
+          "say why it was needed. TOKENS/RUN is the mean of the main thread's input, output and cache-creation tokens per run,",
+          "over the runs that recorded them: an attempt with no token count (another agent than Claude Code, or a",
+          "run from before tokens were recorded) makes its run uncounted for that step, shown as - when no run",
+          "has one and with * when only some do. Sub-agents and cache reads are never counted. An attempt that ended with",
+          "no result (cancelled, or restarted by a resume) is not in ATTEMPTS, but its tokens are in TOKENS/RUN, as in the",
+          "run's budget, so a step can show tokens with no finished attempts; a note under the table says when that happens.",
+          "",
+          "--last counts the runs that started in the last DURATION (30d, 2w, 12h, 90m). Finished runs are kept up to",
+          "200, so a long window may hold fewer than were made. A run file that cannot be read is counted in",
+          "unreadable (a damaged file of another workflow too, since its workflow cannot be told) and the command exits 3 (status partial) because the figures are then incomplete."
+        ],
+        options: [
+          ["--last DURATION", "Only runs started in the last DURATION (30d, 2w, 12h, 90m); a bare number means seconds"],
+          name_opt("Only that workspace's runs"),
+          ["--project [NAME]", "Only that project's runs (NAME, or the project of the current workspace)"],
+          JSON_OPT
+        ],
+        examples: [
+          ["workspace workflow stats rpiv", "how every step of rpiv has gone, in every workspace"],
+          ["workspace workflow stats rpiv-auto-approve --last 30d", "only the runs of the last 30 days"],
+          ["workspace workflow stats rpiv --project", "only this project's runs"],
+          ["workspace workflow stats rpiv --json", "for a script: counts, median_seconds and tokens per step"]
+        ]
+      },
+      "compare" => {
+        usage: ["workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Set a workflow's runs side by side, grouped by definition or pack text",
+        about: [
+          "ID is a workflow definition id; it need not exist now. Covers the runs going and finished, in every workspace unless",
+          "--name or --project narrows it. --by definition (the default) groups runs by the sha256 of the definition they ran;",
+          "--by pack:NAME groups them by the sha256 of that pack's text in the instructions their agent was sent. A run counts in one",
+          "group. If a pack's text changed between a run's attempts, the run is in the mixed group; a run stored without the hash",
+          "is in the unknown group. A run that did not use the pack, or never delivered an attempt, is counted apart and in no group,",
+          "and a pack no run used gives no groups (exit 0), since archived runs may not have kept it.",
+          "",
+          "RUNS is every run in the group. PASS-1ST is the share of settled runs that were a first try: they completed and every",
+          "step they reached had one delivered attempt, which passed (a rejected gate, a `resume --from` rerun or a loop is a miss;",
+          "an attempt that never reached the agent is not). Settled runs: every completed run, plus a cancelled run or a run waiting",
+          "on failed_check or budget_spent that missed. A clean cancelled run and a run still going are left out. A stuck run counts",
+          "as a miss while it waits; resuming it can only make it a completed miss, never a first try.",
+          "RESUMES/RUN is the group's `workflow resume` count (every run in it) divided by its runs. SHA is the first 8 characters; --json has all 64.",
+          "",
+          "This shows a direction and proves nothing: the tasks differ between runs. The result always ends with a warning saying",
+          "so (the `warning` key of --json), and says the sample is too small while any group has fewer than 20 settled runs or there",
+          "is only one group. A run file that cannot be read exits 3 (status partial), as in `workflow stats`."
+        ],
+        options: [
+          ["--by GROUP", "definition (default) or pack:NAME, a pack's name such as plan-review"],
+          ["--last DURATION", "Only runs started in the last DURATION (30d, 2w, 12h, 90m); a bare number means seconds"],
+          name_opt("Only that workspace's runs"),
+          ["--project [NAME]", "Only that project's runs (NAME, or the project of the current workspace)"],
+          JSON_OPT
+        ],
+        examples: [
+          ["workspace workflow compare rpiv-auto-approve", "runs grouped by the definition they ran"],
+          ["workspace workflow compare rpiv-auto-approve --by pack:plan-review", "did changing that pack's text change the results?"],
+          ["workspace workflow compare rpiv --by pack:commits --last 30d --json", "for a script: groups with full shas, counts and the warning"]
+        ]
+      },
+      "sweep" => {
+        usage: ["workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]", "workflow sweep --install | --uninstall [--dry-run] [--json]", "workflow sweep --installed [--json]"],
+        summary: "One pass over the runs going: act on the ones that have stopped",
+        about: [
+          "Looks at every run still going (or one RUN, or one workspace's) and, for a step an agent should be",
+          "working on: records a pane or agent that is gone (`step_stalled`; the run keeps its checkout until you",
+          "resume or cancel it), starts a workspace's agent daemon that is not running, decides a step whose agent",
+          "ended its turn unseen, and applies the step's `on_timeout` (`interrupt` presses the agent's interrupt",
+          "keys once; `fail` fails the step; `warn`, the default, does nothing). A turn counts as unseen once the pane has",
+          "been idle for the definition's `stall`; with no `stall` and no `on_timeout`, only a gone pane or agent and",
+          "a missing daemon are acted on. A step whose line was never delivered, when the failure proves nothing",
+          "was typed (pane busy, no daemon socket), is typed again once the pane is idle, after 1, 5 and 15",
+          "minutes, up to the definition's `redeliver` times (default 3, 0 turns it off); a retried attempt does",
+          "not count against max_attempts, and when the retries run out the run waits for you. Nothing retries",
+          "unless something runs the sweep; the installed entry runs every 300 seconds, so the 1 minute backoff",
+          "can wait up to 5. A held step, a parked resume and a running check",
+          "are left alone.",
+          "",
+          "It needs no agent daemon, so a scheduler can run it. Running it twice records nothing twice. A run",
+          "that another process is changing is skipped and looked at on the next pass. A daemon that could not be",
+          "started, a failed interrupt, a missing program or an unreadable run file is a failed result (exit 3, or",
+          "1 when every result failed). See docs/README.workflow.md.",
+          "",
+          "To run it on a schedule, --install writes a per-user LaunchAgent (every 5 minutes) and loads it; it is",
+          "never done for you. --uninstall unloads and removes it, --installed says whether it is there and loaded.",
+          "The entry records the absolute Ruby, program and PATH it was installed with, so run --install again",
+          "after a Ruby or install move. A plist that is not ours is never touched."
+        ],
+        options: [["--name WORKSPACE", "Only this workspace's runs (default: every run going)"],
+          ["--dry-run", "Say what would be done and do nothing (also for --install and --uninstall; refused with --installed)"],
+          ["--install", "Install and load the launchd entry that runs the sweep every 5 minutes (opt-in)"],
+          ["--uninstall", "Unload and remove that entry"],
+          ["--installed", "Say whether that entry is installed and loaded; changes nothing"],
+          ["--json", "Print one action document (see docs/README.json.md), one result per run looked at"]],
+        examples: [
+          ["workspace workflow sweep --dry-run", "which stopped runs would a sweep act on?"],
+          ["workspace workflow sweep", "act on every run that has stopped"],
+          ["workspace workflow sweep RUN", "only this run"],
+          ["workspace workflow sweep --name app.worktree-x --json", "for a script: one result per run in that workspace"],
+          ["workspace workflow sweep --install --dry-run", "what would installing the 5-minute schedule do?"],
+          ["workspace workflow sweep --installed", "is the schedule installed and loaded?"]
         ]
       },
       "events" => {
@@ -494,7 +787,7 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]"],
+        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--json]"],
         summary: "Get a run going again",
         about: [
           RUN_ID,
@@ -511,9 +804,17 @@ module Workspace
           "`parked`, exit 0, and the caller should end its turn. The agent daemon carries it out once the turn",
           "is over, within 1 hour, else the run reads waiting_you / parked_timeout. It needs a daemon started",
           "after the upgrade (workspace daemon restart) and a pane in window 0. With a draft in a Claude pane's",
-          "input box nothing is typed and the draft stays (pane_busy, input_not_empty)."
+          "input box nothing is typed and the draft stays (pane_busy, input_not_empty).",
+          "",
+          "A resume that would start an attempt is refused (attempts_spent) when the run has made all its",
+          "max_attempts; --extra-attempts N adds N to the run's allowance and goes on. N must cover the overrun",
+          "(1 for a run exactly spent; the refusal names the least). It is ignored when the resume starts no attempt.",
+          "",
+          "A run held by its definition's budget (reason budget_spent) is refused the same way (budget_spent)",
+          "until --extra-tokens N adds N to its token budget; the total counted is a minimum, since sub-agents",
+          "and attempts with no usage are left out."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, JSON_OPT],
+        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, JSON_OPT],
         examples: [
           ["workspace workflow resume RUN", "pick a stuck run up again: its lock is asked for again, a failed step runs again"],
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
@@ -555,18 +856,21 @@ module Workspace
         ]
       },
       "reject" => {
-        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]"],
+        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--json]"],
         summary: "Turn a run's gate down",
         about: [
           RUN_ID,
           "",
           "The gated step (or --to an earlier one) runs again with the note. Refused from a pane a run is bound",
-          "to and from a process under the run's own pane, as approve is."
+          "to and from a process under the run's own pane, as approve is. It is refused (attempts_spent) when",
+          "the run has made all its max_attempts, unless --extra-attempts N adds to the allowance; N must cover the",
+          "overrun (1 for a run exactly spent). The same goes for a spent token budget (budget_spent) and",
+          "--extra-tokens N."
         ],
         options: [["--note TEXT", "Why; given to the next attempt"],
           ["--to STEP", "The step to run again (the gated step, or one before it)"],
           ["--step STEP", "The gated step you saw (current.step in status --json); refused unless the run waits there"],
-          ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], JSON_OPT],
+          ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, JSON_OPT],
         examples: [
           ["workspace workflow reject RUN --note \"Too big; split it.\"", "send the gated step back; it runs again with the note"],
           ["workspace workflow reject RUN --note \"Research the API first.\" --to research", "go back to an earlier step of rpiv instead"],
@@ -1097,7 +1401,7 @@ module Workspace
         usage: ["step status [--json]"],
         summary: "Show which workflow run, step and attempt this pane is on",
         about: [
-          "Also shows where the step's instructions are, and whether the files the step must leave exist. Run",
+          "Also shows where the step's instructions are, and whether the files the step must leave are there: written this attempt, non-empty, regular files and not links (problem names the rule broken). Run",
           "from the pane the run is bound to."
         ],
         options: [JSON_OPT],
@@ -1257,7 +1561,7 @@ module Workspace
       "list" => {
         usage: ["goal list [--all] [--json]"],
         summary: "List goals, one line each",
-        about: ["Each line has the workspace, state, stage, step and agent state."],
+        about: ["Each line has the workspace, state, stage, step and agent state. It reads every workspace at once, so a state of", "stuck (an idle or timed-out run, a gone pane, a stalled plan) shows which goals need you."],
         options: [["--all", "Include workspaces with no plan, run or spine (state none)"], JSON_OPT],
         examples: [
           ["workspace goal list", "one line per goal"],

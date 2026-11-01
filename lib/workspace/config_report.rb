@@ -344,7 +344,7 @@ module Workspace
       scope = (file.layer == "global") ? :global : :project
       declared = declared_keys(file.layer, scope)
       read_here = declared.reject { |key| unread_here?(key, file) }
-      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + default_workflow_problems(file, read_here) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
+      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + default_workflow_problems(file, read_here, scan) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
     end
 
     # The keys a file of this layer holds: those of its scope, plus any layered key that may be set in the layer.
@@ -421,13 +421,14 @@ module Workspace
 
     # A `workflows.default` or `workflows.by_ref.<kind>` that names no workflow: `workflow start` would answer
     # `unknown_workflow`. A value that fails the id rule is left to `value_problems`.
-    def default_workflow_problems(file, declared)
+    def default_workflow_problems(file, declared, scan)
       return [] unless @catalog
+      project = WorkflowCatalog.project_of(scan.parent || scan.workspace)
       declared.filter_map do |key|
         next unless key.name == "workflows.default" || key.name.start_with?("workflows.by_ref.")
         id = dig(file.data, key.name.split("."))
         next unless id.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(id)
-        next if @catalog.known?(id)
+        next if @catalog.known?(id, project: project)
         located(file, "warning", "unknown_default_workflow", key.name,
           "#{key.name} names '#{id}', and no workflow has that id. List them with: workspace workflow show")
       end

@@ -42,7 +42,44 @@ module Workspace
       source
     end
 
+    # The program a scheduler runs: `bin/workspace` of the Homebrew `opt` keg, else of the
+    # checkout. The same worktree rule as {#resolve}, with its own error code and no skills check.
+    #
+    # @return [String] an absolute path to an existing file
+    # @raise [Workspace::Error] `sweep_source_worktree` from a linked worktree, `sweep_program_missing` when no `bin/workspace` with a Ruby shebang is there
+    def executable
+      real = begin
+        File.realpath(@workspace_dir)
+      rescue SystemCallError
+        raise program_missing([File.join(@workspace_dir, "bin", "workspace")])
+      end
+      brew = CELLAR.match(real)
+      if brew && File.directory?("#{brew[1]}/opt/#{brew[2]}/libexec")
+        candidates = ["#{brew[1]}/opt/#{brew[2]}/libexec/bin/workspace"]
+      else
+        raise sweep_worktree(real) if linked_worktree?(real)
+        candidates = [File.join(real, "bin", "workspace")]
+      end
+      candidates.find { |each| ruby_script?(each) } || raise(program_missing(candidates))
+    end
+
     private
+
+    def sweep_worktree(dir)
+      Error.new("#{dir} is a linked git worktree, so a schedule pointing into it would break once it is removed. " \
+        "Run it from the main checkout or from a Homebrew install.", code: "sweep_source_worktree", details: {"path" => dir})
+    end
+
+    # `ruby <file>` can only run a Ruby script: a shell wrapper (Homebrew's own `bin/` stub) is not one.
+    def ruby_script?(file)
+      File.file?(file) && File.open(file, &:gets).to_s.match?(/\A#!.*ruby/)
+    rescue SystemCallError
+      false
+    end
+
+    def program_missing(paths)
+      Error.new("This install has no bin/workspace (looked in #{paths.join(", ")}).", code: "sweep_program_missing", details: {"paths" => paths})
+    end
 
     # A linked worktree's `.git` is a file naming a directory that holds `commondir`.
     # A `.git` file that can't be read counts as one: refusing is the safe answer.

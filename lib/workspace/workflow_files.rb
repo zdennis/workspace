@@ -61,13 +61,15 @@ module Workspace
     # @param text [String] the new definition's text
     # @param if_sha256 [String] the sha256 of the raw bytes the caller last read
     # @param dry_run [Boolean] check, under the lock, and write no definition
+    # @param project [String, nil] the project the caller is in, to name a project definition of the id
     # @return [Hash{String=>Object}] "path" and "sha256" (of the new text's bytes)
     # @raise [Workspace::Error] code `invalid_workflow` for a bad id, `builtin_workflow` (only a preset has the id),
-    #   `unknown_workflow`, `stale_workflow` (details "sha256" is the current file's)
-    def update(id, text, if_sha256:, dry_run: false)
+    #   `unknown_workflow` (none, or only a project's: details "scope" is "project"), `stale_workflow` (details "sha256"
+    #   is the current file's; "project_path" and "project_sha256" are a project definition's that hides it)
+    def update(id, text, if_sha256:, dry_run: false, project: nil)
       target = path(id)
       with_lock(id) do
-        raise_missing(id) unless File.exist?(target) || File.symlink?(target)
+        raise_missing(id, "update", project) unless File.exist?(target) || File.symlink?(target)
         current = current_sha256(target)
         unless current && current == if_sha256.to_s.strip.downcase
           hint = if current
@@ -77,8 +79,10 @@ module Workspace
           else
             " The file can't be read; `workflow remove #{id}` or fixing the file by hand is the way out."
           end
-          raise Workspace::Error.new("The workflow file #{target} changed: its sha256 is #{current || "unreadable"}, not #{if_sha256}. Nothing was changed.#{hint}",
-            code: "stale_workflow", details: {"workflow" => id, "path" => target, "sha256" => current})
+          hidden = hiding_project_file(id, project)
+          other = hidden ? " The project's own file #{hidden["path"]} (sha256 #{hidden["sha256"] || "unreadable"}) hides this one in #{project}, and `workflow show #{id} --source` reads that file; this command edits only #{target}." : ""
+          raise Workspace::Error.new("The workflow file #{target} changed: its sha256 is #{current || "unreadable"}, not #{if_sha256}. Nothing was changed.#{hint}#{other}",
+            code: "stale_workflow", details: {"workflow" => id, "path" => target, "sha256" => current}.merge(hidden ? {"project_path" => hidden["path"], "project_sha256" => hidden["sha256"]} : {}))
         end
         write(id, target, text) unless dry_run
         {"path" => target, "sha256" => Digest::SHA256.hexdigest(text.b)}
@@ -91,19 +95,22 @@ module Workspace
     #
     # @param id [String]
     # @param dry_run [Boolean] check, under the lock, and delete nothing
-    # @return [Hash{String=>Object}] "path" and "preset" (true when a preset of the id is in effect once the file is gone)
+    # @param project [String, nil] the project the caller is in
+    # @return [Hash{String=>Object}] "path", "project_path" (the project definition of the id that stays in effect in +project+,
+    #   else nil) and "preset" (true when a preset of the id is in effect in +project+ once the file is gone)
     # @raise [Workspace::Error] code `invalid_workflow` for a bad id or a directory at the path, `builtin_workflow`
     #   (only a preset has the id), `unknown_workflow`
-    def remove(id, dry_run: false)
+    def remove(id, dry_run: false, project: nil)
       target = path(id)
       with_lock(id) do
-        raise_missing(id, "remove") unless File.exist?(target) || File.symlink?(target)
+        raise_missing(id, "remove", project) unless File.exist?(target) || File.symlink?(target)
         if File.directory?(target) && !File.symlink?(target)
           raise Workspace::Error.new("#{target} is a directory, not a workflow file; nothing was removed. Remove it by hand.",
             code: "invalid_workflow", details: {"workflow" => id, "path" => target})
         end
         File.unlink(target) unless dry_run
-        {"path" => target, "preset" => File.file?(File.join(@config.builtin_workflows_dir, "#{id}.yml"))}
+        hidden = project_file(id, project)
+        {"path" => target, "project_path" => hidden, "preset" => hidden.nil? && File.file?(File.join(@config.builtin_workflows_dir, "#{id}.yml"))}
       end
     end
 
@@ -111,22 +118,38 @@ module Workspace
     # before asking a person anything. `remove` still decides under the lock.
     #
     # @param id [String]
+    # @param project [String, nil] the project the caller is in
     # @return [void]
     # @raise [Workspace::Error] code `invalid_workflow`, `builtin_workflow`, `unknown_workflow`
-    def ensure_present(id)
+    def ensure_present(id, project: nil)
       target = path(id)
-      raise_missing(id, "remove") unless File.exist?(target) || File.symlink?(target)
+      raise_missing(id, "remove", project) unless File.exist?(target) || File.symlink?(target)
     end
 
     private
 
-    def raise_missing(id, verb = "update")
+    # The path of the project's own definition of the id, when +project+ has one.
+    def project_file(id, project)
+      found = project && @catalog.locate(id, project: project)
+      found.last if found&.first == "project"
+    end
+
+    def hiding_project_file(id, project)
+      file = project_file(id, project)
+      file && {"path" => file, "sha256" => current_sha256(file)}
+    end
+
+    def raise_missing(id, verb = "update", project = nil)
+      if (file = project_file(id, project))
+        raise Workspace::Error.new("#{id} is a definition of the project #{project} at #{file}, not a file in #{dir}; `workflow #{verb}` edits only #{dir}, so change the project's file by hand.",
+          code: "unknown_workflow", details: {"workflow" => id, "scope" => "project", "project" => project, "path" => file})
+      end
       if @catalog.locate(id)&.first == "builtin"
         advice = (verb == "update") ? "save a copy with `workflow add #{id} PATH` instead" : "a preset can't be removed"
         raise Workspace::Error.new("#{id} is a preset and has no file of yours to #{verb}; #{advice}.",
           code: "builtin_workflow", details: {"workflow" => id})
       end
-      @catalog.find(id) # raises unknown_workflow, naming the known ids
+      @catalog.find(id, project: project) # raises unknown_workflow, naming the known ids
       raise Workspace::Error.new("No workflow file for #{id}.", code: "unknown_workflow", details: {"workflow" => id})
     end
 
