@@ -31,6 +31,7 @@ module Workspace
       # @param audit [Workspace::WorkflowAudit, nil] checks a run's evidence copies against their hashes (`audit`)
       # @param sweep [Workspace::WorkflowSweep, nil] looks at the runs still going and acts on the stopped ones (`sweep`)
       # @param needs_me [Workspace::WorkflowNeedsMe, nil] narrows the runs to the ones that wait for a person (`status --needs-me`)
+      # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -39,7 +40,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, pid: Process.pid,
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -53,6 +54,7 @@ module Workspace
         @sweep = sweep
         @schedule = schedule
         @needs_me = needs_me
+        @stats = stats
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -318,6 +320,37 @@ module Workspace
         result["unowned_reasons"].each do |reason|
           @output.puts "Reason outside any attempt: #{[reason["step"], reason["code"], reason["since"], reason["until"] || "now"].map { |each| TerminalText.escape(each) }.join("  ")}"
         end
+      end
+
+      STATS_HEADER = %w[STEP ATTEMPTS PASSED FAILED MEDIAN RESUMES TOKENS/RUN].freeze
+
+      # Prints how each step of a workflow went across its runs, going and finished (see {Workspace::WorkflowStats}
+      # for what every figure means). Reads the run files and their histories and writes nothing.
+      #
+      # @param workflow [String] a definition id; it need not exist now, only the runs matter
+      # @param last [Numeric, nil] only runs started in the last this many seconds
+      # @param last_text [String, nil] the `--last` text, to say the window back
+      # @param scope [Workspace::StatusScope::Scope, nil] narrows to one workspace or project; nil is every workspace
+      # @param json [Boolean]
+      # @return [Hash] `exit_code` 3 when a run file could not be read (the figures are then incomplete), else 0
+      def stats(workflow:, last: nil, last_text: nil, scope: nil, json: false)
+        raise Workspace::Error, "workflow stats is not available: no stats reader was wired" unless @stats
+        include = if scope&.workspace
+          ->(run) { run["workspace"] == scope.workspace }
+        elsif scope&.project
+          ->(run) { @status.in_project?(run, scope.project) }
+        end
+        result = @stats.read(workflow: workflow, last: last, include: include)
+        partial = result["unreadable"].positive?
+        if json
+          document("workflow" => workflow, "status" => partial ? "partial" : "ok", "last" => last_text,
+            "since" => last && (@clock.call - last).utc.iso8601, "workspace" => scope&.workspace, "project" => scope&.project&.name,
+            "runs" => result["runs"], "unreadable" => result["unreadable"], "undated" => result["undated"],
+            "unattributed_resumes" => result["unattributed_resumes"], "steps" => result["steps"])
+        else
+          print_stats(workflow, last_text, result)
+        end
+        {exit_code: partial ? 3 : 0}
       end
 
       # Checks the evidence copies a run kept against the hashes recorded for them, going or
@@ -627,6 +660,48 @@ module Workspace
         end
         return unless summary
         @output.puts "Looked at #{rows.size} run#{"s" unless rows.size == 1}; #{shown.empty? ? "nothing to report" : "#{shown.size} reported above"}."
+      end
+
+      def print_stats(workflow, last_text, result)
+        window = last_text ? " started in the last #{TerminalText.escape(last_text)}" : ""
+        name = TerminalText.escape(workflow)
+        steps = result["steps"]
+        if result["runs"].zero?
+          @output.puts "No runs of #{name}#{window}."
+        else
+          rows = [STATS_HEADER] + steps.map { |each| stats_cells(each).map { |cell| TerminalText.escape(cell) } }
+          widths = rows.transpose.map { |column| column.map(&:length).max }
+          rows.each { |line| @output.puts line.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
+          @output.puts "#{result["runs"]} #{(result["runs"] == 1) ? "run" : "runs"} of #{name}#{window}."
+          undelivered = steps.sum { |each| each["not_delivered"] }
+          @output.puts "#{undelivered} attempt#{"s" unless undelivered == 1} never reached the agent and #{(undelivered == 1) ? "is" : "are"} left out." if undelivered.positive?
+          unfinished = steps.sum { |each| each["unfinished"] }
+          @output.puts "#{unfinished} attempt#{"s" unless unfinished == 1} had not ended and #{(unfinished == 1) ? "is" : "are"} left out." if unfinished.positive?
+          @output.puts "#{result["unattributed_resumes"]} resume#{"s" unless result["unattributed_resumes"] == 1} named no step and #{(result["unattributed_resumes"] == 1) ? "is" : "are"} not in the table." if result["unattributed_resumes"].positive?
+          counted_unfinished = steps.sum { |each| each["tokens_from_unfinished"] }
+          @output.puts "TOKENS/RUN also counts the tokens of #{counted_unfinished} attempt#{"s" unless counted_unfinished == 1} that ended with no result (cancelled, or restarted by a resume), which is why a step can show tokens with no finished attempts." if counted_unfinished.positive?
+          partial_tokens = steps.any? { |each| each["tokens"]["runs_uncounted"].positive? }
+          @output.puts "TOKENS/RUN is the mean over the runs that recorded tokens; * marks a step where some runs recorded none, - where none did." if partial_tokens
+        end
+        @output.puts "Warning: #{result["undated"]} run#{"s" unless result["undated"] == 1} with no start time left out of the window." if result["undated"].positive?
+        @output.puts "Warning: #{result["unreadable"]} run file#{"s" unless result["unreadable"] == 1} could not be read; the figures are incomplete." if result["unreadable"].positive?
+      end
+
+      def stats_cells(row)
+        tokens = row["tokens"]
+        mean = if tokens["mean"].nil? then "-"
+        else
+          text = format_tokens(tokens["mean"])
+          tokens["runs_uncounted"].positive? ? "#{text}*" : text
+        end
+        median = row["median_seconds"] ? Duration.humanize(row["median_seconds"]) : "-"
+        [row["step"], row["attempts"], row["passed"], row["failed"], median, row["resumes"], mean].map(&:to_s)
+      end
+
+      def format_tokens(count)
+        return count.to_s if count < 1000
+        return "#{(count / 1000.0).round}k" if count < 999_500
+        "#{(count / 1_000_000.0).round(1)}M"
       end
 
       NEEDS_ME_HEADER = %w[RUN WORKSPACE STEP WAITING WHY DO].freeze

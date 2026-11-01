@@ -320,6 +320,7 @@ require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
 require_relative "workspace/workflow_needs_me"
+require_relative "workspace/workflow_stats"
 require_relative "workspace/workflow_run_health"
 require_relative "workspace/workflow_sweep"
 require_relative "workspace/sweep_schedule"
@@ -659,6 +660,7 @@ module Workspace
       sweep: workflow_sweep,
       schedule: sweep_schedule,
       needs_me: workflow_needs_me,
+      stats: WorkflowStats.new(store: workflow_store),
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,

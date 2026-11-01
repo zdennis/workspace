@@ -19,6 +19,7 @@ workspace workflow events RUN [--since N] [--json]
 workspace workflow files RUN [--json]
 workspace workflow attempts RUN [--attempt-of STEP] [--json]
 workspace workflow audit RUN [--attempt-of STEP] [--json]
+workspace workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
@@ -44,6 +45,7 @@ workspace step status [--json]
 | `workflow events` | A run's history (going or finished), one line per event, oldest first. `--since N` gives only the events after line N; at most 1000 at a time. See [Reading a run's events](#reading-a-runs-events) |
 | `workflow attempts` | What a run recorded about each attempt, going or finished: outcome, failure code, HEAD before and after, hashes, packs, outputs, check, agent, session, tokens and reasons. Reads the run file and writes nothing. See [Reading a run's attempts](#reading-a-runs-attempts) |
 | `workflow audit` | Check the evidence copies a run kept against the hashes recorded for them, going or finished. Exits 1 when a copy changed, is gone or was replaced. Reads the run file and the evidence directory and writes nothing. See [Auditing a run's evidence](#auditing-a-runs-evidence) |
+| `workflow stats` | How each step of a workflow went across its runs, going and finished, in every workspace unless `--name` or `--project` narrows it: attempts, passes, failures, median time, resumes and tokens per run. `--last DURATION` keeps the runs started in that window. Reads the run files and writes nothing. See [Step statistics](#step-statistics) |
 | `workflow files` | The files a run keeps: each attempt's prompt, check log and proof logs and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
 | `workflow sweep` | One pass over the runs going: record a pane or agent that is gone, start an agent daemon that is not running, decide a step whose agent ended its turn unseen, and apply a step's `on_timeout`. Needs no agent daemon. See [Sweeping stopped runs](#sweeping-stopped-runs) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to. Run from the pane it would type into, it is [parked](#resuming-from-the-runs-own-pane) (outcome `parked`) and carried out after the agent ends its turn |
@@ -464,6 +466,37 @@ Rows come from the definition's steps in order, then any other step the run reco
 `workflow attempts --json` prints `{"schema_version":1,"ok":true,"run":ID,"attempts":[...],"unowned_reasons":[...]}`. Each attempt holds `step`, `attempt` (the attempt's `n`), `outcome` (`passed`, `failed`, `not_delivered`, or `null` while it is open), `code`, `started_at`, `ended_at`, `agent`, `session`, `head`, `definition_sha256`, `prompt_sha256`, `packs`, `outputs`, `check`, `usage`, `evidence`, `reported`, `proofs`, `reasons` and `redelivered`, with the values the run file stores under those keys; `check` is the stored check's `command`, `log`, `started_at`, `ended_at`, `exit_code` and `timed_out`; `reported` is the agent's `step done` report (`status`, `summary`, `code`, `at`) and `proofs` the rows of the `require:` proofs that ran outside the lock (see [What an attempt records](#what-an-attempt-records)). Every key is always present and `null` when the run never recorded it (`reasons` too: an attempt with no reason history has `null`, not `[]`). `redelivered` is `true` for an attempt that ended `not_delivered` and was typed again by `workflow sweep` (it does not count against `max_attempts`; the text table adds "(retried)" to its outcome), else `null`. `code` is the code the attempt failed with (an engine code such as `require_commits` or `check_failed`, or the agent's own `step done --code`), `null` for an attempt that did not fail and for any attempt stored before this key existed. `unowned_reasons` is the run's own `reasons` list: the waits that had no attempt to own them, each `{step, code, since, until}`, oldest first; with `--attempt-of` only that step's. They are not attached to rows, since a wait before the first attempt has no row to sit on; a reader joins them to attempts by `step` and time.
 
 Needs `workflow` 12 in `capabilities` (`redelivered`: 17).
+
+### Step statistics
+
+`workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]` shows, for each step of a workflow, how its attempts have gone across the runs of definition `ID`:
+
+```
+$ workspace workflow stats rpiv-auto-approve --last 30d
+STEP         ATTEMPTS  PASSED  FAILED  MEDIAN  RESUMES  TOKENS/RUN
+research           10      10       0  6m            2  310k
+plan               24      23       1  11m           3  420k
+plan_review        26      10      16  9m            9  640k*
+26 runs of rpiv-auto-approve started in the last 30d.
+```
+
+It reads the run files, going and finished, and writes nothing. `ID` needs no definition on disk: only the runs are read, so the figures of a deleted definition still show. An `ID` with no runs prints `No runs of ID.` (exit 0; `--json` gives empty `steps`). With no flag every workspace is covered; `--name` or `--project` narrows it as in `workflow status`, and `--all` is refused as not needed. Rows follow the step order of the newest run's definition, then any step only older runs had; a step is the same step across definition versions when its id is the same.
+
+`--last` takes `30d`, `2w`, `12h`, `90m` (a bare number means seconds; days and weeks are whole numbers; the forms `90`, `90s`, `5m`, `1h` also work). Only this window takes days and weeks; config durations and timeouts still take seconds, minutes and hours. A run is in the window when it started (`created_at`) at or after the cutoff, a run that started exactly at the cutoff included. A run with no readable start time is left out of a window and counted in `undated`. A bad value is a usage error. Finished runs are kept up to 200, so a long window may hold fewer runs than were made, and a run archived before an item was recorded shows only what it kept.
+
+| Column | Meaning |
+|--------|---------|
+| `ATTEMPTS` | `PASSED` + `FAILED`: attempts that reached the agent and ended |
+| `PASSED`, `FAILED` | By the attempt's stored `outcome` |
+| `MEDIAN` | The middle of `ended_at - started_at` over those attempts that have both times |
+| `RESUMES` | `run_resumed` events in the runs' histories, on the step each resumed (`resume --from STEP` counts on `STEP`, any other on the step the run stood at). A resume does not record why it was needed, and many followed a failed delivery. One naming no step is `unattributed_resumes` in `--json` and is noted under the table |
+| `TOKENS/RUN` | The mean, per run, of the step's tokens: input, output and cache creation tokens of the main thread, the count `budget:` uses, over the same attempts the budget counts: passed and failed ones, and one a cancel or `resume --from` ended with no outcome (its tokens were spent), but not one still going or never delivered. Cache reads and sub-agents are never counted |
+
+Where other attempts go: an attempt that was never delivered to the agent (`not_delivered`, or one marked `redelivered`) did no work, so it is counted apart (`not_delivered`) and left out of every column; an attempt with no outcome (still going, or replaced without ending), or any other outcome, is counted apart as `unfinished` and also left out of the other columns (its tokens are still counted, as above, so a step whose only attempt was cancelled shows ATTEMPTS 0 and a token figure; `tokens_from_unfinished` in `--json` counts those attempts, and the text output adds a note under the table when there are any). The text output notes how many of each were left out.
+
+`TOKENS/RUN` never hides a missing count. An attempt whose `usage` is null (another agent than Claude Code, a run from before tokens were recorded, or a heavy attempt the transcript tail could not cover) makes its whole run uncounted for that step. The mean is over the counted runs only; `*` after it marks a step where some runs were left out, and `-` a step where no run was counted. `--json` gives `runs_counted` and `runs_uncounted` for every step.
+
+`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"runs":N,"unreadable":N,"undated":N,"unattributed_resumes":N,"steps":[...]}`, each step `{"step","attempts","passed","failed","not_delivered","unfinished","median_seconds":N-or-null,"resumes","tokens_from_unfinished","tokens":{"mean":N-or-null,"runs_counted","runs_uncounted"}}`. A run file that cannot be read (the runs directory or the archive) counts in `unreadable`, since it cannot be told which workflow it belongs to: a damaged file of another workflow makes `partial` too; then `status` is `partial`, the exit code is 3 and the text output warns, because the figures are incomplete. Needs `workflow` 23 in `capabilities`.
 
 ### Auditing a run's evidence
 

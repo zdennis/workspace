@@ -513,6 +513,42 @@ module Workspace
           ["workspace workflow audit RUN --json", "for a script: one row per file, and clean true or false"]
         ]
       },
+      "stats" => {
+        usage: ["workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Show how each step of a workflow went across its runs",
+        about: [
+          "ID is a workflow definition id (see `workspace workflow show`); it need not exist now, only its runs do.",
+          "Covers the runs going and finished, in every workspace unless --name or --project narrows it. One row",
+          "per step, in the order the newest run ran them.",
+          "",
+          "ATTEMPTS is PASSED + FAILED: the attempts that reached the agent and ended. An attempt never delivered to the",
+          "agent did no work and is counted apart (not_delivered in --json), as is one that had not ended",
+          "(unfinished); neither is in PASSED, FAILED, MEDIAN or TOKENS/RUN. MEDIAN is the middle time of the ended",
+          "attempts. RESUMES counts `workflow resume` on the step (--from names the step it restarted at); a resume does not",
+          "say why it was needed. TOKENS/RUN is the mean of the main thread's input, output and cache-creation tokens per run,",
+          "over the runs that recorded them: an attempt with no token count (another agent than Claude Code, or a",
+          "run from before tokens were recorded) makes its run uncounted for that step, shown as - when no run",
+          "has one and with * when only some do. Sub-agents and cache reads are never counted. An attempt that ended with",
+          "no result (cancelled, or restarted by a resume) is not in ATTEMPTS, but its tokens are in TOKENS/RUN, as in the",
+          "run's budget, so a step can show tokens with no finished attempts; a note under the table says when that happens.",
+          "",
+          "--last counts the runs that started in the last DURATION (30d, 2w, 12h, 90m). Finished runs are kept up to",
+          "200, so a long window may hold fewer than were made. A run file that cannot be read is counted in",
+          "unreadable (a damaged file of another workflow too, since its workflow cannot be told) and the command exits 3 (status partial) because the figures are then incomplete."
+        ],
+        options: [
+          ["--last DURATION", "Only runs started in the last DURATION (30d, 2w, 12h, 90m); a bare number means seconds"],
+          name_opt("Only that workspace's runs"),
+          ["--project [NAME]", "Only that project's runs (NAME, or the project of the current workspace)"],
+          JSON_OPT
+        ],
+        examples: [
+          ["workspace workflow stats rpiv", "how every step of rpiv has gone, in every workspace"],
+          ["workspace workflow stats rpiv-auto-approve --last 30d", "only the runs of the last 30 days"],
+          ["workspace workflow stats rpiv --project", "only this project's runs"],
+          ["workspace workflow stats rpiv --json", "for a script: counts, median_seconds and tokens per step"]
+        ]
+      },
       "sweep" => {
         usage: ["workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]", "workflow sweep --install | --uninstall [--dry-run] [--json]", "workflow sweep --installed [--json]"],
         summary: "One pass over the runs going: act on the ones that have stopped",

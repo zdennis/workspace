@@ -4,6 +4,9 @@ module Workspace
     UNITS = {"" => 1, "s" => 1, "m" => 60, "h" => 3600}.freeze
     private_constant :UNITS
 
+    WINDOW_UNITS = {"d" => 86_400, "w" => 604_800}.freeze
+    private_constant :WINDOW_UNITS
+
     # Parses a duration string or number into seconds.
     # Supports: "20", "20s", "5m", "1h" (a plain number is seconds).
     #
@@ -14,6 +17,20 @@ module Workspace
       match = /\A(\d+(?:\.\d+)?)\s*([smh]?)\z/i.match(value.to_s.strip)
       raise ArgumentError, "expected a duration like \"20\", \"20s\", \"5m\" or \"1h\", got #{value.inspect}" unless match
       match[1].to_f * UNITS.fetch(match[2].downcase)
+    end
+
+    # Parses a look-back window: everything {.parse} takes, plus whole days
+    # ("30d") and weeks ("2w"). Only window options use it; the durations
+    # that config keys and timeouts hold stay seconds, minutes and hours.
+    #
+    # @param value [String, Numeric] window string or number
+    # @return [Numeric] seconds, always greater than 0
+    # @raise [ArgumentError] if value isn't a window, or isn't positive
+    def self.parse_window(value)
+      days = /\A(\d+)\s*([dw])\z/i.match(value.to_s.strip)
+      seconds = days ? days[1].to_i * WINDOW_UNITS.fetch(days[2].downcase) : parse(value)
+      raise ArgumentError, "must be greater than 0, got #{value.inspect}" unless seconds.positive?
+      seconds
     end
 
     # Parses a duration string or number into seconds, requiring it be

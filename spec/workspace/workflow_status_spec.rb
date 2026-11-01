@@ -1024,6 +1024,18 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(result["warnings"].join).to include("Workflow run wr_2 can't be shown")
     end
 
+    it "says by #in_project? whether one stored run belongs, by member, stored project or worktree prefix" do
+      expect(status.in_project?({"workspace" => "app"}, project)).to be true
+      expect(status.in_project?({"workspace" => "elsewhere", "project" => "app"}, project)).to be true
+      expect(status.in_project?({"workspace" => "app.worktree-y"}, project)).to be true
+      expect(status.in_project?({"workspace" => "other", "project" => "other"}, project)).to be false
+    end
+
+    it "does not match a run with no workspace to a member with none" do
+      bare = Workspace::ProjectCatalog::Project.new(name: "app", id: "/src/app/.git", path: "/src/app", vcs: "git", members: [member.new(workspace: nil, kind: "main")])
+      expect(status.in_project?({"workspace" => nil}, bare)).to be false
+    end
+
     it "leaves #runs for a workspace on the runs still going, oldest first" do
       create(workspace: "app", bound: false, created_at: "2026-10-04T12:10:00Z")
       create(workspace: "app", bound: false, created_at: "2026-10-04T12:05:00Z")

@@ -39,7 +39,7 @@ module Workspace
       run["steps"].each do |id, state|
         running = (live && id == run["current"] && %w[running checking].include?(state["state"])) ? Array(state["attempts"]).last : nil
         Array(state["attempts"]).each do |attempt|
-          next unless attempt.is_a?(Hash) && attempt["outcome"] != "not_delivered" && !attempt.equal?(running)
+          next unless attempt.is_a?(Hash) && counted_attempt?(attempt) && !attempt.equal?(running)
           tokens = tokens_of(attempt["usage"])
           if tokens
             used += tokens
@@ -56,6 +56,13 @@ module Workspace
        "spent" => spent, "needed" => needed, "suggested" => needed && (needed.fdiv(ROUND_TO).ceil * ROUND_TO)}
     rescue NoMethodError, TypeError
       nil
+    end
+
+    # @param attempt [Hash] a stored attempt
+    # @return [Boolean] whether the attempt's tokens count toward a run: every attempt but one never delivered
+    #   (no outcome counts too: a cancel, or a `resume --from`, ends an attempt without one)
+    def self.counted_attempt?(attempt)
+      attempt["outcome"] != "not_delivered"
     end
 
     # @param usage [Object] an attempt's stored `usage`

@@ -82,10 +82,12 @@ module Workspace
     # steps every verb goes by. The lock store counts such a run as alive
     # (see {RunLiveness}), so what it held stays held.
     #
+    # @param archived [Boolean] also check the finished runs' files
     # @return [Array<String>] their paths, sorted
-    def unreadable
+    def unreadable(archived: false)
       # A run that finished between the listing and the read is gone, not unreadable.
-      Dir.glob(File.join(@dir, "*.json")).reject { |path| read(path) }.select { |path| File.exist?(path) }.sort
+      dirs = archived ? [@dir, @archive_dir] : [@dir]
+      dirs.flat_map { |dir| Dir.glob(File.join(dir, "*.json")) }.reject { |path| read(path) }.select { |path| File.exist?(path) }.sort
     end
 
     # Changes one run: yields it under the run's lock, then stores what the

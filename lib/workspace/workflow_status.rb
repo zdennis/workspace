@@ -81,12 +81,18 @@ module Workspace
     # @param project [#name, #members] a {Workspace::ProjectCatalog::Project}
     # @return [Hash] "runs" and "warnings", as {#runs}
     def in_project(project)
-      names = project.members.filter_map(&:workspace)
-      stored = (@store.active + @store.archived).select do |run|
-        names.include?(run["workspace"]) || run["project"] == project.name ||
-          WorkspaceLineage.split_worktree_name(run["workspace"])&.first == project.name
-      end
+      stored = (@store.active + @store.archived).select { |run| in_project?(run, project) }
       present_all(stored)
+    end
+
+    # Whether a stored run belongs to a project, by the rules {#in_project} lists.
+    #
+    # @param run [Hash] a stored run
+    # @param project [#name, #members] a {Workspace::ProjectCatalog::Project}
+    # @return [Boolean]
+    def in_project?(run, project)
+      project.members.filter_map(&:workspace).include?(run["workspace"]) || run["project"] == project.name ||
+        WorkspaceLineage.split_worktree_name(run["workspace"])&.first == project.name
     end
 
     # @param id [String] a run id

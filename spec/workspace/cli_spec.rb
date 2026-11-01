@@ -6781,7 +6781,7 @@ RSpec.describe Workspace::CLI do
       it "refuses --project after --prompt TEXT as a flag of another subcommand" do
         expect { cli.run(["workflow", "start", "rpiv", "--prompt", "add a script", "--project"]) }.to raise_error(FakeSystemExit)
 
-        expect(error_output.string).to include("--project is for `workflow status`.")
+        expect(error_output.string).to include("--project is for `workflow status` and `workflow stats`.")
         expect(start_command.calls).to be_empty
       end
 
@@ -7127,7 +7127,7 @@ RSpec.describe Workspace::CLI do
 
     it "refuses --project on the other subcommands, and lists it in the help beside --prompt" do
       expect { cli.run(["workflow", "show", "rpiv", "--project"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("--project is for `workflow status`.")
+      expect(error_output.string).to include("--project is for `workflow status` and `workflow stats`.")
 
       cli.run(["workflow", "--help"])
       expect(output.string).to include("--project [NAME]").and include("--prompt TEXT")
@@ -7403,7 +7403,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, sweep, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, stats, sweep, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,

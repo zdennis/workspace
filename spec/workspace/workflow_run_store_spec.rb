@@ -226,6 +226,14 @@ RSpec.describe Workspace::WorkflowRunStore do
       File.write(File.join(runs_dir, "wr_2.json"), JSON.generate({"id" => "wr_3", "state" => "waiting", "workspace" => "app"}.merge(whole)))
     end
 
+    it "lists an unreadable archived file only when asked for the archive too" do
+      FileUtils.mkdir_p(archive_dir)
+      File.write(File.join(archive_dir, "wr_9.json"), "{not json")
+
+      expect(store.unreadable).not_to include(File.join(archive_dir, "wr_9.json"))
+      expect(store.unreadable(archived: true)).to include(File.join(archive_dir, "wr_9.json"), File.join(runs_dir, "wr_1.json"))
+    end
+
     it "is listed by path, and is not among the runs" do
       expect(store.unreadable).to eq([File.join(runs_dir, "wr_1.json"), File.join(runs_dir, "wr_2.json")])
       expect(store.active).to eq([])
