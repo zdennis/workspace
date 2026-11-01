@@ -455,6 +455,34 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(Dir.children(archive_dir).sort).to eq(%w[wr_2.events.jsonl wr_2.json wr_3.events.jsonl wr_3.json])
   end
 
+  it "removes the evidence of a run it prunes and of no other" do
+    stub_const("#{described_class}::ARCHIVE_LIMIT", 1)
+    evidence = Workspace::WorkflowEvidence.new(dir: File.join(@dir, "ev"))
+    pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence)
+    3.times do |n|
+      pruning.create({"state" => "running"}.merge(whole))
+      FileUtils.mkdir_p(File.join(@dir, "ev", "wr_#{n + 1}"))
+    end
+    FileUtils.mkdir_p(File.join(@dir, "ev", "wr_other"))
+    pruning.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+    pruning.update("wr_2") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:02Z") }
+
+    expect(Dir.children(File.join(@dir, "ev")).sort).to eq(%w[wr_2 wr_3 wr_other])
+  end
+
+  it "removes a pruned run's evidence before its archive file, so a crash leaves it prunable" do
+    stub_const("#{described_class}::ARCHIVE_LIMIT", 0)
+    seen = []
+    archive = archive_dir
+    evidence = Object.new
+    evidence.define_singleton_method(:remove) { |id| seen << File.exist?(File.join(archive, "#{id}.json")) }
+    pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence)
+    pruning.create({"state" => "running"}.merge(whole))
+    pruning.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+
+    expect(seen).to eq([true])
+  end
+
   it "reports a store it can't write as an error" do
     FileUtils.mkdir_p(File.dirname(runs_dir))
     File.write(runs_dir, "a file where the directory should be")

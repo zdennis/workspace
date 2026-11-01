@@ -2729,6 +2729,73 @@ RSpec.describe Workspace::WorkflowEngine do
     end
   end
 
+  describe "evidence copies" do
+    let(:evidence_dir) { File.join(@dir, "state", ".workflows", "evidence") }
+    let(:evidence) { Workspace::WorkflowEvidence.new(dir: evidence_dir) }
+    subject(:engine) { engine_with(attempt_record: Workspace::WorkflowAttemptRecord.new(guard: guard, evidence: evidence)) }
+    let(:steps_dir) { File.join(worktree, ".workflow", "wr_1", "steps") }
+    let(:copies) { File.join(evidence_dir, "wr_1") }
+
+    def attempts(step)
+      store.find("wr_1")["steps"][step]["attempts"]
+    end
+
+    it "keeps the prompt of an attempt that was not delivered, and nothing else" do
+      panes.kick_result = {ok: false, code: "not_delivered", message: "no", reason: "prompt_unconfirmed"}
+      start
+
+      entries = attempts("plan").last["evidence"]
+      expect(entries.map { |e| [e["kind"], e["name"]] }).to eq([["prompt", "plan.1.prompt.md"]])
+      expect(File.read(File.join(copies, "plan.1.prompt.md"))).to eq(File.read(File.join(steps_dir, "plan.1.prompt.md")))
+    end
+
+    it "copies the prompt before delivery, so an agent that rewrites it later can be told from the copy" do
+      start
+      prompt = File.join(steps_dir, "plan.1.prompt.md")
+      recorded = attempts("plan").last["evidence"].first["sha256"]
+      File.write(prompt, "rewritten by the agent")
+
+      expect(recorded).to eq(attempts("plan").last["prompt_sha256"])
+      expect(Digest::SHA256.file(File.join(copies, "plan.1.prompt.md")).hexdigest).to eq(recorded)
+    end
+
+    it "keeps distinct evidence for a passed step, a failed one and its retry" do
+      to_verify
+      File.write(File.join(steps_dir, "verify.1.check.log"), "first failure")
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", pane: "%5")
+      File.write(File.join(steps_dir, "verify.2.check.log"), "second pass")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      names = Dir.children(copies).sort
+      expect(names).to include("plan.1.prompt.md", "plan.1.out.0.plan.md", "build.1.prompt.md", "build.2.prompt.md",
+        "verify.1.prompt.md", "verify.1.check.log", "verify.2.prompt.md", "verify.2.check.log")
+      expect(File.read(File.join(copies, "verify.1.check.log"))).to eq("first failure")
+      expect(attempts("verify").first).to include("outcome" => "failed")
+      expect(attempts("verify").first["evidence"].map { |e| e["name"] }).to eq(%w[verify.1.prompt.md verify.1.check.log])
+      expect(attempts("verify").last["evidence"].last).to include("name" => "verify.2.check.log", "sha256" => Digest::SHA256.hexdigest("second pass"))
+    end
+
+    it "copies on a cancel and leaves the directory alone afterwards" do
+      start
+      artifact("plan.md")
+      engine.cancel("wr_1")
+
+      expect(attempts("plan").last["evidence"].map { |e| e["name"] }).to eq(%w[plan.1.prompt.md plan.1.out.0.plan.md])
+      expect(Dir.children(copies).sort).to eq(%w[plan.1.out.0.plan.md plan.1.prompt.md])
+    end
+
+    it "reads missing and raises nothing when a killed workspace's artifacts are gone" do
+      start
+      FileUtils.rm_rf(File.join(worktree, ".workflow"))
+
+      expect { engine.workspace_killed("app.worktree-x") }.not_to raise_error
+      expect(store.find("wr_1")["state"]).to eq("cancelled")
+      expect(attempts("plan").last["evidence"].map { |e| e["problem"] }.compact).to eq(%w[missing])
+    end
+  end
+
   describe "#workspace_killed" do
     it "ends the killed workspace's runs and no other's, though the checkout is gone" do
       start(workspace: "app.worktree-a", pane: "%5")

@@ -308,6 +308,7 @@ require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_require"
 require_relative "workspace/workflow_produced"
 require_relative "workspace/workflow_attempt_record"
+require_relative "workspace/workflow_evidence"
 require_relative "workspace/workflow_attempts"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
@@ -582,7 +583,8 @@ module Workspace
       installer: library_installer, checkout: workspace_checkout)
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
-    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
+    workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
+    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
@@ -598,7 +600,7 @@ module Workspace
       lineage: lineage,
       git: git,
       guard: workflow_guard,
-      attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard, ledger: session_ledger,
+      attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard, ledger: session_ledger, evidence: workflow_evidence,
         session_names: ->(workspace) { [workspace, tmux.session_name_for(workspace)].uniq },
         # nil is also what a pane that is gone gives (a cancel or a kill), so the record never takes it as
         # proof of anything; its transcript test guards that case. Under the run's lock: 2s at most.

@@ -255,6 +255,14 @@ module Workspace
       File.join(state_dir, ".workflows", "archive")
     end
 
+    # Copies of each attempt's prompt, check log and outputs, one directory per run, kept while the run's
+    # archive entry is (see {WorkflowEvidence}).
+    #
+    # @return [String] path to the directory holding workflow evidence
+    def workflow_evidence_dir
+      File.join(state_dir, ".workflows", "evidence")
+    end
+
     # Dotted, like {#task_dir}, so no workspace name can produce it. Each agent
     # daemon appends its hook events to `<workspace>.jsonl` here.
     #

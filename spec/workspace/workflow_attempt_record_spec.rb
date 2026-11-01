@@ -47,6 +47,104 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
     end
   end
 
+  describe "evidence" do
+    let(:evidence) { Workspace::WorkflowEvidence.new(dir: File.join(@dir, "ev")) }
+    subject(:record) { described_class.new(guard: guard, evidence: evidence) }
+    let(:run) { super().merge("id" => "wr_1") }
+    let(:prompt) { File.join(run["artifacts_dir"], "steps", "plan.1.prompt.md") }
+
+    before do
+      FileUtils.mkdir_p(File.dirname(prompt))
+      File.write(prompt, "p")
+    end
+
+    it "copies the prompt on #start, before anything can change it" do
+      attempt = {"n" => 1, "prompt_file" => prompt}
+      record.start(run: run, attempt: attempt, composed: {"text" => "p", "packs" => []})
+      File.write(prompt, "rewritten")
+
+      expect(attempt["evidence"].map { |e| [e["name"], e["sha256"]] }).to eq([["plan.1.prompt.md", Digest::SHA256.hexdigest("p")]])
+    end
+
+    it "keeps the prompt entry and adds the outputs on #finish" do
+      put("plan.md", "o")
+      attempt = {"n" => 1, "prompt_file" => prompt}
+      record.start(run: run, attempt: attempt, composed: {"text" => "p", "packs" => []})
+      record.finish(run: run, step: step, attempt: attempt)
+      record.finish(run: run, step: step, attempt: attempt)
+
+      expect(attempt["evidence"].map { |e| e["name"] }).to eq(%w[plan.1.prompt.md plan.1.out.0.plan.md])
+    end
+
+    it "takes each output's hash from the one copy" do
+      put("plan.md", "o")
+      attempt = {"n" => 1}
+      record.finish(run: run, step: step, attempt: attempt)
+      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => attempt["evidence"].last["sha256"], "bytes" => 1}])
+    end
+
+    it "still hashes an output that the budget kept from the copy" do
+      stub_const("Workspace::WorkflowEvidence::BUDGET", 0)
+      put("plan.md", "o")
+      attempt = {"n" => 1}
+      record.finish(run: run, step: step, attempt: attempt)
+
+      expect(attempt["evidence"].last).to include("sha256" => nil, "budget" => true)
+      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => Digest::SHA256.hexdigest("o"), "bytes" => 1}])
+    end
+
+    it "records a nil hash for an output evidence refused as outside the artifacts directory" do
+      FileUtils.mkdir_p(File.join(@dir, "elsewhere"))
+      File.write(File.join(@dir, "elsewhere", "plan.md"), "key")
+      File.symlink(File.join(@dir, "elsewhere"), File.join(run["artifacts_dir"], "sub"))
+      attempt = {"n" => 1}
+      record.finish(run: run, step: {"id" => "plan", "produces" => ["sub/plan.md"]}, attempt: attempt)
+
+      expect(attempt["evidence"].last["problem"]).to eq("outside_artifacts")
+      expect(attempt["outputs"]).to eq([{"file" => "sub/plan.md", "sha256" => nil, "bytes" => nil}])
+    end
+
+    it "still hashes an output whose copy failed" do
+      put("plan.md", "o")
+      allow_any_instance_of(File).to receive(:write).and_raise(Errno::ENOSPC)
+      attempt = {"n" => 1}
+      record.finish(run: run, step: step, attempt: attempt)
+
+      expect(attempt["evidence"].last["problem"]).to eq("copy_failed")
+      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => Digest::SHA256.hexdigest("o"), "bytes" => 1}])
+    end
+
+    it "reads each output once" do
+      put("plan.md", "o")
+      allow(Workspace::WorkflowProduced).to receive(:digest).and_call_original
+      record.finish(run: run, step: step, attempt: {"n" => 1})
+      expect(Workspace::WorkflowProduced).to have_received(:digest).once
+    end
+
+    it "hashes the outputs itself when it has no evidence collaborator" do
+      put("plan.md", "o")
+      attempt = {"n" => 1}
+      described_class.new(guard: guard).finish(run: run, step: step, attempt: attempt)
+      expect(attempt["outputs"].first["sha256"]).to eq(Digest::SHA256.hexdigest("o"))
+      expect(attempt).not_to have_key("evidence")
+    end
+
+    it "is recorded on #abandon for an open attempt" do
+      put("plan.md", "o")
+      run["steps"]["plan"]["attempts"] = [{"n" => 1, "started_at" => "2026-11-01T09:00:00Z"}]
+      record.abandon(run)
+      expect(run["steps"]["plan"]["attempts"].last["evidence"].map { |e| e["kind"] }).to eq(%w[output])
+    end
+
+    it "reads missing for every entry when the artifacts directory is gone" do
+      FileUtils.rm_rf(run["artifacts_dir"])
+      run["steps"]["plan"]["attempts"] = [{"n" => 1, "started_at" => "2026-11-01T09:00:00Z"}]
+      expect { record.abandon(run) }.not_to raise_error
+      expect(run["steps"]["plan"]["attempts"].last["evidence"].map { |e| e["problem"] }).to eq(%w[missing])
+      expect(run["steps"]["plan"]["attempts"].last["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => nil}])
+    end
+  end
+
   describe "#finish" do
     it "records HEAD now and the hash and size of each output" do
       put("plan.md", "done\n")

@@ -1720,7 +1720,7 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(doc["attempts"][0]).to include("step" => "implement", "attempt" => 1, "outcome" => "failed", "code" => "require_commits",
         "check" => {"command" => "bin/test", "log" => "/x.log", "exit_code" => 1}, "usage" => {"input_tokens" => 412000, "output_tokens" => 18300},
         "reasons" => [{"code" => "turn_ended_incomplete", "since" => "a", "until" => "b"}])
-      expect(doc["attempts"][1]).to include("attempt" => 2, "outcome" => nil, "code" => nil, "agent" => nil, "session" => nil, "head" => nil, "packs" => nil, "outputs" => nil, "usage" => nil, "reasons" => nil)
+      expect(doc["attempts"][1]).to include("attempt" => 2, "outcome" => nil, "code" => nil, "agent" => nil, "session" => nil, "head" => nil, "packs" => nil, "outputs" => nil, "usage" => nil, "evidence" => nil, "reasons" => nil)
     end
 
     it "reads a run that finished and was archived" do
@@ -1818,7 +1818,7 @@ RSpec.describe Workspace::Commands::Workflow do
         "steps" => {"a" => {"attempts" => [{"n" => 1}, {"n" => 2, "check" => "x"}]}})
       rows = json_attempts
       expect(rows[0].except("step", "attempt").values).to all(be_nil)
-      expect(rows[0].keys).to include("agent", "session", "head", "definition_sha256", "prompt_sha256", "packs", "outputs", "check", "usage", "reasons", "reported", "proofs", "code", "outcome")
+      expect(rows[0].keys).to include("agent", "session", "head", "definition_sha256", "prompt_sha256", "packs", "outputs", "check", "usage", "evidence", "reasons", "reported", "proofs", "code", "outcome")
       expect(rows[1]["check"]).to be_nil
 
       stored = real_store.find("wr_2611010900abcd")

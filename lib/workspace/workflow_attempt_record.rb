@@ -36,7 +36,9 @@ module Workspace
     # @param session_names [#call] given a workspace name, the names the session hook may have recorded
     #   its panes under (the workspace's, and its tmux session's)
     # @param server_for [#call] given a pane id, the pid of its tmux server, or nil
-    def initialize(guard:, ledger: nil, clock: -> { Time.now }, session_names: ->(workspace) { [workspace] }, server_for: ->(_pane) {})
+    # @param evidence [Workspace::WorkflowEvidence, nil] copies the attempt's files aside; nil keeps none
+    def initialize(guard:, ledger: nil, clock: -> { Time.now }, session_names: ->(workspace) { [workspace] }, server_for: ->(_pane) {}, evidence: nil)
+      @evidence = evidence
       @guard = guard
       @ledger = ledger
       @clock = clock
@@ -56,10 +58,15 @@ module Workspace
       attempt["prompt_sha256"] = Digest::SHA256.hexdigest(composed["text"])
       attempt["packs"] = composed["packs"].map { |pack| {"ref" => pack["ref"], "sha256" => pack["sha256"]} }
       attempt.compact!
+      # The prompt is copied as it is written, before it is delivered: the agent has not seen it yet.
+      attempt["evidence"] = @evidence.prompt(run: run, step_id: run["current"], attempt: attempt) if @evidence && attempt["prompt_file"]
       attempt
     end
 
-    # Records HEAD now and each declared `produces` file when an attempt passes or fails.
+    # Records HEAD now and each declared `produces` file when an attempt passes or fails, and copies its
+    # prompt, check log and those files to the evidence directory (`evidence`, see {WorkflowEvidence}).
+    # A check log is complete here for a passed or failed check; a cancel or kill that stops a check
+    # keeps the log as it stood, and what the stopped check writes later is not copied.
     #
     # @param run [Hash{String=>Object}]
     # @param step [Hash{String=>Object}] the step's definition
@@ -67,8 +74,10 @@ module Workspace
     # @return [Hash{String=>Object}] the attempt
     def finish(run:, step:, attempt:)
       attempt["head"] = (attempt["head"] || {"before" => nil}).merge("after" => @guard.head(run["worktree"]))
-      attempt["outputs"] = Array(step["produces"]).map { |file| output(file, File.join(run["artifacts_dir"].to_s, file)) }
+      copies = @evidence ? @evidence.copy(run: run, step: step, attempt: attempt) : []
+      attempt["outputs"] = outputs(step, run, copies)
       attempt.merge!(agent_facts(run, attempt))
+      attempt["evidence"] = Array(attempt["evidence"]).select { |each| each["kind"] == "prompt" } + copies if @evidence
       attempt
     end
 
@@ -311,6 +320,20 @@ module Workspace
       return nil unless usages.all? { |usage| USAGE_KEYS.all? { |key| !usage.key?(key) || (usage[key].is_a?(Integer) && usage[key] >= 0) } }
       sums = USAGE_KEYS.to_h { |key| [key, usages.sum { |usage| usage[key] || 0 }] }
       sums.reject { |key, value| value.zero? && key.start_with?("cache_") }
+    end
+
+    # With an evidence copy that holds the file, its hash is the copy's, so the two records can't differ and
+    # the file is read once. For a file the copy did not take (over the attempt's budget, a failed write, a
+    # missing file, one outside the artifacts directory) the file is hashed here, as it is with no collaborator (except one refused as `outside_artifacts`, which records nil).
+    def outputs(step, run, copies)
+      copied = copies.select { |each| each["kind"] == "output" }
+      Array(step["produces"]).each_with_index.map do |file, index|
+        copy = copied[index]
+        # A file evidence refused as outside the artifacts directory is not read here either.
+        next {"file" => file, "sha256" => nil, "bytes" => nil} if copy && copy["problem"] == "outside_artifacts"
+        next output(file, File.join(run["artifacts_dir"].to_s, file)) unless copy && copy["sha256"]
+        {"file" => file, "sha256" => copy["sha256"], "bytes" => copy["bytes"]}
+      end
     end
 
     def output(file, path)

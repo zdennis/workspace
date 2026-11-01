@@ -1,5 +1,6 @@
 require "spec_helper"
 require "tmpdir"
+require "fileutils"
 
 RSpec.describe "workspace workflow attempts through build_cli" do
   around do |example|
@@ -25,5 +26,22 @@ RSpec.describe "workspace workflow attempts through build_cli" do
 
     row = JSON.parse(out.string)["attempts"].first
     expect(row).to include("step" => "plan", "attempt" => 1, "outcome" => "failed", "code" => "check_failed")
+  end
+  it "wires the evidence copier into the attempt record and the run store" do
+    out = StringIO.new
+    cli = Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {})
+    command = cli.instance_variable_get(:@workflow_command)
+    record = command.instance_variable_get(:@engine).instance_variable_get(:@attempt_record)
+    config = Workspace::Config.new
+    art = File.join(ENV.fetch("HOME"), "art")
+    FileUtils.mkdir_p(art)
+    File.write(File.join(art, "plan.md"), "plan")
+    attempt = {"n" => 1}
+
+    record.finish(run: {"id" => "wr_wired", "artifacts_dir" => art, "worktree" => art}, step: {"id" => "plan", "produces" => ["plan.md"]}, attempt: attempt)
+
+    expect(attempt["evidence"].first).to include("name" => "plan.1.out.0.plan.md", "sha256" => Digest::SHA256.hexdigest("plan"))
+    expect(File.read(File.join(config.workflow_evidence_dir, "wr_wired", "plan.1.out.0.plan.md"))).to eq("plan")
+    expect(command.instance_variable_get(:@store).instance_variable_get(:@evidence)).to be_a(Workspace::WorkflowEvidence)
   end
 end

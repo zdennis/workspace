@@ -52,18 +52,22 @@ module Workspace
     #
     # @param path [String]
     # @param max_bytes [Integer]
+    # @param sink [#<<, nil] given every chunk hashed, so a copy holds the bytes the hash covers
+    # @param check [#call, nil] given the opened handle before anything is read; a falsy answer reads nothing and gives nil
     # @return [Content, nil] nil when the file is missing, a link, not a regular file or unreadable
-    def self.digest(path, max_bytes:)
+    def self.digest(path, max_bytes:, sink: nil, check: nil)
       return nil if link_rule(File.lstat(path))
       File.open(path, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |io|
         stat = io.stat
         return nil unless stat.file?
+        return nil if check && !check.call(io)
         return Content.new(nil, stat.size, true) if stat.size > max_bytes
         digest = Digest::SHA256.new
         remaining = stat.size
         read = 0
         while remaining > 0 && (chunk = io.read([65_536, remaining].min))
           digest << chunk
+          sink&.<<(chunk)
           read += chunk.bytesize
           remaining -= chunk.bytesize
         end
