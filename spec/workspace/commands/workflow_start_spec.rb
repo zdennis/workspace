@@ -52,6 +52,18 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
   end
 
+  def real_engine(active: [])
+    Workspace::WorkflowEngine.allocate.tap do |real|
+      real.instance_variable_set(:@guard, Workspace::WorkflowGuard.new)
+      real.instance_variable_set(:@lineage, lineage)
+      real.instance_variable_set(:@panes, nil)
+      real.instance_variable_set(:@store, instance_double(Workspace::WorkflowRunStore, active: active))
+      real.instance_variable_set(:@gate_note, instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil))
+      real.instance_variable_set(:@commands_config, instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
+      allow(real).to receive(:compose).and_return({"packs" => []})
+    end
+  end
+
   before do
     allow(git).to receive_messages(root: root)
     allow(git).to receive(:valid_branch_name?) { |_path, name| !name.include?("..") }
@@ -326,17 +338,6 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
     after { FileUtils.remove_entry(repo) }
 
-    def real_engine
-      Workspace::WorkflowEngine.allocate.tap do |real|
-        real.instance_variable_set(:@guard, Workspace::WorkflowGuard.new)
-        real.instance_variable_set(:@lineage, lineage)
-        real.instance_variable_set(:@panes, nil)
-        real.instance_variable_set(:@gate_note, instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil))
-        real.instance_variable_set(:@commands_config, instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
-        allow(real).to receive(:compose).and_return({"packs" => []})
-      end
-    end
-
     it "is refused with dirty_worktree, also in a dry run, for a guarded workflow" do
       allow(catalog).to receive(:find).with("flow").and_return(guarded)
       expect(start).not_to receive(:payload)
@@ -345,6 +346,18 @@ RSpec.describe Workspace::Commands::WorkflowStart do
         expect { build_command(real_engine).call(id: "flow", prompt: "x", branch: "mine", dry_run: dry_run) }.to raise_error(Workspace::Error) do |e|
           expect(e.code).to eq("dirty_worktree")
           expect(e.details).to include("path" => repo, "guard" => "tracked_changed", "files" => ["a.txt"])
+        end
+      end
+    end
+
+    it "is refused with checkout_has_run, also in a dry run, when a run is going in the reused checkout" do
+      holder = {"id" => "wr_9", "worktree" => repo, "current" => "plan", "state" => "running"}
+      expect(start).not_to receive(:payload)
+
+      [true, false].each do |dry_run|
+        expect { build_command(real_engine(active: [holder])).call(id: "flow", prompt: "x", branch: "mine", dry_run: dry_run) }.to raise_error(Workspace::Error) do |e|
+          expect(e.code).to eq("checkout_has_run")
+          expect(e.details).to include("run_id" => "wr_9", "next" => ["workspace workflow cancel wr_9"])
         end
       end
     end
@@ -1007,6 +1020,22 @@ RSpec.describe Workspace::Commands::WorkflowStart do
         expect(e.code).to eq("pane_has_run")
         expect(e.details).to include("pane" => "%7", "workspace" => "app.worktree-PROJ-1", "path" => path)
         expect(e.details["next"].first).to match(/\Aworkspace workflow run flow --name app\.worktree-PROJ-1 /)
+      end
+    end
+
+    it "keeps the cancel command of a checkout_has_run raised after the workspace was made" do
+      holder = {"id" => "wr_9", "worktree" => Dir.tmpdir, "current" => "plan", "state" => "running"}
+      refusal = begin
+        real_engine(active: [holder]).send(:check_checkout, Dir.tmpdir)
+      rescue Workspace::Error => e
+        e
+      end
+      allow(workflow).to receive(:run).and_raise(refusal)
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("checkout_has_run")
+        expect(e.details["next"]).to eq(["workspace workflow cancel wr_9"])
+        expect(e.message).not_to include("to start the workflow in it")
       end
     end
 

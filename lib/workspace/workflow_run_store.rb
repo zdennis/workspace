@@ -34,16 +34,26 @@ module Workspace
 
     # Writes a new run's file. The run gets its "id" here.
     #
+    # The store-wide create lock (`.create.lock` beside the runs directory) is held
+    # from +check+ to the write, so two creations can't both pass a check on
+    # the runs going. Nothing under it takes a run's own lock ({#update}), and
+    # {#update} never takes this one, so the two can't deadlock.
+    #
     # @param run [Hash{String=>Object}] the run, without an id
+    # @param check [#call, nil] (positional, so a run hash is never read as keywords) called under the lock before anything is written; it raises to refuse
     # @yieldparam run [Hash{String=>Object}] the run with its id, to fill in what depends on the id
     # @return [Hash{String=>Object}] the run as stored
     # @raise [Workspace::Error] if the store can't be written
-    def create(run)
+    def create(run, check = nil)
       FileUtils.mkdir_p(@dir, mode: 0o700)
-      run = {"id" => unused_id}.merge(run)
-      yield run if block_given?
-      write(run)
-      run
+      File.open(File.join(File.dirname(@dir), ".create.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        check&.call
+        run = {"id" => unused_id}.merge(run)
+        yield run if block_given?
+        write(run)
+        run
+      end
     rescue SystemCallError, JSON::GeneratorError, EncodingError => e
       raise store_error(e)
     end

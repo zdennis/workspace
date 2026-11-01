@@ -510,6 +510,9 @@ module Workspace
       # A UsageError stays one; any other class becomes a plain Workspace::Error, as in promote, because
       # the subclasses do not share a constructor.
       def with_next(error, plan, inputs, note, workspace, path, warnings)
+        # A refusal that already names its own next command (checkout_has_run's cancel) keeps it and its message.
+        return error if error.respond_to?(:details) && error.details.is_a?(Hash) && error.details["next"]
+
         run = ["workspace workflow run", Shellwords.escape(plan.definition.to_h["id"])]
         run.push("--name", Shellwords.escape(workspace)) if workspace
         inputs.each { |name, value| run.push("--input", "#{name}=#{Shellwords.escape(value)}") unless value.to_s.empty? }

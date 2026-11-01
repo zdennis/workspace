@@ -210,6 +210,7 @@ module Workspace
       project = @lineage.resolve(cwd: worktree).name
       check_commands(data, project)
       check_pane(pane)
+      check_checkout(tree)
       first = data["steps"].first
       packs = compose({"definition" => data, "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
                        "id" => "wr_preview", "artifacts_dir" => artifacts_dir(worktree, "wr_preview")}, first, [])["packs"]
@@ -248,7 +249,10 @@ module Workspace
           "error" => "not_started", "message" => "the run was created and its first step never started"),
         "steps" => data["steps"].to_h { |step| [step["id"], {"state" => "pending", "attempts" => []}] }
       }
-      run = @store.create(attributes) { |created| created["artifacts_dir"] = artifacts_dir(worktree, created["id"]) }
+      run = @store.create(attributes, -> {
+        check_pane(pane)
+        check_checkout(worktree)
+      }) { |created| created["artifacts_dir"] = artifacts_dir(worktree, created["id"]) }
       event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
       return run unless dispatch
       transition(run["id"]) { |stored| dispatch(stored) }
@@ -783,6 +787,27 @@ module Workspace
       return unless other
       raise Workspace::Error.new("Pane #{pane} is already running workflow run #{other}. Cancel it, or pass --pane for another agent pane.",
         code: "pane_has_run", details: {"pane" => pane, "run_id" => other})
+    end
+
+    # Refuses a second run going on one checkout, matched by realpath. A run
+    # with no worktree, or one whose path is gone or can't be resolved, is not
+    # that checkout; a finished run is not among the active ones. A resume
+    # never comes here: it is the run itself.
+    def check_checkout(path)
+      return unless path
+      target = File.realpath(path)
+      holder = @store.active.find do |run|
+        run["worktree"].is_a?(String) && File.realpath(run["worktree"]) == target
+      rescue SystemCallError
+        false
+      end
+      return unless holder
+      raise Workspace::Error.new("Checkout #{target} already has workflow run #{holder["id"]} at step #{holder["current"]}. " \
+        "Cancel it with `workspace workflow cancel #{holder["id"]}`, or use another worktree.",
+        code: "checkout_has_run", details: {"worktree" => target, "run_id" => holder["id"], "step" => holder["current"],
+                                            "state" => holder["state"], "next" => ["workspace workflow cancel #{holder["id"]}"]})
+    rescue SystemCallError
+      nil
     end
 
     # Another run waiting to start in +pane+: a run parked by `workflow run` has no binding yet.

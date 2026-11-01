@@ -236,6 +236,7 @@ module Workspace
       "workflow_needs_claude" => "workflow start was asked to run in a workspace whose agent kind is not claude; the run's steps need a Claude Code pane. Nothing was created. details.agent_kind.",
       "agent_not_ready" => "workflow start made the workspace but its coding agent was not ready in time. The workspace is kept. details.workspace, details.path, details.next.",
       "pane_has_run" => "The pane already runs another workflow run.",
+      "checkout_has_run" => "The checkout already has a workflow run going. details.worktree, details.run_id, details.step, details.state, details.next (the cancel command).",
       "unknown_run" => "No workflow run has that id.",
       "unknown_goal" => "goal show: REF matches no workspace, run, task, ticket or branch. details.ref, details.tried.",
       "ambiguous_goal" => "goal show: REF matches more than one workspace (a branch checked out in two projects). details.ref, details.matches (workspace, project, branch).",

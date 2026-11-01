@@ -94,8 +94,11 @@ RSpec.describe Workspace::WorkflowEngine do
     YAML
   end
 
-  def start(definition = three_steps, inputs: {"task" => "X-1"}, pane: "%5", workspace: "app.worktree-x", **rest)
-    engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane, **rest)
+  # One run per checkout: the first run of a spec is in +worktree+, a run for another pane or workspace in a checkout of its own.
+  def start(definition = three_steps, inputs: {"task" => "X-1"}, pane: "%5", workspace: "app.worktree-x", checkout: nil, **rest)
+    path = (checkout || (pane == "%5" && workspace == "app.worktree-x")) ? worktree : FileUtils.mkdir_p("#{worktree}-#{pane.delete("%")}-#{workspace}").first
+    allow(lock_namespace).to receive(:resolve).with(cwd: path).and_return(key: "ns", display: "app", dir: lock_dir)
+    engine.start(definition: definition, workspace: workspace, worktree: path, inputs: inputs, pane: pane, **rest)
   end
 
   def artifact(name, run_id = "wr_1")
@@ -384,6 +387,61 @@ RSpec.describe Workspace::WorkflowEngine do
 
       engine.cancel("wr_1")
       expect(start["id"]).to eq("wr_2")
+    end
+
+    describe "one run per checkout" do
+      it "refuses a second run on the checkout, even from another pane, naming the holder and the cancel command" do
+        start
+
+        expect { start(pane: "%6", checkout: worktree) }.to raise_error(Workspace::Error, /Checkout .*app already has workflow run wr_1 at step/) { |error|
+          expect(error.code).to eq("checkout_has_run")
+          expect(error.details).to include("run_id" => "wr_1", "worktree" => File.realpath(worktree), "step" => "plan",
+            "state" => "running", "next" => ["workspace workflow cancel wr_1"])
+        }
+        expect(store.active.size).to eq(1)
+      end
+
+      it "matches the checkout by real path, through a symlink" do
+        start
+        link = File.join(@dir, "link-to-app")
+        File.symlink(worktree, link)
+
+        expect { engine.start(definition: three_steps, workspace: "app.worktree-x", worktree: link, inputs: {"task" => "X-1"}, pane: "%6") }
+          .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("checkout_has_run") }
+      end
+
+      it "refuses in preflight too, and takes the checkout once the run is cancelled, failed or completed" do
+        start
+
+        expect { engine.preflight(definition: three_steps, workspace: "app.worktree-x", worktree: worktree, inputs: {"task" => "X-1"}, pane: "%6") }
+          .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("checkout_has_run") }
+
+        engine.cancel("wr_1")
+        expect(start(pane: "%6", checkout: worktree)["id"]).to eq("wr_2")
+      end
+
+      it "ignores a stored run with no worktree, or one whose path is gone" do
+        store.create({"state" => "running", "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+                      "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
+        store.create({"state" => "running", "worktree" => File.join(@dir, "gone"), "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+                      "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
+
+        expect(start(pane: "%6", checkout: worktree)["id"]).to eq("wr_3")
+      end
+
+      it "does not refuse a target path that does not exist, or none" do
+        start
+
+        expect(engine.send(:check_checkout, File.join(@dir, "nowhere"))).to be_nil
+        expect(engine.send(:check_checkout, nil)).to be_nil
+      end
+
+      it "is not raised by resume, which is the run itself" do
+        start
+        panes.unbind("wr_1")
+
+        expect { engine.resume("wr_1", pane: "%5") }.not_to raise_error
+      end
     end
 
     it "refuses a pack that can't be read before it creates the run" do
@@ -1239,13 +1297,13 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["steps"]["verify"]).to eq("state" => "waiting", "attempts" => [])
       expect(run["reason"]).to eq("code" => "waiting_lock", "since" => "2026-10-04T12:00:10Z", "details" => {
         "resource" => "test-db", "step" => "verify", "position" => 1, "total" => 2,
-        "holder" => {"run_id" => "wr_1", "step" => "verify", "workspace" => "app.worktree-a", "worktree" => worktree, "kind" => "run"}
+        "holder" => {"run_id" => "wr_1", "step" => "verify", "workspace" => "app.worktree-a", "worktree" => "#{worktree}-5-app.worktree-a", "kind" => "run"}
       })
       expect(panes.kicks.size).to eq(1)
       expect(events.last(2).map(&:first)).to eq(%w[lock_wait_started workflow_changed])
       expect(events[-2]).to eq(["lock_wait_started", "app", {"lock" => "test-db", "run_id" => "wr_2", "step" => "verify",
                                                              "workspace" => "app.worktree-b", "position" => 1,
-                                                             "holder" => {"pane" => "%5", "worktree" => worktree, "run_id" => "wr_1", "step" => "verify"}}])
+                                                             "holder" => {"pane" => "%5", "worktree" => "#{worktree}-5-app.worktree-a", "run_id" => "wr_1", "step" => "verify"}}])
     end
 
     it "does nothing on a tick while the lock is still held, and records the wait once" do
@@ -3092,7 +3150,7 @@ RSpec.describe Workspace::WorkflowEngine do
         panes.unbind("wr_1")
         now[0] += described_class::PARK_SECONDS + 1
 
-        expect(start(single, inputs: {})["id"]).to eq("wr_2")
+        expect(start(single, inputs: {}, workspace: "app.worktree-y")["id"]).to eq("wr_2")
       end
     end
 

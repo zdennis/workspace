@@ -365,6 +365,47 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(store.active.map { |run| run["id"] }).to eq(["wr_1"])
   end
 
+  it "runs the check under a lock shared by every creator, so of two concurrent creations only one passes it" do
+    checker = lambda do |store_for_child|
+      lambda do
+        raise Workspace::Error.new("taken", code: "checkout_has_run") if store_for_child.active.any?
+        sleep 0.2
+      end
+    end
+    results = 2.times.map do
+      reader, writer = IO.pipe
+      pid = fork do
+        child = described_class.new(dir: runs_dir, archive_dir: archive_dir)
+        outcome = begin
+          child.create(whole.merge("state" => "running", "created_at" => "t"), checker.call(child))["id"]
+          "created"
+        rescue Workspace::Error => e
+          e.code
+        end
+        writer.puts outcome
+        exit!(0)
+      end
+      writer.close
+      [pid, reader]
+    end
+    outcomes = results.map do |pid, reader|
+      Process.wait(pid)
+      reader.read.strip
+    end
+
+    expect(outcomes.sort).to eq(%w[checkout_has_run created])
+    expect(store.active.size).to eq(1)
+  end
+
+  it "reports an unusable create lock as a store error, and runs no check" do
+    FileUtils.mkdir_p(File.join(File.dirname(runs_dir), ".create.lock"))
+    called = false
+
+    expect { store.create(whole.merge("state" => "running", "created_at" => "t"), -> { called = true }) }
+      .to raise_error(Workspace::Error, /Could not access the workflow run store/)
+    expect(called).to be(false)
+  end
+
   it "returns nil from a nonblocking update while another process changes the run" do
     create
     reader, writer = IO.pipe
