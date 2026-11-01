@@ -197,7 +197,7 @@ The command runs through `/bin/sh -c`, in its own process group, with stdin and 
 
 | Variable | Value |
 |----------|-------|
-| `WORKSPACE_ALERT` | `waiting`, `idle` or `handoff_stalled` |
+| `WORKSPACE_ALERT` | `waiting`, `idle`, `handoff_stalled` or `workflow` |
 | `WORKSPACE_ALERT_WORKSPACE` | The workspace (tmux session) name |
 | `WORKSPACE_ALERT_PANE` | Pane as shown in the PANE column, e.g. `0.1` |
 | `WORKSPACE_ALERT_PANE_ID` | tmux pane id, e.g. `%12` |
@@ -205,6 +205,8 @@ The command runs through `/bin/sh -c`, in its own process group, with stdin and 
 | `WORKSPACE_ALERT_SECONDS` | Seconds the pane has been waiting or idle (for `handoff_stalled`, since the handoff watch began) |
 | `WORKSPACE_ALERT_MESSAGE` | The agent's notification message (empty for `idle`) |
 | `WORKSPACE_ALERT_TEXT` | One-line summary, e.g. `myapp pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash` |
+
+`workflow` is sent for a workflow run's events named in `alerts.workflow` (see [workflow alerts](README.workflow.md#alerts)); it has none of the pane variables below (no `PANE`, `PANE_ID`, `KIND`, `SECONDS` or `MESSAGE`), so a script must check `WORKSPACE_ALERT=workflow` before treating any other value as idle, and it sets `WORKSPACE_ALERT_EVENT`, `WORKSPACE_ALERT_RUN_ID`, `WORKSPACE_ALERT_STEP` and `WORKSPACE_ALERT_TEXT`, and no pane variables.
 
 `handoff_stalled` is sent when a [handoff follow-up](README.handoff.md#follow-ups) watch ends `stalled`, `expired` or `not_submitted`: the pane was asked to hand off and did not. `WORKSPACE_ALERT_MESSAGE` is empty, and `WORKSPACE_ALERT_TEXT` reads like `myapp pane 0.1 (Claude Code) has not handed off after 10 follow-ups`. It writes no `agent_alert` event; the `handoff_watch_ended` event is the record.
 

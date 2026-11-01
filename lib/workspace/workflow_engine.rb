@@ -231,9 +231,11 @@ module Workspace
     #   (default: one over `guard` and `gate_note`)
     # @param log_tail [Workspace::WorkflowLogTail, nil] reads the end of a failed check's log for `on_fail`'s `log_tail`
     #   (default: a new one)
+    # @param alerts [Workspace::WorkflowAlerts, nil] tells a person of a gate, a failure, a stall or a finish through `alerts.notify`
+    #   (default: none)
     # @param clock [#call] returns the current Time
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-      env_stopper: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, clock: -> { Time.now })
+      env_stopper: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, clock: -> { Time.now })
       @store = store
       @resources = resources
       @composer = composer
@@ -252,6 +254,7 @@ module Workspace
       @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
         commands_config: commands_config, checker: checker)
       @log_tail = log_tail || WorkflowLogTail.new
+      @alerts = alerts
       @clock = clock
       @delivery = nil
     end
@@ -1115,10 +1118,12 @@ module Workspace
     # the line of a step the change started, once the lock is given up.
     def transition(run_id, nonblocking: false)
       before = nil
+      alert_before = nil
       # The one step line this change started, if any; taken before {#deliver} runs a transition of its own.
       @delivery = nil
       run = @store.update(run_id, nonblocking: nonblocking) do |stored|
         before = fingerprint(stored)
+        alert_before = @alerts&.marks(stored)
         was_open = @attempt_record.open_attempt(stored)
         @attempt_record.reasons(run: stored)
         yield stored
@@ -1128,6 +1133,7 @@ module Workspace
       delivery, @delivery = @delivery, nil
       return nil unless run
       changed(run) unless before == fingerprint(run)
+      @alerts&.fire(alert_before, run)
       delivery ? deliver(run_id, delivery) : run
     end
 

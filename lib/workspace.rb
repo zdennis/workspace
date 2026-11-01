@@ -239,6 +239,7 @@ require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/notifier"
 require_relative "workspace/alert_config"
+require_relative "workspace/workflow_alerts"
 require_relative "workspace/agent_recovery_config"
 require_relative "workspace/agentd_config"
 require_relative "workspace/handoff_config"
@@ -596,6 +597,8 @@ module Workspace
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_guard = WorkflowGuard.new(git_path: Which.path("git") || "git")
     workflow_checker = WorkflowCheck.new
+    alert_config = AlertConfig.new(config_resolver: config_resolver, project_config: project_config,
+      lineage: lineage, error_output: error_output)
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
@@ -623,7 +626,8 @@ module Workspace
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
       event_log: event_log,
-      task_store: task_store
+      task_store: task_store,
+      alerts: WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output)
     )
     workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
       gate_note: workflow_gate_note)
@@ -756,8 +760,6 @@ module Workspace
       project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
       lock_holder: lock_holder)
 
-    alert_config = AlertConfig.new(config_resolver: config_resolver, project_config: project_config,
-      lineage: lineage, error_output: error_output)
     agent_recovery_config = AgentRecoveryConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
     agentd_config = AgentdConfig.new(config_resolver: config_resolver, project_config: project_config,

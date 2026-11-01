@@ -433,7 +433,36 @@
         "worktree"
       ],
       "layers": [],
-      "doc": "Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts))",
+      "doc": "Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts)). It also runs for the workflow events named in `alerts.workflow`, with `WORKSPACE_ALERT=workflow` and none of the pane variables (`WORKSPACE_ALERT_PANE`, `_PANE_ID`, `_KIND`, `_SECONDS`, `_MESSAGE`): a script that treats every alert but `waiting` as idle must check for it",
+      "problems": []
+    },
+    {
+      "key": "alerts.workflow",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "unreadable",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Workflow events `alerts.notify` also runs for, as names separated by commas: `gate` (a step waits for you), `failed` (a step or its check failed), `stalled` (the sweep found a stall) and `finished` (the run completed). Unset: none. Read each time, so no restart; see [`workspace workflow`](README.workflow.md#alerts)",
       "problems": []
     },
     {

@@ -98,6 +98,7 @@ module Workspace
         validate_value!(key, value)
         warnings = @agent_command_check ? @agent_command_check.call(key, value) : []
         target = target_for(key, project, scope, cwd, "set")
+        warnings += notify_missing_warnings(key, target)
         write = apply(target) { |data| store(data, key, value) }
         record_change(target.layer, "set", key, target.name)
         @output.puts target.name ? "Set #{key} = #{value} for '#{target.name}'." : "Set #{key} = #{value}."
@@ -273,6 +274,16 @@ module Workspace
 
       # More affected workspaces than this, and the restart hint gives a count and one command.
       MAX_LISTED_RESTARTS = 3
+
+      # `alerts.workflow` only chooses events for `alerts.notify`; with no command in the layers
+      # the workspace reads, it sends nothing. Skipped for a machine-wide write that names no workspace.
+      def notify_missing_warnings(key, target)
+        return [] unless key == "alerts.workflow" && @config_resolver && target.workspace
+        return [] unless @config_resolver.view(workspace: target.workspace).raw("alerts.notify").nil?
+        ["alerts.workflow does nothing until alerts.notify is set for '#{target.workspace}' (workspace config set alerts.notify COMMAND)"]
+      rescue Workspace::ConfigParseError
+        []
+      end
 
       def print_restart_hint(key, affects)
         return unless ConfigSchema.key(key).restart_required?

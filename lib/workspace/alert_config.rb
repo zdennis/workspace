@@ -47,12 +47,14 @@ module Workspace
 
     # @param workspace [String] the daemon's workspace name
     # @return [Hash] :notify [String, nil] the command to run, nil for none;
-    #   :idle_after [Numeric] seconds before an idle agent pane alerts
+    #   :idle_after [Numeric] seconds before an idle agent pane alerts;
+    #   :workflow [Array<String>] the workflow events that alert (`alerts.workflow`), empty for none
     def for_workspace(workspace)
       alerts = load_alerts(workspace)
       {
         notify: setting(alerts, workspace, "notify"),
-        idle_after: setting(alerts, workspace, "idle_after")
+        idle_after: setting(alerts, workspace, "idle_after"),
+        workflow: setting(alerts, workspace, "workflow") || []
       }
     end
 
@@ -61,7 +63,7 @@ module Workspace
     # Every stored `alerts.*` value, or {} when a config file can't be parsed.
     def load_alerts(workspace)
       view = view_for(workspace)
-      %w[notify idle_after].to_h { |key| [key, view.raw("alerts.#{key}")] }
+      %w[notify idle_after workflow].to_h { |key| [key, view.raw("alerts.#{key}")] }
     rescue Workspace::ConfigParseError => e
       @error_output.puts "Warning: #{e.message} No alerts will be sent."
       {}

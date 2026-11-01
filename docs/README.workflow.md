@@ -444,6 +444,21 @@ Exit status is 0 when no copy mismatched (including a run with nothing recorded)
 Needs `workflow` 14 in `capabilities`.
 
 
+### Alerts
+
+`alerts.workflow` makes the project's `alerts.notify` command run for a run's events, which nothing else tells a person about. It is a comma-separated list of `gate` (a step waits at a gate), `failed` (a step failed, or its check did: `failed_check`), `stalled` (the sweep found a stall and recorded it) and `finished` (the run completed). Unknown names are refused by `config set`. Unset means none, so nothing new runs.
+
+```console
+$ workspace config set alerts.notify 'say "$WORKSPACE_ALERT_TEXT"'
+$ workspace config set alerts.workflow gate,failed,stalled,finished
+```
+
+The alert is sent by the process that makes the change (the CLI, `workflow advance` or the sweep), after it gives up the run's lock, and needs no agent daemon. It is read from the change itself, so an event fires once for each episode: a gate when the step starts waiting (not on each `status`), a failure once for each step attempt (a failure whose `on_fail` retry is coming, straight away or after a `backoff:`, is not one: only a run that waits for a person is), a stall once for each attempt and cause (the sweep's marks), a finish once. A new attempt, or a gate asked for again after a reject, is a new episode. The settings are read each time, with no restart. The caller never waits for the command: it starts a detached supervisor process (its own process group), which runs the command, stops it with SIGTERM and then SIGKILL to its group after 10 seconds, and exits, so a hung command is stopped even when the process that changed the run has long gone. Each supervisor is bounded by that limit, so no cap on how many run is needed. A command that fails or is stopped is reported in `workflow-alerts.log` in the state directory (past 1 MiB it is renamed to `workflow-alerts.log.1`, replacing the older one, so at most two files of about that size are kept); a supervisor that can't be started is a line on the stderr of the process that changed the run. Neither fails or holds up the change. `config set alerts.workflow` warns when no `alerts.notify` is set for the workspace, since it sends nothing without one.
+
+The command gets `WORKSPACE_ALERT=workflow`, `WORKSPACE_ALERT_EVENT` (`gate`, `failed`, `stalled` or `finished`), `WORKSPACE_ALERT_RUN_ID`, `WORKSPACE_ALERT_WORKSPACE`, `WORKSPACE_ALERT_STEP`, `WORKSPACE_ALERT_TEXT` and, when the run has one, `WORKSPACE_ALERT_REASON` (the reason code) and, for `stalled`, `WORKSPACE_ALERT_CAUSE`. A workflow alert has none of the pane variables (`WORKSPACE_ALERT_PANE`, `_PANE_ID`, `_KIND`, `_SECONDS`, `_MESSAGE`): a script that treats every `WORKSPACE_ALERT` but `waiting` as idle must check for `workflow` first. The values come from the run file, so they are escaped (control characters become `\n`, `\e` and so on) and each is cut to its first 200 characters before escaping (so an escaped value can be longer), and reach the command only as environment variables, never in its command line. The run's `next_action` is not passed: it is a suggestion for a person, and nothing runs it. The scheduled [sweep](#sweeping-stopped-runs) runs with the short `PATH` its plist records, so a notify command that the sweep may send (for a `stalled` alert) must be an absolute path, such as `/usr/local/bin/notify-me`, not a name found on your login `PATH`. A run stored before this setting works as it did.
+
+Needs `workflow` 20 in `capabilities`.
+
 ### Sweeping stopped runs
 
 `workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]` is one pass over the runs still going (every workspace's, unless you name a run or a workspace). It is for the failures nothing else sees: a daemon that died, a pane that closed, an agent whose turn ended while no daemon was watching. It needs no agent daemon, so a scheduler can run it, and a run that another process is changing is skipped and looked at on the next pass.

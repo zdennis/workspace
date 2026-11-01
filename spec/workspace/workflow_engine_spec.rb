@@ -4979,4 +4979,169 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["steps"]["build"]["attempts"].last["context"].last).to include("```text\nspec line 5\nspec line 6\n```")
     end
   end
+
+  describe "alerts.workflow" do
+    let(:sent) { [] }
+    let(:alert_settings) { {notify: "notify-me", workflow: %w[gate failed stalled finished]} }
+    let(:error_stream) { StringIO.new }
+    let(:alert_config) { instance_double(Workspace::AlertConfig, for_workspace: alert_settings) }
+    let(:spawner) { ->(_argv, env, _log) { sent << env } }
+    let(:alerts) { Workspace::WorkflowAlerts.new(alert_config: alert_config, spawner: ->(*args) { spawner.call(*args) }, error_output: error_stream) }
+    subject(:engine) { engine_with(event_log: event_log, task_store: task_store, alerts: alerts) }
+
+    def events_sent
+      sent.map { |env| env["WORKSPACE_ALERT_EVENT"] }
+    end
+
+    it "alerts when a step starts waiting at a gate, with the run in the environment" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(sent.size).to eq(1)
+      expect(sent.first).to include("WORKSPACE_ALERT" => "workflow", "WORKSPACE_ALERT_EVENT" => "gate", "WORKSPACE_ALERT_RUN_ID" => "wr_1",
+        "WORKSPACE_ALERT_WORKSPACE" => "app.worktree-x", "WORKSPACE_ALERT_STEP" => "plan")
+      expect(sent.first["WORKSPACE_ALERT_TEXT"]).to include("app.worktree-x", "wr_1", "waiting for you")
+    end
+
+    it "does not alert again when the waiting run is changed without leaving the gate" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      sent.clear
+
+      engine.note_stall("wr_1", step: "plan", attempt: 1, cause: "pane_gone")
+      engine.tick("wr_1")
+
+      expect(events_sent).to eq(%w[stalled])
+    end
+
+    it "alerts once when the loops are spent and the check's failure waits for a person, not for each retry" do
+      to_verify
+      sent.clear
+      3.times { check_results << {exit_code: 2, timed_out: false} }
+      2.times do
+        engine.turn_ended("wr_1", pane: "%5")
+        engine.turn_ended("wr_1", pane: "%5")
+      end
+      expect(events_sent).to eq([])
+
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(events_sent).to eq(%w[failed])
+      expect(sent.first["WORKSPACE_ALERT_REASON"]).to eq("failed_check")
+      expect(sent.first["WORKSPACE_ALERT_STEP"]).to eq("verify")
+    end
+
+    it "alerts once when the run finishes" do
+      to_verify
+      sent.clear
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(events_sent).to eq(%w[finished])
+      expect(sent.first["WORKSPACE_ALERT_TEXT"]).not_to include(" at ")
+    end
+
+    it "alerts for a stall the sweep notes once for each attempt and cause" do
+      to_build
+      sent.clear
+      3.times { engine.note_stall("wr_1", step: "build", attempt: 1, cause: "agent_gone") }
+      engine.note_stall("wr_1", step: "build", attempt: 1, cause: "daemon_down")
+
+      expect(events_sent).to eq(%w[stalled stalled])
+      expect(sent.first["WORKSPACE_ALERT_CAUSE"]).to eq("agent_gone")
+    end
+
+    it "sends nothing while an on_fail retry waits out its backoff, since a retry is coming" do
+      waiting = definition("max_attempts: 3\nsteps:\n  build:\n    prompt: B\n  verify:\n    prompt: V\n    status: bin/check\n    on_fail: {goto: build, max: 2, backoff: 2m}\n")
+      start(waiting, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(store.find("wr_1")["reason"]["code"]).to eq("retry_backoff")
+      expect(sent).to eq([])
+    end
+
+    it "sends nothing for a change that raises, nor for a cancel" do
+      start
+      expect { engine.approve("wr_1") }.to raise_error(Workspace::Error)
+      engine.cancel("wr_1")
+
+      expect(sent).to eq([])
+    end
+
+    it "sends only the events alerts.workflow names" do
+      alert_settings[:workflow] = %w[finished]
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(sent).to eq([])
+    end
+
+    it "sends nothing with alerts.workflow unset, or with no notify command" do
+      alert_settings[:workflow] = []
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(sent).to eq([])
+
+      alert_settings.merge!(workflow: %w[gate finished], notify: nil)
+      engine.approve("wr_1")
+      artifact("build.md")
+      engine.resume("wr_1", from: "plan")
+
+      expect(sent).to eq([])
+    end
+
+    it "escapes values from the run file and never passes a next action" do
+      start
+      store.update("wr_1") { |run| run["workspace"] = "evil\e[31m\nname" }
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      env = sent.first
+      expect(env["WORKSPACE_ALERT_WORKSPACE"]).to eq("evil\\e[31m\\nname")
+      expect(env.keys.grep(/NEXT|ACTION/)).to eq([])
+    end
+
+    it "reports a notifier that raises and still completes the change" do
+      allow(self).to receive(:spawner).and_return(->(*) { raise "boom" })
+      start
+      artifact("plan.md")
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run.dig("steps", "plan", "gate", "state")).to eq("waiting")
+      expect(error_stream.string).to include("could not send alerts for wr_1", "boom")
+    end
+
+    it "reports an unreadable alert setting and still completes the change" do
+      allow(alert_config).to receive(:for_workspace).and_raise(Workspace::Error, "cannot read")
+      start
+      artifact("plan.md")
+
+      expect(engine.turn_ended("wr_1", pane: "%5")["state"]).to eq("waiting")
+      expect(error_stream.string).to include("cannot read")
+    end
+
+    it "fires after the run lock is given up" do
+      free = nil
+      allow(self).to receive(:spawner).and_return(->(*) { free = !store.update("wr_1", nonblocking: true) { |run| run }.nil? })
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(free).to eq(true)
+    end
+
+    it "keeps working for a run stored before the setting, with no sweep marks" do
+      start
+      store.update("wr_1") { |run| run.delete("sweep") }
+      artifact("plan.md")
+
+      expect(engine.turn_ended("wr_1", pane: "%5")["state"]).to eq("waiting")
+    end
+  end
 end
