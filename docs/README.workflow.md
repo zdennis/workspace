@@ -12,7 +12,7 @@ workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
 workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]
-                         [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]
+                         [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]
 workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]
 workspace workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow events RUN [--since N] [--json]
@@ -76,6 +76,7 @@ workspace step status [--json]
 | `--[no-]headless` | `start`: start the session in plain tmux, as `start --headless` |
 | `--agent-kind KIND` | `start`: the coding agent the main agent pane runs |
 | `--prompt-timeout DURATION` | `start`: how long to wait for the coding agent to be ready (60s by default) |
+| `--force` | `start`: start although the workflow's `applies_to:` does not list the `REF`'s kind (otherwise refused with `workflow_not_for_ref`); the run starts with a warning |
 | `--since N` | `events`: only the events after line N of the run's history (a whole number, 0 or more; default 0) |
 | `--id ID` | `validate`: check the text as this workflow id |
 | `--project [NAME]` | `status`: every run of a project, going or finished. With no NAME, the project of the current workspace; the optional NAME takes the next bare word, so `status --project wr_x` looks for a project called `wr_x` |
@@ -207,6 +208,8 @@ A library recipe can name a workflow, and `workspace start --recipe NAME REF` th
 4. It runs the checks `workflow run` makes (`input_required`, `workflow_command_unset` for a `status: command:` or a `require: command:` that is not `optional: true`, `invalid_input`) against the project's main checkout, so a refusal leaves nothing behind. For a workspace it reuses, it also checks that checkout's tree: a workflow with a `guard: unchanged` step refuses a dirty one with `dirty_worktree`, before any agent starts. A checkout it makes starts clean and is not checked.
 5. It makes the workspace as `start` does, with no confirmation, no play, no packs and no spine (the run's steps send their own instructions), waits for the coding agent (`--prompt-timeout`), and starts the run in that pane.
 
+A workflow whose `applies_to:` does not list the `REF`'s kind (`jira`, `github_pr`, `github_issue`, `branch`) is refused with `workflow_not_for_ref` (`details.workflow`, `details.kind`, `details.applies_to`) and prints `warning`-style text such as `pr-feedback applies to github_pr, branch, not jira. Pass --force to continue.` The check reads the ref's text only, so it comes before the ticket is read, before the fork check and before anything is made, also under `--dry-run`. `--force` starts anyway and adds the mismatch to `warnings`. In text mode the warning prints on stderr as `warning: ...`; with `--json` it is in `warnings`. `pr-feedback` lists `github_pr` and `branch` (a branch can hold the pull request); a JIRA key or issue is refused. `--prompt` with no `REF` has no kind and is never checked. A workflow with no `applies_to:` applies to everything.
+
 A ticket that cannot be read is refused (`ticket_not_found`, `ticket_source_unavailable`) when it was the only source of `task`; with `--prompt` or `--input task=` it is a warning and the run goes on without it. A pull request that cannot be read is always refused, since it can't be checked for a fork. A branch derived from `--prompt` that already exists, locally, on `origin`, or as `.worktrees/<branch>`, is refused with `branch_exists`: pass `--branch NAME` to use it, or another name. `workflow start` needs Claude Code as the workspace's agent (`--agent-kind`, else `agent.kind`); any other kind is refused with `workflow_needs_claude` before anything is made. A workspace that already exists for a `REF`, or for a `--branch` you named, is reused, as `start` does (`would_create` is `false` in the dry run, and `path` is where a branch checked out in another worktree lives), and the run starts in its agent pane.
 
 `workflow start` never checks out a fork's code or starts an agent in it, for any workflow: an agent that starts in a checkout loads its `CLAUDE.md` and `.claude/settings.json` hooks. It refuses with `fork_pull_request`, before any worktree, check or agent, also under `--dry-run`. `details.reason` says which rule refused, `details.next` holds the `workspace start` command to use only if you trust the code, and the refusal is permanent: running it again gives the same answer.
@@ -305,6 +308,8 @@ Top-level keys:
 | `budget` | `{tokens: N, action: stop}`, or left out (the default, no budget): the tokens the run may use before the next attempt is held. `tokens` is a whole number from 1 up; `stop` is the only `action`. See [Token budgets](#token-budgets) |
 | `stall` | A duration such as `20m`, or left out (the default): how long a step's pane may sit idle, its agent's turn over, before `workflow sweep` decides the step. Only the sweep reads it; left out, the sweep never decides a step for being idle |
 | `redeliver` | A whole number from 0 to 10 (default 3): how many times `workflow sweep` types a step's line again when it was not delivered (see [Sweeping stopped runs](#sweeping-stopped-runs)). `0` turns the retry off. A run stored before the key existed reads as `0` and is never retried |
+| `use_when` | One line (at most 200 characters) saying when to pick the workflow; shown by `workflow show` and listed by `workflow show --json`. Left out: none |
+| `applies_to` | A list of the ref kinds the workflow is for: `jira`, `github_pr`, `github_issue`, `branch`. `workflow start` with a `REF` of another kind is refused with `workflow_not_for_ref` unless `--force`. Left out (the default): every kind, no check. A run stored before the key existed has none |
 | `deny` | A list of shell-glob patterns (at most 50, each at most 200 characters with at most 8 `*` or `?`) for Bash commands the run's agent may not run; see [Denying commands](#denying-commands). A run stored before the key existed has none |
 | `steps` | Step id to step, in the order they run |
 

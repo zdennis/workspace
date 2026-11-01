@@ -97,7 +97,7 @@ module Workspace
       #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout); with +here+,
       #   `branch_exists` when the ref's checkout is not the one it runs in
       def call(id: nil, ref: nil, positional: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
-        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil)
+        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false)
         prompt = prompt.to_s.strip
         prompt = nil if prompt.empty?
         id, ref = split(id, ref, positional, prompt)
@@ -113,9 +113,8 @@ module Workspace
           id = default_id(ref, where[:project_workspace])
           definition = @catalog.find(id)
           warnings = read_as_branch(ref, id) if positional
-          warnings.each { |warning| @output.puts "Warning: #{warning}" }
         end
-        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, **where)
+        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, force: force, **where)
         return run_here(plan, here, note: note, dry_run: dry_run) if here
         return dry_run_row(id, plan) if dry_run
 
@@ -206,13 +205,14 @@ module Workspace
           code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known})
       end
 
-      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:)
+      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:, force: false)
         if here && !agent_kind
           check_agent!(here.workspace, project: project_workspace)
         else
           require_claude!(agent_kind || @agent_commands.kind(project_workspace))
         end
         resolved = ref && @start_ref.call(ref)
+        check_applies_to!(definition, resolved, ref, warnings, force: force)
         ticket = read_ticket(resolved, root, definition, inputs: inputs, prompt: prompt, slug: slug, warnings: warnings)
         allowed = tracked_repositories(root)
         checked = check_pull_request!(definition, resolved, ticket, allowed, "'#{resolved.key}'") if resolved&.kind == "github_pr"
@@ -238,6 +238,25 @@ module Workspace
         checked = @engine.preflight(definition: definition, workspace: here&.workspace || project.name, worktree: here&.path || project.root, inputs: seeded, pane: nil, tree: exists ? path : nil, checkout: path)
         Plan.new(definition: definition, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
           ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt, checkout: checkout_ref(resolved, ticket))
+      end
+
+      # Refuses a ref of a kind the definition's `applies_to` does not list, unless +force+ (then a
+      # warning). Checked from the ref's text alone, before the ticket is read, so a mismatch costs no
+      # `gh` or `jira` call and nothing is made. A prompt has no ref kind and is not checked.
+      def check_applies_to!(definition, resolved, ref, warnings, force:)
+        return unless resolved
+
+        applies = WorkflowDefinition.applies_to(definition.to_h)
+        return if applies.empty? || applies.include?(resolved.kind)
+
+        id = definition.to_h["id"]
+        message = "#{id} applies to #{applies.join(", ")}, not #{resolved.kind}."
+        if force
+          warnings << "#{message} Continuing because of --force."
+          return
+        end
+        raise Workspace::Error.new("#{message} Pass --force to continue.", code: "workflow_not_for_ref",
+          details: {"workflow" => id, "kind" => resolved.kind, "applies_to" => applies})
       end
 
       # The ticket's fields, nil for a prompt or a plain branch; a pull request's also has

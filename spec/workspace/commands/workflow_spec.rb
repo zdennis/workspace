@@ -103,6 +103,15 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json).to eq("schema_version" => 1, "ok" => true, "workflows" => entries)
     end
 
+    it "prints use_when and applies_to of one definition" do
+      data = Workspace::WorkflowDefinition.parse("use_when: Feedback to act on.\napplies_to: [github_pr, branch]\nsteps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+      allow(catalog).to receive(:find).with("flow").and_return(data)
+
+      command.show(id: "flow")
+
+      expect(output.string).to include("Use when: Feedback to act on.\nApplies to: github_pr, branch\n")
+    end
+
     it "says so when there are none" do
       allow(catalog).to receive(:list).and_return([])
 

@@ -89,6 +89,8 @@ module Workspace
         end
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
+        @output.puts "Use when: #{data["use_when"]}" if data["use_when"]
+        @output.puts "Applies to: #{data["applies_to"].join(", ")}" if data["applies_to"].any?
         @output.puts "Inputs:" if data["inputs"].any?
         data["inputs"].each { |name, spec| @output.puts "  #{name}#{" (required)" if spec["required"]}#{": #{spec["description"]}" if spec["description"]}" }
         @output.puts "Steps:"

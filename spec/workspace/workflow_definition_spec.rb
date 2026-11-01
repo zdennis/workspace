@@ -225,7 +225,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(definition.source).to eq("global")
     expect(definition.sha256).to eq(Digest::SHA256.hexdigest(minimal))
     expect(definition.to_h).to eq(
-      "id" => "demo", "title" => "demo", "description" => nil, "inputs" => {}, "include" => [], "instructions" => nil,
+      "id" => "demo", "title" => "demo", "description" => nil, "use_when" => nil, "applies_to" => [], "inputs" => {}, "include" => [], "instructions" => nil,
       "max_attempts" => 6, "stall" => nil, "redeliver" => 3, "deny" => [],
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
                    "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn"}]
@@ -344,6 +344,40 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "use_when and applies_to" do
+    it "reads both" do
+      data = parse("use_when: Review feedback to act on.\napplies_to: [github_pr, branch, github_pr]\n#{minimal}").to_h
+
+      expect(data).to include("use_when" => "Review feedback to act on.", "applies_to" => %w[github_pr branch])
+    end
+
+    it "collects every problem under one error" do
+      found = problems("use_when: \"two\\nlines\"\napplies_to: [jira, ticket, pr]\n#{minimal}")
+
+      expect(found).to include("use_when must be one line of at most 200 characters",
+        a_string_starting_with('applies_to has unknown kinds "ticket", "pr"'))
+    end
+
+    it "refuses an applies_to that is not a non-empty list, and a use_when over the limit" do
+      expect(problems("applies_to: jira\n#{minimal}")).to include(a_string_starting_with("applies_to must be a list of ref kinds"))
+      expect(problems("applies_to: []\n#{minimal}")).to include(a_string_starting_with("applies_to must be a list of ref kinds"))
+      expect(problems("use_when: #{"x" * 201}\n#{minimal}")).to include("use_when must be one line of at most 200 characters")
+    end
+
+    it "reads a stored definition that has none, or a bad value, as unset" do
+      expect(described_class.use_when({})).to be_nil
+      expect(described_class.use_when(nil)).to be_nil
+      expect(described_class.use_when("use_when" => 5)).to be_nil
+      expect(described_class.use_when("use_when" => "two\nlines")).to be_nil
+      expect(described_class.use_when("use_when" => "x" * 300)).to be_nil
+      expect(described_class.use_when("use_when" => "x" * 200)).to eq("x" * 200)
+      expect(described_class.applies_to({})).to eq([])
+      expect(described_class.applies_to(nil)).to eq([])
+      expect(described_class.applies_to("applies_to" => %w[jira bogus])).to eq([])
+      expect(described_class.applies_to("applies_to" => %w[jira])).to eq(%w[jira])
+    end
+  end
+
   it "reports every problem in a file at once" do
     found = problems(<<~YAML)
       schema_version: 2
@@ -371,7 +405,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
       "schema_version must be 1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",

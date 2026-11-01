@@ -5053,6 +5053,7 @@ module Workspace
         opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
         opts.on("--needs-me", "status: the runs still going, in every workspace, that wait for you (a gate, question, prompt, failed check, gone pane, stall), each with the next command; --name or --project narrows it") { options[:needs_me] = true }
         opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
+        opts.on("--force", "start: start although the workflow's applies_to: does not list the REF's kind") { options[:force] = true }
         opts.on("--dry-run", "run, start: report what would start and start nothing; sweep: report what would be done and do nothing (also --install and --uninstall); add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
         opts.on("--install", "sweep: install the launchd entry that runs the sweep every 5 minutes (a per-user LaunchAgent; opt-in)") { options[:schedule_flags] << :install }
         opts.on("--uninstall", "sweep: unload and remove that launchd entry") { options[:schedule_flags] << :uninstall }
@@ -5134,7 +5135,7 @@ module Workspace
       extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
       extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
 
-      start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout}
+      start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout, "--force" => :force}
       if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
         raise UsageError, "#{flag.first} is for `workflow start [ID] [REF]`."
       end
@@ -5213,9 +5214,11 @@ module Workspace
       when "start"
         inputs = workflow_inputs(options[:inputs])
         workflow_action("workflow start", options) do
-          @workflow_start_command.call(id: start_ref && subject, ref: start_ref, positional: start_ref ? nil : subject, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
+          row = @workflow_start_command.call(id: start_ref && subject, ref: start_ref, positional: start_ref ? nil : subject, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
             note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
-            prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run])
+            prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run], force: options[:force] == true)
+          Array(row && row["warnings"]).each { |warning| @error_output.puts "warning: #{TerminalText.escape(warning.to_s)}" } unless options[:json]
+          row
         end
       when "resume"
         workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, caller_pane: ENV["TMUX_PANE"]) }

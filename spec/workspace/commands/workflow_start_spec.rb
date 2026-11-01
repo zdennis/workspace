@@ -88,6 +88,62 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     expect { command.call(id: "nope", ref: "PROJ-1") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
   end
 
+  describe "applies_to" do
+    let(:yaml) { "applies_to: [github_pr]\nsteps:\n  plan:\n    prompt: Go.\n" }
+
+    it "refuses a ref of another kind before the ticket is read or anything is made" do
+      expect(ticket_source).not_to receive(:fetch)
+      expect(engine).not_to receive(:preflight)
+      expect(start).not_to receive(:payload)
+
+      expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("workflow_not_for_ref")
+        expect(e.message).to eq("flow applies to github_pr, not jira. Pass --force to continue.")
+        expect(e.details).to include("workflow" => "flow", "kind" => "jira",
+          "applies_to" => ["github_pr"])
+        expect(e.details).not_to have_key("next")
+      }
+    end
+
+    it "refuses under --dry-run too" do
+      expect { command.call(id: "flow", ref: "PROJ-1", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_not_for_ref") }
+    end
+
+    it "goes on with a warning under force" do
+      row = command.call(id: "flow", ref: "PROJ-1", dry_run: true, force: true)
+
+      expect(row["warnings"]).to include("flow applies to github_pr, not jira. Continuing because of --force.")
+    end
+
+    it "names the kind of a bare #N, a branch and an issue URL" do
+      allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/12", "cross_repository" => false))
+      {"#12" => "github_pr", "my-branch" => "branch", "https://github.com/o/r/issues/5" => "github_issue"}.each do |ref, kind|
+        yaml_for = (kind == "github_pr") ? "jira" : "github_pr"
+        definition = Workspace::WorkflowDefinition.parse("applies_to: [#{yaml_for}]\nsteps:\n  plan:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+        allow(catalog).to receive(:find).with("flow").and_return(definition)
+
+        expect { command.call(id: "flow", ref: ref, dry_run: true) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("workflow_not_for_ref")
+          expect(e.details["kind"]).to eq(kind)
+        }
+      end
+    end
+
+    it "carries the force warning in the dry run row" do
+      expect(command.call(id: "flow", ref: "PROJ-1", dry_run: true, force: true)["warnings"].first).to include("Continuing because of --force")
+    end
+
+    it "does not check a prompt, which has no ref kind" do
+      expect(command.call(id: "flow", prompt: "do it", dry_run: true)["warnings"]).to eq([])
+    end
+
+    it "passes a ref of a listed kind" do
+      allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/12", "cross_repository" => false))
+
+      expect(command.call(id: "flow", ref: "https://github.com/o/r/pull/12", dry_run: true)["warnings"]).to eq([])
+    end
+  end
+
   it "seeds task from a JIRA ticket's key, title and url" do
     row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
 
@@ -1161,7 +1217,6 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       row = command.call(positional: "rpivv", dry_run: true)
 
       expect(row["warnings"]).to contain_exactly(a_string_including("\"rpivv\" is not a known workflow", "rpiv comes from config", "Known: flow, rpiv"))
-      expect(output.string).to include("Warning: \"rpivv\" is not a known workflow")
     end
 
     it "does not warn for a lone ticket, whose shape is no accident" do

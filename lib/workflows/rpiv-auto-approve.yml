@@ -3,6 +3,8 @@ id: rpiv-auto-approve
 title: Research, Plan, Implement, Verify (auto-approve)
 description: One feature end to end with no person, three reviewer agents voting on the plan, and a test-backed verify loop.
 
+use_when: A feature or change to build end to end when no person will review the plan.
+
 inputs:
   task:
     description: What to build. A ticket key with a sentence, or a path to a spec in the worktree.

@@ -2388,7 +2388,7 @@ RSpec.describe Workspace::CLI do
           from_start, from_workflow = workflow_start.calls
           expect(from_start).to eq(id: "rpiv", ref: "PROJ-1", slug: true, inputs: {"task" => "do it"}, base: "main", headless: false, agent_kind: "claude", prompt_timeout: 120)
           expect(from_start).to eq(from_workflow.slice(*from_start.keys))
-          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false)
+          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false, force: false)
           expect(start_command).not_to have_received(:call)
         end
 
@@ -6769,7 +6769,7 @@ RSpec.describe Workspace::CLI do
         cli.run(["workflow", "start", "rpiv", "PROJ-1", "--branch", "b", "--slug", "--base", "main", "--input", "task=x", "--note", "n", "--agent-kind", "codex", "--prompt-timeout", "2m", "--no-headless", "--dry-run"])
 
         expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", positional: nil, prompt: nil, branch: "b", slug: true, inputs: {"task" => "x"}, note: "n", base: "main",
-                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true}])
+                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true, force: false}])
       end
 
       it "takes --prompt with no REF, and headless from the launch mode" do
@@ -6834,6 +6834,34 @@ RSpec.describe Workspace::CLI do
         expect { cli.run(["workflow", "run", "rpiv", "--slug"]) }.to raise_error(FakeSystemExit)
         expect(error_output.string).to include("--slug is for `workflow start")
         expect(workflow_command.calls).to be_empty
+      end
+
+      it "escapes control characters in a printed warning" do
+        start_command.row = start_command.row.merge("warnings" => ["Could not read X: \e[31mred\e[0m\rgone"])
+        cli.run(["workflow", "start", "rpiv", "x"])
+
+        expect(error_output.string).to include('warning: Could not read X: \e[31mred\e[0m\rgone')
+        expect(error_output.string).not_to include("\e")
+      end
+
+      it "refuses --force with workflow run and remove" do
+        expect { cli.run(["workflow", "run", "rpiv", "--force"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--force is for `workflow start")
+        expect { cli.run(["workflow", "remove", "rpiv", "--force"]) }.to raise_error(FakeSystemExit)
+        expect(workflow_command.calls).to be_empty
+      end
+
+      it "passes --force on, and prints the row's warnings on stderr in text mode only" do
+        start_command.row = start_command.row.merge("warnings" => ["rpiv applies to jira, not branch. Continuing because of --force."])
+        cli.run(["workflow", "start", "rpiv", "x", "--force"])
+        expect(start_command.calls.last).to include(force: true)
+        expect(error_output.string).to include("warning: rpiv applies to jira, not branch. Continuing because of --force.")
+
+        error_output.truncate(0)
+        error_output.rewind
+        cli.run(["workflow", "start", "rpiv", "x", "--force", "--json"])
+        expect(error_output.string).not_to include("warning:")
+        expect(JSON.parse(output.string.lines.last)["results"].first["warnings"]).not_to be_empty
       end
     end
 

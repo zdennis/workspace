@@ -3,6 +3,8 @@ id: rpiv
 title: Research, Plan, Implement, Verify
 description: One feature end to end in one workspace, with a plan gate and a test-backed verify loop.
 
+use_when: A feature or change to build end to end, with a plan to approve first.
+
 inputs:
   task:
     description: What to build. A ticket key with a sentence, or a path to a spec in the worktree.

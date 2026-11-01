@@ -85,7 +85,7 @@ module Workspace
     # problems; so is a `.yml` entry that can't be a definition (a name that
     # is not an id, or a directory), which no id finds.
     #
-    # @return [Array<Hash{String=>Object}>] "id", "title", "description", "source", "path",
+    # @return [Array<Hash{String=>Object}>] "id", "title", "description", "use_when", "applies_to", "source", "path",
     #   "sha256" and "problems" (empty when valid), sorted by id
     def list
       ids.filter_map do |id|
@@ -99,14 +99,14 @@ module Workspace
         row = summary(id, source, path).merge("sha256" => read["sha256"], "problems" => read["problems"])
         next row unless read["problems"].empty?
         data = WorkflowDefinition.parse(read["text"], id: id, source: source, path: path).to_h
-        row.merge("title" => data["title"], "description" => data["description"])
+        row.merge("title" => data["title"], "description" => data["description"], "use_when" => data["use_when"], "applies_to" => data["applies_to"])
       end
     end
 
     private
 
     def summary(id, source, path)
-      {"id" => id, "title" => id, "description" => nil, "source" => source, "path" => path, "sha256" => nil, "problems" => []}
+      {"id" => id, "title" => id, "description" => nil, "use_when" => nil, "applies_to" => [], "source" => source, "path" => path, "sha256" => nil, "problems" => []}
     end
 
     def unusable(name)

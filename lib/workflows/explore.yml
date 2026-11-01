@@ -3,6 +3,8 @@ id: explore
 title: Explore and report
 description: Read-only research into a question, a gate on the findings, then a report note. Changes no code.
 
+use_when: A question to answer by reading, with no code change.
+
 inputs:
   task:
     description: The question to explore, or the path of a brief.

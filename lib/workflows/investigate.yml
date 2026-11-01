@@ -7,6 +7,8 @@ description: >-
   Start it in the workspace with the red check (`workflow run investigate`, optionally `--input ci_run=N` or the run's URL and
   `--input pr=N`), or from a ref (`workflow start investigate '#123'`, a JIRA key, an issue URL, or `--prompt "the bug in words"`).
 
+use_when: A failing test or CI check, or a bug report, to reproduce and fix.
+
 inputs:
   task:
     description: The bug in words. `workflow start` fills it from the ticket and `--prompt`. Read it with `workflow status RUN --json` (a bare read may return two runs); it is not in these instructions.

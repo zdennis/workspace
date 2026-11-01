@@ -397,7 +397,7 @@ module Workspace
         ]
       },
       "start" => {
-        usage: ["workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]"],
+        usage: ["workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",
         about: [
           "Run it inside the project's git checkout; the main agent must be Claude Code.",
@@ -409,7 +409,8 @@ module Workspace
           "mistyped ID and is refused as unknown_workflow.",
           "",
           "REF is a JIRA key or URL, a pull request, an issue or a branch. Waits for the workspace's agent, then",
-          "runs ID in it. A fork's pull request, or a branch tracking another repository, is refused with",
+          "runs ID in it. A workflow that lists the kinds of REF it is for (applies_to:) refuses another kind with",
+          "workflow_not_for_ref unless --force; a --prompt has no REF and is not checked. A fork's pull request, or a branch tracking another repository, is refused with",
           "fork_pull_request before anything is made.",
           "",
           "Without --dry-run this makes things for real: a worktree and its workspace (as `workspace start`",
@@ -424,6 +425,7 @@ module Workspace
           ["--agent-kind KIND", "The coding agent the main agent pane runs: #{AGENT_KINDS}"],
           ["--[no-]headless", "Start the session in plain tmux, as `workspace start --headless`"],
           ["--prompt-timeout DURATION", "How long to wait for the coding agent to be ready (default 60s)"],
+          ["--force", "Start although the workflow's applies_to: does not list the REF's kind (workflow_not_for_ref otherwise)"],
           ["--dry-run", "Check everything and make nothing"], JSON_OPT],
         examples: [
           ["workspace workflow start PROJ-101", "use the workflow config names for a JIRA key (workflows.by_ref.jira, else workflows.default)"],

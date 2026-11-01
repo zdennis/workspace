@@ -21,7 +21,7 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts stall redeliver budget deny steps].freeze
+    TOP_KEYS = %w[schema_version id title description use_when applies_to inputs include instructions max_attempts stall redeliver budget deny steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
@@ -53,6 +53,12 @@ module Workspace
     BUDGET_KEYS = %w[tokens action].freeze
     BUDGET_ACTIONS = %w[stop].freeze
     MAX_BUDGET_TOKENS = 1_000_000_000_000
+
+    # The kinds of ref `workflow start` can be given (`StartRef`'s kinds), which `applies_to:` may list.
+    REF_KINDS = %w[jira github_pr github_issue branch].freeze
+
+    # The most characters a `use_when:` line may hold.
+    MAX_USE_WHEN = 200
 
     # Limits on a `deny:` list: patterns, their length, and `*` or `?` in one (a long run of wildcards makes a glob slow).
     MAX_DENY = 50
@@ -174,6 +180,25 @@ module Workspace
       (value.is_a?(Numeric) && value.finite? && value > 0) ? value : nil
     end
 
+    # The `use_when` of a definition hash: one line saying when to pick the workflow.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [String, nil] nil when unset, stored before the key existed, or a bad stored value
+    def self.use_when(definition)
+      value = definition.is_a?(Hash) ? definition["use_when"] : nil
+      (value.is_a?(String) && !value.strip.empty? && value.length <= MAX_USE_WHEN && !value.match?(/[\r\n]/)) ? value : nil
+    end
+
+    # The `applies_to` of a definition hash: the kinds of ref the workflow is for.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Array<String>] kinds from {REF_KINDS}; empty (applies to every ref) when unset, stored before
+    #   the key existed, or a bad stored value
+    def self.applies_to(definition)
+      value = definition.is_a?(Hash) ? definition["applies_to"] : nil
+      (value.is_a?(Array) && value.all? { |kind| REF_KINDS.include?(kind) }) ? value.uniq : []
+    end
+
     # The `deny` of a definition hash: shell globs of Bash commands the run's agent may not run.
     #
     # @param definition [Hash] {#to_h}, or a stored run's definition
@@ -275,6 +300,8 @@ module Workspace
         "id" => id,
         "title" => text_or_nil(raw["title"], "title") || id,
         "description" => text_or_nil(raw["description"], "description"),
+        "use_when" => use_when_from(raw["use_when"]),
+        "applies_to" => applies_to_from(raw["applies_to"]),
         "inputs" => inputs,
         "include" => names(raw["include"], "include"),
         "instructions" => instructions,
@@ -305,6 +332,27 @@ module Workspace
       action = value.fetch("action", BUDGET_ACTIONS.first)
       problem "budget action must be #{BUDGET_ACTIONS.join(" or ")}, got #{action.inspect[0, 40]}" unless BUDGET_ACTIONS.include?(action)
       (tokens.is_a?(Integer) && BUDGET_ACTIONS.include?(action)) ? {"tokens" => tokens, "action" => action} : nil
+    end
+
+    def use_when_from(value)
+      return nil if value.nil?
+      text = text_or_nil(value, "use_when") or return nil
+      if text.match?(/[\r\n]/) || text.length > MAX_USE_WHEN
+        problem "use_when must be one line of at most #{MAX_USE_WHEN} characters"
+        return nil
+      end
+      text
+    end
+
+    def applies_to_from(value)
+      return [] if value.nil?
+      unless value.is_a?(Array) && !value.empty?
+        problem "applies_to must be a list of ref kinds (#{REF_KINDS.join(", ")}), got #{value.inspect[0, 60]}"
+        return []
+      end
+      unknown = value.reject { |kind| REF_KINDS.include?(kind) }
+      problem "applies_to has unknown kind#{"s" if unknown.size > 1} #{unknown.map { |kind| kind.inspect[0, 40] }.join(", ")} (known: #{REF_KINDS.join(", ")})" if unknown.any?
+      unknown.any? ? [] : value.uniq
     end
 
     def deny_from(value)

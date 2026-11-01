@@ -95,7 +95,7 @@ RSpec.describe Workspace::WorkflowCatalog do
 
     entry = catalog.list.find { |each| each["id"] == "mine" }
 
-    expect(entry).to eq("id" => "mine", "title" => "mine", "description" => nil, "source" => "global", "path" => File.join(global_dir, "mine.yml"),
+    expect(entry).to eq("id" => "mine", "title" => "mine", "description" => nil, "use_when" => nil, "applies_to" => [], "source" => "global", "path" => File.join(global_dir, "mine.yml"),
       "sha256" => nil, "problems" => ["#{File.join(global_dir, "mine.yml")} is a link to a file that is not there"])
     expect { catalog.find("mine") }.to raise_error(Workspace::Error, 'No workflow named "mine". Known: rpiv.')
   end

@@ -3,6 +3,9 @@ id: pr-feedback
 title: Pull request feedback
 description: Triage a pull request's review feedback behind an approval gate, then commit the approved fixes and draft the replies. Never posts and never pushes.
 
+use_when: A pull request has review feedback to act on.
+applies_to: [github_pr, branch]
+
 inputs:
   task:
     description: What the run is about. `workflow start` fills it from the pull request.
