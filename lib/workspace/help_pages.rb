@@ -2820,15 +2820,15 @@ module Workspace
     SKILLS = {
       "install" => {
         usage: ["skills install [--install-all] [--dry-run] [--json] [--no-input]"],
-        summary: "Link the four workspace skills into your coding agents' skill directories",
+        summary: "Link the five workspace skills into your coding agents' skill directories",
         about: [
-          "Links the four workspace skills (workspace, workspace-agent-run, workspace-inbox, workspace-lifecycle),",
-          "each as a link to its whole directory, into the skills directory of the coding agents found on this",
-          "machine (Claude Code ~/.claude/skills, Codex ~/.codex/skills, Pi ~/.pi/agent/skills, OpenCode",
+          "Links the five workspace skills (workspace, workspace-agent-run, workspace-inbox, workspace-lifecycle,",
+          "workspace-workflow), each as a link to its whole directory, into the skills directory of the coding",
+          "agents found on this machine (Claude Code ~/.claude/skills, Codex ~/.codex/skills, Pi ~/.pi/agent/skills, OpenCode",
           "~/.config/opencode/skills) and into ~/.agents/skills when it exists.",
           "",
           "It asks once which of the harnesses found to install for; the ones left out are remembered and not",
-          "asked again (end of input installs nothing and records nothing). All four skills are linked in a directory, or none: a path",
+          "asked again (end of input installs nothing and records nothing). All five skills are linked in a directory, or none: a path",
           "already there that is not our link (a real directory with other content, a file, someone else's link)",
           "is never replaced, it is refused and the mv to clear it is printed. A real directory identical to ours",
           "is moved to the state directory's skill-backups and linked. A re-run refreshes links and says what",
@@ -2853,7 +2853,7 @@ module Workspace
         usage: ["skills uninstall [--dry-run] [--json]"],
         summary: "Remove the links skills install made",
         about: [
-          "Removes our links (one of the four names, pointing at a lib/skills/<name> of this tool, dangling ones",
+          "Removes our links (one of the five names, pointing at a lib/skills/<name> of this tool, dangling ones",
           "too) from every known skills directory. Real directories and other links stay and are reported. It",
           "records no decline, works from a linked worktree and never asks."
         ],

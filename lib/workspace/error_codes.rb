@@ -66,7 +66,7 @@ module Workspace
       "skill_path_exists" => "skills install: a skill's path in a skills directory holds a real directory with other content, or a file; nothing is linked in that directory. details.path; the row carries the mv that clears it.",
       "skill_link_foreign" => "skills install: a skill's path in a skills directory is a link that is not this tool's; nothing is linked in that directory. details.path; the row carries the mv that clears it.",
       "skill_source_worktree" => "skills install: run from a linked git worktree, whose directory would be deleted with it, so links into it would dangle. Run it from the main checkout or a Homebrew install. details.path.",
-      "skills_source_missing" => "skills install: this install has no lib/skills directory for one of the four skills. details.path, details.missing.",
+      "skills_source_missing" => "skills install: this install has no lib/skills directory for one of the five skills. details.path, details.missing.",
       "skill_link_failed" => "skills install or uninstall: writing or removing a link failed (permissions, a full disk); what was done in that directory is undone. In a skill row, with message.",
       "no_harness_found" => "skills install: none of claude, codex, pi or opencode is on PATH and none has a config directory.",
       "gh_unavailable" => "pr create (or finish --pr): gh is not installed or is not logged in; details.reason says which (missing or not_logged_in). pr feedback: gh is not installed (details.reason missing); every other gh failure there is pr_feedback_failed.",

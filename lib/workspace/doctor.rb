@@ -313,7 +313,7 @@ module Workspace
       0
     end
 
-    # One row per harness found and not declined (declined get none): ok when the four links resolve,
+    # One row per harness found and not declined (declined get none): ok when the five links resolve,
     # whichever install they point at; a warning when they are missing or something else sits in their
     # place (never replaced); a failure for a dangling link of ours.
     def check_skills
