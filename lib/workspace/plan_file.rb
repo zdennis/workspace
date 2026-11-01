@@ -274,12 +274,13 @@ module Workspace
     # @param phase [String, nil] the `###` heading the task goes under
     # @param after [String, nil] the id of the task it goes after
     # @param if_revision [String, nil] refuse unless the file's {.revision_of} is this
+    # @param dry_run [Boolean] run every check and build the new bytes, but write nothing; the result has +changed+ false, the current revision and the bytes that would be written
     # @return [Result]
     # @raise [Workspace::Error] `task_exists`, `invalid_task`, `reason_required`, `unknown_task` (for +after+),
     #   `unknown_phase`, `no_task_section`, `stale_revision`, `plan_write_conflict`
-    def self.add_task(path, title:, id: nil, state: "todo", reason: nil, phase: nil, after: nil, if_revision: nil)
+    def self.add_task(path, title:, id: nil, state: "todo", reason: nil, phase: nil, after: nil, if_revision: nil, dry_run: false)
       chosen = id
-      result = rewrite(path, if_revision: if_revision) do |bytes|
+      result = rewrite(path, if_revision: if_revision, dry_run: dry_run) do |bytes|
         chosen = id || parse(read_text(bytes)).next_id
         with_added_task(bytes, path, chosen, title, state, reason, phase, after)
       end
@@ -317,8 +318,9 @@ module Workspace
       rewrite(path, if_revision: if_revision) { |bytes| with_new_title(bytes, path, id, title) }
     end
 
-    # The read, change and rename loop every writer goes through.
-    def self.rewrite(path, if_revision: nil)
+    # The read, change and rename loop every writer goes through. With +dry_run+ the block still runs,
+    # and its answer comes back unwritten as a result with +changed+ false.
+    def self.rewrite(path, if_revision: nil, dry_run: false)
       target = File.realpath(path)
       2.times do
         bytes, signature = File.open(target, "rb") { |file| [file.read, signature_for(file.stat)] }
@@ -329,6 +331,7 @@ module Workspace
         end
         updated = yield(bytes)
         return Result.new(changed: false, revision: current, bytes: bytes) if updated.nil?
+        return Result.new(changed: false, revision: current, bytes: updated) if dry_run
         return Result.new(changed: true, revision: revision_of(updated), bytes: updated) if replace_unless_changed(target, updated, signature)
       end
       raise Workspace::Error.new("The plan #{path} changed while it was being written. Nothing was changed; try again.",

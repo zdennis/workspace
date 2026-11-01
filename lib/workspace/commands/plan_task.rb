@@ -29,14 +29,15 @@ module Workspace
       # @param phase [String, nil] the `###` heading it goes under
       # @param after [String, nil] the id of the task it goes after
       # @param if_revision [String, nil] refuse unless the plan's revision is this
-      # @return [Hash] the row: `outcome` `added`, plus `task`, `state`, `line`, `phase`, `revision`, `counts`, `percent`
+      # @param dry_run [Boolean] check everything and report the task that would be added, writing and recording nothing
+      # @return [Hash] the row: `outcome` `added` (`dry_run` for a dry run), plus `task`, `state`, `line`, `phase`, `revision`, `counts`, `percent`
       # @raise [Workspace::Error] `no_plan`, `stale_revision`, `task_exists`, `invalid_task`, `reason_required`,
       #   `unknown_task`, `unknown_phase`, `no_task_section`, `notes_dir_unwritable`, `plan_write_conflict`
-      def add(name:, title:, id: nil, state: "todo", reason: nil, phase: nil, after: nil, if_revision: nil)
+      def add(name:, title:, id: nil, state: "todo", reason: nil, phase: nil, after: nil, if_revision: nil, dry_run: false)
         file, = @access.require_plan(name)
-        result = write(name, file) { PlanFile.add_task(file, id: id, title: title, state: state, reason: reason, phase: phase, after: after, if_revision: if_revision) }
-        @output.puts "Added task #{result.id} to the plan for #{name}."
-        task_row("added", name, file, result, result.id)
+        result = write(name, file) { PlanFile.add_task(file, id: id, title: title, state: state, reason: reason, phase: phase, after: after, if_revision: if_revision, dry_run: dry_run) }
+        @output.puts dry_run ? "Would add task #{result.id} to the plan for #{name}." : "Added task #{result.id} to the plan for #{name}."
+        task_row(dry_run ? "dry_run" : "added", name, file, result, result.id)
       end
 
       # Sets a task's state. A skipped or blocked task ends with ` -- reason`, so +reason+ is needed for those;
