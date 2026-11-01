@@ -556,10 +556,16 @@ RSpec.describe Workspace::ConfigReport do
       let(:catalog) { instance_double(Workspace::WorkflowCatalog) }
       subject(:report) { described_class.new(project_settings: settings, project_config: project_config, notes_dir: notes_dir, catalog: catalog) }
 
-      before { allow(catalog).to receive(:known?) { |id| id == "rpiv" } }
+      before { allow(catalog).to receive(:known?) { |id, project: nil| id == "rpiv" || (id == "team" && project == "api") } }
 
       def found(name = "api")
         report.validate(name)["problems"].map { |p| [p["layer"], p["code"], p["severity"], p["key"]] }
+      end
+
+      it "counts the workspace's own project definitions as workflows" do
+        write("api", "workflows:\n  default: team\n")
+
+        expect(found).to eq([])
       end
 
       it "warns on a workflows.default no workflow has" do
