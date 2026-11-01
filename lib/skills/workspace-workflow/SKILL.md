@@ -11,7 +11,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 
 ## Start with go
 
-`workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--base REF] [--dry-run] [--json]`. Check `workspace capabilities --json` for `features.go`; if it is absent, use `workflow start`. Run with `--dry-run` first, then the same command without it.
+`workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--base REF] [--dry-run] [--json]`. Check `workspace capabilities --json` for `features.go`; if it is absent, use `workflow start`. `--here`, `--base` and `decision.route: task` need `features.go >= 2`; at 1 those flags are invalid options, and free text from a worktree runs there. Run with `--dry-run` first, then the same command without it.
 
 - Any whitespace makes the argument free text. A lone word is a ref, so `go rpiv` looks for a branch named rpiv: name a workflow with `--workflow`. Quote `'#123'`.
 - The workflow is `--workflow`, then `workflows.by_ref.KIND`, then `workflows.default`, then `pr-feedback` for a pull request, else `rpiv`.
@@ -29,6 +29,9 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 | `checkout_has_run` | From `go --here "TEXT"`: the run going here is past every step that reads the plan, so the text would not be picked up. Drop `--here` for a new workspace. |
 | `no_plan` | From `go --here "TEXT"`: the run's plan step has not written the plan yet. Run again after it does, or drop `--here` for a new workspace. |
 | `plan_done` | From `go --here "TEXT"`: the plan is marked done under a run still going. Drop `--here` for a new workspace, or ask the person to reopen the plan. |
+| `invalid_task` | From `go --here "TEXT"`: the text does not fit one task line (over 500 characters, several lines, or ` -- `). Shorten it yourself, or drop `--here`. |
+| `plan_write_conflict` | From `go --here "TEXT"`: the plan kept changing while the task was written. Run it again. |
+| `unknown_base` | `--base` names nothing git can find, or starts with `-`. Nothing started. |
 | `branch_not_allowed` | The default branch or the main checkout's branch. Pick another. `workflow run` is no way round it: running on the default branch is the person's decision. |
 | `branch_exists`, `unknown_ref` | Name taken, or no such branch (`details.did_you_mean` for a case variant). |
 | `unknown_workflow` | No such id. `workflow show` lists them. |

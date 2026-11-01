@@ -91,9 +91,10 @@ Before it writes anything, `go` refuses when the task would not be picked up:
 - `checkout_has_run`: the run is at a step from which no later step reads the plan (a workflow such as `investigate` never does, and an `rpiv` run on `verify` has passed `implement`). Leave off `--here` to make a new workspace for the text, or cancel the run (`details.next`).
 - `no_plan`: the run's `plan` step has not written the plan file yet. `go` never makes it, because `plan init` would create the file that step is due to write. Run `go` again after the step has, or leave off `--here`. `details.run_id` and `details.step` name the run.
 - `plan_done`: the plan is marked `status: done` while the run goes on. Edit the file to reopen it, or leave off `--here`. A plan whose tasks are all checked but whose status is still `active` takes the task, since the run (in `implement`, say) can still pick it up.
-A plan marked `status: paused` still takes the task, with a warning (printed, and in `warnings`): the agent will not take it until someone resumes the plan with `workspace plan start`.
-
 - `invalid_task`: the text does not fit one task line (over 500 characters, more than one line, or containing ` -- `). `go` does not reword it.
+- `plan_write_conflict`: the plan file kept changing while the task was written, so nothing was written. Run it again.
+
+A plan marked `status: paused` still takes the task, with a warning (printed, and in `warnings`): the agent will not take it until someone resumes the plan with `workspace plan start`.
 
 A task added while an `rpiv-auto-approve` run is in `plan_review` changes the plan's revision. The approval the reviewers write is bound to the revision they read, so the step's check fails. Its `on_fail` sends the run back to `plan` and counts one of that step's retries (`max: 9`), and the plan agent starts again and may rewrite the file, so the new task can be reworded or dropped. Add it before `plan_review` starts, or after the plan is approved.
 

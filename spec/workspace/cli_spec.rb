@@ -8900,6 +8900,12 @@ RSpec.describe Workspace::CLI do
       expect(go_command.calls.last).to include(argument: "try the thing", here: true)
     end
 
+    it "passes --base to go" do
+      cli.run(["go", "try the thing", "--base", "origin/main"])
+
+      expect(go_command.calls.last).to include(argument: "try the thing", base: "origin/main")
+    end
+
     it "passes the launch mode's headless setting to go" do
       headless_cli, = build_test_cli(output: output, go_command: go_command, launch_mode: CLITestHelpers.launch_mode(headless: true))
 

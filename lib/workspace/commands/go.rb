@@ -70,14 +70,14 @@ module Workspace
         root = @git.root
         project = root && @start_ref.project(root)
         checkout = checkout_here(root, project, caller_pane)
+        if argument.nil? && checkout.nil? && !here
+          raise Workspace::UsageError, "go needs a ref or free text here: it runs in place only in a linked worktree workspace off the default branch."
+        end
+        raise Workspace::Error, "go must run inside a git repository." unless root
         if here && checkout.nil?
           raise Workspace::Error.new("--here runs go in place, and that works only in a linked worktree workspace off the default branch. This directory is not one, so nothing was started. Drop --here to make a new worktree workspace.",
             code: "go_here_unavailable", details: {"path" => root})
         end
-        if argument.nil? && checkout.nil?
-          raise Workspace::UsageError, "go needs a ref or free text here: it runs in place only in a linked worktree workspace off the default branch."
-        end
-        raise Workspace::Error, "go must run inside a git repository." unless root
 
         reading = classify(argument, root, workflow)
         if reading.ref

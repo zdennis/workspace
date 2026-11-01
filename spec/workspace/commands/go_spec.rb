@@ -547,6 +547,16 @@ RSpec.describe Workspace::Commands::Go do
       end
       expect(workflow_start).not_to have_received(:locate_project)
     end
+
+    it "says a repository is needed under --here, not go_here_unavailable" do
+      [nil, "free text"].each do |argument|
+        error = refusal(argument: argument, here: true)
+
+        expect(error).not_to be_a(Workspace::UsageError)
+        expect(error.code).not_to eq("go_here_unavailable")
+        expect(error.message).to eq("go must run inside a git repository.")
+      end
+    end
   end
 
   describe "choosing the workflow" do

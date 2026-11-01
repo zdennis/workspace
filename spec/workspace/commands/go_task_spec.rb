@@ -80,6 +80,14 @@ RSpec.describe Workspace::Commands::GoTask do
         expect(row["warnings"]).to eq([described_class::PAUSED_WARNING])
         expect(output.string).to include("Warning: #{described_class::PAUSED_WARNING}")
       end
+
+      it "warns and writes nothing under dry_run" do
+        row = task.add(run, "also this", checkout, flags: flags, dry_run: true)
+
+        expect(row["outcome"]).to eq("dry_run")
+        expect(row["warnings"]).to eq([described_class::PAUSED_WARNING])
+        expect(File.read(plan_path)).to eq(plan_text)
+      end
     end
 
     it "writes nothing under dry_run, says would add and answers dry_run" do
@@ -138,16 +146,18 @@ RSpec.describe Workspace::Commands::GoTask do
       end
     end
 
-    it "passes invalid_task through for text over 500 characters" do
-      error = nil
-      begin
-        task.add(run, "x" * 501, checkout, flags: flags, dry_run: false)
-      rescue Workspace::Error => e
-        error = e
-      end
+    ["x" * 501, "two\nlines", "before -- after"].each do |text|
+      it "passes invalid_task through for #{text[0, 15].inspect}" do
+        error = nil
+        begin
+          task.add(run, text, checkout, flags: flags, dry_run: false)
+        rescue Workspace::Error => e
+          error = e
+        end
 
-      expect(error.code).to eq("invalid_task")
-      expect(File.read(plan_path)).to eq(plan_text)
+        expect(error.code).to eq("invalid_task")
+        expect(File.read(plan_path)).to eq(plan_text)
+      end
     end
   end
 
