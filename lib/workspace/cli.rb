@@ -5021,6 +5021,7 @@ module Workspace
         opts.separator "on when a turn ends; it is not meant to be typed."
         opts.separator ""
         opts.separator "`run` and `start` really start a run (start also makes a worktree); --dry-run checks and starts nothing."
+        opts.separator "`start` may leave out the ID: config names it (workflows.by_ref.<kind>, else workflows.default)."
         opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
         opts.separator ""
         opts.on("--name WORKSPACE", "run: the workspace to run in; status: that workspace's runs still going (default: the current workspace)") { |v| options[:name] = v }

@@ -392,10 +392,16 @@ module Workspace
         ]
       },
       "start" => {
-        usage: ["workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]"],
+        usage: ["workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",
         about: [
           "Run it inside the project's git checkout; the main agent must be Claude Code.",
+          "",
+          "With no ID, the workflow comes from config: `workflows.by_ref.<kind>` for the kind of REF (jira,",
+          "github_pr, github_issue, branch, or prompt for --prompt), else `workflows.default`. A lone word that is",
+          "not a known workflow is read as a branch; with a default set it starts on that branch and warns. With",
+          "neither key set it is refused as no_default_workflow. Beside --prompt, a branch-shaped word is a",
+          "mistyped ID and is refused as unknown_workflow.",
           "",
           "REF is a JIRA key or URL, a pull request, an issue or a branch. Waits for the workspace's agent, then",
           "runs ID in it. A fork's pull request, or a branch tracking another repository, is refused with",
@@ -415,6 +421,8 @@ module Workspace
           ["--prompt-timeout DURATION", "How long to wait for the coding agent to be ready (default 60s)"],
           ["--dry-run", "Check everything and make nothing"], JSON_OPT],
         examples: [
+          ["workspace workflow start PROJ-101", "use the workflow config names for a JIRA key (workflows.by_ref.jira, else workflows.default)"],
+          ["workspace workflow start --prompt \"add a hello script\"", "no ID and no ticket: the configured prompt workflow, started from a sentence"],
           ["workspace workflow start rpiv PROJ-101", "make a workspace for the ticket and run rpiv in it"],
           ["workspace workflow start rpiv PROJ-101 --dry-run", "read the ticket and check everything, making nothing"],
           ["workspace workflow start rpiv --prompt \"add a hello script\"", "no ticket: start from a sentence, with the branch named from its words"],

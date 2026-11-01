@@ -11,7 +11,7 @@ workspace workflow add ID PATH|- [--dry-run] [--json]
 workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
 workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
-workspace workflow start ID [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]
+workspace workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]
                          [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--dry-run] [--json]
 workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]
 workspace workflow events RUN [--since N] [--json]
@@ -33,7 +33,7 @@ workspace step status [--json]
 | `workflow update` | Replace your `ID.yml` with new text, from a file or `-` for stdin, only if the file still has the `--if-sha256` you read. A file that does not pass the checks can be replaced. Refused with `stale_workflow` when it changed, `builtin_workflow` for a preset with no file of yours. See [Updating a definition](#updating-a-definition) |
 | `workflow remove` | Delete your `ID.yml` (a link itself, never its target). Asks first unless `--yes` or `--dry-run`; refused with `confirmation_required` under `--no-input`. A preset of the same id is in effect again. See [Removing a definition](#removing-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing. Run from the pane it would use, the run is made and [parked](#resuming-from-the-runs-own-pane) |
-| `workflow start` | Make a workspace from a ticket, pull request, issue or branch `REF`, or from `--prompt TEXT`, wait for its coding agent and run the workflow in it. `--dry-run` checks everything and makes nothing. See [Starting from a ticket or a prompt](#starting-from-a-ticket-or-a-prompt) |
+| `workflow start` | Make a workspace from a ticket, pull request, issue or branch `REF`, or from `--prompt TEXT`, wait for its coding agent and run the workflow in it. The `ID` may be left out when config names a default. `--dry-run` checks everything and makes nothing. See [Starting from a ticket or a prompt](#starting-from-a-ticket-or-a-prompt) and [Default workflows](#default-workflows) |
 | `workflow status` | The runs still going in this workspace, another's (`--name`), a project's (`--project`) or every workspace's (`--all`), or one run (`RUN`). Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck). See [Which runs `status` shows](#which-runs-status-shows). `--table` prints one row per run beside its workspace: [the status table](#the-status-table) |
 | `workflow events` | A run's history (going or finished), one line per event, oldest first. `--since N` gives only the events after line N; at most 1000 at a time. See [Reading a run's events](#reading-a-runs-events) |
 | `workflow files` | The files a run keeps: each attempt's prompt and check log and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
@@ -160,7 +160,7 @@ The other columns say whether each piece exists: `yes`, `no`, or `?` when it cou
 
 ## Starting from a ticket or a prompt
 
-`workflow start ID [REF | --prompt TEXT]` is `start` and `workflow run` in one step, for work that has no workspace yet. `workflow run` needs a workspace; `start` makes one. It takes a `REF`, `--prompt`, or both, not neither; `--name` and `--pane` are refused, because the run goes in the new workspace's own agent pane.
+`workflow start [ID] [REF | --prompt TEXT]` is `start` and `workflow run` in one step, for work that has no workspace yet. `workflow run` needs a workspace; `start` makes one. It takes a `REF`, `--prompt`, or both, not neither; `--name` and `--pane` are refused, because the run goes in the new workspace's own agent pane.
 
 A library recipe can name a workflow, and `workspace start --recipe NAME REF` then makes this same call, with every check below. See [Running a workflow](README.library.md#running-a-workflow).
 
@@ -183,6 +183,41 @@ Tracking config is a proxy for where a branch's code came from, not proof: a bra
 If you trust the code, `workspace start '#N'` (or `workspace start BRANCH`) makes or adopts the workspace, and `workspace workflow run ID` in it starts the workflow. Its agent then starts in that code and loads its `CLAUDE.md` and `.claude/settings.json` hooks. For a bare `#N`, the checkout names the repository `gh pr view` answered from (`owner/repo#N`), so it can't check out another remote's pull request than the one checked; on another host than github.com it stays `#N`, which `gh` resolves from the same repository config.
 
 Once the workspace exists, a failure never removes it. The error keeps its code and gains `details.workspace`, `details.path` and `details.next`, an array holding one command: the `workflow run` command with the same inputs and note, which starts the workflow in that workspace by hand. This covers `agent_not_ready` (the agent was not ready in time) and a refusal from the run itself such as `pane_has_run`, and `start_failed` (the session did not start). A failure inside `start` itself, once the checkout exists, carries `details.path` and a `next` that is `cd PATH && workspace workflow run ...`, as the workspace name is not known.
+
+### Default workflows
+
+`workflow start` can leave out the `ID`. Config then names the workflow, by the kind of `REF`:
+
+1. `workflows.by_ref.<kind>`, where `<kind>` is `jira`, `github_pr`, `github_issue` or `branch`, or `prompt` for a start with `--prompt` and no `REF`.
+2. `workflows.default`, for any kind that has no `by_ref` key.
+
+All six keys can be set globally or per project (`workspace config set workflows.by_ref.jira rpiv --scope project`). A global `by_ref` key beats a project `workflows.default`, because the more specific key is read first. `workflow start` reads the global and project layers only. It does not read a worktree's own setting, because the worktree is not chosen until the ticket has been read, and the ticket read needs the workflow.
+
+With one argument, what it means depends on the word:
+
+| You type | It is read as |
+| --- | --- |
+| `workflow start rpiv` | the workflow `rpiv`, when a workflow of that id exists. It still needs a `REF` or `--prompt`. |
+| `workflow start PROJ-101` | a JIRA ref, so config chooses the workflow |
+| `workflow start '#123'` or a URL | a pull request or issue ref, so config chooses the workflow |
+| `workflow start fix-uploads` | a branch, so config chooses the workflow, and a warning says so |
+| `workflow start fix-uploads --prompt "..."` | a mistyped workflow id: `unknown_workflow` |
+| `workflow start --prompt "..."` | a prompt, so config chooses the workflow |
+
+With no workflow named and no key set for the kind, the start is refused with `no_default_workflow` before anything is made. `details.kind` is the kind, `details.ref` is the word that was read as the ref (null for `--prompt`), and `details.known` lists the workflows that exist. A key that holds an id no workflow has is `unknown_workflow`, and `workspace config validate` warns about it ahead of time as `unknown_default_workflow`.
+
+Three things to know:
+
+- With a default set, a mistyped workflow id becomes a branch. `workflow start rpvi` starts the default workflow on a new branch named `rpvi`. It prints `Warning: ...` naming the workflow config chose and the known ids, and the same text is in `results[0].warnings` under `--json`. A word shaped like a ticket does not warn. Run it with `--dry-run` first to see the branch and the workflow.
+- A branch named like a workflow needs the two-argument form. If a branch is called `explore`, `workflow start explore` runs the workflow `explore`. Use `workflow start rpiv explore` to run `rpiv` on the branch.
+- A global `by_ref` key beats a project `workflows.default`. To change one project's workflow for every kind, set the project's `workflows.by_ref.<kind>` keys too, or remove the global `by_ref` key.
+
+```sh
+workspace config set workflows.default rpiv
+workspace config set workflows.by_ref.github_pr pr-feedback
+workspace workflow start PROJ-101 --dry-run --json     # rpiv, from workflows.default
+workspace workflow start '#123' --dry-run              # pr-feedback, from workflows.by_ref.github_pr
+```
 
 ## Definitions
 
@@ -565,7 +600,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `step status --json` prints `{"schema_version":1,"ok":true,"step":{...}}` with `run_id`, `workflow`, `workspace`, `step`, `attempt`, `state`, `instructions`, `artifacts_dir`, `produces` (each `path`, `exists`, and `current`: written during this attempt), `check` (whether the step has one) and `reported` (`status` and `summary`, or `null`).
 
-Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `invalid_input`, `dirty_worktree` (`workflow run`, `run --dry-run`, and `workflow start` into a reused workspace, for a `guard: unchanged` step), `fork_pull_request` (`workflow start`), `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
+Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, `no_default_workflow` (`workflow start` with no ID and no default for the ref's kind), `invalid_workflow`, `workflow_exists`, `stale_workflow`, `builtin_workflow`, `input_required`, `workflow_command_unset`, `invalid_input`, `dirty_worktree` (`workflow run`, `run --dry-run`, and `workflow start` into a reused workspace, for a `guard: unchanged` step), `fork_pull_request` (`workflow start`), `no_agent_pane`, `pane_has_run`, `no_daemon`, `unknown_run`, `run_not_active`, `gate_not_waiting`, `gate_waiting`, `bound_pane`, `not_bound`, `step_not_running`, and `usage`.
 
 ## Events
 
@@ -590,6 +625,8 @@ workspace workflow run rpiv --input task="PROJ-101 invoice PDF export" --note "K
 workspace workflow start rpiv PROJ-101 --dry-run --json
 workspace workflow start rpiv PROJ-101 --slug --base main
 workspace workflow start rpiv --prompt "add a hello script" --headless
+workspace workflow start PROJ-101 --dry-run --json
+workspace workflow start --prompt "add a hello script"
 workspace workflow status
 workspace workflow status --project
 workspace workflow status --json | jq '.runs[] | {id, step: .current.step, why: .current.reason.code}'
