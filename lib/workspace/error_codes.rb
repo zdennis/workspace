@@ -245,7 +245,7 @@ module Workspace
       "pane_changed" => "A workflow run's waiting retry found its pane is another pane now (a tmux restart reused the id), or cannot be shown to be the same one; nothing was typed. A `waiting_you` reason on the run, not an error envelope.",
       "checkout_has_run" => "The checkout already has a workflow run going. details.worktree, details.run_id, details.step, details.state, details.next (the cancel command).",
       "unknown_run" => "No workflow run has that id.",
-      "unknown_step" => "workflow attempts or audit --attempt-of named a step the run doesn't have. details.run_id, details.step, details.steps (the run's step ids).",
+      "unknown_step" => "workflow attempts or audit --attempt-of named a step the run doesn't have, or workflow render a step the definition doesn't have. details.run_id (not for render), details.workflow (render only), details.step, details.steps (the step ids).",
       "unknown_goal" => "goal show: REF matches no workspace, run, task, ticket or branch. details.ref, details.tried.",
       "ambiguous_goal" => "goal show: REF matches more than one workspace (a branch checked out in two projects). details.ref, details.matches (workspace, project, branch).",
       "stage_disagrees" => "goal warning: the goal's state is done but its current stage is not completed or skipped. workspace, details.stage, details.status.",

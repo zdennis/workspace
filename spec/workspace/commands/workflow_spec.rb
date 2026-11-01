@@ -224,6 +224,66 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#render" do
+    let(:error_output) { StringIO.new }
+    let(:tty) { Class.new(StringIO) { def tty? = true } }
+    let(:rendered) do
+      {"workflow" => "flow", "step" => "plan", "workspace" => "app", "worktree" => "/w/app", "inputs" => {"task" => "x"}, "gate" => "approve",
+       "text" => "Plan x.\n\tdone\e[31m\n", "packs" => ["play/binding"], "run" => "wr_preview", "artifacts_dir" => "/w/app/.workflow/wr_preview",
+       "instructions" => "/w/app/.workflow/wr_preview/steps/plan.1.prompt.md", "in_checkout" => true}
+    end
+
+    def build(out)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+        tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: out, error_output: error_output)
+    end
+
+    before do
+      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(engine).to receive(:render).and_return(rendered)
+    end
+
+    it "writes the text as it is to a pipe, and the preview values and the gate to the error output" do
+      build(output).render(id: "flow", step: "plan", workspace: "app", worktree: "/w/app", inputs: {"task" => "x"})
+
+      expect(output.string).to eq("Plan x.\n\tdone\e[31m\n")
+      expect(error_output.string).to include("{{run}} = wr_preview", "{{artifacts}} = /w/app/.workflow/wr_preview", "has gate: approve")
+      expect(error_output.string).not_to include("{{workspace}}")
+      expect(engine).to have_received(:render).with(definition: definition, step: "plan", workspace: "app", worktree: "/w/app", inputs: {"task" => "x"})
+    end
+
+    it "escapes control characters, keeping tabs and lines, when the output is a terminal" do
+      terminal = tty.new
+      build(terminal).render(id: "flow", step: "plan", workspace: "app", worktree: "/w/app")
+
+      expect(terminal.string).to eq("Plan x.\n\tdone\\e[31m\n")
+    end
+
+    it "shows the workspace as a preview and warns outside a checkout, when it has neither" do
+      allow(engine).to receive(:render).and_return(rendered.merge("workspace" => "<workspace>", "in_checkout" => false))
+      build(output).render(id: "flow", step: "plan", workspace: nil, worktree: "/w/x")
+
+      expect(engine).to have_received(:render).with(hash_including(workspace: "<workspace>"))
+      expect(error_output.string).to include("warning: /w/x is not in a git checkout", "{{workspace}} = <workspace>")
+    end
+
+    it "prints one document with the previews and warnings under --json, and nothing on the error output" do
+      build(output).render(id: "flow", step: "plan", workspace: nil, worktree: "/w/app", json: true)
+      doc = JSON.parse(output.string)
+
+      expect(doc).to include("ok" => true, "schema_version" => 1, "workflow" => "flow", "step" => "plan", "gate" => "approve", "text" => rendered["text"],
+        "packs" => ["play/binding"], "warnings" => [], "instructions_path" => rendered["instructions"])
+      expect(doc["previews"].map { |each| each["name"] }).to eq(%w[run workspace artifacts])
+      expect(error_output.string).to eq("")
+    end
+
+    it "lets an unknown workflow through as the catalog's error" do
+      allow(catalog).to receive(:find).with("nope").and_raise(Workspace::Error.new("No workflow nope.", code: "unknown_workflow"))
+
+      expect { build(output).render(id: "nope", step: "plan", workspace: "app", worktree: "/w/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+    end
+  end
+
   describe "#status" do
     def workspace_scope(name) = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: name)
 

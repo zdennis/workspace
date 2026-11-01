@@ -16,6 +16,9 @@ module Workspace
       # What `step done --code` accepts.
       CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
 
+      # The workspace name `render` shows when the working directory is in no workspace.
+      RENDER_WORKSPACE = "<workspace>".freeze
+
       # What `step done --status` accepts.
       REPORT_STATUSES = %w[pass fail].freeze
 
@@ -128,6 +131,44 @@ module Workspace
           warnings.each { |warning| @output.puts "warning: #{TerminalText.escape(warning["message"])}" }
           found["not_checked"].each { |each| @output.puts "not checked: #{TerminalText.escape(each["message"])}" }
         end
+      end
+
+      # Prints the instructions a step's agent would be sent for its first attempt, composed
+      # by {Workspace::WorkflowEngine#render}, and writes nothing. A missing required input is
+      # refused as `start` refuses it (`input_required`): a prompt with its placeholders left
+      # unfilled would read as a prompt that works.
+      #
+      # Text: the instructions on the output, byte for byte when it is not a terminal; on a
+      # terminal control, bidi and zero-width characters (from a pack, a definition or an
+      # input) are escaped through {Workspace::TerminalText}, line by line. Warnings and the
+      # values that are previews go to the error output. With +json+ one document carries them all.
+      #
+      # @param id [String] a workflow id
+      # @param step [String] a step id
+      # @param workspace [String] the workspace the run would be in, or nil outside any
+      # @param worktree [String] the checkout the packs and commands are read from
+      # @param inputs [Hash{String=>String}]
+      # @param json [Boolean]
+      # @return [void]
+      # @raise [Workspace::Error] code `unknown_workflow`, `invalid_workflow`, `unknown_step`, `input_required`, `invalid_input`, or a pack's
+      def render(id:, step:, workspace:, worktree:, inputs: {}, json: false)
+        definition = @catalog.find(id)
+        preview_workspace = workspace.nil?
+        result = @engine.render(definition: definition, step: step, workspace: workspace || RENDER_WORKSPACE, worktree: worktree, inputs: inputs)
+        previews = [{"name" => "run", "value" => result["run"]}, {"name" => "artifacts", "value" => result["artifacts_dir"]}]
+        previews.insert(1, {"name" => "workspace", "value" => result["workspace"]}) if preview_workspace
+        warnings = []
+        warnings << {"code" => "not_in_checkout", "message" => "#{worktree} is not in a git checkout: the project's own packs and commands.test/commands.lint were not read."} unless result["in_checkout"]
+        if json
+          return document("workflow" => result["workflow"], "step" => result["step"], "workspace" => result["workspace"], "worktree" => result["worktree"],
+            "inputs" => result["inputs"], "gate" => result["gate"], "packs" => result["packs"], "instructions_path" => result["instructions"],
+            "previews" => previews, "warnings" => warnings, "text" => result["text"])
+        end
+        write_text(result["text"])
+        warnings.each { |warning| @error_output.puts "warning: #{TerminalText.escape(warning["message"])}" }
+        shown = previews.map { |each| "{{#{each["name"]}}} = #{TerminalText.escape(each["value"])}" }.join(", ")
+        @error_output.puts "preview values, not a run's: #{shown}; the instructions file would be #{TerminalText.escape(result["instructions"])}."
+        @error_output.puts "step #{TerminalText.escape(result["step"])} has gate: #{TerminalText.escape(result["gate"])}: the run waits for `workflow approve` after its turn ends." if result["gate"]
       end
 
       # Saves a definition as a user's file, `ID.yml` in the workflows directory, after
@@ -623,6 +664,12 @@ module Workspace
       end
 
       private
+
+      # The instructions to the output: as they are to a pipe or file, with each line escaped on a terminal.
+      def write_text(text)
+        return @output.write(text) unless @output.respond_to?(:tty?) && @output.tty?
+        text.each_line { |line| @output.write(TerminalText.escape(line.chomp, keep_tabs: true) + (line.end_with?("\n") ? "\n" : "")) }
+      end
 
       # The text of `audit`: one row per recorded file, then the attempts with no evidence and where the copies are.
       def print_audit(run, step, result)

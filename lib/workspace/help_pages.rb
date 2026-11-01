@@ -399,6 +399,34 @@ module Workspace
           ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --pane %19", "run in a pane other than the workspace's Claude pane"]
         ]
       },
+      "render" => {
+        usage: ["workflow render ID STEP [--input KEY=VALUE]... [--name WORKSPACE] [--json]"],
+        summary: "Print the instructions a step's agent would be sent, without a run",
+        about: [
+          "Composes the packs, the workflow's text and the step's prompt as a delivered attempt does (the same code),",
+          "for the step's first attempt, and prints them. Writes nothing: no run, event, binding, lock, worktree or",
+          "file, and no call to tmux or the agent daemon, so it works outside a tmux session. Packs and commands are",
+          "read from this workspace's checkout (--name picks another); outside a git checkout the project's own",
+          "packs and commands are not read, and a warning says so.",
+          "",
+          "Inputs are checked as `start` checks them: a required input you leave out is refused with input_required,",
+          "an unknown one is a usage error, a value that misses its pattern is invalid_input. An unknown step is",
+          "refused with unknown_step, listing the steps.",
+          "",
+          "A real run's values are not known yet, so {{run}} is wr_preview, {{artifacts}} is a path under it and,",
+          "outside any workspace, {{workspace}} is <workspace>; stderr lists them. What a run adds under \"For this attempt\"",
+          "is not added: its --note, retry text, and after a gate the approval's note and the line naming the gate's note",
+          "(also a resume --note). On a terminal control, bidi and zero-width",
+          "characters are shown escaped; piped, the text is written as it is."
+        ],
+        options: [["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable)"],
+          name_opt("The workspace whose packs and commands are read"), JSON_OPT],
+        examples: [
+          ["workspace workflow render rpiv plan --input task=\"add a hello script\"", "read the plan step's instructions before running rpiv"],
+          ["workspace workflow render rpiv plan --input task=x > plan-prompt.md", "write them to a file, with the preview note on stderr"],
+          ["workspace workflow render rpiv verify --input task=x --json", "one document: text, packs, the preview values and warnings"]
+        ]
+      },
       "start" => {
         usage: ["workflow start --ref REF [--force] [--dry-run] [--json]", "workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",
@@ -441,13 +469,12 @@ module Workspace
           ["workspace workflow start PROJ-101", "use the workflow config names for a JIRA key (workflows.by_ref.jira, else workflows.default)"],
           ["workspace workflow start --prompt \"add a hello script\"", "no ID and no ticket: the configured prompt workflow, started from a sentence"],
           ["workspace workflow start rpiv PROJ-101", "make a workspace for the ticket and run rpiv in it"],
-          ["workspace workflow start --ref PROJ-101", "run the workflow set for JIRA tickets (workflows.by_ref.jira, or workflows.default)"],
+          ["workspace workflow start --ref PROJ-101", "the same, and with no key set, the one workflow that fits a JIRA ref"],
           ["workspace workflow start rpiv PROJ-101 --dry-run", "read the ticket and check everything, making nothing"],
           ["workspace workflow start rpiv --prompt \"add a hello script\"", "no ticket: start from a sentence, with the branch named from its words"],
           ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],
           ["workspace workflow start pr-feedback '#123'", "work through the review feedback on pull request 123 (needs gh)"],
           ["workspace workflow start rpiv PROJ-101 --note \"Keep the change small.\"", "tell every step something extra"],
-          ["workspace workflow start rpiv PROJ-101 --headless", "run in plain tmux, with no iTerm window"],
           ["workspace workflow start rpiv-auto-approve --prompt \"add a hello script\"", "a run no person watches: three reviewer sub-agents approve the plan in place of the gate"]
         ]
       },

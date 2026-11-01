@@ -35,6 +35,9 @@ module Workspace
     # The one line typed into the pane; the instructions themselves are in the file.
     KICK = "Read %s and follow it."
 
+    # The run id {#preflight} and {#render} compose a first step under, for a run that does not exist.
+    PREVIEW_RUN_ID = "wr_preview".freeze
+
     # Restart errors that mean there is no pane to type into.
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
     ENGINE_CODES = (WorkflowGuard::CODES + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out]).freeze
@@ -347,9 +350,45 @@ module Workspace
       check_checkout(tree)
       first = data["steps"].first
       packs = compose({"definition" => data, "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
-                       "id" => "wr_preview", "artifacts_dir" => artifacts_dir(worktree, "wr_preview")}, first, [])["packs"]
+                       "id" => PREVIEW_RUN_ID, "artifacts_dir" => artifacts_dir(worktree, PREVIEW_RUN_ID)}, first, [])["packs"]
       {"workflow" => data["id"], "workspace" => workspace, "project" => project, "step" => first["id"], "pane" => pane,
        "inputs" => inputs, "packs" => packs.map { |pack| pack["ref"] }}
+    end
+
+    # The instructions a step's agent would be sent for its first attempt, composed by the
+    # code that composes a delivered attempt's prompt, with a run that does not exist: the id
+    # is {PREVIEW_RUN_ID} and the artifacts directory lies under it. Writes nothing and
+    # touches no run, binding, lock, pane or daemon.
+    #
+    # @param definition [Workspace::WorkflowDefinition]
+    # @param step [String] a step id
+    # @param workspace [String]
+    # @param worktree [String] the checkout the packs are read from
+    # @param inputs [Hash{String=>String}] checked as {#preflight} checks them
+    # @return [Hash{String=>Object}] "workflow", "step", "workspace", "worktree", "inputs", "gate",
+    #   "text", "packs" (refs), "run", "artifacts_dir", "instructions" (the path a real attempt's file would have)
+    #   and "in_checkout" (false when +worktree+ is not in a git checkout)
+    # @raise [Workspace::Error] code `unknown_step` (details.workflow, step, steps), `input_required`,
+    #   `invalid_input`, and the composer's errors for a pack that can't be read
+    # @raise [Workspace::UsageError] for an input the definition doesn't have
+    def render(definition:, step:, workspace:, worktree:, inputs:)
+      data = definition.to_h
+      found = data["steps"].find { |each| each["id"] == step }
+      unless found
+        ids = data["steps"].map { |each| each["id"] }
+        raise Workspace::Error.new("Workflow #{data["id"]} has no step #{step.to_s[0, 60].inspect} (steps: #{ids.join(", ")}).",
+          code: "unknown_step", details: {"workflow" => data["id"], "step" => step.to_s[0, 60], "steps" => ids})
+      end
+      inputs = check_inputs(data, inputs)
+      # A started run stores the definition with the strict marker, which words the produces line.
+      run = {"definition" => data.merge(WorkflowProduced::MARKER_KEY => WorkflowProduced::STRICT), "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
+             "id" => PREVIEW_RUN_ID, "artifacts_dir" => artifacts_dir(worktree, PREVIEW_RUN_ID)}
+      path = prompt_path(run, found, 1)
+      composed = compose(run, found, [], binding: step_binding(run, found, 1, path))
+      {"workflow" => data["id"], "step" => found["id"], "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
+       "gate" => found["gate"], "text" => composed["text"], "packs" => composed["packs"].map { |pack| pack["ref"] },
+       "run" => PREVIEW_RUN_ID, "artifacts_dir" => run["artifacts_dir"], "instructions" => path,
+       "in_checkout" => !@lineage.resolve(cwd: worktree).git_common_dir.nil?}
     end
 
     # Creates a run and starts its first step.
@@ -1728,14 +1767,21 @@ module Workspace
       text
     end
 
+    # Where an attempt's instructions file goes, and the binding its pane gets; {#render} asks the same two.
+    def prompt_path(run, step, attempt_number)
+      File.join(run["artifacts_dir"], "steps", "#{step["id"]}.#{attempt_number}.prompt.md")
+    end
+
+    def step_binding(run, step, attempt_number, path)
+      {"kind" => "run", "id" => run["id"], "workspace" => run["workspace"], "step" => step["id"], "attempt" => attempt_number,
+       "instructions" => path, "artifacts" => run["artifacts_dir"]}
+    end
+
     def write_prompt(run, step, attempt)
-      dir = File.join(run["artifacts_dir"], "steps")
-      FileUtils.mkdir_p(dir)
+      FileUtils.mkdir_p(File.join(run["artifacts_dir"], "steps"))
       @excludes.add(run["worktree"], "/.workflow/")
-      path = File.join(dir, "#{step["id"]}.#{attempt["n"]}.prompt.md")
-      binding = {"kind" => "run", "id" => run["id"], "workspace" => run["workspace"], "step" => step["id"], "attempt" => attempt["n"],
-                 "instructions" => path, "artifacts" => run["artifacts_dir"]}
-      composed = compose(run, step, attempt["context"], binding: binding)
+      path = prompt_path(run, step, attempt["n"])
+      composed = compose(run, step, attempt["context"], binding: step_binding(run, step, attempt["n"], path))
       File.write(path, composed["text"], encoding: Encoding::UTF_8)
       [path, composed]
     end

@@ -54,7 +54,7 @@ module HelpExamplesSpec
     "ui", "ui open", "ui open task", "ui open notes", "ui open inbox", "ui status",
     "wait-until-content", "whereis",
     "workflow", "workflow show", "workflow validate", "workflow add", "workflow update", "workflow remove",
-    "workflow run", "workflow start", "workflow status", "workflow events", "workflow files", "workflow attempts", "workflow audit", "workflow stats", "workflow compare", "workflow sweep", "workflow resume",
+    "workflow run", "workflow render", "workflow start", "workflow status", "workflow events", "workflow files", "workflow attempts", "workflow audit", "workflow stats", "workflow compare", "workflow sweep", "workflow resume",
     "workflow cancel", "workflow approve", "workflow reject", "workflow advance"
   ].freeze
 

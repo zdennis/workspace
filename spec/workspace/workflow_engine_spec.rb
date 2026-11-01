@@ -772,6 +772,76 @@ RSpec.describe Workspace::WorkflowEngine do
     end
   end
 
+  describe "#render" do
+    def render(step = "plan", inputs: {"task" => "X-1"}, flow: three_steps)
+      engine.render(definition: flow, step: step, workspace: "app.worktree-x", worktree: worktree, inputs: inputs)
+    end
+
+    it "composes the text a delivered attempt of the step is written with, under the preview run" do
+      rendered = render("plan")
+      composer.calls.clear
+      start
+      delivered = File.read(File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.prompt.md"))
+
+      expect(rendered["text"]).to eq(delivered.gsub("wr_1", "wr_preview"))
+      expect(rendered).to include("run" => "wr_preview", "artifacts_dir" => File.join(worktree, ".workflow", "wr_preview"),
+        "instructions" => File.join(worktree, ".workflow", "wr_preview", "steps", "plan.1.prompt.md"), "gate" => "approve")
+    end
+
+    it "hands the composer what a delivery hands it, except the run's id and directory" do
+      render("verify")
+      rendered_call = composer.calls.last
+      to_verify
+      delivered_call = composer.calls.last
+
+      expect(rendered_call.except(:binding)).to eq(delivered_call.except(:binding).merge(attempt: []))
+      expect(rendered_call[:binding]).to eq(delivered_call[:binding].merge("id" => "wr_preview", "attempt" => 1,
+        "instructions" => File.join(worktree, ".workflow", "wr_preview", "steps", "verify.1.prompt.md"),
+        "artifacts" => File.join(worktree, ".workflow", "wr_preview")))
+    end
+
+    it "renders a later step, not just the first, with its packs" do
+      rendered = render("verify")
+
+      expect(rendered).to include("step" => "verify", "packs" => %w[play/binding play/review], "gate" => nil)
+      expect(rendered["text"]).to include("Verify it.", "Work on X-1")
+    end
+
+    it "writes nothing and touches no pane, run or lock" do
+      render("plan")
+
+      expect(Dir.exist?(runs_dir)).to be false
+      expect(Dir.exist?(File.join(worktree, ".workflow"))).to be false
+      expect(Dir.exist?(lock_dir)).to be false
+      expect(panes.kicks).to eq([])
+      expect(panes.bound).to eq({})
+      expect(events).to eq([])
+    end
+
+    it "refuses an unknown step, listing the steps" do
+      expect { render("nope") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_step")
+        expect(e.details).to eq("workflow" => "flow", "step" => "nope", "steps" => %w[plan build verify])
+      }
+    end
+
+    it "refuses a missing required input as a start does" do
+      expect { render("plan", inputs: {}) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("input_required") }
+    end
+
+    it "refuses an input the workflow does not have, and one that misses its pattern" do
+      expect { render("plan", inputs: {"task" => "x", "other" => "y"}) }.to raise_error(Workspace::UsageError, /no input "other"/)
+      patterned = definition("inputs:\n  task: {required: true, pattern: '[A-Z]+-[0-9]+'}\nsteps:\n  a:\n    prompt: Do {{inputs.task}}.\n")
+      expect { render("a", inputs: {"task" => "nope"}, flow: patterned) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_input") }
+    end
+
+    it "passes the composer's refusal of a pack it can't read" do
+      ghost = definition("steps:\n  a:\n    prompt: P\n    include: [ghost]\n")
+
+      expect { render("a", inputs: {}, flow: ghost) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+    end
+  end
+
   describe "the attempt ledger" do
     let(:ledger_flow) do
       definition("steps:\n  plan:\n    prompt: Plan.\n    produces: [plan.md]\n    status: {command: test, timeout: 5m}\n")
@@ -1603,6 +1673,19 @@ RSpec.describe Workspace::WorkflowEngine do
       # build says `context: continue`; the jump's own `context: fresh` wins.
       expect(panes.kicks.last).to include(fresh: true)
       expect(history.last(5)).to eq(%w[check_finished step_failed step_looped step_dispatching step_dispatched])
+    end
+
+    it "delivers a retry as its own attempt: the prompt file and the binding carry the attempt number" do
+      to_verify
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+
+      second = File.join(worktree, ".workflow", "wr_1", "steps", "build.2.prompt.md")
+      expect(File.exist?(second)).to be true
+      expect(File.exist?(File.join(worktree, ".workflow", "wr_1", "steps", "build.1.prompt.md"))).to be true
+      expect(composer.calls.last[:binding]).to include("step" => "build", "attempt" => 2, "instructions" => second)
+      expect(panes.bound["%5"]).to include(step: "build", attempt: 2, instructions: second)
+      expect(panes.kicks.last[:text]).to eq("Read #{second} and follow it.")
     end
 
     it "stops the run for a person once the loops are spent, holding nothing, with the check's log" do
