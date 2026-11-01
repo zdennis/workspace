@@ -301,7 +301,7 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 ### The `rpiv` preset
 
-`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`pr-feedback`](#the-pr-feedback-preset) and [`investigate`](#the-investigate-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset) and [`explore`](#the-explore-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 ```sh
 workspace config set commands.test "bundle exec rspec"
@@ -372,6 +372,18 @@ The task is never rendered into the instructions: the agent reads it as a JSON s
 Approve with a note to change the plan ("approve, but use option B"), or reject with a hint and `diagnose` writes the note again, keeping the earlier answer under `## Rejected (attempt N)`. A stop code is a word the agent chose (`details.code` with `code_source` `agent`); a guard code (`head_moved`, `tracked_changed`, ...) is the engine's. Commit in the workspace while the gate waits and `fix` stops with `fix_head_moved`; `base_sha` in `workflow status --json` shows what HEAD should be. The guard bounds HEAD, the tracked tree and git's own files, not the machine: an agent talked into running something before the gate can do what your account can, so use it on code you would run anyway. `workflow run` never refuses a fork pull request; `reproduce` stops with `fork` (`workflow start` refuses it first, `fork_pull_request`).
 
 A workflow's steps can hand the agent shell commands that hold the run's artifacts path, which lies under the checkout. `workflow run` (also `--dry-run`) and `workflow start` therefore refuse a checkout whose path holds a quote, a backtick, a dollar sign, a backslash, a control character or an invisible one (zero-width, bidi, U+2028, U+2029), with `unsafe_checkout_path` (`details.characters` names them, `details.path_kind` says `checkout` or `notes directory`; spaces and non-ASCII letters are fine). `workflow start` works out the path of a worktree it would create (`.worktrees/<branch>`) before anything is made, so a new unsafe path is refused first, also with `--dry-run`: no worktree, check or agent. The notes directory is held to the same rule for a workflow with a gate, since the fix step is handed the note's path (a branch name can reach it); the gate note is checked again when it is read. The refusal applies to every workflow, so a home directory like `/Users/o'brien` blocks them all.
+
+### The `explore` preset
+
+`explore` answers a question and changes no code: it surveys, waits for you to prune what it found, then writes a report. Use it for a gap analysis or design research, where `rpiv` would go on to build something. It needs no `commands.test`.
+
+```sh
+workspace workflow run explore --input task="What would make uploads resumable?"
+workspace workflow start explore --prompt "What would make uploads resumable?"
+```
+
+- `survey` (`guard: unchanged`, gate `approve`, 90m) writes the note `<date>-<topic>-survey.md` in the notes directory: the questions, what exists today, each gap with its evidence, and a ranked list for you to prune. `survey.md` in the run's artifacts names the note on its first line, so the gate shows it, and a `review_request` inbox item (`explore:RUN`) links it. Approve with a note to cut the list or change the emphasis, or reject with a hint and it writes the note again.
+- `report` (`guard: config`, 90m) reads the approved note, closes the inbox item, and writes `<date>-<topic>-report.md` in the notes directory with the verdict first, then ranked recommendations, then the detail, has a skeptical sub-agent check the claims against the code, and hands the note back through the `report` pack as a `note` inbox item. `report.md` in the run's artifacts holds the note's file name.
 
 ## The guard
 

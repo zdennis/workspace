@@ -4939,7 +4939,7 @@ module Workspace
         opts.separator "holds, in the same queue as `lock acquire` and `dev up`."
         opts.separator ""
         opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml, then the presets that"
-        opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix). See docs/README.workflow.md."
+        opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix; explore: read-only research, a gate, then a report note). See docs/README.workflow.md."
         opts.separator ""
         HelpPages.overview_verbs(HelpPages::WORKFLOW).each { |line| opts.separator line }
         opts.separator "Run `workspace workflow VERB --help` for a verb's options."

@@ -288,7 +288,7 @@ module Workspace
           "an editor.",
           "",
           "Definitions are YAML files: ~/.config/workspace/workflows/ID.yml, then the presets that ship with",
-          "workspace (rpiv, rpiv-auto-approve, pr-feedback, investigate). See docs/README.workflow.md."
+          "workspace (rpiv, rpiv-auto-approve, pr-feedback, investigate, explore). See docs/README.workflow.md."
         ],
         options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"], JSON_OPT],
         examples: [
