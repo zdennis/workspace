@@ -305,14 +305,16 @@ module Workspace
         about: [
           "Checks a definition (a file, or - for stdin) the way a definition on disk is checked, listing every",
           "problem at once; writes nothing. The id is --id, else its id: key, else the file's name (stdin:",
-          "\"stdin\"); a relative prompt_file: is read from the file's directory (stdin: the current directory)."
+          "\"stdin\"); a relative prompt_file: is read from the file's directory (stdin: the current directory).",
+          "A valid definition can still get warnings (exit 0): a step with no produces, status or gate passes on any",
+          "turn end, so it is named with what to add. --json lists them in warnings (code, step, message)."
         ],
         options: [["--id ID", "Check the text as this workflow id"], JSON_OPT],
         examples: [
           ["workspace workflow validate draft.yml", "check a definition you are writing: prints valid, or exits 1 with an error listing every problem"],
           ["workspace workflow validate - < draft.yml", "check text read from stdin"],
           ["workspace workflow validate draft.yml --id ship", "check it as the workflow \"ship\" when the file is named otherwise"],
-          ["workspace workflow validate draft.yml --json", "the checked definition as one document, or an error document with the problems"]
+          ["workspace workflow validate draft.yml --json", "the checked definition and its warnings as one document, or an error document with the problems"]
         ]
       },
       "add" => {

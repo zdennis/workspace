@@ -116,7 +116,26 @@ module Workspace
       @data["steps"]
     end
 
+    # Things a valid definition does that are probably a mistake. Never an error: the
+    # definition still runs. A step with no proof passes on any turn end, so it is named.
+    #
+    # @return [Array<Hash{String=>String}>] each with "code" (`step_without_proof`), "step" (the step id) and "message"
+    def warnings
+      steps.reject { |step| proof?(step) }.map do |step|
+        {"code" => "step_without_proof", "step" => step["id"],
+         "message" => "step #{step["id"]} has no produces, status or gate, so it passes on any turn end, even one that did nothing. Add produces: (a file it must write), status: (a command that must pass) or gate: approve (a person approves it)."}
+      end
+    end
+
     private
+
+    # What makes a step's pass mean something: a file it must write, a command that must
+    # pass, or a person's gate.
+    PROOF_KEYS = %w[status gate].freeze
+
+    def proof?(step)
+      step["produces"].to_a.any? || PROOF_KEYS.any? { |key| step[key] }
+    end
 
     # Definitions are UTF-8, whatever the locale of the process reading them.
     def load_yaml(text)

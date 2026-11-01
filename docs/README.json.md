@@ -62,6 +62,8 @@ These commands take `--json` and print one action document: `add`, `launch`, `st
 
 `worktree`, the checkout path stored with the run (or `null`), is on every row of `workflow status --json` and on the `run` object of every `workflow` action document. Both need `workflow` 10.
 
+`workflow validate --json` adds a top-level `warnings` array beside `workflow` (empty when there are none). Each entry is `{"code":"step_without_proof","step":STEP_ID,"message":TEXT}`: a step with no `produces`, `status` or `gate` passes on any turn end. Warning codes are an open set: callers ignore codes they do not know. Only `workflow validate` reports warnings; `show`, `start` and `run` do not. A warning is not an error code: `ok` stays `true` and the exit code 0. See [Validating a definition](README.workflow.md#validating-a-definition).
+
 ## Snapshot
 
 The agent daemon's pane list (`sessions --json`) carries a boolean `turn_failed` per pane, `true` while the agent's last turn stands as ended by an API error (see [`sessions`](README.sessions.md), and [`agentd`](README.agentd.md#recovering-from-an-api-error) for the recovery). The panes of `snapshot --json` don't list it.

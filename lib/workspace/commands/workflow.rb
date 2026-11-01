@@ -92,6 +92,8 @@ module Workspace
       # @return [void]
       # @raise [Workspace::UsageError] when PATH can't be read
       # @raise [Workspace::Error] code `invalid_workflow`, with `details.problems` listing every problem
+      #
+      # A valid definition also prints its +warnings+ (text lines, or the `warnings` array in JSON); they never change the exit code.
       def validate(path:, id: nil, json: false)
         stdin = path == "-"
         text = read_text(path, stdin)
@@ -99,9 +101,11 @@ module Workspace
         definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
           path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil)
         if json
-          document("workflow" => definition.to_h.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256))
+          document("workflow" => definition.to_h.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256),
+            "warnings" => definition.warnings)
         else
           @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)"
+          definition.warnings.each { |warning| @output.puts "warning: #{warning["message"]}" }
         end
       end
 

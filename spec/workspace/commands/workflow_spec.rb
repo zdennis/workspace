@@ -1760,6 +1760,40 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(Dir.children(dir)).to eq(["flow.yml"])
     end
 
+    it "lists warnings in JSON and keeps the document ok" do
+      input.string = "steps:\n  plan:\n    prompt: Plan.\n"
+
+      command.validate(path: "-", json: true)
+
+      expect(json).to include("ok" => true)
+      expect(json["warnings"]).to match([include("code" => "step_without_proof", "step" => "plan", "message" => /plan/)])
+    end
+
+    it "gives an empty warnings array for a definition with proof" do
+      input.string = "steps:\n  plan:\n    prompt: Plan.\n    gate: approve\n"
+
+      command.validate(path: "-", json: true)
+
+      expect(json["warnings"]).to eq([])
+    end
+
+    it "prints a warning line after valid in text" do
+      input.string = valid
+
+      command.validate(path: "-")
+
+      expect(output.string).to match(/\Astdin: valid \(1 steps\)\nwarning: step plan has no produces/)
+    end
+
+    it "prints one warning line per warned step in text" do
+      input.string = "steps:\n  a:\n    prompt: A.\n  b:\n    prompt: B.\n"
+
+      command.validate(path: "-")
+
+      expect(output.string.lines.grep(/\Awarning: /).size).to eq(2)
+      expect(output.string).to match(/warning: step a .*\nwarning: step b /)
+    end
+
     it "reads stdin for -, checked as the placeholder id stdin" do
       input.string = valid
 
@@ -1781,7 +1815,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "prints a line for a person" do
-      command.validate(path: write("flow.yml", valid))
+      command.validate(path: write("flow.yml", "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n    gate: approve\n"))
 
       expect(output.string).to eq("flow: valid (1 steps)\n")
     end

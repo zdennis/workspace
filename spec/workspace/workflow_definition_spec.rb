@@ -16,6 +16,30 @@ RSpec.describe Workspace::WorkflowDefinition do
 
   let(:minimal) { "steps:\n  build:\n    prompt: Build it.\n" }
 
+  describe "#warnings" do
+    def warnings(yaml) = parse(yaml).warnings
+
+    it "names a step with no produces, status or gate" do
+      expect(warnings(minimal)).to match([include("code" => "step_without_proof", "step" => "build", "message" => /step build has no produces, status or gate.*Add produces/)])
+    end
+
+    it "is quiet for a step with produces, a status command or a gate" do
+      yaml = "steps:\n  a:\n    prompt: A.\n    produces: [a.md]\n  b:\n    prompt: B.\n    status: {run: \"true\"}\n  c:\n    prompt: C.\n    gate: approve\n"
+      expect(warnings(yaml)).to eq([])
+    end
+
+    it "names only the steps without proof, in order" do
+      yaml = "steps:\n  a:\n    prompt: A.\n  b:\n    prompt: B.\n    produces: [b.md]\n  c:\n    prompt: C.\n"
+      expect(warnings(yaml).map { |w| w["step"] }).to eq(%w[a c])
+    end
+
+    it "warns for no shipped preset" do
+      Dir[File.expand_path("../../lib/workflows/*.yml", __dir__)].each do |file|
+        expect(described_class.parse(File.read(file), id: File.basename(file, ".yml"), source: "builtin", path: file).warnings).to eq([])
+      end
+    end
+  end
+
   describe "input pattern" do
     def with_pattern(pattern)
       "inputs:\n  pr: {pattern: #{pattern}}\nsteps:\n  build:\n    prompt: Build it.\n"
