@@ -192,9 +192,76 @@ module Workspace
     PER_SHELL = {
       "zsh" => <<~'SH',
         # workspace shell-init zsh
+        function _workspace_complete {
+          local wf_list wf_ids
+          if [ "${words[1]:t}" = wf ]; then
+            if [ "$CURRENT" -ge 3 ] && [ "${words[CURRENT-1]}" = -w ]; then
+              wf_ids=(${(f)"$(_workspace_wf_ids)"})
+              compadd -a wf_ids
+              return 0
+            fi
+          elif [ "$CURRENT" -eq 2 ]; then
+            wf_list=(init doctor launch start stop add add-project kill finish relaunch restore focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step run-and-report report-run-status layout config tmux statusline current list-projects list status repair cleanup prune set-command event-log events whereis lookup dir alfred shell-init version help)
+            compadd -a wf_list
+            return 0
+          elif [ "${words[2]}" = workflow ]; then
+            if [ "$CURRENT" -eq 3 ]; then
+              wf_list=(show validate add update remove run start status events files resume cancel approve reject)
+              compadd -a wf_list
+              return 0
+            elif [ "$CURRENT" -eq 4 ]; then
+              case "${words[3]}" in
+                start | show | run | update | remove)
+                  wf_ids=(${(f)"$(_workspace_wf_ids)"})
+                  compadd -a wf_ids
+                  return 0
+                  ;;
+              esac
+            fi
+          fi
+          _files || :
+          return 0
+        }
+        
+        if [ "${+functions[compdef]}" = 1 ]; then
+          compdef _workspace_complete workspace wf
+        fi
       SH
       "bash" => <<~'SH'
         # workspace shell-init bash
+        function _workspace_complete {
+          local wf_cur wf_list wf_word wf_cmd IFS
+          IFS=$' \t\n'
+          COMPREPLY=()
+          wf_cur="${COMP_WORDS[COMP_CWORD]}"
+          wf_cmd="${COMP_WORDS[0]##*/}"
+          wf_list=""
+          if [ "$wf_cmd" = wf ]; then
+            if [ "$COMP_CWORD" -ge 2 ] && [ "${COMP_WORDS[COMP_CWORD-1]}" = -w ]; then
+              wf_list="$(_workspace_wf_ids)"
+            fi
+          elif [ "$COMP_CWORD" -eq 1 ]; then
+            wf_list="init doctor launch start stop add add-project kill finish relaunch restore focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step run-and-report report-run-status layout config tmux statusline current list-projects list status repair cleanup prune set-command event-log events whereis lookup dir alfred shell-init version help"
+          elif [ "${COMP_WORDS[1]}" = workflow ]; then
+            if [ "$COMP_CWORD" -eq 2 ]; then
+              wf_list="show validate add update remove run start status events files resume cancel approve reject"
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+              case "${COMP_WORDS[2]}" in
+                start | show | run | update | remove) wf_list="$(_workspace_wf_ids)" ;;
+              esac
+            fi
+          fi
+          for wf_word in $wf_list; do
+            case "$wf_word" in
+              "$wf_cur"*) COMPREPLY[${#COMPREPLY[@]}]="$wf_word" ;;
+            esac
+          done
+          return 0
+        }
+        
+        if command -v complete >/dev/null 2>&1; then
+          complete -o default -F _workspace_complete workspace wf
+        fi
       SH
     }.freeze
     # standard:enable Style/RedundantHeredocDelimiterQuotes

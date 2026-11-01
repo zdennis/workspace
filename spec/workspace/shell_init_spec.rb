@@ -464,6 +464,139 @@ RSpec.describe Workspace::ShellInit do
     end
   end
 
+  describe "completion" do
+    let(:ids_file) { File.join(sandbox, "ids") }
+    let(:subcommands) { Workspace::CLI::SUBCOMMANDS }
+    let(:verbs) { Workspace::CLI::WORKFLOW_SUBCOMMANDS - ["advance"] }
+    let(:id_env) { {"WF_SHOW" => ids_file} }
+
+    before do
+      File.write(ids_file, <<~IDS)
+        rpiv      preset
+        explore   preset
+        $(touch canary)  preset
+        bad;id    preset
+        broken    INVALID: nope
+      IDS
+    end
+
+    # Runs one Tab in bash: +words+ with the cursor on the last one.
+    def bash_tab(words)
+      bash = find_shell("bash") or skip "bash is not installed"
+      list = words.map { |w| "'#{w}'" }.join(" ")
+      line = "COMP_WORDS=(#{list}); COMP_CWORD=#{words.size - 1}; _workspace_complete; printf '%s\\n' \"${COMPREPLY[@]}\""
+      out, err, status = run_shell([bash, "--norc", "--noprofile"], "bash", line, env: id_env)
+      expect(status.exitstatus).to eq(0), err
+      out.split("\n")
+    end
+
+    # Runs one Tab in zsh with compadd and _files stubbed.
+    def zsh_tab(words)
+      zsh = find_shell("zsh") or skip "zsh is not installed"
+      list = words.map { |w| "'#{w}'" }.join(" ")
+      line = <<~SH + "words=(#{list}); CURRENT=#{words.size}; PREFIX='#{words.last}'; _workspace_complete; print -r -- \"rc=$?\"\n"
+        function compadd { local w; for w in "${(@P)2}"; do [[ $w == ${PREFIX}* ]] && print -r -- "add $w"; done; return 0 }
+        function _files { print -r -- files; return 1 }
+      SH
+      out, err, status = run_shell([zsh, "-f"], "zsh", line, env: id_env)
+      expect(status.exitstatus).to eq(0), err
+      out.split("\n")
+    end
+
+    it "prints word lists equal to the CLI's subcommands and workflow verbs minus advance" do
+      zsh_text = described_class.text("zsh")
+      bash_text = described_class.text("bash")
+      expect(zsh_text).to include("wf_list=(#{subcommands.join(" ")})", "wf_list=(#{verbs.join(" ")})")
+      expect(bash_text).to include(%(wf_list="#{subcommands.join(" ")}"), %(wf_list="#{verbs.join(" ")}"))
+    end
+
+    context "in bash" do
+      it "offers every subcommand after workspace" do
+        expect(bash_tab(["workspace", ""])).to eq(subcommands)
+      end
+
+      it "narrows by prefix" do
+        expect(bash_tab(["workspace", "wor"])).to eq(%w[workflow])
+        expect(bash_tab(%w[workspace workflow st])).to eq(%w[start status])
+      end
+
+      it "offers the workflow verbs" do
+        expect(bash_tab(["workspace", "workflow", ""])).to eq(verbs)
+      end
+
+      it "offers only valid ids after workflow start, and runs nothing for an odd one" do
+        expect(bash_tab(["workspace", "workflow", "start", ""])).to eq(%w[rpiv explore])
+        expect(bash_tab(["workspace", "workflow", "show", "ex"])).to eq(%w[explore])
+        expect(File.exist?(File.join(work_dir, "canary"))).to be(false)
+      end
+
+      it "offers nothing for other words, so the default file completion applies" do
+        expect(bash_tab(["workspace", "workflow", "advance", ""])).to eq([])
+        expect(bash_tab(["workspace", "dir", ""])).to eq([])
+        expect(bash_tab(["wf", ""])).to eq([])
+        expect(bash_tab(["wf", "fix", ""])).to eq([])
+      end
+
+      it "offers ids after wf -w" do
+        expect(bash_tab(["wf", "-w", ""])).to eq(%w[rpiv explore])
+        expect(bash_tab(["wf", "-w", "e"])).to eq(%w[explore])
+      end
+
+      it "registers with complete -o default and leaves a person's set -e alone" do
+        bash = find_shell("bash") or skip "bash is not installed"
+        out, err, status = run_shell([bash, "--norc", "--noprofile"], "bash", "complete -p workspace wf; COMP_WORDS=(wf x); COMP_CWORD=1; _workspace_complete; echo alive", prefix: "set -e")
+        expect(status.exitstatus).to eq(0), err
+        expect(out).to include("complete -o default -F _workspace_complete workspace", "alive")
+      end
+    end
+
+    context "in zsh" do
+      it "offers every subcommand after workspace" do
+        expect(zsh_tab(["workspace", ""])).to eq(subcommands.map { |w| "add #{w}" } + ["rc=0"])
+      end
+
+      it "narrows by prefix and offers the workflow verbs" do
+        expect(zsh_tab(%w[workspace workflow st])).to eq(["add start", "add status", "rc=0"])
+        expect(zsh_tab(["workspace", "workflow", ""])).to eq(verbs.map { |w| "add #{w}" } + ["rc=0"])
+      end
+
+      it "offers only valid ids after workflow start, and runs nothing for an odd one" do
+        expect(zsh_tab(["workspace", "workflow", "start", ""])).to eq(["add rpiv", "add explore", "rc=0"])
+        expect(File.exist?(File.join(work_dir, "canary"))).to be(false)
+      end
+
+      it "falls back to files elsewhere" do
+        expect(zsh_tab(["workspace", "workflow", "advance", ""])).to eq(["files", "rc=0"])
+        expect(zsh_tab(["workspace", "dir", ""])).to eq(["files", "rc=0"])
+        expect(zsh_tab(["wf", ""])).to eq(["files", "rc=0"])
+        expect(zsh_tab(["wf", "fix", ""])).to eq(["files", "rc=0"])
+      end
+
+      it "offers ids after wf -w" do
+        expect(zsh_tab(["wf", "-w", ""])).to eq(["add rpiv", "add explore", "rc=0"])
+      end
+
+      it "loads with no compinit: no output, status 0, nothing registered" do
+        zsh = find_shell("zsh") or skip "zsh is not installed"
+        out, err, status = run_shell([zsh, "-f"], "zsh", "print -r -- ${+functions[compdef]}")
+        expect([out, err, status.exitstatus]).to eq(["0\n", "", 0])
+      end
+
+      it "loads silently and registers under ksh_arrays and the other options a person may set" do
+        zsh = find_shell("zsh") or skip "zsh is not installed"
+        out, err, status = run_shell([zsh, "-f"], "zsh", "print -r -- done", prefix: "setopt ksh_arrays sh_word_split no_unset\nfunction compdef { print -r -- \"compdef $*\" }")
+        expect([out, err, status.exitstatus]).to eq(["compdef _workspace_complete workspace wf\ndone\n", "", 0])
+      end
+
+      it "registers through compdef when it exists, and survives set -e" do
+        zsh = find_shell("zsh") or skip "zsh is not installed"
+        out, err, status = run_shell([zsh, "-f"], "zsh", "print -r -- done", prefix: "set -e\nfunction compdef { print -r -- \"compdef $*\" }")
+        expect(status.exitstatus).to eq(0), err
+        expect(out).to eq("compdef _workspace_complete workspace wf\ndone\n")
+      end
+    end
+  end
+
   describe "workspace shell-init" do
     %w[zsh bash].each do |shell|
       it "prints the #{shell} text" do
