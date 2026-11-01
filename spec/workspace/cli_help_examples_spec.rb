@@ -44,7 +44,7 @@ module HelpExamplesSpec
     "projects", "projects list", "projects show", "projects members", "projects stop", "projects kill",
     "projects group", "projects group create", "projects group add", "projects group list", "projects group show",
     "promote", "prune", "push", "reactivate", "rebase", "relaunch", "remove", "repair", "resize", "restore",
-    "run", "run-and-report", "report-run-status", "session-event", "sessions", "set-command", "snapshot",
+    "run", "run-and-report", "report-run-status", "session-event", "sessions", "set-command", "shell-init", "snapshot",
     "review", "review show", "review list",
     "skills", "skills install", "skills uninstall",
     "spine", "spine show", "spine init", "spine set", "spine check", "spine verify", "spine start", "spine goal",
