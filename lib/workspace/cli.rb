@@ -504,7 +504,7 @@ module Workspace
       if json_flag?(argv)
         @output.puts JSON.generate(JsonEnvelope.from_exception(JsonEnvelope::SCHEMA_VERSION, error, message: json_message))
       else
-        @error_output.puts human
+        @error_output.puts human.to_s.split("\n", -1).map { |line| TerminalText.escape(line, keep_tabs: true) }.join("\n")
       end
       @exit_handler.exit(exit_code)
     end

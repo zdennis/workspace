@@ -1049,7 +1049,7 @@ module Workspace
         data = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"]).to_h.merge(data) if found["problems"].empty?
         return document("workflow" => data) if json
         @output.print found["text"] if found["text"]
-        found["problems"].each { |problem| @error_output.puts "#{id}: #{problem}" }
+        found["problems"].each { |problem| @error_output.puts TerminalText.escape("#{id}: #{problem}") }
       end
 
       def list(json)
@@ -1058,7 +1058,7 @@ module Workspace
         @output.puts "No workflows." if entries.empty?
         entries.each do |entry|
           problems = entry["problems"].any? ? "  INVALID: #{entry["problems"].first}" : ""
-          @output.puts "#{entry["id"].ljust(16)} #{entry["source"].ljust(8)} #{entry["title"]}#{problems}"
+          @output.puts TerminalText.escape("#{entry["id"].ljust(16)} #{entry["source"].ljust(8)} #{entry["title"]}#{problems}")
         end
       end
 
