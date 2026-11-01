@@ -316,6 +316,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     before do
       git_env = {"GIT_CONFIG_GLOBAL" => "/dev/null", "GIT_CONFIG_NOSYSTEM" => "1"}
       system(git_env, "git", "-C", repo, "init", "-q", "-b", "main", exception: true)
+      QuietGit.configure(repo)
       File.write(File.join(repo, "a.txt"), "one\n")
       system(git_env, "git", "-C", repo, "add", "a.txt", exception: true)
       system(git_env, "git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init", exception: true)

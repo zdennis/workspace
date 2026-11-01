@@ -32,6 +32,7 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
 
   def init(branch = "main")
     sh(@repo, "init", "-q", "-b", branch)
+    QuietGit.configure(@repo)
     sh(@repo, "commit", "-q", "--allow-empty", "-m", "init")
   end
 
@@ -40,8 +41,10 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
     origin = File.join(@dir, "origin")
     FileUtils.mkdir_p(origin)
     sh(origin, "init", "-q", "-b", default)
+    QuietGit.configure(origin)
     sh(origin, "commit", "-q", "--allow-empty", "-m", "init")
     sh(@dir, "clone", "-q", origin, @repo)
+    QuietGit.configure(@repo)
     sh(@repo, "checkout", "-q", "-b", "side")
   end
 

@@ -41,6 +41,7 @@ RSpec.describe Workspace::Commands::Go, "with a real WorkflowStart and Git" do
 
   def init
     sh(@repo, "init", "-q", "-b", "main")
+    QuietGit.configure(@repo)
     sh(@repo, "commit", "-q", "--allow-empty", "-m", "init")
     sh(@repo, "remote", "add", "origin", "git@github.com:o/r.git")
   end
