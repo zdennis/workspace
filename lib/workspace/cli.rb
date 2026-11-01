@@ -20,7 +20,7 @@ module Workspace
       capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
-      whereis lookup dir alfred version help
+      whereis lookup dir alfred shell-init version help
     ].freeze
 
     # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
@@ -392,6 +392,8 @@ module Workspace
         cmd_lookup(args)
       when "dir"
         cmd_dir(args)
+      when "shell-init"
+        cmd_shell_init(args)
       when "alfred"
         cmd_alfred(args)
       when "version", "--version", "-v"
@@ -683,6 +685,7 @@ module Workspace
           report-run-status  Internal: write run result for --wait (called by shell wrapper)
           hooks           Remove workspace's hooks from a coding agent's settings (hooks uninstall)
           session-event   Forward one agent hook event to its daemon (installed by init)
+          shell-init      Print shell functions (wf) to load from your shell rc file
           review          Show a workspace's finished work for review, or list the ones ready
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
@@ -8159,6 +8162,33 @@ module Workspace
       end
 
       @output.puts File.expand_path(root)
+    end
+
+    def cmd_shell_init(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace shell-init zsh|bash"
+        opts.separator ""
+        opts.separator "Print shell functions for your rc file. Add this line (in zsh, after compinit):"
+        opts.separator ""
+        opts.separator "  eval \"$(workspace shell-init zsh)\""
+        opts.separator ""
+        opts.separator "It defines wf, a short workflow start: wf [-w ID] [--dry-run] [--] REF|TEXT."
+        opts.separator "The text is fixed; nothing from your workflows is put into it. There is no --json."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace shell-init zsh    # the text for zsh"
+        opts.separator "  workspace shell-init bash    # the text for bash 3.2 or later"
+        opts.separator "  workspace shell-init zsh > ~/.workspace.zsh    # write it once, source the file"
+      end
+      parser.parse!(args)
+
+      shell = args.shift
+      unless ShellInit::SHELLS.include?(shell) && args.empty?
+        got = shell.nil? ? "" : " (got #{[shell, *args].join(" ").inspect})"
+        raise Workspace::UsageError, "Usage: workspace shell-init zsh|bash#{got}"
+      end
+
+      @output.print ShellInit.text(shell)
     end
 
     def cmd_alfred(args)
