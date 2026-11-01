@@ -272,6 +272,8 @@ RSpec.describe Workspace::Commands::Workflow do
           "turn_ended_incomplete: the turn ended without /a/plan.md, /a/risks.md",
         reason("turn_ended_incomplete", {"missing" => [], "stale" => ["/a/plan.md"]}) =>
           "turn_ended_incomplete: the turn ended with /a/plan.md left by an earlier attempt and not written again",
+        reason("turn_ended_incomplete", {"missing" => ["/a/risks.md"], "invalid" => [{"file" => "/a/plan.md", "rule" => "empty"}, {"file" => "/a/l.md", "rule" => "symlink"}, {"file" => "/a/d", "rule" => "not_regular_file"}]}) =>
+  "turn_ended_incomplete: the turn ended without /a/risks.md with /a/plan.md (empty; write its content), /a/l.md (a link; write a regular file), /a/d (not a regular file)",
         reason("turn_ended_incomplete", {"missing" => ["/a/plan.md"], "background_tasks" => [{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k\e[31m1", "type" => "sub\nagent"}]}) =>
           "turn_ended_incomplete: the turn ended without /a/plan.md and background tasks were still listed after 90 minutes: shell b1a2c3d4e, sub\\nagent k\\e[31m1",
         reason("failed_check", {"step" => "verify", "cause" => "check", "exit_code" => 1, "log" => "/a/verify.1.check.log"}) =>
@@ -1426,9 +1428,30 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json).to eq("schema_version" => 1, "ok" => true, "step" => {
         "run_id" => "wr_1", "workflow" => "flow", "workspace" => "app", "step" => "plan", "attempt" => 1, "state" => "running",
         "instructions" => "#{@dir}/steps/plan.1.prompt.md", "artifacts_dir" => @dir,
-        "produces" => [{"path" => "#{@dir}/plan.md", "exists" => true, "current" => true}], "check" => false,
+        "produces" => [{"path" => "#{@dir}/plan.md", "exists" => true, "problem" => nil, "current" => true}], "check" => false,
         "reported" => {"status" => "pass", "summary" => "Plan written."}
       })
+    end
+
+    it "says a symlink and a directory are not regular files" do
+      strict = run.merge("definition" => definition.to_h.merge("produces_check" => "strict"))
+      allow(store).to receive(:find).with("wr_1").and_return(strict)
+      File.write(File.join(@dir, "real.md"), "x")
+      File.symlink(File.join(@dir, "real.md"), File.join(@dir, "plan.md"))
+
+      command.step_status(pane: "%5")
+      expect(output.string).to include("#{@dir}/plan.md (a link; write a regular file)\n")
+
+      File.delete(File.join(@dir, "plan.md"))
+      Dir.mkdir(File.join(@dir, "plan.md"))
+      output.truncate(0)
+      output.rewind
+      command.step_status(pane: "%5", json: true)
+      expect(json["step"]["produces"]).to eq([{"path" => "#{@dir}/plan.md", "exists" => true, "problem" => "not_regular_file", "current" => false}])
+      output.truncate(0)
+      output.rewind
+      command.step_status(pane: "%5")
+      expect(output.string).to include("#{@dir}/plan.md (not a regular file)\n")
     end
 
     it "says a file an earlier attempt left has to be written again" do
@@ -1441,7 +1464,22 @@ RSpec.describe Workspace::Commands::Workflow do
       output.truncate(0)
       output.rewind
       command.step_status(pane: "%5", json: true)
-      expect(json["step"]["produces"]).to eq([{"path" => "#{@dir}/plan.md", "exists" => true, "current" => false}])
+      expect(json["step"]["produces"]).to eq([{"path" => "#{@dir}/plan.md", "exists" => true, "problem" => nil, "current" => false}])
+    end
+
+    it "names the rule an empty file or a link breaks in a strict run" do
+      run["definition"] = definition.to_h.merge("produces_check" => "strict")
+      File.write(File.join(@dir, "plan.md"), "")
+
+      command.step_status(pane: "%5")
+      expect(output.string).to include("plan.md (empty; write its content)\n")
+      output.truncate(0)
+      output.rewind
+      File.delete(File.join(@dir, "plan.md"))
+      File.symlink("/nowhere", File.join(@dir, "plan.md"))
+      command.step_status(pane: "%5", json: true)
+
+      expect(json["step"]["produces"]).to eq([{"path" => "#{@dir}/plan.md", "exists" => true, "problem" => "symlink", "current" => false}])
     end
 
     it "says a check will run for a step that has one" do
@@ -1554,7 +1592,7 @@ RSpec.describe Workspace::Commands::Workflow do
       real_store.create("workflow" => "rpiv", "workspace" => "app", "worktree" => File.join(@root, "app"), "state" => "running", "current" => "research",
         "artifacts_dir" => artifacts,
         "steps" => {"research" => {"state" => "running", "attempts" => [{"n" => 1, "prompt_file" => File.join(artifacts, "steps", "research.1.prompt.md"), "check" => {"log" => File.join(artifacts, "steps", "research.1.check.log")}}]}},
-        "definition" => {"steps" => [{"id" => "research", "produces" => ["research.md", "plan.md", "notes.md", "../../../outside.md"]}]})
+        "definition" => {"produces_check" => "strict", "steps" => [{"id" => "research", "produces" => ["research.md", "plan.md", "notes.md", "../../../outside.md"]}]})
     end
 
     it "prints the documented JSON for the fixture run" do

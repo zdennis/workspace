@@ -231,7 +231,9 @@ module Workspace
     # @raise [Workspace::Error] see {#preflight}
     def start(definition:, workspace:, worktree:, inputs:, pane:, note: nil, dispatch: true)
       checked = preflight(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane)
-      data = definition.to_h
+      # The marker says this run's `produces` files must be non-empty regular files, not links;
+      # a run stored without it keeps the exists-only check (see WorkflowProduced).
+      data = definition.to_h.merge(WorkflowProduced::MARKER_KEY => WorkflowProduced::STRICT)
       now = now_iso
       base = @guard.base(worktree)
       # Stored as waiting to be started: a `workflow run` that is interrupted before its
@@ -1033,7 +1035,7 @@ module Workspace
     # becomes the stop it was hiding, with a `since` of its own.
     def expire_background(run)
       held = run["reason"]["details"]
-      run["reason"] = reason("turn_ended_incomplete", held.slice("step", "attempt", "missing", "stale").merge("background_tasks" => held["tasks"]))
+      run["reason"] = reason("turn_ended_incomplete", held.slice("step", "attempt", "missing", "stale", "invalid").merge("background_tasks" => held["tasks"]))
     end
 
     def stop_reason(stored, turn_started, code, details)
@@ -1077,7 +1079,10 @@ module Workspace
     def step_text(run, step, filled)
       text = WorkflowDefinition.render(step["prompt"], filled).strip
       files = step["produces"].map { |file| File.join(run["artifacts_dir"], file) }
-      text += "\n\nThis step is finished when your turn ends and these files exist, written during this attempt: #{files.join(", ")}." if files.any?
+      if files.any?
+        what = WorkflowProduced.strict?(run["definition"]) ? "exist as non-empty regular files (not links), written during this attempt" : "exist, written during this attempt"
+        text += "\n\nThis step is finished when your turn ends and these files #{what}: #{files.join(", ")}."
+      end
       text += "\n\nWhen your turn ends, the runner checks the step with the project's own command; work until it would pass." if step["status"]
       text
     end
@@ -1117,14 +1122,18 @@ module Workspace
         end
       end
       files = step["produces"].map { |file| File.join(run["artifacts_dir"], file) }
-      missing = files.reject { |file| File.exist?(file) }
+      strict = WorkflowProduced.strict?(run["definition"])
+      found = files.to_h { |file| [file, WorkflowProduced.inspect_file(file, strict: strict)] }
+      missing = files.reject { |file| found[file].exists }
+      invalid = files.select { |file| found[file].exists && found[file].rule }.map { |file| {"file" => file, "rule" => found[file].rule} }
       # A file an earlier attempt left does not count: the step has to write it again.
       started = Time.iso8601(attempt["started_at"])
-      stale = (files - missing).select { |file| File.mtime(file) < started }
-      if missing.any? || stale.any?
+      stale = files.select { |file| found[file].exists && found[file].rule.nil? && found[file].mtime < started }
+      if missing.any? || invalid.any? || stale.any?
         state["state"] = "running"
         run["state"] = "waiting"
         details = {"step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale}
+        details["invalid"] = invalid if invalid.any?
         run["reason"] = if background.any?
           # Every notification starts a new turn and a hold is hidden, so its `since` stays.
           stop_reason(run["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)

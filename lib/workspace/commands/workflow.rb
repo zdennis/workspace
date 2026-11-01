@@ -422,9 +422,11 @@ module Workspace
         state = run["steps"].fetch(run["current"])
         attempt = state["attempts"].last || {}
         started = attempt["started_at"] && Time.iso8601(attempt["started_at"])
+        strict = Workspace::WorkflowProduced.strict?(run["definition"])
         produces = step["produces"].map { |file| File.join(run["artifacts_dir"], file) }.map do |path|
           # A file an earlier attempt left has to be written again to count.
-          {"path" => path, "exists" => File.exist?(path), "current" => File.exist?(path) && (started.nil? || File.mtime(path) >= started)}
+          found = Workspace::WorkflowProduced.inspect_file(path, strict: strict)
+          {"path" => path, "exists" => found.exists, "problem" => found.rule, "current" => found.current?(started) == true}
         end
         info = {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "step" => run["current"],
                 "attempt" => attempt["n"], "state" => state["state"], "instructions" => attempt["prompt_file"],
@@ -436,6 +438,8 @@ module Workspace
         produces.each do |file|
           found = if file["current"]
             "there"
+          elsif file["problem"]
+            PRODUCES_PROBLEMS.fetch(file["problem"], file["problem"])
           else
             file["exists"] ? "left by an earlier attempt; write it again" : "missing"
           end
@@ -446,6 +450,8 @@ module Workspace
       end
 
       private
+
+      PRODUCES_PROBLEMS = {"symlink" => "a link; write a regular file", "not_regular_file" => "not a regular file", "empty" => "empty; write its content"}.freeze
 
       TABLE_HEADER = ["Run", "State", "Workspace", "Status", "Config", "tmux session", "Worktree", "State dir"].freeze
 
@@ -784,6 +790,7 @@ module Workspace
           tasks = Array(details["background_tasks"]).grep(Hash).map { |task| TerminalText.escape("#{task["type"]} #{task["id"]}") }
           ["the turn ended", ("without #{details["missing"].join(", ")}" if details["missing"].any?),
             ("with #{stale.join(", ")} left by an earlier attempt and not written again" if stale.any?),
+            ("with #{Array(details["invalid"]).map { |each| "#{each["file"]} (#{PRODUCES_PROBLEMS.fetch(each["rule"], each["rule"])})" }.join(", ")}" if Array(details["invalid"]).any?),
             ("and background tasks were still listed after 90 minutes: #{tasks.join(", ")}" if tasks.any?)].compact.join(" ")
         when "failed_check"
           if details["cause"] == "reported"

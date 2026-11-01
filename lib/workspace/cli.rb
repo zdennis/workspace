@@ -5010,7 +5010,7 @@ module Workspace
         opts.separator "workspace's Claude pane. A step gets its instructions in a file under .workflow/ in the"
         opts.separator "checkout and one typed line pointing at it, in a fresh conversation unless the step says"
         opts.separator "context: continue. A step is done when the agent's turn ends, every file it produces:"
-        opts.separator "exists, and its status: check passes; the agent daemon (agentd) sees the turn end and"
+        opts.separator "is there (a non-empty regular file, not a link), and its status: check passes; the agent daemon (agentd) sees the turn end and"
         opts.separator "moves the run on. A failed step goes back along its on_fail: {goto, max}; a step with"
         opts.separator "gate: approve waits for `workflow approve`. Resources a step uses: are locks the run"
         opts.separator "holds, in the same queue as `lock acquire` and `dev up`."

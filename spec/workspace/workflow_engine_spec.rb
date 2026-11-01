@@ -150,14 +150,14 @@ RSpec.describe Workspace::WorkflowEngine do
         "worktree" => worktree, "task" => "t1", "inputs" => {"task" => "X-1"}, "state" => "running", "current" => "plan",
         "pane" => "%5", "reason" => nil, "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"),
         "definition_source" => "global", "definition_sha256" => three_steps.sha256)
-      expect(run["definition"]).to eq(three_steps.to_h)
+      expect(run["definition"]).to eq(three_steps.to_h.merge("produces_check" => "strict"))
       expect(run["steps"]["plan"]).to eq("state" => "running", "attempts" => [
         {"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "context" => [], "prompt_file" => prompt}
       ])
       expect(File.read(prompt)).to eq(
         "Work on X-1 in app.worktree-x on feature/x.\n\n" \
         "Write #{worktree}/.workflow/wr_1/plan.md for run wr_1.\n\n" \
-        "This step is finished when your turn ends and these files exist, written during this attempt: #{worktree}/.workflow/wr_1/plan.md.\n\n" \
+        "This step is finished when your turn ends and these files exist as non-empty regular files (not links), written during this attempt: #{worktree}/.workflow/wr_1/plan.md.\n\n" \
         "Note for this run: Keep it small.\n"
       )
       expect(panes.bound).to eq("%5" => {workspace: "app.worktree-x", run_id: "wr_1", step: "plan", attempt: 1,
@@ -846,16 +846,116 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "stores a changed missing list and keeps the since" do
-        allow(File).to receive(:exist?).and_call_original
-        allow(File).to receive(:exist?).with(File.join(worktree, ".workflow", "wr_1", "plan.md")).and_return(true)
-        allow(File).to receive(:mtime).and_call_original
-        allow(File).to receive(:mtime).with(File.join(worktree, ".workflow", "wr_1", "plan.md")).and_return(Time.utc(2026, 10, 4, 11, 0, 0))
+        File.utime(Time.utc(2026, 10, 4, 11, 0, 0), Time.utc(2026, 10, 4, 11, 0, 0), artifact("plan.md"))
 
         engine.turn_ended("wr_1", pane: "%5")
 
         reason = store.find("wr_1")["reason"]
         expect(reason["since"]).to eq(first_since)
         expect(reason["details"]).to include("missing" => [], "stale" => [File.join(worktree, ".workflow", "wr_1", "plan.md")])
+      end
+    end
+
+    describe "a produces file that is not a non-empty regular file" do
+      let(:plan) { File.join(worktree, ".workflow", "wr_1", "plan.md") }
+
+      def invalid_details
+        store.find("wr_1")["reason"]["details"]["invalid"]
+      end
+
+      before do
+        start
+        FileUtils.mkdir_p(File.dirname(plan))
+        now[0] += 60
+      end
+
+      it "marks a new run strict in its stored definition" do
+        expect(store.find("wr_1")["definition"]).to include("produces_check" => "strict")
+      end
+
+      it "holds the step on an empty file, naming the rule and the file" do
+        File.write(plan, "")
+        File.utime(now.first, now.first, plan)
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["steps"]["plan"]["state"]).to eq("running")
+        expect(run["reason"]).to include("code" => "turn_ended_incomplete")
+        expect(run["reason"]["details"]).to include("missing" => [], "stale" => [])
+        expect(invalid_details).to eq([{"file" => plan, "rule" => "empty"}])
+      end
+
+      it "holds the step on a directory" do
+        FileUtils.mkdir_p(plan)
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(invalid_details).to eq([{"file" => plan, "rule" => "not_regular_file"}])
+      end
+
+      it "holds the step on a symlink to a real file, never following it" do
+        target = File.join(worktree, "elsewhere.md")
+        File.write(target, "content\n")
+        File.symlink(target, plan)
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(invalid_details).to eq([{"file" => plan, "rule" => "symlink"}])
+      end
+
+      it "holds the step on a dangling symlink as a link, not as missing" do
+        File.symlink(File.join(worktree, "nowhere.md"), plan)
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(invalid_details).to eq([{"file" => plan, "rule" => "symlink"}])
+        expect(store.find("wr_1")["reason"]["details"]["missing"]).to eq([])
+      end
+
+      it "passes once the file is a regular file with content" do
+        File.write(plan, "")
+        engine.turn_ended("wr_1", pane: "%5")
+        artifact("plan.md")
+
+        expect(engine.turn_ended("wr_1", pane: "%5")["steps"]["plan"]["state"]).to eq("passed")
+      end
+
+      it "keeps the exists-only check for a run stored without the marker" do
+        store.update("wr_1") { |run| run["definition"].delete("produces_check") }
+        File.write(plan, "")
+        File.utime(now.first, now.first, plan)
+
+        expect(engine.turn_ended("wr_1", pane: "%5")["steps"]["plan"]["state"]).to eq("passed")
+      end
+
+      it "keeps invalid in the turn_ended_incomplete stop a background hold expires into" do
+        File.write(plan, "")
+        tasks = [{"id" => "b1a2c3d4e", "type" => "shell"}]
+        engine.turn_ended("wr_1", pane: "%5", background: tasks)
+        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+        now[0] += 91 * 60
+
+        run = engine.tick("wr_1")
+
+        expect(run["reason"]["code"]).to eq("turn_ended_incomplete")
+        expect(run["reason"]["details"]).to include("invalid" => [{"file" => plan, "rule" => "empty"}], "background_tasks" => tasks)
+      end
+
+      it "lists a missing, a stale and an invalid file once each, in the right list" do
+        store.update("wr_1") { |run| run["definition"]["steps"].find { |step| step["id"] == "plan" }["produces"] = %w[missing.md stale.md empty.md link.md] }
+        dir = File.join(worktree, ".workflow", "wr_1")
+        FileUtils.mkdir_p(dir)
+        old = Time.utc(2026, 10, 4, 11, 0, 0)
+        File.write(File.join(dir, "stale.md"), "old\n")
+        File.write(File.join(dir, "empty.md"), "")
+        File.symlink(File.join(dir, "stale.md"), File.join(dir, "link.md"))
+        [File.join(dir, "stale.md"), File.join(dir, "empty.md")].each { |file| File.utime(old, old, file) }
+
+        details = engine.turn_ended("wr_1", pane: "%5")["reason"]["details"]
+
+        expect(details["missing"]).to eq([File.join(dir, "missing.md")])
+        expect(details["stale"]).to eq([File.join(dir, "stale.md")])
+        expect(details["invalid"]).to eq([{"file" => File.join(dir, "empty.md"), "rule" => "empty"}, {"file" => File.join(dir, "link.md"), "rule" => "symlink"}])
       end
     end
 

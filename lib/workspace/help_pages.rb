@@ -1097,7 +1097,7 @@ module Workspace
         usage: ["step status [--json]"],
         summary: "Show which workflow run, step and attempt this pane is on",
         about: [
-          "Also shows where the step's instructions are, and whether the files the step must leave exist. Run",
+          "Also shows where the step's instructions are, and whether the files the step must leave are there: written this attempt, non-empty, regular files and not links (problem names the rule broken). Run",
           "from the pane the run is bound to."
         ],
         options: [JSON_OPT],
