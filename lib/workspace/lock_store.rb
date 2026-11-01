@@ -750,6 +750,19 @@ module Workspace
       end
     end
 
+    # Every `kind: "run"` holder and waiter in this store, read without a lock: no directory is made, no
+    # file is written and nothing is reaped, so it is safe for a reader that must change nothing (`doctor`).
+    # `locks.json` is replaced whole through a rename, so the read never sees a torn file.
+    #
+    # @return [Array<Hash>] `{name:, role:, record:}` with `role` "holder" or "waiter" and the stored record
+    # @raise [Workspace::Error] if `locks.json` is corrupt
+    def run_records
+      read_data.flat_map do |name, entry|
+        records = [["holder", entry["holder"]]] + entry["queue"].map { |waiter| ["waiter", waiter] }
+        records.filter_map { |role, record| {name: name, role: role, record: record} if run?(record) }
+      end
+    end
+
     private
 
     # @param lenient [Boolean] when true, a corrupt or unparseable
