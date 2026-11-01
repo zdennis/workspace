@@ -49,6 +49,24 @@ RSpec.describe Workspace::Commands::PlanTask do
       expect(output.string).to eq("Added task T4 to the plan for api.\n")
     end
 
+    it "reports the task a dry run would add, writing and recording nothing" do
+      write_plan
+
+      row = command.add(name: "api", title: "Fourth", phase: "Two", dry_run: true)
+
+      expect(row).to include("outcome" => "dry_run", "task" => "T4", "title" => "Fourth", "state" => "todo", "revision" => revision)
+      expect(output.string).to eq("Would add task T4 to the plan for api.\n")
+      expect(File.read(plan_path)).to eq(plan_text)
+      expect(events).to be_empty
+    end
+
+    it "refuses under a dry run as a write does" do
+      write_plan
+      expect { command.add(name: "api", title: "x", id: "T2", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("task_exists") }
+      expect { command.add(name: "api", title: "a -- b", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_task") }
+      expect(events).to be_empty
+    end
+
     it "refuses an id in use and a stale revision, writing and recording nothing" do
       write_plan
 

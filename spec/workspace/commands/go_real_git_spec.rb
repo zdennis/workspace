@@ -63,7 +63,7 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
     allow(git).to receive(:root).and_return(from)
     command = described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog,
       start_ref: Workspace::StartRef.new(git: git), git: git, project_detector: Workspace::ProjectDetector.new(state: state, project_config: project_config),
-      project_config: project_config, output: StringIO.new, working_dir: from)
+      project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), output: StringIO.new, working_dir: from)
     command.call(**args)
   end
 
@@ -77,6 +77,32 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
   def expect_nothing_ran
     expect(workflow).not_to have_received(:run)
     expect(workflow_start).not_to have_received(:call)
+  end
+
+  describe "--base read in the checkout go runs in" do
+    before do
+      init
+      sh(@repo, "checkout", "-q", "-b", "side")
+      sh(@repo, "branch", "wt")
+      @worktree = linked("wt")
+      mark(@worktree)
+      sh(@worktree, "commit", "-q", "--allow-empty", "-m", "second")
+    end
+
+    it "reads HEAD~1 against the linked worktree's commit, which the main checkout lacks" do
+      expect(refusal(@repo, argument: "try the thing", base: "HEAD~1").code).to eq("unknown_base")
+
+      row = go(@worktree, argument: "try the thing", base: "HEAD~1")
+
+      expect(row["decision"]["route"]).to eq("start")
+      expect(workflow_start).to have_received(:call).with(hash_including(base: "HEAD~1"))
+    end
+
+    it "accepts HEAD from the linked worktree" do
+      go(@worktree, argument: "try the thing", base: "HEAD")
+
+      expect(workflow_start).to have_received(:call).with(hash_including(base: "HEAD"))
+    end
   end
 
   describe "a tag named like the branch" do
@@ -129,7 +155,7 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
       worktree = linked("foo")
       mark(worktree)
 
-      expect(go(worktree, argument: "fix the bug")["decision"]["route"]).to eq("run")
+      expect(go(worktree, argument: "fix the bug", here: true)["decision"]["route"]).to eq("run")
     end
   end
 

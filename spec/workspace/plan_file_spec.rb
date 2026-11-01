@@ -787,6 +787,30 @@ RSpec.describe Workspace::PlanFile do
         expect(described_class.read(@path).tasks.last).to have_attributes(id: "T4", state: "blocked", reason: "needs db", title: "Fourth")
       end
 
+      it "answers a dry run with the id and the task row, leaving the file as it was" do
+        write(phased)
+        before = content
+        current = described_class.read(@path).revision
+
+        result = described_class.add_task(@path, title: "Fourth", dry_run: true)
+
+        expect(result).to have_attributes(changed: false, revision: current, id: "T4")
+        expect(result.plan.tasks.last).to have_attributes(id: "T4", title: "Fourth", state: "todo")
+        expect(content).to eq(before)
+      end
+
+      it "refuses under a dry run exactly as a write does" do
+        write(phased)
+        expect { described_class.add_task(@path, id: "T2", title: "x", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("task_exists") }
+        expect { described_class.add_task(@path, id: "T9", title: "a -- b", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_task") }
+        write("---
+      status: active
+      ---
+      # Plan
+      ")
+        expect { described_class.add_task(@path, id: "T1", title: "x", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_task_section") }
+      end
+
       it "refuses an id that is already used, naming its line, and writes nothing" do
         write(phased)
 

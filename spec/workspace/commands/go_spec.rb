@@ -29,12 +29,14 @@ RSpec.describe Workspace::Commands::Go do
   let(:project_detector) { instance_double(Workspace::ProjectDetector, detect: detected) }
   let(:project_config) { instance_double(Workspace::ProjectConfig, project_root_for: configured_root) }
   let(:output) { StringIO.new }
+  let(:running) { nil }
+  let(:go_task) { instance_double(Workspace::Commands::GoTask, run_for: running) }
   let(:start_row) { {"workspace" => "app.worktree-x", "outcome" => "started", "warnings" => ["from start"]} }
   let(:run_row) { {"workspace" => detected, "outcome" => "started"} }
 
   subject(:command) do
     described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog, start_ref: start_ref,
-      git: git, project_detector: project_detector, project_config: project_config, output: output, working_dir: root || "/nowhere")
+      git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, output: output, working_dir: root || "/nowhere")
   end
 
   before do
@@ -122,7 +124,7 @@ RSpec.describe Workspace::Commands::Go do
     end
 
     it "runs free text here as the task" do
-      command.call(argument: "fix the bug", inputs: {"a" => "b"})
+      command.call(argument: "fix the bug", inputs: {"a" => "b"}, here: true)
 
       expect(workflow).to have_received(:run).with(hash_including(inputs: {"a" => "b", "task" => "fix the bug"}))
       expect(output.string).to include("runs in this worktree")
@@ -153,6 +155,196 @@ RSpec.describe Workspace::Commands::Go do
       expect(workflow_start).to have_received(:call).with(id: "rpiv", ref: "other", headless: false, here: nil, inputs: {}, dry_run: false)
       expect(row["decision"]["route"]).to eq("start")
       expect(output.string).to include("makes or reuses the worktree workspace for other")
+    end
+  end
+
+  describe "free text from a linked worktree workspace" do
+    it "starts a new workspace and touches nothing in the current one" do
+      row = command.call(argument: "fix the bug", caller_pane: "%3")
+
+      expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, dry_run: false)
+      expect(workflow).not_to have_received(:run)
+      expect(row["decision"]).to include("kind" => "prompt", "route" => "start")
+      expect(output.string).to include("makes a new worktree workspace")
+    end
+
+    context "with a branch that differs from the text's slug only in case" do
+      let(:names) { %w[Feature-X main] }
+
+      it "refuses the slug" do
+        error = refusal(argument: "feature x")
+
+        expect(error.code).to eq("branch_exists")
+        expect_nothing_ran
+      end
+    end
+
+    it "passes an existing branch name on to WorkflowStart's own check" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::Error.new("Pass --branch.", code: "branch_exists", details: {"branch" => "other", "path" => "/src/app/.worktrees/other", "worktree" => false}))
+
+      expect(refusal(argument: "other !").code).to eq("branch_exists")
+    end
+
+    it "refuses a slug that is the default branch" do
+      expect(refusal(argument: "main !").code).to eq("branch_not_allowed")
+      expect_nothing_ran
+    end
+  end
+
+  describe "--here with a run going" do
+    let(:running) { {"id" => "wr_1", "workflow" => "rpiv", "current" => "plan"} }
+    let(:task_row) { {"outcome" => "added", "decision" => {"route" => "task"}} }
+
+    before { allow(go_task).to receive(:add).and_return(task_row) }
+
+    it "hands the text and the flags to the task path before choosing a workflow" do
+      row = command.call(argument: "also this", here: true, workflow: "investigate", inputs: {"a" => "b"}, dry_run: true)
+
+      expect(row).to eq(task_row)
+      expect(go_task).to have_received(:add).with(running, "also this", an_object_having_attributes(workspace: detected), flags: {workflow: "investigate", inputs: {"a" => "b"}, base: nil}, dry_run: true)
+      expect(workflow_defaults).not_to have_received(:lookup)
+      expect_nothing_ran
+    end
+
+    it "leaves bare go --here to the run check" do
+      command.call(here: true)
+
+      expect(go_task).not_to have_received(:add)
+      expect(workflow).to have_received(:run)
+    end
+
+    it "does not stop free text without --here from starting a workspace" do
+      row = command.call(argument: "fix the bug")
+
+      expect(go_task).not_to have_received(:run_for)
+      expect(workflow_start).to have_received(:call)
+      expect(row["decision"]["route"]).to eq("start")
+    end
+  end
+
+  describe "--here" do
+    it "runs free text here" do
+      row = command.call(argument: "fix the bug", here: true, caller_pane: "%3")
+
+      expect(workflow).to have_received(:run).with(hash_including(caller_pane: "%3", inputs: {"task" => "fix the bug"}))
+      expect(workflow_start).not_to have_received(:call)
+      expect(row["decision"]["route"]).to eq("run")
+    end
+
+    it "runs with a ref for the current branch" do
+      expect(command.call(argument: "feature", here: true)["decision"]["route"]).to eq("run")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "feature", here: instance_of(Workspace::Commands::WorkflowStart::Here)))
+    end
+
+    it "refuses a ref for another branch, as a usage error" do
+      error = refusal(argument: "other", here: true)
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.message).to include("another branch")
+      expect_nothing_ran
+    end
+
+    shared_examples "go_here_unavailable" do
+      it "refuses with text and with no argument" do
+        [{argument: "fix the bug"}, {}].each do |args|
+          error = refusal(here: true, **args)
+
+          expect(error.code).to eq("go_here_unavailable")
+          expect(error.details).to eq("path" => root)
+        end
+        expect_nothing_ran
+      end
+    end
+
+    context "in a main checkout" do
+      include_context "main checkout"
+      it_behaves_like "go_here_unavailable"
+    end
+
+    context "in a worktree with no marker of its own" do
+      let(:configured_root) { nil }
+      it_behaves_like "go_here_unavailable"
+    end
+
+    context "on a detached HEAD" do
+      let(:current_branch) { nil }
+      it_behaves_like "go_here_unavailable"
+    end
+
+    context "on the default branch" do
+      let(:current_branch) { "main" }
+      let(:main_branch) { "develop" }
+      let(:held) { {"main" => root} }
+      it_behaves_like "go_here_unavailable"
+    end
+  end
+
+  describe "--base" do
+    before { allow(git).to receive(:commit_exists?) { |_path, ref| %w[origin/main abc123].include?(ref) } }
+
+    it "goes to WorkflowStart for free text" do
+      command.call(argument: "try the thing", base: "origin/main")
+
+      expect(workflow_start).to have_received(:call).with(hash_including(prompt: "try the thing", base: "origin/main"))
+    end
+
+    it "goes to WorkflowStart for a ref" do
+      command.call(argument: "PROJ-1", base: "abc123")
+
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "PROJ-1", base: "abc123"))
+    end
+
+    it "leaves base out of the call when not given" do
+      command.call(argument: "try the thing")
+
+      expect(workflow_start).to have_received(:call).with(hash_excluding(:base))
+    end
+
+    it "is refused in place" do
+      expect { command.call(argument: "feature", base: "origin/main") }.to raise_error(Workspace::UsageError, /--base would be ignored/)
+      expect { command.call(base: "origin/main") }.to raise_error(Workspace::UsageError, /--base would be ignored/)
+      expect_nothing_ran
+    end
+
+    it "is refused under --here" do
+      expect { command.call(argument: "try the thing", here: true, base: "origin/main") }.to raise_error(Workspace::UsageError, /--base would be ignored/)
+      expect_nothing_ran
+    end
+
+    it "is handed to the task path, which refuses it" do
+      allow(go_task).to receive(:run_for).and_return({"id" => "wr_1"})
+      allow(go_task).to receive(:add).and_return({})
+
+      command.call(argument: "also this", here: true, base: "abc123")
+
+      expect(go_task).to have_received(:add).with(anything, "also this", anything, flags: hash_including(base: "abc123"), dry_run: false)
+    end
+
+    [true, false].each do |dry_run|
+      %w[nosuchref -x --upload-pack=evil].each do |bad|
+        it "refuses #{bad} as unknown_base with nothing made#{" (dry run)" if dry_run}" do
+          error = refusal(argument: "try the thing", base: bad, dry_run: dry_run)
+
+          expect(error.code).to eq("unknown_base")
+          expect(error.details).to eq("base" => bad)
+          expect(output.string).to eq("")
+          expect_nothing_ran
+        end
+      end
+    end
+
+    it "looks the base up in the checkout go runs in, where git worktree add runs" do
+      allow(git).to receive(:commit_exists?).and_return(true)
+      command.call(argument: "try the thing", base: "HEAD~1")
+
+      expect(git).to have_received(:commit_exists?).with(root, "HEAD~1")
+      expect(git).not_to have_received(:commit_exists?).with(project_root, anything)
+    end
+
+    it "never asks git about a value starting with a dash" do
+      refusal(argument: "try the thing", base: "-x")
+
+      expect(git).not_to have_received(:commit_exists?)
     end
   end
 
@@ -355,6 +547,16 @@ RSpec.describe Workspace::Commands::Go do
       end
       expect(workflow_start).not_to have_received(:locate_project)
     end
+
+    it "says a repository is needed under --here, not go_here_unavailable" do
+      [nil, "free text"].each do |argument|
+        error = refusal(argument: argument, here: true)
+
+        expect(error).not_to be_a(Workspace::UsageError)
+        expect(error.code).not_to eq("go_here_unavailable")
+        expect(error.message).to eq("go must run inside a git repository.")
+      end
+    end
   end
 
   describe "choosing the workflow" do
@@ -379,7 +581,7 @@ RSpec.describe Workspace::Commands::Go do
         refusal = Workspace::Error.new("no", code: "workflow_needs_claude")
         allow(workflow_start).to receive(:check_agent!).with(detected, project: "app").and_raise(refusal)
 
-        expect { command.call(argument: "free text", dry_run: dry_run) }.to raise_error(refusal)
+        expect { command.call(argument: "free text", dry_run: dry_run, here: true) }.to raise_error(refusal)
         expect { command.call(dry_run: dry_run) }.to raise_error(refusal)
         expect(workflow).not_to have_received(:run)
       end
@@ -405,7 +607,7 @@ RSpec.describe Workspace::Commands::Go do
       allow(workflow_defaults).to receive(:lookup).with("prompt", workspace: detected, project: "app").and_return({id: "flow", key: "workflows.default"})
 
       expect(command.call["decision"]).to include("source" => "workflows.default", "kind" => "prompt")
-      expect(command.call(argument: "free text")["decision"]).to include("workflow" => "flow")
+      expect(command.call(argument: "free text", here: true)["decision"]).to include("workflow" => "flow")
     end
 
     it "falls back to pr-feedback for a pull request and rpiv otherwise" do
@@ -664,7 +866,7 @@ RSpec.describe Workspace::Commands::Go do
     end
 
     it "runs in place, where no branch is named" do
-      expect(command.call(argument: "! ! !")["decision"]["route"]).to eq("run")
+      expect(command.call(argument: "! ! !", here: true)["decision"]["route"]).to eq("run")
     end
   end
 
@@ -794,7 +996,7 @@ RSpec.describe Workspace::Commands::Go do
     let(:yaml) { "steps:\n  plan:\n    prompt: Plan.\n" }
 
     it "warns when the workflow declares no task, in place, and leaves task out" do
-      row = command.call(argument: "fix it")
+      row = command.call(argument: "fix it", here: true)
 
       expect(row["warnings"]).to eq(["The text is not the task: rpiv declares no task input."])
       expect(output.string).to include("Warning: The text is not the task")
@@ -804,7 +1006,7 @@ RSpec.describe Workspace::Commands::Go do
     it "keeps the row's own warnings in place" do
       allow(workflow).to receive(:run).and_return({"outcome" => "started", "warnings" => ["from run"]})
 
-      expect(command.call(argument: "fix it")["warnings"]).to eq(["from run", "The text is not the task: rpiv declares no task input."])
+      expect(command.call(argument: "fix it", here: true)["warnings"]).to eq(["from run", "The text is not the task: rpiv declares no task input."])
     end
 
     it "says on the start route that the text still names the branch, beside the row's own warnings" do
@@ -819,14 +1021,14 @@ RSpec.describe Workspace::Commands::Go do
       let(:yaml) { "inputs:\n  task:\nsteps:\n  plan:\n    prompt: Plan.\n" }
 
       it "warns when --input task was given, and keeps it" do
-        row = command.call(argument: "fix it", inputs: {"task" => "other"})
+        row = command.call(argument: "fix it", inputs: {"task" => "other"}, here: true)
 
         expect(row["warnings"]).to eq(["The text is not the task: --input task was given."])
         expect(workflow).to have_received(:run).with(hash_including(inputs: {"task" => "other"}))
       end
 
       it "says nothing otherwise" do
-        expect(command.call(argument: "fix it")["warnings"]).to eq([])
+        expect(command.call(argument: "fix it", here: true)["warnings"]).to eq([])
       end
     end
   end

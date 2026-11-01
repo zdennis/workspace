@@ -547,6 +547,59 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(text).to eq("Do X-1 in app; {{unknown}} stays.")
     end
   end
+  describe ".reads_plan?" do
+    let(:catalog) do
+      Workspace::WorkflowCatalog.new(config: Workspace::Config.new)
+    end
+
+    def preset(id)
+      catalog.find(id).to_h
+    end
+
+    %w[rpiv rpiv-auto-approve].each do |id|
+      it "is true for #{id} at research, plan and implement, and false at verify" do
+        definition = preset(id)
+
+        %w[research plan implement].each do |step|
+          expect(described_class.reads_plan?(definition, from: step)).to be(true), "#{id} at #{step}"
+        end
+        expect(described_class.reads_plan?(definition, from: "verify")).to be(false)
+      end
+    end
+
+    %w[investigate explore pr-feedback].each do |id|
+      it "is false for #{id}" do
+        definition = preset(id)
+
+        definition["steps"].each do |step|
+          expect(described_class.reads_plan?(definition, from: step["id"])).to be(false)
+        end
+        expect(described_class.reads_plan?(definition, from: nil)).to be(false)
+      end
+    end
+
+    it "counts every step for an unknown or nil from" do
+      definition = preset("rpiv")
+
+      expect(described_class.reads_plan?(definition, from: nil)).to be(true)
+      expect(described_class.reads_plan?(definition, from: "nope")).to be(true)
+    end
+
+    it "is true at every step when the top-level include lists implementation-plan" do
+      definition = parse("include: [implementation-plan]\nsteps:\n  a:\n    prompt: A.\n  b:\n    prompt: B.\n").to_h
+
+      expect(described_class.reads_plan?(definition, from: "b")).to be(true)
+    end
+
+    it "is true for a plan_status require, and false for a definition that names neither" do
+      with_proof = parse("steps:\n  a:\n    prompt: A.\n    require:\n      - plan_status: done\n").to_h
+      neither = parse(minimal).to_h
+
+      expect(described_class.reads_plan?(with_proof, from: "a")).to be(true)
+      expect(described_class.reads_plan?(neither, from: "build")).to be(false)
+    end
+  end
+
   describe "require" do
     def step_require(text)
       parse("steps:\n  build:\n    prompt: Build it.\n    require:\n#{text.lines.map { |l| "      #{l}" }.join}").steps.first["require"]

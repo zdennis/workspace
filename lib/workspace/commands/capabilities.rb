@@ -105,7 +105,7 @@ module Workspace
         "remove" => 1,
         "lifecycle_current" => 1,
         "promote" => 1,
-        "go" => 1,
+        "go" => 2,
         "bookkeeping_excluded" => 1,
         "split_cwd" => 1,
         "launch_prompt_status" => 1,
