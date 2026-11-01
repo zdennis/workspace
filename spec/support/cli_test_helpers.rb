@@ -877,6 +877,11 @@ module CLITestHelpers
       end
     end
 
+    def check(**kw)
+      @calls << [:check, kw]
+      {exit_code: 0}
+    end
+
     def check_removable(**kw)
       @calls << [:check_removable, kw]
       raise @error if @error

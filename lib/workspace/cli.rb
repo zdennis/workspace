@@ -710,7 +710,7 @@ module Workspace
           ui              Open a workspace-ui:// link (open), or see which app would take one (status)
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
-          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; print a step's composed instructions without a run (render); manage your own definitions (validate, add, update, remove); read a run's history (events, files, attempts), check its evidence (audit) and act on runs that have stopped (sweep)
+          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; print a step's composed instructions (render) or run its status check (check) without a run; manage your own definitions (validate, add, update, remove); read a run's history (events, files, attempts), check its evidence (audit) and act on runs that have stopped (sweep)
 
         Global options:
           --debug         Print detailed debug output to stderr
@@ -5000,7 +5000,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start render status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start render check status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5032,8 +5032,9 @@ module Workspace
         opts.separator "`start` may leave out the ID: config names it (workflows.by_ref.<kind>, else workflows.default)."
         opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
         opts.separator ""
-        opts.on("--name WORKSPACE", "run: the workspace to run in; render: the workspace whose packs and commands are read; status: that workspace's runs still going (default: the current workspace); sweep: only that workspace's runs (default: every run going)") { |v| options[:name] = v }
+        opts.on("--name WORKSPACE", "run: the workspace to run in; render, check: the workspace whose packs and commands are read; status: that workspace's runs still going (default: the current workspace); sweep: only that workspace's runs (default: every run going)") { |v| options[:name] = v }
         opts.on("--input KEY=VALUE", "run, start, render: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
+        opts.on("--artifacts DIR", "check: an existing directory standing for the run's artifacts (WORKSPACE_RUN_ARTIFACTS); default an empty temporary one") { |v| options[:artifacts] = v }
         opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
         opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
@@ -5104,17 +5105,17 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, render, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, render, check, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
       source_path = args.shift if %w[add update].include?(subcommand)
       start_ref = args.shift if subcommand == "start"
-      render_step = args.shift if subcommand == "render"
+      render_step = args.shift if %w[render check].include?(subcommand)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
-      raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (subcommand == "render" && render_step.nil?))
+      raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
       raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
       raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
@@ -5131,6 +5132,8 @@ module Workspace
       raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
       raise UsageError, "--needs-me is for `workflow status`." if options[:needs_me] && subcommand != "status"
       raise UsageError, "--needs-me lists runs still going and takes no RUN or --table." if options[:needs_me] && (subject || options[:table])
+      raise UsageError, "workflow check runs a status: command, which takes no inputs: --input is for run, start and render." if subcommand == "check" && options[:inputs].any?
+      raise UsageError, "--artifacts is for `workflow check ID STEP`." if options[:artifacts] && subcommand != "check"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
       gate_options = workflow_gate_options(subcommand, options)
@@ -5160,6 +5163,18 @@ module Workspace
         name = options[:name] || @project_detector.detect(@working_dir)
         root = name && (options[:name] ? working_dir_for(name) : @project_config.project_root_for(name))
         @workflow_command.render(id: subject, step: render_step, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: workflow_inputs(options[:inputs]), json: options[:json])
+      when "check"
+        name = options[:name] || @project_detector.detect(@working_dir)
+        root = if name
+          options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
+        else
+          @git.root
+        end
+        artifacts = options[:artifacts]
+        artifacts = File.expand_path(artifacts, @working_dir) unless artifacts.to_s.empty?
+        result = @workflow_command.check(id: subject, step: render_step, worktree: root ? File.expand_path(root) : @working_dir,
+          artifacts: artifacts, json: options[:json])
+        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
       when "add" then workflow_action("workflow add", options) { @workflow_command.add(id: subject, path: source_path, dry_run: options[:dry_run]) }
       when "update"
         raise UsageError, "workflow update needs --if-sha256 SHA (the sha256 from `workflow show ID --source`)." if options[:if_sha256].to_s.empty?

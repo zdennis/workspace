@@ -237,9 +237,10 @@ module Workspace
     #   (default: a new one)
     # @param alerts [Workspace::WorkflowAlerts, nil] tells a person of a gate, a failure, a stall or a finish through `alerts.notify`
     #   (default: none)
+    # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
     # @param clock [#call] returns the current Time
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-      env_stopper: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, clock: -> { Time.now })
+      env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, clock: -> { Time.now })
       @store = store
       @resources = resources
       @composer = composer
@@ -252,6 +253,7 @@ module Workspace
       @excludes = excludes
       @gate_note = gate_note
       @env_stopper = env_stopper
+      @workspace_known = workspace_known
       @event_log = event_log
       @task_store = task_store
       @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard, clock: clock)
@@ -373,12 +375,7 @@ module Workspace
     # @raise [Workspace::UsageError] for an input the definition doesn't have
     def render(definition:, step:, workspace:, worktree:, inputs:)
       data = definition.to_h
-      found = data["steps"].find { |each| each["id"] == step }
-      unless found
-        ids = data["steps"].map { |each| each["id"] }
-        raise Workspace::Error.new("Workflow #{data["id"]} has no step #{step.to_s[0, 60].inspect} (steps: #{ids.join(", ")}).",
-          code: "unknown_step", details: {"workflow" => data["id"], "step" => step.to_s[0, 60], "steps" => ids})
-      end
+      found = step_of(data, step)
       inputs = check_inputs(data, inputs)
       # A started run stores the definition with the strict marker, which words the produces line.
       run = {"definition" => data.merge(WorkflowProduced::MARKER_KEY => WorkflowProduced::STRICT), "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
@@ -389,6 +386,39 @@ module Workspace
        "gate" => found["gate"], "text" => composed["text"], "packs" => composed["packs"].map { |pack| pack["ref"] },
        "run" => PREVIEW_RUN_ID, "artifacts_dir" => run["artifacts_dir"], "instructions" => path,
        "in_checkout" => !@lineage.resolve(cwd: worktree).git_common_dir.nil?}
+    end
+
+    # What `workflow check` runs for a step, found as a run finds it: the step's `status:` command
+    # (the project's `commands.test`/`lint` for the `command:` form), its time limit, and the checkout's HEAD
+    # for `WORKSPACE_RUN_BASE_SHA`. A `status:` command is never rendered, so inputs play no part. Writes nothing.
+    #
+    # @param definition [Workspace::WorkflowDefinition]
+    # @param step [String] a step id
+    # @param worktree [String] the checkout the check runs in and the project's commands are read from
+    # @return [Hash{String=>Object}] "workflow", "step", "command", "timeout" (whole seconds as an Integer), "base_sha"
+    #   (empty when HEAD can't be read), "run" ({PREVIEW_RUN_ID}) and "in_checkout"
+    # @raise [Workspace::Error] code `unknown_step`, `step_without_status` (the step has no `status:`) or
+    #   `workflow_command_unset` (the project command it names is not set; `details.steps` as for `start`)
+    def check_plan(definition:, step:, worktree:)
+      data = definition.to_h
+      found = step_of(data, step)
+      status = found["status"]
+      unless status
+        raise Workspace::Error.new("Step #{found["id"]} of workflow #{data["id"]} has no status: command to check.",
+          code: "step_without_status", details: {"workflow" => data["id"], "step" => found["id"]})
+      end
+      lineage = @lineage.resolve(cwd: worktree)
+      command = status["run"] || @commands_config.for_project(lineage.name)[status["command"].to_sym]
+      unless command
+        raise Workspace::Error.new("Step #{found["id"]} of workflow #{data["id"]} checks with the project's #{status["command"]} command, and #{lineage.name || "this directory"} has none. " +
+          (@workspace_known&.call(lineage.name) ? "Set it: workspace config set commands.#{status["command"]} \"<#{status["command"]} command>\" --name #{lineage.name}" : "Set commands.#{status["command"]} in this project's workspace."),
+          code: "workflow_command_unset", details: {"workflow" => data["id"], "project" => lineage.name, "commands" => [status["command"]],
+                                                    "steps" => [{"step" => found["id"], "command" => status["command"], "via" => "status"}]})
+      end
+      timeout = status["timeout"] || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
+      {"workflow" => data["id"], "step" => found["id"], "command" => command,
+       "timeout" => (timeout == timeout.to_i) ? timeout.to_i : timeout, "base_sha" => @guard.head(worktree).to_s,
+       "run" => PREVIEW_RUN_ID, "in_checkout" => in_checkout?(lineage.git_common_dir, worktree)}
     end
 
     # Creates a run and starts its first step.
@@ -1293,6 +1323,22 @@ module Workspace
 
     def now_iso
       @clock.call.utc.iso8601
+    end
+
+    # A checkout, not the inside of its `.git` directory.
+    def in_checkout?(common_dir, worktree)
+      return false unless common_dir
+      path = File.expand_path(worktree)
+      common = File.expand_path(common_dir)
+      path != common && !path.start_with?(common + File::SEPARATOR)
+    end
+
+    def step_of(data, step)
+      found = data["steps"].find { |each| each["id"] == step }
+      return found if found
+      ids = data["steps"].map { |each| each["id"] }
+      raise Workspace::Error.new("Workflow #{data["id"]} has no step #{step.to_s[0, 60].inspect} (steps: #{ids.join(", ")}).",
+        code: "unknown_step", details: {"workflow" => data["id"], "step" => step.to_s[0, 60], "steps" => ids})
     end
 
     def artifacts_dir(worktree, run_id)

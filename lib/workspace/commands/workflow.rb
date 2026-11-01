@@ -16,6 +16,9 @@ module Workspace
       # What `step done --code` accepts.
       CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
 
+      # Lines of a check's output `check` prints.
+      CHECK_TAIL_LINES = 40
+
       # The workspace name `render` shows when the working directory is in no workspace.
       RENDER_WORKSPACE = "<workspace>".freeze
 
@@ -45,7 +48,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, compare: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, compare: nil, step_check: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -62,6 +65,7 @@ module Workspace
         @needs_me = needs_me
         @stats = stats
         @compare = compare
+        @step_check = step_check
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -169,6 +173,41 @@ module Workspace
         shown = previews.map { |each| "{{#{each["name"]}}} = #{TerminalText.escape(each["value"])}" }.join(", ")
         @error_output.puts "preview values, not a run's: #{shown}; the instructions file would be #{TerminalText.escape(result["instructions"])}."
         @error_output.puts "step #{TerminalText.escape(result["step"])} has gate: #{TerminalText.escape(result["gate"])}: the run waits for `workflow approve` after its turn ends." if result["gate"]
+      end
+
+      # Runs the `status:` command of a step once, outside any run (see {Workspace::WorkflowStepCheck}), in
+      # +worktree+ with the environment a run gives it. The command comes from a catalog definition, so this
+      # runs a shell command with the same trust as a run does. It takes no lock (the step's `uses:` is not
+      # held) and writes no run file, event or binding.
+      #
+      # Text: the last {CHECK_TAIL_LINES} lines of the check's output on the output (escaped through
+      # {Workspace::TerminalText} on a terminal), then one summary line on the error output. With +json+ one
+      # document: `ok: true` (the check ran) and `passed`, the exit code, `timed_out`, the log and artifacts.
+      #
+      # @param id [String] a workflow id
+      # @param step [String] a step id
+      # @param worktree [String] the checkout the command runs in
+      # @param artifacts [String, nil] an existing directory standing for the run's artifacts
+      # @param json [Boolean]
+      # @return [Hash{Symbol=>Integer}] `exit_code`: 0 when the check passed, 1 when it failed, timed out or could not start
+      # @raise [Workspace::Error] code `unknown_workflow`, `invalid_workflow`, `unknown_step`,
+      #   `step_without_status`, `workflow_command_unset`, `artifacts_not_directory`
+      def check(id:, step:, worktree:, artifacts: nil, json: false)
+        raise Workspace::Error, "workflow check is not available: no step check was wired" unless @step_check
+        result = @step_check.call(definition: @catalog.find(id), step: step, worktree: worktree, artifacts: artifacts)
+        tail = log_tail(result["log"])
+        if json
+          document("workflow" => result["workflow"], "step" => result["step"], "worktree" => worktree, "passed" => result["passed"], "command" => result["command"],
+            "exit_code" => result["exit_code"], "timed_out" => result["timed_out"], "error" => result["error"], "timeout" => result["timeout"],
+            "duration" => result["duration"], "log" => result["log"], "artifacts" => result["artifacts"], "artifacts_created" => result["artifacts_created"],
+            "base_sha" => result["base_sha"], "tail" => tail,
+            "warnings" => result["in_checkout"] ? [] : [{"code" => "not_in_checkout", "message" => "#{worktree} is not in a git checkout."}])
+        else
+          write_text(tail)
+          @error_output.puts "warning: #{TerminalText.escape(worktree)} is not in a git checkout." unless result["in_checkout"]
+          @error_output.puts check_summary(result)
+        end
+        {exit_code: result["passed"] ? 0 : 1}
       end
 
       # Saves a definition as a user's file, `ID.yml` in the workflows directory, after
@@ -664,6 +703,27 @@ module Workspace
       end
 
       private
+
+      # The last {CHECK_TAIL_LINES} lines of a check log, read from its last 64 KiB.
+      def log_tail(path)
+        text = File.open(path, "rb") do |file|
+          file.seek([file.size - 65_536, 0].max)
+          file.read
+        end.to_s.dup.force_encoding(Encoding::UTF_8).scrub
+        text.lines.last(CHECK_TAIL_LINES).join
+      rescue SystemCallError
+        ""
+      end
+
+      def check_summary(result)
+        how = if result["timed_out"] then "timed out after #{result["timeout"]}s"
+        elsif result["error"] then TerminalText.escape(result["error"])
+        else "exit #{result["exit_code"]}"
+        end
+        made = result["artifacts_created"] ? " (made for this check, empty)" : ""
+        "step #{TerminalText.escape(result["step"])} check #{result["passed"] ? "passed" : "failed"}: #{how}, #{result["duration"]}s; log #{TerminalText.escape(result["log"])}; " \
+          "artifacts #{TerminalText.escape(result["artifacts"])}#{made}"
+      end
 
       # The instructions to the output: as they are to a pipe or file, with each line escaped on a terminal.
       def write_text(text)

@@ -309,6 +309,7 @@ require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_deny"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
+require_relative "workspace/workflow_step_check"
 require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_require"
 require_relative "workspace/workflow_produced"
@@ -617,6 +618,7 @@ module Workspace
       panes: workflow_panes,
       checker: workflow_checker,
       commands_config: commands_config,
+      workspace_known: ->(name) { project_config.existing_name(name) },
       lineage: lineage,
       git: git,
       guard: workflow_guard,
@@ -669,6 +671,7 @@ module Workspace
       needs_me: workflow_needs_me,
       stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader),
       compare: WorkflowCompare.new(loader: workflow_run_loader),
+      step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,

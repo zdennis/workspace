@@ -427,6 +427,32 @@ module Workspace
           ["workspace workflow render rpiv verify --input task=x --json", "one document: text, packs, the preview values and warnings"]
         ]
       },
+      "check" => {
+        usage: ["workflow check ID STEP [--artifacts DIR] [--name WORKSPACE] [--json]"],
+        summary: "Run one step's status: check once, without a run",
+        about: [
+          "Runs the step's `status:` command in this workspace's checkout (--name picks another) through the code a run's",
+          "check goes through: `sh -c` in the checkout's root, the step's timeout, and WORKSPACE_RUN_ID (wr_preview), WORKSPACE_RUN_ARTIFACTS and",
+          "WORKSPACE_RUN_BASE_SHA (the checkout's HEAD, so a BASE..HEAD check sees no commits) set. A `status:` command is never rendered, so it takes no inputs. The command is a shell command from the definition, so it has",
+          "the same trust as a run. It takes no lock (a step's `uses:` is not held) and writes no run file, event or",
+          "binding. Prints the last 40 lines of its output; the summary, the log path and the artifacts path go to stderr.",
+          "",
+          "--artifacts DIR is what WORKSPACE_RUN_ARTIFACTS is (a relative path is taken from here); it must exist and",
+          "workspace never writes to it. Without it an empty temporary directory is made and named. The log is always in",
+          "a new temporary directory, never in a run's area; one a day old is removed by the next check.",
+          "",
+          "A step with no `status:` is refused as step_without_status; `status: {command: test}` runs the project's",
+          "commands.test, and is workflow_command_unset when it is not set.",
+          "Exits 0 when the check passes, 1 when it fails or times out; --json prints `passed` with ok: true."
+        ],
+        options: [["--artifacts DIR", "An existing directory standing for the run's artifacts"],
+          name_opt("The workspace whose checkout the check runs in and whose commands are read"), JSON_OPT],
+        examples: [
+          ["workspace workflow check rpiv-auto-approve plan_review --artifacts ./fixture", "try the plan_review check against a fixture directory"],
+          ["workspace workflow check rpiv verify", "run verify's check in this checkout"],
+          ["workspace workflow check rpiv verify --json", "one document: passed, exit_code, log and artifacts"]
+        ]
+      },
       "start" => {
         usage: ["workflow start --ref REF [--force] [--dry-run] [--json]", "workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",

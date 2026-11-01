@@ -117,6 +117,42 @@ RSpec.describe Workspace::WorkflowCheck do
     expect(state_of_child).to satisfy("be gone or a zombie") { |value| value.empty? || value.start_with?("Z") }
   end
 
+  it "stops the command's group when the caller is interrupted while it waits" do
+    pidfile = File.join(@dir, "pid")
+    caller_thread = Thread.new do
+      check.call(command: "echo $$ > #{pidfile}; exec sleep 30", cwd: @dir, timeout: 60, log: log)
+    rescue Interrupt
+      :interrupted
+    end
+    sleep 0.05 until File.size?(pidfile)
+    pid = Integer(File.read(pidfile))
+
+    caller_thread.raise(Interrupt)
+
+    expect(caller_thread.value).to eq(:interrupted)
+    expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
+  end
+
+  it "kills a command that traps TERM when the stop itself is interrupted" do
+    pidfile = File.join(@dir, "pid")
+    patient = described_class.new(kill_grace: 30)
+    caller_thread = Thread.new do
+      patient.call(command: "trap '' TERM; echo $$ > #{pidfile}; while :; do sleep 1; done", cwd: @dir, timeout: 60, log: log)
+    rescue Interrupt
+      :interrupted
+    end
+    sleep 0.05 until File.size?(pidfile)
+    pid = Integer(File.read(pidfile))
+
+    caller_thread.raise(Interrupt)
+    sleep 0.5
+    expect { Process.kill(0, pid) }.not_to raise_error
+    caller_thread.raise(Interrupt)
+    caller_thread.join(10)
+
+    expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
+  end
+
   it "stops a command whose run moved on, with everything it started, asking only every stop_poll seconds" do
     ticks = 0
     asked = []

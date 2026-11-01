@@ -52,10 +52,11 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:notes_dir) { File.join(@dir, "notes") }
   let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir}) }
   let(:gate_note) { Workspace::WorkflowGateNote.new(notes: notes) }
+  let(:workspace_known) { ->(_name) { false } }
   subject(:engine) do
     described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
       commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
-      env_stopper: ->(**args) { stopped << args }, event_log: event_log, task_store: task_store, clock: -> { now.first })
+      env_stopper: ->(**args) { stopped << args }, workspace_known: workspace_known, event_log: event_log, task_store: task_store, clock: -> { now.first })
   end
 
   before do
@@ -839,6 +840,82 @@ RSpec.describe Workspace::WorkflowEngine do
       ghost = definition("steps:\n  a:\n    prompt: P\n    include: [ghost]\n")
 
       expect { render("a", inputs: {}, flow: ghost) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+    end
+  end
+
+  describe "#check_plan" do
+    def plan_for(step, flow: three_steps)
+      engine.check_plan(definition: flow, step: step, worktree: worktree)
+    end
+
+    it "gives the project's command, the step's timeout as whole seconds and HEAD, and writes nothing" do
+      expect(plan_for("verify")).to include("workflow" => "flow", "step" => "verify", "command" => "bundle exec rspec", "timeout" => 300,
+        "base_sha" => "1" * 40, "run" => "wr_preview")
+      expect(plan_for("verify")["timeout"]).to be_an(Integer)
+      expect(Dir.exist?(runs_dir)).to be false
+      expect(Dir.exist?(File.join(worktree, ".workflow"))).to be false
+      expect(Dir.exist?(lock_dir)).to be false
+      expect(events).to eq([])
+    end
+
+    it "uses a run: command as it is, with the default timeout, and needs no input" do
+      flow = definition("inputs:\n  task: {required: true}\nsteps:\n  a:\n    prompt: P\n    status: {run: 'test -f x'}\n")
+
+      expect(plan_for("a", flow: flow)).to include("command" => "test -f x", "timeout" => Workspace::WorkflowDefinition::DEFAULT_CHECK_TIMEOUT)
+    end
+
+    it "reads the command for the project the lineage names, as a run does, not for the workspace given" do
+      asked = []
+      allow(commands_config).to receive(:for_project) { |name| asked << name && commands }
+      flow = definition("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    status: {command: test}\n")
+      plan_for("a", flow: flow)
+      checked = asked.dup
+      asked.clear
+      start(flow, inputs: {})
+
+      expect(checked).to eq(["app"])
+      expect(asked.uniq).to eq(checked)
+    end
+
+    it "is not in a checkout inside the .git directory" do
+      allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "app", git_common_dir: File.join(worktree, ".git")))
+      flow = definition("steps:\n  a:\n    prompt: P\n    status: {run: 'true'}\n")
+      inside = engine.check_plan(definition: flow, step: "a", worktree: File.join(worktree, ".git", "hooks"))
+
+      expect(inside["in_checkout"]).to be false
+      expect(plan_for("a", flow: flow)["in_checkout"]).to be true
+    end
+
+    it "refuses a step with no status and an unknown step" do
+      expect { plan_for("plan") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("step_without_status") }
+      expect { plan_for("nope") }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details["steps"]]).to eq(["unknown_step", %w[plan build verify]]) }
+    end
+
+    it "refuses an unset project command with start's details" do
+      lint = definition("steps:\n  a:\n    prompt: P\n    status: {command: lint}\n")
+
+      expect { plan_for("a", flow: lint) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("workflow_command_unset")
+        expect(e.details["steps"]).to eq([{"step" => "a", "command" => "lint", "via" => "status"}])
+      }
+    end
+
+    it "prints a --name command with a placeholder that fails if pasted only when the lineage project is a workspace that exists" do
+      lint = definition("steps:\n  a:\n    prompt: P\n    status: {command: lint}\n")
+      asked = []
+      known = ->(name) { (asked << name) && true }
+      named = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker, commands_config: commands_config,
+        lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, workspace_known: known)
+
+      expect { named.check_plan(definition: lint, step: "a", worktree: worktree) }.to raise_error(Workspace::Error) { |e|
+        expect(e.message).to include('workspace config set commands.lint "<lint command>" --name app')
+      }
+      expect(asked).to eq(["app"])
+      expect { plan_for("a", flow: lint) }.to raise_error(Workspace::Error) { |e|
+        expect(e.message).to include("Set commands.lint in this project's workspace.")
+        expect(e.message).not_to include("--name")
+        expect(e.message).not_to include("workspace add")
+      }
     end
   end
 

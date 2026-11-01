@@ -5,7 +5,7 @@ module Workspace
   # how it ended. The command runs through `sh -c` in its own process group,
   # with its output in a log file the step's failure names; one that runs
   # past its time limit, or whose run moved on while it ran, is stopped,
-  # group and all.
+  # group and all. A caller interrupted or terminated while it waits stops the group too.
   class WorkflowCheck
     # Seconds a stopped check gets between SIGTERM and SIGKILL.
     KILL_GRACE = 5
@@ -50,9 +50,13 @@ module Workspace
     def call(command:, cwd:, timeout:, log:, stop_when: nil, env: {})
       FileUtils.mkdir_p(File.dirname(log))
       pid = Process.spawn(env, "sh", "-c", command, chdir: cwd, pgroup: true, in: File::NULL, out: [log, "w"], err: [:child, :out])
-      status = wait(pid, timeout, stop_when)
+      status = nil
+      begin
+        status = wait(pid, timeout, stop_when)
+      ensure
+        stop(pid) unless status.is_a?(Process::Status)
+      end
       return {exit_code: status.exitstatus, timed_out: false} if status.is_a?(Process::Status)
-      stop(pid)
       return {exit_code: nil, timed_out: true} if status == :timed_out
       {exit_code: nil, timed_out: false, error: "stopped: the run moved on"}
     rescue SystemCallError => e
@@ -78,13 +82,22 @@ module Workspace
       end
     end
 
+    # TERM, a grace period, then KILL. If the stop itself is interrupted the group still gets KILL.
     def stop(pid)
+      exited = false
       signal("TERM", pid)
-      return if wait(pid, @kill_grace).is_a?(Process::Status)
-      signal("KILL", pid)
-      Process.wait(pid)
+      exited = wait(pid, @kill_grace).is_a?(Process::Status)
     rescue Errno::ECHILD
-      nil
+      exited = true
+    ensure
+      unless exited
+        signal("KILL", pid)
+        begin
+          Process.wait(pid)
+        rescue Errno::ECHILD
+          nil
+        end
+      end
     end
 
     def signal(name, pid)
