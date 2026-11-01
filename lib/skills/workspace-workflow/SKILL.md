@@ -50,9 +50,9 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 
 ## Presets
 
-`workflow show` lists all ids, yours too; a file in `~/.config/workspace/workflows/` shadows a preset of the same id.
+`workflow show` lists all ids, yours too; a file in `~/.config/workspace/workflows/` shadows a preset of the same id. `workflow show ID` prints one with all its inputs, optional ones too.
 
-| ID | Input | Steps | For |
+| ID | Required input | Steps | For |
 |---|---|---|---|
 | `rpiv` | `task` | research, plan (gate), implement, verify | One feature end to end; needs `commands.test` |
 | `rpiv-auto-approve` | `task` | as `rpiv`, three reviewers in place of the gate | The same, unattended |
