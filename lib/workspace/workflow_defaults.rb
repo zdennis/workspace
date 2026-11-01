@@ -27,17 +27,18 @@ module Workspace
     #
     # @param kind [String] one of `ConfigSchema::WORKFLOW_REF_KINDS`
     # @param workspace [String, nil] the workspace whose layers are read
+    # @param project [String, nil] the parent project, for a worktree whose name doesn't show it
     # @return [Hash, nil] `{id:, key:}`, where key is `workflows.by_ref.<kind>`
     #   or `workflows.default`; nil when neither key is set
     # @raise [KeyError] if the kind has no declared key
-    def lookup(kind, workspace: nil)
-      workspace.nil? ? read(kind, "", upto: "global") : read(kind, workspace)
+    def lookup(kind, workspace: nil, project: nil)
+      workspace.nil? ? read(kind, "", upto: "global") : read(kind, workspace, project: project)
     end
 
     private
 
-    def read(kind, workspace, upto: nil)
-      view = @config_resolver.view(workspace: workspace, upto: upto)
+    def read(kind, workspace, project: nil, upto: nil)
+      view = @config_resolver.view(workspace: workspace, project: project, upto: upto)
       ["workflows.by_ref.#{kind}", "workflows.default"].each do |key|
         value = view.raw(key)
         return {id: value.to_s, key: key} if value
@@ -45,7 +46,7 @@ module Workspace
       nil
     rescue Workspace::ConfigParseError
       raise if upto
-      read(kind, workspace, upto: "global")
+      read(kind, workspace, project: project, upto: "global")
     end
   end
 end

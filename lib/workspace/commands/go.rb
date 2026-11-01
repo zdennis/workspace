@@ -53,7 +53,7 @@ module Workspace
       # @return [Hash{String=>Object}] the row of `workflow run` or `workflow start`, plus "decision" (+workflow+, +source+,
       #   +kind+, +route+, +reason+) and "warnings"
       # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, or free text with no letters or digits for a new branch
-      # @raise [Workspace::Error] outside a git repository; code `unknown_ref`, `branch_not_allowed`, `branch_exists`, or any of {WorkflowStart#call} and {Workflow#run}
+      # @raise [Workspace::Error] outside a git repository; code `unknown_ref`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
       def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil)
         argument = argument&.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
         raise Workspace::UsageError, "go was given an empty argument. Name a ref, or quote free text." if argument == ""
@@ -74,8 +74,10 @@ module Workspace
           refuse_slug!(StartRef.slug(reading.text), project)
         end
 
-        id, source, definition = choose(workflow, reading.kind, @workflow_start.locate_project[:project_workspace])
         in_place = here && (reading.ref.nil? || same_name?(resolved(reading.ref.branch, project), resolved(@git.worktree_branch(root), project)))
+        # In place the worktree is known, so its own setting counts; a new checkout has none yet.
+        project_workspace = @workflow_start.locate_project[:project_workspace]
+        id, source, definition = choose(workflow, reading.kind, in_place ? here.workspace : project_workspace, project_workspace)
         route = in_place ? "run" : "start"
         reason = reason_for(source, reading.kind)
         warnings = unused_text_warnings(reading, definition, inputs, id, route)
@@ -86,7 +88,7 @@ module Workspace
         row = if reading.ref
           @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? here : nil, **shared)
         elsif in_place
-          run_here(reading.text, definition, here, **shared)
+          run_here(reading.text, definition, here, project_workspace, **shared)
         else
           start_from_text(reading.text, project, definition, headless: headless, **shared)
         end
@@ -274,8 +276,8 @@ module Workspace
       end
 
       # @return [Array] the id, its source and the definition; `Catalog#find` refuses before anything prints
-      def choose(flag, kind, project_workspace)
-        found = @workflow_defaults.lookup(kind, workspace: project_workspace) unless flag
+      def choose(flag, kind, workspace, project_workspace)
+        found = @workflow_defaults.lookup(kind, workspace: workspace, project: project_workspace) unless flag
         id = flag || found&.fetch(:id) || BUILT_IN.fetch(kind, BUILT_IN_OTHERWISE)
         source = flag ? "flag" : found&.fetch(:key) || "built_in"
         [id, source, @catalog.find(id)]
@@ -312,7 +314,8 @@ module Workspace
         definition.to_h["inputs"].key?("task")
       end
 
-      def run_here(text, definition, here, id:, inputs:, dry_run:)
+      def run_here(text, definition, here, project_workspace, id:, inputs:, dry_run:)
+        @workflow_start.check_agent!(here.workspace, project: project_workspace)
         inputs = inputs.merge("task" => text) if text && declares_task?(definition) && !inputs.key?("task")
         @workflow.run(id: id, workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane)
       end

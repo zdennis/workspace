@@ -1247,6 +1247,32 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
     after { FileUtils.remove_entry(dir) }
 
+    it "checks the worktree's agent kind, not the project's" do
+      allow(agent_commands).to receive(:kind).with("app.proj-1", project: an_instance_of(String)).and_return("claude")
+      # A worktree from `workspace add` is not named as `worktree_config_name` would name it.
+      expect(project_config).not_to receive(:worktree_config_name)
+
+      expect(command.call(id: "flow", ref: "PROJ-1", here: here)["run"]).to eq("r1")
+    end
+
+    it "preflights the checkout it runs in, not the main one" do
+      command.call(id: "flow", ref: "PROJ-1", here: here, dry_run: true)
+
+      expect(engine).to have_received(:preflight).with(hash_including(workspace: "app.proj-1", worktree: checkout))
+    end
+
+    it "answers check_agent! for a workspace by name" do
+      allow(agent_commands).to receive(:kind).with("app.proj-1", project: an_instance_of(String)).and_return("codex")
+
+      expect { command.check_agent!("app.proj-1", project: "app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_needs_claude") }
+    end
+
+    it "refuses a worktree whose own agent kind is not Claude Code" do
+      allow(agent_commands).to receive(:kind).with("app.proj-1", project: an_instance_of(String)).and_return("codex")
+
+      expect { command.call(id: "flow", ref: "PROJ-1", here: here) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_needs_claude") }
+    end
+
     it "runs in the checkout without making a workspace or waiting for an agent" do
       expect(start).not_to receive(:payload)
       expect(readiness).not_to receive(:wait)

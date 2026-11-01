@@ -19,6 +19,14 @@ RSpec.describe Workspace::WorkflowDefaults do
     expect(defaults.id_for("jira", workspace: "app")).to be_nil
   end
 
+  it "reads the named project under a worktree whose name doesn't show it" do
+    projects["app"] = {"workflows" => {"default" => "explore"}}
+
+    expect(defaults.lookup("jira", workspace: "app-feat", project: "app")).to eq({id: "explore", key: "workflows.default"})
+    projects["app-feat"] = {"workflows" => {"default" => "investigate"}}
+    expect(defaults.lookup("jira", workspace: "app-feat", project: "app")).to eq({id: "investigate", key: "workflows.default"})
+  end
+
   it "prefers by_ref over default" do
     global["workflows"] = {"default" => "rpiv", "by_ref" => {"jira" => "investigate"}}
 

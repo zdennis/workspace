@@ -49,7 +49,7 @@ Bare `go` outside a checkout it can run in is a usage error. Type a ref (`worksp
 
 The default branch is read from `origin/HEAD`, else it is `main` or `master`. If neither exists, `go` cannot tell which branch is the default, so it checks only against the branch the main checkout holds. It still runs here in a worktree workspace on any other branch.
 
-Anywhere else `go` makes or reuses a new checkout. If the workspace for a worktree is stopped, `--dry-run` passes and the real run then fails at the pane, as `workflow run` does. Bring it up first with `workspace launch NAME`.
+Anywhere else `go` makes or reuses a new checkout. It looks for the ref's plain branch name, so a worktree made with `start PROJ-123 --slug` is not found by `go PROJ-123`, which makes a second one; name that branch instead. If the workspace for a worktree is stopped, `--dry-run` passes and the real run then fails at the pane, as `workflow run` does. Bring it up first with `workspace launch NAME`.
 
 ### How the workflow is chosen
 
@@ -59,6 +59,8 @@ Anywhere else `go` makes or reuses a new checkout. If the workspace for a worktr
 2. `workflows.by_ref.<kind>`, where `<kind>` is `jira`, `github_pr`, `github_issue`, `branch` or `prompt` (free text, or no argument)
 3. `workflows.default`
 4. built in: `pr-feedback` for a pull request, `rpiv` for everything else
+
+Running in this worktree, a setting of the worktree's own wins over the project's. Making or reusing another checkout, only the project's and the global settings count.
 
 Set the config ones with `workspace config set workflows.default rpiv` or `workspace config set workflows.by_ref.jira rpiv`. List the ids with `workspace workflow show`. An id no workflow has is `unknown_workflow`, raised before anything is made; the error lists the known ids.
 

@@ -8733,6 +8733,14 @@ RSpec.describe Workspace::CLI do
       expect(go_command.calls).to eq([{argument: "try the thing", workflow: "investigate", inputs: {"task" => "x", "spec" => "y"}, headless: false, dry_run: true, caller_pane: "%9"}])
     end
 
+    it "passes the launch mode's headless setting to go" do
+      headless_cli, = build_test_cli(output: output, go_command: go_command, launch_mode: CLITestHelpers.launch_mode(headless: true))
+
+      headless_cli.run(["go", "try the thing"])
+
+      expect(go_command.calls.last).to include(headless: true)
+    end
+
     it "passes no argument for bare go" do
       stub_const("ENV", ENV.to_h.except("TMUX_PANE"))
 

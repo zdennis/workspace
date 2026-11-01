@@ -21,6 +21,15 @@ RSpec.describe Workspace::AgentCommands do
     end
   end
 
+  it "reads the named project under a worktree whose name doesn't show it" do
+    stub_file("app", {"agent" => {"kind" => "codex"}})
+
+    expect(agent_commands.kind("app-feat")).to eq("claude")
+    expect(agent_commands.kind("app-feat", project: "app")).to eq("codex")
+    stub_file("app-feat", {"agent" => {"kind" => "claude"}})
+    expect(agent_commands.kind("app-feat", project: "app")).to eq("claude")
+  end
+
   describe "#executable_for" do
     let(:global) { {"agent" => {"commands" => {"claude" => "FOO=1 /opt/bin/claude-dev --x", "codex" => "codex-g"}}} }
 

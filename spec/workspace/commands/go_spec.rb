@@ -21,7 +21,7 @@ RSpec.describe Workspace::Commands::Go do
   let(:project) { Workspace::StartRef::Project.new(root: project_root, name: "app", from_worktree: from_worktree) }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
   let(:start_ref) { Workspace::StartRef.new(git: git) }
-  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, locate_project: {root: root, project: project, project_workspace: "app"}) }
+  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, check_agent!: nil, locate_project: {root: root, project: project, project_workspace: "app"}) }
   let(:workflow) { instance_double(Workspace::Commands::Workflow) }
   let(:workflow_defaults) { instance_double(Workspace::WorkflowDefaults) }
   let(:catalog) { instance_double(Workspace::WorkflowCatalog, known_ids: %w[pr-feedback rpiv], find: definition) }
@@ -365,7 +365,7 @@ RSpec.describe Workspace::Commands::Go do
     end
 
     it "reads config for the kind and the project's workspace" do
-      allow(workflow_defaults).to receive(:lookup).with("branch", workspace: "app").and_return({id: "flow", key: "workflows.by_ref.branch"})
+      allow(workflow_defaults).to receive(:lookup).with("branch", workspace: "app", project: "app").and_return({id: "flow", key: "workflows.by_ref.branch"})
 
       row = command.call(argument: "other")
 
@@ -373,8 +373,25 @@ RSpec.describe Workspace::Commands::Go do
       expect(output.string).to include("flow (set by workflows.by_ref.branch)")
     end
 
+    [false, true].each do |dry_run|
+      it "refuses an in-place run in a worktree whose agent is not Claude Code (dry_run: #{dry_run})" do
+        refusal = Workspace::Error.new("no", code: "workflow_needs_claude")
+        allow(workflow_start).to receive(:check_agent!).with(detected, project: "app").and_raise(refusal)
+
+        expect { command.call(argument: "free text", dry_run: dry_run) }.to raise_error(refusal)
+        expect { command.call(dry_run: dry_run) }.to raise_error(refusal)
+        expect(workflow).not_to have_received(:run)
+      end
+    end
+
+    it "reads the worktree's own layers when it runs in place, for a ref too" do
+      allow(workflow_defaults).to receive(:lookup).with("branch", workspace: detected, project: "app").and_return({id: "flow", key: "workflows.default"})
+
+      expect(command.call(argument: "feature")["decision"]).to include("workflow" => "flow", "route" => "run")
+    end
+
     it "reads the prompt kind for no argument and free text" do
-      allow(workflow_defaults).to receive(:lookup).with("prompt", workspace: "app").and_return({id: "flow", key: "workflows.default"})
+      allow(workflow_defaults).to receive(:lookup).with("prompt", workspace: detected, project: "app").and_return({id: "flow", key: "workflows.default"})
 
       expect(command.call["decision"]).to include("source" => "workflows.default", "kind" => "prompt")
       expect(command.call(argument: "free text")["decision"]).to include("workflow" => "flow")
@@ -658,7 +675,7 @@ RSpec.describe Workspace::Commands::Go do
     end
 
     it "names the workflow it chose, so the suggestion runs the same one" do
-      allow(workflow_defaults).to receive(:lookup).with("prompt", workspace: "app").and_return({id: "flow", key: "workflows.default"})
+      allow(workflow_defaults).to receive(:lookup).with("prompt", workspace: "app", project: "app").and_return({id: "flow", key: "workflows.default"})
 
       expect(refusal(argument: "other !").message).to include("`workspace go other --workflow flow --input task=TEXT`")
     end
@@ -771,6 +788,12 @@ RSpec.describe Workspace::Commands::Go do
       expect(row["warnings"]).to eq(["The text is not the task: rpiv declares no task input."])
       expect(output.string).to include("Warning: The text is not the task")
       expect(workflow).to have_received(:run).with(hash_including(inputs: {}))
+    end
+
+    it "keeps the row's own warnings in place" do
+      allow(workflow).to receive(:run).and_return({"outcome" => "started", "warnings" => ["from run"]})
+
+      expect(command.call(argument: "fix it")["warnings"]).to eq(["from run", "The text is not the task: rpiv declares no task input."])
     end
 
     it "says on the start route that the text still names the branch, beside the row's own warnings" do

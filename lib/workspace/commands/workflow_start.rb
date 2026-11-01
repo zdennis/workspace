@@ -115,7 +115,7 @@ module Workspace
           warnings = read_as_branch(ref, id) if positional
           warnings.each { |warning| @output.puts "Warning: #{warning}" }
         end
-        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, **where)
+        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, **where)
         return run_here(plan, here, note: note, dry_run: dry_run) if here
         return dry_run_row(id, plan) if dry_run
 
@@ -131,6 +131,16 @@ module Workspace
         project = @start_ref.project(root)
         project_workspace = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
         {root: root, project: project, project_workspace: project_workspace}
+      end
+
+      # Refuses a workspace whose agent is not Claude Code: a run's steps have nowhere else to go.
+      #
+      # @param workspace [String]
+      # @param project [String] the project's workspace, whose settings the workspace inherits
+      # @return [void]
+      # @raise [Workspace::Error] code `workflow_needs_claude`
+      def check_agent!(workspace, project:)
+        require_claude!(@agent_commands.kind(workspace, project: project))
       end
 
       private
@@ -196,8 +206,12 @@ module Workspace
           code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known})
       end
 
-      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, root:, project:, project_workspace:)
-        require_claude!(agent_kind || @agent_commands.kind(project_workspace))
+      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:)
+        if here && !agent_kind
+          check_agent!(here.workspace, project: project_workspace)
+        else
+          require_claude!(agent_kind || @agent_commands.kind(project_workspace))
+        end
         resolved = ref && @start_ref.call(ref)
         ticket = read_ticket(resolved, root, definition, inputs: inputs, prompt: prompt, slug: slug, warnings: warnings)
         allowed = tracked_repositories(root)
@@ -211,8 +225,8 @@ module Workspace
         adopted = (exists || derived) ? nil : @git.find_worktree_by_branch(name, repo: project.root)
         path = adopted if adopted
         exists ||= !adopted.nil?
-        # A reused or adopted worktree can have an agent kind of its own.
-        require_claude!(@agent_commands.kind(@project_config.worktree_config_name(project_workspace, File.basename(path)))) if exists && !agent_kind
+        # A reused or adopted worktree can have an agent kind of its own; +here+ was checked by its real name above.
+        require_claude!(@agent_commands.kind(@project_config.worktree_config_name(project_workspace, File.basename(path)))) if exists && !agent_kind && !here
         # A local branch with no worktree is the one `start` would check out.
         if exists || @git.local_branch_exists?(name)
           refuse_foreign_branch!(definition, name, exists ? path : root, root, checked, allowed)
@@ -221,7 +235,7 @@ module Workspace
         spec_path = spec_file(definition, resolved, ticket, path, inputs)
         seeded = seed(definition, ticket, prompt, inputs, spec_path, resolved)
         # A checkout that is already there is the one the agent starts in, so its tree is checked; a new one starts clean.
-        checked = @engine.preflight(definition: definition, workspace: project.name, worktree: project.root, inputs: seeded, pane: nil, tree: exists ? path : nil, checkout: path)
+        checked = @engine.preflight(definition: definition, workspace: here&.workspace || project.name, worktree: here&.path || project.root, inputs: seeded, pane: nil, tree: exists ? path : nil, checkout: path)
         Plan.new(definition: definition, ref: resolved, branch: name, project: project, path: path, would_create: !exists, inputs: checked["inputs"],
           ticket: ticket, spec_path: spec_path, checked: checked, warnings: warnings, prompt: prompt, checkout: checkout_ref(resolved, ticket))
       end
