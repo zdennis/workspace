@@ -49,6 +49,8 @@ Bare `go` outside a checkout it can run in is a usage error. Type a ref (`worksp
 
 The default branch is read from `origin/HEAD`, else it is `main` or `master`. If neither exists, `go` cannot tell which branch is the default, so it checks only against the branch the main checkout holds. It still runs here in a worktree workspace on any other branch.
 
+If `go` runs here from the Claude Code pane it would type into, it types nothing and answers `parked`: the caller ends its turn and the run starts after it (see [Resuming from the run's own pane](README.workflow.md#resuming-from-the-runs-own-pane)).
+
 Anywhere else `go` makes or reuses a new checkout. It looks for the ref's plain branch name, so a worktree made with `start PROJ-123 --slug` is not found by `go PROJ-123`, which makes a second one; name that branch instead. If the workspace for a worktree is stopped, `--dry-run` passes and the real run then fails at the pane, as `workflow run` does. Bring it up first with `workspace launch NAME`.
 
 ### How the workflow is chosen
