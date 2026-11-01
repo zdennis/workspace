@@ -55,7 +55,7 @@ RSpec.describe Workspace::ConfigReport, "golden documents" do
         since_v1 = %w[launch.restore_window_position launch.window_width_percent events.rotate_size spine.template spine.auto codex.hooks.install
           library.install.skills_dir library.install.agents_dir library.install.user_skills_dir library.install.user_agents_dir
           agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi
-          handoff.followup_interval handoff.followup_max handoff.followup_prompt]
+          handoff.followup_interval handoff.followup_max handoff.followup_prompt focus.chain]
         now = now.merge("keys" => now["keys"].reject { |k| since_v1.include?(k["key"]) })
 
         expect(now.except("keys", "unknown_keys")).to eq(old.except("keys", "unknown_keys"))

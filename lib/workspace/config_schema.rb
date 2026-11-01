@@ -1,3 +1,4 @@
+require "shellwords"
 require_relative "agent_provider"
 
 module Workspace
@@ -342,6 +343,64 @@ module Workspace
     end
     private_constant :PACK_LIST
 
+    # The steps `focus.chain` may name, which keeps out `close`, `quit`, `pick`, `watch`, `wait`, `pip` and `record`.
+    FOCUS_CHAIN_COMMANDS = %w[focus center dim highlight flash shake snap maximize].freeze
+
+    # Steps that run in the background, so nothing can follow them.
+    FOCUS_CHAIN_OVERLAYS = %w[dim highlight].freeze
+
+    # Steps that take only `--options`, no positional arguments.
+    FOCUS_CHAIN_NO_POSITIONALS = %w[center dim highlight flash maximize].freeze
+
+    # What `focus` sets itself or what makes window-tool do nothing, so a step may not carry it.
+    FOCUS_CHAIN_FORBIDDEN = /\A(?:id=|title=|--(?:app|json|exact|first|verbose|keep-going|help)(?:=|\z)|-h\z)/
+
+    # The `focus.chain` default: bring the window forward, center it, then dim the others for three seconds.
+    DEFAULT_FOCUS_CHAIN = "focus + center + dim --opacity 0.5 --duration 3"
+
+    FOCUS_CHAIN = lambda do |value|
+      unless value.is_a?(String) || value.is_a?(Array)
+        raise ArgumentError, "must be window-tool steps joined by +, e.g. \"#{DEFAULT_FOCUS_CHAIN}\""
+      end
+      if value.is_a?(Array) && !value.all? { |item| item.is_a?(String) || item.is_a?(Numeric) }
+        raise ArgumentError, "a list must hold only strings and numbers"
+      end
+      tokens = value.is_a?(Array) ? value.map(&:to_s) : [value]
+      raise ArgumentError, "must not contain a control character" if tokens.any? { |text| text.match?(/[[:cntrl:]]/) }
+      tokens = Shellwords.split(value) if value.is_a?(String)
+      raise ArgumentError, "must not be blank" if tokens.empty?
+      if tokens.first == "+" || tokens.last == "+" || tokens.each_cons(2).any? { |a, b| a == "+" && b == "+" }
+        raise ArgumentError, "must not start or end with + or hold two + in a row"
+      end
+      steps = tokens.chunk_while { |a, b| a != "+" && b != "+" }.reject { |part| part == ["+"] }
+      raise ArgumentError, "the first step must be a bare `focus`" unless steps.first == ["focus"]
+      steps.each_with_index do |step, index|
+        name = step.first
+        unless FOCUS_CHAIN_COMMANDS.include?(name)
+          raise ArgumentError, "unknown step #{name.inspect}; steps are #{FOCUS_CHAIN_COMMANDS.join(", ")}"
+        end
+        if FOCUS_CHAIN_OVERLAYS.include?(name) && index != steps.size - 1
+          raise ArgumentError, "`#{name}` runs in the background, so nothing can follow it; put it last"
+        end
+        bad = step.drop(1).find { |token| token.match?(FOCUS_CHAIN_FORBIDDEN) }
+        raise ArgumentError, "#{bad.inspect} is set by focus itself or does nothing here; remove it" if bad
+        if FOCUS_CHAIN_NO_POSITIONALS.include?(name) && step[1] && !step[1].start_with?("--")
+          raise ArgumentError, "`#{name}` takes no positional arguments; got #{step[1].inspect}"
+        end
+        step.each_with_index do |token, at|
+          color = if token == "--color"
+            step[at + 1].to_s
+          elsif token.start_with?("--color=")
+            token.delete_prefix("--color=")
+          end
+          next if color.nil? || WINDOW_TOOL_COLORS.include?(color.downcase)
+          raise ArgumentError, "unknown --color #{color.inspect}; colors are #{WINDOW_TOOL_COLORS.join(", ")}"
+        end
+      end
+      tokens.map { |token| token.match?(%r{\A[A-Za-z0-9_\-.,:+/@=]+\z}) ? token : Shellwords.escape(token) }.join(" ")
+    end
+    private_constant :FOCUS_CHAIN
+
     # Every key, settable ones first in the order `config set` lists them,
     # then keys that are documented but edited by hand.
     KEYS = [
@@ -446,6 +505,10 @@ module Workspace
         doc: "`true` or `false`: whether `launch` puts a window back where it was when the workspace was stopped, if that spot is still on a connected screen (default `true`). `false` tiles every new window, as `launch --arrange` does; `stop` saves the position either way. See [`launch`](README.launch.md#window-position)"),
       Key.new(name: "launch.window_width_percent", scope: :global, type: :percent, settable: true, examples: ["22", "66"], default: 22, min: 1, max: 100, parser: PERCENT,
         doc: "Width of a window `launch` tiles, as a percent of the active screen's width, 1 to 100 (default `22`). Tiled windows overlap when they don't all fit side by side. A window put back at its saved position keeps its saved size; see [`launch`](README.launch.md#window-position)"),
+      Key.new(name: "focus.chain", scope: :global, type: :text, settable: true, examples: ["focus", "focus + center + highlight --color red"], default: DEFAULT_FOCUS_CHAIN, parser: FOCUS_CHAIN,
+        doc: "The window-tool steps `focus` runs on the window, joined by `+` (default `focus + center + dim --opacity 0.5 --duration 3`). " \
+          "The first step is a bare `focus`; the others are `center`, `dim`, `highlight`, `flash`, `shake`, `snap` or `maximize` with their options. " \
+          "`dim` and `highlight` run in the background, so they must be last. `workspace config set focus.chain focus` gives plain focus"),
       # Packs suit projects differently, and compose already knows the cwd.
       Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["binding, commits"], default: DEFAULT_PACKS, parser: PACK_LIST,
         doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \
