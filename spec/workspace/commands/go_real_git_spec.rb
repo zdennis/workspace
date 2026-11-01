@@ -129,7 +129,7 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
       worktree = linked("foo")
       mark(worktree)
 
-      expect(go(worktree, argument: "fix the bug")["decision"]["route"]).to eq("run")
+      expect(go(worktree, argument: "fix the bug", here: true)["decision"]["route"]).to eq("run")
     end
   end
 

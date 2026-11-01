@@ -6,9 +6,11 @@ module Workspace
     # checks where they are: every ref goes through {WorkflowStart#call}, so `fork_pull_request`
     # holds whichever way the ref ends up running.
     #
-    # `go` runs in place only in a linked worktree that is the detected workspace, off the
-    # default branch ({#checkout_here}), and never puts a run on the default branch or the main
-    # checkout's branch.
+    # Free text always makes a new worktree workspace off the default branch, even from inside a
+    # linked worktree workspace; `--here` runs it in this checkout instead. Bare `go` and a ref
+    # for the current branch run in place without `--here`. In place means only a linked worktree
+    # that is the detected workspace, off the default branch ({#checkout_here}); `go` never puts
+    # a run on the default branch or the main checkout's branch.
     class Go
       # The workflow when neither `--workflow` nor config names one.
       BUILT_IN = {"github_pr" => "pr-feedback"}.freeze
@@ -50,18 +52,23 @@ module Workspace
       # @param headless [Boolean]
       # @param dry_run [Boolean] check everything and create nothing
       # @param caller_pane [String, nil] the pane the command runs in (`$TMUX_PANE`)
+      # @param here [Boolean] run free text in this checkout (`--here`) instead of a new workspace
       # @return [Hash{String=>Object}] the row of `workflow run` or `workflow start`, plus "decision" (+workflow+, +source+,
       #   +kind+, +route+, +reason+) and "warnings"
-      # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, or free text with no letters or digits for a new branch
-      # @raise [Workspace::Error] outside a git repository; code `unknown_ref`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
-      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil)
+      # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch
+      # @raise [Workspace::Error] outside a git repository; code `go_here_unavailable` (`--here` where this checkout can't run in place), `unknown_ref`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
+      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false)
         argument = argument&.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
         raise Workspace::UsageError, "go was given an empty argument. Name a ref, or quote free text." if argument == ""
 
         root = @git.root
         project = root && @start_ref.project(root)
-        here = checkout_here(root, project, caller_pane)
-        if argument.nil? && here.nil?
+        checkout = checkout_here(root, project, caller_pane)
+        if here && checkout.nil?
+          raise Workspace::Error.new("--here runs go in place, and that works only in a linked worktree workspace off the default branch. This directory is not one, so nothing was started. Drop --here to make a new worktree workspace.",
+            code: "go_here_unavailable", details: {"path" => root})
+        end
+        if argument.nil? && checkout.nil?
           raise Workspace::UsageError, "go needs a ref or free text here: it runs in place only in a linked worktree workspace off the default branch."
         end
         raise Workspace::Error, "go must run inside a git repository." unless root
@@ -70,16 +77,19 @@ module Workspace
         if reading.ref
           refuse_protected!(reading.ref.branch, project)
           refuse_other_branch!(reading.ref.branch, project)
-        elsif reading.text && here.nil?
-          refuse_slug!(StartRef.slug(reading.text), project)
         end
 
-        in_place = here && (reading.ref.nil? || same_name?(resolved(reading.ref.branch, project), resolved(@git.worktree_branch(root), project)))
+        same_branch = reading.ref && checkout && same_name?(resolved(reading.ref.branch, project), resolved(@git.worktree_branch(root), project))
+        if here && reading.ref && !same_branch
+          raise Workspace::UsageError, "--here runs in this checkout, and #{reading.ref.input} is another branch. Drop --here to make or reuse its worktree workspace."
+        end
+        in_place = checkout && (reading.ref ? same_branch : (reading.text.nil? || here))
+        refuse_slug!(StartRef.slug(reading.text), project) if reading.text && !in_place
         # In place the worktree is known, so its own setting counts; a new checkout has none yet.
         project_workspace = @workflow_start.locate_project[:project_workspace]
         # A project's keys count only where the user's config ties it to this checkout, as for `workflow start`.
         tied = @workflow_start.catalog_project
-        id, source, definition = choose(workflow, reading.kind, tied && (in_place ? here.workspace : tied), tied)
+        id, source, definition = choose(workflow, reading.kind, tied && (in_place ? checkout.workspace : tied), tied)
         route = in_place ? "run" : "start"
         reason = reason_for(source, reading.kind)
         warnings = unused_text_warnings(reading, definition, inputs, id, route)
@@ -88,9 +98,9 @@ module Workspace
 
         shared = {id: id, inputs: inputs, dry_run: dry_run}
         row = if reading.ref
-          @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? here : nil, **shared)
+          @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? checkout : nil, **shared)
         elsif in_place
-          run_here(reading.text, definition, here, project_workspace, **shared)
+          run_here(reading.text, definition, checkout, project_workspace, **shared)
         else
           start_from_text(reading.text, project, definition, headless: headless, **shared)
         end

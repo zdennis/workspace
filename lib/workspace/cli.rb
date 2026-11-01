@@ -8034,24 +8034,28 @@ module Workspace
 
     def go_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace go [REF | \"TEXT\"] [--workflow ID] [--input KEY=VALUE]... [--dry-run] [--json]"
+        opts.banner = "Usage: workspace go [REF | \"TEXT\"] [--workflow ID] [--input KEY=VALUE]... [--here] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "Start a workflow with one argument. A ticket, pull request, issue or branch is the ref; text with a space"
-        opts.separator "is free text that names a new branch. In a linked worktree workspace off the default branch, go runs the"
-        opts.separator "workflow here (bare `workspace go` does too); anywhere else it makes or reuses a worktree workspace, as `workflow start`"
-        opts.separator "does. go never runs on the default branch or the main checkout's branch. It prints the workflow it chose"
+        opts.separator "is free text that names a new branch. Free text always makes a new worktree workspace off the default branch,"
+        opts.separator "even from inside a worktree workspace; --here runs it in this checkout instead. A ref makes or reuses its worktree"
+        opts.separator "workspace, as `workflow start` does, unless it is the branch you are on; bare `workspace go` runs here too, in a"
+        opts.separator "linked worktree workspace off the default branch. go never runs on the default branch or the main checkout's"
+        opts.separator "branch. It prints the workflow it chose"
         opts.separator "and why (--workflow, then workflows.by_ref.KIND, workflows.default, then built in: pr-feedback for a pull"
         opts.separator "request, else rpiv) before it acts."
         opts.separator ""
         opts.on("--workflow ID", "Use this workflow instead of the configured one") { |v| options[:workflow] = v }
         opts.on("--input KEY=VALUE", "Set a workflow input; repeatable") { |v| options[:inputs] << v }
+        opts.on("--here", "Run free text in this worktree workspace instead of making a new one; refused where go can't run in place") { options[:here] = true }
         opts.on("--dry-run", "Check everything and create nothing") { options[:dry_run] = true }
         opts.on("--json", "Print one JSON document; other output goes to stderr") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace go PROJ-123    # a ticket: make or reuse its worktree workspace and start the chosen workflow"
-        opts.separator "  workspace go \"try the thing\"    # free text: a new branch named from it, in a new worktree workspace"
+        opts.separator "  workspace go \"try the thing\"    # free text: a new branch named from it, in a new worktree workspace, even from inside one"
+        opts.separator "  workspace go --here \"try the thing\"    # in a worktree workspace off the default branch: run the workflow here, with the text as the task"
         opts.separator "  workspace go    # in a worktree workspace off the default branch: run the workflow here"
         opts.separator "  workspace go fix-login --workflow investigate --dry-run    # check a branch with a named workflow, create nothing"
         opts.separator "  workspace go \"try the thing\" --input task=\"Try the thing\" --json    # scripted, with a workflow input"
@@ -8074,7 +8078,7 @@ module Workspace
       inputs = workflow_inputs(options[:inputs])
       workflow_action("go", options) do
         @go_command.call(argument: args.first, workflow: options[:workflow], inputs: inputs, headless: @launch_mode.resolve(nil).headless?,
-          dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"])
+          dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], here: options.fetch(:here, false))
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)

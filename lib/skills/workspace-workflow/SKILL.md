@@ -11,20 +11,21 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 
 ## Start with go
 
-`workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--dry-run] [--json]`. Check `workspace capabilities --json` for `features.go`; if it is absent, use `workflow start`. Run with `--dry-run` first, then the same command without it.
+`workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--dry-run] [--json]`. Check `workspace capabilities --json` for `features.go`; if it is absent, use `workflow start`. Run with `--dry-run` first, then the same command without it.
 
 - Any whitespace makes the argument free text. A lone word is a ref, so `go rpiv` looks for a branch named rpiv: name a workflow with `--workflow`. Quote `'#123'`.
 - The workflow is `--workflow`, then `workflows.by_ref.KIND`, then `workflows.default`, then `pr-feedback` for a pull request, else `rpiv`.
 - If the request does not name a workflow, show the person what `--dry-run` chose and why, and wait for a yes before the real start. Unattended, use `workspace ask` (or `inbox add`) and stop; see workspace-inbox.
-- It runs in place only in a linked worktree workspace on a branch that is neither the default nor the main checkout's. Otherwise it makes or reuses `.worktrees/<branch>`. A stopped workspace passes `--dry-run` and then fails at the pane: `workspace launch NAME` first.
-- Free text fills `task` when the workflow declares it, here or in a new checkout. A branch ref, or bare `go`, with `rpiv` needs `--input task=TEXT`.
-- On the main checkout, free text leaves uncommitted changes behind; to move them into the new worktree use `promote` (skill workspace-lifecycle).
-- Run in place from the pane it would type into (usual for an agent), `go` types nothing and answers outcome `parked`, exit 0. The first step starts after your turn ends: end your turn now, and do not poll or run it again. A sub-agent finishes and lets the main agent end its turn. After an hour `workflow status` shows `parked_timeout`.
+- Free text always makes a new worktree workspace off the default branch, even from inside a worktree workspace. It runs in place only for bare `go`, a ref for the current branch, or free text with `--here`, and only in a linked worktree workspace on a branch that is neither the default nor the main checkout's (`--here` elsewhere is `go_here_unavailable`). Otherwise it makes or reuses `.worktrees/<branch>`. A stopped workspace passes `--dry-run` and then fails at the pane: `workspace launch NAME` first.
+- Free text fills `task` when the workflow declares it, in the new checkout or, with `--here`, here. A branch ref, or bare `go`, with `rpiv` needs `--input task=TEXT`.
+- Free text from the main checkout or from a worktree leaves uncommitted changes behind; to move them into the new worktree use `promote` (skill workspace-lifecycle).
+- Free text without `--here` never types into your pane: it opens a new workspace and window, so do not end your turn expecting a step. In `--json`, `decision.route` says which happened: `start` is a new or reused checkout and nothing comes to this pane, `run` is in place. When it runs in place (bare `go`, the current branch, or `--here`) from the pane it would type into, `go` types nothing and answers outcome `parked`, exit 0. The first step starts after your turn ends: end your turn now, and do not poll or run it again. A sub-agent finishes and lets the main agent end its turn. After an hour `workflow status` shows `parked_timeout`.
 
 ## Refusals
 
 | Code | Meaning and what to do |
 |---|---|
+| `go_here_unavailable` | `--here` where `go` can't run in place. Nothing started. Drop `--here`, or run it from a linked worktree workspace. |
 | `branch_not_allowed` | The default branch or the main checkout's branch. Pick another. `workflow run` is no way round it: running on the default branch is the person's decision. |
 | `branch_exists`, `unknown_ref` | Name taken, or no such branch (`details.did_you_mean` for a case variant). |
 | `unknown_workflow` | No such id. `workflow show` lists them. |
@@ -38,8 +39,9 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 | Request | Command |
 |---|---|
 | "start an investigate workflow on PROJ-101" | `workspace go PROJ-101 --workflow investigate --dry-run`, then without `--dry-run` |
-| "run rpiv on this", in a worktree workspace off the default branch, with text | `workspace go "TEXT" --workflow rpiv` |
-| same, no text to hand | `workspace go --workflow rpiv --input task=TEXT` |
+| "run rpiv on this", in a worktree workspace off the default branch, with text, in this workspace | `workspace go --here "TEXT" --workflow rpiv` |
+| "run rpiv on this", as a new workspace, with text | `workspace go "TEXT" --workflow rpiv` |
+| "run rpiv on this", in a worktree workspace off the default branch, no text to hand | `workspace go --workflow rpiv --input task=TEXT` |
 | "run rpiv on this", on the main checkout | Bare `go` is a usage error: give a ref or text. |
 
 ## Other forms

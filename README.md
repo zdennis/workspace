@@ -90,7 +90,7 @@ workspace <subcommand> [options]
 | events | [README](docs/README.events.md) | Read or follow the event log and every agent's hook events (tool, sub-agent, session, prompt) as one stream, resumable by cursor |
 | finish | [README](docs/README.finish.md) | Verify a worktree is clean and pushed, then remove it (default: the one you are in; optionally opens a PR) |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front, centered and dimmed by `focus.chain` (`--center` also centers) |
-| go | [README](docs/README.go.md) | Start a workflow with one argument: a ticket, pull request, issue or branch, or free text for a new branch. Runs in place in a worktree workspace off the default branch, else makes or reuses one; prints the workflow it chose and why |
+| go | [README](docs/README.go.md) | Start a workflow with one argument: a ticket, pull request, issue or branch, or free text for a new branch. Free text makes a new worktree workspace (`--here` runs it in the current one); a ref makes or reuses one, or runs in place for the current branch; prints the workflow it chose and why |
 | goal | [README](docs/README.goal.md) | Say where a workspace's goal is (`show [REF]`): its journey stage, workflow step, agent turn and tool call, what it waits for and on whom, and the next expected event; or one line per goal (`list`). Reads only; `journey` is another name for `spine` |
 | handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
