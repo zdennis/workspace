@@ -39,10 +39,12 @@ module Workspace
     end
 
     # @param workspace [String, nil] a workspace or worktree workspace name; nil reads the global layer alone
+    # @param project [String, nil] the parent project, for a worktree whose name doesn't show it
     # @return [String] the effective agent kind; "claude" when unset, invalid or the config can't be parsed
-    def kind(workspace)
+    def kind(workspace, project: nil)
       default = ConfigSchema.default("agent.kind")
-      winner = layered_view(workspace).resolve("agent.kind").winner
+      view = project ? @config_resolver.view(workspace: workspace, project: project) : layered_view(workspace)
+      winner = view.resolve("agent.kind").winner
       winner ? ConfigSchema.parse("agent.kind", winner.value) : default
     rescue ArgumentError, ConfigParseError
       default

@@ -19,6 +19,14 @@ RSpec.describe Workspace::WorkflowDefaults do
     expect(defaults.id_for("jira", workspace: "app")).to be_nil
   end
 
+  it "reads the named project under a worktree whose name doesn't show it" do
+    projects["app"] = {"workflows" => {"default" => "explore"}}
+
+    expect(defaults.lookup("jira", workspace: "app-feat", project: "app")).to eq({id: "explore", key: "workflows.default"})
+    projects["app-feat"] = {"workflows" => {"default" => "investigate"}}
+    expect(defaults.lookup("jira", workspace: "app-feat", project: "app")).to eq({id: "investigate", key: "workflows.default"})
+  end
+
   it "prefers by_ref over default" do
     global["workflows"] = {"default" => "rpiv", "by_ref" => {"jira" => "investigate"}}
 
@@ -92,5 +100,45 @@ RSpec.describe Workspace::WorkflowDefaults do
 
   it "raises KeyError for an undeclared kind" do
     expect { defaults.id_for("bogus") }.to raise_error(KeyError)
+  end
+
+  describe "#lookup" do
+    it "is nil when neither key is set" do
+      expect(defaults.lookup("jira")).to be_nil
+    end
+
+    it "reports workflows.by_ref.<kind> when it answers" do
+      global["workflows"] = {"by_ref" => {"jira" => "investigate"}}
+
+      expect(defaults.lookup("jira")).to eq(id: "investigate", key: "workflows.by_ref.jira")
+    end
+
+    it "reports workflows.default when it answers" do
+      global["workflows"] = {"default" => "rpiv", "by_ref" => {"jira" => "investigate"}}
+
+      expect(defaults.lookup("branch")).to eq(id: "rpiv", key: "workflows.default")
+    end
+
+    it "reports by_ref when both keys are set" do
+      global["workflows"] = {"default" => "rpiv", "by_ref" => {"jira" => "investigate"}}
+
+      expect(defaults.lookup("jira")[:key]).to eq("workflows.by_ref.jira")
+    end
+
+    it "reads only the global file with a nil workspace" do
+      global["workflows"] = {"default" => "rpiv"}
+      projects["app"] = {"workflows" => {"by_ref" => {"branch" => "explore"}}}
+
+      expect(defaults.lookup("branch")).to eq(id: "rpiv", key: "workflows.default")
+      expect(defaults.lookup("branch", workspace: "app")).to eq(id: "explore", key: "workflows.by_ref.branch")
+    end
+
+    it "reports the key that answered after a project file can't be parsed" do
+      global["workflows"] = {"default" => "rpiv", "by_ref" => {"jira" => "investigate"}}
+      allow(project_settings).to receive(:load).and_raise(bad_file("app"))
+
+      expect(defaults.lookup("jira", workspace: "app")).to eq(id: "investigate", key: "workflows.by_ref.jira")
+      expect(defaults.lookup("branch", workspace: "app")).to eq(id: "rpiv", key: "workflows.default")
+    end
   end
 end

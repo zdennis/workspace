@@ -186,6 +186,8 @@ Once the workspace exists, a failure never removes it. The error keeps its code 
 
 ### Default workflows
 
+`workspace go` chooses a workflow the same way and then starts it; see [go](README.go.md).
+
 `workflow start` can leave out the `ID`. Config then names the workflow, by the kind of `REF`:
 
 1. `workflows.by_ref.<kind>`, where `<kind>` is `jira`, `github_pr`, `github_issue` or `branch`, or `prompt` for a start with `--prompt` and no `REF`.

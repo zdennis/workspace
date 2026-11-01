@@ -133,6 +133,7 @@ RSpec.describe Workspace::CLI do
       instruction_composer: overrides[:instruction_composer],
       workflow_command: overrides[:workflow_command],
       workflow_start_command: overrides[:workflow_start_command],
+      go_command: overrides[:go_command],
       library: overrides[:library],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
@@ -8714,6 +8715,74 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["spine", "init", "a", "b", "--json"]) }.to raise_error(FakeSystemExit)
       expect(spine_init_command).not_to have_received(:call)
+    end
+  end
+
+  describe "#run with go" do
+    let(:go_command) { CLITestHelpers::FakeGoCommand.new }
+    let(:output) { StringIO.new }
+    let(:built) { build_test_cli(output: output, go_command: go_command) }
+    let(:cli) { built[0] }
+    let(:error_output) { built[2] }
+
+    it "passes the argument and every flag to go, with the pane from $TMUX_PANE" do
+      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+
+      cli.run(["go", "try the thing", "--workflow", "investigate", "--input", "task=x", "--input", "spec=y", "--dry-run"])
+
+      expect(go_command.calls).to eq([{argument: "try the thing", workflow: "investigate", inputs: {"task" => "x", "spec" => "y"}, headless: false, dry_run: true, caller_pane: "%9"}])
+    end
+
+    it "passes the launch mode's headless setting to go" do
+      headless_cli, = build_test_cli(output: output, go_command: go_command, launch_mode: CLITestHelpers.launch_mode(headless: true))
+
+      headless_cli.run(["go", "try the thing"])
+
+      expect(go_command.calls.last).to include(headless: true)
+    end
+
+    it "passes no argument for bare go" do
+      stub_const("ENV", ENV.to_h.except("TMUX_PANE"))
+
+      cli.run(["go"])
+
+      expect(go_command.calls.first).to include(argument: nil, workflow: nil, inputs: {}, dry_run: false, caller_pane: nil)
+    end
+
+    it "prints one action document with --json" do
+      cli.run(["go", "PROJ-1", "--json"])
+
+      document = JSON.parse(output.string)
+      expect(document).to include("action" => "go", "status" => "ok")
+      expect(document["results"].first).to include("decision" => include("route" => "start"))
+    end
+
+    it "refuses more than one argument, naming the quoting" do
+      expect { cli.run(["go", "try", "the", "thing"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).to include("go takes one argument, got 3", "Quote free text")
+      expect(go_command.calls).to be_empty
+    end
+
+    it "refuses a bad --input and bytes that are not UTF-8, as JSON errors under --json" do
+      expect { cli.run(["go", "x", "--input", "nokey", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string.lines.last)).to include("code" => "usage")
+
+      expect { cli.run(["go", "caf\xE9".b, "--json"]) }.to raise_error(FakeSystemExit)
+      expect(go_command.calls).to be_empty
+    end
+
+    it "fails when go was not wired" do
+      cli, _out, err = build_test_cli
+      expect { cli.run(["go", "x"]) }.to raise_error(FakeSystemExit)
+      expect(err.string).to include("go is not available")
+    end
+
+    it "prints its help page" do
+      cli.run(["go", "--help"])
+
+      expect(output.string).to start_with("Usage: workspace go")
+      expect(go_command.calls).to be_empty
     end
   end
 

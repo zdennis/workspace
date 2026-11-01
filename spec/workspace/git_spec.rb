@@ -1584,3 +1584,101 @@ RSpec.describe Workspace::Git, "deleting a branch start made" do
     expect(IO.popen(["git", "-C", @repo, "config", "--get-regexp", "^branch\\.PROJ-123\\."], err: File::NULL, &:read)).to eq("")
   end
 end
+
+RSpec.describe Workspace::Git, "#branch_names" do
+  subject(:git) { described_class.new(output: StringIO.new, input: StringIO.new) }
+
+  around do |example|
+    Dir.mktmpdir { |dir| (@origin = File.join(File.realpath(dir), "origin")) && (@repo = File.join(File.realpath(dir), "clone")) && example.run }
+  end
+
+  def sh(path, *args)
+    out = IO.popen(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", path, *args], err: [:child, :out], &:read)
+    raise "git #{args.join(" ")} failed: #{out}" unless $?.success?
+    out
+  end
+
+  before do
+    Dir.mkdir(@origin)
+    sh(@origin, "init", "-q", "-b", "main")
+    sh(@origin, "commit", "-q", "--allow-empty", "-m", "init")
+    sh(@origin, "branch", "feature/remote-only")
+    sh(@origin, "clone", "-q", @origin, @repo)
+    sh(@repo, "branch", "local-only")
+  end
+
+  it "lists local and origin branches by their exact names, each once" do
+    expect(git.branch_names(@repo)).to eq(%w[feature/remote-only local-only main])
+  end
+
+  it "leaves out origin/HEAD, which is no branch" do
+    expect(sh(@repo, "symbolic-ref", "refs/remotes/origin/HEAD").strip).to eq("refs/remotes/origin/main")
+
+    expect(git.branch_names(@repo)).not_to include("HEAD", "origin")
+  end
+
+  it "leaves out another remote's branches" do
+    sh(@repo, "update-ref", "refs/remotes/fork/theirs", "HEAD")
+
+    expect(git.branch_names(@repo)).not_to include("theirs", "fork/theirs")
+  end
+
+  it "answers empty outside a repository" do
+    Dir.mktmpdir { |dir| expect(git.branch_names(dir)).to eq([]) }
+  end
+
+  describe "#worktree_branch" do
+    it "answers the bare name when a tag has the same name" do
+      sh(@repo, "tag", "main")
+
+      expect(git.worktree_branch(@repo)).to eq("main")
+    end
+
+    it "answers nil on a detached HEAD" do
+      sh(@repo, "checkout", "-q", "--detach")
+
+      expect(git.worktree_branch(@repo)).to be_nil
+    end
+
+    it "answers nil outside a repository" do
+      Dir.mktmpdir { |dir| expect(git.worktree_branch(dir)).to be_nil }
+    end
+
+    it "answers nil on a branch with no commit yet" do
+      sh(@repo, "checkout", "-q", "--orphan", "unborn")
+
+      expect(git.worktree_branch(@repo)).to be_nil
+    end
+
+    it "answers the target of a branch that is a symref" do
+      sh(@repo, "checkout", "-q", "local-only")
+      sh(@repo, "symbolic-ref", "refs/heads/master", "refs/heads/local-only")
+      sh(@repo, "symbolic-ref", "HEAD", "refs/heads/master")
+
+      expect(git.worktree_branch(@repo)).to eq("local-only")
+    end
+  end
+
+  describe "#branch_target" do
+    it "answers a plain or missing branch's own name" do
+      expect(git.branch_target(@repo, "main")).to eq("main")
+      expect(git.branch_target(@repo, "nope")).to eq("nope")
+    end
+
+    it "follows a symref, through more than one" do
+      sh(@repo, "symbolic-ref", "refs/heads/master", "refs/heads/main")
+      sh(@repo, "symbolic-ref", "refs/heads/trunk", "refs/heads/master")
+
+      expect(git.branch_target(@repo, "master")).to eq("main")
+      expect(git.branch_target(@repo, "trunk")).to eq("main")
+    end
+  end
+
+  it "lists only the local branches for #local_branch_names" do
+    expect(git.local_branch_names(@repo)).to eq(%w[local-only main])
+  end
+
+  it "answers empty outside a repository for #local_branch_names" do
+    Dir.mktmpdir { |dir| expect(git.local_branch_names(dir)).to eq([]) }
+  end
+end

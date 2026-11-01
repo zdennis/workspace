@@ -316,6 +316,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     before do
       git_env = {"GIT_CONFIG_GLOBAL" => "/dev/null", "GIT_CONFIG_NOSYSTEM" => "1"}
       system(git_env, "git", "-C", repo, "init", "-q", "-b", "main", exception: true)
+      QuietGit.configure(repo)
       File.write(File.join(repo, "a.txt"), "one\n")
       system(git_env, "git", "-C", repo, "add", "a.txt", exception: true)
       system(git_env, "git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init", exception: true)
@@ -1230,5 +1231,99 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       expect(error_of { command.call(positional: "PROJ-1") }.code).to eq("no_default_workflow")
     end
+  end
+  describe "with here:" do
+    let(:dir) { Dir.mktmpdir }
+    let(:checkout) { File.join(dir, ".worktrees", "PROJ-1") }
+    let(:here) { described_class::Here.new(workspace: "app.proj-1", path: checkout, caller_pane: "%3") }
+    let(:run_row) { {"workspace" => "app.proj-1", "outcome" => "started", "run" => "r1"} }
+
+    before do
+      FileUtils.mkdir_p(checkout)
+      allow(git).to receive(:root).and_return(dir)
+      allow(git).to receive(:worktree_exists?) { |path| path == checkout }
+      allow(workflow).to receive(:run).and_return(run_row)
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "checks the worktree's agent kind, not the project's" do
+      allow(agent_commands).to receive(:kind).with("app.proj-1", project: an_instance_of(String)).and_return("claude")
+      # A worktree from `workspace add` is not named as `worktree_config_name` would name it.
+      expect(project_config).not_to receive(:worktree_config_name)
+
+      expect(command.call(id: "flow", ref: "PROJ-1", here: here)["run"]).to eq("r1")
+    end
+
+    it "preflights the checkout it runs in, not the main one" do
+      command.call(id: "flow", ref: "PROJ-1", here: here, dry_run: true)
+
+      expect(engine).to have_received(:preflight).with(hash_including(workspace: "app.proj-1", worktree: checkout))
+    end
+
+    it "answers check_agent! for a workspace by name" do
+      allow(agent_commands).to receive(:kind).with("app.proj-1", project: an_instance_of(String)).and_return("codex")
+
+      expect { command.check_agent!("app.proj-1", project: "app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_needs_claude") }
+    end
+
+    it "refuses a worktree whose own agent kind is not Claude Code" do
+      allow(agent_commands).to receive(:kind).with("app.proj-1", project: an_instance_of(String)).and_return("codex")
+
+      expect { command.call(id: "flow", ref: "PROJ-1", here: here) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_needs_claude") }
+    end
+
+    it "runs in the checkout without making a workspace or waiting for an agent" do
+      expect(start).not_to receive(:payload)
+      expect(readiness).not_to receive(:wait)
+
+      row = command.call(id: "flow", ref: "PROJ-1", here: here)
+
+      expect(workflow).to have_received(:run).with(id: "flow", workspace: "app.proj-1", worktree: checkout, inputs: hash_including("task"), note: nil, dry_run: false, caller_pane: "%3")
+      expect(row).to include("outcome" => "started", "project" => anything, "branch" => "PROJ-1", "path" => checkout, "would_create" => false, "warnings" => [], "ticket" => {"key" => "PROJ-1", "title" => "Fix login", "url" => ticket["url"]})
+    end
+
+    it "writes the ticket file on a real run and not on a dry run" do
+      command.call(id: "flow", ref: "PROJ-1", here: here, dry_run: true)
+      expect(File.exist?(File.join(checkout, ".workflow", "tickets", "PROJ-1.md"))).to be(false)
+      expect(workflow).to have_received(:run).with(hash_including(dry_run: true))
+
+      command.call(id: "flow", ref: "PROJ-1", here: here)
+      expect(File.read(File.join(checkout, ".workflow", "tickets", "PROJ-1.md"))).to eq("Details.")
+      expect(excludes).to have_received(:add).with(checkout, "/.workflow/")
+    end
+
+    it "still refuses a fork pull request, real or dry" do
+      allow(ticket_source).to receive(:fetch).and_return(ticket.merge("url" => "https://github.com/o/r/pull/12", "cross_repository" => true))
+
+      [true, false].each do |dry_run|
+        expect { command.call(id: "flow", ref: "#12", prompt: "x", here: here, dry_run: dry_run) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("fork_pull_request") }
+      end
+      expect(workflow).not_to have_received(:run)
+    end
+
+    it "refuses a ref whose checkout is another directory" do
+      other = described_class::Here.new(workspace: "app", path: dir, caller_pane: nil)
+      expect(start).not_to receive(:payload)
+
+      expect { command.call(id: "flow", ref: "PROJ-1", here: other) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("branch_exists")
+        expect(e.details["path"]).to eq(checkout)
+        expect(e.message).to include(checkout)
+        expect(e.message).not_to include("--branch", "workflow start")
+      end
+      expect(workflow).not_to have_received(:run)
+    end
+
+    it "treats a checkout path that does not exist as different" do
+      FileUtils.remove_entry(checkout)
+      expect(start).not_to receive(:payload)
+
+      expect { command.call(id: "flow", ref: "PROJ-1", here: here, dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("branch_exists") }
+    end
+  end
+
+  it "makes locate_project public" do
+    expect(command.locate_project).to include(root: root, project_workspace: "app")
   end
 end

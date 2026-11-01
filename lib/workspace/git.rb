@@ -243,6 +243,24 @@ module Workspace
       system("git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/#{name}")
     end
 
+    # The exact branch names of the repository, read from git's refs, so unlike
+    # {#branch_exists?} a name that differs only in case never matches on a
+    # case-insensitive filesystem. `origin/HEAD` is a pointer, not a branch.
+    #
+    # @param path [String] any checkout of the repository
+    # @return [Array<String>] local and origin branch names, sorted, each once; empty if git could not answer
+    def branch_names(path)
+      names_under(path, "refs/heads", "refs/remotes/origin")
+    end
+
+    # The exact names of the local branches, which are what a name resolves to first.
+    #
+    # @param path [String] any checkout of the repository
+    # @return [Array<String>] sorted; empty if git could not answer
+    def local_branch_names(path)
+      names_under(path, "refs/heads")
+    end
+
     # @return [Array<String>] list of remote branch names (without origin/ prefix)
     def fetch_remote_branches
       Open3.capture3("git", "fetch", "--prune")
@@ -349,15 +367,28 @@ module Workspace
     end
 
     # Returns the current branch name for a worktree directory.
-    # Returns nil if the HEAD is detached or an error occurs.
+    # Returns nil if the HEAD is detached, the branch has no commit yet, or an error
+    # occurs. Asks for HEAD's full name, so a tag of the same name does not turn the
+    # answer into `heads/<name>`, and a branch that is a symref answers its target.
     #
     # @param path [String] worktree directory path
-    # @return [String, nil] the branch name, or nil if detached or error
+    # @return [String, nil] the branch name, or nil if detached (a rebase in progress too), unborn or error
     def worktree_branch(path)
-      stdout, _, status = capture_git("-C", path, "rev-parse", "--abbrev-ref", "HEAD")
+      stdout, _, status = capture_git("-C", path, "rev-parse", "--symbolic-full-name", "HEAD")
       return nil unless status.success?
-      result = stdout.scrub.strip
-      (result == "HEAD") ? nil : result
+      ref = stdout.scrub.strip
+      ref.start_with?("refs/heads/") ? ref.delete_prefix("refs/heads/") : nil
+    end
+
+    # The branch a name really is: a symref under `refs/heads` answers its target, any
+    # other name answers itself.
+    #
+    # @param path [String] any checkout of the repository
+    # @param name [String] branch name
+    # @return [String]
+    def branch_target(path, name)
+      stdout, _, status = capture_git("-C", path, "symbolic-ref", "--quiet", "refs/heads/#{name}")
+      status.success? ? stdout.scrub.strip.delete_prefix("refs/heads/") : name
     end
 
     # @param path [String] worktree path
@@ -1247,6 +1278,20 @@ module Workspace
       end
     rescue SystemCallError
       layout_from_rev_parse(dir)
+    end
+
+    # The branch names under the given ref prefixes, with those prefixes taken off.
+    # `origin/HEAD` is left out, being a pointer and no branch.
+    #
+    # @param path [String] any checkout of the repository
+    # @param prefixes [Array<String>] `refs/heads`, `refs/remotes/origin`
+    # @return [Array<String>] sorted, each once; empty if git could not answer
+    def names_under(path, *prefixes)
+      stdout, _, status = capture_git("-C", path, "for-each-ref", "--format=%(refname)", *prefixes)
+      return [] unless status.success?
+
+      refs = stdout.scrub.lines(chomp: true) - ["refs/remotes/origin/HEAD"]
+      refs.map { |ref| ref.delete_prefix("refs/heads/").delete_prefix("refs/remotes/origin/") }.uniq.sort
     end
 
     # Runs git in a process group of its own and, if the calling thread is

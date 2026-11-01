@@ -383,6 +383,7 @@ require_relative "workspace/commands/library"
 require_relative "workspace/commands/instructions"
 require_relative "workspace/commands/workflow"
 require_relative "workspace/commands/workflow_start"
+require_relative "workspace/commands/go"
 require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
 require_relative "workspace/commands/inbox"
@@ -659,6 +660,10 @@ module Workspace
       real = CheckoutMove.real_path(path)
       project_config.available_projects.find { |name| (root = project_config.project_root_for(name)) && CheckoutMove.real_path(File.expand_path(root)) == real }
     end
+    go_command = Commands::Go.new(
+      workflow_start: workflow_start_command, workflow: workflow_command, workflow_defaults: workflow_defaults, catalog: workflow_catalog,
+      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, output: output
+    )
     held_locks = HeldLocks.new(lock_namespace: lock_namespace, lock_holder: lock_holder, bound_run: bound_run, env: env)
     promote_command = Commands::Promote.new(
       checkout_move: CheckoutMove.new(git: git, git_exclude: GitExclude.new(git: git), workspace_name: workspace_at),
@@ -861,6 +866,7 @@ module Workspace
       instruction_composer: instruction_composer,
       workflow_command: workflow_command,
       workflow_start_command: workflow_start_command,
+      go_command: go_command,
       review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,

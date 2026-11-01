@@ -24,7 +24,7 @@ module HelpExamplesSpec
     "dev", "dev up", "dev down", "dev status", "dev wait", "dev leave", "dev __run",
     "event-log", "event-log show", "event-log compact",
     "events", "finish", "focus",
-    "goal", "goal show", "goal list",
+    "go", "goal", "goal show", "goal list",
     "handoff", "handoff check", "handoff new",
     "hooks", "hooks uninstall",
     "inbox", "inbox add", "inbox list", "inbox show", "inbox edit", "inbox done", "inbox dismiss", "inbox reopen",
