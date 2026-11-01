@@ -5048,7 +5048,10 @@ module Workspace
         opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
         opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
         opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
-        opts.on("--dry-run", "run, start: report what would start and start nothing; sweep: report what would be done and do nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
+        opts.on("--dry-run", "run, start: report what would start and start nothing; sweep: report what would be done and do nothing (also --install and --uninstall); add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
+        opts.on("--install", "sweep: install the launchd entry that runs the sweep every 5 minutes (a per-user LaunchAgent; opt-in)") { options[:schedule_flags] << :install }
+        opts.on("--uninstall", "sweep: unload and remove that launchd entry") { options[:schedule_flags] << :uninstall }
+        opts.on("--installed", "sweep: say whether that launchd entry is installed and loaded") { options[:schedule_flags] << :status }
         opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
         opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
@@ -5084,7 +5087,7 @@ module Workspace
     def cmd_workflow(args)
       return if verb_help_shown?(HelpPages::WORKFLOW, args)
 
-      options = {json: false, inputs: [], background: [], all: false, dry_run: false, turn_ended: false, source: false}
+      options = {json: false, inputs: [], background: [], all: false, dry_run: false, turn_ended: false, source: false, schedule_flags: []}
       given = args.dup
       parser = workflow_parser(options)
       refuse_bad_bytes!(args)
@@ -5110,6 +5113,10 @@ module Workspace
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
       raise UsageError, "--project is for `workflow status`." if options[:project] && subcommand != "status"
       raise UsageError, "workflow sweep takes a RUN or --name WORKSPACE, not both." if subcommand == "sweep" && subject && options[:name]
+      schedule = options[:schedule_flags].first
+      raise UsageError, "--install, --uninstall and --installed are for `workflow sweep`." if schedule && subcommand != "sweep"
+      raise UsageError, "workflow sweep takes one of --install, --uninstall and --installed, and no RUN or --name with it." if schedule && (options[:schedule_flags].size > 1 || subject || options[:name])
+      raise UsageError, "--dry-run does not apply to `workflow sweep --installed`: it changes nothing." if schedule == :status && options[:dry_run]
       raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
@@ -5148,6 +5155,11 @@ module Workspace
         result = @workflow_command.audit(run: subject, step: options[:attempt_of], json: options[:json])
         @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
       when "sweep"
+        if schedule
+          action = "workflow sweep --#{(schedule == :status) ? "installed" : schedule}"
+          workflow_action_rows(action, options) { @workflow_command.schedule(schedule, dry_run: options[:dry_run]) }
+          return
+        end
         workflow_action_rows("workflow sweep", options) { @workflow_command.sweep(run: subject, name: options[:name], dry_run: options[:dry_run], json: options[:json], caller_pane: ENV["TMUX_PANE"]) }
       when "events"
         @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])

@@ -38,7 +38,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, pid: Process.pid,
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -50,6 +50,7 @@ module Workspace
         @attempts = attempts
         @audit = audit
         @sweep = sweep
+        @schedule = schedule
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -361,6 +362,24 @@ module Workspace
         rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow)
         print_sweep(rows, summary: !json)
         {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil)}
+      end
+
+      # `workflow sweep --install`, `--uninstall` or `--installed`: the opt-in launchd
+      # entry that runs the sweep every five minutes. Changes nothing unless asked.
+      #
+      # @param action [Symbol] `:install`, `:uninstall` or `:status`
+      # @param dry_run [Boolean] say what would be done and change nothing
+      # @return [Hash] the outcome for `run_action`: `exit_code` and `results` (one row)
+      # @raise [Workspace::Error] see {Workspace::SweepSchedule}
+      def schedule(action, dry_run: false)
+        raise Workspace::Error, "workflow sweep --install is not available: no schedule was wired" unless @schedule
+        row = case action
+        when :install then @schedule.install(dry_run: dry_run)
+        when :uninstall then @schedule.uninstall(dry_run: dry_run)
+        else @schedule.status
+        end
+        @output.puts row["message"]
+        {exit_code: 0, results: [row], status: ((row["outcome"] == "dry_run") ? "dry_run" : nil)}
       end
 
       # Gets a run going again. Everything the engine would refuse is refused

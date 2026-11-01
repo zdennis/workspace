@@ -501,7 +501,7 @@ module Workspace
         ]
       },
       "sweep" => {
-        usage: ["workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]"],
+        usage: ["workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]", "workflow sweep --install | --uninstall [--dry-run] [--json]", "workflow sweep --installed [--json]"],
         summary: "One pass over the runs going: act on the ones that have stopped",
         about: [
           "Looks at every run still going (or one RUN, or one workspace's) and, for a step an agent should be",
@@ -515,16 +515,26 @@ module Workspace
           "It needs no agent daemon, so a scheduler can run it. Running it twice records nothing twice. A run",
           "that another process is changing is skipped and looked at on the next pass. A daemon that could not be",
           "started, a failed interrupt, a missing program or an unreadable run file is a failed result (exit 3, or",
-          "1 when every result failed). See docs/README.workflow.md."
+          "1 when every result failed). See docs/README.workflow.md.",
+          "",
+          "To run it on a schedule, --install writes a per-user LaunchAgent (every 5 minutes) and loads it; it is",
+          "never done for you. --uninstall unloads and removes it, --installed says whether it is there and loaded.",
+          "The entry records the absolute Ruby, program and PATH it was installed with, so run --install again",
+          "after a Ruby or install move. A plist that is not ours is never touched."
         ],
         options: [["--name WORKSPACE", "Only this workspace's runs (default: every run going)"],
-          ["--dry-run", "Say what would be done and do nothing"],
+          ["--dry-run", "Say what would be done and do nothing (also for --install and --uninstall; refused with --installed)"],
+          ["--install", "Install and load the launchd entry that runs the sweep every 5 minutes (opt-in)"],
+          ["--uninstall", "Unload and remove that entry"],
+          ["--installed", "Say whether that entry is installed and loaded; changes nothing"],
           ["--json", "Print one action document (see docs/README.json.md), one result per run looked at"]],
         examples: [
           ["workspace workflow sweep --dry-run", "which stopped runs would a sweep act on?"],
           ["workspace workflow sweep", "act on every run that has stopped"],
           ["workspace workflow sweep RUN", "only this run"],
-          ["workspace workflow sweep --name app.worktree-x --json", "for a script: one result per run in that workspace"]
+          ["workspace workflow sweep --name app.worktree-x --json", "for a script: one result per run in that workspace"],
+          ["workspace workflow sweep --install --dry-run", "what would installing the 5-minute schedule do?"],
+          ["workspace workflow sweep --installed", "is the schedule installed and loaded?"]
         ]
       },
       "events" => {

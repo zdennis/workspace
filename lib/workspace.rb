@@ -316,6 +316,7 @@ require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
 require_relative "workspace/workflow_sweep"
+require_relative "workspace/sweep_schedule"
 require_relative "workspace/workflow_workspace_facts"
 require_relative "workspace/workflow_nudger"
 require_relative "workspace/bookkeeping_exclude"
@@ -414,8 +415,9 @@ module Workspace
   # @param input [IO] input stream for interactive prompts
   # @param env [Hash] environment; `WORKSPACE_NO_INPUT` makes every prompt fail instead of waiting
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
+  # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -627,6 +629,14 @@ module Workspace
       agents: ProjectAgents.new(client: agent_snapshot_client))
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
       interrupter: ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) })
+    sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
+      launchctl: launchctl || ->(args) do
+        out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)
+        [out + err, ok ? 0 : 1]
+      rescue SystemCallError, Timeout::Error => e
+        [e.message, nil]
+      end,
+      source: SkillSource.new(workspace_dir: config.workspace_dir), ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
     workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
@@ -635,6 +645,7 @@ module Workspace
       attempts: WorkflowAttempts.new,
       audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
       sweep: workflow_sweep,
+      schedule: sweep_schedule,
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,
