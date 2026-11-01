@@ -1101,6 +1101,16 @@ module Workspace
         return emit_json_usage_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, parser.help.lines.first.strip)
       end
 
+      entry = @start_command.recipe_entry(recipe) if recipe
+      if entry&.dig("fields", "workflow")
+        refused = {"--prompt" => !prompt.nil?, "--play" => plays.any?, "--pack" => packs.any?, "--no-packs" => no_packs,
+                   "--handoff" => handoff == true, "--no-handoff" => handoff == false, "--agent" => agents.any?, "--skill" => skills.any?,
+                   "--no-launch" => no_launch, "--spine" => !spine.nil?, "--plan" => !plan.nil?, "--title" => !title.nil?,
+                   "--title-from-ticket" => title_from_ticket}.select { |_, given| given }.keys
+        return start_recipe_workflow(entry, args.first, refused, json: json, slug: slug, base: base, headless: headless,
+          agent_kind: agent_kind, prompt_timeout: prompt_timeout)
+      end
+
       start_options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, json: json}
       start_options[:title] = title if title
       start_options[:plays] = plays.uniq if plays.any?
@@ -1117,7 +1127,7 @@ module Workspace
       start_options[:spine] = spine if spine
       start_options[:plan] = plan if plan
       start_options[:agent_kind] = agent_kind if agent_kind
-      start_options[:recipe] = @start_command.recipe_entry(recipe) if recipe
+      start_options[:recipe] = entry if entry
       start_options[:title_from_ticket] = true if title_from_ticket
       start_options[:slug] = true if slug
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
@@ -1128,6 +1138,27 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
       emit_json_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # `start --recipe NAME REF` for a recipe that names a workflow: the same call as `workflow start`,
+    # refused first for any flag that call has no use for, before anything is created.
+    def start_recipe_workflow(entry, ref, refused, json:, slug:, base:, headless:, agent_kind:, prompt_timeout:)
+      fields = entry["fields"]
+      id = fields["workflow"]
+      if refused.any?
+        raise Error.new("Recipe #{entry["ref"]} runs workflow #{id}, which cannot take #{refused.join(", ")}.",
+          code: "recipe_workflow_conflict", details: {"ref" => entry["ref"], "workflow" => id, "flags" => refused})
+      end
+      raise Error, "start --recipe #{entry["ref"]} runs a workflow, but no workflow start command was wired" unless @workflow_start_command
+      workflow_action("start", {json: json}) do
+        row = @workflow_start_command.call(id: id, ref: ref, slug: slug, inputs: fields.fetch("workflow_inputs", {}), base: base,
+          headless: @launch_mode.resolve(headless).headless?, agent_kind: agent_kind || fields["agent_kind"], prompt_timeout: prompt_timeout)
+        row&.merge("recipe" => entry.slice("ref", "scope"))
+      rescue Error => e
+        raise unless e.code == "input_required"
+        raise Error.new("Recipe #{entry["ref"]} leaves out an input that workflow #{id} needs. Add it to the recipe's workflow_inputs, " \
+          "or run `workspace workflow start #{id} #{ref} --input NAME=VALUE`.", code: e.code, details: e.details)
+      end
     end
 
     def cmd_stop(args)

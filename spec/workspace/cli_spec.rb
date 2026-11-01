@@ -2362,6 +2362,125 @@ RSpec.describe Workspace::CLI do
         expect(lines.size).to eq(1)
         expect(JSON.parse(lines.first)).to include("ok" => false, "code" => "usage")
       end
+
+      context "with a workflow" do
+        let(:fields) { {"workflow" => "rpiv", "workflow_inputs" => {"task" => "do it"}, "agent_kind" => "claude"} }
+        let(:entry) { {"ref" => "recipe/r", "scope" => "global", "path" => "/x", "fields" => fields} }
+        let(:start_command) { double("start", call: {exit_code: 0}, recipe_entry: entry) }
+        let(:workflow_start) { CLITestHelpers::FakeWorkflowStartCommand.new }
+        let(:built) { build_test_cli(start_command: start_command, workflow_start_command: workflow_start, workflow_command: CLITestHelpers::FakeWorkflowCommand.new) }
+        let(:cli) { built[0] }
+        let(:output) { built[1] }
+
+        def refused_flags
+          expect { yield }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+          doc = JSON.parse(output.string.lines.tap { |l| expect(l.size).to eq(1) }.first)
+          expect(doc).to include("ok" => false, "code" => "recipe_workflow_conflict")
+          expect(doc["details"]).to include("ref" => "recipe/r", "workflow" => "rpiv")
+          doc["details"]["flags"]
+        end
+
+        it "makes the same call as workflow start and never calls Start" do
+          cli.run(["start", "--recipe", "r", "PROJ-1", "--base", "main", "--slug", "--no-headless", "--prompt-timeout", "2m", "--yes", "--no-spine"])
+          cli.run(["workflow", "start", "rpiv", "PROJ-1", "--base", "main", "--slug", "--no-headless", "--prompt-timeout", "2m", "--input", "task=do it", "--agent-kind", "claude"])
+
+          from_start, from_workflow = workflow_start.calls
+          expect(from_start).to eq(id: "rpiv", ref: "PROJ-1", slug: true, inputs: {"task" => "do it"}, base: "main", headless: false, agent_kind: "claude", prompt_timeout: 120)
+          expect(from_start).to eq(from_workflow.slice(*from_start.keys))
+          expect(from_workflow.except(*from_start.keys)).to eq(prompt: nil, branch: nil, note: nil, dry_run: false)
+          expect(start_command).not_to have_received(:call)
+        end
+
+        it "lets an explicit --agent-kind win over the recipe's" do
+          cli.run(["start", "--recipe", "r", "PROJ-1", "--agent-kind", "codex"])
+          expect(workflow_start.calls.first).to include(agent_kind: "codex")
+        end
+
+        it "sends empty inputs when the recipe has none" do
+          fields.delete("workflow_inputs")
+          cli.run(["start", "--recipe", "r", "PROJ-1"])
+          expect(workflow_start.calls.first).to include(inputs: {})
+        end
+
+        {
+          "--prompt" => ["--prompt", "x"], "--play" => ["--play", "p"], "--pack" => ["--pack", "k"], "--no-packs" => ["--no-packs"],
+          "--handoff" => ["--handoff"], "--no-handoff" => ["--no-handoff"], "--agent" => ["--agent", "a"], "--skill" => ["--skill", "s"],
+          "--no-launch" => ["--no-launch"], "--spine" => ["--spine"], "--plan" => ["--plan"], "--title" => ["--title", "T"],
+          "--title-from-ticket" => ["--title-from-ticket"]
+        }.each do |flag, args|
+          it "refuses #{flag} alone, creating nothing" do
+            expect(refused_flags { cli.run(["start", "--recipe", "r", "PROJ-1", "--json", *args]) }).to eq([flag])
+            expect(workflow_start.calls).to be_empty
+            expect(start_command).not_to have_received(:call)
+          end
+        end
+
+        it "lists every refused flag at once" do
+          flags = refused_flags { cli.run(["start", "--recipe", "r", "PROJ-1", "--json", "--prompt", "x", "--no-launch", "--title", "T", "--no-handoff"]) }
+          expect(flags).to eq(%w[--prompt --no-handoff --no-launch --title])
+        end
+
+        it "names a refusal in plain text too" do
+          expect { cli.run(["start", "--recipe", "r", "PROJ-1", "--play", "p"]) }.to raise_error(FakeSystemExit)
+          expect(built[2].string).to include("recipe/r runs workflow rpiv, which cannot take --play")
+        end
+
+        it "accepts --no-headless, --yes and --no-spine" do
+          cli.run(["start", "--recipe", "r", "PROJ-1", "--no-headless", "--yes", "--no-spine"])
+          expect(workflow_start.calls.size).to eq(1)
+        end
+
+        it "needs a REF before it dispatches" do
+          expect { cli.run(["start", "--recipe", "r"]) }.to raise_error(FakeSystemExit)
+          expect(workflow_start.calls).to be_empty
+        end
+
+        it "prints one action document with the recipe under --json" do
+          cli.run(["start", "--recipe", "r", "PROJ-1", "--json"])
+
+          doc = JSON.parse(output.string)
+          expect(output.string.lines.size).to eq(1)
+          expect(doc).to include("ok" => true, "action" => "start")
+          expect(doc["results"].first).to include("outcome" => "started", "recipe" => {"ref" => "recipe/r", "scope" => "global"})
+        end
+
+        it "exits 1 for an outcome of failed" do
+          workflow_start.row = {"workspace" => nil, "outcome" => "failed", "reason" => "x", "message" => "no"}
+          expect { cli.run(["start", "--recipe", "r", "PROJ-1"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        end
+
+        it "prints one error document for an unknown workflow" do
+          workflow_start.error = Workspace::Error.new("No workflow rpiv.", code: "unknown_workflow")
+          expect { cli.run(["start", "--recipe", "r", "PROJ-1", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+          expect(output.string.lines.size).to eq(1)
+          expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workflow", "error" => "No workflow rpiv.")
+        end
+
+        it "rewrites input_required to name workflow_inputs, keeping code and details" do
+          details = {"workflow" => "rpiv", "inputs" => [{"name" => "task"}]}
+          workflow_start.error = Workspace::Error.new("needs input task. Pass --input task=VALUE.", code: "input_required", details: details)
+          expect { cli.run(["start", "--recipe", "r", "PROJ-1", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+          expect(output.string.lines.size).to eq(1)
+          doc = JSON.parse(output.string)
+          expect(doc).to include("code" => "input_required", "details" => details)
+          expect(doc["error"]).to include("workflow_inputs").and include("workspace workflow start rpiv PROJ-1 --input")
+          expect(doc["error"]).not_to include("Pass --input")
+        end
+
+        it "says so when no workflow start command was wired" do
+          cli, = build_test_cli(start_command: start_command)
+          expect { cli.run(["start", "--recipe", "r", "PROJ-1"]) }.to raise_error(FakeSystemExit)
+        end
+      end
+
+      it "sends a recipe without a workflow to Start" do
+        start_command = double("start", call: {exit_code: 0}, recipe_entry: entry)
+        workflow_start = CLITestHelpers::FakeWorkflowStartCommand.new
+        cli, = build_test_cli(start_command: start_command, workflow_start_command: workflow_start)
+        cli.run(["start", "--recipe", "r", "PROJ-1"])
+        expect(start_command).to have_received(:call)
+        expect(workflow_start.calls).to be_empty
+      end
     end
 
     it "passes --play through to start" do
