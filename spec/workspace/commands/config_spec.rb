@@ -1356,6 +1356,13 @@ RSpec.describe Workspace::Commands::Config do
         expect(result).to have_attributes(workspace: nil, layer: "global", scope: "global", path: settings.global_config_path)
       end
 
+      it "stores workflows.by_ref.jira as nested YAML beside workflows.defaults.include" do
+        command.set("workflows.defaults.include", "review", project: "myapp")
+        command.set("workflows.by_ref.jira", "rpiv", project: "myapp")
+
+        expect(settings.load_global).to eq({"workflows" => {"defaults" => {"include" => "review"}, "by_ref" => {"jira" => "rpiv"}}})
+      end
+
       it "lets a project override a global key (workflows.defaults.include), and keeps writing global with no scope" do
         command.set("workflows.defaults.include", "commits", project: "myapp", scope: "project")
         expect(settings.load("myapp")).to eq({"workflows" => {"defaults" => {"include" => "commits"}}})

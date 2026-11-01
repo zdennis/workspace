@@ -1606,6 +1606,186 @@
       "problems": []
     },
     {
+      "key": "workflows.default",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Id of the workflow `workflow start` runs when it is given no id and no `workflows.by_ref.*` key matches the reference (no default)",
+      "problems": []
+    },
+    {
+      "key": "workflows.by_ref.jira",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Id of the workflow `workflow start` runs when it is given no id and the reference is a Jira ticket; it wins over `workflows.default` (no default)",
+      "problems": []
+    },
+    {
+      "key": "workflows.by_ref.github_pr",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Id of the workflow `workflow start` runs when it is given no id and the reference is a GitHub pull request; it wins over `workflows.default` (no default)",
+      "problems": []
+    },
+    {
+      "key": "workflows.by_ref.github_issue",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Id of the workflow `workflow start` runs when it is given no id and the reference is a GitHub issue; it wins over `workflows.default` (no default)",
+      "problems": []
+    },
+    {
+      "key": "workflows.by_ref.branch",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Id of the workflow `workflow start` runs when it is given no id and the reference is a branch name; it wins over `workflows.default` (no default)",
+      "problems": []
+    },
+    {
+      "key": "workflows.by_ref.prompt",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Id of the workflow `workflow start` runs when it is given no id and the reference is `--prompt` text; it wins over `workflows.default` (no default)",
+      "problems": []
+    },
+    {
       "key": "events.rotate_size",
       "scope": "global",
       "type": "size",
