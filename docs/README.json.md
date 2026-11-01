@@ -67,6 +67,8 @@ The agent daemon's pane list (`sessions --json`) carries a boolean `turn_failed`
 
 `snapshot --json` prints one read-only document of everything a UI polls (see [`snapshot`](README.snapshot.md)). `--json` is required; a source that can't answer is reported as unavailable (null fields, `daemons_unavailable` rows, `warnings`) rather than as clean, and the command still succeeds. Its `cursor` is `ev:<inode>:<byte offset>` of the event log.
 
+`ui status --json` prints one read-only document: `{"schema_version":1,"ok":true,"running","pids","handler","links","probe","warnings"}`. It opens nothing. A probe that cannot answer is `ok: true`, exit 0, with `running`, `pids` and `handler` null and `probe` naming the problem; a usage error is the error envelope (see [`ui`](README.ui.md#status)).
+
 ## Goal
 
 `goal show [REF] --json` prints `{"schema_version":1,"ok":true,"goal":{...},"warnings":[]}` and `goal list [--all] --json` prints `{"schema_version":1,"ok":true,"goals":[...],"warnings":[]}`. Both are read-only; a source that can't answer is a null level plus a warning. `show` also carries `done_means` and `not_yet` (lists of `{code, text}`) and `delivery`, and `list` rows `delivered` and `not_yet_codes`: a finished plan or spine is `done` only once the branch's commits are on the default branch (local git only). Every field, the closed value sets, nullability and warning codes are in [README.goal.md](README.goal.md).

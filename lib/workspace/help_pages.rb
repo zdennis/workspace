@@ -1333,20 +1333,32 @@ module Workspace
 
     UI = {
       "open" => {
-        usage: ["ui open task|review|plan [WORKSPACE] [--print] [--json]",
+        usage: ["ui open [task|review|plan] [WORKSPACE] [--print] [--json]",
           "ui open notes [WORKSPACE] [--path REL] [--print] [--json]",
           "ui open pane [WORKSPACE] PANE [--print] [--json]",
           "ui open inbox [--print] [--json]"],
         summary: "Open a view of the workspace UI through its workspace-ui:// link",
         about: [
           "The views:",
-          "  task WORKSPACE     workspace-ui://task/WORKSPACE",
+          "  task WORKSPACE     workspace-ui://task/WORKSPACE (the workspace's default view)",
           "  review WORKSPACE   workspace-ui://review/WORKSPACE",
           "  notes WORKSPACE    workspace-ui://notes/WORKSPACE, or .../REL when --path REL is given (an existing .md note in the notes directory)",
-          "  plan WORKSPACE     workspace-ui://plan/WORKSPACE",
+          "  plan WORKSPACE     workspace-ui://plan/WORKSPACE (opens the same workspace view as task, which holds the plan;",
+          "                     there is no plan page, and task and plan share one tab)",
           "  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE",
-          "                     (PANE is a tmux pane id such as %19; WORKSPACE may be left out as for the others)",
+          "                     (PANE is a tmux pane id such as %19, written %2519 in the link; WORKSPACE may be left out as for the others)",
           "  inbox              workspace-ui://inbox",
+          "",
+          "A note path (--path REL) uses the characters A-Z a-z 0-9 . _ - in one to four segments.",
+          "The app takes a workspace name of at most 128 characters of A-Z a-z 0-9 . _ -, starting with a letter or",
+          "digit, with no `..`. The CLI allows up to 255 characters and encodes the rest, but the app shows",
+          "\"Couldn't open the link\" for a name it does not take, and `open` still exits 0: the exit status only",
+          "says the app received the link. A pane link needs an app that declares link revision 1 or later (see",
+          "`ui status`; a null revision means unknown, not old), and it goes stale when the pane closes.",
+          "",
+          "With no view, `ui open` and `ui open WORKSPACE` open the task view; a word that is neither a view nor a",
+          "workspace with a config is a usage error and nothing opens. Use `ui open task WORKSPACE` for a workspace",
+          "named like a view.",
           "",
           "Without --print this opens the link for the person, so the UI app comes to the front on that view.",
           "A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)",
@@ -1363,20 +1375,23 @@ module Workspace
         examples: [
           ["workspace ui open task my-app", "send the person to my-app's task view (opens the UI app)"],
           ["workspace ui open review my-app.worktree-fix-login", "point the person at the review of one worktree's change"],
-          ["workspace ui open plan --print", "learn the plan link of the workspace you are in, and open nothing"],
+          ["workspace ui open my-app", "shorthand for the task view of the workspace my-app (it must have a config)"],
+          ["workspace ui open plan --print", "learn the link that shows this workspace's plan, and open nothing"],
           ["workspace ui open pane my-app %19", "show the person the pane an agent is stuck in"],
           ["workspace ui open task my-app --json", "open from a script; on failure exits 1 with reason open_failed or open_unavailable"]
         ]
       },
       "open task" => {
         usage: ["ui open task [WORKSPACE] [--print] [--json]"],
-        summary: "Open a workspace's task view in the workspace UI",
+        summary: "Open a workspace's default view (task) in the workspace UI",
         about: [
-          "Opens workspace-ui://task/WORKSPACE for the person: the UI app comes to the front on that workspace's",
-          "task. Nothing else happens; the link never starts an agent or runs a command. WORKSPACE (or --name)",
+          "Opens workspace-ui://task/WORKSPACE for the person: the UI app comes to the front on the workspace's",
+          "default view, which also holds its plan (`ui open plan` opens the same view). Nothing else happens; the",
+          "link never starts an agent or runs a command. WORKSPACE (or --name)",
           "defaults to the project detected from the current directory; from anywhere else a usage error asks for",
-          "one. The workspace is not checked to exist: the UI validates the link it receives. Without the UI app",
-          "installed `open` fails and the exit status is 1; --print still shows the link."
+          "one. `ui open task WORKSPACE` does not check that the workspace exists: the UI validates the link it",
+          "receives. The shorthand `ui open WORKSPACE` does check: its word must be a view or a workspace with a",
+          "config. Without the UI app installed `open` fails and the exit status is 1; --print still shows the link."
         ],
         hidden: true,
         options: [name_opt("Workspace name"),
@@ -1433,6 +1448,27 @@ module Workspace
           ["workspace ui open inbox", "tell the person something waits for them (opens the UI app)"],
           ["workspace ui open inbox --print", "learn the inbox link and open nothing"],
           ["workspace ui open inbox --json", "open from a script; on failure exits 1 with reason open_failed or open_unavailable"]
+        ]
+      },
+      "status" => {
+        usage: ["ui status [--json]"],
+        summary: "Show which app would take a workspace-ui:// link, and whether it is running",
+        about: [
+          "Asks macOS, and only asks: nothing is opened or launched, and no link is built. Prints three lines",
+          "(running, handler, links), or with --json one read document: running, pids, handler (path, id, version),",
+          "links (revision, reason), probe and warnings. When macOS cannot be asked, running, pids and handler are",
+          "null and probe says why (timed_out, unavailable, bad_answer); that is still exit 0.",
+          "",
+          "The rule for an agent: `handler: null`, or links.reason `foreign_handler`, means no UI app would take a",
+          "link, so print it (`ui open ... --print`) rather than open it. `running: false` does not mean that:",
+          "macOS launches the app for a link. links.revision is a number only when the handler is the shipped app",
+          "and its bundle declares the links it takes; otherwise it is null and links.reason says why."
+        ],
+        options: [["--json", "Print one JSON read document (see docs/README.ui.md)"]],
+        examples: [
+          ["workspace ui status", "see whether the UI app is installed and running"],
+          ["workspace ui status --json", "read the same from a script"],
+          ["workspace ui status --json | jq .links.reason", "learn why links may not reach the running app (null when they will)"]
         ]
       }
     }.freeze

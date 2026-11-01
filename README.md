@@ -138,7 +138,7 @@ workspace <subcommand> [options]
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
 | ticket | [README](docs/README.ticket.md) | Look up a ticket the way `start` reads it (`show`): a JIRA key, pull request, issue or branch, with its title and body from `gh` or `jira` and whether a workspace for it already exists; or list the tickets assigned to you or changed lately (`list`) |
 | tmux | [README](docs/README.tmux.md) | Show a workspace's tmuxinator file as windows and panes |
-| ui | [README](docs/README.ui.md) | Open a `workspace-ui://` link: a task, a review, notes (or one note with `--path`) or the inbox |
+| ui | [README](docs/README.ui.md) | Open a `workspace-ui://` link: the workspace view (`task`, also `plan`), a review, notes (or one note with `--path`) or the inbox; `ui status` shows which app would take one |
 | version | [README](docs/README.version.md) | Print the workspace version |
 | wait-until-content | [README](docs/README.wait-until-content.md) | Block until a pane shows content, then exec a command |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |

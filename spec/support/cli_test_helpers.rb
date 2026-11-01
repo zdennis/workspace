@@ -752,6 +752,19 @@ module CLITestHelpers
       @result = Workspace::Commands::Ui::Result.new("opened", "task", "workspace-ui://task/app")
     end
 
+    attr_accessor :status_doc
+
+    def status
+      @calls << {status: true}
+      raise @error if @error
+      @status_doc ||= {"running" => false, "pids" => [], "handler" => nil,
+                       "links" => {"revision" => nil, "reason" => "no_handler"}, "probe" => nil, "warnings" => []}
+    end
+
+    def status_lines(_doc)
+      ["running: no", "handler: none", "links: no revision (no_handler)"]
+    end
+
     def open(view:, workspace: nil, print_only: false, pane: nil, path: nil)
       @calls << {view: view, workspace: workspace, print_only: print_only}.tap { |call|
         call[:pane] = pane if pane
