@@ -29,6 +29,7 @@ steps:
       Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
       constraints, open questions, risks.
     produces: [research.md]
+    guard: unchanged
     timeout: 45m
 
   plan:
@@ -52,6 +53,7 @@ steps:
       finished until plan.md exists.
       Don't change code.
     produces: [plan.md]
+    guard: unchanged
     # Done only when the workspace plan exists and has at least one task.
     status:
       run: |
@@ -91,6 +93,7 @@ steps:
       skeptical: approve or reject
       implementer: approve or reject
     produces: [plan-approval.md]
+    guard: unchanged
     # Done only when the skeptic and one other approved the plan as it stands now. A rejection goes back to plan.
     status:
       run: |

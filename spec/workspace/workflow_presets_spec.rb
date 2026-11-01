@@ -54,6 +54,43 @@ RSpec.describe "the shipped workflow presets" do
       end
     end
 
+    it "guards research and plan (and plan_review in rpiv-auto-approve) as unchanged, and nothing else" do
+      %w[rpiv rpiv-auto-approve].each do |id|
+        guards = catalog.find(id).to_h["steps"].to_h { |step| [step["id"], step["guard"]] }
+        expect(guards.select { |_, guard| guard }).to eq({"research" => "unchanged", "plan" => "unchanged"}.merge((id == "rpiv-auto-approve") ? {"plan_review" => "unchanged"} : {})), id
+      end
+    end
+
+    %w[rpiv rpiv-auto-approve].each do |id|
+      it "#{id} refuses a dirty checkout at preflight and accepts a clean one" do
+        definition = catalog.find(id)
+        worktree = File.join(File.realpath(dir), "app")
+        FileUtils.mkdir_p(worktree)
+        system("git", "-C", worktree, "init", "-q", "-b", "feature/x", exception: true)
+        QuietGit.configure(worktree)
+        File.write(File.join(worktree, "a.txt"), "1")
+        system("git", "-C", worktree, "add", "a.txt", exception: true)
+        system("git", "-C", worktree, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "a", exception: true)
+        git = Workspace::Git.new(output: StringIO.new, input: StringIO.new)
+        lock_namespace = instance_double(Workspace::LockNamespace)
+        allow(lock_namespace).to receive(:resolve).and_return(key: "ns", display: "app", dir: File.join(dir, "locks"))
+        store = Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive"))
+        engine = Workspace::WorkflowEngine.new(store: store,
+          resources: Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: RunFileLiveness.new(File.join(dir, "runs"))),
+          composer: FakeStepComposer.new, panes: FakeWorkflowPanes.new, checker: ->(**) { {exit_code: 0, timed_out: false} },
+          commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "t", lint: nil}),
+          lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")), git: git, guard: Workspace::WorkflowGuard.new,
+          excludes: Workspace::GitExclude.new(git: git), gate_note: instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil),
+          env_stopper: ->(**) {}, event_log: instance_double(Workspace::EventLog, record: nil),
+          task_store: instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}))
+        run = -> { engine.preflight(definition: definition, workspace: "app", worktree: worktree, inputs: {"task" => "x"}) }
+
+        expect(run.call["step"]).to eq("research")
+        File.write(File.join(worktree, "a.txt"), "2")
+        expect { run.call }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("dirty_worktree") }
+      end
+    end
+
     it "makes the lint proof optional, so a project without a lint command still runs" do
       %w[rpiv rpiv-auto-approve].each do |id|
         verify = catalog.find(id).to_h["steps"].find { |step| step["id"] == "verify" }

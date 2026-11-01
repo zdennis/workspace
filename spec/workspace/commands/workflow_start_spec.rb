@@ -362,13 +362,23 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       end
     end
 
-    it "is not refused for rpiv, which has no guarded step" do
+    it "is not refused, in a dry run, for a workflow with no guarded step" do
+      unguarded = Workspace::WorkflowDefinition.parse("inputs:\n  task:\nsteps:\n  look:\n    prompt: Look.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+      allow(catalog).to receive(:find).with("flow").and_return(unguarded)
+
+      row = build_command(real_engine).call(id: "flow", prompt: "x", branch: "mine", dry_run: true)
+
+      expect(row).to include("outcome" => "dry_run", "path" => repo)
+    end
+
+    it "is refused for rpiv, whose research and plan steps are guarded" do
       rpiv = Workspace::WorkflowDefinition.parse(File.read(File.expand_path("../../../lib/workflows/rpiv.yml", __dir__)), id: "rpiv", source: "preset", path: "rpiv.yml")
       allow(catalog).to receive(:find).with("rpiv").and_return(rpiv)
 
-      row = build_command(real_engine).call(id: "rpiv", prompt: "x", branch: "mine", dry_run: true)
-
-      expect(row).to include("outcome" => "dry_run", "path" => repo, "would_create" => false)
+      expect { build_command(real_engine).call(id: "rpiv", prompt: "x", branch: "mine", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("dirty_worktree")
+        expect(e.details).to include("path" => repo, "files" => ["a.txt"])
+      end
     end
   end
 
