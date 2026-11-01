@@ -135,6 +135,8 @@ module CLITestHelpers
     def find_window_for_project(_project) = nil
     def iterm_windows = {}
     def focus_by_id(_wid, highlight: nil) = true
+    def run_focus_steps(_wid, _steps) = nil
+    def highlight_by_id(_wid, _color) = true
     def shake_by_id(_wid) = true
     def live_window_ids = Set.new
     def window_ids_front_to_back = []

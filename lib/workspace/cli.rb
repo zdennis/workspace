@@ -1430,9 +1430,9 @@ module Workspace
           @hook_runner.run(project, "post_focus")
           if json
             @state.load
-            {results: [action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))]}
+            {results: [action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))], warnings: @focus_command.warnings}
           else
-            {}
+            {warnings: @focus_command.warnings}
           end
         end
       end
@@ -1447,9 +1447,9 @@ module Workspace
           @state.load
           row = action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))
           row["pane"] = focused_pane if pane
-          {results: [row]}
+          {results: [row], warnings: @focus_command.warnings}
         else
-          {}
+          {warnings: @focus_command.warnings}
         end
       end
     end

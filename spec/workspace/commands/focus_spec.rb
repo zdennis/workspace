@@ -25,11 +25,11 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
 
       command.call("myproject")
 
-      expect(window_manager).to have_received(:focus_by_id).with(42, highlight: nil)
+      expect(window_manager).to have_received(:focus_by_id).with(42)
       expect(output.string).to include("Focusing myproject")
     end
 
@@ -37,12 +37,12 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
       allow(window_manager).to receive(:shake_by_id).with(42).and_return(true)
 
       command.call("myproject", shake: true)
 
-      expect(window_manager).to have_received(:focus_by_id).with(42, highlight: nil)
+      expect(window_manager).to have_received(:focus_by_id).with(42)
       expect(window_manager).to have_received(:shake_by_id).with(42)
     end
 
@@ -50,7 +50,7 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
       allow(window_manager).to receive(:shake_by_id)
 
       command.call("myproject")
@@ -58,22 +58,38 @@ RSpec.describe Workspace::Commands::Focus do
       expect(window_manager).not_to have_received(:shake_by_id)
     end
 
-    it "passes highlight color to focus_by_id" do
+    it "passes highlight color to highlight_by_id" do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42, highlight: "green").and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
+      allow(window_manager).to receive(:highlight_by_id).with(42, "green").and_return(true)
 
       command.call("myproject", highlight: "green")
 
-      expect(window_manager).to have_received(:focus_by_id).with(42, highlight: "green")
+      expect(window_manager).to have_received(:focus_by_id).with(42)
+      expect(window_manager).to have_received(:highlight_by_id).with(42, "green")
+      expect(command.warnings).to be_empty
+    end
+
+    it "warns when the highlight fails, and still shakes" do
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+      allow(window_manager).to receive(:focus_by_id).and_return(true)
+      allow(window_manager).to receive(:highlight_by_id).and_return(false)
+      allow(window_manager).to receive(:shake_by_id)
+
+      command.call("myproject", highlight: "green", shake: true)
+
+      expect(command.warnings).to eq(["The window is in front, but the highlight failed."])
+      expect(window_manager).to have_received(:shake_by_id).with(42)
     end
 
     it "centers the window when center: true, after shaking" do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
       allow(window_manager).to receive(:shake_by_id).with(42)
       allow(window_manager).to receive(:center_window).with(42).and_return([560, 240])
 
@@ -87,7 +103,7 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
       allow(window_manager).to receive(:center_window).with(42).and_return(false)
 
       expect { command.call("myproject", center: true) }.to raise_error(
@@ -102,7 +118,7 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
       allow(window_manager).to receive(:center_window)
 
       command.call("myproject")
@@ -125,7 +141,7 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(false)
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(false)
 
       expect { command.call("myproject") }.to raise_error(
         Workspace::Error, /no longer exists/
@@ -133,6 +149,173 @@ RSpec.describe Workspace::Commands::Focus do
         expect(error.code).to eq("window_gone")
         expect(error.details).to eq("workspace" => "myproject", "iterm_window_id" => 42)
       }
+    end
+  end
+
+  describe "#call with a focus chain" do
+    let(:error_output) { StringIO.new }
+    let(:steps) { [["center"], ["dim", "--duration", "3"]] }
+    let(:reading) { Workspace::FocusConfig::Reading.new(steps, nil) }
+    let(:focus_config) { double("focus_config", read: reading) }
+    let(:failure) { nil }
+    let(:command) do
+      described_class.new(state: state, window_manager: window_manager, focus_config: focus_config, output: output, error_output: error_output)
+    end
+
+    before do
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+      allow(window_manager).to receive(:focus_by_id).and_return(true)
+      allow(window_manager).to receive(:run_focus_steps) { failure }
+      allow(window_manager).to receive(:highlight_by_id).and_return(true)
+      allow(window_manager).to receive(:shake_by_id)
+      allow(window_manager).to receive(:center_window).and_return([0, 0])
+    end
+
+    def step_failure(step, status, stderr)
+      Workspace::WindowManager::StepFailure.new(step, status, stderr)
+    end
+
+    it "runs focus, the chain, highlight, shake, center in order" do
+      command.call("myproject", highlight: "red", shake: true, center: true)
+
+      expect(window_manager).to have_received(:focus_by_id).with(42).ordered
+      expect(window_manager).to have_received(:run_focus_steps).with(42, steps).ordered
+      expect(window_manager).to have_received(:highlight_by_id).with(42, "red").ordered
+      expect(window_manager).to have_received(:shake_by_id).with(42).ordered
+      expect(window_manager).to have_received(:center_window).with(42).ordered
+      expect(command.warnings).to be_empty
+      expect(error_output.string).to eq("")
+    end
+
+    it "starts no chain when the window is gone" do
+      allow(window_manager).to receive(:focus_by_id).and_return(false)
+
+      expect { command.call("myproject") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("window_gone") }
+
+      expect(focus_config).not_to have_received(:read)
+      expect(window_manager).not_to have_received(:run_focus_steps)
+    end
+
+    context "when a step reports an unknown command" do
+      [1, 2].each do |status|
+        it "says to update window-tool at exit #{status}" do
+          allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("center", status, "\nerror: Unknown command 'center'\nusage...\n"))
+
+          command.call("myproject")
+
+          message = "The window is in front, but this window-tool has no 'center' command: error: Unknown command 'center'. Update window-tool, or change focus.chain."
+          expect(command.warnings).to eq([message])
+          expect(error_output.string).to eq("Warning: #{message}\n")
+        end
+      end
+    end
+
+    it "names the exit status for any other failure, including a bad flag at exit 2" do
+      allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("dim", 2, "error: unknown option --bogus\n"))
+
+      command.call("myproject")
+
+      expect(command.warnings).to eq(["The window is in front, but window-tool step 'dim' failed (exit 2): error: unknown option --bogus. Check focus.chain."])
+    end
+
+    it "says a step could not be run when there is no exit status" do
+      allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("dim", nil, "No such file"))
+
+      command.call("myproject")
+
+      expect(command.warnings).to eq(["The window is in front, but window-tool step 'dim' could not be run: No such file."])
+    end
+
+    it "leaves out the colon clause when stderr is empty" do
+      allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("dim", 3, ""), step_failure("dim", nil, " \n"))
+
+      command.call("myproject")
+      command.call("myproject")
+
+      expect(command.warnings).to eq(["The window is in front, but window-tool step 'dim' could not be run."])
+      expect(error_output.string).to include("step 'dim' failed (exit 3). Check focus.chain.")
+    end
+
+    it "keeps going after a step failure" do
+      allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("dim", 1, "boom"))
+
+      command.call("myproject", shake: true)
+
+      expect(window_manager).to have_received(:shake_by_id).with(42)
+    end
+
+    it "still selects the pane after a step failure" do
+      tmux = CLITestHelpers::FakeTmuxServer.new("myproject" => [{id: "%3", window: 0, index: 0}])
+      allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("dim", 1, "boom"))
+      with_pane = described_class.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: Workspace::PaneLocator.new(tmux: tmux),
+        focus_config: focus_config, output: output, error_output: error_output)
+
+      with_pane.call("myproject", pane: "%3")
+
+      expect(tmux.selected).to eq([{session: "myproject", id: "%3", window: 0}])
+      expect(with_pane.warnings.size).to eq(1)
+    end
+
+    it "adds a bad config's warning" do
+      allow(focus_config).to receive(:read).and_return(Workspace::FocusConfig::Reading.new(steps, "focus.chain is bad; using the default focus.chain."))
+
+      command.call("myproject")
+
+      expect(command.warnings).to eq(["focus.chain is bad; using the default focus.chain."])
+      expect(error_output.string).to eq("Warning: focus.chain is bad; using the default focus.chain.\n")
+    end
+
+    it "resets warnings on each call" do
+      allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("dim", 1, "boom"), nil)
+
+      command.call("myproject")
+      command.call("myproject")
+
+      expect(command.warnings).to be_empty
+    end
+
+    it "puts the warnings in no_screen_geometry details" do
+      allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("dim", 1, "boom"))
+      allow(window_manager).to receive(:center_window).and_return(false)
+
+      expect { command.call("myproject", center: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("no_screen_geometry")
+        expect(e.details["warnings"]).to eq(command.warnings)
+        expect(e.details["warnings"].size).to eq(1)
+      }
+    end
+
+    it "puts the warnings in focus_failed details" do
+      tmux = CLITestHelpers::FakeTmuxServer.new("myproject" => [{id: "%3", window: 0, index: 0}])
+      tmux.select_ok = false
+      allow(window_manager).to receive(:run_focus_steps).and_return(step_failure("dim", 1, "boom"))
+      with_pane = described_class.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: Workspace::PaneLocator.new(tmux: tmux),
+        focus_config: focus_config, output: output, error_output: error_output)
+
+      expect { with_pane.call("myproject", pane: "%3") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("focus_failed")
+        expect(e.details["warnings"].size).to eq(1)
+      }
+    end
+
+    it "leaves details alone without warnings" do
+      allow(window_manager).to receive(:center_window).and_return(false)
+
+      expect { command.call("myproject", center: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.details).to eq("workspace" => "myproject", "iterm_window_id" => 42)
+      }
+    end
+
+    it "runs the chain for a cycle's target" do
+      liveness = double("liveness", call: {"myproject" => true})
+      allow(window_manager).to receive(:window_ids_front_to_back).and_return([])
+      cycler = described_class.new(state: state, window_manager: window_manager, window_liveness: liveness, focus_config: focus_config,
+        output: output, error_output: error_output)
+
+      cycler.cycle
+
+      expect(window_manager).to have_received(:run_focus_steps).with(42, steps)
     end
   end
 
@@ -166,7 +349,7 @@ RSpec.describe Workspace::Commands::Focus do
     it "focuses the window, then selects the pane, and returns its id" do
       expect(command.call("proj", pane: "1.2")).to eq("%19")
 
-      expect(window_manager).to have_received(:focus_by_id).with(42, highlight: nil)
+      expect(window_manager).to have_received(:focus_by_id).with(42)
       expect(tmux.selected).to eq([{session: "proj", id: "%19", window: 1}])
       expect(output.string).to eq("Focusing proj, pane %19...\n")
     end
@@ -236,7 +419,7 @@ RSpec.describe Workspace::Commands::Focus do
       front.replace([2, 1, 3])
 
       expect(cycler.cycle).to eq("charlie")
-      expect(window_manager).to have_received(:focus_by_id).with(3, highlight: nil)
+      expect(window_manager).to have_received(:focus_by_id).with(3)
     end
 
     it "wraps around past the last" do
@@ -273,10 +456,11 @@ RSpec.describe Workspace::Commands::Focus do
     it "passes shake and highlight on to the focus" do
       front.replace([1])
       allow(window_manager).to receive(:shake_by_id)
+      allow(window_manager).to receive(:highlight_by_id).and_return(true)
 
       cycler.cycle(shake: true, highlight: "blue")
 
-      expect(window_manager).to have_received(:focus_by_id).with(2, highlight: "blue")
+      expect(window_manager).to have_received(:highlight_by_id).with(2, "blue")
       expect(window_manager).to have_received(:shake_by_id).with(2)
     end
 

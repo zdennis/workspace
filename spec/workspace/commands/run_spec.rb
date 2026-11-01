@@ -193,10 +193,12 @@ RSpec.describe Workspace::Commands::Run do
         allow(state).to receive(:load)
         allow(state).to receive(:dig).with("myproject", "iterm_window_id").and_return(42)
         allow(window_manager).to receive(:focus_by_id).and_return(true)
+        allow(window_manager).to receive(:run_focus_steps)
 
         command.call("myproject", "echo hi", focus: true)
 
         expect(window_manager).to have_received(:focus_by_id).with(42, highlight: nil)
+        expect(window_manager).not_to have_received(:run_focus_steps)
       end
 
       it "skips focus when the stored window ID is 0" do
