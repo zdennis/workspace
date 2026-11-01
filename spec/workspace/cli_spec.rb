@@ -2387,7 +2387,7 @@ RSpec.describe Workspace::CLI do
           from_start, from_workflow = workflow_start.calls
           expect(from_start).to eq(id: "rpiv", ref: "PROJ-1", slug: true, inputs: {"task" => "do it"}, base: "main", headless: false, agent_kind: "claude", prompt_timeout: 120)
           expect(from_start).to eq(from_workflow.slice(*from_start.keys))
-          expect(from_workflow.except(*from_start.keys)).to eq(prompt: nil, branch: nil, note: nil, dry_run: false)
+          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false)
           expect(start_command).not_to have_received(:call)
         end
 
