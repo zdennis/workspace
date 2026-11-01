@@ -8867,6 +8867,81 @@ RSpec.describe Workspace::CLI do
       ])
     end
 
+    context "with no view" do
+      let(:known) { instance_double(Workspace::ProjectConfig) }
+      let(:built) { build_test_cli(ui_command: ui_command, project_detector: detector, working_dir: "/some/dir", project_config: known) }
+
+      before do
+        allow(known).to receive(:existing_name) { |word| %w[my-app task].find { |name| name.casecmp?(word) } }
+      end
+
+      it "asks for a workspace outside a project" do
+        allow(detector).to receive(:detect).and_return(nil)
+
+        expect { cli.run(["ui", "open"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("task needs a workspace")
+        expect(ui_command.calls).to be_empty
+      end
+
+      it "opens the task view of the detected project" do
+        cli.run(["ui", "open"])
+
+        expect(ui_command.calls).to eq([{view: "task", workspace: "detected-ws", print_only: false}])
+      end
+
+      it "opens the task view of --name" do
+        cli.run(["ui", "open", "--name", "other"])
+
+        expect(ui_command.calls).to eq([{view: "task", workspace: "other", print_only: false}])
+      end
+
+      it "takes a known workspace word as the workspace, in its on-disk spelling" do
+        cli.run(["ui", "open", "my-app"])
+        cli.run(["ui", "open", "My-App", "--print"])
+
+        expect(ui_command.calls).to eq([
+          {view: "task", workspace: "my-app", print_only: false},
+          {view: "task", workspace: "my-app", print_only: true}
+        ])
+      end
+
+      it "keeps a workspace named like a view reachable as `ui open task task`" do
+        cli.run(["ui", "open", "task", "task"])
+
+        expect(ui_command.calls).to eq([{view: "task", workspace: "task", print_only: false}])
+      end
+
+      it "refuses an unknown word and opens nothing" do
+        expect { cli.run(["ui", "open", "nosuchthing", "--print"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(error_output.string).to include("Unknown view or workspace 'nosuchthing'").and include("task, review, notes")
+        expect(output.string).to eq("")
+        expect(ui_command.calls).to eq([])
+      end
+
+      it "refuses a non-view word given with --name, known or not, and opens nothing" do
+        [["ui", "open", "my-app", "--name", "other"], ["ui", "open", "nosuchthing", "--name", "other"]].each do |argv|
+          expect { cli.run(argv) }.to raise_error(FakeSystemExit), argv.inspect
+          expect(error_output.string).to include("is not a view, and --name already names the workspace")
+        end
+        expect(ui_command.calls).to eq([])
+      end
+
+      it "answers --print --json on the bare form" do
+        cli.run(["ui", "open", "--print", "--json"])
+
+        expect(ui_command.calls).to eq([{view: "task", workspace: "detected-ws", print_only: true}])
+        expect(JSON.parse(output.string)["results"].first).to include("workspace" => "detected-ws", "view" => "task")
+      end
+
+      it "answers an unknown word as the usage envelope under --json" do
+        expect { cli.run(["ui", "open", "nosuchthing", "--json"]) }.to raise_error(FakeSystemExit)
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+        expect(ui_command.calls).to eq([])
+      end
+    end
+
     it "routes notes with a workspace, --name, or the detected workspace" do
       cli.run(["ui", "open", "notes", "app", "--print"])
       cli.run(["ui", "open", "notes", "--name", "other"])
@@ -8981,7 +9056,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "rejects a missing subcommand, missing view and extra arguments as usage errors" do
-      [["ui"], ["ui", "bogus"], ["ui", "open"], ["ui", "open", "task", "a", "b"]].each do |argv|
+      [["ui"], ["ui", "bogus"], ["ui", "open", "task", "a", "b"]].each do |argv|
         expect { cli.run(argv) }.to raise_error(FakeSystemExit), argv.inspect
       end
       expect(ui_command.calls).to eq([])
@@ -9009,7 +9084,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "answers CLI-raised usage errors as the usage envelope under --json" do
-      [["ui", "bogus", "--json"], ["ui", "open", "--json"], ["ui", "--json"]].each do |argv|
+      [["ui", "bogus", "--json"], ["ui", "--json"]].each do |argv|
         output.truncate(0)
         output.rewind
         output.rewind
@@ -9017,6 +9092,11 @@ RSpec.describe Workspace::CLI do
         expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage"), argv.inspect
       end
       allow(detector).to receive(:detect).and_return(nil)
+      output.truncate(0)
+      output.rewind
+      output.rewind
+      expect { cli.run(["ui", "open", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("code" => "usage", "error" => a_string_including("task needs a workspace"))
       output.truncate(0)
       output.rewind
       output.rewind

@@ -5,7 +5,7 @@ Open a view of the workspace UI from a script, an agent or a notification, throu
 ## Usage
 
 ```sh
-workspace ui open task [WORKSPACE] [--print] [--json]
+workspace ui open [task] [WORKSPACE] [--print] [--json]
 workspace ui open review [WORKSPACE] [--print] [--json]
 workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]
 workspace ui open plan [WORKSPACE] [--print] [--json]
@@ -23,7 +23,7 @@ workspace ui open inbox [--print] [--json]
 | `pane WORKSPACE PANE` | `workspace-ui://pane/WORKSPACE/PANE` |
 | `inbox` | `workspace-ui://inbox` |
 
-`WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. `inbox` takes no workspace. `PANE` is a tmux pane id such as `%19`, percent-encoded in the link (`%2519`); anything else is a usage error. With `--name` or a workspace detected from the current directory, `workspace ui open pane %19` is enough. The pane is not checked against tmux: the UI validates it. The name is percent-encoded, so `my-app.worktree-fix` stays as written and a `/` becomes `%2F`; a name with control characters or over 255 characters is a usage error. The command does not check that the workspace exists: the UI validates the target it receives.
+`WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. `inbox` takes no workspace. `PANE` is a tmux pane id such as `%19`, percent-encoded in the link (`%2519`); anything else is a usage error. With `--name` or a workspace detected from the current directory, `workspace ui open pane %19` is enough. The pane is not checked against tmux: the UI validates it. The name is percent-encoded, so `my-app.worktree-fix` stays as written and a `/` becomes `%2F`; a name with control characters or over 255 characters is a usage error. With no view, `ui open` opens the `task` view, and `ui open WORKSPACE` does too when WORKSPACE is not a view but has a config (ignoring case; the on-disk spelling is used); any other word, or a non-view word together with `--name`, is a usage error and nothing opens. A workspace named like a view stays reachable as `ui open task NAME`. With a view given, the command does not check that the workspace exists: the UI validates the target it receives.
 
 | Option | Description |
 |--------|-------------|

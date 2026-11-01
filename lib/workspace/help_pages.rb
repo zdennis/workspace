@@ -1333,7 +1333,7 @@ module Workspace
 
     UI = {
       "open" => {
-        usage: ["ui open task|review|plan [WORKSPACE] [--print] [--json]",
+        usage: ["ui open [task|review|plan] [WORKSPACE] [--print] [--json]",
           "ui open notes [WORKSPACE] [--path REL] [--print] [--json]",
           "ui open pane [WORKSPACE] PANE [--print] [--json]",
           "ui open inbox [--print] [--json]"],
@@ -1347,6 +1347,10 @@ module Workspace
           "  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE",
           "                     (PANE is a tmux pane id such as %19; WORKSPACE may be left out as for the others)",
           "  inbox              workspace-ui://inbox",
+          "",
+          "With no view, `ui open` and `ui open WORKSPACE` open the task view; a word that is neither a view nor a",
+          "workspace with a config is a usage error and nothing opens. Use `ui open task WORKSPACE` for a workspace",
+          "named like a view.",
           "",
           "Without --print this opens the link for the person, so the UI app comes to the front on that view.",
           "A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)",
@@ -1363,6 +1367,7 @@ module Workspace
         examples: [
           ["workspace ui open task my-app", "send the person to my-app's task view (opens the UI app)"],
           ["workspace ui open review my-app.worktree-fix-login", "point the person at the review of one worktree's change"],
+          ["workspace ui open my-app", "shorthand for the task view of the workspace my-app (it must have a config)"],
           ["workspace ui open plan --print", "learn the plan link of the workspace you are in, and open nothing"],
           ["workspace ui open pane my-app %19", "show the person the pane an agent is stuck in"],
           ["workspace ui open task my-app --json", "open from a script; on failure exits 1 with reason open_failed or open_unavailable"]
@@ -1375,8 +1380,9 @@ module Workspace
           "Opens workspace-ui://task/WORKSPACE for the person: the UI app comes to the front on that workspace's",
           "task. Nothing else happens; the link never starts an agent or runs a command. WORKSPACE (or --name)",
           "defaults to the project detected from the current directory; from anywhere else a usage error asks for",
-          "one. The workspace is not checked to exist: the UI validates the link it receives. Without the UI app",
-          "installed `open` fails and the exit status is 1; --print still shows the link."
+          "one. `ui open task WORKSPACE` does not check that the workspace exists: the UI validates the link it",
+          "receives. The shorthand `ui open WORKSPACE` does check: its word must be a view or a workspace with a",
+          "config. Without the UI app installed `open` fails and the exit status is 1; --print still shows the link."
         ],
         hidden: true,
         options: [name_opt("Workspace name"),

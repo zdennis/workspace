@@ -4581,15 +4581,29 @@ module Workspace
       raise UsageError, "Missing subcommand: open.\n\n#{parser.help}" unless subcommand
       raise Error, "ui is not available: no ui command was wired" unless @ui_command
 
-      view = args.shift
-      raise UsageError, "Missing view: one of #{Commands::Ui::VIEWS.keys.join(", ")}.\n\n#{parser.help}" unless view
+      view = nil
+      name = nil
+      if args.empty? || Commands::Ui::VIEWS.key?(args.first)
+        view = args.shift || "task"
+      else
+        # `ui open WORKSPACE` is the task view of a workspace that has a config; any other word is a typo.
+        word = args.first
+        known = options[:name] ? nil : @project_config.existing_name(word)
+        unless known
+          why = options[:name] ? "#{word} is not a view, and --name already names the workspace" : "Unknown view or workspace '#{word}'"
+          raise UsageError, "#{why}: views are #{Commands::Ui::VIEWS.keys.join(", ")}. Run 'workspace ui open --help'."
+        end
+        args.shift
+        view = "task"
+        name = known
+      end
       pane = nil
       if view == Commands::Ui::PANE_VIEW
         # `pane WORKSPACE PANE`; a lone argument is the pane when --name or the current directory names the workspace.
         pane = args.pop if options[:name] || args.size == 1
         pane = args.pop if pane.nil? && args.size == 2
       end
-      name = settle_name(options[:name] || args.shift)
+      name ||= settle_name(options[:name] || args.shift)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace ui --help'." if args.any?
       if Commands::Ui::VIEWS[view]
         name ||= @project_detector.detect(@working_dir)

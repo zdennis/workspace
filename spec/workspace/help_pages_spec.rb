@@ -357,6 +357,12 @@ RSpec.describe Workspace::HelpPages do
   end
 
   describe "ui and event-log pages" do
+    it "shows the view as optional and says a bare word must be a workspace with a config" do
+      page = described_class::UI.fetch("open")
+      expect(page[:usage].first).to start_with("ui open [task|review|plan] [WORKSPACE]")
+      expect(page[:about].join(" ")).to include("a word that is neither a view nor a workspace with a config is a usage error")
+    end
+
     it "keeps the hidden ui open pages out of the ui overview, and prints each on its own" do
       with_cli do |cli, out, *|
         cli.run(%w[ui --help])
