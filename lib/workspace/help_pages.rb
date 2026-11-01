@@ -462,6 +462,24 @@ module Workspace
           ["workspace workflow status --json", "for a script: each run's state, reason and the commands that resolve it"]
         ]
       },
+      "attempts" => {
+        usage: ["workflow attempts RUN [--attempt-of STEP] [--json]"],
+        summary: "Show what a run recorded about each attempt",
+        about: [
+          RUN_ID,
+          "",
+          "A going or finished run, oldest attempt first: step, attempt, outcome, code, HEAD before>after, how long it",
+          "took and the main thread's tokens (in/out). --json adds the agent, session, hashes, packs, outputs, the",
+          "check that ran and each attempt's reasons. A field an older run never recorded is - (null). Waits that no",
+          "attempt owned are listed after the table (unowned_reasons). Reads the run file and writes nothing."
+        ],
+        options: [["--attempt-of STEP", "Only this step's attempts (an unknown step is refused as unknown_step)"], JSON_OPT],
+        examples: [
+          ["workspace workflow attempts RUN", "why a run took seven resumes: each attempt, how it ended and what it cost"],
+          ["workspace workflow attempts RUN --attempt-of implement", "only the implement step's attempts"],
+          ["workspace workflow attempts RUN --json", "for a script: one row per attempt, with sessions, hashes and reasons"]
+        ]
+      },
       "events" => {
         usage: ["workflow events RUN [--since N] [--json]"],
         summary: "Show a run's history, one line per event",

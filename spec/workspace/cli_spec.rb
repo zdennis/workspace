@@ -6994,6 +6994,12 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls).to eq([])
     end
 
+    it "lists a run's attempts, of one step" do
+      cli.run(["workflow", "attempts", "wr_1", "--attempt-of", "plan", "--json"])
+
+      expect(workflow_command.calls).to eq([[:attempts, {run: "wr_1", step: "plan", json: true}]])
+    end
+
     it "lists a run's files" do
       cli.run(["workflow", "files", "wr_1", "--json"])
 
@@ -7324,11 +7330,13 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "files"] => /workflow files needs a RUN id/,
+        ["workflow", "attempts"] => /workflow attempts needs a RUN id/,
+        ["workflow", "files", "wr_1", "--attempt-of", "plan"] => /--attempt-of is for `workflow attempts RUN`/,
         ["workflow", "show", "--source"] => /workflow show --source needs an ID/,
         ["workflow", "status", "--source"] => /--source is for `workflow show ID`/,
         ["workflow", "run"] => /workflow run needs an ID/,

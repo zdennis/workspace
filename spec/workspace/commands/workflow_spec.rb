@@ -1673,6 +1673,193 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#attempts" do
+    around do |example|
+      Dir.mktmpdir("wf-attempts") do |dir|
+        @runs = File.join(dir, "runs")
+        @archive = File.join(dir, "archive")
+        example.run
+      end
+    end
+
+    let(:real_store) { Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: @archive, id_generator: -> { "wr_2611010900abcd" }) }
+    let(:attempts_command) do
+      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, attempts: Workspace::WorkflowAttempts.new, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+    end
+    let(:attempt_one) do
+      {"n" => 1, "started_at" => "2026-11-01T09:00:00Z", "ended_at" => "2026-11-01T09:02:05Z", "outcome" => "failed", "code" => "require_commits",
+       "head" => {"before" => "4f2a91c" + "0" * 33, "after" => "4f2a91c" + "0" * 33}, "usage" => {"input_tokens" => 412000, "output_tokens" => 18300},
+       "check" => {"command" => "bin/test", "log" => "/x.log", "exit_code" => 1}, "reasons" => [{"code" => "turn_ended_incomplete", "since" => "a", "until" => "b"}]}
+    end
+
+    def create_run(extra = {})
+      real_store.create({"workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "implement",
+                         "definition" => {"steps" => [{"id" => "plan"}, {"id" => "implement"}]},
+                         "steps" => {"plan" => {"attempts" => []}, "implement" => {"state" => "running", "attempts" => [attempt_one, {"n" => 2, "started_at" => "2026-11-01T09:05:00Z"}]}}}.merge(extra))
+    end
+
+    it "prints one table row per attempt" do
+      create_run
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines.map(&:rstrip)).to eq([
+        "STEP       ATTEMPT  OUTCOME  CODE             HEAD             DURATION  TOKENS",
+        "implement  1        failed   require_commits  4f2a91c>4f2a91c  125s      412000/18300",
+        "implement  2        -        -                ->-              -         -"
+      ])
+    end
+
+    it "prints the documented fields as JSON, with an old attempt's missing keys null" do
+      create_run
+
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("schema_version" => 1, "ok" => true, "run" => "wr_2611010900abcd", "unowned_reasons" => [])
+      expect(doc["attempts"][0]).to include("step" => "implement", "attempt" => 1, "outcome" => "failed", "code" => "require_commits",
+        "check" => {"command" => "bin/test", "log" => "/x.log", "exit_code" => 1}, "usage" => {"input_tokens" => 412000, "output_tokens" => 18300},
+        "reasons" => [{"code" => "turn_ended_incomplete", "since" => "a", "until" => "b"}])
+      expect(doc["attempts"][1]).to include("attempt" => 2, "outcome" => nil, "code" => nil, "agent" => nil, "session" => nil, "head" => nil, "packs" => nil, "outputs" => nil, "usage" => nil, "reasons" => nil)
+    end
+
+    it "reads a run that finished and was archived" do
+      create_run
+      real_store.update("wr_2611010900abcd") { |run| run.merge!("state" => "completed", "ended_at" => "2026-11-01T10:00:00Z") }
+
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["attempts"].size).to eq(2)
+      expect(File.exist?(File.join(@archive, "wr_2611010900abcd.json"))).to be(true)
+    end
+
+    it "limits to one step and keeps that step's unowned reasons" do
+      create_run("reasons" => [{"step" => "plan", "code" => "waiting_lock", "since" => "s", "until" => "u"}, {"step" => "implement", "code" => "waiting_lock", "since" => "t", "until" => nil}])
+
+      attempts_command.attempts(run: "wr_2611010900abcd", step: "implement", json: true)
+
+      doc = JSON.parse(output.string)
+      expect(doc["unowned_reasons"]).to eq([{"step" => "implement", "code" => "waiting_lock", "since" => "t", "until" => nil}])
+      attempts_command.attempts(run: "wr_2611010900abcd", step: "plan")
+      expect(output.string).to include("No attempts recorded for wr_2611010900abcd step plan.", "Reason outside any attempt: plan  waiting_lock  s  u")
+    end
+
+    it "escapes stored text in the table" do
+      create_run
+      real_store.update("wr_2611010900abcd") { |run| run["steps"]["implement"]["attempts"][0]["code"] = "x\e[2Jy" }
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string).not_to include("\e")
+      expect(output.string).to include("x\\e[2Jy")
+    end
+
+    it "refuses an unknown step with unknown_step and an unknown run with unknown_run" do
+      create_run
+
+      expect { attempts_command.attempts(run: "wr_2611010900abcd", step: "nope") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_step")
+        expect(e.details).to include("steps" => %w[plan implement])
+      }
+      expect { attempts_command.attempts(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+
+    def json_attempts(run_id = "wr_2611010900abcd")
+      attempts_command.attempts(run: run_id, json: true)
+      JSON.parse(output.string)["attempts"]
+    end
+
+    it "orders interleaved attempts by start time, and a same-second tie by step then attempt number" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan",
+        "definition" => {"steps" => [{"id" => "plan"}, {"id" => "implement"}]},
+        "steps" => {"plan" => {"attempts" => [{"n" => 1, "started_at" => "2026-11-01T09:00:00Z"}, {"n" => 3, "started_at" => "2026-11-01T09:20:00Z"},
+          {"n" => 4, "started_at" => "2026-11-01T09:30:00Z"}]},
+                    "implement" => {"attempts" => [{"n" => 2, "started_at" => "2026-11-01T09:10:00Z"}, {"n" => 1, "started_at" => "2026-11-01T09:30:00Z"}]}})
+
+      expect(json_attempts.map { |row| [row["step"], row["attempt"]] }).to eq([["plan", 1], ["implement", 2], ["plan", 3], ["plan", 4], ["implement", 1]])
+    end
+
+    it "orders a same-second tie by step index, then attempt number" do
+      stamp = "2026-11-01T09:00:00Z"
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan",
+        "definition" => {"steps" => [{"id" => "plan"}, {"id" => "implement"}]},
+        "steps" => {"plan" => {"attempts" => [{"n" => 2, "started_at" => stamp}, {"n" => 1, "started_at" => stamp}]}, "implement" => {"attempts" => [{"n" => 1, "started_at" => stamp}]}})
+
+      expect(json_attempts.map { |row| [row["step"], row["attempt"]] }).to eq([["plan", 1], ["plan", 2], ["implement", 1]])
+    end
+
+    it "shows the end fields of a cancelled run's open attempt, and a resumed attempt's two reasons" do
+      create_run
+      real_store.update("wr_2611010900abcd") do |run|
+        run["steps"]["implement"]["attempts"][1].merge!("head" => {"before" => "a" * 40, "after" => "b" * 40}, "outputs" => [{"file" => "x.md", "sha256" => nil, "bytes" => nil}],
+          "reasons" => [{"code" => "waiting_lock", "since" => "s1", "until" => "u1"}, {"code" => "turn_ended_incomplete", "since" => "s2", "until" => nil}])
+        run.merge!("state" => "cancelled", "ended_at" => "2026-11-01T10:00:00Z")
+      end
+
+      row = json_attempts.last
+      expect(row).to include("attempt" => 2, "outcome" => nil, "ended_at" => nil, "head" => {"before" => "a" * 40, "after" => "b" * 40},
+        "outputs" => [{"file" => "x.md", "sha256" => nil, "bytes" => nil}])
+      expect(row["reasons"].map { |reason| reason["code"] }).to eq(%w[waiting_lock turn_ended_incomplete])
+    end
+
+    it "carries check.log, reported and proofs" do
+      create_run
+      real_store.update("wr_2611010900abcd") do |run|
+        run["steps"]["implement"]["attempts"][0].merge!("reported" => {"status" => "fail", "code" => "x"}, "proofs" => [{"proof" => "command", "exit_code" => 0}])
+      end
+
+      row = json_attempts.first
+      expect(row).to include("reported" => {"status" => "fail", "code" => "x"}, "proofs" => [{"proof" => "command", "exit_code" => 0}])
+      expect(row["check"]).to include("log" => "/x.log")
+    end
+
+    it "prints every key as null for a bare attempt, a non-hash check as null, and falls back to the stored steps without a definition" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "a", "definition" => {"steps" => [{"id" => "a"}]},
+        "steps" => {"a" => {"attempts" => [{"n" => 1}, {"n" => 2, "check" => "x"}]}})
+      rows = json_attempts
+      expect(rows[0].except("step", "attempt").values).to all(be_nil)
+      expect(rows[0].keys).to include("agent", "session", "head", "definition_sha256", "prompt_sha256", "packs", "outputs", "check", "usage", "reasons", "reported", "proofs", "code", "outcome")
+      expect(rows[1]["check"]).to be_nil
+
+      stored = real_store.find("wr_2611010900abcd")
+      stored.delete("definition")
+      expect(Workspace::WorkflowAttempts.new.read(stored)["attempts"].map { |row| row["step"] }).to eq(%w[a a])
+    end
+
+    it "lists a step the definition no longer names, and accepts it for --attempt-of" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "a", "definition" => {"steps" => [{"id" => "a"}]},
+        "steps" => {"a" => {"attempts" => []}, "old" => {"attempts" => [{"n" => 1, "started_at" => "2026-11-01T09:00:00Z"}]}})
+
+      expect(json_attempts.map { |row| row["step"] }).to eq(["old"])
+      output.truncate(0)
+      output.rewind
+      attempts_command.attempts(run: "wr_2611010900abcd", step: "old", json: true)
+      expect(JSON.parse(output.string)["attempts"].size).to eq(1)
+    end
+
+    it "prints - for a missing attempt number and cuts a long code in the table only" do
+      long = "c" * 100
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "a", "definition" => {"steps" => [{"id" => "a"}]},
+        "steps" => {"a" => {"attempts" => [{"code" => long}]}})
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+      cells = output.string.lines.last.split
+      expect(cells[1]).to eq("-")
+      expect(cells[3]).to eq("#{"c" * 39}~")
+      output.truncate(0)
+      output.rewind
+      expect(json_attempts.first["code"]).to eq(long)
+    end
+
+    it "prints a run with a bare steps record without failing" do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "a", "definition" => {"steps" => [{"id" => "a"}]}, "steps" => {"a" => {"attempts" => [{"n" => 1}]}})
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines.last.split).to eq(%w[a 1 - - ->- - -])
+    end
+  end
+
   describe "#events" do
     around do |example|
       Dir.mktmpdir("wf-events") do |dir|

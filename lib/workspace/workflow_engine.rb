@@ -1001,6 +1001,7 @@ module Workspace
     def not_delivered(run, state, attempt, kick)
       attempt&.delete("delivery")
       attempt&.merge!("ended_at" => now_iso, "outcome" => "not_delivered")
+      attempt["code"] = kick[:code].to_s if attempt && kick[:code]
       # The next attempt is told what this one would have been.
       run["pending_context"] = attempt["context"] + run["pending_context"] if attempt
       release(run)
@@ -1406,6 +1407,7 @@ module Workspace
       attempt = state["attempts"].last
       attempt["ended_at"] = now_iso
       attempt["outcome"] = "failed"
+      attempt["code"] = failure["code"] if failure["code"].is_a?(String)
       @attempt_record.finish(run: run, step: step, attempt: attempt)
       state["state"] = "failed"
       event(run, "step_failed", {"step" => step["id"], "attempt" => attempt["n"]}.merge(failure.slice("cause", "exit_code")))

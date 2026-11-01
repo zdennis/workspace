@@ -308,6 +308,7 @@ require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_require"
 require_relative "workspace/workflow_produced"
 require_relative "workspace/workflow_attempt_record"
+require_relative "workspace/workflow_attempts"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
@@ -625,6 +626,7 @@ module Workspace
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
       run_files: WorkflowRunFiles.new,
+      attempts: WorkflowAttempts.new,
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,

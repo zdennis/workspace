@@ -812,7 +812,7 @@ RSpec.describe Workspace::WorkflowEngine do
       check_results << {exit_code: 1, timed_out: false}
       engine.turn_ended("wr_1", pane: "%5")
 
-      expect(attempt).to include("outcome" => "failed", "head" => {"before" => "1" * 40, "after" => "1" * 40})
+      expect(attempt).to include("outcome" => "failed", "code" => "check_failed", "head" => {"before" => "1" * 40, "after" => "1" * 40})
       expect(attempt["outputs"].first).to include("file" => "plan.md", "bytes" => 5)
     end
 
@@ -902,6 +902,7 @@ RSpec.describe Workspace::WorkflowEngine do
       start(ledger_flow, inputs: {})
 
       expect(attempt["outcome"]).to eq("not_delivered")
+      expect(attempt["code"]).to eq("not_delivered")
       expect(attempt).not_to include("outputs")
       expect(attempt["head"]).to eq("before" => "1" * 40, "after" => nil)
     end
@@ -1106,9 +1107,18 @@ RSpec.describe Workspace::WorkflowEngine do
         run = engine.turn_ended("wr_1", pane: "%5")
 
         expect(run).to include("current" => "prep", "loops" => {"build->prep" => 1})
-        expect(run["steps"]["build"]["attempts"].last).to include("outcome" => "failed")
+        expect(run["steps"]["build"]["attempts"].last).to include("outcome" => "failed", "code" => "require_commits")
         expect(run["steps"]["prep"]["attempts"].last["context"].join).to include("a required proof failed (commits): required 1 commit since 1111111, found 0")
         expect(check_calls).to eq([])
+      end
+
+      it "keeps the failed attempt's code when the retry begins, and the retry has none" do
+        commit_counts[0] = 0
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["steps"]["build"]["attempts"].last["code"]).to eq("require_commits")
+        expect(run["steps"]["prep"]["attempts"].last).not_to have_key("code")
       end
 
       it "stops the run with the code, source and what was found when no loop is left" do

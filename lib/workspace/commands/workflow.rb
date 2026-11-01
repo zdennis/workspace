@@ -27,6 +27,7 @@ module Workspace
       # @param panes [Workspace::WorkflowPanes]
       # @param files [Workspace::WorkflowFiles] writes a user's definitions (`add`)
       # @param run_files [Workspace::WorkflowRunFiles] lists a run's files (`files`)
+      # @param attempts [Workspace::WorkflowAttempts, nil] reads a run's recorded attempts (`attempts`)
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -35,7 +36,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, pid: Process.pid,
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -44,6 +45,7 @@ module Workspace
         @catalog = catalog
         @files = files
         @run_files = run_files
+        @attempts = attempts
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -287,6 +289,29 @@ module Workspace
         end
       end
 
+      # Prints the attempts a run recorded, going or finished, oldest first. Reads the
+      # run file and writes nothing; a key an old run never recorded is `null`.
+      #
+      # @param run [String] a run id
+      # @param step [String, nil] only this step's attempts
+      # @param json [Boolean]
+      # @return [void]
+      # @raise [Workspace::Error] code `unknown_run`, or `unknown_step` for a +step+ the run doesn't have
+      def attempts(run:, step: nil, json: false)
+        raise Workspace::Error, "workflow attempts is not available: no attempts reader was wired" unless @attempts
+        result = @attempts.read(@store.find(run), step: step)
+        return document("run" => run, "attempts" => result["attempts"], "unowned_reasons" => result["unowned_reasons"]) if json
+        @output.puts "No attempts recorded for #{run}#{" step #{TerminalText.escape(step)}" if step}." if result["attempts"].empty?
+        unless result["attempts"].empty?
+          table = [%w[STEP ATTEMPT OUTCOME CODE HEAD DURATION TOKENS]] + result["attempts"].map { |each| attempt_cells(each) }
+          widths = table.transpose.map { |column| column.map(&:length).max }
+          table.each { |cells| @output.puts cells.each_with_index.map { |cell, index| cell.ljust(widths[index]) }.join("  ").rstrip }
+        end
+        result["unowned_reasons"].each do |reason|
+          @output.puts "Reason outside any attempt: #{[reason["step"], reason["code"], reason["since"], reason["until"] || "now"].map { |each| TerminalText.escape(each) }.join("  ")}"
+        end
+      end
+
       # Gets a run going again. Everything the engine would refuse is refused
       # first; only then is a daemon started or a pane picked.
       #
@@ -455,6 +480,29 @@ module Workspace
       end
 
       private
+
+      # One text row of `attempts`: step, attempt, outcome, code, head, duration, tokens.
+      def attempt_cells(row)
+        head = row["head"].is_a?(Hash) ? row["head"] : {}
+        heads = [head["before"], head["after"]].map { |sha| sha.is_a?(String) ? sha[0, 7] : "-" }
+        usage = row["usage"].is_a?(Hash) ? row["usage"] : nil
+        tokens = usage ? "#{usage["input_tokens"]}/#{usage["output_tokens"]}" : "-"
+        [row["step"], row["attempt"] || "-", row["outcome"] || "-", attempt_code(row["code"]), heads.join(">"), attempt_duration(row), tokens].map { |cell| TerminalText.escape(cell) }
+      end
+
+      # The code as the table shows it: an agent-reported code has no length limit.
+      def attempt_code(code)
+        return "-" if code.nil?
+        text = TerminalText.escape(code)
+        (text.length > 40) ? "#{text[0, 39]}~" : text
+      end
+
+      def attempt_duration(row)
+        seconds = Time.iso8601(row["ended_at"].to_s) - Time.iso8601(row["started_at"].to_s)
+        (seconds >= 0) ? "#{seconds.round}s" : "-"
+      rescue ArgumentError
+        "-"
+      end
 
       PRODUCES_PROBLEMS = {"symlink" => "a link; write a regular file", "not_regular_file" => "not a regular file", "empty" => "empty; write its content"}.freeze
 
