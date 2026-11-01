@@ -517,7 +517,7 @@ RSpec.describe Workspace::ShellInit do
 
       it "narrows by prefix" do
         expect(bash_tab(["workspace", "wor"])).to eq(%w[workflow])
-        expect(bash_tab(%w[workspace workflow st])).to eq(%w[start status])
+        expect(bash_tab(%w[workspace workflow st])).to eq(%w[start status stats])
       end
 
       it "offers the workflow verbs" do
@@ -556,7 +556,7 @@ RSpec.describe Workspace::ShellInit do
       end
 
       it "narrows by prefix and offers the workflow verbs" do
-        expect(zsh_tab(%w[workspace workflow st])).to eq(["add start", "add status", "rc=0"])
+        expect(zsh_tab(%w[workspace workflow st])).to eq(["add start", "add status", "add stats", "rc=0"])
         expect(zsh_tab(["workspace", "workflow", ""])).to eq(verbs.map { |w| "add #{w}" } + ["rc=0"])
       end
 
