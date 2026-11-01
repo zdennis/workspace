@@ -64,7 +64,7 @@ Attempts are not listed in `workflow status --json`; `workflow attempts RUN --js
 
 `worktree`, the checkout path stored with the run (or `null`), is on every row of `workflow status --json` and on the `run` object of every `workflow` action document. Both need `workflow` 10.
 
-`workflow validate --json` adds a top-level `warnings` array beside `workflow` (empty when there are none). Each entry is `{"code":"step_without_proof","step":STEP_ID,"message":TEXT}`: a step with no `produces`, `status`, `require` or `gate` passes on any turn end. Warning codes are an open set: callers ignore codes they do not know. Only `workflow validate` reports warnings; `show`, `start` and `run` do not. A warning is not an error code: `ok` stays `true` and the exit code 0. See [Validating a definition](README.workflow.md#validating-a-definition).
+`workflow validate --json` adds a top-level `warnings` array beside `workflow` (empty when there are none). Each entry is `{"code":CODE,"step":STEP_ID,"message":TEXT}`. `step_without_proof`: a step with no `produces`, `status`, `require` or `gate` passes on any turn end. `on_timeout_without_timeout`: a step sets `on_timeout: interrupt` or `fail` with no `timeout`. Warning codes are an open set: callers ignore codes they do not know. Only `workflow validate` reports warnings; `show`, `start` and `run` do not. A warning is not an error code: `ok` stays `true` and the exit code 0. See [Validating a definition](README.workflow.md#validating-a-definition).
 
 ## Snapshot
 

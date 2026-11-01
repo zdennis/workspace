@@ -21,8 +21,12 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts steps].freeze
-    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout].freeze
+    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts stall steps].freeze
+    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout].freeze
+
+    # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
+    ON_TIMEOUT_ACTIONS = %w[warn interrupt fail].freeze
+    DEFAULT_ON_TIMEOUT = "warn"
     INPUT_PATTERN_LIMIT = 300
     INPUT_KEYS = %w[description required pattern].freeze
     ON_FAIL_KEYS = %w[goto max context].freeze
@@ -121,10 +125,33 @@ module Workspace
     #
     # @return [Array<Hash{String=>String}>] each with "code" (`step_without_proof`), "step" (the step id) and "message"
     def warnings
-      steps.reject { |step| proof?(step) }.map do |step|
+      missing = steps.reject { |step| proof?(step) }.map do |step|
         {"code" => "step_without_proof", "step" => step["id"],
          "message" => "step #{step["id"]} has no produces, status, require or gate, so it passes on any turn end, even one that did nothing. Add produces: (a file it must write), require: (proofs about the repository), status: (a command that must pass) or gate: approve (a person approves it)."}
       end
+      idle = steps.select { |step| step["timeout"].nil? && step["on_timeout"] != DEFAULT_ON_TIMEOUT }.map do |step|
+        {"code" => "on_timeout_without_timeout", "step" => step["id"],
+         "message" => "step #{step["id"]} sets on_timeout: #{step["on_timeout"]} but has no timeout:, so it never applies. Add timeout: (such as 2h) or remove on_timeout."}
+      end
+      missing + idle
+    end
+
+    # The `on_timeout` of a step hash. A definition stored before the key existed has none and reads as `warn`.
+    #
+    # @param step [Hash] a step of {#to_h}, or of a stored run's definition
+    # @return [String] one of {ON_TIMEOUT_ACTIONS}
+    def self.on_timeout(step)
+      value = step.is_a?(Hash) ? step["on_timeout"] : nil
+      ON_TIMEOUT_ACTIONS.include?(value) ? value : DEFAULT_ON_TIMEOUT
+    end
+
+    # The `stall` of a definition hash: seconds of silence that count as a stall; nil when unset, or in a definition stored before the key existed.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Numeric, nil] seconds; nil unless a positive number
+    def self.stall(definition)
+      value = definition.is_a?(Hash) ? definition["stall"] : nil
+      (value.is_a?(Numeric) && value.finite? && value > 0) ? value : nil
     end
 
     private
@@ -179,6 +206,7 @@ module Workspace
         "include" => names(raw["include"], "include"),
         "instructions" => instructions,
         "max_attempts" => max_attempts,
+        "stall" => duration_from(raw["stall"], "stall"),
         "steps" => steps_from(raw["steps"], inputs)
       }
     end
@@ -271,7 +299,8 @@ module Workspace
         "uses" => uses_from(raw["uses"], where),
         "on_fail" => on_fail_from(raw["on_fail"], earlier, where),
         "context" => context_from(raw.fetch("context", "fresh"), "#{where}: context"),
-        "timeout" => duration_from(raw["timeout"], "#{where}: timeout")
+        "timeout" => duration_from(raw["timeout"], "#{where}: timeout"),
+        "on_timeout" => on_timeout_from(raw.fetch("on_timeout", DEFAULT_ON_TIMEOUT), where)
       }
     end
 
@@ -328,6 +357,12 @@ module Workspace
       end
       run = text_or_nil(value["run"], "#{where}: status run")
       run && {"run" => run, "timeout" => timeout}
+    end
+
+    def on_timeout_from(value, where)
+      return value if ON_TIMEOUT_ACTIONS.include?(value)
+      problem "#{where}: on_timeout must be #{ON_TIMEOUT_ACTIONS.join(", ")}, got #{value.inspect[0, 60]}"
+      DEFAULT_ON_TIMEOUT
     end
 
     def gate_from(value, where)

@@ -16,6 +16,65 @@ RSpec.describe Workspace::WorkflowDefinition do
 
   let(:minimal) { "steps:\n  build:\n    prompt: Build it.\n" }
 
+  describe "stall and on_timeout" do
+    it "reads stall as seconds and on_timeout as a word, with warn and unset as defaults" do
+      definition = parse("stall: 20m\nsteps:\n  a:\n    prompt: P\n    timeout: 2h\n    on_timeout: interrupt\n  b:\n    prompt: P\n")
+      expect(definition.to_h["stall"]).to eq(1200.0)
+      expect(definition.steps.map { |step| described_class.on_timeout(step) }).to eq(%w[interrupt warn])
+      expect(described_class.stall(parse(minimal).to_h)).to be_nil
+    end
+
+    it "reads an old stored definition without the keys as warn and unset" do
+      expect(described_class.on_timeout({"id" => "a"})).to eq("warn")
+      expect(described_class.stall({"steps" => []})).to be_nil
+    end
+
+    it "reads nil, an old hash or an invalid stored value as the default" do
+      expect(described_class.on_timeout(nil)).to eq("warn")
+      expect(described_class.on_timeout({"on_timeout" => "stop"})).to eq("warn")
+      expect(described_class.on_timeout({"on_timeout" => 5})).to eq("warn")
+      expect(described_class.stall(nil)).to be_nil
+      expect(described_class.stall({"stall" => 0})).to be_nil
+      expect(described_class.stall({"stall" => -3})).to be_nil
+      expect(described_class.stall({"stall" => "20m"})).to be_nil
+      expect(described_class.stall({"stall" => 30.0})).to eq(30.0)
+    end
+
+    {"stall: 0" => /\Astall: /, "stall: -1" => /\Astall: /, "stall: 20" => nil, "stall: ~" => nil}.each do |line, bad|
+      it "treats #{line} as #{bad ? "a problem" : "valid"}" do
+        found = problems("#{line}\nsteps:\n  a:\n    prompt: P\n")
+        if bad
+          expect(found.grep(bad).size).to eq(1)
+        else
+          expect(found).to eq([])
+        end
+      end
+    end
+
+    {"on_timeout: ~" => "nil", "on_timeout: 5" => "5"}.each do |line, shown|
+      it "refuses #{line}" do
+        expect(problems("steps:\n  a:\n    prompt: P\n    timeout: 1h\n    #{line}\n"))
+          .to eq(["step a: on_timeout must be warn, interrupt, fail, got #{shown}"])
+      end
+    end
+
+    it "warns for interrupt with no timeout and not for fail with one" do
+      expect(parse("steps:\n  a:\n    prompt: P\n    gate: approve\n    on_timeout: interrupt\n").warnings.map { |w| w["code"] }).to eq(["on_timeout_without_timeout"])
+      expect(parse("steps:\n  a:\n    prompt: P\n    gate: approve\n    timeout: 1h\n    on_timeout: fail\n").warnings).to eq([])
+    end
+
+    it "lists bad values as problems" do
+      found = problems("stall: soon\nsteps:\n  a:\n    prompt: P\n    timeout: 1h\n    on_timeout: stop\n")
+      expect(found).to include("step a: on_timeout must be warn, interrupt, fail, got \"stop\"")
+      expect(found.grep(/\Astall: expected a duration/).size).to eq(1)
+    end
+
+    it "warns when on_timeout is interrupt or fail and the step has no timeout" do
+      yaml = "steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    on_timeout: fail\n  b:\n    prompt: P\n    produces: [b.md]\n    on_timeout: warn\n"
+      expect(parse(yaml).warnings).to match([include("code" => "on_timeout_without_timeout", "step" => "a")])
+    end
+  end
+
   describe "#warnings" do
     def warnings(yaml) = parse(yaml).warnings
 
@@ -103,9 +162,9 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(definition.sha256).to eq(Digest::SHA256.hexdigest(minimal))
     expect(definition.to_h).to eq(
       "id" => "demo", "title" => "demo", "description" => nil, "inputs" => {}, "include" => [], "instructions" => nil,
-      "max_attempts" => 6,
+      "max_attempts" => 6, "stall" => nil,
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
-                   "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil}]
+                   "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn"}]
     )
   end
 
@@ -214,7 +273,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, stall, steps)",
       "schema_version must be 1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
@@ -223,7 +282,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",
