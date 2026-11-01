@@ -17,7 +17,7 @@ If a row matches, load that skill now, before running anything.
 |---|---|
 | Message, queue for, or ask another agent in a pane; type a command into a pane and wait (`run`); hand off when context is full; bind a pane | skill `workspace-agent-run` |
 | Leave something for the person; record a question when running unattended | skill `workspace-inbox` |
-| Start, launch (open a project's panes in iTerm), promote, restore, stop, finish, kill, prune, remove, clean up | skill `workspace-lifecycle` |
+| Start, `go` (start a workflow from a ref or text), launch (open a project's panes in iTerm), promote, restore, stop, finish, kill, prune, remove, clean up | skill `workspace-lifecycle` |
 | Anything else | `Everything else`, below |
 
 ## Where am I
