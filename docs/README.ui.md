@@ -16,15 +16,15 @@ workspace ui status [--json]
 
 | View | Link |
 |------|------|
-| `task WORKSPACE` | `workspace-ui://task/WORKSPACE` |
+| `task WORKSPACE` | `workspace-ui://task/WORKSPACE` (the workspace's default view) |
 | `review WORKSPACE` | `workspace-ui://review/WORKSPACE` |
 | `notes WORKSPACE` | `workspace-ui://notes/WORKSPACE` |
 | `notes WORKSPACE --path REL` | `workspace-ui://notes/WORKSPACE/REL` |
-| `plan WORKSPACE` | `workspace-ui://plan/WORKSPACE` |
+| `plan WORKSPACE` | `workspace-ui://plan/WORKSPACE` (the same workspace view as `task`, which holds the plan; there is no plan page, and the two share a tab) |
 | `pane WORKSPACE PANE` | `workspace-ui://pane/WORKSPACE/PANE` |
 | `inbox` | `workspace-ui://inbox` |
 
-`WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. `inbox` takes no workspace. `PANE` is a tmux pane id such as `%19`, percent-encoded in the link (`%2519`); anything else is a usage error. With `--name` or a workspace detected from the current directory, `workspace ui open pane %19` is enough. The pane is not checked against tmux: the UI validates it. The name is percent-encoded, so `my-app.worktree-fix` stays as written and a `/` becomes `%2F`; a name with control characters or over 255 characters is a usage error. With no view, `ui open` opens the `task` view, and `ui open WORKSPACE` does too when WORKSPACE is not a view but has a config (ignoring case; the on-disk spelling is used); any other word, or a non-view word together with `--name`, is a usage error and nothing opens. A workspace named like a view stays reachable as `ui open task NAME`. With a view given, the command does not check that the workspace exists: the UI validates the target it receives.
+`WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. `inbox` takes no workspace. `PANE` is a tmux pane id such as `%19`, percent-encoded in the link (`%2519` is the intended encoding of pane `%19`); anything else is a usage error. A pane link needs an app that declares link revision 1 or later (`ui status`; a null revision means unknown, not old), and it goes stale when the pane closes. With `--name` or a workspace detected from the current directory, `workspace ui open pane %19` is enough. The pane is not checked against tmux: the UI validates it. The name is percent-encoded, so `my-app.worktree-fix` stays as written and a `/` becomes `%2F`; a name with control characters or over 255 characters is a usage error. The app takes a name of at most 128 characters of `A-Z a-z 0-9 . _ -`, starting with a letter or digit, with no `..`. A longer or otherwise different name is encoded and sent, and the app shows "Couldn't open the link"; `open` still exits 0, since the exit status only says the app received the link. With no view, `ui open` opens the `task` view, and `ui open WORKSPACE` does too when WORKSPACE is not a view but has a config (ignoring case; the on-disk spelling is used); any other word, or a non-view word together with `--name`, is a usage error and nothing opens. A workspace named like a view stays reachable as `ui open task NAME`. With a view given, the command does not check that the workspace exists: the UI validates the target it receives.
 
 | Option | Description |
 |--------|-------------|
@@ -33,7 +33,7 @@ workspace ui status [--json]
 | `--print` | Print the link and open nothing |
 | `--json` | Print one action document |
 
-`--path` names a note by its path inside the workspace's notes directory (`workspace notes dir`). Workspace checks it first: up to 4 segments of ASCII letters, digits, dot, hyphen and underscore (no space, no leading dot, no `node_modules`), ending in `.md` or `.markdown`, no symlink along the way, and the file must exist with exactly that case. A note with a space or a non-ASCII character in its name cannot be linked until you rename it. The UI accepts more than this and checks again when it opens the note. Nothing is encoded, since every allowed character is plain in a link. A refused path is an `invalid_note_path` error (exit 1; `details.workspace`, `details.path` cut to 200 characters, `details.reason`); `--path` on any other view is a usage error.
+`--path` names a note by its path inside the workspace's notes directory (`workspace notes dir`). Workspace checks it first: up to 4 segments of ASCII letters, digits, dot, hyphen and underscore (no space, no leading dot, no `node_modules`), ending in `.md` or `.markdown`, no symlink along the way, and the file must exist with exactly that case. A note with a space or a non-ASCII character in its name cannot be linked until you rename it. Nothing is encoded, since every allowed character is plain in a link. A refused path is an `invalid_note_path` error (exit 1; `details.workspace`, `details.path` cut to 200 characters, `details.reason`); `--path` on any other view is a usage error.
 
 A link only opens a view. It never starts an agent or runs a command, so nothing in `workspace ui open` changes workspace state.
 

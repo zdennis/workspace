@@ -55,7 +55,7 @@ In a plain git repository that is not a workspace (`workspace lookup .` exits 1)
 
 Other commands, in short:
 - `workspace run [WS] "cmd"` types a shell command into a pane of a running workspace. It types into a live pane, so name the workspace.
-- `workspace ui open task|review|plan|notes|pane|inbox` opens a `workspace-ui://` link for the person. `--print` shows the link and opens nothing.
+- `workspace ui open [task|review|plan] | notes | pane | inbox` opens a `workspace-ui://` link for the person. `--print` shows the link and opens nothing. `workspace ui status` says which app would take a link; print the link instead of opening it when it reports no handler.
 - `workspace snapshot --json` prints everything the UI polls as one document. `--json` is required.
 - `workspace projects list|show|members` groups workspaces by repository. `projects stop` and `projects kill` end workspaces: see the safety table.
 - `workspace deactivate` sends Ctrl-C to the agent pane and interrupts running work. Ask first.

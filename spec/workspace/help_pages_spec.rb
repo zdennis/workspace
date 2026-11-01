@@ -363,6 +363,27 @@ RSpec.describe Workspace::HelpPages do
       expect(page[:about].join(" ")).to include("a word that is neither a view nor a workspace with a config is a usage error")
     end
 
+    it "says plan opens the workspace view that holds the plan, shared with task" do
+      text = described_class::UI.fetch("open")[:about].join(" ")
+      expect(text).to include("opens the same workspace view as task, which holds the plan")
+      expect(text).to include("there is no plan page, and task and plan share one tab")
+      expect(text).to include("the workspace's default view")
+    end
+
+    it "states the note path characters and segments in the overview" do
+      text = described_class::UI.fetch("open")[:about].join(" ")
+      expect(text).to include("A note path (--path REL) uses the characters A-Z a-z 0-9 . _ - in one to four segments.")
+    end
+
+    it "states the app's name limit and that open still exits 0 for a name it refuses" do
+      text = described_class::UI.fetch("open")[:about].join(" ")
+      expect(text).to include("at most 128 characters of A-Z a-z 0-9 . _ -, starting with a letter or digit, with no `..`")
+      expect(text).to include("allows up to 255 characters")
+      expect(text).to include("`open` still exits 0")
+      expect(text).to include("link revision 1 or later")
+      expect(text).to include("a null revision means unknown, not old")
+    end
+
     it "keeps the hidden ui open pages out of the ui overview, and prints each on its own" do
       with_cli do |cli, out, *|
         cli.run(%w[ui --help])
