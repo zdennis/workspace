@@ -89,6 +89,102 @@ module Workspace
         done
         _workspace_wf_start "$wf_id" "$wf_dry" "$@"
       }
+
+      function _workspace_wf_ids {
+        [ -n "${ZSH_VERSION:-}" ] && emulate -L zsh
+        command workspace workflow show 2>/dev/null | command awk '$1 ~ /^[a-z0-9][a-z0-9_-]{0,39}$/ && $0 !~ /INVALID:/ { print $1 }'
+      }
+
+      function _workspace_wf_refs {
+        [ -n "${ZSH_VERSION:-}" ] && emulate -L zsh
+        local wf_gh wf_dog
+        command git for-each-ref --format='%(refname:lstrip=2)' refs/heads 2>/dev/null || :
+        command -v gh >/dev/null 2>&1 || return 0
+        GH_PROMPT_DISABLED=1 command gh pr list --limit 30 --json number,title --jq '.[] | "#\(.number)\t\(.title | gsub("[\u0001-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]"; " "))"' 2>/dev/null &
+        wf_gh=$!
+        (
+          command sleep 5 >/dev/null 2>&1
+          builtin kill "$wf_gh" >/dev/null 2>&1
+        ) >/dev/null 2>&1 &
+        wf_dog=$!
+        builtin wait "$wf_gh" >/dev/null 2>&1 || :
+        builtin kill "$wf_dog" >/dev/null 2>&1 || :
+        return 0
+      }
+
+      function wfp {
+        [ -n "${ZSH_VERSION:-}" ] && emulate -L zsh
+        local wf_ids wf_id wf_out wf_rc wf_query wf_sel wf_ref wf_tab wf_nl wf_num wf_count
+        if [ "$#" -gt 0 ]; then
+          builtin printf '%s\n' 'Usage: wfp   (takes no arguments; use wf to pass them)' >&2
+          return 1
+        fi
+        wf_tab=$'\t'
+        wf_nl=$'\n'
+        wf_ids="$(_workspace_wf_ids)"
+        if [ -z "$wf_ids" ]; then
+          builtin printf '%s\n' 'wfp: no workflows (see: workspace workflow show)' >&2
+          return 1
+        fi
+        if command -v fzf >/dev/null 2>&1; then
+          wf_rc=0
+          wf_out="$(builtin printf '%s\n' "$wf_ids" | command fzf --no-multi --no-preview --prompt='workflow> ')" || wf_rc=$?
+          [ "$wf_rc" -eq 130 ] && return 130
+          wf_id="${wf_out%%"$wf_tab"*}"
+          if [ "$wf_rc" -ne 0 ] || [ -z "$wf_id" ]; then
+            builtin printf '%s\n' 'wfp: no workflow picked; nothing started' >&2
+            return 1
+          fi
+          wf_rc=0
+          wf_out="$( { (exec 2>/dev/null </dev/null; _workspace_wf_refs) & } | command fzf --no-multi --no-preview --print-query --bind=alt-enter:print-query --prompt='ref (Alt-Enter: use typed text)> ')" || wf_rc=$?
+          [ "$wf_rc" -eq 130 ] && return 130
+          if [ "$wf_rc" -ne 0 ] && [ "$wf_rc" -ne 1 ]; then
+            builtin printf '%s\n' "wfp: fzf failed (exit $wf_rc); nothing started" >&2
+            return 1
+          fi
+          wf_query="${wf_out%%"$wf_nl"*}"
+          wf_ref="$wf_query"
+          case "$wf_out" in
+            *"$wf_nl"*)
+              if [ "$wf_rc" -eq 0 ]; then
+                wf_sel="${wf_out#*"$wf_nl"}"
+                wf_ref="${wf_sel%%"$wf_tab"*}"
+              fi
+              ;;
+          esac
+          [ -n "$wf_ref" ] || { builtin printf '%s\n' 'wfp: no ref or text given; nothing started' >&2; return 1; }
+        else
+          builtin printf '%s\n' "$wf_ids" | command awk '{ printf "%d) %s\n", NR, $0 }'
+          builtin printf '%s' 'Workflow number: '
+          if ! IFS= builtin read -r wf_num && [ -z "$wf_num" ]; then
+            builtin printf '\n'
+            return 1
+          fi
+          case "$wf_num" in
+            '')
+              builtin printf '%s\n' "wfp: no number given; nothing started" >&2
+              return 1
+              ;;
+            *[!0-9]*)
+              builtin printf '%s\n' "wfp: not a workflow number: $wf_num" >&2
+              return 1
+              ;;
+          esac
+          wf_count="$(builtin printf '%s\n' "$wf_ids" | command awk 'END { print NR }')"
+          if [ "${#wf_num}" -gt 6 ] || [ "$wf_num" -lt 1 ] || [ "$wf_num" -gt "$wf_count" ]; then
+            builtin printf '%s\n' "wfp: choose a number from 1 to $wf_count" >&2
+            return 1
+          fi
+          wf_id="$(builtin printf '%s\n' "$wf_ids" | command sed -n "${wf_num}p")"
+          builtin printf '%s' "Ref or text (branch, '#12', or words): "
+          if ! IFS= builtin read -r wf_ref && [ -z "$wf_ref" ]; then
+            builtin printf '\n'
+            return 1
+          fi
+          [ -n "$wf_ref" ] || { builtin printf '%s\n' 'wfp: no ref or text given; nothing started' >&2; return 1; }
+        fi
+        _workspace_wf_start "$wf_id" 0 "$wf_ref"
+      }
     SH
 
     # What differs between the shells.
