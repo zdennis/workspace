@@ -103,6 +103,7 @@ module Workspace
           id = default_id(ref, where[:project_workspace])
           definition = @catalog.find(id)
           warnings = read_as_branch(ref, id) if positional
+          warnings.each { |warning| @output.puts "Warning: #{warning}" }
         end
         plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, **where)
         return dry_run_row(id, plan) if dry_run

@@ -1121,6 +1121,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       row = command.call(positional: "rpivv", dry_run: true)
 
       expect(row["warnings"]).to contain_exactly(a_string_including("\"rpivv\" is not a known workflow", "rpiv comes from config", "Known: flow, rpiv"))
+      expect(output.string).to include("Warning: \"rpivv\" is not a known workflow")
     end
 
     it "does not warn for a lone ticket, whose shape is no accident" do
