@@ -24,6 +24,12 @@ instructions: |
   `gh api graphql` mutation (such as resolveReviewThread). Never push. Never run
   `workflow approve` or `workflow reject`: the person decides.
 
+deny:
+  - "git push*"
+  - "gh pr comment*"
+  - "gh pr review*"
+  - "gh run rerun*"
+
 steps:
   triage:
     title: Triage

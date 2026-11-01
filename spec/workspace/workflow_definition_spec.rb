@@ -31,6 +31,30 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "deny" do
+    it "is an empty list by default and keeps a list of patterns" do
+      expect(parse(minimal).to_h["deny"]).to eq([])
+      expect(parse("deny:\n  - 'git push*'\n  - 'gh pr comment*'\n#{minimal}").to_h["deny"]).to eq(["git push*", "gh pr comment*"])
+    end
+
+    it "reads nothing from a missing or bad stored value" do
+      expect(described_class.deny(nil)).to eq([])
+      expect(described_class.deny({"steps" => []})).to eq([])
+      expect(described_class.deny({"deny" => "git push"})).to eq([])
+      expect(described_class.deny({"deny" => ["git push*", 3]})).to eq([])
+      expect(described_class.deny({"deny" => ["git push*"]})).to eq(["git push*"])
+    end
+
+    it "collects every problem" do
+      expect(problems("deny: git push\n#{minimal}")).to include(a_string_matching(/deny must be a list/))
+      expect(problems("deny: ['', 5]\n#{minimal}")).to include(a_string_matching(/deny entry 1 must be a non-empty/), a_string_matching(/deny entry 2/))
+      expect(problems("deny: ['#{"a" * 201}']\n#{minimal}")).to include(a_string_matching(/longer than 200/))
+      expect(problems("deny: ['#{"*" * 9}']\n#{minimal}")).to include(a_string_matching(/more than 8 wildcards/))
+      many = (1..51).map { |n| "'c#{n}'" }.join(", ")
+      expect(problems("deny: [#{many}]\n#{minimal}")).to include(a_string_matching(/at most 50/))
+    end
+  end
+
   describe "stall and on_timeout" do
     it "reads stall as seconds and on_timeout as a word, with warn and unset as defaults" do
       definition = parse("stall: 20m\nsteps:\n  a:\n    prompt: P\n    timeout: 2h\n    on_timeout: interrupt\n  b:\n    prompt: P\n")
@@ -177,7 +201,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(definition.sha256).to eq(Digest::SHA256.hexdigest(minimal))
     expect(definition.to_h).to eq(
       "id" => "demo", "title" => "demo", "description" => nil, "inputs" => {}, "include" => [], "instructions" => nil,
-      "max_attempts" => 6, "stall" => nil, "redeliver" => 3,
+      "max_attempts" => 6, "stall" => nil, "redeliver" => 3, "deny" => [],
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
                    "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn"}]
     )
@@ -322,7 +346,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, stall, redeliver, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, inputs, include, instructions, max_attempts, stall, redeliver, deny, steps)",
       "schema_version must be 1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",

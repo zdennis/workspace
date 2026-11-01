@@ -90,6 +90,10 @@ RSpec.describe "the shipped workflow presets" do
 
   describe "pr-feedback" do
     let(:definition) { catalog.find("pr-feedback") }
+
+    it "denies pushing, comments, reviews and CI reruns" do
+      expect(Workspace::WorkflowDefinition.deny(definition.to_h)).to eq(["git push*", "gh pr comment*", "gh pr review*", "gh run rerun*"])
+    end
     let(:steps) { definition.steps.to_h { |step| [step["id"], step] } }
     let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
     let(:project_config) { instance_double(Workspace::ProjectConfig) }

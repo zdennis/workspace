@@ -21,7 +21,7 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts stall redeliver steps].freeze
+    TOP_KEYS = %w[schema_version id title description inputs include instructions max_attempts stall redeliver deny steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
@@ -48,6 +48,11 @@ module Workspace
 
     # The most `redeliver` may be.
     MAX_REDELIVER = 10
+
+    # Limits on a `deny:` list: patterns, their length, and `*` or `?` in one (a long run of wildcards makes a glob slow).
+    MAX_DENY = 50
+    MAX_DENY_LENGTH = 200
+    MAX_DENY_WILDCARDS = 8
 
     # Seconds a `status:` check may run when it names no timeout.
     DEFAULT_CHECK_TIMEOUT = 20 * 60
@@ -164,6 +169,16 @@ module Workspace
       (value.is_a?(Numeric) && value.finite? && value > 0) ? value : nil
     end
 
+    # The `deny` of a definition hash: shell globs of Bash commands the run's agent may not run.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Array<String>] empty in a definition stored before the key existed or holding a bad value
+    def self.deny(definition)
+      value = definition.is_a?(Hash) ? definition["deny"] : nil
+      return [] unless value.is_a?(Array) && value.size <= MAX_DENY
+      (value.all? { |pattern| pattern.is_a?(String) && !pattern.strip.empty? }) ? value : []
+    end
+
     # The `redeliver` of a definition hash: how many times `workflow sweep` retries a step's undelivered line.
     #
     # @param definition [Hash] {#to_h}, or a stored run's definition
@@ -249,6 +264,7 @@ module Workspace
         "max_attempts" => max_attempts,
         "stall" => duration_from(raw["stall"], "stall"),
         "redeliver" => redeliver,
+        "deny" => deny_from(raw["deny"]),
         "steps" => steps_from(raw["steps"], inputs)
       }
     end
@@ -256,6 +272,27 @@ module Workspace
     def unknown_keys(mapping, allowed, where)
       extra = mapping.keys.map(&:to_s) - allowed
       problem "#{where} has unknown key#{"s" if extra.size > 1} #{extra.join(", ")} (known: #{allowed.join(", ")})" if extra.any?
+    end
+
+    def deny_from(value)
+      return [] if value.nil?
+      unless value.is_a?(Array)
+        problem "deny must be a list of shell-glob patterns, got #{value.inspect[0, 60]}"
+        return []
+      end
+      problem "deny holds #{value.size} patterns, at most #{MAX_DENY}" if value.size > MAX_DENY
+      value.each_with_index.filter_map do |pattern, index|
+        where = "deny entry #{index + 1}"
+        if !pattern.is_a?(String) || pattern.strip.empty?
+          problem "#{where} must be a non-empty pattern, got #{pattern.inspect[0, 60]}"
+        elsif pattern.length > MAX_DENY_LENGTH
+          problem "#{where} is longer than #{MAX_DENY_LENGTH} characters"
+        elsif pattern.count("*?") > MAX_DENY_WILDCARDS
+          problem "#{where} has more than #{MAX_DENY_WILDCARDS} wildcards (* or ?)"
+        else
+          pattern
+        end
+      end
     end
 
     def text_or_nil(value, where)

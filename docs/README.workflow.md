@@ -299,6 +299,7 @@ Top-level keys:
 | `max_attempts` | Attempts the run may make across all its steps before a failure stops it (default 6) |
 | `stall` | A duration such as `20m`, or left out (the default): how long a step's pane may sit idle, its agent's turn over, before `workflow sweep` decides the step. Only the sweep reads it; left out, the sweep never decides a step for being idle |
 | `redeliver` | A whole number from 0 to 10 (default 3): how many times `workflow sweep` types a step's line again when it was not delivered (see [Sweeping stopped runs](#sweeping-stopped-runs)). `0` turns the retry off. A run stored before the key existed reads as `0` and is never retried |
+| `deny` | A list of shell-glob patterns (at most 50, each at most 200 characters with at most 8 `*` or `?`) for Bash commands the run's agent may not run; see [Denying commands](#denying-commands). A run stored before the key existed has none |
 | `steps` | Step id to step, in the order they run |
 
 Step keys:
@@ -641,6 +642,31 @@ The proofs show facts about the repository, not that the work is good: `commits:
 
 The presets use them. `rpiv` and `rpiv-auto-approve` are described above. Every preset step that posts to the inbox on each successful path requires its `inbox_item`: `explore` (`explore:RUN` for `survey`, `explore-report:RUN` for `report`), `pr-feedback` (`pr-feedback:RUN` for `triage`, a stop path included, and `pr-feedback-fix:RUN` for `fix`) and `investigate` (`investigate:RUN` for `diagnose`, `investigate-fix:RUN` for `fix`). Their prompts post with `--reopen`, because a rerun of the step (after a rejected gate or a resume) uses the same key, and an item the person already closed would otherwise be left alone and fail the proof. A step that stops through `step done --status fail` is not checked, and `investigate`'s `reproduce` posts only on its stop paths, so it has no proof. A run already started keeps the definition it was stored with: a change to a preset affects new runs only.
 
+## Denying commands
+
+```yaml
+deny:
+  - "git push*"
+  - "gh pr comment*"
+  - "gh pr review*"
+  - "gh run rerun*"
+```
+
+A `deny:` list stops the run's agent from running a Bash command that matches a pattern. The `session-event` hook that runs before each tool call looks up the run the pane is bound to, reads `deny` from the definition the run kept, and refuses a matching command with exit 2 and this text for the agent: `denied by workflow investigate, step fix: "git push*". Report this and stop.` Each denial writes `command_denied` to the run's history (`workflow events`) and to the [event log](README.event-log.md) (`run_id`, `workflow`, `workspace`, `step`, `pattern`, and the first 300 characters of `command`, control characters escaped). A pane with no binding costs one read of the bindings file. A pane bound to a run also pays the stale-binding check (two tmux calls) and one parse of the run file on each Bash call, whether or not the run has a `deny` list. The run's stored definition is what counts, so editing the definition file mid-run changes nothing for a run in flight. A run that has finished, or a run or binding file that can't be read, allows the command: an error in the check never stops the agent's other tools.
+
+**This is a tripwire, not a sandbox.** It catches an agent that was misled or made a mistake with the plain forms of a command. `bash -c '...'`, a script, an alias, a variable holding the command, `$'...'` quoting, `timeout N`, `nice` or `xargs` in front of the command, a command after `if ...; then`, `!` or `{`, inside `((...))` (without the `$`), `[[ ]]` or a `case` pattern, and any tool other than Bash get past it. Do not rely on it against an agent that means harm. For the push, the proof after the fact is `require: remote_unchanged` on the step (see [Required proofs](#required-proofs)), which fails the step when the remote branch moved.
+
+How a command is matched:
+
+- It is cut into pieces at `;`, `&&`, `||`, `|`, `&`, newlines, parentheses and backticks that are not inside quotes, so `cd x && git push` and `$(git push)` are checked as `git push`. A quoted `;` does not cut: `git commit -m "a; git push"` is one piece and is not denied (and `echo "$(git push)"` is not looked into).
+- An unquoted `#` that starts a word begins a comment, skipped to the end of the line. `$(( ))` is only watched so that a `<<` shift in it does not start a here-document; a `$(...)` or backtick inside it is still checked, but a bare command in it (`$((git push) )`) is not.
+- Runs of spaces and tabs outside quotes count as one space. The body of a here-document (`<<WORD`, `<<-WORD`, `<<'WORD'`) is skipped up to its terminator line, or to the end of the text when the terminator never comes, so a commit message that contains `git push` is not denied.
+- Each piece loses leading whitespace, leading `NAME=value` assignments and the words `sudo`, `command`, `env`, `exec`, `nohup` and `time` (with an option such as `-i` right after one, and the value of `sudo -u/-g` and `env -u`), so `FOO=1 sudo -u root git push` is checked as `git push`. A path before the program (`/usr/bin/git`) is dropped, and so are git's global options (`-C dir`, `-c k=v`, `--git-dir`, `--work-tree`, `--no-pager`, ...) and gh's `-R/--repo`, so `git -C x push` is checked as `git push`.
+- The rest of the piece must match a pattern as a whole, as a shell glob: `*` matches any run of characters (slashes and newlines too) and `?` one character. Nothing in a pattern is run or evaluated; `[abc]` sets work, and `{a,b}` is plain text. `git push*` matches `git push origin HEAD` and also `git pushd`.
+
+`workflow validate` collects a bad `deny` (not a list, an empty or non-text entry, too many, too long, too many wildcards) with the other problems under `invalid_workflow`. The `investigate` and `pr-feedback` presets deny the four patterns above, since neither pushes or posts; `workspace push` is not matched, so the person's next step still works.
+
+
 ## The guard
 
 A step with `guard:` is checked by the engine when the agent's turn ends, before its `produces:` files are looked for (a step the agent reported as failed is not guarded: it already failed). The checkout it is checked against was recorded when the run started: `base_sha` (HEAD) and a snapshot of the repository's config, its hooks directory and its hidden-file flags, in the run file as `base_guard`. `workflow status --json` shows `base_sha` on the run.
@@ -824,7 +850,7 @@ Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, 
 
 ## Events
 
-Every change to a run writes one `workflow_changed` to the [event log](README.event-log.md), under the run's workspace, with `run_id`, `workflow`, `workspace`, `state`, `step` and `reason` (the stored reason code, or `null`). It says a run changed; refetch `workflow status --json`. A hold (`turn_ended_background`) writes one line on entering, with `state` `running`, and none for its later Stops. A run's locks write `lock_wait_started`, `lock_acquired` and `lock_released` under the repository's project, with `run_id` in place of `pid`. The sweep writes `step_stalled` and `step_recovered` to the run's own history (`workflow events`), not to the event log.
+Every change to a run writes one `workflow_changed` to the [event log](README.event-log.md), under the run's workspace, with `run_id`, `workflow`, `workspace`, `state`, `step` and `reason` (the stored reason code, or `null`). It says a run changed; refetch `workflow status --json`. A hold (`turn_ended_background`) writes one line on entering, with `state` `running`, and none for its later Stops. A denied command writes `command_denied` (see [Denying commands](#denying-commands)). A run's locks write `lock_wait_started`, `lock_acquired` and `lock_released` under the repository's project, with `run_id` in place of `pid`. The sweep writes `step_stalled` and `step_recovered` to the run's own history (`workflow events`), not to the event log.
 
 ## Examples
 

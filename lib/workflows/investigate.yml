@@ -54,6 +54,12 @@ instructions: |
 
   Mark each finding observed or inferred.
 
+deny:
+  - "git push*"
+  - "gh pr comment*"
+  - "gh pr review*"
+  - "gh run rerun*"
+
 steps:
   reproduce:
     title: Reproduce

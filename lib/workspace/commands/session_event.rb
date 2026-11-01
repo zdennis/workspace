@@ -118,6 +118,8 @@ module Workspace
       # @param lock_enforcer [Workspace::LockEnforcer, nil] denies an edit while
       #   another agent holds the edit lock, and releases locks on session end;
       #   nil skips enforcement
+      # @param workflow_deny [Workspace::WorkflowDeny, nil] denies a Bash command the bound run's
+      #   definition lists under `deny:`; nil skips it
       # @param session_ledger [Workspace::SessionLedger, nil] records each
       #   SessionStart and SessionEnd; nil skips the ledger
       # @param pane_bindings [Workspace::PaneBindings, nil] looked up on SessionStart to
@@ -134,7 +136,7 @@ module Workspace
       # @param connect_timeout [Numeric] seconds to wait for the daemon's socket to take the connection
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
+        lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
         workspace_for_session: ->(session) { session }, delivery_log: nil,
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
         @workspace_for_session = workspace_for_session
@@ -151,6 +153,7 @@ module Workspace
         @logger = logger
         @lock_idle_tracker = lock_idle_tracker
         @lock_enforcer = lock_enforcer
+        @workflow_deny = workflow_deny
         @session_ledger = session_ledger
         @pane_bindings = pane_bindings
         @instruction_composer = instruction_composer
@@ -178,7 +181,8 @@ module Workspace
         @lock_idle_tracker&.update(hook, cwd: cwd)
 
         if hook == "PreToolUse"
-          deny = @lock_enforcer&.check(tool_name: payload["tool_name"], cwd: cwd)
+          deny = @lock_enforcer&.check(tool_name: payload["tool_name"], cwd: cwd) ||
+            @workflow_deny&.check(tool_name: payload["tool_name"], tool_input: payload["tool_input"])
           if deny
             @error_output.puts deny
             return {exit_code: 2}

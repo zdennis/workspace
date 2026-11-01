@@ -23,6 +23,10 @@ RSpec.describe "the investigate preset" do
      "inputs.spec" => "/w/.workflow/tickets/o-r-7.md", "inputs.pr" => "7", "inputs.ci_run" => "55"}
   end
 
+  it "denies pushing, comments, reviews and CI reruns" do
+    expect(Workspace::WorkflowDefinition.deny(definition.to_h)).to eq(["git push*", "gh pr comment*", "gh pr review*", "gh run rerun*"])
+  end
+
   before do
     allow(config).to receive(:workflows_dir).and_return(File.join(dir, "none"))
     allow(project_config).to receive(:exists?).and_return(true)
