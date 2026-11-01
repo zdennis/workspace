@@ -25,6 +25,9 @@ module Workspace
     # Values the `context.source` key accepts.
     CONTEXT_SOURCES = %w[statusline scrape].freeze
 
+    # Colors window-tool accepts for `highlight --color`, in the order `focus --color` lists them.
+    WINDOW_TOOL_COLORS = %w[red green blue yellow orange purple white cyan magenta random].freeze
+
     # Values the `launch.headless` key accepts.
     LAUNCH_HEADLESS_VALUES = %w[true false].freeze
 

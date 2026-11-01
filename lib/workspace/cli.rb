@@ -1418,6 +1418,9 @@ module Workspace
       end
       parser.parse!(args)
 
+      unless ConfigSchema::WINDOW_TOOL_COLORS.include?(highlight_color.downcase)
+        raise UsageError, "Unknown --color #{highlight_color.inspect}. Colors: #{ConfigSchema::WINDOW_TOOL_COLORS.join(", ")}\n\n#{parser.help}"
+      end
       raise UsageError, "--reverse needs --cycle\n\n#{parser.help}" if reverse && !cycle
       if cycle
         raise UsageError, "--cycle takes no project; it picks one\n\n#{parser.help}" if args.any? || name_opt

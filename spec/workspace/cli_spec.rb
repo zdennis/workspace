@@ -12706,6 +12706,64 @@ RSpec.describe Workspace::CLI do
         expect(parse_one(raw)["results"].first).to include("workspace" => "api", "outcome" => "focused")
         expect(err.string).to include("Focusing api...")
       end
+
+      describe "--color" do
+        let(:state) do
+          CLITestHelpers::FakeState.new.tap { |s| s["api"] = {"iterm_window_id" => 77} }
+        end
+        let(:windows) do
+          double("window_manager").tap do |w|
+            allow(w).to receive(:focus_by_id).and_return(true)
+            allow(w).to receive(:window_ids_front_to_back).and_return([77])
+          end
+        end
+
+        def color_cli
+          action_cli(state: state) do |out|
+            {focus_command: Workspace::Commands::Focus.new(state: state, window_manager: windows, output: out)}
+          end
+        end
+
+        it "refuses an unknown color before focusing, with or without --highlight" do
+          [["focus", "api", "--color", "pink"], ["focus", "api", "--highlight", "--color", "pink"]].each do |argv|
+            cli, _, err = color_cli
+
+            expect(exit_status { cli.run(argv) }).to eq(1)
+
+            expect(err.string).to include("pink")
+            expect(err.string).to include(Workspace::ConfigSchema::WINDOW_TOOL_COLORS.join(", "))
+          end
+          expect(windows).not_to have_received(:focus_by_id)
+        end
+
+        it "refuses an unknown color with --cycle before anything moves" do
+          cli, _, err = color_cli
+
+          expect(exit_status { cli.run(["focus", "--cycle", "--color", "pink"]) }).to eq(1)
+
+          expect(err.string).to include("Unknown --color")
+          expect(windows).not_to have_received(:focus_by_id)
+        end
+
+        it "accepts a color in any case, and random" do
+          %w[BLUE random].each do |color|
+            cli, = color_cli
+
+            expect(exit_status { cli.run(["focus", "api", "--highlight", "--color", color]) }).to eq(0)
+          end
+          expect(windows).to have_received(:focus_by_id).twice
+        end
+
+        it "answers an unknown color with the usage error document under --json" do
+          cli, raw, = color_cli
+
+          expect(exit_status { cli.run(["focus", "api", "--color", "pink", "--json"]) }).to eq(1)
+
+          expect(parse_one(raw)).to include("ok" => false, "code" => "usage")
+          expect(parse_one(raw)["error"]).to include("Unknown --color \"pink\"")
+          expect(windows).not_to have_received(:focus_by_id)
+        end
+      end
     end
 
     describe "focus --cycle" do
