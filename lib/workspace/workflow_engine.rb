@@ -68,6 +68,56 @@ module Workspace
     # The daemon's `reason` for a failure that may have left the line in the input box; retrying could type it twice.
     REDELIVER_NEVER_REASONS = %w[prompt_unconfirmed].freeze
 
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Integer] the attempts that count against the allowance: all but those the sweep typed again
+    def self.attempts_made(run)
+      run["steps"].values.sum { |each| each["attempts"].count { |earlier| !earlier["redelivered"] } }
+    end
+
+    # Whether the run has made all the attempts it is allowed, read from the stored run (the definition's
+    # `max_attempts` plus `extra_attempts`); false for a run that does not say.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.attempts_spent?(run)
+      return false unless run.dig("definition", "max_attempts").is_a?(Integer)
+      attempts_made(run) >= attempt_allowance(run)
+    end
+
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @return [Integer] the definition's `max_attempts` plus the run's `extra_attempts`
+    def self.attempt_allowance(run)
+      run["definition"]["max_attempts"] + run["extra_attempts"].to_i
+    end
+
+    # The least `--extra-attempts` that lets the attempt about to start fit.
+    #
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @return [Integer] attempts made minus the allowance, plus one (1 for a run exactly spent)
+    def self.extra_attempts_needed(run)
+      attempts_made(run) - attempt_allowance(run) + 1
+    end
+
+    # Whether a resume would start a new attempt: `--from`, a retry's wait, a step that failed or never
+    # got its line, or a running step given a pane. Not a check or a turn left to decide (a failure there goes
+    # through the `on_fail` budget), a passed step moving on, or a lock wait (the attempt was allowed when the
+    # step was reached).
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param from [String, nil] the step a resume would start again at
+    # @param pane [String, nil] the pane the resume would name
+    # @return [Boolean]
+    def self.starts_attempt?(run, from:, pane:)
+      return true if from
+      return true if run["backoff"].is_a?(Hash) && run["backoff"]["to"].is_a?(String)
+      return false if run.dig("reason", "code") == "waiting_lock"
+      case run["steps"].fetch(run["current"])["state"]
+      when "running" then !pane.nil?
+      when "checking", "passed" then false
+      else true
+      end
+    end
+
     # Where the line that starts an attempt stands. An attempt is stored as
     # `delivering` before its line is typed, outside the run's lock, and the
     # mark is cleared once the daemon answers or a turn's end shows the agent
@@ -438,10 +488,12 @@ module Workspace
     # @param step [String, nil] the gated step the caller saw; refused when the run is elsewhere
     # @param attempt [Integer, nil] that step's attempt the caller saw (needs +step+)
     # @param guard [#call, nil] called with the stored run after the step checks; raises to refuse
+    # @param extra_attempts [Integer, nil] added to the run's attempt allowance (see {#resume})
     # @return [Hash{String=>Object}] the run afterwards
-    # @raise [Workspace::Error] code `gate_not_waiting`; `usage` when `to` is not the gated step or
+    # @raise [Workspace::Error] code `gate_not_waiting`; `attempts_spent` when the run has made all its
+    #   attempts and +extra_attempts+ is not given; `usage` when `to` is not the gated step or
     #   one before it; and what +guard+ raises
-    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil)
+    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil)
       transition(run_id) do |stored|
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
@@ -450,6 +502,8 @@ module Workspace
         unless ids.first(ids.index(stored["current"]) + 1).include?(target)
           raise UsageError, "--to must be #{stored["current"]} or a step before it (#{ids.first(ids.index(stored["current"]) + 1).join(", ")}), got #{target.to_s[0, 60].inspect}."
         end
+        # The step runs again, which is a new attempt.
+        spend_attempts(stored, extra_attempts)
         gate.merge!("state" => "rejected", "at" => now_iso, "note" => note, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil))
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
@@ -472,14 +526,18 @@ module Workspace
     # @param turn_over [Hash{String=>Object}, nil] "step" and "attempt": the pane's agent was
     #   seen to have ended its turn on that attempt, so the step, if the run is still on that
     #   attempt and it reads `running`, is decided now
+    # @param extra_attempts [Integer, nil] raises the run's attempt allowance by this much, kept in the run
+    #   (`extra_attempts`) and recorded as `attempts_extended`; applied only when the resume starts an attempt,
+    #   whether or not the allowance was spent
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why, as a
     #   sentence) when nothing was done
-    # @raise [Workspace::Error] see {#refuse_resume}
-    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil)
+    # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` when the resume would start
+    #   an attempt the run has none left for and +extra_attempts+ is not given
+    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil)
       check = nil
       unchanged = nil
       run = transition(run_id) do |stored|
-        check, unchanged = resume_step(stored, from: from, note: note, pane: pane, turn_over: turn_over)
+        check, unchanged = resume_step(stored, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts)
       end
       run = finish_check(run_id, check) if check
       unchanged ? run.merge("unchanged" => unchanged) : run
@@ -495,10 +553,12 @@ module Workspace
     # @param note [String, nil] see {#resume}; stored in the run, never in an event
     # @param pane [String, nil] see {#resume}
     # @param turn_over [Hash{String=>Object}, nil] see {#resume}
+    # @param extra_attempts [Integer, nil] see {#resume}; applied when the park is released
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why, as a
     #   sentence) when nothing was stored
-    # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has
-    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil)
+    # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has;
+    #   `attempts_spent` as {#resume}
+    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil)
       unchanged = nil
       run = transition(run_id) do |stored|
         refuse_resume(stored, from: from)
@@ -509,8 +569,9 @@ module Workspace
         unchanged = from ? nil : left_alone(stored, step_state(stored), pane, turn_over)
         next if unchanged
         check_pane(pane, run_id: run_id) if pane && @panes.run_on(pane) != run_id
+        refuse_spent(stored, extra_attempts) if starts_attempt?(stored, from: from, pane: pane)
         drop_park(stored, "expired")
-        store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over},
+        store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}),
           expires_at: (@clock.call + PARK_SECONDS).utc.iso8601, retries: 0)
       end
       unchanged ? run.merge("unchanged" => unchanged) : run
@@ -530,7 +591,8 @@ module Workspace
         parked = stored["parked"]
         next unless parked && parked["id"] == id
         stored.delete("parked")
-        check, unchanged = resume_step(stored, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"])
+        check, unchanged = resume_step(stored, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"], extra_attempts: parked["extra_attempts"],
+          budget: parked["retries"].to_i.zero?)
         add_resume_note(stored, parked["note"]) if unchanged
         event(stored, "resume_parked_ended", {"step" => stored["current"], "how" => unchanged ? "unchanged" : "released"}
           .merge(unchanged ? {"detail" => unchanged} : {}))
@@ -916,7 +978,7 @@ module Workspace
     # The body of {#resume}, inside a transition.
     #
     # @return [Array] the check to run, or nil; and why nothing was done, or nil
-    def resume_step(stored, from:, note:, pane:, turn_over:)
+    def resume_step(stored, from:, note:, pane:, turn_over:, extra_attempts: nil, budget: true)
       # Refusals come first, so a refused resume leaves the run and its pane as they were.
       refuse_resume(stored, from: from)
       state = step_state(stored)
@@ -926,6 +988,11 @@ module Workspace
       # A wait whose pane would not take the retry is held before anything is written: no rebind, note, event or reset.
       held = held_by_pane(stored, pane, from)
       return [nil, held] if held
+      # A pane another run has is refused first, so a refusal after this point logs nothing.
+      check_pane(pane, run_id: stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
+      # Only a resume that starts an attempt is held to the budget (not a parked one typed again after a
+      # busy pane: its attempt was counted then); decided before anything is written.
+      spend_attempts(stored, extra_attempts, needed: budget && starts_attempt?(stored, from: from, pane: pane))
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
@@ -962,6 +1029,35 @@ module Workspace
       else dispatch(stored)
       end
       [check, nil]
+    end
+
+    def starts_attempt?(run, from:, pane:) = self.class.starts_attempt?(run, from: from, pane: pane)
+
+    # Attempts that count against the allowance: every one except those the sweep typed again.
+    def attempts_made(run) = self.class.attempts_made(run)
+
+    # The definition's `max_attempts` plus what people added with `--extra-attempts`.
+    def attempt_allowance(run) = self.class.attempt_allowance(run)
+
+    # Refuses with `attempts_spent` when the allowance is used up and +extra+ does not cover the overrun: the
+    # attempt about to start must fit, so +extra+ must be at least made minus allowed plus one.
+    def refuse_spent(run, extra)
+      made = attempts_made(run)
+      allowed = attempt_allowance(run)
+      needed = self.class.extra_attempts_needed(run)
+      return if made < allowed || (extra && extra >= needed)
+      raise Workspace::Error.new("Run #{run["id"]} has spent max_attempts (#{made} of #{allowed}). Pass --extra-attempts #{needed} to continue.",
+        code: "attempts_spent", details: {"run_id" => run["id"], "attempts" => made, "max_attempts" => allowed, "step" => run["current"], "needed" => needed})
+    end
+
+    # The budget step of a person's resume or reject: refused before anything changes; +extra+ is added to the
+    # run and recorded when the action goes on.
+    def spend_attempts(run, extra, needed: true)
+      return unless needed
+      refuse_spent(run, extra)
+      return unless extra
+      run["extra_attempts"] = run["extra_attempts"].to_i + extra
+      event(run, "attempts_extended", "extra" => extra, "extra_attempts" => run["extra_attempts"], "max_attempts" => attempt_allowance(run))
     end
 
     # The read-only decision of a resume over a retry's wait: the sentence saying why the retry can't start in the
@@ -1831,8 +1927,8 @@ module Workspace
       event(run, "step_failed", {"step" => step["id"], "attempt" => attempt["n"]}.merge(failure.slice("cause", "exit_code")))
       on_fail = step["on_fail"]
       edge = on_fail && "#{step["id"]}->#{on_fail["goto"]}"
-      attempts = run["steps"].values.sum { |each| each["attempts"].count { |earlier| !earlier["redelivered"] } }
-      spent = attempts >= run["definition"]["max_attempts"]
+      attempts = attempts_made(run)
+      spent = attempts >= attempt_allowance(run)
       if on_fail && run["loops"].fetch(edge, 0) < on_fail["max"] && !spent
         run["loops"][edge] = run["loops"].fetch(edge, 0) + 1
         text = loop_context(run, step, on_fail, failure, run["loops"][edge])
@@ -1846,7 +1942,7 @@ module Workspace
       release(run)
       run["state"] = "waiting"
       run["reason"] = reason("failed_check", {"step" => step["id"], "attempt" => attempt["n"], "loops" => run["loops"],
-                                              "attempts" => attempts, "max_attempts" => run["definition"]["max_attempts"]}.merge(failure))
+                                              "attempts" => attempts, "max_attempts" => attempt_allowance(run)}.merge(failure))
     end
 
     # No attempt, pane binding or lock is held while the retry waits: the run reads `waiting` with the reason

@@ -672,6 +672,103 @@ RSpec.describe Workspace::WorkflowStatus do
       end
     end
 
+    describe "once the run has made all its attempts" do
+      let(:extra) { [{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 1}] }
+
+      def spent_run(max, reason)
+        steps = [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}]
+        create(state: "waiting", step_state: "failed", reason: reason, bound: false, definition: {"max_attempts" => max, "steps" => steps})
+      end
+
+      it "offers resume and resume --from for a failed check only with --extra-attempts, read live rather than from the details" do
+        spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check", "attempts" => 99, "max_attempts" => 99}})
+
+        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: extra),
+          action("workflow resume", "wr_1", "--from", "plan", needs: extra), action("workflow cancel", "wr_1")])
+      end
+
+      it "stops asking once the allowance was raised" do
+        run = spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check", "attempts" => 3, "max_attempts" => 3}})
+        store.update(run["id"]) { |stored| stored["extra_attempts"] = 1 }
+
+        expect(current["reason"]["actions"].first).to eq(action("workflow resume", "wr_1"))
+      end
+
+      {
+        "a delivery's resume and --from" => [{"code" => "waiting_you", "since" => "t", "details" => {"kind" => "delivery", "step" => "plan"}}, 2],
+        "a parked resume that ended" => [{"code" => "waiting_you", "since" => "t", "details" => {"kind" => "dispatch", "error" => "attempts_spent"}}, 1],
+        "a gone pane" => [{"code" => "pane_gone", "since" => "t", "details" => {}}, 1],
+        "a retry's backoff" => [{"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan"}}, 1]
+      }.each do |name, (reason, count)|
+        it "asks for it on #{name}" do
+          spent_run(3, reason)
+
+          resumes = current["reason"]["actions"].select { |each| each["action"] == "workflow resume" }
+          expect(resumes.size).to eq(count)
+          expect(resumes.map { |each| each["needs"] }).to all(eq(extra))
+        end
+      end
+
+      it "asks for it on a held retry, which also needs a pane" do
+        run = spent_run(3, {"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan"}})
+        store.update(run["id"]) { |stored| stored["backoff"] = {"blocked" => "pane_gone", "to" => "research"} }
+
+        expect(current["reason"]["actions"].first["needs"]).to eq([{"name" => "pane", "flag" => "--pane"}] + extra)
+      end
+
+      it "asks for it on a gate's reject, alongside the note" do
+        gate = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "plan", "artifacts" => []}}
+        steps = [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}]
+        create(state: "waiting", step_state: "passed", reason: gate, bound: false, definition: {"max_attempts" => 3, "steps" => steps})
+
+        actions = current["reason"]["actions"]
+        expect(actions.find { |each| each["action"] == "workflow reject" }["needs"]).to eq([{"name" => "note", "flag" => "--note"}] + extra)
+        expect(actions.find { |each| each["action"] == "workflow approve" }["needs"]).to eq([])
+      end
+
+      # The row replaces a stored reason for a step that reads running, so these read the actions of the stored run.
+      def actions_of(reason, step_state)
+        run = spent_run(3, reason)
+        store.update(run["id"]) { |stored| stored["steps"]["plan"]["state"] = step_state }
+        status.send(:actions, store.find(run["id"]), reason, "%5").select { |each| each["action"] == "workflow resume" }
+      end
+
+      it "leaves a plain resume unmarked for a running step, which it would only look at, but marks --from" do
+        delivery = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "delivery", "step" => "plan"}}
+
+        expect(actions_of(delivery, "running")).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan", needs: extra)])
+        expect(actions_of({"code" => "turn_ended_incomplete", "since" => "t", "details" => {}}, "running")).to eq([action("workflow resume", "wr_2")])
+      end
+
+      it "leaves a parked resume's plain resume over a checking step unmarked" do
+        reason = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "dispatch", "error" => "parked_timeout"}}
+
+        expect(actions_of(reason, "checking")).to eq([action("workflow resume", "wr_1")])
+        expect(actions_of(reason, "failed")).to eq([action("workflow resume", "wr_2", needs: extra)])
+      end
+
+      it "keeps a gone pane's resume marked over a running step, since it needs --pane" do
+        expect(actions_of({"code" => "pane_gone", "since" => "t", "details" => {}}, "running")).to eq([action("workflow resume", "wr_1", needs: extra)])
+      end
+
+      it "takes the minimum from the overrun and from a stored extra_attempts" do
+        run = spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check"}})
+        store.update(run["id"]) { |stored| stored["extra_attempts"] = 2 }
+        expect(current["reason"]["actions"].first["needs"]).to eq([])
+
+        store.update(run["id"]) { |stored| stored["steps"]["plan"]["attempts"] += [{"n" => 3}, {"n" => 4}, {"n" => 5}] }
+        # made 6 of 5: one below the minimum of 2 is refused by the engine, exactly at it is not
+        expect(current["reason"]["actions"].first["needs"].first).to include("min" => 2)
+        expect(Workspace::WorkflowEngine.extra_attempts_needed(store.find("wr_1"))).to eq(2)
+      end
+
+      it "does not ask while attempts are left" do
+        spent_run(6, {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "delivery", "step" => "plan"}})
+
+        expect(current["reason"]["actions"].flat_map { |each| each["needs"] }).to eq([])
+      end
+    end
+
     it "offers resume for a failed check" do
       failed("cause" => "check", "code" => "check_failed", "code_source" => "engine")
 

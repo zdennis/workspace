@@ -320,10 +320,17 @@ module Workspace
     def actions(run, reason, pane)
       id = run["id"]
       cancel = action("workflow cancel", id)
-      resume = action("workflow resume", id)
+      # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
+      # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
+      spent = WorkflowEngine.attempts_spent?(run)
+      extra = spent ? [need("extra_attempts", "--extra-attempts").merge("min" => WorkflowEngine.extra_attempts_needed(run))] : []
+      plain = WorkflowEngine.starts_attempt?(run, from: nil, pane: nil) ? extra : []
+      with_pane = WorkflowEngine.starts_attempt?(run, from: nil, pane: "%0") ? extra : []
+      resume = action("workflow resume", id, needs: plain)
+      from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra) }
       focus = action("focus", run["workspace"], "--pane", pane.to_s)
       # A held retry would block again on the same pane: the resume has to name another one.
-      return [action("workflow resume", id, needs: [need("pane", "--pane")]), cancel] if run.dig("backoff", "blocked") && run["state"] == "waiting"
+      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra), cancel] if run.dig("backoff", "blocked") && run["state"] == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}
@@ -333,11 +340,11 @@ module Workspace
         case reason.dig("details", "kind")
         when "gate"
           at = ["--step", run["current"], "--attempt", run["steps"].fetch(run["current"])["attempts"].last&.fetch("n", nil).to_s]
-          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")]), cancel]
+          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")] + extra), cancel]
         when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run["workspace"], needs: [need("answer", nil)]), focus]
         when "prompt" then [focus]
         # Resume decides the step as a turn's end would; --from types the line again.
-        when "delivery" then [focus, resume, action("workflow resume", id, "--from", reason.dig("details", "step").to_s), cancel]
+        when "delivery" then [focus, resume, from.call(reason.dig("details", "step")), cancel]
         else [resume, cancel]
         end
       when "turn_ended_incomplete" then [focus, resume, cancel]
@@ -348,9 +355,9 @@ module Workspace
         if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))
           [cancel]
         else
-          [resume, action("workflow resume", id, "--from", reason.dig("details", "step").to_s), cancel]
+          [resume, from.call(reason.dig("details", "step")), cancel]
         end
-      when "pane_gone" then [action("launch", run["workspace"]), resume, cancel]
+      when "pane_gone" then [action("launch", run["workspace"]), action("workflow resume", id, needs: with_pane), cancel]
       else [cancel]
       end
     end

@@ -389,12 +389,13 @@ module Workspace
       # @param from [String, nil] start again at this step
       # @param note [String, nil] added to the next attempt's instructions
       # @param pane [String, nil] move the run to this pane of its workspace
+      # @param extra_attempts [Integer, nil] add this to the run's attempt allowance (see {Workspace::WorkflowEngine#resume})
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [Hash{String=>Object}] the action row; `outcome` is "unchanged" when an agent
       #   is working on the step or its check is still running
       # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate from a pane
       #   bound to a run, or see {Workspace::WorkflowEngine#resume}
-      def resume(run:, from: nil, note: nil, pane: nil, caller_pane: nil)
+      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, caller_pane: nil)
         stored = @store.find(run)
         pane_id = nil
         turn_over = nil
@@ -412,9 +413,9 @@ module Workspace
         target = pane_id || @panes.pane_of(run) || stored["pane"]
         if !WorkflowRunStore::TERMINAL_STATES.include?(stored["state"]) && caller_in_pane?(stored["workspace"], caller_pane, target) &&
             @panes.parkable?(stored["workspace"], target)
-          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over)
+          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts)
         end
-        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over)
+        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts)
         row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
       end
 
@@ -448,12 +449,13 @@ module Workspace
       # @param to [String, nil] the step to run again
       # @param step [String, nil] the gated step the caller saw
       # @param attempt [Integer, nil] that step's attempt the caller saw
+      # @param extra_attempts [Integer, nil] add this to the run's attempt allowance
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#reject}
-      def reject(run:, note:, to: nil, step: nil, attempt: nil, caller_pane: nil)
+      def reject(run:, note:, to: nil, step: nil, attempt: nil, extra_attempts: nil, caller_pane: nil)
         guard = ->(stored) { refuse_caller!(stored, caller_pane, "workflow reject") }
-        row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard), "rejected")
+        row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts), "rejected")
       end
 
       # What the agent daemon runs when a turn ends in a bound pane, and on
@@ -771,9 +773,9 @@ module Workspace
 
       # The caller is in the pane the resume would type into, so nothing is typed:
       # the resume is stored and the daemon carries it out once this turn ends.
-      def park_resume(stored, from:, note:, pane:, target:, turn_over:)
+      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil)
         existing = WorkflowEngine.parked(stored, @clock.call) == :waiting
-        parked = @engine.park(stored["id"], from: from, note: note, pane: pane, turn_over: turn_over)
+        parked = @engine.park(stored["id"], from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts)
         if parked["unchanged"]
           message = "Nothing was done: #{parked["unchanged"]}."
           if existing

@@ -2312,6 +2312,260 @@ RSpec.describe Workspace::WorkflowEngine do
     end
   end
 
+  describe "the attempt budget on resume and reject" do
+    let(:one_attempt) { definition("max_attempts: 1\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n") }
+
+    def failed_run
+      start(one_attempt, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+    end
+
+    it "refuses a resume that would start an attempt once max_attempts is spent, and changes nothing" do
+      failed_run
+      before = store.find("wr_1")
+      lines = history_lines.size
+
+      expect { engine.resume("wr_1", note: "again") }.to raise_error(Workspace::Error, /spent max_attempts \(1 of 1\)\. Pass --extra-attempts 1 to continue/) { |error|
+        expect(error.code).to eq("attempts_spent")
+        expect(error.details).to eq("run_id" => "wr_1", "attempts" => 1, "max_attempts" => 1, "step" => "a", "needed" => 1)
+      }
+
+      expect(store.find("wr_1")).to eq(before)
+      expect(history_lines.size).to eq(lines)
+    end
+
+    it "refuses --from the same way" do
+      failed_run
+
+      expect { engine.resume("wr_1", from: "a") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+    end
+
+    it "goes on with --extra-attempts, keeps the allowance in the run and records it" do
+      failed_run
+
+      run = engine.resume("wr_1", extra_attempts: 1)
+
+      expect(run).to include("state" => "running", "extra_attempts" => 1)
+      expect(run["definition"]["max_attempts"]).to eq(1)
+      expect(history_lines.find { |line| line["type"] == "attempts_extended" }).to include("extra" => 1, "extra_attempts" => 1, "max_attempts" => 2)
+    end
+
+    it "makes a later failure check the raised allowance" do
+      failed_run
+      engine.resume("wr_1", extra_attempts: 1)
+      check_results << {exit_code: 1, timed_out: false}
+
+      run = engine.turn_ended("wr_1")
+
+      expect(run["reason"]["details"]).to include("attempts" => 2, "max_attempts" => 2)
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+      expect(engine.resume("wr_1", extra_attempts: 3)["extra_attempts"]).to eq(4)
+    end
+
+    it "adds --extra-attempts even when the budget is not spent" do
+      roomy = definition("max_attempts: 5\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n")
+      start(roomy, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      expect(engine.resume("wr_1", extra_attempts: 2)).to include("extra_attempts" => 2)
+    end
+
+    it "does not count an attempt the sweep typed again" do
+      failed_run
+      store.update("wr_1") { |stored| stored["steps"]["a"]["attempts"].last["redelivered"] = true }
+
+      expect(engine.resume("wr_1")).to include("state" => "running")
+    end
+
+    it "answers unchanged, not a refusal, when the resume starts no attempt" do
+      start(one_attempt, inputs: {})
+
+      run = engine.resume("wr_1")
+
+      expect(run["unchanged"]).to match(/an agent is working on step a/)
+      expect(run).not_to have_key("extra_attempts")
+      expect(engine.resume("wr_1", extra_attempts: 2)).not_to have_key("extra_attempts")
+    end
+
+    it "does not refuse a check being decided from a turn that is over" do
+      start(one_attempt, inputs: {})
+      check_results << {exit_code: 0, timed_out: false}
+
+      run = engine.resume("wr_1", turn_over: {"step" => "a", "attempt" => 1})
+
+      expect(run["state"]).to eq("completed")
+    end
+
+    it "refuses a reject once max_attempts is spent, and goes on with --extra-attempts" do
+      gated = definition("max_attempts: 1\nsteps:\n  plan:\n    prompt: P\n    produces: [plan.md]\n    gate: approve\n")
+      start(gated, inputs: {})
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      before = store.find("wr_1")
+
+      expect { engine.reject("wr_1", note: "no") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+      expect(store.find("wr_1")).to eq(before)
+
+      run = engine.reject("wr_1", note: "no", extra_attempts: 1)
+
+      expect(run).to include("state" => "running", "extra_attempts" => 1)
+    end
+
+    def two_attempts = definition("max_attempts: 2\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n")
+
+    def add_attempts(count)
+      store.update("wr_1") { |stored| count.times { |n| stored["steps"]["a"]["attempts"] << {"n" => 10 + n, "outcome" => "failed"} } }
+    end
+
+    it "keeps no extra_attempts key on a first attempt or an old run, which is still refused when spent" do
+      start(one_attempt, inputs: {})
+      expect(store.find("wr_1")).not_to have_key("extra_attempts")
+      expect(store.find("wr_1")["steps"]["a"]["attempts"].size).to eq(1)
+
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      expect(store.find("wr_1")).not_to have_key("extra_attempts")
+      expect(described_class.attempts_spent?(store.find("wr_1"))).to be(true)
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+      expect(described_class.attempts_spent?({"definition" => {}, "steps" => {}})).to be(false)
+    end
+
+    it "needs an --extra-attempts that covers the overrun, and says how much" do
+      failed_run
+      add_attempts(2)
+
+      expect { engine.resume("wr_1", extra_attempts: 2) }.to raise_error(Workspace::Error, /\(3 of 1\)\. Pass --extra-attempts 3 to continue/) { |error|
+        expect(error.details).to include("needed" => 3)
+      }
+      expect(store.find("wr_1")).not_to have_key("extra_attempts")
+      expect(engine.resume("wr_1", extra_attempts: 3)).to include("extra_attempts" => 3)
+    end
+
+    it "measures the minimum against a stored extra_attempts: one below is refused, exactly at it goes on" do
+      failed_run
+      engine.resume("wr_1", extra_attempts: 1)
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+      add_attempts(2)
+      # made 4 of an allowance of 2 (1 plus 1 stored): at least 3 more is needed
+      expect(described_class.extra_attempts_needed(store.find("wr_1"))).to eq(3)
+
+      expect { engine.resume("wr_1", extra_attempts: 2) }.to raise_error(Workspace::Error) { |error| expect(error.details).to include("needed" => 3, "max_attempts" => 2) }
+      expect(engine.resume("wr_1", extra_attempts: 3)).to include("extra_attempts" => 4)
+    end
+
+    it "takes --extra-attempts with --from" do
+      failed_run
+
+      expect(engine.resume("wr_1", from: "a", extra_attempts: 1)).to include("state" => "running", "extra_attempts" => 1)
+    end
+
+    it "logs and changes nothing when the named pane belongs to another run" do
+      failed_run
+      start(one_attempt, inputs: {}, pane: "%8", workspace: "app.worktree-b")
+      before = store.find("wr_1")
+      lines = history_lines.size
+
+      expect { engine.resume("wr_1", pane: "%8", extra_attempts: 1) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
+
+      expect(store.find("wr_1")).to eq(before)
+      expect(history_lines.size).to eq(lines)
+    end
+
+    it "holds a resume during an on_fail backoff to the budget, and ends the wait with --extra-attempts" do
+      waiting = definition("max_attempts: 3\nsteps:\n  build:\n    prompt: B\n  verify:\n    prompt: V\n    status: bin/check\n    on_fail: {goto: build, max: 2, backoff: 2m}\n")
+      start(waiting, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(store.find("wr_1")["reason"]["code"]).to eq("retry_backoff")
+      store.update("wr_1") { |stored| stored["definition"]["max_attempts"] = 2 }
+      before = store.find("wr_1")
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+      expect(store.find("wr_1")).to eq(before)
+
+      run = engine.resume("wr_1", extra_attempts: 1)
+
+      expect(run).to include("state" => "running", "current" => "build", "extra_attempts" => 1)
+      expect(run).not_to have_key("backoff")
+      expect(run["loops"]).to eq("verify->build" => 1)
+    end
+
+    it "lets on_fail retry up to the raised allowance, and no further" do
+      looping = definition("max_attempts: 2\nsteps:\n  build:\n    prompt: B\n  verify:\n    prompt: V\n    status: bin/check\n    on_fail: {goto: build, max: 9}\n")
+      start(looping, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", pane: "%5")
+      expect(run["reason"]["details"]).to include("attempts" => 2, "max_attempts" => 2)
+
+      engine.resume("wr_1", extra_attempts: 2)
+      check_results << {exit_code: 1, timed_out: false}
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
+      engine.turn_ended("wr_1", pane: "%5")
+      check_results << {exit_code: 1, timed_out: false}
+      run = engine.turn_ended("wr_1", pane: "%5")
+      expect(run["reason"]["details"]).to include("attempts" => 5, "max_attempts" => 4)
+      expect(run["state"]).to eq("waiting")
+    end
+
+    describe "a parked resume" do
+      it "keeps the flag in the park, applies it on release, and records it once" do
+        failed_run
+
+        parked = engine.park("wr_1", extra_attempts: 1)
+
+        expect(parked["parked"]).to include("extra_attempts" => 1)
+        expect(parked).not_to have_key("extra_attempts")
+        run = engine.release_park("wr_1", parked["parked"]["id"])
+        expect(run).to include("state" => "running", "extra_attempts" => 1)
+        expect(history_lines.count { |line| line["type"] == "attempts_extended" }).to eq(1)
+      end
+
+      it "is not charged again when the line could not be typed and the park is made again" do
+        failed_run
+        id = engine.park("wr_1", extra_attempts: 1)["parked"]["id"]
+        panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+
+        run = engine.release_park("wr_1", id)
+
+        expect(run["parked"]).to include("retries" => 1)
+        expect(run["parked"]).not_to have_key("extra_attempts")
+        expect(run["extra_attempts"]).to eq(1)
+        panes.kick_result = {ok: true}
+
+        run = engine.release_park("wr_1", run["parked"]["id"])
+
+        expect(run).to include("state" => "running", "extra_attempts" => 1)
+        expect(history_lines.count { |line| line["type"] == "attempts_extended" }).to eq(1)
+      end
+
+      it "raises on release when the budget filled in the meantime, and stays parked" do
+        start(two_attempts, inputs: {})
+        check_results << {exit_code: 1, timed_out: false}
+        engine.turn_ended("wr_1")
+        id = engine.park("wr_1")["parked"]["id"]
+        add_attempts(1)
+
+        expect { engine.release_park("wr_1", id) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+
+        expect(store.find("wr_1")["parked"]["id"]).to eq(id)
+      end
+    end
+
+    it "refuses a resume parked for a spent run, at park time" do
+      failed_run
+
+      expect { engine.park("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+    end
+  end
+
   describe "a require: proof outside the run's lock" do
     let(:flow) do
       definition(<<~YAML)

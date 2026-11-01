@@ -7178,9 +7178,9 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "reject", "wr_1", "--note", "Too big.", "--to", "research"])
 
       expect(workflow_command.calls).to eq([
-        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", caller_pane: nil}],
+        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, caller_pane: nil}],
         [:cancel, {run: "wr_1"}],
-        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, caller_pane: nil}]
+        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, extra_attempts: nil, caller_pane: nil}]
       ])
     end
 
@@ -7190,7 +7190,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["workflow", "resume", "wr_1", "--json"])
 
-      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, caller_pane: "%5"}]])
+      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, caller_pane: "%5"}]])
       expect(JSON.parse(output.string)).to include("ok" => true, "status" => "ok", "summary" => {"unchanged" => 1})
     end
 
@@ -7212,9 +7212,23 @@ RSpec.describe Workspace::CLI do
 
       expect(workflow_command.calls).to eq([
         [:approve, {run: "wr_1", note: nil, step: "triage", attempt: 2, note_sha256: sha, caller_pane: "%5"}],
-        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, caller_pane: "%5"}],
+        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, extra_attempts: nil, caller_pane: "%5"}],
         [:approve, {run: "wr_1", note: nil, step: "triage", attempt: nil, note_sha256: nil, caller_pane: "%5"}]
       ])
+    end
+
+    it "passes --extra-attempts to resume and reject, and refuses a bad one or another verb" do
+      cli.run(["workflow", "resume", "wr_1", "--extra-attempts", "2"])
+      cli.run(["workflow", "reject", "wr_1", "--note", "No.", "--extra-attempts=3"])
+
+      expect(workflow_command.calls.map { |call| [call.first, call.last[:extra_attempts]] }).to eq([[:resume, 2], [:reject, 3]])
+      {["workflow", "resume", "wr_1", "--extra-attempts", "0"] => /--extra-attempts must be a whole number from 1 up, got "0"/,
+       ["workflow", "resume", "wr_1", "--extra-attempts", "x"] => /--extra-attempts must be a whole number/,
+       ["workflow", "approve", "wr_1", "--extra-attempts", "1"] => /--extra-attempts is for `workflow resume` and `workflow reject`/}.each do |argv, message|
+        cli, _, error_output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+      end
     end
 
     it "refuses a bad --step, --attempt or --note-sha256 as a usage error, and moves nothing" do

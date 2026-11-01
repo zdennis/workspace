@@ -278,6 +278,7 @@ module Workspace
     }.freeze
 
     WORKFLOW_NOTE = ["--note TEXT", "Added to the next attempt's instructions"].freeze
+    EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
 
     WORKFLOW = {
       "show" => {
@@ -578,7 +579,7 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]"],
+        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--json]"],
         summary: "Get a run going again",
         about: [
           RUN_ID,
@@ -595,9 +596,13 @@ module Workspace
           "`parked`, exit 0, and the caller should end its turn. The agent daemon carries it out once the turn",
           "is over, within 1 hour, else the run reads waiting_you / parked_timeout. It needs a daemon started",
           "after the upgrade (workspace daemon restart) and a pane in window 0. With a draft in a Claude pane's",
-          "input box nothing is typed and the draft stays (pane_busy, input_not_empty)."
+          "input box nothing is typed and the draft stays (pane_busy, input_not_empty).",
+          "",
+          "A resume that would start an attempt is refused (attempts_spent) when the run has made all its",
+          "max_attempts; --extra-attempts N adds N to the run's allowance and goes on. N must cover the overrun",
+          "(1 for a run exactly spent; the refusal names the least). It is ignored when the resume starts no attempt."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, JSON_OPT],
+        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, JSON_OPT],
         examples: [
           ["workspace workflow resume RUN", "pick a stuck run up again: its lock is asked for again, a failed step runs again"],
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
@@ -639,13 +644,15 @@ module Workspace
         ]
       },
       "reject" => {
-        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]"],
+        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--json]"],
         summary: "Turn a run's gate down",
         about: [
           RUN_ID,
           "",
           "The gated step (or --to an earlier one) runs again with the note. Refused from a pane a run is bound",
-          "to and from a process under the run's own pane, as approve is."
+          "to and from a process under the run's own pane, as approve is. It is refused (attempts_spent) when",
+          "the run has made all its max_attempts, unless --extra-attempts N adds to the allowance; N must cover the",
+          "overrun (1 for a run exactly spent)."
         ],
         options: [["--note TEXT", "Why; given to the next attempt"],
           ["--to STEP", "The step to run again (the gated step, or one before it)"],

@@ -21,10 +21,10 @@ workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
-workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
+workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--json]
 workspace workflow cancel RUN [--json]
 workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
-workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--json]
+workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--json]
 
 workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
 workspace step status [--json]
@@ -95,6 +95,8 @@ A step is done when the agent's turn ends in the bound pane, every file the step
 
 - A step with `gate: approve` waits for `workflow approve` once it has passed. The run holds no lock while it waits. See [Passing a gate](#passing-a-gate).
 - A step that fails (its check exits non-zero or runs past its time limit, or the agent reported `fail`) goes back to the step its `on_fail: {goto, max}` names, at most `max` times, and never once the run has made `max_attempts` attempts across all its steps. The step it goes back to is told what failed, and, with `log_tail`, shown the end of the check's log. With `backoff` the retry starts after a wait instead of at once ([Retrying a failed step](#retrying-a-failed-step)). After that the run stops and waits for you.
+
+`workflow resume` and `workflow reject` hold to the same budget: one that would start an attempt (a failed or undelivered step run again, `--from`, a retry's wait ended, a `--pane` resume of a running step, any reject) is refused with `attempts_spent` (`details`: `attempts`, `max_attempts`, `step`) once the run has made `max_attempts` attempts, and nothing changes. Pass `--extra-attempts N` (a whole number from 1 up) to add N to that run's allowance and go on; N must cover the overrun (the attempt about to start has to fit), and the refusal names the least that does (`details.needed`, also in its message); the run file keeps it as `extra_attempts`, the event log records `attempts_extended`, the definition is not rewritten, and a later `on_fail` check counts against the raised total (`failed_check` `details.max_attempts` shows it). It also applies when the budget is not spent yet. A resume parked from the run's own pane is checked when it is parked and again when it is carried out, but not when it is typed again after a busy pane (that attempt was already counted); the flag is applied once, on release. A resume that starts no attempt (it only reports `unchanged`, decides a running step from a turn that is over, looks at a check, moves a passed step on, or asks for a lock again) is never refused and ignores the flag, as do `tick` and `workflow sweep`; attempts the sweep typed again (`redelivered`) do not count. Runs stored before this check get the same refusal. `workflow status` marks every action that would start an attempt (a plain resume only for a step that a resume would run again; resume `--from`; a gate's reject) with the `extra_attempts` need while the run has spent its attempts, read from the run as it is now. The need is `{"name":"extra_attempts","flag":"--extra-attempts","min":N}`: pass at least `min` (the same number as `details.needed`).
 - When the last step passes, the run is `completed`, its locks are released and its pane is unbound.
 - A check still running when its run is cancelled, killed or moved to another step is stopped within a few seconds, so it doesn't go on using the test database beside the lock's next holder.
 
@@ -659,7 +661,7 @@ Every refusal leaves the run file as it was.
 A run that is not moving has a `reason`: a `code`, `since`, `details`, and `actions`, the commands that resolve it. Every entry has `action`, `args` and `needs`:
 
 - `needs: []`: run `workspace <action> <args...>` as written.
-- Otherwise the caller supplies one value per entry of `needs` (`name`, `flag`) and appends it after `args`: the flag then the value, or `--` then the value when `flag` is `null`. `workflow reject` needs `{"name":"note","flag":"--note"}` and `ask answer` needs `{"name":"answer","flag":null}`. No placeholder is ever in `args`; the text output shows one for a person (`workspace workflow reject RUN --note NOTE`).
+- Otherwise the caller supplies one value per entry of `needs` (`name`, `flag`) and appends it after `args`: the flag then the value, or `--` then the value when `flag` is `null`. `workflow reject` needs `{"name":"note","flag":"--note"}`; an action that would be refused with `attempts_spent` also lists `{"name":"extra_attempts","flag":"--extra-attempts","min":N}`, where the value must be a whole number of at least `min` (`min` is only on this need) and `ask answer` needs `{"name":"answer","flag":null}`. No placeholder is ever in `args`; the text output shows one for a person (`workspace workflow reject RUN --note NOTE`).
 
 | Code | Meaning | `details` |
 |---|---|---|
