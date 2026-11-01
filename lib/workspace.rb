@@ -315,6 +315,7 @@ require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
+require_relative "workspace/workflow_sweep"
 require_relative "workspace/workflow_workspace_facts"
 require_relative "workspace/workflow_nudger"
 require_relative "workspace/bookkeeping_exclude"
@@ -624,6 +625,8 @@ module Workspace
       gate_note: workflow_gate_note)
     workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
       agents: ProjectAgents.new(client: agent_snapshot_client))
+    workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
+      interrupter: ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) })
     workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
@@ -631,6 +634,7 @@ module Workspace
       run_files: WorkflowRunFiles.new,
       attempts: WorkflowAttempts.new,
       audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
+      sweep: workflow_sweep,
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,

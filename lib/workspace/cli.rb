@@ -710,7 +710,7 @@ module Workspace
           ui              Open a workspace-ui:// link (open), or see which app would take one (status)
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
-          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; manage your own definitions (validate, add, update, remove); read a run's history (events, files, attempts) and check its evidence (audit)
+          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; manage your own definitions (validate, add, update, remove); read a run's history (events, files, attempts), check its evidence (audit) and act on runs that have stopped (sweep)
 
         Global options:
           --debug         Print detailed debug output to stderr
@@ -5000,7 +5000,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start status events files attempts audit resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start status events files attempts audit sweep resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5032,7 +5032,7 @@ module Workspace
         opts.separator "`start` may leave out the ID: config names it (workflows.by_ref.<kind>, else workflows.default)."
         opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
         opts.separator ""
-        opts.on("--name WORKSPACE", "run: the workspace to run in; status: that workspace's runs still going (default: the current workspace)") { |v| options[:name] = v }
+        opts.on("--name WORKSPACE", "run: the workspace to run in; status: that workspace's runs still going (default: the current workspace); sweep: only that workspace's runs (default: every run going)") { |v| options[:name] = v }
         opts.on("--input KEY=VALUE", "run, start: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
         opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
         opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
@@ -5048,7 +5048,7 @@ module Workspace
         opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
         opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
         opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
-        opts.on("--dry-run", "run, start: report what would start and start nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
+        opts.on("--dry-run", "run, start: report what would start and start nothing; sweep: report what would be done and do nothing; add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
         opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
         opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
@@ -5094,7 +5094,7 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
@@ -5109,6 +5109,7 @@ module Workspace
       raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
       raise UsageError, "--project is for `workflow status`." if options[:project] && subcommand != "status"
+      raise UsageError, "workflow sweep takes a RUN or --name WORKSPACE, not both." if subcommand == "sweep" && subject && options[:name]
       raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
@@ -5146,6 +5147,8 @@ module Workspace
       when "audit"
         result = @workflow_command.audit(run: subject, step: options[:attempt_of], json: options[:json])
         @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      when "sweep"
+        workflow_action_rows("workflow sweep", options) { @workflow_command.sweep(run: subject, name: options[:name], dry_run: options[:dry_run], json: options[:json], caller_pane: ENV["TMUX_PANE"]) }
       when "events"
         @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])
       when "status"
@@ -5253,6 +5256,14 @@ module Workspace
         row = yield
         next {exit_code: 0, results: [], status: "cancelled"} unless row
         {exit_code: (row["outcome"] == "failed") ? 1 : 0, results: [row], status: (row["outcome"] == "dry_run") ? "dry_run" : nil}
+      end
+    end
+
+    # Like {#workflow_action}, for a command that answers many rows and its own exit code.
+    def workflow_action_rows(action, options)
+      run_action(action, json: options[:json]) do
+        outcome = yield
+        {exit_code: outcome[:exit_code], results: outcome[:results], status: outcome[:status]}
       end
     end
 

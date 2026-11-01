@@ -3,8 +3,8 @@
 # a binding that goes stale when its pane is no longer where it was bound
 # (`stale`), and a kick that types nothing when it reports a failure.
 class FakeWorkflowPanes
-  attr_reader :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone
-  attr_accessor :kick_result, :bind_error, :daemon
+  attr_reader :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone, :rows, :respawns
+  attr_accessor :kick_result, :bind_error, :daemon, :respawn_result, :on_row, :session
 
   def initialize
     @bound = {}
@@ -16,6 +16,10 @@ class FakeWorkflowPanes
     @gone = []
     @agents_gone = []
     @daemon = true
+    @rows = {}
+    @session = true
+    @respawns = []
+    @respawn_result = {ok: true}
   end
 
   def run_on(pane)
@@ -40,6 +44,20 @@ class FakeWorkflowPanes
   def agent_gone?(_workspace, pane) = @agents_gone.include?(pane)
 
   def daemon_running?(_workspace) = @daemon
+
+  # The pane's entry in the daemon's snapshot; +on_row+ runs first, for a spec that changes the run in between.
+  def pane_row(_workspace, pane)
+    @on_row&.call
+    @rows[pane]
+  end
+
+  def session_live?(_workspace) = @session
+
+  def respawn_daemon(workspace)
+    @respawns << workspace
+    @daemon = true if @respawn_result[:ok]
+    @respawn_result
+  end
 
   def bind(workspace:, pane:, **fields)
     raise @bind_error if @bind_error

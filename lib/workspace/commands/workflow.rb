@@ -29,6 +29,7 @@ module Workspace
       # @param run_files [Workspace::WorkflowRunFiles] lists a run's files (`files`)
       # @param attempts [Workspace::WorkflowAttempts, nil] reads a run's recorded attempts (`attempts`)
       # @param audit [Workspace::WorkflowAudit, nil] checks a run's evidence copies against their hashes (`audit`)
+      # @param sweep [Workspace::WorkflowSweep, nil] looks at the runs still going and acts on the stopped ones (`sweep`)
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -37,7 +38,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, pid: Process.pid,
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -48,6 +49,7 @@ module Workspace
         @run_files = run_files
         @attempts = attempts
         @audit = audit
+        @sweep = sweep
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -334,6 +336,33 @@ module Workspace
         {exit_code: result["clean"] ? 0 : 1}
       end
 
+      # One pass over the runs still going (see {Workspace::WorkflowSweep}): records the ones whose pane or
+      # agent is gone, starts a workspace's agent daemon that is not running, decides a step whose agent ended
+      # its turn unseen, and applies `on_timeout` to a step past its `timeout`. Prints a line for each run it
+      # acted on or noted. Needs no agent daemon, and leaves a run alone when this process runs in its pane.
+      #
+      # @param run [String, nil] only this run
+      # @param name [String, nil] only this workspace's runs
+      # @param dry_run [Boolean] say what would be done and do nothing
+      # @param json [Boolean] the caller prints the action document, so no count line is written
+      # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
+      # @return [Hash{Symbol=>Object}] `exit_code` (1 when a result is `failed`: the action document turns that into 3 or 1),
+      #   `results` (the rows) and, for a dry run, `status`
+      # @raise [Workspace::Error] code `unknown_run`
+      def sweep(run: nil, name: nil, dry_run: false, json: false, caller_pane: nil)
+        raise Workspace::Error, "workflow sweep is not available: no sweep was wired" unless @sweep
+        allow = lambda do |stored|
+          refuse_caller!(stored, caller_pane, "workflow sweep", "A run is moved by a person or the sweep, not by its own agent")
+          nil
+        rescue Workspace::Error => e
+          raise unless e.code == "bound_pane"
+          e.message.lines.first.to_s.strip
+        end
+        rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow)
+        print_sweep(rows, summary: !json)
+        {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil)}
+      end
+
       # Gets a run going again. Everything the engine would refuse is refused
       # first; only then is a daemon started or a pane picked.
       #
@@ -561,6 +590,18 @@ module Workspace
         (seconds >= 0) ? "#{seconds.round}s" : "-"
       rescue ArgumentError
         "-"
+      end
+
+      QUIET_SWEEP_REASONS = %w[healthy parked checking not_running finished held idle delivering prompt timed_out].freeze
+
+      def print_sweep(rows, summary:)
+        shown = rows.reject { |each| each["outcome"] == "nothing" && QUIET_SWEEP_REASONS.include?(each["reason"]) }
+        shown.each do |each|
+          label = (each["outcome"] == "nothing") ? "left alone (#{each["reason"]})" : each["outcome"].tr("_", " ")
+          @output.puts "#{each["run_id"]}  #{each["workspace"]}  step #{each["step"]}  #{label}#{": #{TerminalText.escape(each["message"])}" if each["message"]}"
+        end
+        return unless summary
+        @output.puts "Looked at #{rows.size} run#{"s" unless rows.size == 1}; #{shown.empty? ? "nothing to report" : "#{shown.size} reported above"}."
       end
 
       PRODUCES_PROBLEMS = {"symlink" => "a link; write a regular file", "not_regular_file" => "not a regular file", "empty" => "empty; write its content"}.freeze
@@ -907,6 +948,8 @@ module Workspace
         when "failed_check"
           if details["cause"] == "reported"
             "step #{details["step"]} was reported failed#{": #{details["summary"]}" if details["summary"]}"
+          elsif details["cause"] == "timeout"
+            "step #{details["step"]} ran past its #{details["timeout"]} second time limit and was failed by the sweep"
           elsif details["cause"] == "require"
             "step #{details["step"]} failed #{details["code"]}: #{TerminalText.escape(details["detail"].to_s)}"
           else

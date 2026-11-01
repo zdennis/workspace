@@ -18,6 +18,7 @@ workspace workflow events RUN [--since N] [--json]
 workspace workflow files RUN [--json]
 workspace workflow attempts RUN [--attempt-of STEP] [--json]
 workspace workflow audit RUN [--attempt-of STEP] [--json]
+workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
 workspace workflow cancel RUN [--json]
 workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
@@ -41,6 +42,7 @@ workspace step status [--json]
 | `workflow attempts` | What a run recorded about each attempt, going or finished: outcome, failure code, HEAD before and after, hashes, packs, outputs, check, agent, session, tokens and reasons. Reads the run file and writes nothing. See [Reading a run's attempts](#reading-a-runs-attempts) |
 | `workflow audit` | Check the evidence copies a run kept against the hashes recorded for them, going or finished. Exits 1 when a copy changed, is gone or was replaced. Reads the run file and the evidence directory and writes nothing. See [Auditing a run's evidence](#auditing-a-runs-evidence) |
 | `workflow files` | The files a run keeps: each attempt's prompt, check log and proof logs and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
+| `workflow sweep` | One pass over the runs going: record a pane or agent that is gone, start an agent daemon that is not running, decide a step whose agent ended its turn unseen, and apply a step's `on_timeout`. Needs no agent daemon. See [Sweeping stopped runs](#sweeping-stopped-runs) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to. Run from the pane it would type into, it is [parked](#resuming-from-the-runs-own-pane) (outcome `parked`) and carried out after the agent ends its turn |
 | `workflow cancel` | End a run and release what it holds |
 | `workflow approve` | Pass a gate. Refused from a pane a run is bound to, and from a process under the run's own pane, so an agent doesn't approve its own plan by mistake. Records the gate's note when it names one. See [Passing a gate](#passing-a-gate) |
@@ -269,7 +271,7 @@ Top-level keys:
 | `include` | Pack names composed after the default packs, for every step |
 | `instructions` | Text for every step |
 | `max_attempts` | Attempts the run may make across all its steps before a failure stops it (default 6) |
-| `stall` | A duration such as `20m`, or left out (the default). Read and kept in the definition, but nothing acts on it yet |
+| `stall` | A duration such as `20m`, or left out (the default): how long a step's pane may sit idle, its agent's turn over, before `workflow sweep` decides the step. Only the sweep reads it; left out, the sweep never decides a step for being idle |
 | `steps` | Step id to step, in the order they run |
 
 Step keys:
@@ -287,8 +289,8 @@ Step keys:
 | `uses` | Lock names the run holds for the step. `dev-env` is `devenv`; `edit` is refused (only the agent that edits can hold it). A step that uses `devenv` is not sent the `dev` pack, even when it is in the defaults or an `include:`: the run holds the environment for it |
 | `on_fail` | `{goto: STEP, max: N}`: on failure go back to an earlier step, at most `N` times (default 1). `context:` overrides the target step's `context` for that jump |
 | `context` | `fresh` (default): start the step in a new conversation. `continue`: keep the pane's conversation |
-| `timeout` | How long the step may take before `status` flags it `timed_out`. Nothing is stopped |
-| `on_timeout` | `warn` (the default), `interrupt` or `fail`: what a step past its `timeout` should get. Read and kept in the definition, but nothing acts on it yet, so every value behaves as `warn`. `interrupt` or `fail` with no `timeout` is a `workflow validate` warning |
+| `timeout` | How long the step may take before `status` flags it `timed_out`. Nothing is stopped unless `on_timeout` says so and `workflow sweep` runs |
+| `on_timeout` | `warn` (the default), `interrupt` or `fail`: what a step past its `timeout` gets when `workflow sweep` runs: nothing (`warn`), the agent's interrupt keys once (`interrupt`), or a failed step (`fail`). Without a sweep every value behaves as `warn`. `interrupt` or `fail` with no `timeout` is a `workflow validate` warning |
 
 Text in `instructions` and `prompt` may use `{{workspace}}`, `{{branch}}`, `{{artifacts}}` (the run's directory, `<checkout>/.workflow/<run>`), `{{run}}` and `{{inputs.NAME}}`. Any other placeholder is a problem in the definition. A definition with problems is reported with all of them at once (code `invalid_workflow`).
 
@@ -414,6 +416,29 @@ Exit status is 0 when no copy mismatched (including a run with nothing recorded)
 
 Needs `workflow` 14 in `capabilities`.
 
+
+### Sweeping stopped runs
+
+`workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]` is one pass over the runs still going (every workspace's, unless you name a run or a workspace). It is for the failures nothing else sees: a daemon that died, a pane that closed, an agent whose turn ended while no daemon was watching. It needs no agent daemon, so a scheduler can run it, and a run that another process is changing is skipped and looked at on the next pass.
+
+For a step that reads `running`, the sweep takes the first row of this table that applies:
+
+| It finds | It does | Writes (in the run's history) |
+|----------|---------|-------------------------------|
+| The run's pane is gone | Nothing to the run. It keeps its checkout and locks until `workflow resume` or `workflow cancel`; the sweep only surfaces it | `step_stalled` cause `pane_gone` |
+| The workspace's agent daemon is not running | Starts it (once for each workspace in a pass) and does nothing more to that run in the pass, since a new daemon's reading is not evidence; the next pass reads the pane. It also starts one for a run that is checking, parked or waiting for a lock. A start that fails is tried again on the next pass. A workspace with no tmux session gets none (`workspace_stopped`, not a failure) | `step_stalled` cause `daemon_down`, then `step_recovered` action `daemon_respawned` (written whenever a start succeeds and it is not yet written, once for each attempt) |
+| The step is held (it has a reason, such as `turn_ended_incomplete`, with or without `details.invalid`, or `turn_ended_background`), its line is still being delivered, or its pane waits for an answer | Nothing. A person decides a held step. One exception: a step past its `timeout` with `on_timeout: fail` that is held on `turn_ended_incomplete` is failed (`step_timed_out`, then `on_fail`), because otherwise the timeout is never enforced. A `turn_ended_background` hold has its own 90-minute limit and is never touched | none (the failure writes `step_stalled` cause `timed_out` and `step_recovered` action `failed`) |
+| The pane shows a shell where the agent was | Nothing to the run; it surfaces it | `step_stalled` cause `agent_gone` |
+| The agent's turn is over, and the pane has been idle for the definition's `stall`, or the step is past its `timeout` with `on_timeout` `interrupt` or `fail`, or the sweep interrupted it earlier | Decides the step as `workflow resume` does when given the same proof (its files, `require:` proofs and check), so it passes, fails by `on_fail`, or is held; with `on_timeout: fail`, a decision that is a `turn_ended_incomplete` stop fails the step instead. The pane is read again just before the change and must still show the turn over and idle for at least 5 seconds | `step_stalled` cause `idle_turn_over` (`idle_for`), `step_recovered` action `evaluated`, then the step's own events |
+| The agent is working and the step is past its `timeout` | `on_timeout: interrupt` presses the agent's interrupt keys once for the attempt; `fail` presses them and then fails the step (`step_timed_out`, which then follows `on_fail`); `warn`, the default, does nothing and writes nothing, as before. The press is claimed under the run's lock, made with the lock given up, and confirmed under the lock; it is made only if the pane, read again just before, still shows the same agent working and still belongs to the run, and a claim whose press never finished can be taken over after 60 seconds. If the press fails under `on_timeout: fail`, the step is not failed: the claim is given back, and each pass retries and exits non-zero until the keys go through | `step_stalled` cause `timed_out`, then `step_recovered` action `interrupted` or `failed` |
+
+A run with a live [park](#resuming-from-the-runs-own-pane), a step whose check is running, a run waiting at a gate or for a lock, and a run whose step is not being worked on are left alone. A step with no `stall` and an `on_timeout` of `warn` is never decided for being idle; set `stall` (such as `20m`), or `on_timeout: interrupt`. A step the agent finished while the daemon was down passes on the next sweep once it has been idle that long, and no sooner than 30 seconds after the attempt began.
+
+Every change goes through the run's lock, and is made only if the run is still on the step and attempt the sweep read, so a `resume`, a turn's end or a cancel that got there first stands, and the sweep reports `moved_on`. A cause is recorded once for each attempt: a second sweep writes no event and presses no key again, and a new attempt starts afresh. The marks are the run file's `sweep` key (`step`, `attempt`, `stalled`, `interrupted_at`); a run stored before the sweep has none. The sweep leaves a run alone when it runs in the run's own pane or under it, as `resume` is refused there. A small window remains between reading the pane and taking the lock: a turn that begins in it is decided as if it had ended, which the second reading, the idle floor and the attempt check keep to a moment.
+
+A scheduler runs the sweep with a short `PATH`, which must include a Ruby new enough for workspace (`/usr/bin/ruby` can't load the code) and `tmux`; a missing program is a `failed` result with reason `tool_unavailable` that names it. A run file that can't be read is a `failed` result with reason `unreadable_run`.
+
+`--dry-run` reads everything and changes nothing; its rows have outcome `dry_run` and say the `action` they would take. Text output prints a line for each run it acted on or noted, then a count. With `--json` it prints the [action document](README.json.md) with one result for each run looked at: `workspace`, `outcome`, `reason`, `message`, `run_id`, `step`, `attempt`, `cause`, `action`. Outcomes: `nothing` (`reason`: `healthy`, `idle`, `held`, `parked`, `checking`, `not_running`, `delivering`, `prompt`, `timed_out`, `already_recorded`, `already_interrupted`, `no_interrupt_key`, `refused`, `busy`, `moved_on`, `unknown`, `finished`), `recorded`, `evaluated`, `interrupted`, `timed_out`, `respawned`, `dry_run` and `failed` (`daemon_not_started`, `interrupt_failed`, `tool_unavailable`, `unreadable_run`, or the code of an error reading the run). Other reasons under `nothing`: `workspace_stopped`, `pane_changed`, `not_working`, `no_attempt`. A `failed` result is a daemon that could not be started, an interrupt that failed, a missing program or an unreadable run file; a stalled run found and recorded is a finding, not a failure. The exit status follows the action document: 0 when no result failed, 3 when some did, 1 when all did. A usage error or an unknown RUN (`unknown_run`) prints the error envelope and exits 1, so a script tells it from a failed action by the document's shape (`ok: false` and `code`, against `action` and `results`), not by the exit code. Needs `workflow` 15 in `capabilities`.
 
 ### Reading a run's files
 
@@ -572,7 +597,7 @@ A plain `workflow resume` (no `--from`) and `workflow advance` of a step that ha
 
 ### Failure codes
 
-Every `failed_check` reason has `details.code` and `details.code_source`. `engine` codes are a closed set: the guard codes above, `require_commits`, `require_nonempty`, `require_plan_status`, `require_tracked_clean`, `require_command`, `require_inbox_item`, `require_remote_unchanged`, `require_remote_unreachable`, `require_unknown` (see [Required proofs](#required-proofs)), `check_failed` (a `status:` command exited non-zero), `check_timed_out`, `check_error` (the check could not run, or the project's command is unset) and `reported` (`step done --status fail` with no `--code`). For a guard failure `details.guard` repeats `code`, `details.paths` is `[]` except for `tracked_changed`, and `head_moved` also has `base_sha` and `head`. A run stored before these keys existed has no `code` or `code_source` on its stored reasons. `step done --code` refuses the engine's words. An `agent` code is the word the agent gave with `step done --code`, stored as `reported.code`: a word it chose, which each workflow documents for itself. A client maps it to words, never to actions. `details.summary` stays free text, and `details.error` (why a check has no exit code) is not a code.
+Every `failed_check` reason has `details.code` and `details.code_source`. `engine` codes are a closed set: the guard codes above, `require_commits`, `require_nonempty`, `require_plan_status`, `require_tracked_clean`, `require_command`, `require_inbox_item`, `require_remote_unchanged`, `require_remote_unreachable`, `require_unknown` (see [Required proofs](#required-proofs)), `check_failed` (a `status:` command exited non-zero), `check_timed_out`, `check_error` (the check could not run, or the project's command is unset), `step_timed_out` (`workflow sweep` failed a step past its `timeout` with `on_timeout: fail`; `details.cause` is `timeout`, with `timeout` and `elapsed` in seconds) and `reported` (`step done --status fail` with no `--code`). For a guard failure `details.guard` repeats `code`, `details.paths` is `[]` except for `tracked_changed`, and `head_moved` also has `base_sha` and `head`. A run stored before these keys existed has no `code` or `code_source` on its stored reasons. `step done --code` refuses the engine's words. An `agent` code is the word the agent gave with `step done --code`, stored as `reported.code`: a word it chose, which each workflow documents for itself. A client maps it to words, never to actions. `details.summary` stays free text, and `details.error` (why a check has no exit code) is not a code.
 
 ### A rejected gate
 
@@ -727,7 +752,7 @@ Failures print the [error envelope](README.json.md). Codes: `unknown_workflow`, 
 
 ## Events
 
-Every change to a run writes one `workflow_changed` to the [event log](README.event-log.md), under the run's workspace, with `run_id`, `workflow`, `workspace`, `state`, `step` and `reason` (the stored reason code, or `null`). It says a run changed; refetch `workflow status --json`. A hold (`turn_ended_background`) writes one line on entering, with `state` `running`, and none for its later Stops. A run's locks write `lock_wait_started`, `lock_acquired` and `lock_released` under the repository's project, with `run_id` in place of `pid`.
+Every change to a run writes one `workflow_changed` to the [event log](README.event-log.md), under the run's workspace, with `run_id`, `workflow`, `workspace`, `state`, `step` and `reason` (the stored reason code, or `null`). It says a run changed; refetch `workflow status --json`. A hold (`turn_ended_background`) writes one line on entering, with `state` `running`, and none for its later Stops. A run's locks write `lock_wait_started`, `lock_acquired` and `lock_released` under the repository's project, with `run_id` in place of `pid`. The sweep writes `step_stalled` and `step_recovered` to the run's own history (`workflow events`), not to the event log.
 
 ## Examples
 

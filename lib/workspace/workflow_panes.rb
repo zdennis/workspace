@@ -205,10 +205,42 @@ module Workspace
     # @return [Boolean] whether the pane has shown a shell for {AGENT_GONE_AFTER}
     #   seconds; false when the daemon does not answer
     def agent_gone?(workspace, pane)
-      row = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
-      !row.nil? && row["kind"] == "shell" && row["idle_seconds"].to_i >= AGENT_GONE_AFTER
+      self.class.agent_gone_row?(row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane))
     rescue Workspace::Error
       false
+    end
+
+    # @param row [Hash{String=>Object}, nil] a pane's entry in the daemon's snapshot
+    # @return [Boolean] whether the pane has shown a shell for {AGENT_GONE_AFTER} seconds
+    def self.agent_gone_row?(row)
+      !row.nil? && row["kind"] == "shell" && row["idle_seconds"].to_i >= AGENT_GONE_AFTER
+    end
+
+    # @param workspace [String]
+    # @param pane [String] a pane id
+    # @return [Hash{String=>Object}, nil] the pane's entry in the daemon's snapshot; nil when the daemon does
+    #   not answer or does not list the pane
+    def pane_row(workspace, pane)
+      row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+    rescue Workspace::Error
+      nil
+    end
+
+    # @param workspace [String]
+    # @return [Boolean] whether the workspace has a tmux session
+    def session_live?(workspace)
+      @tmux.session_exists?(@tmux.session_name_for(workspace))
+    end
+
+    # Starts the workspace's agent daemon when none runs (it answers at once when one does).
+    #
+    # @param workspace [String]
+    # @return [Hash] `:ok`, and `:detail` (why it could not be started) when not
+    def respawn_daemon(workspace)
+      result = @agent_ensurer.call(name: workspace)
+      {ok: result.ok?, detail: result.detail}
+    rescue Workspace::Error => e
+      {ok: false, detail: e.message.lines.first.to_s.strip}
     end
 
     # @param pane [String] a pane id

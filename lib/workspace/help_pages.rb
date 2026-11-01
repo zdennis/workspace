@@ -500,6 +500,33 @@ module Workspace
           ["workspace workflow audit RUN --json", "for a script: one row per file, and clean true or false"]
         ]
       },
+      "sweep" => {
+        usage: ["workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]"],
+        summary: "One pass over the runs going: act on the ones that have stopped",
+        about: [
+          "Looks at every run still going (or one RUN, or one workspace's) and, for a step an agent should be",
+          "working on: records a pane or agent that is gone (`step_stalled`; the run keeps its checkout until you",
+          "resume or cancel it), starts a workspace's agent daemon that is not running, decides a step whose agent",
+          "ended its turn unseen, and applies the step's `on_timeout` (`interrupt` presses the agent's interrupt",
+          "keys once; `fail` fails the step; `warn`, the default, does nothing). A turn counts as unseen once the pane has",
+          "been idle for the definition's `stall`; with no `stall` and no `on_timeout`, only a gone pane or agent and",
+          "a missing daemon are acted on. A held step, a parked resume and a running check are left alone.",
+          "",
+          "It needs no agent daemon, so a scheduler can run it. Running it twice records nothing twice. A run",
+          "that another process is changing is skipped and looked at on the next pass. A daemon that could not be",
+          "started, a failed interrupt, a missing program or an unreadable run file is a failed result (exit 3, or",
+          "1 when every result failed). See docs/README.workflow.md."
+        ],
+        options: [["--name WORKSPACE", "Only this workspace's runs (default: every run going)"],
+          ["--dry-run", "Say what would be done and do nothing"],
+          ["--json", "Print one action document (see docs/README.json.md), one result per run looked at"]],
+        examples: [
+          ["workspace workflow sweep --dry-run", "which stopped runs would a sweep act on?"],
+          ["workspace workflow sweep", "act on every run that has stopped"],
+          ["workspace workflow sweep RUN", "only this run"],
+          ["workspace workflow sweep --name app.worktree-x --json", "for a script: one result per run in that workspace"]
+        ]
+      },
       "events" => {
         usage: ["workflow events RUN [--since N] [--json]"],
         summary: "Show a run's history, one line per event",

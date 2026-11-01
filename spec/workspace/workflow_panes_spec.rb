@@ -681,6 +681,41 @@ RSpec.describe Workspace::WorkflowPanes do
     end
   end
 
+  describe "#pane_row" do
+    it "is the pane's entry in the daemon's snapshot, and nil for another pane or a daemon that doesn't answer" do
+      allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { {"panes" => [{"pane_id" => "%5", "state" => "idle"}]} }
+
+      expect(panes.pane_row("app", "%5")).to eq("pane_id" => "%5", "state" => "idle")
+      expect(panes.pane_row("app", "%9")).to be_nil
+
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no", reason: :no_daemon))
+      expect(panes.pane_row("app", "%5")).to be_nil
+    end
+  end
+
+  describe "#respawn_daemon" do
+    it "asks for the daemon to be running and says whether it is" do
+      expect(panes.respawn_daemon("app")).to eq(ok: true, detail: nil)
+      expect(ensured).to eq(["app"])
+    end
+
+    it "carries the reason a daemon could not be started" do
+      result = Workspace::Commands::EnsureAgent::Result.new(:failed, "no tmux session")
+      allow(snapshot_client).to receive(:fetch)
+      ensure_result.status = result.status
+      ensure_result.detail = result.detail
+
+      expect(panes.respawn_daemon("app")).to eq(ok: false, detail: "no tmux session")
+    end
+  end
+
+  describe ".agent_gone_row?" do
+    it "is true for a shell idle 30 seconds and false for no row" do
+      expect(described_class.agent_gone_row?({"kind" => "shell", "idle_seconds" => 30})).to be(true)
+      expect(described_class.agent_gone_row?(nil)).to be(false)
+    end
+  end
+
   describe "#agent_gone?" do
     let(:row) { {"pane_id" => "%5", "kind" => "shell", "idle_seconds" => 30} }
 

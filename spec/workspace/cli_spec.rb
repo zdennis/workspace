@@ -7330,7 +7330,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, sweep, resume, cancel, approve or reject/,
         ["workflow", "list"] => /Unknown workflow subcommand: list/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
