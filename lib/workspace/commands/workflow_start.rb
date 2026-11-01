@@ -227,7 +227,7 @@ module Workspace
       # worktree isn't known yet).
       def default_id(ref, project_workspace, project)
         kind = ref ? @start_ref.call(ref).kind : "prompt"
-        @workflow_defaults.id_for(kind, workspace: project_workspace) || raise_no_default(kind, ref, project_workspace, project)
+        @workflow_defaults.id_for(kind, workspace: project_workspace) || raise_no_default(kind, ref, project)
       end
 
       # A word that names no workflow reads as a branch, so a mistyped id would otherwise start the
@@ -238,13 +238,13 @@ module Workspace
         ["#{ref.inspect} is not a known workflow, so it was read as a branch and #{id} comes from config. Known: #{@catalog.known_ids(project: project).join(", ")}."]
       end
 
-      def raise_no_default(kind, ref, project_workspace, project)
+      def raise_no_default(kind, ref, project)
         known = @catalog.known_ids(project: project)
         read_as = ref ? "#{ref.inspect} is not a known workflow, so it was read as a #{kind} ref. " : ""
         raise Workspace::Error.new("#{read_as}No default workflow is set for a #{kind} start. Name one (workspace workflow start ID ...), " \
           "or set one with `workspace config set workflows.default ID` (add `--scope project` for this project only; " \
           "`workflows.by_ref.#{kind}` sets it for #{kind} starts alone). Known: #{known.join(", ")}.",
-          code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known}.merge(@router.unrouted(kind, workspace: project_workspace)))
+          code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known}.merge(@router.unrouted(kind, workspace: project)))
       end
 
       def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:, force: false)
