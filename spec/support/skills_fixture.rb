@@ -3,10 +3,10 @@ require "fileutils"
 require "open3"
 
 # A temp world for the skills specs: a fake HOME, a fake checkout that holds the
-# four skills (with bin/workspace and a .git directory) and a state directory.
+# five skills (with bin/workspace and a .git directory) and a state directory.
 # Nothing outside the temp directory is read or written.
 module SkillsFixture
-  NAMES = %w[workspace workspace-agent-run workspace-inbox workspace-lifecycle].freeze
+  NAMES = %w[workspace workspace-agent-run workspace-inbox workspace-lifecycle workspace-workflow].freeze
 
   def self.included(base)
     base.around do |example|

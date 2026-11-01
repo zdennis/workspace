@@ -16,7 +16,7 @@ RSpec.describe Workspace::SkillLinks do
   end
 
   describe "#plan and #apply" do
-    it "links all four whole directories, with no links per file, and creates the skills directory" do
+    it "links all five whole directories, with no links per file, and creates the skills directory" do
       result = plan
       links.apply(result)
 
@@ -73,14 +73,14 @@ RSpec.describe Workspace::SkillLinks do
       expect(Dir.children(dir)).not_to include(a_string_matching(/backup|old/))
     end
 
-    it "refuses a real directory with other content, prints the mv, and links none of the four" do
+    it "refuses a real directory with other content, prints the mv, and links none of the five" do
       FileUtils.mkdir_p("#{dir}/workspace-inbox")
       File.write("#{dir}/workspace-inbox/SKILL.md", "mine")
 
       result = plan
       links.apply(result)
 
-      expect(outcomes(result)).to eq("workspace" => "skipped", "workspace-agent-run" => "skipped", "workspace-inbox" => "refused", "workspace-lifecycle" => "skipped")
+      expect(outcomes(result)).to eq("workspace" => "skipped", "workspace-agent-run" => "skipped", "workspace-inbox" => "refused", "workspace-lifecycle" => "skipped", "workspace-workflow" => "skipped")
       refused = result.steps.find { |s| s.outcome == "refused" }
       expect(refused.code).to eq("skill_path_exists")
       expect(refused.mv).to eq("mkdir -p #{File.join(state_dir, "skill-backups/20261030-120000", dir.gsub(/[^A-Za-z0-9._-]+/, "_")).shellescape} && mv #{"#{dir}/workspace-inbox".shellescape} #{File.join(state_dir, "skill-backups/20261030-120000", dir.gsub(/[^A-Za-z0-9._-]+/, "_")).shellescape}/")
@@ -141,7 +141,7 @@ RSpec.describe Workspace::SkillLinks do
       expect(File.symlink?("#{real}/workspace")).to be(true)
     end
 
-    it "refuses all four when the skills directory path is a file" do
+    it "refuses all five when the skills directory path is a file" do
       FileUtils.mkdir_p(File.dirname(dir))
       File.write(dir, "x")
 
