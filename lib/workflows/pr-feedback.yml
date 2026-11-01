@@ -67,14 +67,22 @@ steps:
     prompt: |
       Start by reading {{artifacts}}/triage.md. If its first line is not `note: <file name>`,
       or this step's instructions give no "approved note is PATH, sha256 HASH" line, write
-      {{artifacts}}/fix.md saying the triage did not produce an approved note, make no commits
-      and stop.
+      {{artifacts}}/fix.md saying the triage did not produce an approved note, make no commits,
+      run `workspace step done --status fail --code no_note --summary "<one sentence>"` and end your
+      turn with no further work.
       Run `shasum -a 256` on the triage note at that path and compare it with the approved
-      hash. If they differ, write {{artifacts}}/fix.md saying so, make no commits and stop.
+      hash. If they differ, write {{artifacts}}/fix.md saying so, make no commits,
+      run `workspace step done --status fail --code note_changed --summary "<one sentence>"` and end
+      your turn with no further work.
       The approval comment, if the instructions have one, changes the verdicts; the triage
       note's text is the rest of the plan.
       Check that `git rev-parse HEAD` equals the triage note's `head_sha` and that
-      `git status --porcelain` is empty. If not, write fix.md saying so, make no commits and stop.
+      `git status --porcelain` is empty. If HEAD differs, write fix.md saying so, make no commits, run
+      `workspace step done --status fail --code fix_head_moved --summary "<one sentence>"` and end
+      your turn with no further work. If the tree is not clean, write fix.md saying so, make no
+      commits, run
+      `workspace step done --status fail --code dirty_worktree --summary "<one sentence>"` and end
+      your turn with no further work.
       Record `git rev-parse @{upstream}` in {{artifacts}}/fix.md before and after the work, so
       an unexpected push shows. <n> below is the pull request number in the triage note.
       Fix only the items marked fix, one commit per item or a few related items, and run the

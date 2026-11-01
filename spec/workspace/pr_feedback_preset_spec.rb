@@ -150,7 +150,21 @@ RSpec.describe "the shipped workflow presets" do
       expect(text).to include("is not `note: <file name>`").and include("approved note is PATH, sha256 HASH")
       expect(text).to include("workspace inbox done --dedupe-key pr-feedback:wr_abc123 --name app")
       expect(text).not_to include("origin/<head>")
+      %w[no_note note_changed fix_head_moved dirty_worktree].each do |code|
+        expect(text).to include("workspace step done --status fail --code #{code}")
+      end
       expect(text).to include("pr-feedback-fix:wr_abc123").and include("pr-feedback:wr_abc123").and include("workspace push")
+    end
+  end
+
+  it "never gives step done a code the engine reserves" do
+    Dir[File.join(config.builtin_workflows_dir, "*.yml")].sort.each do |path|
+      id = File.basename(path, ".yml")
+      catalog.find(id).to_h["steps"].each do |step|
+        step["prompt"].to_s.scan(/step done[^`]*?--code\s+([a-z][a-z0-9_]*)/m).flatten.each do |word|
+          expect(Workspace::WorkflowEngine::ENGINE_CODES).not_to include(word), "#{id}/#{step["id"]} uses reserved code #{word}"
+        end
+      end
     end
   end
 end
