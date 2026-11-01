@@ -11,7 +11,7 @@ RSpec.describe "workflow extends" do
 
   let(:global_dir) { File.join(@dir, "global") }
   let(:builtin_dir) { File.join(@dir, "builtin") }
-  let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+  let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(global_dir, "..", "no-projects")) }
   let(:catalog) { Workspace::WorkflowCatalog.new(config: config) }
 
   let(:parent_yaml) {

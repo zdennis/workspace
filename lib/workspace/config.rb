@@ -7,6 +7,9 @@ module Workspace
   class Config
     # Cap for socket paths: macOS sockaddr_un allows 104 bytes for the full
     # expanded path, so agent socket paths are kept under this with headroom.
+    # A project name that is one safe directory name: it starts with a letter, digit or underscore, so
+    # never `.` or `..`, and holds no separator.
+    PROJECT_DIR_NAME = /\A[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\z/
     MAX_SOCKET_PATH_BYTES = 100
 
     # Cap for the log filename component: macOS NAME_MAX allows 255 bytes per
@@ -91,6 +94,16 @@ module Workspace
     # @return [String] path to the user's workflow definitions, one `<id>.yml` each
     def workflows_dir
       File.join(workspace_config_dir, "workflows")
+    end
+
+    # A project's workflow definitions, in the user's config and never in a repository.
+    #
+    # @param name [String] the project's name
+    # @return [String, nil] `projects/NAME/workflows`, or nil when NAME could not be one directory under
+    #   `projects/` (a separator, a leading dot, control or other odd characters)
+    def project_workflows_dir(name)
+      return nil unless name.is_a?(String) && PROJECT_DIR_NAME.match?(name)
+      File.join(workspace_projects_dir, name, "workflows")
     end
 
     # @return [String] path to the workflow presets that ship with workspace

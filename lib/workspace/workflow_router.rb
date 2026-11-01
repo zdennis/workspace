@@ -16,22 +16,24 @@ module Workspace
     end
 
     # @param kind [String] a {WorkflowDefinition::REF_KINDS} entry, from {StartRef}
-    # @param workspace [String] the project the ref would join; its file and the global one are read
+    # @param workspace [String] the project the ref would join; its file and the global one are read, and its
+    #   own workflow definitions are searched before the user's and the presets
     # @param ref [String, nil] the ref, for a refusal's details
     # @param force [Boolean] let a configured default whose `applies_to:` leaves out the kind through
     # @param registered [Boolean] whether +workspace+ is a registered project (else `config set --scope project` has no file to write)
     # @return [Hash{String=>String, nil}] "workflow", "kind", "source" (`default` or `only_fit`), "scope" (`project` or
-    #   `global` for a default, else nil) and "key" (the config key)
+    #   `global` for a default, else nil), "key" (the config key) and "definition_source" (`project`, `global` or `builtin`: the directory
+    #   the chosen definition is read from)
     # @raise [Workspace::Error] code `invalid_workflow_default` (the configured workflow is unknown, unusable, or not
     #   for the kind and not +force+) or `no_default_workflow` (several or none fit, or a definition is broken, and no default is set)
     def route(kind:, workspace:, ref: nil, force: false, registered: true)
-      rows, broken = readable
+      rows, broken = readable(workspace)
       hit = @workflow_defaults.lookup(kind, workspace: workspace)
       return default_route(hit[:id], hit[:scope], hit[:key], kind, rows, force, registered) if hit
 
       key = "workflows.by_ref.#{kind}"
       fits = rows.select { |row| fits?(row, kind) }
-      return {"workflow" => fits.first["id"], "kind" => kind, "source" => "only_fit", "scope" => nil, "key" => key} if fits.size == 1 && broken.empty?
+      return {"workflow" => fits.first["id"], "kind" => kind, "source" => "only_fit", "scope" => nil, "key" => key, "definition_source" => fits.first["source"]} if fits.size == 1 && broken.empty?
 
       refuse_unrouted(kind, ref, key, fits, broken, registered, rows)
     end
@@ -39,16 +41,17 @@ module Workspace
     # What `no_default_workflow` says of a kind, for a start that named no workflow and no key answered.
     #
     # @param kind [String] a {ConfigSchema::WORKFLOW_REF_KINDS} entry; `prompt` has no `applies_to` check, so every workflow fits it
+    # @param workspace [String, nil] the project the ref would join
     # @return [Hash{String=>Object}] "key", "reason", "candidates" (id and use_when of each fit) and "broken"
-    def unrouted(kind)
-      rows, broken = readable
+    def unrouted(kind, workspace: nil)
+      rows, broken = readable(workspace)
       unrouted_details(kind, "workflows.by_ref.#{kind}", rows.select { |row| fits?(row, kind) }, broken)
     end
 
     private
 
-    def readable
-      @catalog.list.partition { |row| row["problems"].empty? }.then { |rows, bad| [rows, bad.map { |row| row["id"] }] }
+    def readable(workspace)
+      @catalog.list(project: WorkflowCatalog.project_of(workspace)).partition { |row| row["problems"].empty? }.then { |rows, bad| [rows, bad.map { |row| row["id"] }] }
     end
 
     def unrouted_details(kind, key, fits, broken)
@@ -69,7 +72,8 @@ module Workspace
         "not_for_kind" unless force
       end
       raise_invalid_default(reason, configured, key, kind, row, rows, registered) if reason
-      {"workflow" => configured, "kind" => kind, "source" => "default", "scope" => scope, "key" => key}
+      {"workflow" => configured, "kind" => kind, "source" => "default", "scope" => scope, "key" => key,
+       "definition_source" => rows.find { |each| each["id"] == configured }["source"]}
     end
 
     def raise_invalid_default(reason, configured, key, kind, row, rows, registered)

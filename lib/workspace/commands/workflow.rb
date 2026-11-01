@@ -98,15 +98,16 @@ module Workspace
       # @param id [String, nil]
       # @param json [Boolean]
       # @param source [Boolean] answer the file's text instead of the parsed definition
+      # @param project [String, nil] the project whose definitions come first (see {Workspace::WorkflowCatalog})
       # @return [void]
       # @raise [Workspace::Error] code `unknown_workflow`; without +source:+ also `invalid_workflow`
-      def show(id: nil, json: false, source: false)
-        return list(json) unless id
-        return show_source(id, json) if source
-        definition = @catalog.find(id)
+      def show(id: nil, json: false, source: false, project: nil)
+        return list(json, project) unless id
+        return show_source(id, json, project) if source
+        definition = @catalog.find(id, project: project)
         data = definition.to_h
         if json
-          return document("workflow" => data.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)))
+          return document("workflow" => data.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)))
         end
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
@@ -126,26 +127,28 @@ module Workspace
       # @param path [String] a file, or "-" for stdin
       # @param id [String, nil] the id to check it as; else a string `id:` in the text, else the file's name, else "stdin" for `-` or "file"
       # @param json [Boolean]
+      # @param project [String, nil] the project whose definitions come first; `scope` and a `shadowed` warning say where PATH sits
       # @return [void]
       # @raise [Workspace::UsageError] when PATH can't be read
       # @raise [Workspace::Error] code `invalid_workflow`, with `details.problems` listing every problem
       #
       # A valid definition also prints its +warnings+ (text lines, or the `warnings` array in JSON) and what it could not check
       # (+not_checked+); neither changes the exit code.
-      def validate(path:, id: nil, json: false)
+      def validate(path:, id: nil, json: false, project: nil)
         stdin = path == "-"
         text = read_text(path, stdin)
         id ||= claimed_id(text) || (stdin ? STDIN_ID : file_id(path))
-        lookup, chain = draft_lookup(id, text)
+        lookup, chain = draft_lookup(id, text, project)
         definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
           path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain)
         found = @lint.call(definition, cwd: Dir.pwd)
-        warnings = definition.warnings + found["warnings"]
+        scope = stdin ? nil : @catalog.scope_of(path, project: project)
+        warnings = definition.warnings + found["warnings"] + shadow_warnings(definition.id, scope, project)
         if json
-          document("workflow" => definition.to_h.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)),
+          document("workflow" => definition.to_h.merge("source" => definition.source, "scope" => scope, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)),
             "warnings" => warnings, "not_checked" => found["not_checked"])
         else
-          @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)"
+          @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)#{", in the #{scope} definitions" if scope}"
           warnings.each { |warning| @output.puts "warning: #{TerminalText.escape(warning["message"])}" }
           found["not_checked"].each { |each| @output.puts "not checked: #{TerminalText.escape(each["message"])}" }
         end
@@ -167,10 +170,11 @@ module Workspace
       # @param worktree [String] the checkout the packs and commands are read from
       # @param inputs [Hash{String=>String}]
       # @param json [Boolean]
+      # @param project [String, nil] the project whose definitions are read first
       # @return [void]
       # @raise [Workspace::Error] code `unknown_workflow`, `invalid_workflow`, `unknown_step`, `input_required`, `invalid_input`, or a pack's
-      def render(id:, step:, workspace:, worktree:, inputs: {}, json: false)
-        definition = @catalog.find(id)
+      def render(id:, step:, workspace:, worktree:, inputs: {}, json: false, project: nil)
+        definition = @catalog.find(id, project: project)
         preview_workspace = workspace.nil?
         result = @engine.render(definition: definition, step: step, workspace: workspace || RENDER_WORKSPACE, worktree: worktree, inputs: inputs)
         previews = [{"name" => "run", "value" => result["run"]}, {"name" => "artifacts", "value" => result["artifacts_dir"]}]
@@ -203,12 +207,13 @@ module Workspace
       # @param worktree [String] the checkout the command runs in
       # @param artifacts [String, nil] an existing directory standing for the run's artifacts
       # @param json [Boolean]
+      # @param project [String, nil] the project whose definitions are read first
       # @return [Hash{Symbol=>Integer}] `exit_code`: 0 when the check passed, 1 when it failed, timed out or could not start
       # @raise [Workspace::Error] code `unknown_workflow`, `invalid_workflow`, `unknown_step`,
       #   `step_without_status`, `workflow_command_unset`, `artifacts_not_directory`
-      def check(id:, step:, worktree:, artifacts: nil, json: false)
+      def check(id:, step:, worktree:, artifacts: nil, json: false, project: nil)
         raise Workspace::Error, "workflow check is not available: no step check was wired" unless @step_check
-        result = @step_check.call(definition: @catalog.find(id), step: step, worktree: worktree, artifacts: artifacts)
+        result = @step_check.call(definition: @catalog.find(id, project: project), step: step, worktree: worktree, artifacts: artifacts)
         tail = log_tail(result["log"])
         if json
           document("workflow" => result["workflow"], "step" => result["step"], "worktree" => worktree, "passed" => result["passed"], "command" => result["command"],
@@ -233,12 +238,13 @@ module Workspace
       # @param script [String] the path of the script file
       # @param inputs [Hash{String=>String}] input values; they win over the script's `inputs:`
       # @param json [Boolean]
+      # @param project [String, nil] the project whose definitions are read first
       # @return [void]
       # @raise [Workspace::Error] code `unknown_workflow`, `invalid_workflow`, `invalid_script`, `input_required`, `invalid_input`
       # @raise [Workspace::UsageError] when the script can't be read
-      def simulate(id:, script:, inputs: {}, json: false)
+      def simulate(id:, script:, inputs: {}, json: false, project: nil)
         raise Workspace::Error, "workflow simulate is not available: no simulator was wired" unless @simulator
-        definition = @catalog.find(id)
+        definition = @catalog.find(id, project: project)
         parsed = WorkflowSimScript.parse(read_script(script), definition: definition.to_h, source: script)
         result = @simulator.call(definition: definition, script: parsed, inputs: inputs)
         return document(result.merge("script" => script)) if json
@@ -252,18 +258,24 @@ module Workspace
       # @param id [String] the workflow's id; a string `id:` in the text must match it
       # @param path [String] a file, or "-" for stdin
       # @param dry_run [Boolean] run every check (the file's existence under its lock) and write no definition; the directory and lock file may be created
+      # @param project [String, nil] the project the caller is in (see {Workspace::WorkflowProject}); definitions stay in the user's config and these write only its workflows directory
       # @return [Hash{String=>Object}] the action row: outcome "added" or "dry_run", with "workflow", "path" and "sha256"
       # @raise [Workspace::UsageError] when PATH can't be read
       # @raise [Workspace::Error] code `invalid_workflow` (a bad id, or text that doesn't pass), `workflow_exists`
-      def add(id:, path:, dry_run: false)
+      def add(id:, path:, dry_run: false, project: nil)
         @files.path(id)
         stdin = path == "-"
         text = read_text(path, stdin)
-        lookup, chain = draft_lookup(id, text)
+        lookup, chain = draft_lookup(id, text, project)
         WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain)
-        builtin = @catalog.locate(id)&.first == "builtin"
+        found = @catalog.locate(id, project: project)
         written = @files.add(id, text, dry_run: dry_run)
-        message = "#{dry_run ? "Would add" : "Added"} workflow #{id} at #{written["path"]}#{"; it shadows the preset of the same id" if builtin}."
+        note = if found&.first == "project"
+          "; the project definition at #{found.last} hides it in #{project}"
+        elsif found&.first == "builtin"
+          "; it shadows the preset of the same id"
+        end
+        message = "#{dry_run ? "Would add" : "Added"} workflow #{id} at #{written["path"]}#{note}."
         @output.puts message
         {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "added", "reason" => nil, "message" => message, "workflow" => id}.merge(written).merge(extended_by(id))
       end
@@ -276,17 +288,20 @@ module Workspace
       # @param path [String] a file, or "-" for stdin
       # @param if_sha256 [String] the sha256 of the file's raw bytes, from `show ID --source --json` or `show --json`
       # @param dry_run [Boolean] run every check and write no definition
+      # @param project [String, nil] the project the caller is in (see {Workspace::WorkflowProject}); definitions stay in the user's config and these write only its workflows directory
       # @return [Hash{String=>Object}] the action row: outcome "updated" or "dry_run", with "workflow", "path" and "sha256"
       # @raise [Workspace::UsageError] when PATH can't be read
       # @raise [Workspace::Error] code `invalid_workflow`, `unknown_workflow`, `builtin_workflow`, `stale_workflow`
-      def update(id:, path:, if_sha256:, dry_run: false)
+      def update(id:, path:, if_sha256:, dry_run: false, project: nil)
         @files.path(id)
         stdin = path == "-"
         text = read_text(path, stdin)
-        lookup, chain = draft_lookup(id, text)
+        lookup, chain = draft_lookup(id, text, project)
         WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain)
-        written = @files.update(id, text, if_sha256: if_sha256, dry_run: dry_run)
-        message = "#{dry_run ? "Would update" : "Updated"} workflow #{id} at #{written["path"]}."
+        written = @files.update(id, text, if_sha256: if_sha256, dry_run: dry_run, project: project)
+        hidden = @catalog.locate(id, project: project)
+        note = "; the project definition at #{hidden.last} hides it in #{project}" if hidden&.first == "project"
+        message = "#{dry_run ? "Would update" : "Updated"} workflow #{id} at #{written["path"]}#{note}."
         @output.puts message
         {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "updated", "reason" => nil, "message" => message, "workflow" => id}.merge(written).merge(extended_by(id))
       end
@@ -294,23 +309,25 @@ module Workspace
       # Refuses, before anyone is asked anything, an id that has no file of the user's.
       #
       # @param id [String]
+      # @param project [String, nil] the project the caller is in
       # @return [void]
       # @raise [Workspace::Error] code `invalid_workflow`, `builtin_workflow`, `unknown_workflow`
-      def check_removable(id:)
-        @files.ensure_present(id)
+      def check_removable(id:, project: nil)
+        @files.ensure_present(id, project: project)
       end
 
       # Deletes a user's definition file. Without +yes+ (and not a dry run) it asks first,
       # before the file's lock is taken; "y" confirms, anything else answers nothing. A preset of
-      # the same id is untouched and is in effect again.
+      # the same id is untouched and is in effect again, unless the project (+project+) has its own definition of the id.
       #
       # @param id [String] the workflow's id
       # @param yes [Boolean] skip the prompt
       # @param dry_run [Boolean] run every check and delete nothing; needs no +yes+
+      # @param project [String, nil] the project the caller is in (see {Workspace::WorkflowProject}); definitions stay in the user's config and these write only its workflows directory
       # @return [Hash{String=>Object}, nil] the action row: outcome "removed" or "dry_run", with "workflow" and "path"; nil when the prompt was declined
       # @raise [Workspace::Error] code `invalid_workflow`, `unknown_workflow`, `builtin_workflow`, `confirmation_required` (input is off)
-      def remove(id:, yes: false, dry_run: false)
-        check_removable(id: id)
+      def remove(id:, yes: false, dry_run: false, project: nil)
+        check_removable(id: id, project: project)
         target = @files.path(id)
         affected = extended_by(id)
         unless yes || dry_run
@@ -320,8 +337,13 @@ module Workspace
             return nil
           end
         end
-        removed = @files.remove(id, dry_run: dry_run)
-        message = "#{dry_run ? "Would remove" : "Removed"} workflow #{id} at #{removed["path"]}#{"; the preset of the same id is in effect again" if removed["preset"]}."
+        removed = @files.remove(id, dry_run: dry_run, project: project)
+        after = if removed["project_path"]
+          "; the project definition at #{removed["project_path"]} stays in effect in #{project}"
+        elsif removed["preset"]
+          "; the preset of the same id is in effect again"
+        end
+        message = "#{dry_run ? "Would remove" : "Removed"} workflow #{id} at #{removed["path"]}#{after}."
         @output.puts message
         {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "removed", "reason" => nil, "message" => message, "workflow" => id, "path" => removed["path"]}.merge(affected)
       end
@@ -335,12 +357,13 @@ module Workspace
       # @param pane [String, nil] the pane to run in (a pane id or `window.pane`); nil for the workspace's Claude pane
       # @param note [String, nil] added to every step's instructions
       # @param dry_run [Boolean] check everything and start nothing
+      # @param project [String, nil] the project whose definitions are read first
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`); a run for that pane is
       #   created and parked, so nothing is typed into the caller
       # @return [Hash{String=>Object}] the action row; `outcome` is "parked" for a run parked from its own pane
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
-      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil)
-        definition = @catalog.find(id)
+      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil)
+        definition = @catalog.find(id, project: project)
         if dry_run
           pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace, start_daemon: false)
           checked = @engine.preflight(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane_id)
@@ -459,6 +482,7 @@ module Workspace
       # @param last [Numeric, nil] only runs started in the last this many seconds
       # @param last_text [String, nil] the `--last` text, to say the window back
       # @param scope [Workspace::StatusScope::Scope, nil] narrows to one workspace or project; nil is every workspace
+      #   (and the definition is looked up with no project)
       # @param json [Boolean]
       # @return [Hash] `exit_code` 3 when a run file could not be read (the figures are then incomplete), else 0
       def stats(workflow:, last: nil, last_text: nil, scope: nil, json: false)
@@ -466,13 +490,15 @@ module Workspace
         include = scope_filter(scope)
         result = @stats.read(workflow: workflow, last: last, include: include)
         partial = result["unreadable"].positive?
+        definition = current_definition(workflow, scope)
         if json
           document("workflow" => workflow, "status" => partial ? "partial" : "ok", "last" => last_text,
             "since" => last && (@clock.call - last).utc.iso8601, "workspace" => scope&.workspace, "project" => scope&.project&.name,
-            "runs" => result["runs"], "unreadable" => result["unreadable"], "undated" => result["undated"],
+            "definition" => definition, "runs" => result["runs"], "unreadable" => result["unreadable"], "undated" => result["undated"],
             "unattributed_resumes" => result["unattributed_resumes"], "steps" => result["steps"])
         else
           print_stats(workflow, last_text, result)
+          @output.puts "The definition now in effect is a project definition (#{TerminalText.escape(definition["path"])})." if definition && definition["source"] == "project"
         end
         {exit_code: partial ? 3 : 0}
       end
@@ -1118,13 +1144,13 @@ module Workspace
 
       # The parent lookup and chain for a draft that will be installed as +id+: the draft stands in for the installed file, so a
       # cycle through it is found now and not when the next definition is read. Without a files directory, the plain lookup.
-      def draft_lookup(id, text)
+      def draft_lookup(id, text, project = nil)
         installed = begin
           @files&.path(id)
         rescue Workspace::Error
           nil
         end
-        base = parent_lookup
+        base = parent_lookup(project: project)
         return [base, nil] unless installed
         lookup = ->(parent_id, below: nil) { (parent_id == id && below.nil?) ? {"text" => text, "path" => installed, "source" => "global"} : base.call(parent_id, below: below) }
         [lookup, [[id, installed]]]
@@ -1143,12 +1169,29 @@ module Workspace
         WorkflowDefinition::ID_PATTERN.match?(name) ? name : FILE_ID
       end
 
+      # A definition file in a directory a lookup reaches later than another file of its id is never the one a
+      # run reads; say so, with where the one that wins is.
+      def shadow_warnings(id, scope, project)
+        return [] unless scope
+        winner = @catalog.locate(id.to_s, project: project)
+        return [] if winner.nil? || winner.first == scope || WorkflowCatalog::SOURCES.index(winner.first) > WorkflowCatalog::SOURCES.index(scope)
+        [{"code" => "shadowed", "message" => "A #{winner.first} definition of #{id} (#{winner.last}) is found first, so this file is not the one a run reads."}]
+      end
+
+      # Where a lookup of the id finds its definition now, for the project the scope names (nil for every workspace);
+      # the runs counted may have run an earlier or another definition. nil when none has the id.
+      def current_definition(id, scope)
+        project = scope&.project&.name || WorkflowCatalog.project_of(scope&.workspace)
+        found = @catalog.locate(id, project: project)
+        found && {"source" => found.first, "project" => (found.first == "project") ? project : nil, "path" => found.last}
+      end
+
       def document(body)
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true}.merge(body))
       end
 
-      def show_source(id, json)
-        found = @catalog.source(id)
+      def show_source(id, json, project)
+        found = @catalog.source(id, project: project)
         data = {"id" => id}.merge(found)
         data = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"], parent_lookup: parent_lookup).to_h.merge(data) if found["problems"].empty?
         return document("workflow" => data) if json
@@ -1156,8 +1199,8 @@ module Workspace
         found["problems"].each { |problem| @error_output.puts TerminalText.escape("#{id}: #{problem}") }
       end
 
-      def list(json)
-        entries = @catalog.list
+      def list(json, project)
+        entries = @catalog.list(project: project)
         return document("workflows" => entries) if json
         @output.puts "No workflows." if entries.empty?
         entries.each do |entry|

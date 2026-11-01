@@ -11,7 +11,11 @@ RSpec.describe Workspace::WorkflowCatalog do
 
   let(:global_dir) { File.join(@dir, "global") }
   let(:builtin_dir) { File.join(@dir, "builtin") }
-  let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+  let(:config) do
+    instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(@dir, "projects")).tap do |double|
+      allow(double).to receive(:project_workflows_dir) { |name| Workspace::Config::PROJECT_DIR_NAME.match?(name) ? File.join(@dir, "projects", name, "workflows") : nil }
+    end
+  end
   subject(:catalog) { described_class.new(config: config) }
 
   def write(dir, id, yaml)
@@ -32,6 +36,164 @@ RSpec.describe Workspace::WorkflowCatalog do
 
     expect(catalog.find("rpiv").source).to eq("global")
     expect(catalog.find("rpiv").to_h["title"]).to eq("Mine")
+  end
+
+  describe "project scope" do
+    let(:project_dir) { File.join(@dir, "projects", "app", "workflows") }
+    let(:yaml) { "title: Team\nsteps:\n  a:\n    prompt: P\n" }
+
+    it "finds a project's file before the user's and the preset" do
+      write(project_dir, "rpiv", yaml)
+      write(global_dir, "rpiv", "title: Mine\nsteps:\n  a:\n    prompt: P\n")
+
+      expect(catalog.find("rpiv", project: "app").source).to eq("project")
+      expect(catalog.find("rpiv", project: "app").to_h["title"]).to eq("Team")
+      expect(catalog.find("rpiv", project: "other").source).to eq("global")
+      expect(catalog.find("rpiv").source).to eq("global")
+    end
+
+    it "lists one row per id, the project's winning and naming the project" do
+      write(project_dir, "rpiv", yaml)
+      write(project_dir, "team", yaml)
+
+      rows = catalog.list(project: "app").to_h { |row| [row["id"], row.values_at("source", "project")] }
+      expect(rows).to eq("rpiv" => %w[project app], "team" => %w[project app])
+      expect(catalog.list.map { |row| row["id"] }).to eq(%w[rpiv])
+      expect(catalog.list.first["project"]).to be_nil
+    end
+
+    it "does not know a project's id from another project or from no project" do
+      write(project_dir, "team", yaml)
+
+      expect { catalog.find("team") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_workflow") }
+      expect { catalog.find("team", project: "other") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_workflow") }
+      expect(catalog.find("team", project: "app").path).to eq(File.join(project_dir, "team.yml"))
+    end
+
+    it "lists a broken project file with its problems instead of falling back to the user's" do
+      write(project_dir, "rpiv", "steps: nope\n")
+      write(global_dir, "rpiv", yaml)
+
+      row = catalog.list(project: "app").first
+      expect(row["source"]).to eq("project")
+      expect(row["problems"]).not_to be_empty
+      expect { catalog.find("rpiv", project: "app") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("invalid_workflow") }
+    end
+
+    it "reads a project file's bytes through source" do
+      write(project_dir, "team", yaml)
+
+      found = catalog.source("team", project: "app")
+      expect([found["source"], found["project"], found["text"]]).to eq(["project", "app", yaml])
+    end
+
+    it "ignores a project name that could not be one directory" do
+      ["../x", "a/b", ".hidden", "..", "", "a\nb"].each do |name|
+        expect(catalog.find("rpiv", project: name).source).to eq("builtin")
+        expect(catalog.list(project: name).map { |row| row["source"] }).to eq(%w[builtin])
+      end
+    end
+
+    it "does not read a project file through a name that climbs out of the projects directory" do
+      write(File.join(@dir, "projects"), "escaped", yaml)
+
+      expect { catalog.find("escaped", project: "../projects") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_workflow") }
+    end
+
+    it "names a project's ids among the known ones when an id is unknown" do
+      write(project_dir, "team", yaml)
+
+      expect { catalog.find("nope", project: "app") }.to raise_error(Workspace::Error, 'No workflow named "nope". Known: rpiv, team.') { |error|
+        expect(error.details["known"]).to eq(%w[rpiv team])
+      }
+      expect { catalog.find("nope") }.to raise_error(Workspace::Error) { |error| expect(error.details["known"]).to eq(%w[rpiv]) }
+    end
+
+    it "lists an entry of a project's directory that can't be a definition, with why and its project" do
+      write(project_dir, "Bad Name", yaml)
+      FileUtils.mkdir_p(File.join(project_dir, "dir.yml"))
+
+      rows = catalog.list(project: "app").reject { |row| row["id"] == "rpiv" }
+
+      expect(rows.map { |row| row.values_at("id", "source", "project") }).to eq([["Bad Name", "project", "app"], ["dir", "project", "app"]])
+      expect(rows.first["path"]).to eq(File.join(project_dir, "Bad Name.yml"))
+      expect(rows.first["problems"]).to eq(["the file's name must be a workflow id: lowercase letters, digits, '-' and '_', at most 40 characters"])
+      expect(rows.last["problems"]).to eq(["#{File.join(project_dir, "dir.yml")} is not a file"])
+      expect(catalog.list.map { |row| row["id"] }).to eq(%w[rpiv])
+    end
+
+    it "looks a parent up project first, and below the source that asks" do
+      write(project_dir, "rpiv", yaml)
+      write(global_dir, "rpiv", "title: Mine\nsteps:\n  a:\n    prompt: P\n")
+
+      expect(catalog.parent("rpiv", project: "app")["source"]).to eq("project")
+      expect(catalog.parent("rpiv", below: "project", project: "app")["source"]).to eq("global")
+      expect(catalog.parent("rpiv", below: "global", project: "app")["source"]).to eq("builtin")
+      expect(catalog.parent("rpiv", below: "file", project: "app")["source"]).to eq("builtin")
+      expect(catalog.parent("rpiv", below: "builtin", project: "app")).to be_nil
+      expect(catalog.parent("rpiv", project: "other")["source"]).to eq("global")
+      expect(catalog.parent("rpiv")["source"]).to eq("global")
+    end
+
+    it "lets a project file extend the id it hides, and be read through find, list and source" do
+      write(global_dir, "team", "title: User\nsteps:\n  a:\n    prompt: P\n")
+      write(project_dir, "team", "extends: team\ntitle: Project\n")
+
+      found = catalog.find("team", project: "app")
+      expect([found.source, found.to_h["title"], found.to_h["steps"].map { |step| step["id"] }]).to eq(["project", "Project", ["a"]])
+      expect(catalog.list(project: "app").find { |row| row["id"] == "team" }["problems"]).to eq([])
+      expect(catalog.source("team", project: "app")["problems"]).to eq([])
+      expect(catalog.source("team")["source"]).to eq("global")
+    end
+
+    it "names the definitions of every project that extend an id, whichever project the caller is in" do
+      other_dir = File.join(@dir, "projects", "other", "workflows")
+      write(global_dir, "base", yaml)
+      write(global_dir, "mid", "extends: base\n")
+      write(project_dir, "kid", "extends: mid\n")
+      write(other_dir, "pk", "extends: base\n")
+
+      expect(catalog.extended_by("base")).to eq(["mid", "kid (project app)", "pk (project other)"])
+    end
+
+    it "leaves out a project that has its own definition of the id, which its children extend instead" do
+      other_dir = File.join(@dir, "projects", "other", "workflows")
+      write(global_dir, "base", yaml)
+      write(other_dir, "base", yaml)
+      write(other_dir, "pk", "extends: base\n")
+
+      expect(catalog.extended_by("base")).to eq([])
+    end
+
+    it "keeps a project whose own definition of the id extends it, with the project definitions that extend that one" do
+      other_dir = File.join(@dir, "projects", "other", "workflows")
+      write(global_dir, "team", yaml)
+      write(project_dir, "team", "extends: team\n")
+      write(project_dir, "kid", "extends: team\n")
+      write(other_dir, "team", yaml)
+
+      expect(catalog.extended_by("team")).to eq(["team (project app)", "kid (project app)"])
+    end
+
+    it "ignores a directory under projects/ that could not be a project name" do
+      write(File.join(@dir, "projects", "bad name", "workflows"), "pk", "extends: base\n")
+      write(global_dir, "base", yaml)
+
+      expect(catalog.extended_by("base")).to eq([])
+    end
+
+    it "says which directory a file path sits in" do
+      expect(catalog.scope_of(File.join(project_dir, "x.yml"), project: "app")).to eq("project")
+      expect(catalog.scope_of(File.join(global_dir, "x.yml"), project: "app")).to eq("global")
+      expect(catalog.scope_of(File.join(project_dir, "x.yml"))).to be_nil
+      expect(catalog.scope_of(File.join(builtin_dir, "x.yml"))).to eq("builtin")
+    end
+
+    it "takes the parent project of a worktree workspace" do
+      expect(described_class.project_of("app.worktree-fix")).to eq("app")
+      expect(described_class.project_of("app")).to eq("app")
+      expect(described_class.project_of(nil)).to be_nil
+    end
   end
 
   it "raises unknown_workflow, naming the ids it has" do
@@ -95,7 +257,7 @@ RSpec.describe Workspace::WorkflowCatalog do
 
     entry = catalog.list.find { |each| each["id"] == "mine" }
 
-    expect(entry).to eq("id" => "mine", "title" => "mine", "description" => nil, "use_when" => nil, "applies_to" => [], "source" => "global", "path" => File.join(global_dir, "mine.yml"),
+    expect(entry).to eq("id" => "mine", "title" => "mine", "description" => nil, "use_when" => nil, "applies_to" => [], "source" => "global", "project" => nil, "path" => File.join(global_dir, "mine.yml"),
       "sha256" => nil, "problems" => ["#{File.join(global_dir, "mine.yml")} is a link to a file that is not there"])
     expect { catalog.find("mine") }.to raise_error(Workspace::Error, 'No workflow named "mine". Known: rpiv.')
   end
@@ -179,7 +341,7 @@ RSpec.describe Workspace::WorkflowCatalog do
       yaml = "steps:\n  a:\n    prompt: P\n"
       write(global_dir, "ship", yaml)
 
-      expect(catalog.source("ship")).to eq("source" => "global", "path" => File.join(global_dir, "ship.yml"), "text" => yaml,
+      expect(catalog.source("ship")).to eq("source" => "global", "project" => nil, "path" => File.join(global_dir, "ship.yml"), "text" => yaml,
         "sha256" => Digest::SHA256.hexdigest(yaml), "problems" => [])
     end
 

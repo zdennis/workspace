@@ -31,6 +31,15 @@ module Workspace
       settle(read_marker(working_dir))
     end
 
+    # Detects a project from the active project roots only: the state's projects whose root holds
+    # the directory. Nothing is read from the directory itself.
+    #
+    # @param working_dir [String] the directory to detect from
+    # @return [String, nil] the detected project name, or nil if not found
+    def detect_from_roots(working_dir)
+      settle(detect_from_active_roots(working_dir))
+    end
+
     private
 
     def settle(name)

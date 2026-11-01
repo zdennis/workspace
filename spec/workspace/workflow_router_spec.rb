@@ -27,7 +27,7 @@ RSpec.describe Workspace::WorkflowRouter do
     write(:global, "workflows:\n  by_ref:\n    jira: pr-feedback\n")
     write("app", "workflows:\n  by_ref:\n    jira: rpiv\n")
 
-    expect(router.route(kind: "jira", workspace: "app")).to eq("workflow" => "rpiv", "kind" => "jira", "source" => "default", "scope" => "project", "key" => "workflows.by_ref.jira")
+    expect(router.route(kind: "jira", workspace: "app")).to eq("workflow" => "rpiv", "kind" => "jira", "source" => "default", "scope" => "project", "key" => "workflows.by_ref.jira", "definition_source" => nil)
   end
 
   it "falls back to the global default and says so" do
@@ -56,6 +56,13 @@ RSpec.describe Workspace::WorkflowRouter do
     expect(router.unrouted("jira")).to include("reason" => "broken_definition", "key" => "workflows.by_ref.jira", "broken" => ["broken"])
     expect(router.unrouted("jira")["candidates"].map { |c| c["id"] }).to eq(%w[rpiv])
     expect(router.unrouted("prompt")["candidates"].map { |c| c["id"] }).to eq(%w[rpiv pr-feedback])
+  end
+
+  it "lists the definitions of the project a worktree workspace belongs to, and reports where the chosen one was found" do
+    rows.replace([rows[0].merge("source" => "project")])
+
+    expect(router.route(kind: "github_pr", workspace: "app.worktree-fix")).to include("workflow" => "rpiv", "definition_source" => "project")
+    expect(catalog).to have_received(:list).with(project: "app")
   end
 
   context "without a default" do

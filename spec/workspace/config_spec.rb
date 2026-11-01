@@ -47,6 +47,37 @@ RSpec.describe Workspace::Config do
     end
   end
 
+  describe "#project_workflows_dir" do
+    subject(:config) { described_class.new }
+
+    it "is the workflows directory under the project's own directory in the user's config" do
+      expect(config.project_workflows_dir("my-app_2.x")).to eq(File.join(config.workspace_projects_dir, "my-app_2.x", "workflows"))
+    end
+
+    it "is nil for a name that starts with a dot, including .. and a hidden name" do
+      expect(config.project_workflows_dir("..")).to be_nil
+      expect(config.project_workflows_dir(".x")).to be_nil
+      expect(config.project_workflows_dir(".")).to be_nil
+    end
+
+    it "is nil for a name with a separator, a space, a leading dash, control characters or a newline" do
+      ["a/b", "../x", "my app", "-dash", "a\nb", "a\x00b", "x\n"].each do |name|
+        expect(config.project_workflows_dir(name)).to be_nil, name.inspect
+      end
+    end
+
+    it "takes 128 characters and no more" do
+      expect(config.project_workflows_dir("a" * 128)).not_to be_nil
+      expect(config.project_workflows_dir("a" * 129)).to be_nil
+    end
+
+    it "is nil for nil, an empty name and anything but a String" do
+      [nil, "", :app, 7, ["app"]].each do |name|
+        expect(config.project_workflows_dir(name)).to be_nil, name.inspect
+      end
+    end
+  end
+
   describe "#config_path_for" do
     subject(:config) { described_class.new }
 

@@ -290,14 +290,18 @@ module Workspace
           "--source gives the file's text, its sha256 and its problems even when it is invalid (exit 0), for",
           "an editor.",
           "",
-          "Definitions are YAML files: ~/.config/workspace/workflows/ID.yml, then the presets that ship with",
-          "workspace (rpiv, rpiv-auto-approve, pr-feedback, investigate, explore). See docs/README.workflow.md.",
+          "Definitions are YAML files, found in this order: ~/.config/workspace/projects/NAME/workflows/ID.yml (the",
+          "project of the current workspace or --name; a worktree reads its parent project's), then",
+          "~/.config/workspace/workflows/ID.yml, then the presets that ship with workspace (rpiv, rpiv-auto-approve,",
+          "pr-feedback, investigate, explore). A file in an earlier place hides the same id in a later one; each row",
+          "says which (project, global or builtin). Nothing is read from a repository. See docs/README.workflow.md.",
           "",
           "A definition with extends: ID starts from another workflow's steps; show prints the result, with an",
           "\"Extends:\" line for each parent (source and path). --json adds \"extends\" and \"resolved_sha256\", the digest",
           "a run started now would record."
         ],
-        options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"], JSON_OPT],
+        options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"],
+          name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow show", "list the workflows you can run"],
           ["workspace workflow show rpiv", "see the inputs and steps of one before running it"],
@@ -316,17 +320,20 @@ module Workspace
           "A valid definition can still get warnings (exit 0): a step with no produces, status, require or gate passes on any",
           "turn end, so it is named with what to add. It also warns of an include: pack the library can't find, a status or",
           "require command the project has no `commands.test`/`commands.lint` for, and an on_fail max that max_attempts can't",
-          "fit. An extends: ID is looked up as any workflow id (your own file first, then the presets), so a draft that",
+          "fit. An extends: ID is looked up as any workflow id (the project's file first, then your own, then the presets), so a draft that",
           "extends another is checked against the ones you have; a missing parent, a cycle, a chain over 4, a replace: of a",
           "step the parent lacks and an added step that the parent already has are problems. The library and the commands",
           "are read for the project of the current directory; outside a git checkout they",
           "are listed as \"not checked\" instead. --json lists warnings (code, step, message) and not_checked (same shape).",
+          "A PATH inside the project's workflows directory, the user's, or the presets is reported with its scope, and a",
+          "`shadowed` warning says when another file of that id is found first.",
           "",
           "A step's guard: (unchanged or config) checks the checkout when the turn ends, on_fail's context: (fresh or continue)",
           "sets the conversation of the step it goes back to, and a status: check gets WORKSPACE_RUN_ID,",
           "WORKSPACE_RUN_ARTIFACTS and WORKSPACE_RUN_BASE_SHA. See docs/README.workflow.md."
         ],
-        options: [["--id ID", "Check the text as this workflow id"], JSON_OPT],
+        options: [["--id ID", "Check the text as this workflow id"],
+          name_opt("The workspace whose project's definitions the scope and shadowed check read (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow validate draft.yml", "check a definition you are writing: prints valid, or exits 1 with an error listing every problem"],
           ["workspace workflow validate - < draft.yml", "check text read from stdin"],
@@ -341,9 +348,10 @@ module Workspace
           "Saves a definition (a file, or - for stdin) as ID.yml in ~/.config/workspace/workflows/, after the",
           "checks `workflow validate` makes; refused with workflow_exists when that file is there. A preset of",
           "the same id is left alone and the copy shadows it. A relative prompt_file: is read from that directory.",
-          "Without --dry-run it writes that file."
+          "Without --dry-run it writes that file. Only that directory is written, never a project's: when the",
+          "project has its own ID.yml, the message says it hides yours there."
         ],
-        options: [["--dry-run", "Check, and write no definition (the lock file may be created)"], JSON_OPT],
+        options: [["--dry-run", "Check, and write no definition (the lock file may be created)"], name_opt("The workspace whose project is told about when its own definition of the ID hides or replaces yours (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow add ship draft.yml", "save draft.yml as your workflow \"ship\""],
           ["workspace workflow add ship draft.yml --dry-run", "check it and see where it would go, saving nothing"],
@@ -359,10 +367,12 @@ module Workspace
           "Replaces your ID.yml (a file, or - for stdin) after the same checks as `workflow add`, only if the",
           "file's raw bytes still hash to --if-sha256 (from `workflow show ID --source`; a broken file can be",
           "replaced). Refused with stale_workflow when it changed, builtin_workflow for a preset with no file",
-          "of yours. Without --dry-run it overwrites that file."
+          "of yours. Without --dry-run it overwrites that file. Only your directory is edited: an id only the",
+          "project has is refused (unknown_workflow, naming the project's file); when both have it, `show ID",
+          "--source` reads the project's file, so a stale_workflow answer names both files and their shas."
         ],
         options: [["--if-sha256 SHA", "The sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches"],
-          ["--dry-run", "Check, and write no definition (the lock file may be created)"], JSON_OPT],
+          ["--dry-run", "Check, and write no definition (the lock file may be created)"], name_opt("The workspace whose project is told about when its own definition of the ID hides or replaces yours (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow update ship draft.yml --if-sha256 SHA", "replace your ship.yml; SHA is the sha256 that `workflow show ship --source --json` gave"],
           ["workspace workflow update ship draft.yml --if-sha256 SHA --dry-run", "check the replacement and write nothing"],
@@ -376,9 +386,10 @@ module Workspace
         about: [
           "Deletes your ID.yml (a link itself, never its target). Asks first unless --yes or --dry-run, and",
           "refuses with confirmation_required under --no-input. A preset of the same id is then in effect",
-          "again; unknown_workflow when you have no file, builtin_workflow for a preset alone."
+          "again, unless the project has its own ID.yml, which stays in effect there (it is never deleted);",
+          "unknown_workflow when you have no file, builtin_workflow for a preset alone."
         ],
-        options: [["--yes", "Do not ask before deleting the file"], ["--dry-run", "Check and delete nothing"], JSON_OPT],
+        options: [["--yes", "Do not ask before deleting the file"], ["--dry-run", "Check and delete nothing"], name_opt("The workspace whose project is told about when its own definition of the ID hides or replaces yours (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow remove ship", "delete your ship.yml after a y/N question"],
           ["workspace workflow remove ship --dry-run", "see which file would be deleted, deleting nothing"],
@@ -417,7 +428,7 @@ module Workspace
           "Composes the packs, the workflow's text and the step's prompt as a delivered attempt does (the same code),",
           "for the step's first attempt, and prints them. Writes nothing: no run, event, binding, lock, worktree or",
           "file, and no call to tmux or the agent daemon, so it works outside a tmux session. Packs and commands are",
-          "read from this workspace's checkout (--name picks another); outside a git checkout the project's own",
+          "read from this workspace's checkout (--name picks another), and ID is looked up in that workspace's project first; outside a git checkout the project's own",
           "packs and commands are not read, and a warning says so.",
           "",
           "Inputs are checked as `start` checks them: a required input you leave out is refused with input_required,",
@@ -520,7 +531,9 @@ module Workspace
           "",
           "--ref REF takes the place of ID: the workflow comes from a table, not a guess. The config key",
           "workflows.by_ref.<kind> (jira, github_pr, github_issue or branch), then workflows.default, names it; with no",
-          "default, the one workflow whose applies_to: lists the kind (or has none) is used. Several fit: refused with",
+          "default, the one workflow whose applies_to: lists the kind (or has none) is used. The project's own",
+          "definitions count first (a project file hides the same id elsewhere); the routing line and routed.definition_source",
+          "say where the one chosen was found. Several fit: refused with",
           "no_default_workflow, listing them. A default that names no workflow, or one whose applies_to: leaves out the",
           "kind, is refused with invalid_workflow_default (--force starts the second kind anyway). The rest is a normal start."
         ],
@@ -629,6 +642,8 @@ module Workspace
         summary: "Show how each step of a workflow went across its runs",
         about: [
           "ID is a workflow definition id (see `workspace workflow show`); it need not exist now, only its runs do.",
+          "The runs of one id are counted together, even when two projects have each their own definition of it; with --name or",
+          "--project, --json `definition` and a text line say where that project's definition of the id is found now.",
           "Covers the runs going and finished, in every workspace unless --name or --project narrows it. One row",
           "per step, in the order the newest run ran them.",
           "",

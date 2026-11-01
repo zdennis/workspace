@@ -58,7 +58,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:unsafe) { Workspace::Error.new("unsafe", code: "unsafe_checkout_path") }
 
     before do
-      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
       allow(engine).to receive(:preflight).and_raise(unsafe)
     end
 
@@ -105,7 +105,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "prints use_when and applies_to of one definition" do
       data = Workspace::WorkflowDefinition.parse("use_when: Feedback to act on.\napplies_to: [github_pr, branch]\nsteps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
-      allow(catalog).to receive(:find).with("flow").and_return(data)
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(data)
 
       command.show(id: "flow")
 
@@ -121,7 +121,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "prints one definition: where it came from, its inputs and what each step does" do
-      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
 
       command.show(id: "flow")
 
@@ -138,17 +138,33 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "prints one definition as a document, with its source, path and hash" do
-      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
 
       command.show(id: "flow", json: true)
 
       expect(json).to eq("schema_version" => 1, "ok" => true,
-        "workflow" => definition.to_h.merge("source" => "global", "path" => "/defs/flow.yml", "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256))
+        "workflow" => definition.to_h.merge("source" => "global", "project" => nil, "path" => "/defs/flow.yml", "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256))
+    end
+  end
+
+  describe "#show of a project's definition" do
+    let(:project_definition) { Workspace::WorkflowDefinition.parse("title: Team\nsteps:\n  a:\n    prompt: P\n", id: "team", source: "project", path: "/cfg/projects/app/workflows/team.yml") }
+
+    it "names the project in the document, and the scope in the text" do
+      allow(catalog).to receive(:find).with("team", project: "app").and_return(project_definition)
+
+      command.show(id: "team", json: true, project: "app")
+      expect(json["workflow"]).to include("source" => "project", "project" => "app", "path" => "/cfg/projects/app/workflows/team.yml")
+
+      output.truncate(0)
+      output.rewind
+      command.show(id: "team", project: "app")
+      expect(output.string.lines.first).to eq("team: Team (project, /cfg/projects/app/workflows/team.yml)\n")
     end
   end
 
   describe "#run" do
-    before { allow(catalog).to receive(:find).with("flow").and_return(definition) }
+    before { allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition) }
 
     it "starts the run in the workspace's Claude pane and reports where it stands" do
       allow(panes).to receive(:default_pane).with("app").and_return("%5")
@@ -239,7 +255,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     before do
-      allow(catalog).to receive(:find).with("flow").and_return(definition)
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
       allow(engine).to receive(:render).and_return(rendered)
     end
 
@@ -250,6 +266,16 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(error_output.string).to include("{{run}} = wr_preview", "{{artifacts}} = /w/app/.workflow/wr_preview", "has gate: approve")
       expect(error_output.string).not_to include("{{workspace}}")
       expect(engine).to have_received(:render).with(definition: definition, step: "plan", workspace: "app", worktree: "/w/app", inputs: {"task" => "x"})
+    end
+
+    it "looks the workflow up in the project it is given, and in none without one" do
+      allow(catalog).to receive(:find).and_return(definition)
+
+      build(output).render(id: "flow", step: "plan", workspace: "app.worktree-fix", worktree: "/w/app", project: "app")
+      build(output).render(id: "flow", step: "plan", workspace: nil, worktree: "/w/app")
+
+      expect(catalog).to have_received(:find).with("flow", project: "app")
+      expect(catalog).to have_received(:find).with("flow", project: nil)
     end
 
     it "escapes control characters, keeping tabs and lines, when the output is a terminal" do
@@ -278,7 +304,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "lets an unknown workflow through as the catalog's error" do
-      allow(catalog).to receive(:find).with("nope").and_raise(Workspace::Error.new("No workflow nope.", code: "unknown_workflow"))
+      allow(catalog).to receive(:find).with("nope", project: anything).and_raise(Workspace::Error.new("No workflow nope.", code: "unknown_workflow"))
 
       expect { build(output).render(id: "nope", step: "plan", workspace: "app", worktree: "/w/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
     end
@@ -1614,7 +1640,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:builtin_dir) { File.join(dir, "builtin") }
     let(:dir) { Dir.mktmpdir }
     let(:real_catalog) do
-      Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir))
+      Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil))
     end
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
@@ -2050,6 +2076,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }
     let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
+    before { allow(catalog).to receive(:scope_of).and_return(nil) }
     subject(:command) do
       described_class.new(lint: lint, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
@@ -2227,7 +2254,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:dir) { Dir.mktmpdir }
     let(:global_dir) { File.join(dir, "global") }
     let(:builtin_dir) { File.join(dir, "builtin") }
-    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
     let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
     let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
     let(:base_text) { "title: Base\nsteps:\n  plan:\n    prompt: Plan.\n" }
@@ -2332,7 +2359,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:dir) { Dir.mktmpdir }
     let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
     let(:builtin_dir) { File.join(dir, "lib", "workflows") }
-    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
     let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
     let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
@@ -2444,7 +2471,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:dir) { Dir.mktmpdir }
     let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
     let(:builtin_dir) { File.join(dir, "lib", "workflows") }
-    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
     let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
     let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
     let(:old_text) { "title: Old\nsteps:\n  plan:\n    prompt: Old.\n" }
@@ -2593,7 +2620,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:dir) { Dir.mktmpdir }
     let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
     let(:builtin_dir) { File.join(dir, "lib", "workflows") }
-    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
     let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
     let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
     let(:target) { File.join(global_dir, "flow.yml") }

@@ -6734,19 +6734,19 @@ RSpec.describe Workspace::CLI do
     it "hands workflow check the --name workspace's checkout" do
       cli.run(["workflow", "check", "rpiv", "verify", "--name", "api", "--artifacts", "fixture"])
 
-      expect(workflow_command.calls).to eq([[:check, {id: "rpiv", step: "verify", worktree: "/work/api", artifacts: "/some/dir/fixture", json: false}]])
+      expect(workflow_command.calls).to eq([[:check, {id: "rpiv", step: "verify", worktree: "/work/api", artifacts: "/some/dir/fixture", json: false, project: nil}]])
     end
 
     it "shows every definition, or one" do
       cli.run(["workflow", "show"])
       cli.run(["workflow", "show", "rpiv", "--json"])
 
-      expect(workflow_command.calls).to eq([[:show, {id: nil, json: false, source: false}], [:show, {id: "rpiv", json: true, source: false}]])
+      expect(workflow_command.calls).to eq([[:show, {id: nil, json: false, source: false, project: nil}], [:show, {id: "rpiv", json: true, source: false, project: nil}]])
     end
 
     it "passes --source to show" do
       cli.run(["workflow", "show", "rpiv", "--source", "--json"])
-      expect(workflow_command.calls).to eq([[:show, {id: "rpiv", json: true, source: true}]])
+      expect(workflow_command.calls).to eq([[:show, {id: "rpiv", json: true, source: true, project: nil}]])
     end
 
     it "answers an invalid global file with --source --json and exit 0, end to end" do
@@ -6913,7 +6913,7 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["workflow", "add", "ship", "draft.yml", "--dry-run", "--json"]) }.not_to raise_error
       cli.run(["workflow", "add", "--dry-run", "ship", "-"])
 
-      expect(workflow_command.calls).to eq([[:add, {id: "ship", path: "draft.yml", dry_run: true}], [:add, {id: "ship", path: "-", dry_run: true}]])
+      expect(workflow_command.calls).to eq([[:add, {id: "ship", path: "draft.yml", dry_run: true, project: nil}], [:add, {id: "ship", path: "-", dry_run: true, project: nil}]])
       doc = JSON.parse(output.string.lines.first)
       expect(doc).to include("ok" => true, "action" => "workflow add", "status" => "dry_run")
       expect(doc["results"]).to eq([workflow_command.row])
@@ -6921,7 +6921,7 @@ RSpec.describe Workspace::CLI do
 
     it "adds a definition from stdin end to end, then refuses a second add with workflow_exists" do
       Dir.mktmpdir do |dir|
-        config = instance_double(Workspace::Config, workflows_dir: File.join(dir, "home", "workflows"), builtin_workflows_dir: File.join(dir, "builtin"))
+        config = instance_double(Workspace::Config, workflows_dir: File.join(dir, "home", "workflows"), builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "no-projects"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
         command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
@@ -6949,8 +6949,8 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "update", "ship", "draft.yml", "--if-sha256", "abc123", "--dry-run", "--json"])
       cli.run(["workflow", "update", "--if-sha256", "abc123", "ship", "-"])
 
-      expect(workflow_command.calls).to eq([[:update, {id: "ship", path: "draft.yml", if_sha256: "abc123", dry_run: true}],
-        [:update, {id: "ship", path: "-", if_sha256: "abc123", dry_run: false}]])
+      expect(workflow_command.calls).to eq([[:update, {id: "ship", path: "draft.yml", if_sha256: "abc123", dry_run: true, project: nil}],
+        [:update, {id: "ship", path: "-", if_sha256: "abc123", dry_run: false, project: nil}]])
       doc = JSON.parse(output.string.lines.first)
       expect(doc).to include("ok" => true, "action" => "workflow update", "status" => "dry_run")
     end
@@ -6962,7 +6962,7 @@ RSpec.describe Workspace::CLI do
         old_text = "title: Old\nsteps:\n  plan:\n    prompt: Old.\n"
         text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
         File.write(File.join(home, "ship.yml"), old_text)
-        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
+        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "no-projects"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
           engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
@@ -6989,7 +6989,7 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "remove", "ship", "--yes", "--json"])
       cli.run(["workflow", "remove", "ship", "--dry-run"])
 
-      expect(workflow_command.calls.select { |call| call.first == :remove }).to eq([[:remove, {id: "ship", yes: true, dry_run: false}], [:remove, {id: "ship", yes: nil, dry_run: true}]])
+      expect(workflow_command.calls.select { |call| call.first == :remove }).to eq([[:remove, {id: "ship", yes: true, dry_run: false, project: nil}], [:remove, {id: "ship", yes: nil, dry_run: true, project: nil}]])
       expect(JSON.parse(output.string.lines.first)).to include("ok" => true, "action" => "workflow remove")
       output.truncate(0)
       cli.run(["workflow", "--help"])
@@ -6999,7 +6999,7 @@ RSpec.describe Workspace::CLI do
     it "answers a declined prompt as status cancelled and exit 0" do
       workflow_command.row = nil
       expect { cli.run(["workflow", "remove", "ship"]) }.not_to raise_error
-      expect(workflow_command.calls.last).to eq([:remove, {id: "ship", yes: nil, dry_run: false}])
+      expect(workflow_command.calls.last).to eq([:remove, {id: "ship", yes: nil, dry_run: false, project: nil}])
     end
 
     it "treats --json without --yes or --dry-run as a usage error that never prompts" do
@@ -7012,7 +7012,7 @@ RSpec.describe Workspace::CLI do
         home = File.join(dir, "home", "workflows")
         FileUtils.mkdir_p(home)
         File.write(File.join(home, "ship.yml"), "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n")
-        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"))
+        config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "no-projects"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
           engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new("n\n"))
@@ -7079,14 +7079,14 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "validate", "a.yml", "--json"])
       cli.run(["workflow", "validate", "-", "--id", "ship"])
 
-      expect(workflow_command.calls).to eq([[:validate, {path: "a.yml", id: nil, json: true}], [:validate, {path: "-", id: "ship", json: false}]])
+      expect(workflow_command.calls).to eq([[:validate, {path: "a.yml", id: nil, json: true, project: nil}], [:validate, {path: "-", id: "ship", json: false, project: nil}]])
     end
 
     it "starts a run in the detected workspace, from its working directory" do
       cli.run(["workflow", "run", "rpiv", "--input", "task=PROJ-1 export=pdf", "--input", "spec=", "--note", "Keep it small."])
 
       expect(workflow_command.calls).to eq([[:run, {id: "rpiv", workspace: "detected-ws", worktree: "/some/dir",
-                                                    inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"]}]])
+                                                    inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"], project: nil}]])
     end
 
     it "starts a run in a named workspace from its root, in a named pane, or only checks with --dry-run" do

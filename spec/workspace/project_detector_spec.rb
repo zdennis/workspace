@@ -31,6 +31,16 @@ RSpec.describe Workspace::ProjectDetector do
     expect(detector.detect(dir)).to eq("Headless")
   end
 
+  it "reads only the active roots through detect_from_roots, never the marker" do
+    File.write(File.join(dir, ".workspace-project"), "elsewhere\n")
+    allow(state).to receive(:keys).and_return(["notes"])
+    allow(project_config).to receive(:project_root_for).with("notes").and_return(dir)
+    detector = described_class.new(state: state, project_config: project_config, workspace_name: workspace_name)
+
+    expect(detector.detect_from_roots(dir)).to eq("Notes")
+    expect(detector.detect_from_roots(File.join(dir, "..", "nowhere"))).to be_nil
+  end
+
   it "settles a name found from the active roots" do
     allow(state).to receive(:keys).and_return(["notes"])
     allow(project_config).to receive(:project_root_for).with("notes").and_return(dir)

@@ -306,6 +306,7 @@ require_relative "workspace/workflow_lint"
 require_relative "workspace/workflow_catalog"
 require_relative "workspace/workflow_router"
 require_relative "workspace/workflow_files"
+require_relative "workspace/workflow_project"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_deny"
 require_relative "workspace/workflow_run_files"
@@ -660,6 +661,7 @@ module Workspace
       end,
       source: SkillSource.new(workspace_dir: config.workspace_dir), ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
     workflow_catalog = WorkflowCatalog.new(config: config)
+    workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
     workflow_needs_me = WorkflowNeedsMe.new
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
@@ -722,7 +724,7 @@ module Workspace
     workflow_defaults = WorkflowDefaults.new(config_resolver: config_resolver)
     workflow_start_command = Commands::WorkflowStart.new(
       catalog: workflow_catalog, workflow_defaults: workflow_defaults, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
-      project_config: project_config, start: start_command, workflow: workflow_command, readiness: agent_readiness, tmux: tmux, agent_commands: agent_commands,
+      project_config: project_config, workflow_project: workflow_project, start: start_command, workflow: workflow_command, readiness: agent_readiness, tmux: tmux, agent_commands: agent_commands,
       excludes: GitExclude.new(git: git), ssh_hosts: SshHostResolver.new, router: WorkflowRouter.new(catalog: workflow_catalog, workflow_defaults: workflow_defaults), output: output
     )
     workspace_at = lambda do |path|
@@ -934,6 +936,7 @@ module Workspace
       workflow_command: workflow_command,
       workflow_start_command: workflow_start_command,
       go_command: go_command,
+      workflow_project: workflow_project,
       review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,
