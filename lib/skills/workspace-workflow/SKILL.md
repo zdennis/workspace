@@ -3,7 +3,7 @@ name: workspace-workflow
 description: "Start and follow `workspace` workflow runs: `go` from a ticket, PR or text, name a preset (rpiv, rpiv-auto-approve, investigate, pr-feedback, explore), `workflow start`, `workflow run`, read `workflow status`. Use for 'run rpiv on this' or 'start an investigate workflow on PROJ-101'. Not a worktree with no workflow, or ending one: use workspace-lifecycle."
 ---
 
-Written against workspace 0.91.0 with go (features.go); check with the working --help form.
+Written against workspace 0.97.0; check with the working --help form.
 
 Shared rules for `--json`, exit codes and error codes: [machine-contract](../workspace/references/machine-contract.md).
 
