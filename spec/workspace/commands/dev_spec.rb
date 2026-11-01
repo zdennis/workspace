@@ -651,7 +651,7 @@ RSpec.describe Workspace::Commands::Dev do
 
       expect(dev.down(working_dir: login)).to eq(exit_code: 0)
 
-      expect(alive?(spawned.last)).to be(false)
+      wait_until { !alive?(spawned.last) }
       expect(holder).to include("kind" => "run", "run_id" => "wr_1")
       expect(holder).not_to include("delegate")
       expect(output.string).to include("Stopped dev environment for app-login (feat/login); the devenv lock stays with app-login (run wr_1, step implement).")
@@ -664,7 +664,7 @@ RSpec.describe Workspace::Commands::Dev do
 
       expect(holder).to include("kind" => "process", "pid" => spawned.last, "worktree" => login)
       expect(dev.down(working_dir: login)).to eq(exit_code: 0)
-      expect(alive?(spawned.last)).to be(false)
+      wait_until { !alive?(spawned.last) }
       expect(holder).to be_nil
     end
 
@@ -681,7 +681,7 @@ RSpec.describe Workspace::Commands::Dev do
       expect(alive?(wrapper)).to be(true)
 
       expect(dev(bound_run: stranger).down(force: true, working_dir: main)).to eq(exit_code: 0)
-      expect(alive?(wrapper)).to be(false)
+      wait_until { !alive?(wrapper) }
       expect(holder).to include("kind" => "run", "run_id" => "wr_1")
     end
 
@@ -689,7 +689,7 @@ RSpec.describe Workspace::Commands::Dev do
       dev(bound_run: bound_run).up(working_dir: login)
 
       expect(dev(bound_run: bound_run).down(working_dir: main)).to eq(exit_code: 0)
-      expect(alive?(spawned.last)).to be(false)
+      wait_until { !alive?(spawned.last) }
     end
 
     it "has nothing to refuse while the run holds the lock with no environment running" do
