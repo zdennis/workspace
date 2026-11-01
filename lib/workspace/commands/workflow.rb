@@ -94,11 +94,12 @@ module Workspace
         definition = @catalog.find(id)
         data = definition.to_h
         if json
-          return document("workflow" => data.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256))
+          return document("workflow" => data.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)))
         end
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
         @output.puts "Use when: #{data["use_when"]}" if data["use_when"]
+        definition.parents.each { |parent| @output.puts "Extends: #{parent["id"]} (#{parent["source"]}, #{parent["path"]})" }
         @output.puts "Applies to: #{data["applies_to"].join(", ")}" if data["applies_to"].any?
         @output.puts "Inputs:" if data["inputs"].any?
         data["inputs"].each { |name, spec| @output.puts "  #{name}#{" (required)" if spec["required"]}#{": #{spec["description"]}" if spec["description"]}" }
@@ -123,12 +124,13 @@ module Workspace
         stdin = path == "-"
         text = read_text(path, stdin)
         id ||= claimed_id(text) || (stdin ? STDIN_ID : file_id(path))
+        lookup, chain = draft_lookup(id, text)
         definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
-          path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil)
+          path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain)
         found = @lint.call(definition, cwd: Dir.pwd)
         warnings = definition.warnings + found["warnings"]
         if json
-          document("workflow" => definition.to_h.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256),
+          document("workflow" => definition.to_h.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)),
             "warnings" => warnings, "not_checked" => found["not_checked"])
         else
           @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)"
@@ -224,12 +226,13 @@ module Workspace
         @files.path(id)
         stdin = path == "-"
         text = read_text(path, stdin)
-        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir)
+        lookup, chain = draft_lookup(id, text)
+        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain)
         builtin = @catalog.locate(id)&.first == "builtin"
         written = @files.add(id, text, dry_run: dry_run)
         message = "#{dry_run ? "Would add" : "Added"} workflow #{id} at #{written["path"]}#{"; it shadows the preset of the same id" if builtin}."
         @output.puts message
-        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "added", "reason" => nil, "message" => message, "workflow" => id}.merge(written)
+        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "added", "reason" => nil, "message" => message, "workflow" => id}.merge(written).merge(extended_by(id))
       end
 
       # Replaces a user's definition file when it is still the one the caller read. The new
@@ -247,11 +250,12 @@ module Workspace
         @files.path(id)
         stdin = path == "-"
         text = read_text(path, stdin)
-        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir)
+        lookup, chain = draft_lookup(id, text)
+        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain)
         written = @files.update(id, text, if_sha256: if_sha256, dry_run: dry_run)
         message = "#{dry_run ? "Would update" : "Updated"} workflow #{id} at #{written["path"]}."
         @output.puts message
-        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "updated", "reason" => nil, "message" => message, "workflow" => id}.merge(written)
+        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "updated", "reason" => nil, "message" => message, "workflow" => id}.merge(written).merge(extended_by(id))
       end
 
       # Refuses, before anyone is asked anything, an id that has no file of the user's.
@@ -275,6 +279,7 @@ module Workspace
       def remove(id:, yes: false, dry_run: false)
         check_removable(id: id)
         target = @files.path(id)
+        affected = extended_by(id)
         unless yes || dry_run
           answer = Prompt.ask(@input, @output, "Remove workflow #{id} (#{target})? [y/N] ", retry_flags: ["--yes"], destructive: true)
           unless answer.to_s.strip.casecmp?("y")
@@ -285,7 +290,7 @@ module Workspace
         removed = @files.remove(id, dry_run: dry_run)
         message = "#{dry_run ? "Would remove" : "Removed"} workflow #{id} at #{removed["path"]}#{"; the preset of the same id is in effect again" if removed["preset"]}."
         @output.puts message
-        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "removed", "reason" => nil, "message" => message, "workflow" => id, "path" => removed["path"]}
+        {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "removed", "reason" => nil, "message" => message, "workflow" => id, "path" => removed["path"]}.merge(affected)
       end
 
       # Starts a run of a workflow in a workspace.
@@ -1034,6 +1039,39 @@ module Workspace
         nil
       end
 
+      # How a definition being read finds the workflow its `extends:` names.
+      def parent_lookup(project: nil)
+        ->(id, below: nil) { @catalog.parent(id, below: below, project: project) }
+      end
+
+      # The `extends` field of a definition document: the parents nearest first, left out when there are none.
+      def extends_field(definition)
+        parents = definition.parents
+        parents.empty? ? {} : {"extends" => parents.map { |parent| parent.slice("id", "source", "path", "sha256") }}
+      end
+
+      # The parent lookup and chain for a draft that will be installed as +id+: the draft stands in for the installed file, so a
+      # cycle through it is found now and not when the next definition is read. Without a files directory, the plain lookup.
+      def draft_lookup(id, text)
+        installed = begin
+          @files&.path(id)
+        rescue Workspace::Error
+          nil
+        end
+        base = parent_lookup
+        return [base, nil] unless installed
+        lookup = ->(parent_id, below: nil) { (parent_id == id && below.nil?) ? {"text" => text, "path" => installed, "source" => "global"} : base.call(parent_id, below: below) }
+        [lookup, [[id, installed]]]
+      end
+
+      # Warns on stderr of the definitions that extend +id+, which a change to it reaches, and answers the row field naming them (empty when none).
+      def extended_by(id)
+        children = @catalog.extended_by(id)
+        return {} if children.empty?
+        @error_output.puts "warning: #{children.join(", ")} #{(children.size == 1) ? "extends" : "extend"} #{id}, directly or through another workflow, so this change affects #{(children.size == 1) ? "it" : "them"}."
+        {"extended_by" => children}
+      end
+
       def file_id(path)
         name = File.basename(path, ".*")
         WorkflowDefinition::ID_PATTERN.match?(name) ? name : FILE_ID
@@ -1046,7 +1084,7 @@ module Workspace
       def show_source(id, json)
         found = @catalog.source(id)
         data = {"id" => id}.merge(found)
-        data = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"]).to_h.merge(data) if found["problems"].empty?
+        data = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"], parent_lookup: parent_lookup).to_h.merge(data) if found["problems"].empty?
         return document("workflow" => data) if json
         @output.print found["text"] if found["text"]
         found["problems"].each { |problem| @error_output.puts TerminalText.escape("#{id}: #{problem}") }

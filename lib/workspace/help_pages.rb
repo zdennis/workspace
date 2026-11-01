@@ -291,7 +291,11 @@ module Workspace
           "an editor.",
           "",
           "Definitions are YAML files: ~/.config/workspace/workflows/ID.yml, then the presets that ship with",
-          "workspace (rpiv, rpiv-auto-approve, pr-feedback, investigate, explore). See docs/README.workflow.md."
+          "workspace (rpiv, rpiv-auto-approve, pr-feedback, investigate, explore). See docs/README.workflow.md.",
+          "",
+          "A definition with extends: ID starts from another workflow's steps; show prints the result, with an",
+          "\"Extends:\" line for each parent (source and path). --json adds \"extends\" and \"resolved_sha256\", the digest",
+          "a run started now would record."
         ],
         options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"], JSON_OPT],
         examples: [
@@ -312,7 +316,10 @@ module Workspace
           "A valid definition can still get warnings (exit 0): a step with no produces, status, require or gate passes on any",
           "turn end, so it is named with what to add. It also warns of an include: pack the library can't find, a status or",
           "require command the project has no `commands.test`/`commands.lint` for, and an on_fail max that max_attempts can't",
-          "fit. The library and the commands are read for the project of the current directory; outside a git checkout they",
+          "fit. An extends: ID is looked up as any workflow id (your own file first, then the presets), so a draft that",
+          "extends another is checked against the ones you have; a missing parent, a cycle, a chain over 4, a replace: of a",
+          "step the parent lacks and an added step that the parent already has are problems. The library and the commands",
+          "are read for the project of the current directory; outside a git checkout they",
           "are listed as \"not checked\" instead. --json lists warnings (code, step, message) and not_checked (same shape).",
           "",
           "A step's guard: (unchanged or config) checks the checkout when the turn ends, on_fail's context: (fresh or continue)",

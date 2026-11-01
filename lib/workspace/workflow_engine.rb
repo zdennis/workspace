@@ -444,7 +444,7 @@ module Workspace
       attributes = {
         "schema_version" => 1, "workflow" => data["id"], "title" => data["title"],
         "definition" => data, "definition_source" => definition.source, "definition_path" => definition.path,
-        "definition_sha256" => definition.sha256,
+        "definition_sha256" => definition.resolved_sha256,
         "workspace" => workspace, "project" => checked["project"], "worktree" => worktree,
         "base_sha" => base["base_sha"], "base_guard" => base["base_guard"],
         "task" => task_id(workspace), "inputs" => checked["inputs"], "note" => note,

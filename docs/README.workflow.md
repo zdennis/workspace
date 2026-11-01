@@ -337,7 +337,9 @@ Top-level keys:
 | `use_when` | One line (at most 200 characters) saying when to pick the workflow; shown by `workflow show` and listed by `workflow show --json`. Left out: none |
 | `applies_to` | A list of the ref kinds the workflow is for: `jira`, `github_pr`, `github_issue`, `branch`. `workflow start` with a `REF` of another kind is refused with `workflow_not_for_ref` unless `--force`. Left out (the default): every kind, no check. A run stored before the key existed has none |
 | `deny` | A list of shell-glob patterns (at most 50, each at most 200 characters with at most 8 `*` or `?`) for Bash commands the run's agent may not run; see [Denying commands](#denying-commands). A run stored before the key existed has none |
-| `steps` | Step id to step, in the order they run |
+| `extends` | The id of another workflow to start from (a user's file, then a preset; see [Extending a workflow](#extending-a-workflow)). Left out: none |
+| `replace` | With `extends`: step id to the whole new step, swapped in at the parent's place. See [Extending a workflow](#extending-a-workflow) |
+| `steps` | Step id to step, in the order they run. With `extends`, the steps to add |
 
 Step keys:
 
@@ -355,9 +357,38 @@ Step keys:
 | `on_fail` | `{goto: STEP, max: N}`: on failure go back to an earlier step, at most `N` times (default 1). `context:` overrides the target step's `context` for that jump. `log_tail: N` (1 to 200) adds the last `N` lines of the failed check's log to the retry's instructions, and `backoff: DURATION` (`90`, `30s`, `2m`, `1h`; more than 0, at most 24 hours) delays the retry; see [Retrying a failed step](#retrying-a-failed-step) |
 | `context` | `fresh` (default): start the step in a new conversation. `continue`: keep the pane's conversation |
 | `timeout` | How long the step may take before `status` flags it `timed_out`. Nothing is stopped unless `on_timeout` says so and `workflow sweep` runs |
+| `after` | Only in a step added by a workflow with `extends`: the id of the step it goes after (default: the end). A step that is not added that way with `after` is a problem |
 | `on_timeout` | `warn` (the default), `interrupt` or `fail`: what a step past its `timeout` gets when `workflow sweep` runs: nothing (`warn`), the agent's interrupt keys once (`interrupt`), or a failed step (`fail`). Without a sweep every value behaves as `warn`. `interrupt` or `fail` with no `timeout` is a `workflow validate` warning |
 
 Text in `instructions` and `prompt` may use `{{workspace}}`, `{{branch}}`, `{{artifacts}}` (the run's directory, `<checkout>/.workflow/<run>`), `{{run}}` and `{{inputs.NAME}}`. Any other placeholder is a problem in the definition. A definition with problems is reported with all of them at once (code `invalid_workflow`).
+
+### Extending a workflow
+
+`extends: ID` starts a definition from another one, so a variant states only what differs. `rpiv-auto-approve` is `rpiv` with a replaced `plan` step and an added `plan_review` step:
+
+```yaml
+extends: rpiv
+max_attempts: 32
+replace:
+  plan:                      # the whole new step, in plan's place
+    prompt: ...
+    produces: [plan.md]
+steps:
+  plan_review:               # a new step
+    after: plan              # goes after plan; without after: it goes last
+    prompt: ...
+    produces: [plan-approval.md]
+```
+
+How the result is built: the parent's top-level keys, then this file's over them (a key it sets replaces the parent's value whole), except `inputs`, which merge by name with this file's winning. `replace:` swaps a parent step whole (nothing of the old step is kept, so say `gate:` again if you want it); each added step goes after the step its `after:` names, or at the end, and several added after the same step keep the order written. `id` is always this file's. A parent's `prompt_file:` is read from the parent's directory.
+
+The parent is found like any workflow id (`~/.config/workspace/workflows/` first, then the presets), so your own file named `rpiv` replaces the preset for every workflow that extends it, `rpiv-auto-approve` included. A file may extend the id it shadows: your `rpiv.yml` with `extends: rpiv` starts from the preset `rpiv` (only the sources after its own are searched), which is the way to change a preset and keep the rest. `show` prints each parent with its source and path, so you can see which file was read. A parent may extend another, up to 4 above the one you read.
+
+Refused with `invalid_workflow`. A parent that can't be used (missing, a cycle, a chain over 4, an `extends` that is not an id, or itself invalid) is reported alone, each of its problems under `extends ID (PATH)`, with the parent's own id and file, because nothing else in the child can be judged until it works. With a good parent, all of the child's problems are listed together: `replace` naming a step the parent lacks (the message lists its steps), an added step with an id the parent already has (use `replace`), an `after` naming no step, `replace` or `after` without `extends`. The merged result is then checked as any definition is, so a `goto` to a step that no longer comes earlier is a problem too.
+
+A run stores the resolved definition, so editing the parent later changes nothing in a run that is going. `definition_sha256` is the digest of the file's text alone when it extends nothing; with `extends` it is the digest of the file's own digest and each parent's text, so `workflow compare --by definition` tells apart runs of the same child file over a changed parent. For the same reason the runs of `rpiv-auto-approve` stored before it began to extend `rpiv` form their own group in `workflow compare`: their digest covered the old file. `workflow show` prints one `Extends:` line per parent (source and path); `show --json` and `validate --json` add `extends` (the parents nearest first: `id`, `source`, `path`, `sha256`) and `resolved_sha256`, the digest a run started now would store, and keep `sha256` as the file's own, the one `update --if-sha256` wants.
+
+`workflow add`, `update` and `remove` of a definition that others extend print a warning on stderr naming them, and their action row gains `extended_by` (the ids); the children are not changed, and read the new file the next time they are loaded.
 
 ### Validating a definition
 

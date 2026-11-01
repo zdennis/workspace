@@ -190,8 +190,10 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
 
     it "warns for no shipped preset" do
-      Dir[File.expand_path("../../lib/workflows/*.yml", __dir__)].each do |file|
-        expect(described_class.parse(File.read(file), id: File.basename(file, ".yml"), source: "builtin", path: file).warnings).to eq([])
+      presets = File.expand_path("../../lib/workflows", __dir__)
+      lookup = ->(id, below: nil) { {"text" => File.read(File.join(presets, "#{id}.yml")), "path" => File.join(presets, "#{id}.yml"), "source" => "builtin"} }
+      Dir[File.join(presets, "*.yml")].each do |file|
+        expect(described_class.parse(File.read(file), id: File.basename(file, ".yml"), source: "builtin", path: file, parent_lookup: lookup).warnings).to eq([])
       end
     end
   end
@@ -438,7 +440,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
       "schema_version must be 1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
@@ -447,7 +449,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, after)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",

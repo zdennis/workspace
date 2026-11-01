@@ -2,38 +2,15 @@ schema_version: 1
 id: rpiv-auto-approve
 title: Research, Plan, Implement, Verify (auto-approve)
 description: One feature end to end with no person, three reviewer agents voting on the plan, and a test-backed verify loop.
+extends: rpiv
 
 use_when: A feature or change to build end to end when no person will review the plan.
-
-inputs:
-  task:
-    description: What to build. A ticket key with a sentence, or a path to a spec in the worktree.
-    required: true
-  spec:
-    description: Optional spec or ticket file to read first.
-
-instructions: |
-  You are working on {{inputs.task}} in workspace {{workspace}}, branch {{branch}}.
-  Spec (may be empty): {{inputs.spec}}
-  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
-  inputs; read them before you start.
 
 # Five steps, nine plan rejections and three trips back from verify fit in twenty-nine;
 # three more cover a step run again for a file it didn't write.
 max_attempts: 32
 
-steps:
-  research:
-    title: Research
-    prompt: |
-      Research {{inputs.task}}. Read the code it touches, the tests that cover it, and
-      related docs. Don't change code or commit.
-      Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
-      constraints, open questions, risks.
-    produces: [research.md]
-    guard: unchanged
-    timeout: 45m
-
+replace:
   plan:
     title: Plan
     include: [notes, implementation-plan]
@@ -62,7 +39,9 @@ steps:
         workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 ? 0 : 1)'
     timeout: 45m
 
+steps:
   plan_review:
+    after: plan
     title: Plan review
     # The conversation stays the planner's, so a rejection goes back to the agent that wrote
     # the plan. The reviewers are sub-agents, so they read it fresh all the same.
@@ -105,43 +84,3 @@ steps:
       max: 9
       context: continue
     timeout: 30m
-
-  implement:
-    title: Implement
-    include: [notes, implementation-plan]
-    prompt: |
-      Implement the workspace plan (`workspace plan path`) one task at a time, marking
-      each task as the instructions say. Run the relevant tests before each commit. If the
-      plan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.
-      Write {{artifacts}}/implement.md listing the commits you made, then set the plan's
-      `status: done`; the run is waiting on that file and on that status. Make at least one commit.
-      On a rerun (after a failed verify, or a resume), make a new commit for the fix and never
-      amend or rebase, which the run's commit check can't follow. If no code change is needed,
-      run `git commit --allow-empty -m '<why>'`.
-    produces: [implement.md]
-    require:
-      - commits: 1
-      - plan_status: done
-    timeout: 3h
-
-  verify:
-    title: Verify
-    include: [review]
-    prompt: |
-      Verify the work against the workspace plan (`workspace plan path`). Run the full test suite and the
-      linter (the project's lint command, when it has one, must pass: the run checks it), then review the branch's diff against its base.
-      Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
-      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
-      and end your turn.
-    produces: [verify.md]
-    uses: [test-db]
-    status:
-      command: test
-    require:
-      - command: lint
-        optional: true
-    timeout: 90m
-    on_fail:
-      goto: implement
-      max: 3
-      context: continue

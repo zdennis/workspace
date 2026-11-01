@@ -143,6 +143,23 @@ RSpec.describe Workspace::WorkflowEngine do
   end
 
   describe "#start" do
+    it "stores the resolved definition of a workflow that extends another, so editing the parent later changes nothing in the run" do
+      defs = FileUtils.mkdir_p(File.join(@dir, "defs")).first
+      File.write(File.join(defs, "base.yml"), "steps:\n  plan:\n    prompt: Plan it.\n    produces: [plan.md]\n")
+      File.write(File.join(defs, "kid.yml"), "extends: base\nsteps:\n  more:\n    prompt: More.\n    produces: [more.md]\n")
+      catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: defs, builtin_workflows_dir: File.join(@dir, "none")))
+      kid = catalog.find("kid")
+
+      start(kid, inputs: {})
+      File.write(File.join(defs, "base.yml"), "steps:\n  plan:\n    prompt: Plan it differently.\n    produces: [plan.md]\n")
+      stored = store.find("wr_1")
+
+      expect(stored["definition"]).to eq(kid.to_h.merge("produces_check" => "strict"))
+      expect(stored["definition"]["steps"].map { |step| step["prompt"] }).to eq(["Plan it.", "More."])
+      expect(stored["definition_sha256"]).to eq(kid.resolved_sha256)
+      expect(catalog.find("kid").resolved_sha256).not_to eq(stored["definition_sha256"])
+    end
+
     it "writes the run, the first step's instructions and the pane's binding, then types one line into the pane" do
       run = start(note: "Keep it small.")
       prompt = File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.prompt.md")

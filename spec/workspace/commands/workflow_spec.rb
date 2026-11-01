@@ -143,7 +143,7 @@ RSpec.describe Workspace::Commands::Workflow do
       command.show(id: "flow", json: true)
 
       expect(json).to eq("schema_version" => 1, "ok" => true,
-        "workflow" => definition.to_h.merge("source" => "global", "path" => "/defs/flow.yml", "sha256" => definition.sha256))
+        "workflow" => definition.to_h.merge("source" => "global", "path" => "/defs/flow.yml", "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256))
     end
   end
 
@@ -2218,6 +2218,112 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "refuses a PATH that can't be read as a usage error" do
       expect { command.validate(path: File.join(dir, "nope.yml")) }.to raise_error(Workspace::UsageError, /Can't read .*nope\.yml: No such file or directory\z/)
+    end
+  end
+
+  describe "definitions that extend another" do
+    let(:input) { StringIO.new }
+    let(:error_output) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "global") }
+    let(:builtin_dir) { File.join(dir, "builtin") }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir) }
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
+    let(:base_text) { "title: Base\nsteps:\n  plan:\n    prompt: Plan.\n" }
+    subject(:command) do
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux,
+        process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
+    end
+
+    before do
+      FileUtils.mkdir_p([global_dir, builtin_dir])
+      File.write(File.join(builtin_dir, "base.yml"), base_text)
+      File.write(File.join(global_dir, "kid.yml"), "extends: base\n")
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "shows each parent with where it came from, and the digest a run would store" do
+      command.show(id: "kid")
+      expect(output.string).to include("Extends: base (builtin, #{File.join(builtin_dir, "base.yml")})")
+
+      output.truncate(0)
+      output.rewind
+      command.show(id: "kid", json: true)
+      expect(json["workflow"]["extends"]).to eq([{"id" => "base", "source" => "builtin", "path" => File.join(builtin_dir, "base.yml"), "sha256" => Digest::SHA256.hexdigest(base_text)}])
+      expect(json["workflow"]).to include("sha256" => Digest::SHA256.hexdigest("extends: base\n"), "resolved_sha256" => real_catalog.find("kid").resolved_sha256)
+    end
+
+    it "shows a parent that is the user's own file as global" do
+      File.write(File.join(global_dir, "base.yml"), base_text)
+
+      command.show(id: "kid", json: true)
+
+      expect(json["workflow"]["extends"].first).to include("source" => "global")
+    end
+
+    it "warns on stderr and in the row, naming the children, when add, update or remove changes what they extend" do
+      draft = File.join(dir, "draft.yml")
+      File.write(draft, base_text)
+
+      added = command.add(id: "base", path: draft)
+      expect(added["extended_by"]).to eq(%w[kid])
+      expect(error_output.string).to eq("warning: kid extends base, directly or through another workflow, so this change affects it.\n")
+
+      File.write(draft, base_text.sub("Plan.", "Plan more."))
+      updated = command.update(id: "base", path: draft, if_sha256: Digest::SHA256.hexdigest(base_text))
+      expect(updated["extended_by"]).to eq(%w[kid])
+
+      removed = command.remove(id: "base", yes: true)
+      expect(removed["extended_by"]).to eq(%w[kid])
+      expect(error_output.string.scan("warning:").size).to eq(3)
+    end
+
+    it "refuses a draft that makes a cycle through the file it will be installed as, before writing, in add, update and validate" do
+      File.write(File.join(global_dir, "tail.yml"), "extends: base\n")
+      draft = File.join(dir, "draft.yml")
+      File.write(draft, "extends: tail\n")
+      File.write(File.join(global_dir, "other.yml"), base_text)
+
+      expect { command.add(id: "base", path: draft) }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details["problems"].last]).to match(["invalid_workflow", /extends makes a cycle: base -> tail -> base\z/]) }
+      expect { command.validate(path: draft, id: "base") }.to raise_error(Workspace::Error, /extends makes a cycle/)
+      expect(File.exist?(File.join(global_dir, "base.yml"))).to be(false)
+
+      File.write(File.join(global_dir, "tail.yml"), "extends: other\n")
+      File.write(draft, "extends: tail\n")
+      expect { command.update(id: "other", path: draft, if_sha256: Digest::SHA256.hexdigest(base_text)) }.to raise_error(Workspace::Error, /extends makes a cycle: other -> tail -> other\z/)
+      expect(File.read(File.join(global_dir, "other.yml"))).to eq(base_text)
+    end
+
+    it "accepts a draft that extends the preset it will shadow, reading the preset and not itself" do
+      draft = File.join(dir, "draft.yml")
+      File.write(draft, "extends: base\ntitle: Shadow\n")
+
+      row = command.add(id: "base", path: draft)
+
+      expect(row["outcome"]).to eq("added")
+      expect(real_catalog.find("base").parents).to contain_exactly(include("id" => "base", "source" => "builtin"))
+    end
+
+    it "warns before the remove question, not only after" do
+      File.write(File.join(global_dir, "base.yml"), base_text)
+      input.string = "n\n"
+
+      command.remove(id: "base")
+
+      expect(error_output.string).to include("kid extends base")
+      expect(output.string).to include("[y/N]")
+    end
+
+    it "adds no field and prints no warning when nothing extends the id" do
+      draft = File.join(dir, "draft.yml")
+      File.write(draft, base_text)
+
+      row = command.add(id: "alone", path: draft)
+
+      expect(row).not_to have_key("extended_by")
+      expect(error_output.string).to eq("")
     end
   end
 

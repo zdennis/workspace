@@ -21,8 +21,8 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description use_when applies_to inputs include instructions max_attempts stall redeliver budget deny steps].freeze
-    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout].freeze
+    TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget deny steps].freeze
+    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout after].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
     ON_TIMEOUT_ACTIONS = %w[warn interrupt fail].freeze
@@ -94,10 +94,12 @@ module Workspace
     # @param source [String] "builtin" or "global"
     # @param path [String, nil] the file, for messages and for resolving `prompt_file:`; nil for text with no file
     # @param base_dir [String, nil] the directory `prompt_file:` resolves against, else the directory of `path`
+    # @param parent_lookup [#call, nil] given a workflow id and `below:` (a source name or nil), answers the parent's "text", "path" and "source" (nil when there is none); needed only for `extends:`
+    # @param chain [Array, nil] for {WorkflowExtends}: the id and file of each definition being read, outermost first
     # @return [Workspace::WorkflowDefinition]
     # @raise [Workspace::Error] code `invalid_workflow`, with every problem in `details["problems"]`
-    def self.parse(text, id:, source:, path:, base_dir: nil)
-      new(text, id: id, source: source, path: path, base_dir: base_dir)
+    def self.parse(text, id:, source:, path:, base_dir: nil, parent_lookup: nil, chain: nil)
+      new(text, id: id, source: source, path: path, base_dir: base_dir, parent_lookup: parent_lookup, chain: chain)
     end
 
     # Fills a text's placeholders. A placeholder with no value is left as written;
@@ -117,7 +119,9 @@ module Workspace
     # @param source [String]
     # @param path [String, nil]
     # @param base_dir [String, nil]
-    def initialize(text, id:, source:, path:, base_dir: nil)
+    # @param parent_lookup [#call, nil]
+    # @param chain [Array, nil]
+    def initialize(text, id:, source:, path:, base_dir: nil, parent_lookup: nil, chain: nil)
       @text = text
       @base_dir = base_dir || (path && File.dirname(path))
       @id = id
@@ -125,10 +129,38 @@ module Workspace
       @path = path
       @sha256 = Digest::SHA256.hexdigest(text)
       @problems = []
-      @data = build(load_yaml(text))
+      extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]])
+      @resolved_raw = extension.resolve(load_yaml(text))
+      @parents = extension.parents
+      if extension.failure.any?
+        # The parent can't be used, so nothing else about this file can be judged.
+        @problems = extension.failure
+      else
+        @problems.concat(extension.problems)
+        @data = build(@resolved_raw)
+      end
       return if @problems.empty?
       raise Workspace::Error.new("Workflow '#{id}' #{path ? "(#{path})" : "(from stdin)"} is not valid:\n" + @problems.map { |problem| "  - #{problem}" }.join("\n"),
         code: "invalid_workflow", details: {"workflow" => id, "path" => path, "problems" => @problems})
+    end
+
+    # The mapping {#to_h} was checked from: the file's own, or, with `extends:`, the parent's laid under it (see {WorkflowExtends}).
+    #
+    # @return [Hash]
+    attr_reader :resolved_raw
+
+    # The workflows this one extends, nearest first, as read now.
+    #
+    # @return [Array<Hash{String=>String}>] each with "id", "source", "path" and "sha256" (of that file's text)
+    attr_reader :parents
+
+    # The digest a run records as `definition_sha256`: {#sha256} alone, or, for a definition that extends
+    # others, the digest of its own digest and each parent's, so a changed parent is a changed definition.
+    #
+    # @return [String]
+    def resolved_sha256
+      return @sha256 if @parents.empty?
+      Digest::SHA256.hexdigest(([@sha256] + @parents.map { |parent| parent["sha256"] }).join("\n"))
     end
 
     # @return [Hash{String=>Object}] the checked definition with defaults filled in: "id",
@@ -477,6 +509,7 @@ module Workspace
         raw = {}
       end
       unknown_keys(raw, STEP_KEYS, where)
+      problem "#{where}: after: only places a step added by a workflow that has extends:" if raw.key?("after")
       prompt = prompt_from(raw, where)
       placeholders(prompt, inputs, "#{where}: prompt")
       {
