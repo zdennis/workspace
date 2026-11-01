@@ -480,6 +480,26 @@ module Workspace
           ["workspace workflow attempts RUN --json", "for a script: one row per attempt, with sessions, hashes and reasons"]
         ]
       },
+      "audit" => {
+        usage: ["workflow audit RUN [--attempt-of STEP] [--json]"],
+        summary: "Check a run's kept evidence against the hashes recorded for it",
+        about: [
+          RUN_ID,
+          "",
+          "Compares each prompt, check log and output the engine copied to the state directory with the SHA-256 it",
+          "recorded, for a going or finished run. OK: the copy matches. CHANGED, MISSING, REPLACED: the copy no longer",
+          "holds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which",
+          "is not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a",
+          "cancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.",
+          "Reads the run file and the evidence directory and writes nothing."
+        ],
+        options: [["--attempt-of STEP", "Only this step's attempts (an unknown step is refused as unknown_step)"], JSON_OPT],
+        examples: [
+          ["workspace workflow audit RUN", "has anything the run kept been changed since it was copied?"],
+          ["workspace workflow audit RUN --attempt-of implement", "only the implement step's files"],
+          ["workspace workflow audit RUN --json", "for a script: one row per file, and clean true or false"]
+        ]
+      },
       "events" => {
         usage: ["workflow events RUN [--since N] [--json]"],
         summary: "Show a run's history, one line per event",

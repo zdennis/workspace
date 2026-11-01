@@ -710,7 +710,7 @@ module Workspace
           ui              Open a workspace-ui:// link (open), or see which app would take one (status)
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
-          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; manage your own definitions (validate, add, update, remove); read a run's history (events, files, attempts)
+          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; manage your own definitions (validate, add, update, remove); read a run's history (events, files, attempts) and check its evidence (audit)
 
         Global options:
           --debug         Print detailed debug output to stderr
@@ -5000,7 +5000,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start status events files attempts resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start status events files attempts audit resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5042,7 +5042,7 @@ module Workspace
         opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
         opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
-        opts.on("--attempt-of STEP", "attempts: only this step's attempts") { |v| options[:attempt_of] = v }
+        opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
         opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
@@ -5094,19 +5094,19 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
       source_path = args.shift if %w[add update].include?(subcommand)
       start_ref = args.shift if subcommand == "start"
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
       raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?))
 
       raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
-      raise UsageError, "--attempt-of is for `workflow attempts RUN`." if options[:attempt_of] && subcommand != "attempts"
+      raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
       raise UsageError, "--project is for `workflow status`." if options[:project] && subcommand != "status"
       raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
@@ -5143,6 +5143,9 @@ module Workspace
         @workflow_command.files(run: subject, json: options[:json])
       when "attempts"
         @workflow_command.attempts(run: subject, step: options[:attempt_of], json: options[:json])
+      when "audit"
+        result = @workflow_command.audit(run: subject, step: options[:attempt_of], json: options[:json])
+        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
       when "events"
         @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])
       when "status"

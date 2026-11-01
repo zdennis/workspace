@@ -28,6 +28,7 @@ module Workspace
       # @param files [Workspace::WorkflowFiles] writes a user's definitions (`add`)
       # @param run_files [Workspace::WorkflowRunFiles] lists a run's files (`files`)
       # @param attempts [Workspace::WorkflowAttempts, nil] reads a run's recorded attempts (`attempts`)
+      # @param audit [Workspace::WorkflowAudit, nil] checks a run's evidence copies against their hashes (`audit`)
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -36,7 +37,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, pid: Process.pid,
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -46,6 +47,7 @@ module Workspace
         @files = files
         @run_files = run_files
         @attempts = attempts
+        @audit = audit
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -312,6 +314,26 @@ module Workspace
         end
       end
 
+      # Checks the evidence copies a run kept against the hashes recorded for them, going or
+      # finished. Reads the run file and the evidence directory and writes nothing.
+      #
+      # @param run [String] a run id
+      # @param step [String, nil] only this step's attempts
+      # @param json [Boolean]
+      # @return [Hash] `exit_code`: 0 when no copy mismatched, 1 when one is changed, missing or replaced
+      # @raise [Workspace::Error] code `unknown_run`, or `unknown_step` for a +step+ the run doesn't have
+      def audit(run:, step: nil, json: false)
+        raise Workspace::Error, "workflow audit is not available: no audit reader was wired" unless @audit
+        result = @audit.read(@store.find(run), step: step)
+        if json
+          document("run" => run, "step" => step, "clean" => result["clean"], "counts" => result["counts"], "directory" => result["directory"],
+            "files" => result["files"], "without_evidence" => result["without_evidence"])
+        else
+          print_audit(run, step, result)
+        end
+        {exit_code: result["clean"] ? 0 : 1}
+      end
+
       # Gets a run going again. Everything the engine would refuse is refused
       # first; only then is a daemon started or a pane picked.
       #
@@ -480,6 +502,43 @@ module Workspace
       end
 
       private
+
+      # The text of `audit`: one row per recorded file, then the attempts with no evidence and where the copies are.
+      def print_audit(run, step, result)
+        files = result["files"]
+        if files.empty? && result["without_evidence"].empty?
+          @output.puts "No attempts recorded for #{run}#{" step #{TerminalText.escape(step)}" if step}."
+          return
+        end
+        unless files.empty?
+          table = [%w[STEP ATTEMPT KIND STATUS NAME DETAIL]] + files.map { |each| audit_cells(each) }
+          widths = table.transpose.map { |column| column.map(&:length).max }
+          table.each { |cells| @output.puts cells.each_with_index.map { |cell, index| cell.ljust(widths[index]) }.join("  ").rstrip }
+        end
+        unless result["without_evidence"].empty?
+          list = result["without_evidence"].map { |each| "#{TerminalText.escape(each["step"])} #{TerminalText.escape(each["attempt"])}" }.join(", ")
+          @output.puts "No evidence recorded (the attempt predates it): #{list}"
+        end
+        counts = result["counts"].map { |status, count| "#{count} #{status}" }.join(", ")
+        @output.puts "#{files.size} #{(files.size == 1) ? "file" : "files"}#{": " + counts unless counts.empty?}. #{result["clean"] ? "No copy differs from its record." : "A copy differs from its record."}"
+        @output.puts "Evidence kept in #{TerminalText.escape(result["directory"].to_s)}/" if result["directory"]
+      end
+
+      # One text row of `audit`: step, attempt, kind, status, name, detail.
+      def audit_cells(row)
+        short = ->(sha) { sha&.[](0, 12) }
+        detail = case row["status"]
+        when "changed"
+          if row["now_sha256"]
+            "recorded #{short.call(row["recorded_sha256"])}, now #{short.call(row["now_sha256"])}"
+          else
+            row["reason"]
+          end
+        when "replaced", "not_copied", "too_large", "missing" then row["reason"]
+        end
+        detail = [detail, ("checkout copy differs" if row["source_status"] == "differs")].compact.join("; ")
+        [row["step"], row["attempt"] || "-", row["kind"] || "-", row["status"].upcase.tr("_", " "), row["name"] || "-", detail.empty? ? "-" : detail].map { |cell| TerminalText.escape(cell) }
+      end
 
       # One text row of `attempts`: step, attempt, outcome, code, head, duration, tokens.
       def attempt_cells(row)

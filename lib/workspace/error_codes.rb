@@ -238,7 +238,7 @@ module Workspace
       "pane_has_run" => "The pane already runs another workflow run.",
       "checkout_has_run" => "The checkout already has a workflow run going. details.worktree, details.run_id, details.step, details.state, details.next (the cancel command).",
       "unknown_run" => "No workflow run has that id.",
-      "unknown_step" => "workflow attempts --attempt-of named a step the run doesn't have. details.run_id, details.step, details.steps (the run's step ids).",
+      "unknown_step" => "workflow attempts or audit --attempt-of named a step the run doesn't have. details.run_id, details.step, details.steps (the run's step ids).",
       "unknown_goal" => "goal show: REF matches no workspace, run, task, ticket or branch. details.ref, details.tried.",
       "ambiguous_goal" => "goal show: REF matches more than one workspace (a branch checked out in two projects). details.ref, details.matches (workspace, project, branch).",
       "stage_disagrees" => "goal warning: the goal's state is done but its current stage is not completed or skipped. workspace, details.stage, details.status.",

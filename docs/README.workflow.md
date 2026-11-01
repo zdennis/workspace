@@ -17,6 +17,7 @@ workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [-
 workspace workflow events RUN [--since N] [--json]
 workspace workflow files RUN [--json]
 workspace workflow attempts RUN [--attempt-of STEP] [--json]
+workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]
 workspace workflow cancel RUN [--json]
 workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
@@ -38,6 +39,7 @@ workspace step status [--json]
 | `workflow status` | The runs still going in this workspace, another's (`--name`), a project's (`--project`) or every workspace's (`--all`), or one run (`RUN`). Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck). See [Which runs `status` shows](#which-runs-status-shows). `--table` prints one row per run beside its workspace: [the status table](#the-status-table) |
 | `workflow events` | A run's history (going or finished), one line per event, oldest first. `--since N` gives only the events after line N; at most 1000 at a time. See [Reading a run's events](#reading-a-runs-events) |
 | `workflow attempts` | What a run recorded about each attempt, going or finished: outcome, failure code, HEAD before and after, hashes, packs, outputs, check, agent, session, tokens and reasons. Reads the run file and writes nothing. See [Reading a run's attempts](#reading-a-runs-attempts) |
+| `workflow audit` | Check the evidence copies a run kept against the hashes recorded for them, going or finished. Exits 1 when a copy changed, is gone or was replaced. Reads the run file and the evidence directory and writes nothing. See [Auditing a run's evidence](#auditing-a-runs-evidence) |
 | `workflow files` | The files a run keeps: each attempt's prompt, check log and proof logs and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to. Run from the pane it would type into, it is [parked](#resuming-from-the-runs-own-pane) (outcome `parked`) and carried out after the agent ends its turn |
 | `workflow cancel` | End a run and release what it holds |
@@ -388,6 +390,28 @@ Rows come from the definition's steps in order, then any other step the run reco
 `workflow attempts --json` prints `{"schema_version":1,"ok":true,"run":ID,"attempts":[...],"unowned_reasons":[...]}`. Each attempt holds `step`, `attempt` (the attempt's `n`), `outcome` (`passed`, `failed`, `not_delivered`, or `null` while it is open), `code`, `started_at`, `ended_at`, `agent`, `session`, `head`, `definition_sha256`, `prompt_sha256`, `packs`, `outputs`, `check`, `usage`, `evidence`, `reported`, `proofs` and `reasons`, with the values the run file stores under those keys; `check` is the stored check's `command`, `log`, `started_at`, `ended_at`, `exit_code` and `timed_out`; `reported` is the agent's `step done` report (`status`, `summary`, `code`, `at`) and `proofs` the rows of the `require:` proofs that ran outside the lock (see [What an attempt records](#what-an-attempt-records)). Every key is always present and `null` when the run never recorded it (`reasons` too: an attempt with no reason history has `null`, not `[]`). `code` is the code the attempt failed with (an engine code such as `require_commits` or `check_failed`, or the agent's own `step done --code`), `null` for an attempt that did not fail and for any attempt stored before this key existed. `unowned_reasons` is the run's own `reasons` list: the waits that had no attempt to own them, each `{step, code, since, until}`, oldest first; with `--attempt-of` only that step's. They are not attached to rows, since a wait before the first attempt has no row to sit on; a reader joins them to attempts by `step` and time.
 
 Needs `workflow` 12 in `capabilities`.
+
+### Auditing a run's evidence
+
+`workflow audit RUN [--attempt-of STEP] [--json]` compares each file in the attempts' `evidence` (see [Evidence outside the checkout](#evidence-outside-the-checkout)) with the SHA-256 recorded for it, for a going or finished run. It reads the run file and the evidence directory and writes nothing. An unknown run is refused with `unknown_run`, an unknown `--attempt-of` step with `unknown_step`.
+
+Each recorded file gets one status. The run file is the trust root: the audit trusts the hash it records, so an edit to both a copy and its recorded hash is not detected. The comparison always uses the entry's own `sha256`, never the attempt's `prompt_sha256` (that hashes the composed text and may differ from the prompt file).
+
+| Status | Meaning | Counts as a mismatch |
+|--------|---------|----------------------|
+| `ok` | The copy hashes to the recorded `sha256` | no |
+| `changed` | The copy now hashes differently (`reason: unreadable` or `too_large` when it could not be hashed); or the entry has no recorded hash and no `problem` or `too_large` (`reason: no_recorded_hash`; the engine writes a hash on every successful copy); or the entry says nothing was kept yet a copy is there (`reason: unexpected_copy`) | yes |
+| `missing` | The copy is not there; `reason` is `no_evidence_directory` (the run's evidence directory is absent, a link, or the run id is not a valid one) or `invalid_name` (the stored name is not a plain file name, so nothing was read) | yes |
+| `replaced` | The copy is now a link or not a regular file (`reason`: `symlink`, `not_regular_file`) | yes |
+| `not_copied` | The entry has a `problem` (`missing`, `outside_artifacts`, `copy_failed`; the `reason`): nothing was kept | no |
+| `too_large` | The file was past the size limit (`reason: size`) or the attempt's 64 MiB budget (`reason: budget`): nothing was kept | no |
+
+Entries from a run stored before evidence existed have no `evidence` key: they are listed under `without_evidence` (text: "No evidence recorded"), never as a mismatch. A stored `name` is read only when it is a plain file name (letters, digits, `.`, `_`, `-`), directly inside `evidence/<RUN>/`; the copy is looked at with `lstat` first and never read through a link, and the run's evidence directory must itself be a real directory. A prompt's or check log's `source` in the checkout is also hashed (only when it lies under the run's artifacts directory) and shown as `source_status` (`same`, `differs`, `gone`, `outside`, `null` for outputs); `differs` is printed as "checkout copy differs" and does not change the exit status, since a cancelled check keeps writing its log and a later attempt rewrites an output. Text output escapes the stored names and paths.
+
+Exit status is 0 when no copy mismatched (including a run with nothing recorded) and 1 when any file is `changed`, `missing` or `replaced`. With `--json` the exit status is the same and the document is still printed: `{"schema_version":1,"ok":true,"run":ID,"step":STEP-or-null,"clean":bool,"counts":{status: n},"directory":"<evidence dir>/<RUN>","files":[...],"without_evidence":[{"step","attempt"}]}`. `ok` says the command ran, `clean` says no copy mismatched. Each `files` row has `step`, `attempt`, `name`, `kind` (`prompt`, `check_log`, `output`), `source`, `status`, `reason`, `recorded_sha256`, `now_sha256`, `bytes` and `source_status`; every key is always present. An agent under the same account could change a copy and the run file's hash together, so a clean audit shows no change since the copy, not that nothing was altered.
+
+Needs `workflow` 14 in `capabilities`.
+
 
 ### Reading a run's files
 

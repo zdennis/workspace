@@ -2428,4 +2428,59 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(command.remove(id: "flow", yes: true)).to include("outcome" => "removed")
     end
   end
+  describe "#audit" do
+    around do |example|
+      Dir.mktmpdir("wf-audit") do |dir|
+        @runs = File.join(dir, "runs")
+        @archive = File.join(dir, "archive")
+        example.run
+      end
+    end
+
+    let(:real_store) { Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: @archive, id_generator: -> { "wr_2611010900abcd" }) }
+    let(:audit_reader) { instance_double(Workspace::WorkflowAudit) }
+    let(:audit_command) do
+      described_class.new(catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, audit: audit_reader, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+    end
+    let(:row) { {"step" => "plan", "attempt" => 1, "name" => "plan.1.check.log\e[2J", "kind" => "check_log", "status" => "changed", "recorded_sha256" => "a" * 64, "now_sha256" => "b" * 64, "source_status" => "differs"} }
+
+    before do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}, "steps" => {"plan" => {"attempts" => []}})
+    end
+
+    it "prints a row per file with both hashes, escapes stored text, and asks for exit 1 on a mismatch" do
+      allow(audit_reader).to receive(:read).and_return("files" => [row], "without_evidence" => [{"step" => "x", "attempt" => 2}], "counts" => {"changed" => 1}, "clean" => false, "directory" => "/e/wr_2611010900abcd")
+
+      result = audit_command.audit(run: "wr_2611010900abcd")
+
+      expect(result).to eq(exit_code: 1)
+      expect(output.string).not_to include("\e")
+      expect(output.string).to include("CHANGED", "recorded aaaaaaaaaaaa, now bbbbbbbbbbbb; checkout copy differs", "No evidence recorded (the attempt predates it): x 2", "Evidence kept in /e/wr_2611010900abcd/")
+    end
+
+    it "shows the reason, not a question mark, for a copy it could not hash" do
+      allow(audit_reader).to receive(:read).and_return("files" => [row.merge("now_sha256" => nil, "reason" => "too_large", "source_status" => nil)], "without_evidence" => [], "counts" => {"changed" => 1}, "clean" => false, "directory" => nil)
+
+      audit_command.audit(run: "wr_2611010900abcd")
+
+      expect(output.string).to include("too_large")
+      expect(output.string).not_to include("now ?")
+    end
+
+    it "prints a clean json document and exit 0" do
+      allow(audit_reader).to receive(:read).and_return("files" => [], "without_evidence" => [], "counts" => {}, "clean" => true, "directory" => nil)
+
+      expect(audit_command.audit(run: "wr_2611010900abcd", json: true)).to eq(exit_code: 0)
+      expect(JSON.parse(output.string)).to include("ok" => true, "clean" => true, "files" => [])
+    end
+
+    it "says so for a run with no attempts, and refuses an unknown run" do
+      allow(audit_reader).to receive(:read).and_return("files" => [], "without_evidence" => [], "counts" => {}, "clean" => true, "directory" => nil)
+
+      audit_command.audit(run: "wr_2611010900abcd")
+
+      expect(output.string).to include("No attempts recorded for wr_2611010900abcd.")
+      expect { audit_command.audit(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+  end
 end
