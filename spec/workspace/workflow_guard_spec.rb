@@ -71,6 +71,35 @@ RSpec.describe Workspace::WorkflowGuard do
     end
   end
 
+  describe "#head" do
+    it "answers the full commit id, and nil when git can't answer" do
+      expect(guard.head(repo)).to eq(git("rev-parse", "HEAD").strip)
+      expect(guard.head(File.join(@dir, "nowhere"))).to be_nil
+    end
+
+    it "waits at most 5 seconds for git, and reads a timeout as nil" do
+      limits = []
+      slow = described_class.new(runner: lambda do |_argv, **options|
+        limits << options[:timeout]
+        raise Timeout::Error
+      end)
+
+      expect(slow.head(repo)).to be_nil
+      expect(limits).to eq([5])
+    end
+
+    it "leaves the other git calls at 30 seconds" do
+      limits = []
+      watching = described_class.new(runner: lambda do |argv, **options|
+        limits << options[:timeout]
+        Workspace::TimedProcess.run(argv, **options)
+      end)
+      watching.base(repo)
+
+      expect(limits.uniq.sort).to eq([5, 30])
+    end
+  end
+
   it "finds a commit as head_moved, naming both commits" do
     write("a.txt", "two\n")
     git("commit", "-q", "-am", "agent commit")

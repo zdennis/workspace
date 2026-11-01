@@ -111,9 +111,11 @@ module Workspace
     # @param event_log [Workspace::EventLog, nil] gets `workflow_changed` and the run's lock events
     # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
+    # @param attempt_record [Workspace::WorkflowAttemptRecord, nil] records what each attempt started from and ended with
+    #   (default: one reading HEAD through `guard`)
     # @param clock [#call] returns the current Time
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-      env_stopper: nil, event_log: nil, task_store: nil, clock: -> { Time.now })
+      env_stopper: nil, event_log: nil, task_store: nil, attempt_record: nil, clock: -> { Time.now })
       @store = store
       @resources = resources
       @composer = composer
@@ -128,6 +130,7 @@ module Workspace
       @env_stopper = env_stopper
       @event_log = event_log
       @task_store = task_store
+      @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard)
       @clock = clock
       @delivery = nil
     end
@@ -519,6 +522,7 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, cause: "cancel")
       transition(run_id) do |stored|
+        @attempt_record.abandon(stored)
         finish(stored, "cancelled")
         stored["cancelled_by"] = cause
         event(stored, "run_cancelled", "cause" => cause)
@@ -913,7 +917,8 @@ module Workspace
       attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
                  "delivery" => "delivering"}
       run["pending_context"] = []
-      attempt["prompt_file"] = write_prompt(run, step, attempt)
+      attempt["prompt_file"], composed = write_prompt(run, step, attempt)
+      @attempt_record.start(run: run, attempt: attempt, composed: composed)
       state["attempts"] << attempt
       @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
         instructions: attempt["prompt_file"], artifacts: run["artifacts_dir"])
@@ -1094,8 +1099,9 @@ module Workspace
       path = File.join(dir, "#{step["id"]}.#{attempt["n"]}.prompt.md")
       binding = {"kind" => "run", "id" => run["id"], "workspace" => run["workspace"], "step" => step["id"], "attempt" => attempt["n"],
                  "instructions" => path, "artifacts" => run["artifacts_dir"]}
-      File.write(path, compose(run, step, attempt["context"], binding: binding)["text"], encoding: Encoding::UTF_8)
-      path
+      composed = compose(run, step, attempt["context"], binding: binding)
+      File.write(path, composed["text"], encoding: Encoding::UTF_8)
+      [path, composed]
     end
 
     # Decides a step whose turn ended. Returns the check to run, when the
@@ -1150,6 +1156,7 @@ module Workspace
       command = step["status"]["run"] || @commands_config.for_project(run["project"])[step["status"]["command"].to_sym]
       log = File.join(run["artifacts_dir"], "steps", "#{step["id"]}.#{attempt["n"]}.check.log")
       attempt["check"] = {"started_at" => now_iso, "log" => log}
+      attempt["check"]["command"] = command if command
       state["state"] = "checking"
       run["state"] = "running"
       run["reason"] = nil
@@ -1260,6 +1267,7 @@ module Workspace
     def pass_step(run)
       state = step_state(run)
       state["attempts"].last.merge!("ended_at" => now_iso, "outcome" => "passed")
+      @attempt_record.finish(run: run, step: step_def(run), attempt: state["attempts"].last)
       state["state"] = "passed"
       event(run, "step_passed", "step" => run["current"], "attempt" => state["attempts"].last["n"])
       return advance(run) unless step_def(run)["gate"]
@@ -1305,6 +1313,7 @@ module Workspace
       attempt = state["attempts"].last
       attempt["ended_at"] = now_iso
       attempt["outcome"] = "failed"
+      @attempt_record.finish(run: run, step: step, attempt: attempt)
       state["state"] = "failed"
       event(run, "step_failed", {"step" => step["id"], "attempt" => attempt["n"]}.merge(failure.slice("cause", "exit_code")))
       on_fail = step["on_fail"]

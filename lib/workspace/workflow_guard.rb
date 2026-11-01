@@ -29,6 +29,9 @@ module Workspace
     # Seconds one git call may take.
     GIT_TIMEOUT = 30
 
+    # Seconds {#head} waits for git: it runs under a run's lock, so it must stay short.
+    HEAD_TIMEOUT = 5
+
     # Most stdout one git call is read for.
     MAX_OUTPUT = 32 * 1024 * 1024
 
@@ -101,15 +104,20 @@ module Workspace
       nil
     end
 
+    # Never raises: a checkout that is gone, a timeout and a failed git all read nil.
+    #
+    # @param worktree [String] a checkout
+    # @return [String, nil] the full commit id `git rev-parse` answers for HEAD in the path (a checkout that lost its `.git`
+    #   inside another repository reads that repository's HEAD); nil on an unborn branch, past {HEAD_TIMEOUT}, or when git cannot answer
+    def head(worktree)
+      out, ok = run_git(worktree, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", timeout: HEAD_TIMEOUT)
+      ok ? out.strip : nil
+    end
+
     private
 
     def failure(code, extra = {})
       {"code" => code, "paths" => []}.merge(extra)
-    end
-
-    def head(worktree)
-      out, ok = git(worktree, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
-      ok ? out.strip : nil
     end
 
     def snapshot_part(worktree, part)
@@ -253,10 +261,10 @@ module Workspace
       run_git(worktree, *args, hooks: hooks, env: env_extra)
     end
 
-    def run_git(worktree, *args, hooks: false, env: {})
+    def run_git(worktree, *args, hooks: false, env: {}, timeout: GIT_TIMEOUT)
       inherited = ENV.keys.select { |name| name.start_with?("GIT_") }.to_h { |name| [name, nil] }
       options = hooks ? HARDENED_OPTIONS : HARDENED_OPTIONS + NO_HOOKS
-      out, err, ok = @runner.call([@git_path, *options, "-C", worktree, *args], chdir: worktree, timeout: GIT_TIMEOUT,
+      out, err, ok = @runner.call([@git_path, *options, "-C", worktree, *args], chdir: worktree, timeout: timeout,
         env: inherited.merge(HARDENED_ENV).merge(env), max_bytes: MAX_OUTPUT)
       [out.to_s.scrub, ok, exit_code(ok, err)]
     rescue SystemCallError, Timeout::Error, Workspace::TimedProcess::OutputTooLarge

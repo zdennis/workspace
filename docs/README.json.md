@@ -60,6 +60,8 @@ These commands take `--json` and print one action document: `add`, `launch`, `st
 
 `workflow status --table --json` prints `{"schema_version":1,"ok":true,"generated_at":...,"rows":[...],"warnings":[]}`: one row per run, with `id`, `workflow`, `state`, `step` (`null` once the run has finished), `workspace`, `workspace_status` (`live`, `stopped`, `gone` or `unknown`), `agent` (`working`, `waiting`, `idle` or `null`), and `has_config`, `has_tmux_session`, `has_worktree`, `has_state_dir` (`true`, `false`, or `null` when it could not be read). The workspace fields describe the workspace now, not when the run ran. See [the status table](README.workflow.md#the-status-table).
 
+Attempts are not listed in `workflow status --json`; the run file keeps each attempt's `head`, `definition_sha256`, `prompt_sha256`, `packs`, `outputs` and `check.command` (see [what an attempt records](README.workflow.md#what-an-attempt-records)).
+
 `worktree`, the checkout path stored with the run (or `null`), is on every row of `workflow status --json` and on the `run` object of every `workflow` action document. Both need `workflow` 10.
 
 `workflow validate --json` adds a top-level `warnings` array beside `workflow` (empty when there are none). Each entry is `{"code":"step_without_proof","step":STEP_ID,"message":TEXT}`: a step with no `produces`, `status` or `gate` passes on any turn end. Warning codes are an open set: callers ignore codes they do not know. Only `workflow validate` reports warnings; `show`, `start` and `run` do not. A warning is not an error code: `ok` stays `true` and the exit code 0. See [Validating a definition](README.workflow.md#validating-a-definition).

@@ -1,3 +1,5 @@
+require "digest"
+
 module Workspace
   # The one check of a file a workflow step `produces`, shared by the engine's
   # decision at a turn's end, `step status` and anything else that asks whether
@@ -35,14 +37,49 @@ module Workspace
     def self.inspect_file(path, strict:)
       return legacy(path) unless strict
       stat = File.lstat(path)
-      rule = if stat.symlink? then "symlink"
-      elsif !stat.file? then "not_regular_file"
-      elsif stat.size.zero? then "empty"
-      end
+      rule = link_rule(stat) || (stat.size.zero? ? "empty" : nil)
       Result.new(true, rule, stat.mtime)
     rescue SystemCallError
       Result.new(false, nil, nil)
     end
+
+    # What a file's content is when recorded: `sha256` is nil for a file past the size cap.
+    Content = Struct.new(:sha256, :bytes, :too_large)
+
+    # Hashes a file under the same rule as {.inspect_file}: a regular file, never a link as the last part
+    # of the path (a linked parent directory is followed). Stats first; a file above `max_bytes` is not read.
+    # At most the stat'd size is read, so a file still being written cannot keep it going.
+    #
+    # @param path [String]
+    # @param max_bytes [Integer]
+    # @return [Content, nil] nil when the file is missing, a link, not a regular file or unreadable
+    def self.digest(path, max_bytes:)
+      return nil if link_rule(File.lstat(path))
+      File.open(path, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |io|
+        stat = io.stat
+        return nil unless stat.file?
+        return Content.new(nil, stat.size, true) if stat.size > max_bytes
+        digest = Digest::SHA256.new
+        remaining = stat.size
+        read = 0
+        while remaining > 0 && (chunk = io.read([65_536, remaining].min))
+          digest << chunk
+          read += chunk.bytesize
+          remaining -= chunk.bytesize
+        end
+        Content.new(digest.hexdigest, read, false)
+      end
+    rescue SystemCallError, IOError
+      nil
+    end
+
+    # @return [String, nil] `symlink` or `not_regular_file`, the rules of an lstat that need no size
+    def self.link_rule(stat)
+      if stat.symlink? then "symlink"
+      elsif !stat.file? then "not_regular_file"
+      end
+    end
+    private_class_method :link_rule
 
     def self.legacy(path)
       return Result.new(false, nil, nil) unless File.exist?(path)

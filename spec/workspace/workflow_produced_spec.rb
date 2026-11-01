@@ -96,6 +96,38 @@ RSpec.describe Workspace::WorkflowProduced do
     end
   end
 
+  describe ".digest" do
+    it "hashes a regular file and counts its bytes" do
+      File.write(path("a.md"), "hello")
+      expect(described_class.digest(path("a.md"), max_bytes: 100)).to eq(described_class::Content.new(Digest::SHA256.hexdigest("hello"), 5, false))
+    end
+
+    it "hashes an empty file" do
+      File.write(path("a.md"), "")
+      expect(described_class.digest(path("a.md"), max_bytes: 100).bytes).to eq(0)
+    end
+
+    it "gives only the size for a file above the cap" do
+      File.write(path("a.md"), "hello")
+      expect(described_class.digest(path("a.md"), max_bytes: 4)).to eq(described_class::Content.new(nil, 5, true))
+    end
+
+    it "gives nil for a missing path, a link and a directory" do
+      File.write(path("real"), "x")
+      File.symlink(path("real"), path("link"))
+      Dir.mkdir(path("dir"))
+      %w[nope link dir].each { |name| expect(described_class.digest(path(name), max_bytes: 100)).to be_nil }
+    end
+
+    it "follows a linked parent directory, as inspect_file does" do
+      Dir.mkdir(path("real_dir"))
+      File.write(path("real_dir/a.md"), "x")
+      File.symlink(path("real_dir"), path("linked_dir"))
+      expect(described_class.digest(path("linked_dir/a.md"), max_bytes: 100).bytes).to eq(1)
+      expect(described_class.inspect_file(path("linked_dir/a.md"), strict: true).rule).to be_nil
+    end
+  end
+
   describe "Result#current?" do
     let(:time) { Time.utc(2026, 10, 4, 12) }
 

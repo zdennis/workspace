@@ -68,7 +68,7 @@ class FakeStepComposer
     @calls << args
     raise Workspace::Error.new("No library entry named ghost.", code: "unknown_library_entry") if args[:step]["include"].include?("ghost")
     text = [args[:workflow]["text"], args[:step]["text"], *args[:attempt]].compact.join("\n\n")
-    {"packs" => [{"ref" => "play/binding"}] + args[:step]["include"].map { |name| {"ref" => "play/#{name}"} }, "text" => "#{text}\n"}
+    {"packs" => [{"ref" => "play/binding", "sha256" => "b" * 64}] + args[:step]["include"].map { |name| {"ref" => "play/#{name}", "sha256" => Digest::SHA256.hexdigest(name)} }, "text" => "#{text}\n"}
   end
 end
 

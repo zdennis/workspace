@@ -334,6 +334,32 @@ Each event's `n` is its 1-based line number in the file, so a reader that rememb
 
 A run started with this version stores `"produces_check": "strict"` in its definition snapshot (`workflow status --json` does not show it; the run file does). For such a run each file a step `produces` must be, at the turn's end, a regular file (read with `lstat`, so a symlink as the last part of the path is never followed, even one to a real file; a symlinked directory earlier in the path is followed, as the check does not look at the parents) that is not empty and was written during this attempt. A symlink, a directory or an empty file keeps the step from passing: the run stores `turn_ended_incomplete` with `details.invalid`, a list of `{file, rule}` where `rule` is `symlink`, `not_regular_file` or `empty`. The run holds there: `step status` and `workflow status` name the rule that was broken. Nothing is typed to the agent; the next turn's end or `workflow resume` looks again. A link to nothing is a `symlink`, not `missing`. This is a hold, not a failure, so there is no `details.code` or `code_source`, and no `on_fail` applies. A run stored before this change has no marker and keeps the old check: the path exists (through a link, a directory counts) and was written this attempt. `step status` and the `turn_ended` decision use the same check.
 
+### What an attempt records
+
+Each attempt in the run file (`~/.local/state/workspace/.workflows/runs/<RUN>.json`, under `steps.<id>.attempts`) keeps, besides its number, times, prompt file, report and outcome, a record of what it started from and ended with. `workflow status --json` shows only the count of attempts, so read the run file for these:
+
+| Key | Set | Meaning |
+|-----|-----|---------|
+| `head.before` | when the attempt begins | what `git rev-parse HEAD` answers in the run's checkout path, or `null` (unborn branch, git could not answer, or git took longer than 5 seconds). A checkout that lost its `.git` inside another repository reads that repository's HEAD. A `require: commits` check counts from this commit. |
+| `head.after` | when the attempt ends (see below) | HEAD then, read the same way, or `null` |
+| `definition_sha256` | when the attempt begins | the run's definition hash (the run's own `definition_sha256`) |
+| `prompt_sha256` | when the attempt begins | SHA-256 of the prompt file as written |
+| `packs` | when the attempt begins | `[{ref, sha256}]`, each pack composed into the prompt |
+| `outputs` | when the attempt ends (see below) | `[{file, sha256, bytes}]`, one per `produces` file, named as the definition names it; `[]` for a step with no `produces`. `sha256` and `bytes` are `null` for a file that is missing, a symlink, not a regular file or unreadable. A file above 16 MiB is not read: `bytes` is its size, `sha256` is `null` and `too_large` is `true`. A link as the last part of the path is never followed; a linked parent directory is, as in the `produces` check above. |
+| `check.command` | when the check starts | the command that ran, as resolved then: a later change to `commands.test` does not rewrite it. Absent when the project's command is unset. A step that names `status: {run: ...}` also has that text in the run's stored definition; one that names `command: test` or `lint` has only the role there, so this key is the only record of the text that ran. |
+
+Which outcomes have end fields (`head.after`, `outputs`):
+
+| How the attempt ended | End fields |
+|-----------------------|------------|
+| `passed` | yes |
+| `failed` (a check that exited non-zero, timed out or could not run, a guard, an agent's report of failure) | yes |
+| the run was cancelled, or its workspace was killed, while the attempt was open | yes, with no `ended_at` or `outcome` added; an attempt that already ended (for example one waiting at a gate) is left as it was |
+| `not_delivered` (nothing ran) | no |
+| a parked resume or a background hold that ran out | no attempt ends, so none |
+
+In every end field `null` means git or the file could not answer: a removed checkout gives a `null` `head.after`, and a removed artifacts directory gives `outputs` with `null` hashes. A recording problem never fails the step, the cancel or the kill. An attempt stored before these keys existed has none of them, and `head.after` and `outputs` are only added when it ends.
+
 ### Reading a run's files
 
 `workflow files RUN` lists the files a run keeps, going or finished, from the run's own record: for each attempt its prompt (`prompt`) and, when a check ran, its log (`check_log`), and for each step each file it `produces`. It reads file metadata only and writes nothing. An unknown run is refused with `unknown_run`.

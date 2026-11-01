@@ -306,6 +306,7 @@ require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_produced"
+require_relative "workspace/workflow_attempt_record"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
@@ -583,6 +584,7 @@ module Workspace
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
+    workflow_guard = WorkflowGuard.new(git_path: Which.path("git") || "git")
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
@@ -592,7 +594,8 @@ module Workspace
       commands_config: commands_config,
       lineage: lineage,
       git: git,
-      guard: WorkflowGuard.new(git_path: Which.path("git") || "git"),
+      guard: workflow_guard,
+      attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard),
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },

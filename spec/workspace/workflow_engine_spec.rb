@@ -40,7 +40,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
   # Recording a base takes about a dozen git calls, which only the examples about the guard and
   # base_sha need; the rest get a base that does not look at the checkout.
-  let(:guard) { instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}) }
+  let(:guard) { instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40) }
   let(:events) { [] }
   let(:event_log) do
     log = instance_double(Workspace::EventLog)
@@ -151,9 +151,9 @@ RSpec.describe Workspace::WorkflowEngine do
         "pane" => "%5", "reason" => nil, "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"),
         "definition_source" => "global", "definition_sha256" => three_steps.sha256)
       expect(run["definition"]).to eq(three_steps.to_h.merge("produces_check" => "strict"))
-      expect(run["steps"]["plan"]).to eq("state" => "running", "attempts" => [
-        {"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "context" => [], "prompt_file" => prompt}
-      ])
+      expect(run["steps"]["plan"]).to include("state" => "running")
+      expect(run["steps"]["plan"]["attempts"].size).to eq(1)
+      expect(run["steps"]["plan"]["attempts"].first).to include("n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "context" => [], "prompt_file" => prompt)
       expect(File.read(prompt)).to eq(
         "Work on X-1 in app.worktree-x on feature/x.\n\n" \
         "Write #{worktree}/.workflow/wr_1/plan.md for run wr_1.\n\n" \
@@ -708,6 +708,151 @@ RSpec.describe Workspace::WorkflowEngine do
     end
   end
 
+  describe "the attempt ledger" do
+    let(:ledger_flow) do
+      definition("steps:\n  plan:\n    prompt: Plan.\n    produces: [plan.md]\n    status: {command: test, timeout: 5m}\n")
+    end
+    let(:plan) { File.join(worktree, ".workflow", "wr_1", "plan.md") }
+
+    def attempt
+      store.find("wr_1")["steps"]["plan"]["attempts"].last
+    end
+
+    it "records the definition, the prompt, the packs and HEAD when the attempt begins" do
+      start(ledger_flow, inputs: {})
+
+      expect(attempt["head"]).to eq("before" => "1" * 40, "after" => nil)
+      expect(attempt["definition_sha256"]).to eq(store.find("wr_1")["definition_sha256"])
+      expect(attempt["prompt_sha256"]).to eq(Digest::SHA256.file(attempt["prompt_file"]).hexdigest)
+      expect(attempt["packs"]).to eq([{"ref" => "play/binding", "sha256" => "b" * 64}])
+    end
+
+    it "records HEAD after, each output's hash and size, and the check command that ran, when the attempt ends" do
+      start(ledger_flow, inputs: {})
+      artifact("plan.md")
+      allow(guard).to receive(:head).and_return("2" * 40)
+      commands[:test] = "bin/test --first"
+      engine.turn_ended("wr_1", pane: "%5")
+      commands[:test] = "bin/test --drifted"
+
+      done = attempt
+      expect(done["outcome"]).to eq("passed")
+      expect(done["head"]).to eq("before" => "1" * 40, "after" => "2" * 40)
+      expect(done["outputs"]).to eq([{"file" => "plan.md", "sha256" => Digest::SHA256.hexdigest("done\n"), "bytes" => 5}])
+      expect(done["check"]["command"]).to eq("bin/test --first")
+    end
+
+    it "records a failed attempt too" do
+      start(ledger_flow, inputs: {})
+      artifact("plan.md")
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(attempt).to include("outcome" => "failed", "head" => {"before" => "1" * 40, "after" => "1" * 40})
+      expect(attempt["outputs"].first).to include("file" => "plan.md", "bytes" => 5)
+    end
+
+    # A run stored before the strict check passes a link; the record must not follow it.
+    def link_output
+      store.update("wr_1") { |run| run["definition"].delete("produces_check") }
+      FileUtils.mkdir_p(File.dirname(plan))
+      target = File.join(@dir, "elsewhere.md")
+      File.write(target, "outside\n")
+      File.utime(now.first, now.first, target)
+      File.symlink(target, plan)
+    end
+
+    it "reads a linked output as nil, never following the link, when the step passes" do
+      start(ledger_flow, inputs: {})
+      link_output
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(attempt["outcome"]).to eq("passed")
+      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => nil}])
+    end
+
+    it "reads a linked output as nil, never following the link, when the step fails" do
+      start(ledger_flow, inputs: {})
+      link_output
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(attempt["outcome"]).to eq("failed")
+      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => nil}])
+    end
+
+    it "records a file past the size cap by its size alone" do
+      stub_const("Workspace::WorkflowAttemptRecord::MAX_HASH_BYTES", 3)
+      start(ledger_flow, inputs: {})
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => 5, "too_large" => true}])
+    end
+
+    it "records no outputs for a step with no produces" do
+      start(definition("steps:\n  plan:\n    prompt: Plan.\n    status: {command: test, timeout: 5m}\n"), inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(attempt["outputs"]).to eq([])
+    end
+
+    it "leaves check.command out when the project sets no command" do
+      start(ledger_flow, inputs: {})
+      commands[:test] = nil
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(attempt["check"]).not_to have_key("command")
+    end
+
+    it "closes the open attempt when the run is cancelled" do
+      start(ledger_flow, inputs: {})
+      artifact("plan.md")
+      allow(guard).to receive(:head).and_return("3" * 40)
+      engine.cancel("wr_1")
+
+      expect(attempt["head"]).to eq("before" => "1" * 40, "after" => "3" * 40)
+      expect(attempt["outputs"].first).to include("file" => "plan.md", "bytes" => 5)
+    end
+
+    it "closes the open attempt when the workspace is killed, with nil fields for a checkout that is gone" do
+      start(ledger_flow, inputs: {})
+      allow(guard).to receive(:head).and_return(nil)
+      engine.workspace_killed("app.worktree-x")
+
+      expect(store.find("wr_1")["state"]).to eq("cancelled")
+      expect(attempt["head"]).to eq("before" => "1" * 40, "after" => nil)
+      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => nil}])
+    end
+
+    it "never fails a cancel because the record could not be made" do
+      start(ledger_flow, inputs: {})
+      allow(guard).to receive(:head).and_raise("boom")
+
+      expect(engine.cancel("wr_1")["state"]).to eq("cancelled")
+    end
+
+    it "gives no end fields to an attempt that was not delivered" do
+      panes.kick_result = {ok: false, code: "not_delivered", message: "may still be in the input box", reason: "prompt_unconfirmed"}
+      start(ledger_flow, inputs: {})
+
+      expect(attempt["outcome"]).to eq("not_delivered")
+      expect(attempt).not_to include("outputs")
+      expect(attempt["head"]).to eq("before" => "1" * 40, "after" => nil)
+    end
+
+    it "closes an attempt stored without the new fields, and leaves the other fields alone" do
+      start(ledger_flow, inputs: {})
+      store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last.reject! { |key, _| %w[head packs prompt_sha256 definition_sha256].include?(key) } }
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(attempt).to include("outcome" => "passed", "head" => {"before" => nil, "after" => "1" * 40})
+      expect(attempt).not_to include("packs", "prompt_sha256", "definition_sha256")
+    end
+  end
+
   describe "#turn_ended" do
     it "leaves the step when a file it produces is missing, and says which" do
       start
@@ -1221,7 +1366,7 @@ RSpec.describe Workspace::WorkflowEngine do
         env = ENV.keys.grep(/\AGIT_/).to_h { |name| [name, nil] }.merge("WORKSPACE_RUN_ID" => "wr_1", "WORKSPACE_RUN_ARTIFACTS" => File.join(worktree, ".workflow", "wr_1"),
           "WORKSPACE_RUN_BASE_SHA" => `git -C #{worktree} rev-parse HEAD`.strip)
         expect(check_calls).to eq([{command: "bundle exec rspec", cwd: worktree, timeout: 300.0, log: log, env: env, state_during: "checking"}])
-        expect(run["steps"]["verify"]["attempts"].last["check"]).to eq("started_at" => "2026-10-04T12:00:00Z", "log" => log,
+        expect(run["steps"]["verify"]["attempts"].last["check"]).to eq("started_at" => "2026-10-04T12:00:00Z", "log" => log, "command" => "bundle exec rspec",
           "ended_at" => "2026-10-04T12:00:00Z", "exit_code" => 0, "timed_out" => false)
       end
     end
@@ -2466,7 +2611,7 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     it "fails the step as check_error, rather than leaving the run stuck, when the guard raises" do
-      exploding = instance_double(Workspace::WorkflowGuard, base: {"base_sha" => nil, "base_guard" => {}})
+      exploding = instance_double(Workspace::WorkflowGuard, base: {"base_sha" => nil, "base_guard" => {}}, head: nil)
       allow(exploding).to receive(:check).and_raise(Encoding::CompatibilityError)
       raising = engine_with(guard: exploding)
       run = store.create({"workflow" => "flow", "workspace" => "app", "project" => "app", "worktree" => worktree, "state" => "running", "current" => "diagnose",
