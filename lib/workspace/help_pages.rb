@@ -437,7 +437,7 @@ module Workspace
         ]
       },
       "status" => {
-        usage: ["workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]"],
+        usage: ["workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]", "workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]"],
         summary: "Show the runs still going, each with its step and why it is stuck",
         about: [
           RUN_ID + " With RUN, shows that one run.",
@@ -449,11 +449,17 @@ module Workspace
           "retry_backoff (a failed step's retry is waiting out its on_fail backoff) or pane_gone, with the",
           "commands that resolve it. A parked resume shows as the flag `parked`.",
           "",
+          "--needs-me lists only the runs that wait for you, in every workspace, longest wait first: a gate, an open",
+          "question, a permission prompt, a failed check, a gone pane, or a stall (idle, or noted by `workflow sweep`),",
+          "each with the next command from the run's own actions. A run that is working, queued for a lock, waiting out a",
+          "backoff, parked or holding for background tasks is left out; so are finished runs. --name or --project narrows",
+          "it; --all, RUN and --table are refused. Nothing waiting prints a line and exits 0.",
+          "",
           "--table shows one row per run, finished ones too at every scope, with its workspace as it is now: live, stopped",
           "or gone, and whether its config, tmux session, worktree and state directory exist (? when that could not be read).",
           "Stopped keeps its config with no tmux session; gone has no config left."
         ],
-        options: [name_opt("Only this workspace's runs (default: the current workspace)"), ["--project [NAME]", "All runs of a project, finished too (NAME, or the project of the current workspace)"], ["--all", "Every workspace's runs, finished too"], ["--table", "One row per run with its workspace's status and what still exists, finished runs too"], JSON_OPT],
+        options: [name_opt("Only this workspace's runs (default: the current workspace)"), ["--project [NAME]", "All runs of a project, finished too (NAME, or the project of the current workspace)"], ["--all", "Every workspace's runs, finished too"], ["--table", "One row per run with its workspace's status and what still exists, finished runs too"], ["--needs-me", "Only the runs still going that wait for you, in every workspace, with the next command"], JSON_OPT],
         examples: [
           ["workspace workflow status", "the runs still going in this workspace, each with its step and why it is stuck"],
           ["workspace workflow status RUN", "one run, going or finished"],
@@ -461,6 +467,8 @@ module Workspace
           ["workspace workflow status --project", "the main checkout's and its worktrees' runs, finished too"],
           ["workspace workflow status --all", "every workspace's runs, finished too"],
           ["workspace workflow status --all --table", "each run beside whether its workspace is live, stopped or gone"],
+          ["workspace workflow status --needs-me", "what is waiting for you across every workspace, with the command that moves each on"],
+          ["workspace workflow status --needs-me --json", "the same rows for a script: code, waiting_seconds and next_action"],
           ["workspace workflow status --json", "for a script: each run's state, reason and the commands that resolve it"]
         ]
       },

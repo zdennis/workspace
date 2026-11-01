@@ -30,6 +30,7 @@ module Workspace
       # @param attempts [Workspace::WorkflowAttempts, nil] reads a run's recorded attempts (`attempts`)
       # @param audit [Workspace::WorkflowAudit, nil] checks a run's evidence copies against their hashes (`audit`)
       # @param sweep [Workspace::WorkflowSweep, nil] looks at the runs still going and acts on the stopped ones (`sweep`)
+      # @param needs_me [Workspace::WorkflowNeedsMe, nil] narrows the runs to the ones that wait for a person (`status --needs-me`)
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -38,7 +39,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, pid: Process.pid,
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -51,6 +52,7 @@ module Workspace
         @audit = audit
         @sweep = sweep
         @schedule = schedule
+        @needs_me = needs_me
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -236,6 +238,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] code `unknown_run`
       def status(run: nil, scope: nil, json: false, hint: true, table: false)
+        return needs_me(scope, json) if scope&.kind == :needs_me
         result = if run
           @status.run(run)
         elsif scope&.kind == :workspace
@@ -623,6 +626,58 @@ module Workspace
         end
         return unless summary
         @output.puts "Looked at #{rows.size} run#{"s" unless rows.size == 1}; #{shown.empty? ? "nothing to report" : "#{shown.size} reported above"}."
+      end
+
+      NEEDS_ME_HEADER = %w[RUN WORKSPACE STEP WAITING WHY DO].freeze
+
+      # `status --needs-me`: the runs still going that wait for a person, longest wait first.
+      #
+      # @return [Hash] `exit_code` 3 when a run file could not be read (the list is then incomplete), else 0
+      def needs_me(scope, json)
+        raise Workspace::Error, "workflow status --needs-me is not available: no reader was wired" unless @needs_me
+        result = if scope.workspace
+          @status.runs(workspace: scope.workspace)
+        elsif scope.project
+          @status.in_project(scope.project)
+        else
+          @status.runs
+        end
+        rows = @needs_me.rows(result["runs"])
+        unreadable = result["unreadable"].to_i
+        partial = unreadable.positive?
+        if json
+          document("generated_at" => @clock.call.utc.iso8601, "status" => partial ? "partial" : "ok", "unreadable" => unreadable, "runs" => rows, "warnings" => result["warnings"])
+        else
+          if rows.empty?
+            @output.puts partial ? "No readable workflow run needs you; #{unreadable} could not be read." : "No workflow runs need you."
+          else
+            lines = [NEEDS_ME_HEADER] + rows.map { |each| needs_me_cells(each).map { |cell| TerminalText.escape(cell) } }
+            widths = lines.transpose.map { |column| column.map(&:length).max }
+            lines.each { |line| @output.puts line.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
+          end
+          result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
+        end
+        {exit_code: partial ? 3 : 0}
+      end
+
+      def needs_me_cells(row)
+        why = row["kind"] || row["code"]
+        note = row["gate_file"]&.fetch("name", nil)
+        why = "#{why} (#{row["detail"] || note})" if row["detail"] || note
+        action = row["next_action"]
+        command = action ? ([action["action"]] + action["args"] + needed(action)).join(" ") : "-"
+        [row["run"], row["workspace"], row["step"].to_s, wait_text(row["waiting_seconds"]), why, command]
+      end
+
+      def wait_text(seconds)
+        return "-" unless seconds
+        days, rest = seconds.divmod(86_400)
+        hours, rest = rest.divmod(3600)
+        minutes = rest / 60
+        return "#{days}d #{hours}h" if days.positive?
+        return "#{hours}h #{minutes}m" if hours.positive?
+        return "#{minutes}m" if minutes.positive?
+        "#{seconds}s"
       end
 
       PRODUCES_PROBLEMS = {"symlink" => "a link; write a regular file", "not_regular_file" => "not a regular file", "empty" => "empty; write its content"}.freeze

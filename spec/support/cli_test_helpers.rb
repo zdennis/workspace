@@ -862,7 +862,7 @@ module CLITestHelpers
   # Records each `workflow`/`step` call; mutations return the row the real command returns.
   class FakeWorkflowCommand
     attr_reader :calls
-    attr_accessor :error, :row
+    attr_accessor :error, :row, :status_result
 
     def initialize
       @calls = []
@@ -873,6 +873,7 @@ module CLITestHelpers
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error
+        (name == :status) ? @status_result : nil
       end
     end
 

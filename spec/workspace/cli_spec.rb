@@ -7144,6 +7144,51 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("--project [NAME] | --all] [--table] [--json]").and include("--table")
     end
 
+    it "passes --needs-me through as the needs_me scope, narrowed by --name, and refuses what it can't combine with" do
+      cli.run(["workflow", "status", "--needs-me", "--json"])
+      cli.run(["workflow", "status", "--needs-me", "--name", "api"])
+
+      expect(workflow_command.calls.map { |_, kw| [kw[:scope].kind, kw[:scope].workspace, kw[:json]] }).to eq([[:needs_me, nil, true], [:needs_me, "api", false]])
+
+      [%w[--needs-me --all], %w[--needs-me --table], %w[--needs-me wr_1], %w[--needs-me --name api --project]].each do |flags|
+        expect { cli.run(["workflow", "status", *flags]) }.to raise_error(FakeSystemExit)
+      end
+      expect { cli.run(["workflow", "show", "rpiv", "--needs-me"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--needs-me is for `workflow status`.")
+      expect(workflow_command.calls.size).to eq(2)
+    end
+
+    it "exits with the code the status command returns, and with none for no code, 0 or a non-hash" do
+      workflow_command.status_result = {exit_code: 3}
+      expect { cli.run(["workflow", "status", "--needs-me"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+
+      [nil, {exit_code: 0}, "text", 3, {}].each do |result|
+        workflow_command.status_result = result
+        expect { cli.run(["workflow", "status", "--needs-me"]) }.not_to raise_error
+      end
+    end
+
+    it "exits 3 for a list with an unreadable run file, through the real status and command" do
+      Dir.mktmpdir("cli-needs-me") do |dir|
+        store = Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive"))
+        FileUtils.mkdir_p(File.join(dir, "runs"))
+        File.write(File.join(dir, "runs", "wr_bad.json"), "{not json")
+        real_status = Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes), snapshot_client: instance_double(Workspace::AgentSnapshotClient),
+          ask_store_for: ->(_) {}, gate_note: instance_double(Workspace::WorkflowGateNote))
+        real = Workspace::Commands::Workflow.new(catalog: nil, engine: nil, status: real_status, store: store, panes: nil, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new,
+          tmux: nil, process_tree: nil, lock_holder: nil, output: output)
+        real_cli, = build_test_cli(workflow_command: real)
+
+        expect { real_cli.run(["workflow", "status", "--needs-me", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+        expect(JSON.parse(output.string)).to include("status" => "partial", "unreadable" => 1)
+      end
+    end
+
+    it "lists --needs-me on the status help page" do
+      cli.run(["workflow", "status", "--help"])
+      expect(output.string).to include("workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]")
+    end
+
     it "refuses --table on the other subcommands, and with a RUN and a scope flag" do
       expect { cli.run(["workflow", "show", "rpiv", "--table"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("--table is for `workflow status`.")

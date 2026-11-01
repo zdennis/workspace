@@ -37,6 +37,23 @@ module Workspace
       Scope.new(kind: :project, project: project_of(current))
     end
 
+    # The scope of `workflow status --needs-me`: the runs still going in every workspace, so no flag means
+    # `:needs_me` with nothing narrowed. `--name` or `--project` narrows it to one workspace or one project,
+    # still only runs going. `--all` is refused: it means finished runs too, which this never shows.
+    #
+    # @param name [String, nil] the --name value
+    # @param project [nil, true, String] as for {#resolve}
+    # @param all [Boolean, nil] the --all flag
+    # @param working_dir [String] where a bare --project looks for the current workspace
+    # @return [Scope] kind :needs_me, with `workspace` or `project` set when narrowed
+    # @raise [Workspace::UsageError] for --all, or more than one of --name and --project
+    # @raise [Workspace::Error] as {#resolve} for --project
+    def resolve_needs_me(name:, project:, all:, working_dir:)
+      raise UsageError, "--needs-me lists runs still going and takes no --all: it never shows finished runs." if all
+      narrowed = resolve(name: name, project: project, all: nil, working_dir: working_dir) if (name && name != "") || (project && project != "")
+      Scope.new(kind: :needs_me, workspace: narrowed&.workspace, project: narrowed&.project)
+    end
+
     private
 
     def current_workspace(working_dir)

@@ -288,7 +288,7 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(current("wr_1")["reason"]).to eq(gate.merge("details" => gate["details"].merge("gate_file" => nil, "gate_file_error" => nil),
       "actions" => [action("workflow approve", "wr_1", *at),
         action("workflow reject", "wr_1", *at, needs: [{"name" => "note", "flag" => "--note"}]), action("workflow cancel", "wr_1")]))
-    expect(current("wr_2")["reason"]["actions"]).to eq([action("workflow status", "wr_9"), action("workflow cancel", "wr_2")])
+    expect(current("wr_2")["reason"]["actions"]).to eq([action("workflow status", "wr_9"), action("lock status", "test-db", "--name", "app"), action("workflow cancel", "wr_2")])
     expect(current("wr_3")["reason"]["actions"]).to eq([action("workflow resume", "wr_3"),
       action("workflow resume", "wr_3", "--from", "plan"), action("workflow cancel", "wr_3")])
     expect(snapshot_client).not_to have_received(:fetch)
@@ -319,8 +319,8 @@ RSpec.describe Workspace::WorkflowStatus do
     create(state: "waiting", step_state: "waiting", reason: lock, bound: false)
     create(state: "waiting", step_state: "waiting", reason: agent, bound: false)
 
-    expect(current("wr_1")["reason"]["actions"]).to eq([action("dev down", "--name", "app"), action("workflow cancel", "wr_1")])
-    expect(current("wr_2")["reason"]["actions"]).to eq([action("workflow cancel", "wr_2")])
+    expect(current("wr_1")["reason"]["actions"]).to eq([action("dev down", "--name", "app"), action("lock status", "devenv", "--name", "app"), action("workflow cancel", "wr_1")])
+    expect(current("wr_2")["reason"]["actions"]).to eq([action("lock status", "test-db", "--name", "app"), action("workflow cancel", "wr_2")])
   end
 
   it "offers resume and cancel for a step that could not be started" do
@@ -572,6 +572,7 @@ RSpec.describe Workspace::WorkflowStatus do
         "Workflow run wr_4 can't be shown: its run file is malformed. What it holds stays held: #{way_out}"
       ])
       expect(result["warnings"].join).not_to include("cancel")
+      expect(result["unreadable"]).to eq(3)
       expect { status.run("wr_2") }.to raise_error(Workspace::Error) { |error|
         expect(error.code).to eq("unknown_run")
         expect(error.details).to eq("run_id" => "wr_2", "path" => no_steps)
@@ -971,5 +972,147 @@ RSpec.describe Workspace::WorkflowStatus do
 
       expect(status.runs(workspace: "app")["runs"].map { |run| run["id"] }).to eq(%w[wr_2 wr_1])
     end
+  end
+  describe "current.stuck" do
+    def mark(stalled: {}, recovered: {}, step: "plan", attempt: 2)
+      store.update("wr_1") { |run| run["sweep"] = {"step" => step, "attempt" => attempt, "stalled" => stalled, "recovered" => recovered} }
+    end
+
+    let(:stall) { {"agent_gone" => "2026-10-04T12:41:00Z"} }
+
+    before { snapshot["panes"].first["state"] = "idle" }
+
+    it "is absent for a run stored without sweep marks" do
+      create
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "shows a stall the sweep noted, with its time and a resume" do
+      create
+      mark(stalled: stall)
+
+      expect(current["stuck"]).to eq("code" => "stalled", "cause" => "agent_gone", "since" => "2026-10-04T12:41:00Z",
+        "actions" => [action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+    end
+
+    it "is absent for a stale mark on a pane that is working again" do
+      create
+      snapshot["panes"].first["state"] = "working"
+      mark(stalled: stall)
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "keeps the stall listed when the pane can't be read" do
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::Error.new("down", code: "daemon_unavailable"))
+      create
+      mark(stalled: stall)
+      expect(current["stuck"]).to include("code" => "stalled")
+    end
+
+    it "is absent for a step that is checking, or a line still on its way" do
+      create(step_state: "checking")
+      mark(stalled: stall)
+      expect(current).not_to have_key("stuck")
+      store.update("wr_1") { |run| run["steps"]["plan"]["state"] = "running" }
+      allow(Workspace::WorkflowEngine).to receive(:delivery).and_return(:delivering)
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "is absent while a turn_ended_background hold stands" do
+      create(state: "waiting", reason: {"code" => "turn_ended_background", "since" => "2026-10-04T12:00:00Z", "details" => {}})
+      mark(stalled: stall)
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "leaves out a stall that was put right, and marks of another attempt" do
+      create
+      mark(stalled: stall, recovered: {"agent_gone" => "2026-10-04T12:42:00Z"})
+      expect(current).not_to have_key("stuck")
+      mark(stalled: stall, attempt: 1)
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "shows an idle pane on a running step as idle, once the turn's end is known" do
+      create
+      snapshot["panes"].first["main_turn_over_since"] = "2026-10-04T12:45:00Z"
+
+      expect(current["flags"]).to eq(["idle"])
+      expect(current["stuck"]).to include("code" => "idle", "cause" => nil, "since" => "2026-10-04T12:45:00Z")
+    end
+
+    it "is not stuck while the idle pane has no turn end yet" do
+      create
+      expect(current["flags"]).to eq(["idle"])
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "is absent for a live parked resume, whatever the marks say" do
+      create(parked: {"from" => "%9", "requested_at" => "2026-10-04T12:55:00Z", "expires_at" => "2026-10-04T13:30:00Z", "pane" => "%5"})
+      mark(stalled: stall)
+      expect(current["flags"]).to include("parked")
+      expect(current).not_to have_key("stuck")
+    end
+
+    it "is absent while a reason shows" do
+      create(bound: false)
+      mark(stalled: stall)
+      expect(current["reason"]["code"]).to eq("pane_gone")
+      expect(current).not_to have_key("stuck")
+    end
+  end
+
+  it "leaves the focus action out when the run has no pane" do
+    create(pane: nil, bound: false, state: "waiting", step_state: "passed", reason: {"code" => "turn_ended_incomplete", "since" => "2026-10-04T12:00:00Z", "details" => {}})
+    snapshot["panes"] = []
+    expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+  end
+
+  it "asks every workspace's daemon at the same time, not one after another" do
+    started = Queue.new
+    gave_up = Queue.new
+    allow(snapshot_client).to receive(:fetch) do |_workspace, **|
+      started << 1
+      # Returns once all three have started: serial reads would wait here for the cap.
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      sleep 0.01 while started.size < 3 && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      gave_up << 1 if started.size < 3
+      snapshot
+    end
+    3.times { |i| create(workspace: "ws#{i}", pane: "%#{i}") }
+
+    result = status.runs
+
+    expect(gave_up.size).to eq(0)
+    expect(started.size).to eq(3)
+    expect(result).to include("unreadable" => 0)
+    expect(result["runs"].size).to eq(3)
+  end
+
+  it "reads a daemon that does not answer by the shared deadline as no answer, with a warning" do
+    stub_const("Workspace::WorkflowStatus::SNAPSHOT_TIMEOUT", 0.05)
+    stub_const("Workspace::WorkflowStatus::LIST_GRACE", 0.05)
+    allow(snapshot_client).to receive(:fetch) { |*, **| sleep 30 }
+    create
+
+    result = status.runs
+
+    expect(result["warnings"].join).to include("did not answer")
+    expect(result["runs"].size).to eq(1)
+  end
+
+  it "asks a workspace's daemon once for a whole list" do
+    create
+    create(pane: "%6", bound: false)
+    status.runs
+    expect(snapshot_client).to have_received(:fetch).with("app", timeout: 1.0).at_most(:once)
+  end
+
+  it "asks a daemon that did not answer once, and warns" do
+    allow(snapshot_client).to receive(:fetch).and_raise(Workspace::Error.new("down", code: "daemon_unavailable"))
+    create
+    create(pane: "%6", bound: true)
+    result = status.runs
+    expect(snapshot_client).to have_received(:fetch).once
+    expect(result["warnings"].size).to eq(1)
   end
 end

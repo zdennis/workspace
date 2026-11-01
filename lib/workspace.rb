@@ -316,6 +316,7 @@ require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
+require_relative "workspace/workflow_needs_me"
 require_relative "workspace/workflow_sweep"
 require_relative "workspace/sweep_schedule"
 require_relative "workspace/workflow_workspace_facts"
@@ -647,6 +648,7 @@ module Workspace
       audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
       sweep: workflow_sweep,
       schedule: sweep_schedule,
+      needs_me: WorkflowNeedsMe.new,
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,

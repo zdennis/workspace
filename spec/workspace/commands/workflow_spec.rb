@@ -2500,4 +2500,182 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { audit_command.audit(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
     end
   end
+  describe "#status --needs-me" do
+    around do |example|
+      Dir.mktmpdir("wf-needs-me") do |dir|
+        @dir = dir
+        example.run
+      end
+    end
+
+    let(:now) { Time.utc(2026, 10, 4, 13, 0, 0) }
+    let(:ids) { %w[wr_1 wr_2 wr_3 wr_4] }
+    let(:store) do
+      Workspace::WorkflowRunStore.new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, id_generator: -> { ids.shift })
+    end
+    let(:status) do
+      Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes, pane_of: "%5", alive?: true, daemon_running?: true),
+        snapshot_client: instance_double(Workspace::AgentSnapshotClient, fetch: {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]}),
+        ask_store_for: ->(_workspace) { instance_double(Workspace::AskStore, list: []) },
+        gate_note: instance_double(Workspace::WorkflowGateNote, find: nil), clock: -> { now })
+    end
+    subject(:command) do
+      described_class.new(catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new(clock: -> { now }),
+        tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output)
+    end
+    let(:scope) { Workspace::StatusScope::Scope.new(kind: :needs_me) }
+
+    def create(workspace: "app", reason: nil, state: "waiting", gate: nil)
+      store.create({
+        "workflow" => "flow", "title" => "Flow", "workspace" => workspace, "project" => "app", "worktree" => @dir, "task" => "t",
+        "inputs" => {}, "state" => state, "created_at" => "2026-10-04T11:00:00Z", "started_at" => "2026-10-04T11:00:00Z", "ended_at" => nil,
+        "current" => "plan", "pane" => "%5", "loops" => {}, "reason" => reason, "artifacts_dir" => "#{@dir}/wr",
+        "definition" => {"steps" => [{"id" => "plan", "title" => "Plan", "timeout" => nil}]},
+        "steps" => {"plan" => {"state" => "passed", "gate" => gate, "attempts" => [{"n" => 1, "started_at" => "2026-10-04T11:00:00Z"}]}}
+      })
+    end
+
+    def failed(code, since) = {"code" => "failed_check", "since" => since, "details" => {"step" => "plan", "code" => code, "attempt" => 1}}
+
+    def lines = output.string.lines.map(&:chomp)
+
+    it "prints a table of the runs waiting for you in every workspace, longest wait first, and skips the rest" do
+      create(workspace: "web", reason: failed("test", "2026-10-04T12:22:00Z"))
+      create(workspace: "api", reason: {"code" => "waiting_you", "since" => "2026-10-04T10:46:00Z", "details" => {"kind" => "dispatch", "step" => "plan", "error" => "x", "message" => "m"}})
+      create(workspace: "lock", reason: {"code" => "waiting_lock", "since" => "2026-10-04T12:45:00Z", "details" => {"resource" => "r", "holder" => {"run_id" => "wr_9"}, "position" => 1, "total" => 1}})
+      create(workspace: "busy", state: "running")
+
+      command.status(scope: scope)
+
+      expect(lines.first).to match(/\ARUN +WORKSPACE +STEP +WAITING +WHY +DO\z/)
+      expect(lines[1]).to match(/\Awr_2 +api +plan +2h 14m +dispatch +workflow resume wr_2\z/)
+      expect(lines[2]).to match(/\Awr_1 +web +plan +38m +failed_check \(test\) +workflow resume wr_1\z/)
+      expect(lines.size).to eq(3)
+    end
+
+    it "shows - for a wait with no start, and the placeholder for a value the caller supplies" do
+      create(reason: {"code" => "waiting_you", "since" => nil, "details" => {"kind" => "dispatch", "step" => "plan", "error" => "x", "message" => "m"}})
+      command.status(scope: scope)
+      expect(lines.last).to match(/\Awr_1 +app +plan +- +dispatch +workflow resume wr_1\z/)
+    end
+
+    it "says plainly that nothing needs you, and exits normally" do
+      create(state: "running")
+      command.status(scope: scope)
+      expect(lines).to eq(["No workflow runs need you."])
+    end
+
+    it "prints the rows as a JSON document" do
+      create(reason: failed("test", "2026-10-04T12:22:00Z"))
+      command.status(scope: scope, json: true)
+
+      body = JSON.parse(output.string)
+      expect(body).to include("schema_version" => 1, "ok" => true, "generated_at" => "2026-10-04T13:00:00Z", "status" => "ok", "unreadable" => 0, "warnings" => [])
+      expect(body["runs"].size).to eq(1)
+      expect(body["runs"].first).to include("run" => "wr_1", "workspace" => "app", "step" => "plan", "code" => "failed_check", "detail" => "test",
+        "waiting_seconds" => 2280, "next_action" => {"action" => "workflow resume", "args" => ["wr_1"], "needs" => []})
+      expect(body["runs"].first.keys).to eq(%w[run workflow workspace step attempt code kind gate_file detail since waiting_seconds next_action actions])
+    end
+
+    it "prints an empty JSON list" do
+      command.status(scope: scope, json: true)
+      expect(JSON.parse(output.string)).to include("ok" => true, "runs" => [])
+    end
+
+    it "escapes control characters in agent-written fields" do
+      create(workspace: "api", reason: failed("te\e[31mst", "2026-10-04T12:22:00Z"))
+      command.status(scope: scope)
+      expect(output.string).not_to include("\e")
+      expect(output.string).to include('\e[31m')
+    end
+
+    it "narrows to one workspace" do
+      create(workspace: "web", reason: failed("a", "2026-10-04T12:22:00Z"))
+      create(workspace: "api", reason: failed("b", "2026-10-04T12:22:00Z"))
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :needs_me, workspace: "api"), json: true)
+      expect(JSON.parse(output.string)["runs"].map { |row| row["workspace"] }).to eq(["api"])
+    end
+
+    it "leaves a finished run of a project out" do
+      create(workspace: "app", reason: failed("a", "2026-10-04T12:22:00Z"))
+      create(workspace: "app", state: "completed", reason: failed("old", "2026-10-04T12:00:00Z"))
+      project = Struct.new(:name, :members).new("app", [Struct.new(:workspace).new("app")])
+      command.status(scope: Workspace::StatusScope::Scope.new(kind: :needs_me, project: project), json: true)
+      expect(JSON.parse(output.string)["runs"].map { |row| row["run"] }).to eq(["wr_1"])
+    end
+
+    it "names an unreadable run file in a warning and still lists the others" do
+      create(reason: failed("a", "2026-10-04T12:22:00Z"))
+      File.write(File.join(@dir, "runs", "wr_bad.json"), "{not json")
+      command.status(scope: scope)
+      expect(lines.first).to match(/\ARUN/)
+      expect(lines.last).to match(/\AWarning: .*wr_bad/)
+    end
+
+    it "words the wait in seconds, minutes, hours and days" do
+      {45 => "45s", 125 => "2m", 3700 => "1h 1m", 90_000 => "1d 1h"}.each do |seconds, text|
+        expect(command.send(:wait_text, seconds)).to eq(text)
+      end
+      expect(command.send(:wait_text, nil)).to eq("-")
+    end
+
+    it "writes a value the caller supplies as an upper-case placeholder" do
+      held = {"action" => "workflow resume", "args" => ["wr_1"], "needs" => [{"name" => "pane", "flag" => "--pane"}]}
+      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 60, "code" => "retry_backoff", "kind" => nil, "detail" => nil,
+             "gate_file" => nil, "next_action" => held}
+      expect(command.send(:needs_me_cells, row).last).to eq("workflow resume wr_1 --pane PANE")
+    end
+
+    it "shows a gate's note in WHY" do
+      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 60, "code" => "waiting_you", "kind" => "gate", "detail" => nil,
+             "gate_file" => {"name" => "plan.md"}, "next_action" => nil}
+      expect(command.send(:needs_me_cells, row)[4..]).to eq(["gate (plan.md)", "-"])
+    end
+
+    it "does not claim nothing is waiting when a run file could not be read, and exits 3" do
+      FileUtils.mkdir_p(File.join(@dir, "runs"))
+      File.write(File.join(@dir, "runs", "wr_bad.json"), "{not json")
+      expect(command.status(scope: scope)).to eq(exit_code: 3)
+      expect(lines.first).to eq("No readable workflow run needs you; 1 could not be read.")
+    end
+
+    it "counts a run file that is valid JSON of the wrong shape, text and JSON" do
+      create(reason: failed("a", "2026-10-04T12:22:00Z"))
+      File.write(File.join(@dir, "runs", "wr_odd.json"), JSON.generate("id" => "wr_odd", "state" => "running", "current" => "plan", "steps" => {}))
+
+      expect(command.status(scope: scope)).to eq(exit_code: 3)
+      expect(lines.first).to match(/\ARUN/)
+      expect(lines.grep(/\AWarning: .*wr_odd/)).not_to be_empty
+
+      output.truncate(0)
+      output.rewind
+      expect(command.status(scope: scope, json: true)).to eq(exit_code: 3)
+      expect(JSON.parse(output.string)).to include("status" => "partial", "unreadable" => 1)
+      expect(JSON.parse(output.string)["runs"].size).to eq(1)
+    end
+
+    it "prints - for a lock wait that offers only cancel" do
+      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 4000, "code" => "waiting_lock", "kind" => nil, "detail" => nil,
+             "gate_file" => nil, "next_action" => nil}
+      expect(command.send(:needs_me_cells, row).last).to eq("-")
+    end
+
+    it "says status partial in the JSON of an incomplete list" do
+      FileUtils.mkdir_p(File.join(@dir, "runs"))
+      File.write(File.join(@dir, "runs", "wr_bad.json"), "{not json")
+      expect(command.status(scope: scope, json: true)).to eq(exit_code: 3)
+      expect(JSON.parse(output.string)).to include("status" => "partial", "unreadable" => 1, "runs" => [])
+    end
+
+    it "exits 0 for a complete list" do
+      expect(command.status(scope: scope)).to eq(exit_code: 0)
+    end
+
+    it "reads a run stored without reasons history or sweep marks" do
+      create(reason: failed("a", "2026-10-04T12:22:00Z"))
+      store.update("wr_1") { |run| run.delete("sweep") && run.delete("reasons") }
+      command.status(scope: scope)
+      expect(lines.size).to eq(2)
+    end
+  end
 end

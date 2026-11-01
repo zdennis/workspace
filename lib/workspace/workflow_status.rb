@@ -105,19 +105,56 @@ module Workspace
     private
 
     # Warns of unreadable run files, then shows each stored run; a malformed one is a warning.
+    # "unreadable" counts the run files and runs left out.
     def present_all(stored)
-      warnings = @store.unreadable.map do |path|
+      paths = @store.unreadable
+      warnings = paths.map do |path|
         "The run file #{path} can't be read, so its run is not shown. What it held stays held: " \
           "free a lock with `workspace lock clear NAME`, or delete the file."
       end
+      malformed = 0
+      # One daemon answer (or silence) per workspace for the whole list, asked in parallel under one deadline.
+      @snapshots = prefetch_snapshots(stored)
       shown = stored.filter_map do |run|
         present(run, warnings)
       rescue KeyError, NoMethodError, TypeError, ArgumentError
+        malformed += 1
         warnings << "Workflow run #{run["id"]} can't be shown: its run file is malformed. What it holds stays held: " \
           "free a lock with `workspace lock clear NAME`, or delete the file."
         nil
       end
-      {"runs" => shown, "warnings" => warnings.uniq}
+      @snapshots = nil
+      {"runs" => shown, "warnings" => warnings.uniq, "unreadable" => paths.size + malformed}
+    end
+
+    # Seconds all the daemon reads of one list share, past SNAPSHOT_TIMEOUT.
+    LIST_GRACE = 0.25
+
+    # Each workspace with a run whose pane will be looked at, read in its own thread; a daemon that has not
+    # answered by the shared deadline reads as an error, as a refused connection would.
+    def prefetch_snapshots(stored)
+      names = stored.filter_map do |run|
+        next if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
+        run["workspace"] if run["parked"] || %w[running checking].include?(run.dig("steps", run["current"], "state"))
+      end.uniq
+      clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+      deadline = clock.call + SNAPSHOT_TIMEOUT + LIST_GRACE
+      threads = names.to_h do |name|
+        thread = Thread.new do
+          [:ok, @snapshot_client.fetch(name, timeout: SNAPSHOT_TIMEOUT)]
+        rescue Workspace::Error => e
+          [:error, e]
+        rescue
+          [:error, Workspace::Error.new("The agent daemon for '#{name}' failed", code: "connection_failed")]
+        end
+        thread.report_on_exception = false
+        [name, thread]
+      end
+      threads.to_h do |name, thread|
+        finished = thread.join([deadline - clock.call, 0].max)
+        thread.kill unless finished
+        [name, finished ? thread.value : [:error, Workspace::Error.new("The agent daemon for '#{name}' did not answer in time", code: "connection_failed")]]
+      end
     end
 
     def present(run, warnings)
@@ -138,11 +175,37 @@ module Workspace
         "cancelled_by" => run["cancelled_by"],
         "current" => {"step" => run["current"], "attempt" => state["attempts"].last&.fetch("n", nil), "state" => state["state"],
                       "reason" => reason&.merge("actions" => actions(run, reason, pane)),
-                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state)),
+                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
+            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)),
         "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
         "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
         "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
       }
+    end
+
+    # A step that reads running with no reason but is not moving: the sweep noted a stall on this attempt and
+    # nothing has put it right (`code` `stalled`, `cause` the first cause, `since` its time), or its turn ended
+    # unseen (`code` `idle`, `since` the turn's end, which the daemon must have given). Only for a running step
+    # with no reason, no live park, no line still on its way and no hidden hold; a stall also only while the
+    # pane is not working (a pane that can't be read leaves the stall standing). `actions` are a resume or a
+    # cancel. Absent otherwise, and in runs stored before the sweep existed.
+    def stuck_row(run, state, reason, shown, pane)
+      return {} if reason || live_park?(run) || run["parked"] || state["state"] != "running"
+      return {} if hidden_reason?(run["reason"], shown) || WorkflowEngine.delivery(state["attempts"].last, @clock.call) == :delivering
+      marks = WorkflowEngine.sweep_marks(run)
+      recovered = marks["recovered"].is_a?(Hash) ? marks["recovered"] : {}
+      open = marks["stalled"].is_a?(Hash) ? marks["stalled"].reject { |cause, _| recovered.key?(cause) } : {}
+      cause, since = open.min_by { |_, time| time.to_s }
+      if cause && !(shown && shown["state"] == "working")
+        code = "stalled"
+      elsif !cause && flags(run, state, reason, shown).include?("idle") && shown["main_turn_over_since"].is_a?(String)
+        code = "idle"
+        since = shown["main_turn_over_since"]
+      else
+        return {}
+      end
+      {"stuck" => {"code" => code, "cause" => cause, "since" => since.is_a?(String) ? since : nil,
+                   "actions" => actions(run, {"code" => code, "details" => {}}, pane)}}
     end
 
     # A live park, as `current` shows it; never its note.
@@ -275,11 +338,19 @@ module Workspace
     end
 
     def pane_state(workspace, pane, warnings)
-      snapshot = @snapshot_client.fetch(workspace, timeout: SNAPSHOT_TIMEOUT)
+      snapshot = snapshot_for(workspace)
       Array(snapshot["panes"]).find { |each| each["pane_id"] == pane }
     rescue Workspace::Error
       warnings << "The agent daemon for '#{workspace}' did not answer, so a permission prompt in its panes would not show here."
       nil
+    end
+
+    # The daemon's snapshot of a workspace; while a list is built, the one read ahead (an error raised again).
+    def snapshot_for(workspace)
+      cached = @snapshots && @snapshots[workspace]
+      return @snapshot_client.fetch(workspace, timeout: SNAPSHOT_TIMEOUT) unless cached
+      raise cached.last if cached.first == :error
+      cached.last
     end
 
     # A question store that can't be read costs the `ask` reason, never the document.
@@ -318,6 +389,11 @@ module Workspace
     end
 
     def actions(run, reason, pane)
+      build_actions(run, reason, pane).compact
+    end
+
+    # A `focus` needs a pane to name: with none it is left out.
+    def build_actions(run, reason, pane)
       id = run["id"]
       cancel = action("workflow cancel", id)
       # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
@@ -328,14 +404,16 @@ module Workspace
       with_pane = WorkflowEngine.starts_attempt?(run, from: nil, pane: "%0") ? extra : []
       resume = action("workflow resume", id, needs: plain)
       from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra) }
-      focus = action("focus", run["workspace"], "--pane", pane.to_s)
+      focus = action("focus", run["workspace"], "--pane", pane) if pane
       # A held retry would block again on the same pane: the resume has to name another one.
       return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra), cancel] if run.dig("backoff", "blocked") && run["state"] == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}
+        resource = reason.dig("details", "resource")
         [(action("workflow status", holder["run_id"]) if holder["run_id"]),
-          (action("dev down", "--name", run["workspace"]) if holder["kind"] == "process"), cancel].compact
+          (action("dev down", "--name", run["workspace"]) if holder["kind"] == "process"),
+          (action("lock status", resource, "--name", run["workspace"]) if resource.is_a?(String) && resource.match?(/\A[A-Za-z0-9][\w.-]*\z/)), cancel].compact
       when "waiting_you"
         case reason.dig("details", "kind")
         when "gate"
@@ -357,6 +435,7 @@ module Workspace
         else
           [resume, from.call(reason.dig("details", "step")), cancel]
         end
+      when "stalled", "idle" then [resume, cancel]
       when "pane_gone" then [action("launch", run["workspace"]), action("workflow resume", id, needs: with_pane), cancel]
       else [cancel]
       end

@@ -5048,6 +5048,7 @@ module Workspace
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
         opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
+        opts.on("--needs-me", "status: the runs still going, in every workspace, that wait for you (a gate, question, prompt, failed check, gone pane, stall), each with the next command; --name or --project narrows it") { options[:needs_me] = true }
         opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
         opts.on("--dry-run", "run, start: report what would start and start nothing; sweep: report what would be done and do nothing (also --install and --uninstall); add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
         opts.on("--install", "sweep: install the launchd entry that runs the sweep every 5 minutes (a per-user LaunchAgent; opt-in)") { options[:schedule_flags] << :install }
@@ -5119,6 +5120,8 @@ module Workspace
       raise UsageError, "workflow sweep takes one of --install, --uninstall and --installed, and no RUN or --name with it." if schedule && (options[:schedule_flags].size > 1 || subject || options[:name])
       raise UsageError, "--dry-run does not apply to `workflow sweep --installed`: it changes nothing." if schedule == :status && options[:dry_run]
       raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
+      raise UsageError, "--needs-me is for `workflow status`." if options[:needs_me] && subcommand != "status"
+      raise UsageError, "--needs-me lists runs still going and takes no RUN or --table." if options[:needs_me] && (subject || options[:table])
       raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
       raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
       gate_options = workflow_gate_options(subcommand, options)
@@ -5169,8 +5172,14 @@ module Workspace
         if subject && (options[:name] || options[:project] || options[:all])
           raise UsageError, "workflow status RUN takes no --name, --project or --all: the run names its own workspace."
         end
-        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir) unless subject
-        @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name], table: options[:table] || false)
+        scope = if options[:needs_me]
+          @status_scope.resolve_needs_me(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
+        elsif !subject
+          @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
+        end
+        outcome = @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name], table: options[:table] || false)
+        code = outcome[:exit_code] if outcome.is_a?(Hash)
+        @exit_handler.exit(code) if code && !code.zero?
       when "advance"
         @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started], "--turn-started"),
           stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], caller_pane: ENV["TMUX_PANE"])
