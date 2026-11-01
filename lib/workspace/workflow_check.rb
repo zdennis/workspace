@@ -25,6 +25,19 @@ module Workspace
       @stop_poll = stop_poll
     end
 
+    # What a check is told about its run: `WORKSPACE_RUN_ID`, `WORKSPACE_RUN_ARTIFACTS` and `WORKSPACE_RUN_BASE_SHA`
+    # (empty for a run with no recorded commit), and every inherited `GIT_*` variable removed, so a caller's
+    # `GIT_DIR`, `GIT_INDEX_FILE` or `GIT_CONFIG_*` can't steer the check.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Hash{String=>String, nil}]
+    def self.env_for(run)
+      ENV.keys.select { |name| name.start_with?("GIT_") }.to_h { |name| [name, nil] }.merge(
+        "WORKSPACE_RUN_ID" => run["id"], "WORKSPACE_RUN_ARTIFACTS" => run["artifacts_dir"].to_s,
+        "WORKSPACE_RUN_BASE_SHA" => run["base_sha"].to_s
+      )
+    end
+
     # @param command [String] a shell command
     # @param cwd [String] the directory it runs in
     # @param timeout [Numeric] seconds it may run

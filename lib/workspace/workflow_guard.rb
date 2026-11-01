@@ -41,6 +41,15 @@ module Workspace
     # The codes {#check} answers with, in the order it looks for them.
     CODES = %w[no_commit head_moved operation_in_progress config_changed hooks_changed hidden_changed tracked_changed].freeze
 
+    # Seconds {#remote_head} waits for the remote.
+    REMOTE_TIMEOUT = 15
+
+    # The most seconds {#remote_head} can take: six local reads and the remote.
+    REMOTE_READ_LIMIT = REMOTE_TIMEOUT + 6 * HEAD_TIMEOUT
+
+    # Added to {#remote_head}'s git call: no prompt, ssh never asks, and no `ext::` or other helper protocol.
+    REMOTE_ENV = {"GIT_TERMINAL_PROMPT" => "0", "GIT_SSH_COMMAND" => "ssh -o BatchMode=yes", "GIT_ALLOW_PROTOCOL" => "https:ssh:git:file"}.freeze
+
     # Directories git keeps while a rebase is stopped.
     REBASE_DIRS = %w[rebase-merge rebase-apply].freeze
 
@@ -112,6 +121,34 @@ module Workspace
     def head(worktree)
       out, ok = run_git(worktree, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", timeout: HEAD_TIMEOUT)
       ok ? out.strip : nil
+    end
+
+    # What the branch's remote holds for it now, on the remote a `git push` would go to: `branch.<b>.pushRemote`, then
+    # `remote.pushDefault`, then `branch.<b>.remote`, then `origin`. The ref is the one the branch tracks
+    # (`branch.<b>.merge`, else its own name). On a push remote other than the tracked one it is `refs/heads/<b>`, where
+    # such a push lands, except that a `pr-N` branch keeps a `refs/heads/` merge ref: its local name is no branch anywhere.
+    # It runs `git ls-remote` under {REMOTE_TIMEOUT}, with no prompt (`GIT_TERMINAL_PROMPT=0`, ssh in batch mode) and only
+    # the https, ssh, git and file protocols. Because the user's git config is ignored, a global `remote.pushDefault`,
+    # credential helper, `insteadOf` or `core.sshCommand` is not used: a remote that needs one reads as `unreachable`.
+    # Never raises. All of it takes at most {REMOTE_READ_LIMIT} seconds.
+    #
+    # @param worktree [String] a checkout
+    # @return [Hash{String=>String, nil}] "remote", "ref" and "sha" (nil when the remote has no such branch); or
+    #   "unread", why not: `detached_head`, `local_upstream` (the branch would push to a local branch), `bad_remote`
+    #   (a remote name that looks like an option), `no_remote` (no remote of that name) or `unreachable` (git failed or timed out)
+    def remote_head(worktree)
+      out, ok = run_git(worktree, "symbolic-ref", "-q", "--short", "HEAD", timeout: HEAD_TIMEOUT)
+      branch = out.strip
+      return {"unread" => "detached_head"} unless ok && !branch.empty?
+      tracked = branch_config(worktree, branch, "remote")
+      remote = [branch_config(worktree, branch, "pushRemote"), config(worktree, "remote.pushDefault"), tracked, "origin"].find { |each| !each.empty? }
+      return {"unread" => "local_upstream"} if remote == "."
+      return {"unread" => "bad_remote"} if remote.start_with?("-")
+      ref = remote_ref(branch, branch_config(worktree, branch, "merge"), remote == (tracked.empty? ? "origin" : tracked))
+      out, ok = run_git(worktree, "ls-remote", "--", remote, ref, timeout: REMOTE_TIMEOUT, env: REMOTE_ENV)
+      return {"unread" => remote_known?(worktree, remote) ? "unreachable" : "no_remote"} unless ok
+      sha = out.lines.map { |line| line.split("\t") }.find { |_, name| name&.strip == ref }&.first
+      {"remote" => remote, "ref" => ref, "sha" => sha}
     end
 
     # Counts the commits made on HEAD's first-parent line since `base`, merges left out, under {HEAD_TIMEOUT}
@@ -340,6 +377,26 @@ module Workspace
       [out.to_s.scrub, ok, exit_code(ok, err)]
     rescue SystemCallError, Timeout::Error, Workspace::TimedProcess::OutputTooLarge
       ["", false, 2]
+    end
+
+    def branch_config(worktree, branch, key)
+      config(worktree, "branch.#{branch}.#{key}")
+    end
+
+    def config(worktree, key)
+      run_git(worktree, "config", "--get", key, timeout: HEAD_TIMEOUT).first.strip
+    end
+
+    def remote_ref(branch, merge, on_tracked_remote)
+      own = "refs/heads/#{branch}"
+      return own if merge.empty?
+      return merge if on_tracked_remote
+      (branch.match?(/\Apr-\d+\z/) && merge.start_with?("refs/heads/")) ? merge : own
+    end
+
+    # A URL in place of a remote's name is not listed, so it counts as known.
+    def remote_known?(worktree, remote)
+      remote.match?(%r{[/:]}) || run_git(worktree, "remote", timeout: HEAD_TIMEOUT).first.split("\n").include?(remote)
     end
 
     # Only the success flag is known: a failure with no message is git's "not found" (exit 1).

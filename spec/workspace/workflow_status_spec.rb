@@ -52,6 +52,14 @@ RSpec.describe Workspace::WorkflowStatus do
     {"action" => name, "args" => args, "needs" => needs}
   end
 
+  it "shows the current attempt's proofs, and no key for an attempt with none" do
+    create
+    expect(current).not_to have_key("proofs")
+    proofs = [{"proof" => "command", "log" => "/l", "exit_code" => 3}]
+    store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last["proofs"] = proofs }
+    expect(current["proofs"]).to eq(proofs)
+  end
+
   it "shows a run an agent is working on, with no reason" do
     create
 

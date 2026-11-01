@@ -1104,7 +1104,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "reserves the require codes so step done --code can't forge them" do
-        expect(described_class::ENGINE_CODES).to include("require_commits", "require_nonempty", "require_plan_status", "require_tracked_clean")
+        expect(described_class::ENGINE_CODES).to include("require_commits", "require_nonempty", "require_plan_status", "require_tracked_clean", "require_command", "require_inbox_item", "require_remote_unchanged", "require_remote_unreachable")
       end
     end
 
@@ -2235,6 +2235,232 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       expect(engine.resume("wr_1")["state"]).to eq("completed")
+    end
+  end
+
+  describe "a require: proof outside the run's lock" do
+    let(:flow) do
+      definition(<<~YAML)
+        steps:
+          build:
+            prompt: Build it.
+            require:
+              - tracked_clean: true
+              - command: test
+              - commits: 1
+              - remote_unchanged: true
+            status: {run: "true"}
+      YAML
+    end
+    let(:baseline) { {"remote" => "origin", "ref" => "refs/heads/feature/x", "sha" => "a" * 40} }
+    let(:readings) { [baseline, baseline] }
+    let(:seen) { [] }
+    let(:during) { [] }
+    let(:checker) do
+      lambda do |stop_when:, **args|
+        stop_whens << stop_when
+        check_calls << args.merge(state_during: store.find("wr_1")["steps"]["build"]["state"])
+        during.shift&.call
+        check_results.shift || {exit_code: 0, timed_out: false}
+      end
+    end
+
+    before do
+      allow(guard).to receive(:dirty_paths).and_return([])
+      allow(guard).to receive(:operation_in_progress?).and_return(false)
+      allow(guard).to receive(:commits_since).and_return(1)
+      allow(guard).to receive(:remote_head) do
+        seen << store.find("wr_1")["steps"]["build"]["state"] if store.active.any?
+        readings.shift
+      end
+    end
+
+    def attempt
+      store.find("wr_1")["steps"]["build"]["attempts"].last
+    end
+
+    it "takes the baseline with the lock given up, before the line is typed" do
+      held = nil
+      allow(guard).to receive(:remote_head) do
+        held = store.update("wr_1", nonblocking: true) { |run| run }.nil?
+        expect(panes.kicks).to be_empty
+        baseline
+      end
+      start(flow, inputs: {})
+      expect(held).to be(false)
+      expect(attempt["remote"]).to eq(baseline)
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "keeps the reason for a remote it could not read" do
+      readings.replace([{"unread" => "detached_head"}])
+      start(flow, inputs: {})
+      expect(attempt["remote"]).to eq("unread" => "detached_head")
+    end
+
+    it "does not touch the remote for a step that does not require it" do
+      start(definition("steps:\n  build:\n    prompt: Build it.\n"), inputs: {})
+      expect(guard).not_to have_received(:remote_head)
+    end
+
+    it "types nothing when the run was cancelled during the read" do
+      allow(guard).to receive(:remote_head) do
+        engine.cancel("wr_1")
+        baseline
+      end
+      start(flow, inputs: {})
+      expect(panes.kicks).to be_empty
+      expect(store.find("wr_1")["state"]).to eq("cancelled")
+    end
+
+    it "runs the command, then the proofs after it, then the status check, in order" do
+      start(flow, inputs: {})
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(check_calls.map { |call| call[:command] }).to eq(["bundle exec rspec", "true"])
+      expect(check_calls.map { |call| call[:state_during] }).to eq(%w[checking checking])
+      expect(check_calls.first).to include(cwd: worktree, timeout: Workspace::WorkflowRequire::COMMAND_TIMEOUT,
+        log: %r{/\.workflow/wr_1/steps/build\.1\.require-test\.\h{8}\.log\z},
+        env: hash_including("WORKSPACE_RUN_ID" => "wr_1"))
+      expect(seen).to eq(%w[running checking])
+      expect(guard).to have_received(:commits_since).once
+      expect(run["state"]).to eq("completed")
+    end
+
+    it "does not hold the run's lock while the command runs" do
+      start(flow, inputs: {})
+      free = nil
+      during << -> { free = !store.update("wr_1", nonblocking: true) { |run| run }.nil? }
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(free).to be(true)
+    end
+
+    it "records each proof's result on the attempt" do
+      start(flow, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(attempt["proofs"]).to match([
+        hash_including("proof" => "command", "index" => 1, "exit_code" => 0, "log" => /require-test\.\h{8}\.log/, "started_at" => String, "ended_at" => String),
+        hash_including("proof" => "remote_unchanged", "index" => 3, "sha" => "a" * 40, "ended_at" => String)
+      ])
+      expect(File.readlines(store.events_path("wr_1")).map { |line| JSON.parse(line) }.select { |line| line["type"] == "proof_finished" }.map { |line| line.slice("proof", "passed") })
+        .to eq([{"proof" => "command", "passed" => true}, {"proof" => "remote_unchanged", "passed" => true}])
+    end
+
+    it "stores a failed command's exit code and log in failed_check, and goes no further" do
+      start(flow, inputs: {})
+      check_results << {exit_code: 3, timed_out: false}
+      run = engine.turn_ended("wr_1", pane: "%5")
+      expect(run["reason"]).to include("code" => "failed_check")
+      expect(run["reason"]["details"]).to include("code" => "require_command", "code_source" => "engine", "cause" => "require", "require" => "command",
+        "exit_code" => 3, "log" => %r{build\.1\.require-test\.\h{8}\.log\z})
+      expect(check_calls.size).to eq(1)
+      expect(guard).not_to have_received(:commits_since)
+    end
+
+    it "stores a moved remote's before and after in failed_check" do
+      readings.replace([baseline, baseline.merge("sha" => "b" * 40)])
+      start(flow, inputs: {})
+      run = engine.turn_ended("wr_1", pane: "%5")
+      expect(run["reason"]["details"]).to include("code" => "require_remote_unchanged", "before" => "a" * 40, "after" => "b" * 40)
+      expect(check_calls.size).to eq(1)
+    end
+
+    it "fails an unreachable remote with its own code" do
+      readings.replace([baseline, {"unread" => "unreachable"}])
+      start(flow, inputs: {})
+      expect(engine.turn_ended("wr_1", pane: "%5")["reason"]["details"]).to include("code" => "require_remote_unreachable", "unproven" => true)
+    end
+
+    it "stops the command on a cancel and applies nothing" do
+      start(flow, inputs: {})
+      told_to_stop = nil
+      during << lambda do
+        engine.cancel("wr_1")
+        told_to_stop = stop_whens.last.call
+      end
+      check_results << {exit_code: nil, timed_out: false, error: "stopped: the run moved on"}
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(told_to_stop).to be(true)
+      expect(run["state"]).to eq("cancelled")
+      expect(run["reason"]).to be_nil
+      expect(run["steps"]["build"]["attempts"].last["proofs"].first).not_to have_key("exit_code")
+      expect(check_calls.size).to eq(1)
+    end
+
+    it "runs the proofs again on a tick when the process running one died, after that proof's limit and not before" do
+      start(flow, inputs: {})
+      store.update("wr_1") do |run|
+        run["state"] = "running"
+        run["steps"]["build"]["state"] = "checking"
+        run["steps"]["build"]["attempts"].last["proofs"] = [{"proof" => "remote_unchanged", "index" => 3, "timeout" => 30, "started_at" => "2026-10-04T12:00:00Z"}]
+      end
+      now[0] += 90
+      expect(engine.tick("wr_1")).to be_nil
+      now[0] += 1
+      expect(engine.tick("wr_1")["state"]).to eq("completed")
+      expect(check_calls.map { |call| call[:command] }).to eq(["bundle exec rspec", "true"])
+    end
+
+    it "drops a late result once the proof was run again, and stops the old run" do
+      start(flow, inputs: {})
+      told_to_stop = nil
+      # A resume or a tick took this run for lost and started the proof over.
+      during << lambda do
+        store.update("wr_1") { |run| run["steps"]["build"]["attempts"].last["proofs"] = [{"proof" => "command", "token" => "newer", "index" => 1, "timeout" => 300, "started_at" => "2026-10-04T12:00:00Z"}] }
+        told_to_stop = stop_whens.last.call
+      end
+      check_results << {exit_code: 3, timed_out: false}
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(told_to_stop).to be(true)
+      expect(run["reason"]).to be_nil
+      expect(run["steps"]["build"]["state"]).to eq("checking")
+      expect(run["steps"]["build"]["attempts"].last["proofs"]).to eq([{"proof" => "command", "token" => "newer", "index" => 1, "timeout" => 300, "started_at" => "2026-10-04T12:00:00Z"}])
+    end
+
+    it "still types the line when storing the reading fails for another reason, and the proof is unproven" do
+      armed = false
+      allow(guard).to receive(:remote_head) do
+        armed = true
+        baseline
+      end
+      allow(store).to receive(:update).and_wrap_original do |original, *args, **options, &block|
+        if armed
+          armed = false
+          raise Workspace::Error.new("the run file can't be written", code: "run_file_unreadable")
+        end
+        original.call(*args, **options, &block)
+      end
+
+      start(flow, inputs: {})
+
+      expect(panes.kicks.size).to eq(1)
+      expect(attempt).not_to have_key("remote")
+      expect(attempt).not_to have_key("delivery")
+      expect(engine.turn_ended("wr_1", pane: "%5")["reason"]["details"]).to include("code" => "require_remote_unchanged", "unproven" => true)
+    end
+
+    it "leaves a run stored before proofs existed to its status check, through a tick" do
+      start(definition(%(steps:\n  build:\n    prompt: Build it.\n    status: {run: "true"}\n)), inputs: {})
+      store.update("wr_1") do |run|
+        run["state"] = "running"
+        run["steps"]["build"]["state"] = "checking"
+        run["steps"]["build"]["attempts"].last["check"] = {"started_at" => "2026-10-04T12:00:00Z"}
+        run["definition"]["steps"].first.delete("require")
+      end
+      now[0] += 100_000
+      expect(engine.tick("wr_1")["state"]).to eq("completed")
+    end
+
+    it "fails an attempt stored with no remote reading as unproven, running no remote read" do
+      start(flow, inputs: {})
+      store.update("wr_1") { |run| run["steps"]["build"]["attempts"].last.delete("remote") }
+      readings.clear
+      run = engine.turn_ended("wr_1", pane: "%5")
+      expect(run["reason"]["details"]).to include("code" => "require_remote_unchanged", "unproven" => true)
     end
   end
 

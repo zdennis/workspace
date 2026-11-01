@@ -331,6 +331,27 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(list).to eq([{"commits" => 1}, {"nonempty" => "implement.md"}, {"plan_status" => "done"}, {"tracked_clean" => true}])
     end
 
+    it "reads command, inbox_item and remote_unchanged" do
+      list = step_require("- command: lint\n- inbox_item: \"verify:{{run}}\"\n- remote_unchanged: true\n")
+      expect(list).to eq([{"command" => "lint"}, {"inbox_item" => "verify:{{run}}"}, {"remote_unchanged" => true}])
+    end
+
+    it "lists every bad value of the new proofs" do
+      yaml = "inputs:\n  task: {}\nsteps:\n  build:\n    prompt: B.\n    require:\n      - command: deploy\n      - inbox_item: \"a b\"\n      - remote_unchanged: false\n"
+      expect(problems(yaml)).to include(
+        "step build: require command must be test or lint, got \"deploy\"",
+        /step build: require inbox_item must be a dedupe key of 1 to 200 letters.*got "a b"/,
+        "step build: require remote_unchanged must be true, got false"
+      )
+      yaml = "steps:\n  build:\n    prompt: B.\n    require:\n      - inbox_item: \"x:{{branch}}:{{inputs.nope}}\"\n"
+      expect(problems(yaml)).to include(/require inbox_item uses \{\{branch\}\}, which it can't fill in/, /require inbox_item uses \{\{inputs.nope\}\}/)
+    end
+
+    it "accepts inputs in an inbox_item key" do
+      yaml = "inputs:\n  task: {}\nsteps:\n  build:\n    prompt: B.\n    require:\n      - inbox_item: \"k:{{inputs.task}}\"\n"
+      expect(parse(yaml).steps.first["require"]).to eq([{"inbox_item" => "k:{{inputs.task}}"}])
+    end
+
     it "defaults to an empty list" do
       expect(parse(minimal).steps.first["require"]).to eq([])
     end
@@ -350,7 +371,7 @@ RSpec.describe Workspace::WorkflowDefinition do
         "step build: require nonempty must be a path under the run's artifacts directory, got \"/abs\"",
         "step build: require plan_status must be active, paused, done, got \"finished\"",
         "step build: require tracked_clean must be true, got false",
-        "step build: require \"bogus\" is not a proof (known: commits, nonempty, plan_status, tracked_clean)",
+        "step build: require \"bogus\" is not a proof (known: commits, nonempty, plan_status, tracked_clean, command, inbox_item, remote_unchanged)",
         /each require entry must be one proof/
       )
     end

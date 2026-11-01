@@ -138,7 +138,7 @@ module Workspace
         "cancelled_by" => run["cancelled_by"],
         "current" => {"step" => run["current"], "attempt" => state["attempts"].last&.fetch("n", nil), "state" => state["state"],
                       "reason" => reason&.merge("actions" => actions(run, reason, pane)),
-                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)),
+                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state)),
         "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
         "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
         "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
@@ -212,6 +212,12 @@ module Workspace
                 "details" => {"step" => run["current"], "pane" => pane, "workspace" => run["workspace"]}}
       end
       waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || hide_while_working(stored, shown)
+    end
+
+    # The current attempt's `require:` proofs that ran outside the run's lock, with their results and logs.
+    def proofs_row(state)
+      proofs = state["attempts"].last&.fetch("proofs", nil)
+      proofs ? {"proofs" => proofs} : {}
     end
 
     def gate_waiting?(run)

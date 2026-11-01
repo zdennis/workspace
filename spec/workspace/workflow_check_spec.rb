@@ -12,6 +12,25 @@ RSpec.describe Workspace::WorkflowCheck do
   let(:log) { File.join(@dir, "steps", "verify.1.check.log") }
   subject(:check) { described_class.new }
 
+  describe ".env_for" do
+    around do |example|
+      saved = ENV["GIT_DIR"]
+      ENV["GIT_DIR"] = "/elsewhere"
+      example.run
+    ensure
+      ENV["GIT_DIR"] = saved
+    end
+
+    it "removes an inherited GIT_ variable" do
+      env = described_class.env_for({"id" => "wr_1", "artifacts_dir" => "/a", "base_sha" => "abc"})
+      expect(env).to include("GIT_DIR" => nil, "WORKSPACE_RUN_ID" => "wr_1", "WORKSPACE_RUN_ARTIFACTS" => "/a", "WORKSPACE_RUN_BASE_SHA" => "abc")
+    end
+
+    it "gives an empty base for a run with no recorded commit" do
+      expect(described_class.env_for({"id" => "wr_1", "base_sha" => nil})).to include("WORKSPACE_RUN_BASE_SHA" => "", "WORKSPACE_RUN_ARTIFACTS" => "")
+    end
+  end
+
   it "runs the command through the shell in the checkout and reports a pass" do
     result = check.call(command: "pwd && echo to-stderr >&2", cwd: @dir, timeout: 30, log: log)
 

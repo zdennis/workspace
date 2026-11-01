@@ -995,6 +995,18 @@ RSpec.describe Workspace::Commands::Workflow do
         expect { command.resume(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
       end
 
+      it "is refused for a step with a command proof, which runs a shell" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil, "require" => [{"command" => "lint"}]}]}
+
+        expect { command.resume(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
+      end
+
+      it "is not refused for the other proofs, which use the guard's own git" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil, "require" => [{"commits" => 1}, {"remote_unchanged" => true}]}]}
+
+        expect { command.resume(run: "wr_1", caller_pane: "%5") }.not_to raise_error
+      end
+
       it "is allowed from another pane, and from the bound pane with --from" do
         command.resume(run: "wr_1", caller_pane: "%3")
         command.resume(run: "wr_1", from: "plan", caller_pane: "%5")
@@ -1417,6 +1429,15 @@ RSpec.describe Workspace::Commands::Workflow do
         Must be written by the time your turn ends: #{@dir}/plan.md (missing)
         Reported: pass (Plan written.)
       TEXT
+    end
+
+    it "adds the attempt's proofs to the document once one has run" do
+      proofs = [{"proof" => "command", "log" => "/l", "exit_code" => 3}]
+      run["steps"]["plan"]["attempts"].last["proofs"] = proofs
+
+      command.step_status(pane: "%5", json: true)
+
+      expect(json["step"]["proofs"]).to eq(proofs)
     end
 
     it "prints it as one document, the report as `step done` gives it" do

@@ -436,6 +436,7 @@ module Workspace
                 "attempt" => attempt["n"], "state" => state["state"], "instructions" => attempt["prompt_file"],
                 "artifacts_dir" => run["artifacts_dir"], "produces" => produces, "check" => !step["status"].nil?,
                 "reported" => attempt["reported"]&.slice("status", "summary")}
+        info["proofs"] = attempt["proofs"] if attempt["proofs"]
         return document("step" => info) if json
         @output.puts "Step #{info["step"]} (attempt #{info["attempt"]}, #{info["state"]}) of workflow run #{info["run_id"]} (#{info["workflow"]}) in #{info["workspace"]}."
         @output.puts "Instructions: #{info["instructions"]}" if info["instructions"]
@@ -594,11 +595,11 @@ module Workspace
 
       # The run the step's pane is bound to keeps the pane it has unless that pane is gone:
       # only then is the workspace's Claude pane looked up (which starts its agent daemon).
-      # Whether the run's current step has a `guard:` or a `status:` check. An agent that
+      # Whether the run's current step has a `guard:`, a `status:` check or a `command` proof. An agent that
       # re-ran its own check from a shell could put a fake `git` first on PATH.
       def checked_step?(run)
         step = Array(run.dig("definition", "steps")).find { |each| each["id"] == run["current"] }
-        !!(step && (step["guard"] || step["status"]))
+        !!(step && (step["guard"] || step["status"] || Array(step["require"]).any? { |entry| entry.key?("command") }))
       end
 
       # The caller is in the pane the resume would type into, so nothing is typed:

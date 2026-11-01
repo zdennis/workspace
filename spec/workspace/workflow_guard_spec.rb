@@ -475,6 +475,119 @@ RSpec.describe Workspace::WorkflowGuard do
     end
     expect(File.exist?(marker)).to be(false)
   end
+
+  describe "#remote_head" do
+    let(:remote) { File.join(@dir, "remote.git") }
+
+    before do
+      git("init", "-q", "--bare", "-b", "main", remote, path: @dir)
+      git("remote", "add", "origin", remote)
+      git("push", "-q", "origin", "main")
+    end
+
+    it "reads the current branch's sha on the remote it tracks, else origin" do
+      sha = git("rev-parse", "HEAD").strip
+      expect(guard.remote_head(repo)).to eq("remote" => "origin", "ref" => "refs/heads/main", "sha" => sha)
+      git("remote", "rename", "origin", "up")
+      git("config", "branch.main.remote", "up")
+      expect(guard.remote_head(repo)).to include("remote" => "up", "sha" => sha)
+    end
+
+    it "reads a nil sha for a branch the remote lacks" do
+      git("checkout", "-q", "-b", "topic")
+      expect(guard.remote_head(repo)).to eq("remote" => "origin", "ref" => "refs/heads/topic", "sha" => nil)
+    end
+
+    it "reads the ref the branch tracks, not its local name" do
+      sha = git("rev-parse", "HEAD").strip
+      git("checkout", "-q", "-b", "pr-12")
+      git("config", "branch.pr-12.remote", "origin")
+      git("config", "branch.pr-12.merge", "refs/heads/main")
+      expect(guard.remote_head(repo)).to eq("remote" => "origin", "ref" => "refs/heads/main", "sha" => sha)
+    end
+
+    it "says why it has no reading: unreachable, an option-like remote name, a detached HEAD" do
+      git("remote", "set-url", "origin", File.join(@dir, "nowhere.git"))
+      expect(guard.remote_head(repo)).to eq("unread" => "unreachable")
+      git("config", "branch.main.remote", "--upload-pack=x")
+      expect(guard.remote_head(repo)).to eq("unread" => "bad_remote")
+      git("checkout", "-q", "--detach")
+      expect(guard.remote_head(repo)).to eq("unread" => "detached_head")
+    end
+
+    it "does not look at origin for a branch whose upstream is local" do
+      git("config", "branch.main.remote", ".")
+      expect(guard.remote_head(repo)).to eq("unread" => "local_upstream")
+    end
+
+    it "says no_remote, not unreachable, when there is no such remote" do
+      git("remote", "remove", "origin")
+      expect(guard.remote_head(repo)).to eq("unread" => "no_remote")
+      git("config", "branch.main.remote", "gone")
+      expect(guard.remote_head(repo)).to eq("unread" => "no_remote")
+    end
+
+    describe "the remote a push would go to" do
+      let(:fork_remote) { File.join(@dir, "fork.git") }
+      let!(:sha) { git("rev-parse", "HEAD").strip }
+
+      before do
+        git("init", "-q", "--bare", "-b", "main", fork_remote, path: @dir)
+        git("remote", "add", "fork", fork_remote)
+        git("push", "-q", "fork", "main:refs/heads/topic", "main:refs/heads/head-x")
+        git("checkout", "-q", "-b", "topic")
+        git("config", "branch.topic.remote", "origin")
+        git("config", "branch.topic.merge", "refs/heads/main")
+      end
+
+      it "prefers branch.<b>.pushRemote, on the branch's own name" do
+        git("config", "remote.pushDefault", "origin")
+        git("config", "branch.topic.pushRemote", "fork")
+        expect(guard.remote_head(repo)).to eq("remote" => "fork", "ref" => "refs/heads/topic", "sha" => sha)
+      end
+
+      it "takes remote.pushDefault over the tracked remote" do
+        git("config", "remote.pushDefault", "fork")
+        expect(guard.remote_head(repo)).to include("remote" => "fork", "ref" => "refs/heads/topic")
+      end
+
+      it "keeps the merge ref when the push remote is the tracked one" do
+        git("config", "branch.topic.pushRemote", "origin")
+        expect(guard.remote_head(repo)).to include("remote" => "origin", "ref" => "refs/heads/main")
+      end
+
+      it "keeps a pr-N branch's refs/heads/ merge ref on another push remote, but not a pull ref" do
+        git("checkout", "-q", "-b", "pr-7")
+        git("config", "branch.pr-7.remote", "origin")
+        git("config", "branch.pr-7.merge", "refs/heads/head-x")
+        git("config", "branch.pr-7.pushRemote", "fork")
+        expect(guard.remote_head(repo)).to include("remote" => "fork", "ref" => "refs/heads/head-x", "sha" => sha)
+        git("config", "branch.pr-7.merge", "refs/pull/7/head")
+        expect(guard.remote_head(repo)).to include("remote" => "fork", "ref" => "refs/heads/pr-7", "sha" => nil)
+      end
+
+      it "reads a real push remote for a branch whose upstream is local" do
+        git("config", "branch.topic.remote", ".")
+        git("config", "branch.topic.pushRemote", "fork")
+        expect(guard.remote_head(repo)).to include("remote" => "fork")
+      end
+    end
+
+    it "runs hardened, with no prompt and a time limit" do
+      calls = []
+      runner = ->(command, **options) do
+        calls << [command, options]
+        ["main\n", "", true]
+      end
+      described_class.new(runner: runner, git_path: "/usr/bin/git").remote_head(repo)
+      command, options = calls.find { |(cmd, _)| cmd.include?("ls-remote") }
+      expect(command.first).to eq("/usr/bin/git")
+      expect(command).to include("ls-remote", "core.hooksPath=/dev/null")
+      expect(options[:timeout]).to eq(described_class::REMOTE_TIMEOUT)
+      expect(options[:env]).to include("GIT_TERMINAL_PROMPT" => "0", "GIT_CONFIG_GLOBAL" => "/dev/null", "GIT_ALLOW_PROTOCOL" => "https:ssh:git:file")
+    end
+  end
+
   describe "#commits_since" do
     it "counts the commits made after the base" do
       expect(guard.commits_since(repo, base["base_sha"])).to eq(0)

@@ -267,7 +267,7 @@ module Workspace
         "status" => status_from(raw["status"], where),
         "gate" => gate_from(raw["gate"], where),
         "guard" => guard_from(raw["guard"], where),
-        "require" => require_from(raw["require"], where),
+        "require" => require_from(raw["require"], where, inputs),
         "uses" => uses_from(raw["uses"], where),
         "on_fail" => on_fail_from(raw["on_fail"], earlier, where),
         "context" => context_from(raw.fetch("context", "fresh"), "#{where}: context"),
@@ -343,7 +343,7 @@ module Workspace
     end
 
     # A list of single-key mappings, each one proof of WorkflowRequire::PROOFS, kept as written.
-    def require_from(value, where)
+    def require_from(value, where, inputs)
       return [] if value.nil?
       return problem("#{where}: require must be a list of proofs such as - commits: 1, got #{value.inspect[0, 60]}") || [] unless value.is_a?(Array)
       seen = []
@@ -359,22 +359,37 @@ module Workspace
         end
         problem "#{where}: require #{name} is listed twice" if seen.include?(name)
         seen << name
-        entry if require_value_ok?(name, wanted, where)
+        entry if require_value_ok?(name, wanted, where, inputs)
       end
     end
 
-    def require_value_ok?(name, wanted, where)
+    def require_value_ok?(name, wanted, where, inputs)
       ok = case name
       when "commits" then wanted.is_a?(Integer) && wanted.between?(1, 1000)
       when "nonempty" then plain_relative_path?(wanted)
       when "plan_status" then PlanFile::STATUSES.include?(wanted)
+      when "command" then CommandsConfig::ROLES.include?(wanted)
+      when "inbox_item" then inbox_key_ok?(wanted, where, inputs)
       else wanted == true
       end
       return true if ok
       expected = {"commits" => "a whole number from 1 to 1000", "nonempty" => "a path under the run's artifacts directory",
-                  "plan_status" => PlanFile::STATUSES.join(", "), "tracked_clean" => "true"}.fetch(name)
+                  "plan_status" => PlanFile::STATUSES.join(", "), "tracked_clean" => "true",
+                  "command" => CommandsConfig::ROLES.join(" or "), "inbox_item" => "a dedupe key of 1 to 200 letters, digits and . _ : / # @ -, which may hold {{run}}, {{workspace}} and {{inputs.NAME}}",
+                  "remote_unchanged" => "true"}.fetch(name)
       problem "#{where}: require #{name} must be #{expected}, got #{wanted.inspect[0, 60]}"
       false
+    end
+
+    # A string that renders to a valid dedupe key, holding only the placeholders the proof can fill in.
+    def inbox_key_ok?(template, where, inputs)
+      return false unless template.is_a?(String)
+      names = template.scan(PLACEHOLDER).flatten.uniq
+      known = ->(name) { WorkflowRequire::KEY_VARIABLES.include?(name) || (name.start_with?("inputs.") && inputs.key?(name.delete_prefix("inputs."))) }
+      unknown = names.reject(&known)
+      unknown.each { |name| problem "#{where}: require inbox_item uses {{#{name}}}, which it can't fill in (known: #{WorkflowRequire::KEY_VARIABLES.map { |v| "{{#{v}}}" }.join(", ")} and {{inputs.NAME}})" }
+      return true if unknown.any? # already reported
+      template.gsub(PLACEHOLDER, "x").match?(WorkflowRequire::KEY_PATTERN)
     end
 
     # A normal relative path: no control character (NUL included), no empty, `.` or `..` part (so no `a//b`,

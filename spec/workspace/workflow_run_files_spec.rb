@@ -42,6 +42,14 @@ RSpec.describe Workspace::WorkflowRunFiles do
     ])
   end
 
+  it "lists a proof log, and nothing for a proof with none" do
+    log = write("steps/research.1.require-test.log", "ok\n")
+
+    rows = files.list(run_for(attempts: [{"n" => 1, "proofs" => [{"proof" => "command", "log" => log}, {"proof" => "remote_unchanged"}]}]))
+
+    expect(rows).to eq([{"path" => log, "kind" => "proof_log", "step" => "research", "attempt" => 1, "exists" => true, "bytes" => 3}])
+  end
+
   it "leaves out the rows of a prompt or check that was not recorded" do
     rows = files.list(run_for(attempts: [{"n" => 1}]))
 

@@ -37,7 +37,7 @@ module Workspace
 
     # Restart errors that mean there is no pane to type into.
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
-    ENGINE_CODES = (WorkflowGuard::CODES + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_unknown check_failed check_timed_out check_error reported]).freeze
+    ENGINE_CODES = (WorkflowGuard::CODES + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported]).freeze
 
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
 
@@ -133,7 +133,8 @@ module Workspace
       @event_log = event_log
       @task_store = task_store
       @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard)
-      @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) })
+      @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
+        commands_config: commands_config, checker: checker)
       @clock = clock
       @delivery = nil
     end
@@ -174,7 +175,11 @@ module Workspace
       state = run["steps"].fetch(run["current"])
       return false unless state["state"] == "checking"
       return true if run["reason"] || parked(run, now) == :expired
-      started = state["attempts"].last&.dig("check", "started_at")
+      attempt = state["attempts"].last
+      # A `require:` proof outside the run's lock has its own start and limit; a run stored without `proofs` has neither.
+      proof = Array(attempt&.dig("proofs")).find { |each| !each.key?("ended_at") }
+      return now - Time.iso8601(proof["started_at"]) > proof["timeout"] + 60 if proof
+      started = attempt&.dig("check", "started_at")
       step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
       timeout = step.dig("status", "timeout") || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
       started.nil? || now - Time.iso8601(started) > timeout + 60
@@ -931,7 +936,8 @@ module Workspace
       run["reason"] = nil
       event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane)
       @delivery = {"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
-                   "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh"}
+                   "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
+                   "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"]}
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
@@ -943,6 +949,7 @@ module Workspace
     # settled it meanwhile. A line that could not be typed makes the run wait
     # as before; a late answer for an attempt already settled changes nothing.
     def deliver(run_id, delivery)
+      record_remote(run_id, delivery) if delivery["remote_baseline"]
       kick = begin
         @panes.kick(workspace: delivery["workspace"], pane: delivery["pane"], text: delivery["text"], fresh: delivery["fresh"], run_id: run_id)
       rescue => e
@@ -965,6 +972,21 @@ module Workspace
       # Cancelled while the line was on its way: the cancel stands.
       raise unless e.code == "run_not_active"
       @store.find(run_id)
+    end
+
+    # The reading `remote_unchanged` compares with. It is taken here, the one place every attempt passes with the
+    # lock given up and the agent not yet told: `dispatch` runs inside a transition, from many callers. It may take
+    # {WorkflowGuard::REMOTE_READ_LIMIT} seconds, which {DELIVERY_WINDOW} has room for. A process that dies here
+    # leaves an attempt with no reading, which that proof fails as unproven.
+    def record_remote(run_id, delivery)
+      reading = @guard.remote_head(delivery["worktree"])
+      transition(run_id) do |stored|
+        attempt = stored["steps"].fetch(delivery["step"])["attempts"].last
+        attempt["remote"] = reading if stored["current"] == delivery["step"] && attempt["n"] == delivery["attempt"]
+      end
+    rescue Workspace::Error => e
+      # Only a cancel stops the line; otherwise the attempt goes on with no reading, which that proof fails as unproven.
+      raise if e.code == "run_not_active"
     end
 
     def not_delivered(run, state, attempt, kick)
@@ -1118,6 +1140,7 @@ module Workspace
       attempt = state["attempts"].last
       # A turn that ended on the attempt shows its line reached the agent.
       attempt.delete("delivery")
+      attempt.delete("proofs")
       reported = attempt["reported"]
       if reported && reported["status"] == "fail"
         fail_step(run, {"cause" => "reported", "summary" => reported["summary"]}.merge(code_for("reported", reported["code"])))
@@ -1151,8 +1174,15 @@ module Workspace
         end
         return nil
       end
+      require_and_status(run, step, state, attempt)
+    end
+
+    # What comes after the step's files: its `require:` entries from +from+ in order, then its `status:`
+    # check. Returns the next thing to run outside the lock (a proof or the check); nil once the step is decided.
+    def require_and_status(run, step, state, attempt, from: 0)
       if step["require"].to_a.any?
-        unmet = @require_check.check(run: run, step: step, attempt: attempt)
+        unmet = @require_check.check(run: run, step: step, attempt: attempt, from: from)
+        return start_proof(run, step, state, attempt, unmet["outside"]) if unmet&.key?("outside")
         if unmet
           fail_step(run, require_failure(unmet))
           return nil
@@ -1174,18 +1204,33 @@ module Workspace
        "cwd" => run["worktree"], "role" => step["status"]["command"]}
     end
 
+    # A proof takes the step to `checking` like a `status:` check, so a resume, a cancel, a tick and {#wanted?}
+    # treat it as one. Its record stays open (no `ended_at`) until it is applied, or a next {#evaluate} starts over.
+    def start_proof(run, step, state, attempt, pending)
+      (attempt["proofs"] ||= []) << pending.merge("started_at" => now_iso)
+      state["state"] = "checking"
+      run["state"] = "running"
+      run["reason"] = nil
+      {"step" => step["id"], "attempt" => attempt["n"], "cwd" => run["worktree"], "proof" => pending}
+    end
+
+    # Runs what {#evaluate} handed back with the run's lock given up, and whatever comes after it: a proof can be
+    # followed by another proof or the `status:` check.
     def finish_check(run_id, check)
-      result = if check["command"]
-        @checker.call(command: check["command"], cwd: check["cwd"], timeout: check["timeout"], log: check["log"],
-          stop_when: -> { !wanted?(run_id, check) }, env: check_env(run_id))
-      else
-        {exit_code: nil, timed_out: false, error: "the project's #{check["role"]} command is not set"}
-      end
-      apply_check(run_id, check, result)
+      run = nil
+      run, check = apply_check(run_id, check, run_check(run_id, check)) while check
+      run
     rescue Workspace::Error => e
       # Cancelled while the check ran: there is nothing left to decide.
       raise unless e.code == "run_not_active"
       @store.find(run_id)
+    end
+
+    def run_check(run_id, check)
+      stop_when = -> { !wanted?(run_id, check) }
+      return @require_check.run_outside(check["proof"], cwd: check["cwd"], env: check_env(run_id), stop_when: stop_when) if check["proof"]
+      return {exit_code: nil, timed_out: false, error: "the project's #{check["role"]} command is not set"} unless check["command"]
+      @checker.call(command: check["command"], cwd: check["cwd"], timeout: check["timeout"], log: check["log"], stop_when: stop_when, env: check_env(run_id))
     end
 
     # What a `status:` check is told about its run. `WORKSPACE_RUN_BASE_SHA` is
@@ -1193,11 +1238,7 @@ module Workspace
     # Every inherited `GIT_*` variable is removed, so a caller's `GIT_DIR`, `GIT_INDEX_FILE` or
     # `GIT_CONFIG_*` can't steer the check.
     def check_env(run_id)
-      run = @store.find(run_id)
-      ENV.keys.select { |name| name.start_with?("GIT_") }.to_h { |name| [name, nil] }.merge(
-        "WORKSPACE_RUN_ID" => run["id"], "WORKSPACE_RUN_ARTIFACTS" => run["artifacts_dir"].to_s,
-        "WORKSPACE_RUN_BASE_SHA" => run["base_sha"].to_s
-      )
+      WorkflowCheck.env_for(@store.find(run_id))
     end
 
     # The steps' prompts hand the agent shell commands that hold the run's artifacts path
@@ -1240,23 +1281,30 @@ module Workspace
     # Whether the run still waits for this check: it is still on that step and
     # attempt, checking. A cancel, a kill or a `resume --from` ends that, and
     # the check is stopped instead of running on beside the lock's next holder.
-    # So does a park: only a `--from` parks over a check, and that restarts the step.
+    # So does a park: only a `--from` parks over a check, and that restarts the step. So does a proof run again.
     def wanted?(run_id, check)
       run = @store.find(run_id)
       state = run["steps"].fetch(check["step"])
       !run["parked"] && !WorkflowRunStore::TERMINAL_STATES.include?(run["state"]) && run["current"] == check["step"] &&
-        state["state"] == "checking" && state["attempts"].last["n"] == check["attempt"]
+        state["state"] == "checking" && state["attempts"].last["n"] == check["attempt"] &&
+        (!check["proof"] || !open_proof(state["attempts"].last, check).nil?)
     rescue Workspace::Error, SystemCallError
       true
     end
 
+    # @return [Array] the run afterwards, and what to run next outside the lock, or nil
     def apply_check(run_id, check, result)
-      transition(run_id) do |stored|
+      following = nil
+      run = transition(run_id) do |stored|
         next if stored["parked"]
         state = step_state(stored)
         attempt = state["attempts"].last
         # The run moved on while the check ran (a resume, a reject): its result decides nothing.
         next unless stored["current"] == check["step"] && state["state"] == "checking" && attempt["n"] == check["attempt"]
+        if check["proof"]
+          following = apply_proof(stored, attempt, check, result)
+          next
+        end
         attempt["check"].merge!("ended_at" => now_iso, "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
           "error" => result[:error]).compact!
         event(stored, "check_finished", "step" => check["step"], "attempt" => check["attempt"], "exit_code" => result[:exit_code])
@@ -1272,6 +1320,26 @@ module Workspace
                              "error" => result[:error], "log" => check["log"]}.compact.merge(code_for(code, nil)))
         end
       end
+      [run, following]
+    end
+
+    # Records a proof's result; a passed one goes on to the next `require:` entry. A proof run again (a tick or a
+    # resume took it for lost) has a new token, so a late result of the old run matches nothing and is dropped.
+    def apply_proof(run, attempt, check, result)
+      record = open_proof(attempt, check)
+      return nil unless record
+      record.merge!(result["record"].merge("ended_at" => now_iso))
+      unmet = result["unmet"]
+      event(run, "proof_finished", "step" => check["step"], "attempt" => check["attempt"], "proof" => record["proof"], "passed" => unmet.nil?)
+      if unmet
+        fail_step(run, require_failure(unmet))
+        return nil
+      end
+      require_and_status(run, step_def(run), step_state(run), attempt, from: check["proof"]["index"] + 1)
+    end
+
+    def open_proof(attempt, check)
+      Array(attempt["proofs"]).find { |each| each["token"] == check["proof"]["token"] && !each.key?("ended_at") }
     end
 
     def pass_step(run)
@@ -1351,7 +1419,8 @@ module Workspace
     def require_failure(unmet)
       {"cause" => "require", "require" => unmet["proof"], "detail" => unmet["detail"], "unproven" => unmet["unproven"],
        "required" => unmet["required"], "found" => unmet["found"], "base" => unmet["base"], "paths" => unmet["paths"],
-       "reason" => unmet["reason"], "error" => unmet["error"]}
+       "reason" => unmet["reason"], "error" => unmet["error"], "exit_code" => unmet["exit_code"], "log" => unmet["log"],
+       "before" => unmet["before"], "after" => unmet["after"]}
         .compact.merge(code_for(unmet["code"], nil))
     end
 

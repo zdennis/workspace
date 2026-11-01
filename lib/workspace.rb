@@ -586,18 +586,22 @@ module Workspace
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_guard = WorkflowGuard.new(git_path: Which.path("git") || "git")
+    workflow_checker = WorkflowCheck.new
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
       composer: instruction_composer,
       panes: workflow_panes,
-      checker: WorkflowCheck.new,
+      checker: workflow_checker,
       commands_config: commands_config,
       lineage: lineage,
       git: git,
       guard: workflow_guard,
       attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard),
-      require_check: WorkflowRequire.new(guard: workflow_guard, notes_dir_of: workflow_gate_note.method(:notes_dir_of)),
+      require_check: WorkflowRequire.new(guard: workflow_guard, notes_dir_of: workflow_gate_note.method(:notes_dir_of),
+        commands_config: commands_config, checker: workflow_checker,
+        # `inbox_item` reads under the run's lock, so the inbox's flock is taken inside it. Nothing takes them the other way round.
+        inbox_for: ->(workspace) { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) }),
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },

@@ -33,6 +33,12 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         "prompt_sha256" => Digest::SHA256.hexdigest("hi\n"), "packs" => [{"ref" => "play/x", "sha256" => "f" * 64}])
     end
 
+    it "never reads the remote: it runs under the run's lock" do
+      allow(guard).to receive(:remote_head)
+      run["definition"]["steps"][0]["require"] = [{"remote_unchanged" => true}]
+      record.start(run: run, attempt: {"n" => 1}, composed: {"text" => "", "packs" => []})
+      expect(guard).not_to have_received(:remote_head)
+    end
     it "leaves out a definition hash a run was stored without" do
       attempt = {"n" => 1}
       record.start(run: run.except("definition_sha256"), attempt: attempt, composed: {"text" => "", "packs" => []})
