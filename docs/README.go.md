@@ -12,7 +12,7 @@ Start a workflow with one argument. `go` reads the argument, picks the workflow,
 ## Usage
 
 ```sh
-workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--dry-run] [--json]
+workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--base REF] [--dry-run] [--json]
 ```
 
 ## Options
@@ -22,6 +22,7 @@ workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--d
 | `--workflow ID` | Use this workflow instead of the configured one |
 | `--input KEY=VALUE` | Set a workflow input; repeatable. Needed only for an input nothing else fills: see [Free text and `task`](#free-text-and-task) |
 | `--here` | Run free text in this worktree workspace instead of making a new one. If a run is already going here, add the text to its plan as a task instead: see [Adding to a run already going](#adding-to-a-run-already-going). Refused with `go_here_unavailable` where `go` can't run here, and as a usage error with a ref for another branch |
+| `--base REF` | Start the new branch from this branch, tag or commit instead of the default branch. Useful when the local default branch may be behind origin (`--base origin/main`). Values such as `HEAD` or `HEAD~1` are read in the checkout you run `go` in, not the main checkout. A usage error where `go` runs here, since the checkout starts from where it is. A value git can't find, or one starting with `-`, is refused as `unknown_base` before anything is made, `--dry-run` included. For a branch that already exists the real run ignores the value and adds a warning to `warnings`; `--dry-run` does not show that warning. A foreign branch gets no fork check here, as with `workflow start --base` |
 | `--dry-run` | Check everything and create nothing |
 | `--json` | Print one JSON document; other output goes to stderr |
 
@@ -118,6 +119,7 @@ Each leaves nothing behind, `--dry-run` included.
 - `go_here_unavailable`: `--here` was given where `go` can't run here: a main checkout, a worktree with no workspace of its own, a detached HEAD, or the default or main checkout's branch. Nothing is started. Drop `--here` for a new checkout. `details.path` is the checkout's root.
 - `branch_not_allowed`: the branch is the default branch or the one the main checkout holds, so a run would land on the branch everyone shares. A name that is another name for one of them counts (a branch that points at it, or the same name in other letter case), and so does a ref whose existing checkout holds one. Name a new branch, or reword the text (`go "main !"` makes the name `main`). `details.branch`, `details.path`, `details.reason` (`default_branch` or `main_checkout`).
 - `branch_exists`: free text makes the name of a branch that already exists, or differs from one only in letter case. Reword the text, or run the `workspace go BRANCH` command the message gives. For a ref, the existing checkout for it holds another branch or none: switch it back or name another ref. `details.held` is the branch it holds, or null.
+- `unknown_base`: `--base` is not a branch, tag or commit of this repository, or starts with `-`. Nothing is made, `--dry-run` included. For a branch that is only on origin, run `git fetch` or give `origin/NAME`. `details.base` is the value.
 - `unknown_ref`: no branch, ticket or pull request has that name. For a branch that is only on origin, run `git fetch` and retry. If the name differs from a local branch only in letter case, or is origin's name for it (`origin/fix`), use the real name in `details.did_you_mean`; `--workflow` does not change that.
 - `workflow_needs_claude`: the workspace's agent is not Claude Code, and the steps need a Claude Code pane. Nothing is made. Use `workspace workflow start ID REF --agent-kind claude`, or `workspace workflow run ID` in a workspace that runs Claude Code.
 
@@ -137,6 +139,9 @@ workspace go PROJ-123 --input task="Fix the login timeout"
 
 # Free text: a new branch named from it, in a new checkout (also from inside a worktree workspace)
 workspace go "try the thing"
+
+# The same, starting from origin's main when the local default branch may be behind it
+workspace go "try the thing" --base origin/main
 
 # Free text in a worktree workspace off the default branch: run the workflow here
 workspace go --here "try the thing"

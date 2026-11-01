@@ -11,7 +11,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 
 ## Start with go
 
-`workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--dry-run] [--json]`. Check `workspace capabilities --json` for `features.go`; if it is absent, use `workflow start`. Run with `--dry-run` first, then the same command without it.
+`workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--base REF] [--dry-run] [--json]`. Check `workspace capabilities --json` for `features.go`; if it is absent, use `workflow start`. Run with `--dry-run` first, then the same command without it.
 
 - Any whitespace makes the argument free text. A lone word is a ref, so `go rpiv` looks for a branch named rpiv: name a workflow with `--workflow`. Quote `'#123'`.
 - The workflow is `--workflow`, then `workflows.by_ref.KIND`, then `workflows.default`, then `pr-feedback` for a pull request, else `rpiv`.
@@ -49,7 +49,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 
 ## Other forms
 
-- `workflow start [ID] [REF | --prompt TEXT]` has what `go` lacks: `--branch`, `--base`, `--slug`, `--note`, `--agent-kind`, `--[no-]headless`, `--prompt-timeout`. `workflow start --help` lists them.
+- `workflow start [ID] [REF | --prompt TEXT]` has what `go` lacks: `--branch`, `--slug`, `--note`, `--agent-kind`, `--[no-]headless`, `--prompt-timeout`. `workflow start --help` lists them.
 - `workflow run ID` runs in an existing checkout, with `--name` and `--pane`. It makes nothing, reads no ticket and does no fork check. It parks as `go` does.
 - For any other `workflow` verb (`workflow show`, `workflow validate` and the rest), read `workspace workflow --help`.
 

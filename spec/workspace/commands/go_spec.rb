@@ -201,7 +201,7 @@ RSpec.describe Workspace::Commands::Go do
       row = command.call(argument: "also this", here: true, workflow: "investigate", inputs: {"a" => "b"}, dry_run: true)
 
       expect(row).to eq(task_row)
-      expect(go_task).to have_received(:add).with(running, "also this", an_object_having_attributes(workspace: detected), flags: {workflow: "investigate", inputs: {"a" => "b"}}, dry_run: true)
+      expect(go_task).to have_received(:add).with(running, "also this", an_object_having_attributes(workspace: detected), flags: {workflow: "investigate", inputs: {"a" => "b"}, base: nil}, dry_run: true)
       expect(workflow_defaults).not_to have_received(:lookup)
       expect_nothing_ran
     end
@@ -276,6 +276,75 @@ RSpec.describe Workspace::Commands::Go do
       let(:main_branch) { "develop" }
       let(:held) { {"main" => root} }
       it_behaves_like "go_here_unavailable"
+    end
+  end
+
+  describe "--base" do
+    before { allow(git).to receive(:commit_exists?) { |_path, ref| %w[origin/main abc123].include?(ref) } }
+
+    it "goes to WorkflowStart for free text" do
+      command.call(argument: "try the thing", base: "origin/main")
+
+      expect(workflow_start).to have_received(:call).with(hash_including(prompt: "try the thing", base: "origin/main"))
+    end
+
+    it "goes to WorkflowStart for a ref" do
+      command.call(argument: "PROJ-1", base: "abc123")
+
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "PROJ-1", base: "abc123"))
+    end
+
+    it "leaves base out of the call when not given" do
+      command.call(argument: "try the thing")
+
+      expect(workflow_start).to have_received(:call).with(hash_excluding(:base))
+    end
+
+    it "is refused in place" do
+      expect { command.call(argument: "feature", base: "origin/main") }.to raise_error(Workspace::UsageError, /--base would be ignored/)
+      expect { command.call(base: "origin/main") }.to raise_error(Workspace::UsageError, /--base would be ignored/)
+      expect_nothing_ran
+    end
+
+    it "is refused under --here" do
+      expect { command.call(argument: "try the thing", here: true, base: "origin/main") }.to raise_error(Workspace::UsageError, /--base would be ignored/)
+      expect_nothing_ran
+    end
+
+    it "is handed to the task path, which refuses it" do
+      allow(go_task).to receive(:run_for).and_return({"id" => "wr_1"})
+      allow(go_task).to receive(:add).and_return({})
+
+      command.call(argument: "also this", here: true, base: "abc123")
+
+      expect(go_task).to have_received(:add).with(anything, "also this", anything, flags: hash_including(base: "abc123"), dry_run: false)
+    end
+
+    [true, false].each do |dry_run|
+      %w[nosuchref -x --upload-pack=evil].each do |bad|
+        it "refuses #{bad} as unknown_base with nothing made#{" (dry run)" if dry_run}" do
+          error = refusal(argument: "try the thing", base: bad, dry_run: dry_run)
+
+          expect(error.code).to eq("unknown_base")
+          expect(error.details).to eq("base" => bad)
+          expect(output.string).to eq("")
+          expect_nothing_ran
+        end
+      end
+    end
+
+    it "looks the base up in the checkout go runs in, where git worktree add runs" do
+      allow(git).to receive(:commit_exists?).and_return(true)
+      command.call(argument: "try the thing", base: "HEAD~1")
+
+      expect(git).to have_received(:commit_exists?).with(root, "HEAD~1")
+      expect(git).not_to have_received(:commit_exists?).with(project_root, anything)
+    end
+
+    it "never asks git about a value starting with a dash" do
+      refusal(argument: "try the thing", base: "-x")
+
+      expect(git).not_to have_received(:commit_exists?)
     end
   end
 

@@ -213,6 +213,7 @@ module Workspace
       "path_tracked" => "library install or uninstall would touch a path the repo tracks; it is never overwritten or deleted.",
       "path_linked" => "library install or uninstall would act through a symlinked install directory (or one above it), where git can't tell what it tracks.",
       "unknown_workflow" => "No workflow definition has that id.",
+      "unknown_base" => "go: --base is not a branch, tag or commit of this repository, or starts with a dash. Nothing is made. details.base.",
       "unknown_ref" => "go: the word is no branch of this repository, ticket or pull request, or differs only in case from a branch, or names a branch as origin/NAME; --workflow does not change the last two. details.ref, details.known (workflow ids), details.did_you_mean (the real branch, for those two).",
       "go_here_unavailable" => "go: --here was given where this checkout can't run in place (a main checkout, a worktree with no workspace of its own, a detached HEAD, or the default or main checkout's branch), so nothing ran. details.path is the checkout's root.",
       "branch_not_allowed" => "go: the ref, or the branch name free text makes, is the default branch or the main checkout's branch (a symref to one or a name differing only in case counts), or the checkout start would reuse holds one, so nothing ran. details.branch, details.path (nil when no checkout holds it), details.reason (default_branch or main_checkout).",

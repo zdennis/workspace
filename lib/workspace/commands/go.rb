@@ -58,11 +58,12 @@ module Workspace
       # @param dry_run [Boolean] check everything and create nothing
       # @param caller_pane [String, nil] the pane the command runs in (`$TMUX_PANE`)
       # @param here [Boolean] run free text in this checkout (`--here`) instead of a new workspace
+      # @param base [String, nil] the ref a new branch starts from (`--base`); refused when go runs in place
       # @return [Hash{String=>Object}] the row of `workflow run` or `workflow start` (of `plan task add` on the task path, route `task`), plus "decision" (+workflow+, +source+,
       #   +kind+, +route+, +reason+) and "warnings"
       # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch
-      # @raise [Workspace::Error] outside a git repository; code `go_here_unavailable` (`--here` where this checkout can't run in place), `unknown_ref`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
-      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false)
+      # @raise [Workspace::Error] outside a git repository; code `go_here_unavailable` (`--here` where this checkout can't run in place), `unknown_ref`, `unknown_base`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
+      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil)
         argument = argument&.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
         raise Workspace::UsageError, "go was given an empty argument. Name a ref, or quote free text." if argument == ""
 
@@ -90,8 +91,9 @@ module Workspace
         end
         in_place = checkout && (reading.ref ? same_branch : (reading.text.nil? || here))
         if reading.text && here && (run = @go_task.run_for(checkout))
-          return @go_task.add(run, reading.text, checkout, flags: {workflow: workflow, inputs: inputs}, dry_run: dry_run)
+          return @go_task.add(run, reading.text, checkout, flags: {workflow: workflow, inputs: inputs, base: base}, dry_run: dry_run)
         end
+        check_base!(base, root, in_place)
         refuse_slug!(StartRef.slug(reading.text), project) if reading.text && !in_place
         # In place the worktree is known, so its own setting counts; a new checkout has none yet.
         project_workspace = @workflow_start.locate_project[:project_workspace]
@@ -105,6 +107,7 @@ module Workspace
         warnings.each { |warning| @output.puts "Warning: #{warning}" }
 
         shared = {id: id, inputs: inputs, dry_run: dry_run}
+        shared[:base] = base if base
         row = if reading.ref
           @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? checkout : nil, **shared)
         elsif in_place
@@ -117,6 +120,20 @@ module Workspace
       end
 
       private
+
+      # A run in place starts from where the checkout is, so a base would be ignored. A value
+      # starting with `-` would be read by git as an option, so it is refused before any lookup.
+      # The value is read in the checkout go runs in, because `git worktree add` runs there too.
+      def check_base!(base, root, in_place)
+        return unless base
+
+        raise Workspace::UsageError, "--base would be ignored: go runs in this checkout, which starts from where it is now. Drop --base, or drop --here to make a new workspace." if in_place
+
+        return if !base.start_with?("-") && @git.commit_exists?(root, base)
+
+        raise Workspace::Error.new("--base #{base.inspect} is not a branch, tag or commit of this repository, so nothing was started. A branch on origin may need `git fetch`.",
+          code: "unknown_base", details: {"base" => base})
+      end
 
       # The one test for running in place and the one source of the checkout. The detected
       # workspace must be this very checkout, a linked worktree on a branch other than the

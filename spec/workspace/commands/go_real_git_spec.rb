@@ -79,6 +79,32 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
     expect(workflow_start).not_to have_received(:call)
   end
 
+  describe "--base read in the checkout go runs in" do
+    before do
+      init
+      sh(@repo, "checkout", "-q", "-b", "side")
+      sh(@repo, "branch", "wt")
+      @worktree = linked("wt")
+      mark(@worktree)
+      sh(@worktree, "commit", "-q", "--allow-empty", "-m", "second")
+    end
+
+    it "reads HEAD~1 against the linked worktree's commit, which the main checkout lacks" do
+      expect(refusal(@repo, argument: "try the thing", base: "HEAD~1").code).to eq("unknown_base")
+
+      row = go(@worktree, argument: "try the thing", base: "HEAD~1")
+
+      expect(row["decision"]["route"]).to eq("start")
+      expect(workflow_start).to have_received(:call).with(hash_including(base: "HEAD~1"))
+    end
+
+    it "accepts HEAD from the linked worktree" do
+      go(@worktree, argument: "try the thing", base: "HEAD")
+
+      expect(workflow_start).to have_received(:call).with(hash_including(base: "HEAD"))
+    end
+  end
+
   describe "a tag named like the branch" do
     it "refuses the main checkout's branch" do
       init("release")
