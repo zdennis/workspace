@@ -184,7 +184,7 @@ module Workspace
       end
 
       def raise_unknown_ref(message, ref, extra = {})
-        raise Workspace::Error.new(message, code: "unknown_ref", details: {"ref" => ref.input, "known" => @catalog.known_ids}.merge(extra))
+        raise Workspace::Error.new(message, code: "unknown_ref", details: {"ref" => ref.input, "known" => @catalog.known_ids(project: @workflow_start.catalog_project)}.merge(extra))
       end
 
       # `start` would adopt the main checkout, or put the run on the default branch in a worktree.
@@ -280,7 +280,7 @@ module Workspace
         found = @workflow_defaults.lookup(kind, workspace: workspace, project: project_workspace) unless flag
         id = flag || found&.fetch(:id) || BUILT_IN.fetch(kind, BUILT_IN_OTHERWISE)
         source = flag ? "flag" : found&.fetch(:key) || "built_in"
-        [id, source, @catalog.find(id)]
+        [id, source, @catalog.find(id, project: @workflow_start.catalog_project)]
       end
 
       def reason_for(source, kind)
@@ -317,7 +317,7 @@ module Workspace
       def run_here(text, definition, here, project_workspace, id:, inputs:, dry_run:)
         @workflow_start.check_agent!(here.workspace, project: project_workspace)
         inputs = inputs.merge("task" => text) if text && declares_task?(definition) && !inputs.key?("task")
-        @workflow.run(id: id, workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane)
+        @workflow.run(id: id, workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane, project: @workflow_start.catalog_project)
       end
 
       def start_from_text(text, project, definition, **options)

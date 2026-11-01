@@ -7,7 +7,7 @@ require "tmpdir"
 # repositories; only the two commands `go` calls, and the config lookup, are doubles.
 RSpec.describe Workspace::Commands::Go, "against a real repository" do
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, call: {"outcome" => "started"}, check_agent!: nil, locate_project: {project_workspace: "app"}) }
+  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: nil, call: {"outcome" => "started"}, check_agent!: nil, locate_project: {project_workspace: "app"}) }
   let(:workflow) { instance_double(Workspace::Commands::Workflow, run: {"outcome" => "started"}) }
   let(:definition) { Workspace::WorkflowDefinition.parse("inputs:\n  task:\nsteps:\n  plan:\n    prompt: Plan.\n", id: "rpiv", source: "global", path: "/defs/rpiv.yml") }
   let(:catalog) { instance_double(Workspace::WorkflowCatalog, find: definition, known_ids: %w[rpiv]) }

@@ -119,12 +119,12 @@ RSpec.describe Workspace::WorkflowRouter do
       expect { router.route(kind: "github_pr", workspace: "app") }.to raise_error(Workspace::Error) { |e| expect(e.message).not_to include("\e") }
     end
 
-    it "suggests --scope project only for a registered project" do
+    it "names the project in the command it prints, so the command works from any checkout" do
       expect { router.route(kind: "jira", workspace: "app", registered: false) }.to raise_error(Workspace::Error) { |e|
         expect(e.message).to include("`workspace config set workflows.by_ref.jira ID`")
       }
       expect { router.route(kind: "jira", workspace: "app") }.to raise_error(Workspace::Error) { |e|
-        expect(e.message).to include("`workspace config set workflows.by_ref.jira ID --scope project`")
+        expect(e.message).to include("`workspace config set workflows.by_ref.jira ID --scope project --name app`")
       }
     end
   end

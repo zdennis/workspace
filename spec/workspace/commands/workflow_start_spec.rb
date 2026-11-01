@@ -125,7 +125,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
   it "reads a default workflow and a lone word from the project the checkout joins" do
     allow(workflow_project).to receive(:for_directory).and_return(instance_double(Workspace::WorkflowProject::Resolved, project: "team-app"))
-    allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("flow")
+    allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "team-app").and_return("flow")
 
     command.call(positional: "PROJ-1", dry_run: true)
 
@@ -1080,6 +1080,23 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
     after { FileUtils.remove_entry(dir) }
 
+    it "runs the project's definition on a real start, not a preset of the same id" do
+      parsed = ->(title, source) { Workspace::WorkflowDefinition.parse("title: #{title}\ninputs:\n  task:\nsteps:\n  plan:\n    prompt: P\n", id: "flow", source: source, path: "/defs/flow.yml") }
+      team = parsed.call("Team", "project")
+      preset = parsed.call("Preset", "builtin")
+      ran = []
+      allow(workflow_project).to receive(:for_directory).and_return(Workspace::WorkflowProject::Resolved.new(project: "team-app", registered: true))
+      allow(catalog).to receive(:find) { |_id, project: nil| (project == "team-app") ? team : preset }
+      allow(workflow).to receive(:run) do |id:, project: nil, **|
+        ran << catalog.find(id, project: project)
+        {"workspace" => "app.worktree-PROJ-1", "outcome" => "started", "run_id" => "wr_1"}
+      end
+
+      command.call(id: "flow", ref: "PROJ-1")
+
+      expect(ran).to eq([team])
+    end
+
     it "starts the workspace with no prompt, waits on its session, and runs in the ready pane" do
       row = command.call(id: "flow", ref: "PROJ-1", base: "main", headless: true, prompt_timeout: 30)
 
@@ -1340,7 +1357,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "takes a lone unknown ticket as the ref and the id from config" do
-      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: nil).and_return("rpiv")
 
       row = command.call(positional: "PROJ-1", dry_run: true)
 
@@ -1348,13 +1365,13 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "takes a lone unknown branch as the ref, kind branch" do
-      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: nil).and_return("rpiv")
 
       expect(command.call(positional: "my-branch", dry_run: true)).to include("workflow" => "rpiv", "branch" => "my-branch")
     end
 
     it "warns that a lone word was read as a branch, naming the workflow config chose" do
-      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: nil).and_return("rpiv")
 
       row = command.call(positional: "rpivv", dry_run: true)
 
@@ -1362,13 +1379,13 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "does not warn for a lone ticket, whose shape is no accident" do
-      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: nil).and_return("rpiv")
 
       expect(command.call(positional: "PROJ-1", dry_run: true)["warnings"]).to be_empty
     end
 
     it "does not warn for an explicit ref" do
-      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: nil).and_return("rpiv")
 
       expect(command.call(ref: "my-branch", dry_run: true)["warnings"]).to be_empty
     end
@@ -1378,9 +1395,16 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       expect(error.code).to eq("no_default_workflow")
       expect(error.details).to eq({"kind" => "jira", "ref" => "PROJ-1", "known" => %w[flow rpiv]}.merge(unrouted))
-      expect(error.message).to include("flow, rpiv", "workspace config set workflows.default ID", "--scope project")
+      expect(error.message).to include("flow, rpiv", "workspace config set workflows.default ID")
+      expect(error.message).not_to include("--scope project")
       expect(ticket_source).not_to have_received(:fetch)
       expect(error.details).to include("key" => "workflows.by_ref.jira", "reason" => "several", "candidates" => [{"id" => "rpiv", "use_when" => nil}], "broken" => [])
+    end
+
+    it "names the project in the command it prints, so the command works from a plain worktree" do
+      allow(workflow_project).to receive(:for_directory).and_return(Workspace::WorkflowProject::Resolved.new(project: "app", registered: true))
+
+      expect(error_of { command.call(positional: "PROJ-1") }.message).to include("--scope project --name app")
     end
 
     it "refuses a lone unknown branch with no_default_workflow, kind branch" do
@@ -1391,7 +1415,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "uses the prompt kind for --prompt alone" do
-      allow(workflow_defaults).to receive(:id_for).with("prompt", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("prompt", workspace: nil).and_return("rpiv")
 
       expect(command.call(prompt: "add a script", dry_run: true)).to include("workflow" => "rpiv")
     end
@@ -1405,7 +1429,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "reads a ticket-shaped word beside --prompt as the ref, with its kind" do
-      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: nil).and_return("rpiv")
 
       row = command.call(positional: "PROJ-1", prompt: "keep it small", dry_run: true)
 
@@ -1420,7 +1444,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "counts a blank --prompt as none, so the word is the ref" do
-      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: nil).and_return("rpiv")
 
       row = command.call(positional: "PROJ-1", prompt: "  ", dry_run: true)
 
@@ -1450,7 +1474,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "reads id: nil with ref: rpiv as a ref, never an id" do
-      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: "app").and_return("rpiv")
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: nil).and_return("rpiv")
 
       expect(command.call(id: nil, ref: "rpiv", dry_run: true)).to include("workflow" => "rpiv", "branch" => "rpiv")
       expect(catalog).not_to have_received(:known?)
@@ -1458,9 +1482,20 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
     it "reads a linked worktree's parent project value" do
       allow(start_ref).to receive(:project).with(root).and_return(Workspace::StartRef::Project.new(root: "/src/parent", name: "parent", from_worktree: true))
+      allow(workflow_project).to receive(:for_directory).and_return(Workspace::WorkflowProject::Resolved.new(project: "parent", registered: true))
       allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "parent").and_return("rpiv")
+      allow(catalog).to receive(:find).with("rpiv", project: "parent").and_return(rpiv)
 
       expect(command.call(positional: "PROJ-1", dry_run: true)).to include("workflow" => "rpiv")
+    end
+
+    it "reads no project's key in a clone that only shares a project's name, as --ref does" do
+      allow(project_config).to receive(:existing_name).with("app").and_return("app")
+      allow(workflow_project).to receive(:for_directory).and_return(nil)
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: nil).and_return("rpiv")
+
+      expect(command.call(positional: "PROJ-1", dry_run: true)).to include("workflow" => "rpiv")
+      expect(workflow_defaults).not_to have_received(:id_for).with("jira", workspace: "app")
     end
 
     it "puts no_default_workflow before workflow_needs_claude" do
@@ -1516,7 +1551,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       row = command.call(id: "flow", ref: "PROJ-1", here: here)
 
-      expect(workflow).to have_received(:run).with(id: "flow", workspace: "app.proj-1", worktree: checkout, inputs: hash_including("task"), note: nil, dry_run: false, caller_pane: "%3")
+      expect(workflow).to have_received(:run).with(id: "flow", workspace: "app.proj-1", worktree: checkout, inputs: hash_including("task"), note: nil, dry_run: false, caller_pane: "%3", project: nil)
       expect(row).to include("outcome" => "started", "project" => anything, "branch" => "PROJ-1", "path" => checkout, "would_create" => false, "warnings" => [], "ticket" => {"key" => "PROJ-1", "title" => "Fix login", "url" => ticket["url"]})
     end
 

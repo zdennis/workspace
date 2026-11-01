@@ -61,9 +61,9 @@ RSpec.describe Workspace::Commands::Go, "with a real WorkflowStart and Git" do
   def workflow_start
     Workspace::Commands::WorkflowStart.new(
       catalog: catalog, workflow_defaults: workflow_defaults, engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
-      project_config: project_config, start: start, workflow: workflow, readiness: instance_double(Workspace::AgentReadiness, deadline_in: 99.0),
+      project_config: project_config, workflow_project: instance_double(Workspace::WorkflowProject, for_directory: nil), start: start, workflow: workflow, readiness: instance_double(Workspace::AgentReadiness, deadline_in: 99.0),
       tmux: instance_double(Workspace::Tmux), agent_commands: instance_double(Workspace::AgentCommands, detector: :detector, kind: "claude"),
-      excludes: instance_double(Workspace::GitExclude, add: true), ssh_hosts: ssh_hosts, output: StringIO.new
+      excludes: instance_double(Workspace::GitExclude, add: true), ssh_hosts: ssh_hosts, router: instance_double(Workspace::WorkflowRouter, unrouted: {}), output: StringIO.new
     )
   end
 

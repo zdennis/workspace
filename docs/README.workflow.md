@@ -228,11 +228,11 @@ A workflow whose `applies_to:` does not list the `REF`'s kind (`jira`, `github_p
 `workflow start --ref REF` picks the workflow from a table, with no model deciding. `--ref` says the word is a ref, so it is never read as a workflow ID, and adds the single-fit step below; a start with no ID and no `--ref` refuses when no key is set (see [Default workflows](#default-workflows)). It takes no `ID`, no positional `REF` and no `--prompt` (usage errors); `--force` and `--dry-run` work as for any start.
 
 1. The kind comes from `REF` (`jira`, `github_pr`, `github_issue` or `branch`).
-2. The config keys win: `workflows.by_ref.<kind>`, then `workflows.default`, read as for [Default workflows](#default-workflows). They are read from the project the ref would join (the parent project when you run it inside a linked worktree) and then the global file; the worktree's own file is not read, since the worktree does not exist yet. Set one with `workspace config set workflows.by_ref.jira rpiv --scope project`.
+2. The config keys win: `workflows.by_ref.<kind>`, then `workflows.default`, read as for [Default workflows](#default-workflows). They are read from the project the ref would join (the parent project when you run it inside a linked worktree) and then the global file; the worktree's own file is not read, since the worktree does not exist yet. Set one with `workspace config set workflows.by_ref.jira rpiv --scope project --name app`.
 3. With no key, the definitions that fit the kind are listed: a definition fits when its `applies_to:` lists the kind or is left out. Exactly one fit runs. Several are refused with `no_default_workflow`, listing each with its `use_when`; none fit is refused with the same code. A definition that cannot be read might fit, so while any is broken the single-fit route is never taken: the refusal lists the readable fits and the broken ids (`details.broken`). A valid configured default still routes past a broken unrelated file. Most presets have no `applies_to:`, so a ticket needs a default.
 
 ```console
-$ workspace config set workflows.by_ref.jira rpiv --scope project
+$ workspace config set workflows.by_ref.jira rpiv --scope project --name app
 $ workspace workflow start --ref PROJ-101
 Routing PROJ-101 (jira) to rpiv, this project's default for jira. Use --dry-run to see the steps.
 ```
@@ -262,7 +262,7 @@ Once the workspace exists, a failure never removes it. The error keeps its code 
 1. `workflows.by_ref.<kind>`, where `<kind>` is `jira`, `github_pr`, `github_issue` or `branch`, or `prompt` for a start with `--prompt` and no `REF`.
 2. `workflows.default`, for any kind that has no `by_ref` key.
 
-All six keys can be set globally or per project (`workspace config set workflows.by_ref.jira rpiv --scope project`). A global `by_ref` key beats a project `workflows.default`, because the more specific key is read first. `workflow start` reads the global and project layers only. It does not read a worktree's own setting, because the worktree is not chosen until the ticket has been read, and the ticket read needs the workflow.
+All six keys can be set globally or per project (`workspace config set workflows.by_ref.jira rpiv --scope project --name app`). A project's keys count only in a checkout your config ties to that project: a clone that merely shares its directory name reads the global keys. A global `by_ref` key beats a project `workflows.default`, because the more specific key is read first. `workflow start` reads the global and project layers only. It does not read a worktree's own setting, because the worktree is not chosen until the ticket has been read, and the ticket read needs the workflow.
 
 With one argument, what it means depends on the word:
 

@@ -29,13 +29,13 @@ module Workspace
     def route(kind:, workspace:, ref: nil, force: false, registered: true)
       rows, broken = readable(workspace)
       hit = @workflow_defaults.lookup(kind, workspace: workspace)
-      return default_route(hit[:id], hit[:scope], hit[:key], kind, rows, force, registered) if hit
+      return default_route(hit[:id], hit[:scope], hit[:key], kind, rows, force, workspace, registered) if hit
 
       key = "workflows.by_ref.#{kind}"
       fits = rows.select { |row| fits?(row, kind) }
       return {"workflow" => fits.first["id"], "kind" => kind, "source" => "only_fit", "scope" => nil, "key" => key, "definition_source" => fits.first["source"]} if fits.size == 1 && broken.empty?
 
-      refuse_unrouted(kind, ref, key, fits, broken, registered, rows)
+      refuse_unrouted(kind, ref, key, fits, broken, workspace, registered, rows)
     end
 
     # What `no_default_workflow` says of a kind, for a start that named no workflow and no key answered.
@@ -63,7 +63,7 @@ module Workspace
       {"key" => key, "reason" => reason, "candidates" => candidates, "broken" => broken.map { |id| TerminalText.escape(id) }}
     end
 
-    def default_route(configured, scope, key, kind, rows, force, registered)
+    def default_route(configured, scope, key, kind, rows, force, workspace, registered)
       reason = if !configured.is_a?(String) || !WorkflowDefinition::ID_PATTERN.match?(configured)
         "invalid_value"
       elsif (row = rows.find { |each| each["id"] == configured }).nil?
@@ -71,14 +71,14 @@ module Workspace
       elsif !fits?(row, kind)
         "not_for_kind" unless force
       end
-      raise_invalid_default(reason, configured, key, kind, row, rows, registered) if reason
+      raise_invalid_default(reason, configured, key, kind, row, rows, workspace, registered) if reason
       {"workflow" => configured, "kind" => kind, "source" => "default", "scope" => scope, "key" => key,
        "definition_source" => rows.find { |each| each["id"] == configured }["source"]}
     end
 
-    def raise_invalid_default(reason, configured, key, kind, row, rows, registered)
+    def raise_invalid_default(reason, configured, key, kind, row, rows, workspace, registered)
       shown = TerminalText.escape(configured.to_s[0, 60])
-      set = set_command(key, registered)
+      set = set_command(key, workspace, registered)
       message = case reason
       when "invalid_value" then "#{key} is #{shown.inspect}, which is not a workflow id. Fix it with `#{set}`, or unset it."
       when "unknown_workflow" then "#{key} names #{shown}, which is not a usable workflow (known: #{rows.map { |each| each["id"] }.join(", ")}). --force does not help. Fix it with `#{set}`, or unset it."
@@ -89,11 +89,11 @@ module Workspace
       raise Workspace::Error.new(message, code: "invalid_workflow_default", details: details)
     end
 
-    def refuse_unrouted(kind, ref, key, fits, broken, registered, rows)
+    def refuse_unrouted(kind, ref, key, fits, broken, workspace, registered, rows)
       details = unrouted_details(kind, key, fits, broken)
       candidates = details["candidates"]
       shown_broken = details["broken"]
-      set = set_command(key, registered)
+      set = set_command(key, workspace, registered)
       unread = "Could not be read, so may fit: #{shown_broken.join(", ")} (see `workspace workflow show`)." if broken.any?
       head = if candidates.empty?
         "No readable workflow fits #{kind}."
@@ -107,8 +107,8 @@ module Workspace
         details: {"kind" => kind, "ref" => ref, "known" => rows.map { |row| row["id"] }}.merge(details))
     end
 
-    def set_command(key, registered)
-      "workspace config set #{key} ID#{" --scope project" if registered}"
+    def set_command(key, workspace, registered)
+      "workspace config set #{key} ID#{" --scope project --name #{workspace}" if registered}"
     end
 
     def fits?(row, kind)
