@@ -21,7 +21,7 @@ workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--d
 |--------|-------------|
 | `--workflow ID` | Use this workflow instead of the configured one |
 | `--input KEY=VALUE` | Set a workflow input; repeatable. Needed only for an input nothing else fills: see [Free text and `task`](#free-text-and-task) |
-| `--here` | Run free text in this worktree workspace instead of making a new one. Refused with `go_here_unavailable` where `go` can't run here, and as a usage error with a ref for another branch |
+| `--here` | Run free text in this worktree workspace instead of making a new one. If a run is already going here, add the text to its plan as a task instead: see [Adding to a run already going](#adding-to-a-run-already-going). Refused with `go_here_unavailable` where `go` can't run here, and as a usage error with a ref for another branch |
 | `--dry-run` | Check everything and create nothing |
 | `--json` | Print one JSON document; other output goes to stderr |
 
@@ -77,6 +77,25 @@ workspace go PROJ-123 --input task="Fix the login timeout"
 
 When the text is not used as the task (you gave `--input task`, or the workflow has no `task` input; the text still names a new branch), `go` prints a warning and adds it to `warnings` in the JSON.
 
+### Adding to a run already going
+
+`go --here "TEXT"` with a workflow run already going on this checkout does not start a second run. It adds TEXT as a new task at the end of the workspace's `IMPLEMENTATION_PLAN.md`, as `workspace plan task add` does (the next id after the last, `T9` after `T8`), and prints `go: task for run ID (WORKFLOW at step STEP), added to this workspace's plan.` Nothing is typed into any pane: the run's agent takes the task the next time it reads the plan. With `--dry-run` it says `would add` and writes nothing. In `--json` the row is the `plan task add` row (`outcome` `added`, or `dry_run`) plus `workspace`, `run_id` and `decision` with `route: task`, `source: run` and `workflow` the run's workflow id.
+
+Bare `go --here` with a run going stays `checkout_has_run`: there is no text to add. Without `--here`, a run going does not matter: the text makes a new workspace.
+
+`--workflow`, `--input` and `--base` are usage errors on this path, because the run already has its workflow and inputs and they would be ignored.
+
+Before it writes anything, `go` refuses when the task would not be picked up:
+
+- `checkout_has_run`: the run is at a step from which no later step reads the plan (a workflow such as `investigate` never does, and an `rpiv` run on `verify` has passed `implement`). Leave off `--here` to make a new workspace for the text, or cancel the run (`details.next`).
+- `no_plan`: the run's `plan` step has not written the plan file yet. `go` never makes it, because `plan init` would create the file that step is due to write. Run `go` again after the step has, or leave off `--here`. `details.run_id` and `details.step` name the run.
+- `plan_done`: the plan is marked `status: done` while the run goes on. Edit the file to reopen it, or leave off `--here`. A plan whose tasks are all checked but whose status is still `active` takes the task, since the run (in `implement`, say) can still pick it up.
+A plan marked `status: paused` still takes the task, with a warning (printed, and in `warnings`): the agent will not take it until someone resumes the plan with `workspace plan start`.
+
+- `invalid_task`: the text does not fit one task line (over 500 characters, more than one line, or containing ` -- `). `go` does not reword it.
+
+A task added while an `rpiv-auto-approve` run is in `plan_review` changes the plan's revision. The approval the reviewers write is bound to the revision they read, so the step's check fails. Its `on_fail` sends the run back to `plan` and counts one of that step's retries (`max: 9`), and the plan agent starts again and may rewrite the file, so the new task can be reworded or dropped. Add it before `plan_review` starts, or after the plan is approved.
+
 ### Pull requests from forks
 
 A pull request from another repository is refused with `fork_pull_request`: its code would run in an agent that loads its `CLAUDE.md` and hooks. Nothing is made. The error carries the command to use if you trust the code: `workspace start '#N'`, then `workspace workflow run ID` in the workspace it makes.
@@ -87,7 +106,7 @@ Every explicit ref gets this check. Bare `go` and free text with `--here` run in
 
 The document is the row `workflow run` or `workflow start` prints, plus:
 
-- `decision`: `workflow`, `source` (`flag`, a config key such as `workflows.by_ref.jira`, or `built_in`), `kind`, `route` (`run` in place, or `start` for a new or reused checkout, where nothing is typed into the calling pane) and `reason`
+- `decision`: `workflow`, `source` (`flag`, a config key such as `workflows.by_ref.jira`, or `built_in`), `kind`, `route` (`run` in place, `start` for a new or reused checkout, where nothing is typed into the calling pane, or `task` when `--here` added the text to the plan of a run already going, where nothing is typed into any pane) and `reason`
 - `warnings`: strings, including those from `workflow start`
 
 With `--dry-run` the outcome is `dry_run` and nothing was created.
@@ -121,6 +140,9 @@ workspace go "try the thing"
 
 # Free text in a worktree workspace off the default branch: run the workflow here
 workspace go --here "try the thing"
+
+# A run is already going here: add the text to its plan as a new task
+workspace go --here "also handle the empty list"
 
 # In a worktree workspace off the default branch: run the workflow here
 workspace go

@@ -29,12 +29,14 @@ RSpec.describe Workspace::Commands::Go do
   let(:project_detector) { instance_double(Workspace::ProjectDetector, detect: detected) }
   let(:project_config) { instance_double(Workspace::ProjectConfig, project_root_for: configured_root) }
   let(:output) { StringIO.new }
+  let(:running) { nil }
+  let(:go_task) { instance_double(Workspace::Commands::GoTask, run_for: running) }
   let(:start_row) { {"workspace" => "app.worktree-x", "outcome" => "started", "warnings" => ["from start"]} }
   let(:run_row) { {"workspace" => detected, "outcome" => "started"} }
 
   subject(:command) do
     described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog, start_ref: start_ref,
-      git: git, project_detector: project_detector, project_config: project_config, output: output, working_dir: root || "/nowhere")
+      git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, output: output, working_dir: root || "/nowhere")
   end
 
   before do
@@ -186,6 +188,37 @@ RSpec.describe Workspace::Commands::Go do
     it "refuses a slug that is the default branch" do
       expect(refusal(argument: "main !").code).to eq("branch_not_allowed")
       expect_nothing_ran
+    end
+  end
+
+  describe "--here with a run going" do
+    let(:running) { {"id" => "wr_1", "workflow" => "rpiv", "current" => "plan"} }
+    let(:task_row) { {"outcome" => "added", "decision" => {"route" => "task"}} }
+
+    before { allow(go_task).to receive(:add).and_return(task_row) }
+
+    it "hands the text and the flags to the task path before choosing a workflow" do
+      row = command.call(argument: "also this", here: true, workflow: "investigate", inputs: {"a" => "b"}, dry_run: true)
+
+      expect(row).to eq(task_row)
+      expect(go_task).to have_received(:add).with(running, "also this", an_object_having_attributes(workspace: detected), flags: {workflow: "investigate", inputs: {"a" => "b"}}, dry_run: true)
+      expect(workflow_defaults).not_to have_received(:lookup)
+      expect_nothing_ran
+    end
+
+    it "leaves bare go --here to the run check" do
+      command.call(here: true)
+
+      expect(go_task).not_to have_received(:add)
+      expect(workflow).to have_received(:run)
+    end
+
+    it "does not stop free text without --here from starting a workspace" do
+      row = command.call(argument: "fix the bug")
+
+      expect(go_task).not_to have_received(:run_for)
+      expect(workflow_start).to have_received(:call)
+      expect(row["decision"]["route"]).to eq("start")
     end
   end
 

@@ -408,6 +408,7 @@ require_relative "workspace/commands/instructions"
 require_relative "workspace/commands/workflow"
 require_relative "workspace/commands/workflow_start"
 require_relative "workspace/commands/go"
+require_relative "workspace/commands/go_task"
 require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
 require_relative "workspace/commands/inbox"
@@ -731,9 +732,10 @@ module Workspace
       real = CheckoutMove.real_path(path)
       project_config.available_projects.find { |name| (root = project_config.project_root_for(name)) && CheckoutMove.real_path(File.expand_path(root)) == real }
     end
+    go_task = Commands::GoTask.new(engine: workflow_engine, plan_task: plan_task_command, access: plan_access, output: output)
     go_command = Commands::Go.new(
       workflow_start: workflow_start_command, workflow: workflow_command, workflow_defaults: workflow_defaults, catalog: workflow_catalog,
-      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, output: output
+      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, output: output
     )
     held_locks = HeldLocks.new(lock_namespace: lock_namespace, lock_holder: lock_holder, bound_run: bound_run, env: env)
     promote_command = Commands::Promote.new(

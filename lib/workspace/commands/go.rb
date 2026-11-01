@@ -11,6 +11,9 @@ module Workspace
     # for the current branch run in place without `--here`. In place means only a linked worktree
     # that is the detected workspace, off the default branch ({#checkout_here}); `go` never puts
     # a run on the default branch or the main checkout's branch.
+    #
+    # `--here` with free text while a run is already going on the checkout adds the text to the
+    # plan as a task instead ({GoTask}), and types nothing.
     class Go
       # The workflow when neither `--workflow` nor config names one.
       BUILT_IN = {"github_pr" => "pr-feedback"}.freeze
@@ -31,9 +34,10 @@ module Workspace
       # @param git [Workspace::Git]
       # @param project_detector [Workspace::ProjectDetector]
       # @param project_config [Workspace::ProjectConfig]
+      # @param go_task [Workspace::Commands::GoTask] adds `--here` text to the plan of a run already going
       # @param output [IO]
       # @param working_dir [String] the directory the command runs in
-      def initialize(workflow_start:, workflow:, workflow_defaults:, catalog:, start_ref:, git:, project_detector:, project_config:, output: $stdout, working_dir: Dir.pwd)
+      def initialize(workflow_start:, workflow:, workflow_defaults:, catalog:, start_ref:, git:, project_detector:, project_config:, go_task:, output: $stdout, working_dir: Dir.pwd)
         @workflow_start = workflow_start
         @workflow = workflow
         @workflow_defaults = workflow_defaults
@@ -42,6 +46,7 @@ module Workspace
         @git = git
         @project_detector = project_detector
         @project_config = project_config
+        @go_task = go_task
         @output = output
         @working_dir = working_dir
       end
@@ -53,7 +58,7 @@ module Workspace
       # @param dry_run [Boolean] check everything and create nothing
       # @param caller_pane [String, nil] the pane the command runs in (`$TMUX_PANE`)
       # @param here [Boolean] run free text in this checkout (`--here`) instead of a new workspace
-      # @return [Hash{String=>Object}] the row of `workflow run` or `workflow start`, plus "decision" (+workflow+, +source+,
+      # @return [Hash{String=>Object}] the row of `workflow run` or `workflow start` (of `plan task add` on the task path, route `task`), plus "decision" (+workflow+, +source+,
       #   +kind+, +route+, +reason+) and "warnings"
       # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch
       # @raise [Workspace::Error] outside a git repository; code `go_here_unavailable` (`--here` where this checkout can't run in place), `unknown_ref`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
@@ -84,6 +89,9 @@ module Workspace
           raise Workspace::UsageError, "--here runs in this checkout, and #{reading.ref.input} is another branch. Drop --here to make or reuse its worktree workspace."
         end
         in_place = checkout && (reading.ref ? same_branch : (reading.text.nil? || here))
+        if reading.text && here && (run = @go_task.run_for(checkout))
+          return @go_task.add(run, reading.text, checkout, flags: {workflow: workflow, inputs: inputs}, dry_run: dry_run)
+        end
         refuse_slug!(StartRef.slug(reading.text), project) if reading.text && !in_place
         # In place the worktree is known, so its own setting counts; a new checkout has none yet.
         project_workspace = @workflow_start.locate_project[:project_workspace]

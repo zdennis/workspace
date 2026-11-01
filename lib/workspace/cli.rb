@@ -8041,9 +8041,8 @@ module Workspace
         opts.separator "even from inside a worktree workspace; --here runs it in this checkout instead. A ref makes or reuses its worktree"
         opts.separator "workspace, as `workflow start` does, unless it is the branch you are on; bare `workspace go` runs here too, in a"
         opts.separator "linked worktree workspace off the default branch. go never runs on the default branch or the main checkout's"
-        opts.separator "branch. It prints the workflow it chose"
-        opts.separator "and why (--workflow, then workflows.by_ref.KIND, workflows.default, then built in: pr-feedback for a pull"
-        opts.separator "request, else rpiv) before it acts."
+        opts.separator "branch. It prints the workflow it chose and why (--workflow, then workflows.by_ref.KIND, workflows.default,"
+        opts.separator "then built in: pr-feedback for a pull request, else rpiv) before it acts."
         opts.separator ""
         opts.on("--workflow ID", "Use this workflow instead of the configured one") { |v| options[:workflow] = v }
         opts.on("--input KEY=VALUE", "Set a workflow input; repeatable") { |v| options[:inputs] << v }
