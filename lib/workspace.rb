@@ -422,7 +422,7 @@ module Workspace
     agent_commands = AgentCommands.new(config_resolver: config_resolver)
     project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands)
     window_positions = WindowPositions.new(dir: config.state_dir, logger: logger)
-    window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, error_output: error_output, logger: logger)
+    window_layout = WindowLayout.new(window_manager: window_manager, config: config, width_percent: -> { project_settings.load_global.dig("launch", "window_width_percent") }, output: output, error_output: error_output, logger: logger)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
     workspace_name = WorkspaceName.new(project_config: project_config)
     project_detector = ProjectDetector.new(state: state, project_config: project_config, workspace_name: workspace_name)

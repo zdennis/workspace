@@ -5,14 +5,18 @@ module Workspace
   # Calculates and applies window positions for arranging project windows
   # across the active screen.
   class WindowLayout
+    DEFAULT_WIDTH_PERCENT = ConfigSchema.default("launch.window_width_percent")
+
     # @param window_manager [Workspace::WindowManager] window operations for setting bounds
     # @param config [Workspace::Config] configuration for window_tool path
+    # @param width_percent [#call] returns the stored `launch.window_width_percent`, nil when unset
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] stream for warnings
     # @param logger [Workspace::Logger] debug logger
-    def initialize(window_manager:, config:, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new)
+    def initialize(window_manager:, config:, width_percent: -> {}, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new)
       @window_manager = window_manager
       @config = config
+      @width_percent = width_percent
       @output = output
       @error_output = error_output
       @logger = logger
@@ -73,11 +77,12 @@ module Workspace
     # @param screen_w [Integer] screen width
     # @param screen_h [Integer] screen height
     # @param count [Integer] number of windows to position
+    # @param width_percent [Integer] each window's width, as a percent of the screen's
     # @return [Array<Hash>] array of {x:, y:, width:, height:} hashes
-    def calculate_positions(screen_x:, screen_y:, screen_w:, screen_h:, count:)
+    def calculate_positions(screen_x:, screen_y:, screen_w:, screen_h:, count:, width_percent: DEFAULT_WIDTH_PERCENT)
       return [] if count == 0
 
-      window_width = (screen_w * 0.22).to_i
+      window_width = (screen_w * width_percent / 100.0).to_i
       window_height = (screen_h * 0.9).to_i
       y_pos = screen_y + ((screen_h - window_height) / 2).to_i
 
@@ -156,6 +161,16 @@ module Workspace
       nil
     end
 
+    # The stored width, or the default with a warning when `config set` would refuse it.
+    def width_percent
+      stored = @width_percent.call
+      return DEFAULT_WIDTH_PERCENT if stored.nil?
+      ConfigSchema.parse("launch.window_width_percent", stored)
+    rescue ArgumentError => e
+      @error_output.puts "Warning: launch.window_width_percent #{e.message}; using #{DEFAULT_WIDTH_PERCENT}."
+      DEFAULT_WIDTH_PERCENT
+    end
+
     def apply_layout(project_window_ids, calculator, verb, quiet: false)
       return if project_window_ids.empty?
 
@@ -169,7 +184,8 @@ module Workspace
       positions = calculator.call(
         screen_x: screen_x, screen_y: screen_y,
         screen_w: screen_w, screen_h: screen_h,
-        count: project_window_ids.size
+        count: project_window_ids.size,
+        width_percent: width_percent
       )
 
       project_window_ids.each_with_index do |entry, i|
