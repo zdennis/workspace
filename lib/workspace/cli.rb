@@ -1023,7 +1023,8 @@ module Workspace
         opts.on("--recipe NAME", "Apply a library recipe: its plays, packs, agents, skills, agent kind and prompt fill in",
           "whatever --play, --pack, --agent, --skill, --agent-kind and --prompt don't give (a flag you pass",
           "replaces that recipe field). Make one with 'workspace library add - --kind recipe --as NAME'.",
-          "An unknown or invalid recipe fails before the worktree is created") do |v|
+          "An unknown or invalid recipe fails before the worktree is created. A recipe with a 'workflow'",
+          "runs `workspace workflow start` instead and refuses the flags that run can't use (docs/README.library.md)") do |v|
           recipe = v
         end
         opts.on("--no-launch", "Create the worktree, config and task and start nothing; run",
@@ -1090,7 +1091,7 @@ module Workspace
         opts.separator "  workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"    # point the agent at a library play"
         opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
         opts.separator "  workspace start PROJ-123 --slug    # give the branch a readable name from the ticket title"
-        opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
+        opts.separator "  workspace start PROJ-123 --recipe rpiv-task    # apply a saved recipe, or run the workflow it names"
         opts.separator "  workspace start PROJ-123 --plan --prompt \"Add SSO login\"    # the agent drafts a plan for that goal first"
         opts.separator "  workspace start PROJ-123 --base main --headless --yes --json    # non-interactive, e.g. from CI, branching from main"
       end
@@ -1099,6 +1100,16 @@ module Workspace
       if args.empty?
         raise UsageError, parser.help unless json
         return emit_json_usage_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, parser.help.lines.first.strip)
+      end
+
+      entry = @start_command.recipe_entry(recipe) if recipe
+      if entry&.dig("fields", "workflow")
+        refused = {"--prompt" => !prompt.nil?, "--play" => plays.any?, "--pack" => packs.any?, "--no-packs" => no_packs,
+                   "--handoff" => handoff == true, "--no-handoff" => handoff == false, "--agent" => agents.any?, "--skill" => skills.any?,
+                   "--no-launch" => no_launch, "--spine" => !spine.nil?, "--plan" => !plan.nil?, "--title" => !title.nil?,
+                   "--title-from-ticket" => title_from_ticket}.select { |_, given| given }.keys
+        return start_recipe_workflow(entry, args.first, refused, json: json, slug: slug, base: base, headless: headless,
+          agent_kind: agent_kind, prompt_timeout: prompt_timeout)
       end
 
       start_options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, json: json}
@@ -1117,7 +1128,7 @@ module Workspace
       start_options[:spine] = spine if spine
       start_options[:plan] = plan if plan
       start_options[:agent_kind] = agent_kind if agent_kind
-      start_options[:recipe] = recipe if recipe
+      start_options[:recipe] = entry if entry
       start_options[:title_from_ticket] = true if title_from_ticket
       start_options[:slug] = true if slug
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
@@ -1128,6 +1139,27 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
       emit_json_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # `start --recipe NAME REF` for a recipe that names a workflow: the same call as `workflow start`,
+    # refused first for any flag that call has no use for, before anything is created.
+    def start_recipe_workflow(entry, ref, refused, json:, slug:, base:, headless:, agent_kind:, prompt_timeout:)
+      fields = entry["fields"]
+      id = fields["workflow"]
+      if refused.any?
+        raise Error.new("Recipe #{entry["ref"]} runs workflow #{id}, which cannot take #{refused.join(", ")}.",
+          code: "recipe_workflow_conflict", details: {"ref" => entry["ref"], "workflow" => id, "flags" => refused})
+      end
+      raise Error, "start --recipe #{entry["ref"]} runs a workflow, but no workflow start command was wired" unless @workflow_start_command
+      workflow_action("start", {json: json}) do
+        row = @workflow_start_command.call(id: id, ref: ref, slug: slug, inputs: fields.fetch("workflow_inputs", {}), base: base,
+          headless: @launch_mode.resolve(headless).headless?, agent_kind: agent_kind || fields["agent_kind"], prompt_timeout: prompt_timeout)
+        row&.merge("recipe" => entry.slice("ref", "scope"))
+      rescue Error => e
+        raise unless e.code == "input_required"
+        raise Error.new("Recipe #{entry["ref"]} leaves out an input that workflow #{id} needs. Add it to the recipe's workflow_inputs, " \
+          "or run `workspace workflow start #{id} #{ref} --input NAME=VALUE`.", code: e.code, details: e.details)
+      end
     end
 
     def cmd_stop(args)
@@ -4762,7 +4794,7 @@ module Workspace
         opts.separator "Run `workspace library VERB --help` for a verb's options."
         opts.separator ""
         opts.on("--kind KIND", "agent, play, prompt, recipe, skill or spine (add: required; list: a filter);",
-          "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt (for 'start --recipe');",
+          "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start --recipe');",
           "add --kind skill takes a directory holding SKILL.md;",
           "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }

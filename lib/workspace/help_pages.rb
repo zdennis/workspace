@@ -719,7 +719,7 @@ module Workspace
           "the file name in kebab case; identical content is a no-op, different content under the same name",
           "needs --force.",
           "",
-          "--kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt (for 'start",
+          "--kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start",
           "--recipe'); --kind skill takes a directory holding SKILL.md; --kind spine takes a folder of",
           "plan-spine stage files (a template for 'spine init').",
           "",

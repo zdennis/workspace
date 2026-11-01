@@ -210,7 +210,7 @@ Each command acts on one entry, so a failure is the error envelope, never a `ref
 |---|---|---|
 | `unknown_library_entry` | No entry has that name in the scopes searched | `ref`, `scopes` |
 | `ambiguous_library_entry` | A bare name matches more than one kind | `ref`, `candidates` |
-| `invalid_recipe` | `add` or `update` of a recipe, or `start --recipe`, found a field that isn't allowed | `ref`, `problems` |
+| `invalid_recipe` | `add` or `update` of a recipe, or `start --recipe`, found a field that isn't allowed, or fields that can't go together | `ref`, `problems` |
 | `library_entry_exists` | `add` would replace different content | `ref`, `scope`; `retry` with `--force`, marked `destructive` |
 | `library_source_missing` | `PATH` does not exist, or a link's target can't be read; also `install` (with or without `--dry-run`) and `uninstall` of an entry whose link is unreadable | `ref`, `path` |
 
@@ -230,7 +230,30 @@ agent_kind: codex
 prompt: Start at step 2.
 ```
 
-Every field is optional, but a recipe must set at least one besides `description`. `plays`, `packs`, `agents` and `skills` are lists (or one value) of names, each `name` or `kind/name`, at most 20; `agent_kind` is one of the coding-agent keys `start --agent-kind` takes; `prompt` is text up to 20,000 characters. An unknown field, a wrong type or a bad name is refused with `invalid_recipe` (`details.problems` lists all of them), when you `add` or `update` it and again when `start --recipe` reads it. The names are not looked up until `start` runs. Apply one with [`start --recipe`](README.start.md#recipes); a flag passed to `start` wins over the recipe. `capabilities` reports `"library_recipes": 1`.
+Every field is optional, but a recipe must set at least one besides `description` (`workflow` counts). `plays`, `packs`, `agents` and `skills` are lists (or one value) of names, each `name` or `kind/name`, at most 20; `agent_kind` is one of the coding-agent keys `start --agent-kind` takes; `prompt` is text up to 20,000 characters. An unknown field, a wrong type or a bad name is refused with `invalid_recipe` (`details.problems` lists all of them), when you `add` or `update` it and again when `start --recipe` reads it. The names are not looked up until `start` runs. Apply one with [`start --recipe`](README.start.md#recipes); a flag passed to `start` wins over the recipe. `capabilities` reports `"library_recipes": 2`.
+
+### Running a workflow
+
+Instead of plays and packs, a recipe can name a workflow, and `start --recipe` then runs it the way [`workflow start`](README.workflow.md) does:
+
+```yaml
+description: Research, plan, implement, verify
+workflow: rpiv
+workflow_inputs:
+  task: Add a retry to the upload client
+  retries: "3"
+agent_kind: claude
+```
+
+- `workflow` is a workflow id: lowercase letters, digits, `-` and `_`, starting with a letter or digit, at most 40 characters. Only the shape is checked when you save the recipe; a workflow that doesn't exist is `unknown_workflow` when `start` runs.
+- `workflow_inputs` is a mapping of input names to values, at most 20, and needs `workflow`. A name is lowercase letters, digits and `_`, starting with a letter. A value is text, a whole number, `true` or `false`, and arrives as text. Lists, maps, null, decimals such as `1.50` and text holding a control character other than newline, carriage return or tab are refused. A value is at most 20,000 characters.
+- Quote any value YAML would change. Unquoted, `yes` and `no` read as booleans, `010` as 8, and a date fails to load. `1.50` is refused until you write `"1.50"`.
+- `workflow` can't be combined with `plays`, `packs`, `agents`, `skills` or `prompt`, and `agent_kind` beside it can only be `claude`. `description` is fine. Every clash is listed in `details.problems` of `invalid_recipe`.
+- `agent_kind: claude` in the recipe skips the check on a reused worktree, as `start --agent-kind claude` does.
+- A `task` in `workflow_inputs` wins over the ticket's text for every kind of ref.
+- A branch ref has no ticket text, so a workflow that requires `task` fails with `input_required` unless the recipe sets `task`. For inputs you give per run, use `workspace workflow start ID REF --input NAME=VALUE`; add `--dry-run` there to preview a workflow, which `start` can't do.
+
+`start --recipe` passes `--base`, `--slug`, `--headless`, `--prompt-timeout` and `--agent-kind` through (a workflow runs on Claude Code only, so any other kind is `workflow_needs_claude`), accepts `--yes` and `--no-spine` with no effect, and refuses the other options that shape a start with `recipe_workflow_conflict`. [The `start` page](README.start.md#a-recipe-with-a-workflow) lists them and describes the `--json` document, which is the workflow action document with a `recipe` entry.
 
 ## Examples
 

@@ -13,9 +13,16 @@ module Workspace
   #   skills: [write-tests]
   #   agent_kind: codex
   #   prompt: Start at step 2.
+  #
+  # or, instead of those, a workflow to run:
+  #
+  #   workflow: rpiv
+  #   workflow_inputs: {task: Add a retry}
+  #   agent_kind: claude
   module RecipeFile
     LIST_FIELDS = %w[plays packs agents skills].freeze
-    FIELDS = (LIST_FIELDS + %w[agent_kind prompt description]).freeze
+    FIELDS = (LIST_FIELDS + %w[agent_kind prompt description workflow workflow_inputs]).freeze
+    WORKFLOW_EXCLUDES = %w[plays packs agents skills prompt].freeze
 
     # Most items in one list, and the longest prompt, in characters.
     MAX_ITEMS = 20
@@ -26,7 +33,8 @@ module Workspace
     # @param text [String] the entry's body
     # @param ref [String] `recipe/name`, for the error
     # @return [Hash{String=>Object}] only the fields the recipe sets: the list fields as arrays of
-    #   strings, `agent_kind`, `prompt` and `description` as strings
+    #   strings, `agent_kind`, `prompt`, `description` and `workflow` as strings, `workflow_inputs` as a
+    #   Hash of strings to strings
     # @raise [Workspace::Error] code `invalid_recipe`, `details.problems` listing every problem
     def self.parse(text, ref:)
       data, problems = load(text)
@@ -40,7 +48,10 @@ module Workspace
         string("agent_kind", data, fields, problems) { |v| known_kind(v, problems) }
         string("prompt", data, fields, problems) { |v| problems << "prompt is longer than #{MAX_PROMPT} characters" if v.length > MAX_PROMPT }
         string("description", data, fields, problems)
-        problems << "the recipe sets nothing: give plays, packs, agents, skills, agent_kind or prompt" if problems.empty? && (fields.keys - ["description"]).empty?
+        workflow(data, fields, problems)
+        inputs(data, fields, problems)
+        combination(data, problems)
+        problems << "the recipe sets nothing: give plays, packs, agents, skills, agent_kind, prompt or workflow" if problems.empty? && (fields.keys - ["description"]).empty?
       end
       return fields if problems.empty?
       raise Error.new("Recipe #{ref} is not valid: #{problems.join("; ")}.", code: "invalid_recipe",
@@ -88,6 +99,69 @@ module Workspace
       yield value if block_given?
     end
     private_class_method :string
+
+    def self.workflow(data, fields, problems)
+      return unless data.key?("workflow")
+      value = data["workflow"]
+      if value.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(value)
+        fields["workflow"] = value
+      else
+        problems << "workflow must be a workflow id (#{WorkflowDefinition::ID_RULE}, at most 40 characters); not #{value.inspect[0, 40]}"
+      end
+    end
+    private_class_method :workflow
+
+    def self.inputs(data, fields, problems)
+      return unless data.key?("workflow_inputs")
+      value = data["workflow_inputs"]
+      unless value.is_a?(Hash) && !value.empty?
+        problems << "workflow_inputs must be a non-empty mapping of input names to values"
+        return
+      end
+      if value.length > MAX_ITEMS
+        problems << "workflow_inputs takes at most #{MAX_ITEMS} entries, not #{value.length}"
+        return
+      end
+      found = {}
+      value.each do |name, item|
+        unless name.is_a?(String) && WorkflowDefinition::INPUT_PATTERN.match?(name)
+          problems << "workflow_inputs input name #{name.inspect[0, 40]} must be lowercase letters, digits and '_', starting with a letter"
+          next
+        end
+        if item.is_a?(Float)
+          problems << "workflow_inputs #{name} is a decimal number; quote it (\"1.50\") to keep it as text"
+          next
+        end
+        unless [String, Integer, TrueClass, FalseClass].any? { |type| item.is_a?(type) }
+          problems << "workflow_inputs #{name} must be text, a whole number, true or false"
+          next
+        end
+        if item.is_a?(String) && item.match?(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/)
+          problems << "workflow_inputs #{name} holds a control character"
+          next
+        end
+        text = item.to_s
+        if text.length > MAX_PROMPT
+          problems << "workflow_inputs #{name} is longer than #{MAX_PROMPT} characters"
+          next
+        end
+        found[name] = text
+      end
+      fields["workflow_inputs"] = found if found.length == value.length
+    end
+    private_class_method :inputs
+
+    def self.combination(data, problems)
+      if data.key?("workflow")
+        clash = WORKFLOW_EXCLUDES & data.keys
+        problems << "workflow can't be combined with #{clash.join(", ")}: a workflow run takes none of them" if clash.any?
+        kind = data["agent_kind"]
+        problems << "agent_kind '#{kind.to_s[0, 40]}' can't be combined with workflow: only claude" if kind.is_a?(String) && kind != "claude" && AgentProvider.all.map(&:key).include?(kind)
+      elsif data.key?("workflow_inputs")
+        problems << "workflow_inputs needs workflow"
+      end
+    end
+    private_class_method :combination
 
     def self.known_kind(value, problems)
       known = AgentProvider.all.map(&:key)
