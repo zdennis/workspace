@@ -511,6 +511,34 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(start(pane: "%6", checkout: worktree)["id"]).to eq("wr_3")
       end
 
+      describe "#run_on_checkout" do
+        it "returns the active run on the checkout, through a symlinked path" do
+          start
+          link = File.join(@dir, "link-to-app")
+          File.symlink(worktree, link)
+
+          expect(engine.run_on_checkout(link)["id"]).to eq("wr_1")
+          expect(engine.run_on_checkout(worktree)["id"]).to eq("wr_1")
+        end
+
+        it "skips a finished run" do
+          start
+          engine.cancel("wr_1")
+
+          expect(engine.run_on_checkout(worktree)).to be_nil
+        end
+
+        it "skips a run whose path is gone, a run with no worktree, and a path that does not exist" do
+          store.create({"state" => "running", "worktree" => File.join(@dir, "gone"), "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+                        "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
+          store.create({"state" => "running", "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+                        "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
+
+          expect(engine.run_on_checkout(worktree)).to be_nil
+          expect(engine.run_on_checkout(File.join(@dir, "nowhere"))).to be_nil
+        end
+      end
+
       it "does not refuse a target path that does not exist, or none" do
         start
 

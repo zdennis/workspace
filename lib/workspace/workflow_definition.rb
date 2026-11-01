@@ -206,6 +206,24 @@ module Workspace
       end
     end
 
+    # Whether the step +from+, or a later one, reads the workspace's plan: `implementation-plan`
+    # in the step's `include` or in the definition's top-level `include` (which applies to every
+    # step), or a `plan_status` entry in the step's `require`.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @param from [String, nil] a step id; an unknown or nil one counts every step
+    # @return [Boolean]
+    def self.reads_plan?(definition, from:)
+      return false unless definition.is_a?(Hash)
+      steps = Array(definition["steps"]).select { |step| step.is_a?(Hash) }
+      return true if Array(definition["include"]).include?("implementation-plan") && steps.any?
+      index = steps.index { |step| step["id"] == from } || 0
+      steps.drop(index).any? do |step|
+        Array(step["include"]).include?("implementation-plan") ||
+          Array(step["require"]).any? { |entry| entry.is_a?(Hash) && entry.key?("plan_status") }
+      end
+    end
+
     # The `on_timeout` of a step hash. A definition stored before the key existed has none and reads as `warn`.
     #
     # @param step [Hash] a step of {#to_h}, or of a stored run's definition

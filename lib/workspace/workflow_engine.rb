@@ -990,6 +990,23 @@ module Workspace
       end
     end
 
+    # The active run on a checkout, matched by realpath. A run with no worktree, or one whose
+    # path is gone or can't be resolved, is not that checkout; a finished run is not among the
+    # active ones. Reads the store and takes no lock.
+    #
+    # @param path [String] the checkout's path
+    # @return [Hash{String=>Object}, nil] the stored run, or nil
+    def run_on_checkout(path)
+      target = File.realpath(path)
+      @store.active.find do |run|
+        run["worktree"].is_a?(String) && File.realpath(run["worktree"]) == target
+      rescue SystemCallError
+        false
+      end
+    rescue SystemCallError
+      nil
+    end
+
     private
 
     # One change the sweep makes under the run's lock. The block returns [outcome, check], and is run only for
@@ -1439,13 +1456,9 @@ module Workspace
     # never comes here: it is the run itself.
     def check_checkout(path)
       return unless path
-      target = File.realpath(path)
-      holder = @store.active.find do |run|
-        run["worktree"].is_a?(String) && File.realpath(run["worktree"]) == target
-      rescue SystemCallError
-        false
-      end
+      holder = run_on_checkout(path)
       return unless holder
+      target = File.realpath(path)
       raise Workspace::Error.new("Checkout #{target} already has workflow run #{holder["id"]} at step #{holder["current"]}. " \
         "Cancel it with `workspace workflow cancel #{holder["id"]}`, or use another worktree.",
         code: "checkout_has_run", details: {"worktree" => target, "run_id" => holder["id"], "step" => holder["current"],
