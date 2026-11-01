@@ -343,6 +343,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `path_linked` | `library install`/`uninstall`: the install directory, or one above it such as `.claude`, is a symlink, so git can't tell what is tracked. `details.ref`, `details.path`. |
 | `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read (`library install`, including `--dry-run`, and `uninstall` without `--force` too). `details.ref`, `details.path`. |
 | `unknown_workflow` | No workflow definition has that id (`workflow remove`: you have no file of that id, and no preset has it). `details.workflow`, `details.known`. |
+| `no_default_workflow` | `workflow start` was given no workflow ID, and neither `workflows.by_ref.<kind>` nor `workflows.default` is set for that kind of ref (`jira`, `github_pr`, `github_issue`, `branch` or `prompt`). `details.kind`, `details.ref` (the word read as the ref, null for `--prompt`), `details.known`. |
 | `inbox_store_unreadable` | An inbox scope's file (or `acks`, the acks of derived rows) can't be read, so nothing was written to it. `details.scope`. |
 | `inbox_full` | The scope already holds 500 open or snoozed items, so nothing was added (also for a reopen that would pass 500). `details.scope`, `details.limit`. |
 | `unknown_inbox_item` | No inbox item has that id. `details.id`. |

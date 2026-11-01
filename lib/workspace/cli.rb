@@ -5091,7 +5091,7 @@ module Workspace
       source_path = args.shift if %w[add update].include?(subcommand)
       start_ref = args.shift if subcommand == "start"
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "start" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
       raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?))
 
@@ -5105,12 +5105,12 @@ module Workspace
 
       start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout}
       if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
-        raise UsageError, "#{flag.first} is for `workflow start ID [REF]`."
+        raise UsageError, "#{flag.first} is for `workflow start [ID] [REF]`."
       end
       if subcommand == "start"
         raise UsageError, "workflow start makes its own workspace: --name is for `workflow run`." if options[:name]
         raise UsageError, "workflow start runs in the new workspace's pane: --pane is for `workflow run`." if options[:pane]
-        raise UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." if start_ref.nil? && options[:prompt].to_s.strip.empty?
+        raise UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." if subject.nil? && options[:prompt].to_s.strip.empty?
         raise Error, "workflow start is not available: no workflow start command was wired" unless @workflow_start_command
       end
 
@@ -5154,7 +5154,7 @@ module Workspace
       when "start"
         inputs = workflow_inputs(options[:inputs])
         workflow_action("workflow start", options) do
-          @workflow_start_command.call(id: subject, ref: start_ref, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
+          @workflow_start_command.call(id: start_ref && subject, ref: start_ref, positional: start_ref ? nil : subject, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
             note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
             prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run])
         end

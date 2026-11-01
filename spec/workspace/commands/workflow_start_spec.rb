@@ -7,7 +7,8 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
   let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")) }
   let(:start_ref) { Workspace::StartRef.new(git: git, lineage: lineage) }
-  let(:catalog) { instance_double(Workspace::WorkflowCatalog) }
+  let(:catalog) { instance_double(Workspace::WorkflowCatalog, known?: false, known_ids: %w[flow rpiv]) }
+  let(:workflow_defaults) { instance_double(Workspace::WorkflowDefaults, id_for: nil) }
   let(:ticket_source) { instance_double(Workspace::TicketSource) }
   let(:engine) { instance_double(Workspace::WorkflowEngine) }
   let(:output) { StringIO.new }
@@ -47,7 +48,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   subject(:command) { build_command(engine) }
 
   def build_command(engine)
-    described_class.new(catalog: catalog, engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git, project_config: project_config, start: start,
+    described_class.new(catalog: catalog, workflow_defaults: workflow_defaults, engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git, project_config: project_config, start: start,
       workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
   end
 
@@ -151,7 +152,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "needs a ref or a prompt, and not a ref with --branch" do
-    expect { command.call(id: "flow") }.to raise_error(Workspace::UsageError, /REF or --prompt/)
+    expect { command.call(id: "flow") }.to raise_error(Workspace::UsageError, /REF.*or --prompt/)
     expect { command.call(id: "flow", ref: "PROJ-1", branch: "x") }.to raise_error(Workspace::UsageError, /--branch/)
   end
 
@@ -436,7 +437,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
     {"#12" => nil, "o/r#12" => "o/r", "https://github.com/o/r/pull/12" => "o/r"}.each do |ref, viewed_with|
       it "is the same for #{ref}" do
-        command = described_class.new(catalog: catalog, engine: engine, start_ref: start_ref, ticket_source: real_source, git: git, project_config: project_config,
+        command = described_class.new(catalog: catalog, workflow_defaults: workflow_defaults, engine: engine, start_ref: start_ref, ticket_source: real_source, git: git, project_config: project_config,
           start: start, workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, output: output)
 
         expect { command.call(id: "flow", ref: ref) }.to raise_error(Workspace::Error, /stop here/)
@@ -1056,6 +1057,177 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       allow(start).to receive(:payload).and_raise(Workspace::Error.new("no base", code: "usage"))
 
       expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details]).to eq(["usage", {}]) }
+    end
+  end
+
+  describe "the id" do
+    let(:rpiv) { Workspace::WorkflowDefinition.parse(yaml, id: "rpiv", source: "global", path: "/defs/rpiv.yml") }
+
+    def error_of
+      yield
+    rescue Workspace::Error, Workspace::UsageError => e
+      e
+    end
+
+    before do
+      allow(catalog).to receive(:find).with("rpiv").and_return(rpiv)
+      allow(catalog).to receive(:known?).with("rpiv").and_return(true)
+    end
+
+    it "needs a REF or --prompt when nothing is given" do
+      error = error_of { command.call }
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.message).to match(/needs a REF.*--prompt/)
+    end
+
+    it "takes a known id alone as the id, and then needs a REF" do
+      error = error_of { command.call(positional: "rpiv") }
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.message).to match(/needs a REF/)
+    end
+
+    it "says the REF is missing before the git error, outside a repository" do
+      allow(git).to receive(:root).and_return(nil)
+
+      expect(error_of { command.call(positional: "rpiv") }).to be_a(Workspace::UsageError)
+      expect(error_of { command.call(positional: "rpiv", prompt: "go") }.message).to eq("workflow start must run inside a git repository.")
+    end
+
+    it "gives the git error to a lone unknown word outside a repository" do
+      allow(git).to receive(:root).and_return(nil)
+
+      expect(error_of { command.call(positional: "PROJ-1") }.message).to eq("workflow start must run inside a git repository.")
+    end
+
+    it "takes a lone unknown ticket as the ref and the id from config" do
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("rpiv")
+
+      row = command.call(positional: "PROJ-1", dry_run: true)
+
+      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
+    end
+
+    it "takes a lone unknown branch as the ref, kind branch" do
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: "app").and_return("rpiv")
+
+      expect(command.call(positional: "my-branch", dry_run: true)).to include("workflow" => "rpiv", "branch" => "my-branch")
+    end
+
+    it "warns that a lone word was read as a branch, naming the workflow config chose" do
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: "app").and_return("rpiv")
+
+      row = command.call(positional: "rpivv", dry_run: true)
+
+      expect(row["warnings"]).to contain_exactly(a_string_including("\"rpivv\" is not a known workflow", "rpiv comes from config", "Known: flow, rpiv"))
+    end
+
+    it "does not warn for a lone ticket, whose shape is no accident" do
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("rpiv")
+
+      expect(command.call(positional: "PROJ-1", dry_run: true)["warnings"]).to be_empty
+    end
+
+    it "does not warn for an explicit ref" do
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: "app").and_return("rpiv")
+
+      expect(command.call(ref: "my-branch", dry_run: true)["warnings"]).to be_empty
+    end
+
+    it "refuses with no_default_workflow, naming the kind, the known ids and both ways to set one, and reads no ticket" do
+      error = error_of { command.call(positional: "PROJ-1") }
+
+      expect(error.code).to eq("no_default_workflow")
+      expect(error.details).to eq({"kind" => "jira", "ref" => "PROJ-1", "known" => %w[flow rpiv]})
+      expect(error.message).to include("flow, rpiv", "workspace config set workflows.default ID", "--scope project")
+      expect(ticket_source).not_to have_received(:fetch)
+    end
+
+    it "refuses a lone unknown branch with no_default_workflow, kind branch" do
+      error = error_of { command.call(positional: "my-branch") }
+
+      expect(error.details).to include("kind" => "branch", "ref" => "my-branch")
+      expect(error.message).to include("\"my-branch\" is not a known workflow")
+    end
+
+    it "uses the prompt kind for --prompt alone" do
+      allow(workflow_defaults).to receive(:id_for).with("prompt", workspace: "app").and_return("rpiv")
+
+      expect(command.call(prompt: "add a script", dry_run: true)).to include("workflow" => "rpiv")
+    end
+
+    it "refuses --prompt alone with no_default_workflow when nothing is set" do
+      expect(error_of { command.call(prompt: "add a script") }.details).to include("kind" => "prompt", "ref" => nil)
+    end
+
+    it "starts a known id with --prompt" do
+      expect(command.call(positional: "rpiv", prompt: "add a script", dry_run: true)).to include("workflow" => "rpiv")
+    end
+
+    it "reads a ticket-shaped word beside --prompt as the ref, with its kind" do
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("rpiv")
+
+      row = command.call(positional: "PROJ-1", prompt: "keep it small", dry_run: true)
+
+      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
+      expect(ticket_source).to have_received(:fetch).with(having_attributes(kind: "jira"), chdir: root)
+    end
+
+    it "keeps unknown_workflow for a branch-shaped word beside --prompt" do
+      allow(catalog).to receive(:find).with("my-branch").and_raise(Workspace::Error.new("No workflow.", code: "unknown_workflow"))
+
+      expect(error_of { command.call(positional: "my-branch", prompt: "go") }.code).to eq("unknown_workflow")
+    end
+
+    it "counts a blank --prompt as none, so the word is the ref" do
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "app").and_return("rpiv")
+
+      row = command.call(positional: "PROJ-1", prompt: "  ", dry_run: true)
+
+      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
+    end
+
+    it "keeps a known first argument and a ref as id and ref, and an unknown first argument unknown" do
+      expect(command.call(id: "rpiv", ref: "PROJ-1", dry_run: true)).to include("workflow" => "rpiv")
+      allow(catalog).to receive(:find).with("nope").and_raise(Workspace::Error.new("No workflow.", code: "unknown_workflow"))
+
+      expect(error_of { command.call(id: "nope", ref: "PROJ-1") }.code).to eq("unknown_workflow")
+    end
+
+    it "answers invalid_workflow for a known id whose file fails its checks" do
+      allow(catalog).to receive(:known?).with("broken").and_return(true)
+      allow(catalog).to receive(:find).with("broken").and_raise(Workspace::Error.new("Bad.", code: "invalid_workflow"))
+
+      expect(error_of { command.call(positional: "broken") }.code).to eq("invalid_workflow")
+    end
+
+    it "refuses a configured id that names no workflow as unknown_workflow" do
+      allow(workflow_defaults).to receive(:id_for).and_return("stale")
+      allow(catalog).to receive(:find).with("stale").and_raise(Workspace::Error.new("No workflow.", code: "unknown_workflow"))
+
+      expect(error_of { command.call(positional: "PROJ-1") }.code).to eq("unknown_workflow")
+      expect(ticket_source).not_to have_received(:fetch)
+    end
+
+    it "reads id: nil with ref: rpiv as a ref, never an id" do
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: "app").and_return("rpiv")
+
+      expect(command.call(id: nil, ref: "rpiv", dry_run: true)).to include("workflow" => "rpiv", "branch" => "rpiv")
+      expect(catalog).not_to have_received(:known?)
+    end
+
+    it "reads a linked worktree's parent project value" do
+      allow(start_ref).to receive(:project).with(root).and_return(Workspace::StartRef::Project.new(root: "/src/parent", name: "parent", from_worktree: true))
+      allow(workflow_defaults).to receive(:id_for).with("jira", workspace: "parent").and_return("rpiv")
+
+      expect(command.call(positional: "PROJ-1", dry_run: true)).to include("workflow" => "rpiv")
+    end
+
+    it "puts no_default_workflow before workflow_needs_claude" do
+      allow(agent_commands).to receive(:kind).and_return("codex")
+
+      expect(error_of { command.call(positional: "PROJ-1") }.code).to eq("no_default_workflow")
     end
   end
 end

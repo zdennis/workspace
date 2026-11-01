@@ -6767,14 +6767,14 @@ RSpec.describe Workspace::CLI do
       it "passes the ID, REF and flags to workflow start" do
         cli.run(["workflow", "start", "rpiv", "PROJ-1", "--branch", "b", "--slug", "--base", "main", "--input", "task=x", "--note", "n", "--agent-kind", "codex", "--prompt-timeout", "2m", "--no-headless", "--dry-run"])
 
-        expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", prompt: nil, branch: "b", slug: true, inputs: {"task" => "x"}, note: "n", base: "main",
+        expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", positional: nil, prompt: nil, branch: "b", slug: true, inputs: {"task" => "x"}, note: "n", base: "main",
                                             headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true}])
       end
 
       it "takes --prompt with no REF, and headless from the launch mode" do
         cli.run(["workflow", "start", "rpiv", "--prompt", "add a script"])
 
-        expect(start_command.calls.first).to include(id: "rpiv", ref: nil, prompt: "add a script", slug: false, headless: false, dry_run: false)
+        expect(start_command.calls.first).to include(id: nil, ref: nil, positional: "rpiv", prompt: "add a script", slug: false, headless: false, dry_run: false)
       end
 
       it "refuses --project after --prompt TEXT as a flag of another subcommand" do
@@ -6784,14 +6784,26 @@ RSpec.describe Workspace::CLI do
         expect(start_command.calls).to be_empty
       end
 
+      it "passes a lone argument as positional, for WorkflowStart to settle" do
+        cli.run(["workflow", "start", "PROJ-1"])
+
+        expect(start_command.calls.first).to include(id: nil, ref: nil, positional: "PROJ-1")
+      end
+
+      it "takes --prompt alone, with no id" do
+        cli.run(["workflow", "start", "--prompt", "add a script"])
+
+        expect(start_command.calls.first).to include(id: nil, ref: nil, positional: nil, prompt: "add a script")
+      end
+
       it "needs a REF or --prompt" do
-        expect { cli.run(["workflow", "start", "rpiv"]) }.to raise_error(FakeSystemExit)
+        expect { cli.run(["workflow", "start"]) }.to raise_error(FakeSystemExit)
         expect(error_output.string).to match(/needs a REF.*--prompt/)
         expect(start_command.calls).to be_empty
       end
 
       it "gives a JSON error for a missing REF under --json" do
-        expect { cli.run(["workflow", "start", "rpiv", "--json"]) }.to raise_error(FakeSystemExit)
+        expect { cli.run(["workflow", "start", "--json"]) }.to raise_error(FakeSystemExit)
 
         expect(JSON.parse(output.string)).to include("ok" => false)
         expect(start_command.calls).to be_empty
