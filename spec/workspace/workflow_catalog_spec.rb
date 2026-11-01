@@ -306,6 +306,16 @@ RSpec.describe Workspace::WorkflowCatalog do
   end
 
   describe "#known? and #known_ids" do
+    it "counts a project's own definitions only for that project" do
+      project_dir = File.join(@dir, "projects", "app", "workflows")
+      write(project_dir, "team", "steps:\n  a:\n    prompt: P\n")
+
+      expect(catalog.known?("team")).to be(false)
+      expect(catalog.known?("team", project: "app")).to be(true)
+      expect(catalog.known_ids(project: "app")).to include("team")
+      expect(catalog.known_ids).not_to include("team")
+    end
+
     it "is true for a preset, a user file and a file that fails its checks" do
       write(global_dir, "mine", "steps:\n  a:\n    prompt: P\n")
       write(global_dir, "broken", "title: [\n")
