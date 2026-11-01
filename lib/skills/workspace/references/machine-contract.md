@@ -13,7 +13,7 @@ Written against workspace 0.75.0. Source: `docs/README.json.md`, `lib/workspace/
 7. Resending after `not_submitted`, `clear_unconfirmed` or `maybe_delivered: true`. That types the prompt twice. Look at the pane first.
 8. Retrying `push_timeout`, or any error with `permanent: false` and no `retry`. Forcing a push by hand after `push_rejected`.
 9. Comparing `version` instead of reading `features.NAME`.
-10. Putting `--json` after a bare `--` (it goes to the child command), or adding it to `current`, `capture`, `dir`, `lookup`, `whereis`, `version`. Check `--help`.
+10. Putting `--json` after a bare `--` (it goes to the child command), or adding it to `current`, `capture`, `dir`, `lookup`, `whereis`, `shell-init`, `version`. Check `--help`.
 11. Matching on `error` text. Match on `code`, and read `details`.
 12. Running `kill` from inside the session it kills. The session ends last, so the document may never print.
 13. Approving a workflow gate from the pane the run is bound to (`bound_pane`), or running `details.recover` from `move_incomplete`.

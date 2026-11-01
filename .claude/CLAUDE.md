@@ -35,6 +35,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/commands/ui.rb` — `ui open [VIEW] [WORKSPACE]` builds a `workspace-ui://` link and hands it to `open` (no view means `task`); `ui status [--json]` turns the probe's answer into a read document, reporting a link revision only when the bundle that declares it is the app that would take the link (else null with a `links.reason`), always exit 0
 - `lib/workspace/iterm.rb` — iTerm2 session/pane lifecycle (AppleScript); `#last_call_timed_out?` says iTerm2 did not answer, which `stop` turns into a warning
 - `lib/workspace/focus_config.rb` — Reads the global `focus.chain` (default `focus + center + dim --opacity 0.5 --duration 3`) into the steps after the first `focus`, as token arrays split on `+`; a value `config set` would refuse, or an unreadable global file, gives the default's steps and a warning, so a bad config never stops `focus`
+- `lib/workspace/shell_init.rb` — `ShellInit.text(shell)`: the fixed text `shell-init zsh|bash` prints for an rc file (single-quoted heredocs, nothing interpolated): `wf` (`workflow start` with the default `rpiv` or `WORKSPACE_WF_DEFAULT`), `wfp` (fzf or numbered picker), and the completion for `workspace` and `wf`; docs in `docs/README.shell-init.md`
 - `lib/workspace/window_manager.rb` — iTerm2 window operations: find, focus, position, close; `#run_focus_steps` runs a chain's window-tool steps in order, `dim` and `highlight` detached (counted started after 0.25s), the first failure stopping the rest and returned as a `StepFailure`
 - `lib/workspace/window_liveness.rb` — Whether iTerm still has each tracked workspace's recorded window (one `live_window_ids` call, none when all are headless); nil for headless or when the list can't be read; backs `window_alive` in `status --json`, `list --liveness --json` and `cleanup`
 - `lib/workspace/window_layout.rb` — Window positioning math
@@ -185,7 +186,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, skills, spine, pr, rebase, push, promote, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, shell-init, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, skills, spine, pr, rebase, push, promote, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 
