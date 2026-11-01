@@ -29,7 +29,11 @@ module Workspace
     DEFAULT_ON_TIMEOUT = "warn"
     INPUT_PATTERN_LIMIT = 300
     INPUT_KEYS = %w[description required pattern].freeze
-    ON_FAIL_KEYS = %w[goto max context].freeze
+    ON_FAIL_KEYS = %w[goto max context log_tail backoff].freeze
+
+    # The most seconds an `on_fail` `backoff` may be (one day), and the most lines a `log_tail` may be.
+    MAX_BACKOFF = 24 * 3600
+    MAX_LOG_TAIL = WorkflowLogTail::MAX_LINES
     GUARDS = %w[unchanged config].freeze
     STATUS_KEYS = %w[command run timeout].freeze
 
@@ -115,7 +119,7 @@ module Workspace
     #   "title", "description", "inputs" (name to "description" and "required"), "include",
     #   "instructions", "max_attempts" and "steps", an ordered list where each step has "id",
     #   "title", "prompt", "include", "produces", "status" (nil, or "command" or "run" with
-    #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "require" (a list of one-key proofs such as `{"commits" => 1}`), "uses", "on_fail" (nil, or "goto", "max", "context"),
+    #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "require" (a list of one-key proofs such as `{"commits" => 1}`), "uses", "on_fail" (nil, or "goto", "max", "context", and, only when set, "log_tail" and "backoff" seconds),
     #   "context" and "timeout" (seconds or nil)
     def to_h
       @data
@@ -167,6 +171,24 @@ module Workspace
     def self.redeliver(definition)
       value = definition.is_a?(Hash) ? definition["redeliver"] : nil
       (value.is_a?(Integer) && value.between?(0, MAX_REDELIVER)) ? value : 0
+    end
+
+    # The `backoff` of a step's `on_fail`: seconds to wait before the retry starts.
+    #
+    # @param on_fail [Hash, nil] a step's `on_fail`, or one stored before the key existed
+    # @return [Numeric, nil] seconds; nil unless a positive number up to a day
+    def self.backoff(on_fail)
+      value = on_fail.is_a?(Hash) ? on_fail["backoff"] : nil
+      (value.is_a?(Numeric) && value.finite? && value > 0 && value <= MAX_BACKOFF) ? value : nil
+    end
+
+    # The `log_tail` of a step's `on_fail`: how many lines of the failed check's log the retry's prompt holds.
+    #
+    # @param on_fail [Hash, nil] a step's `on_fail`, or one stored before the key existed
+    # @return [Integer, nil] nil unless a whole number from 1 to {MAX_LOG_TAIL}
+    def self.log_tail(on_fail)
+      value = on_fail.is_a?(Hash) ? on_fail["log_tail"] : nil
+      (value.is_a?(Integer) && value.between?(1, MAX_LOG_TAIL)) ? value : nil
     end
 
     private
@@ -485,7 +507,23 @@ module Workspace
       max = value.fetch("max", 1)
       problem "#{where}: on_fail max must be a whole number of 1 or more, got #{max.inspect}" unless max.is_a?(Integer) && max >= 1
       context = value.key?("context") ? context_from(value["context"], "#{where}: on_fail context") : nil
-      {"goto" => goto, "max" => max, "context" => context}
+      log_tail = nil
+      if value.key?("log_tail")
+        log_tail = value["log_tail"]
+        unless log_tail.is_a?(Integer) && log_tail.between?(1, MAX_LOG_TAIL)
+          problem "#{where}: on_fail log_tail must be a whole number from 1 to #{MAX_LOG_TAIL}, got #{log_tail.inspect}"
+          log_tail = nil
+        end
+      end
+      backoff = nil
+      if value.key?("backoff")
+        begin
+          backoff = Duration.parse_capped(value["backoff"], max: MAX_BACKOFF)
+        rescue ArgumentError => e
+          problem "#{where}: on_fail backoff: #{e.message}"
+        end
+      end
+      {"goto" => goto, "max" => max, "context" => context, "log_tail" => log_tail, "backoff" => backoff}.compact.merge("context" => context)
     end
 
     def context_from(value, where)

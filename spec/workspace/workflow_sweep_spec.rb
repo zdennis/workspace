@@ -1153,4 +1153,155 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call(run: "wr_1"))).to include("outcome" => "nothing", "reason" => "finished")
     end
   end
+
+  describe "a failed step waiting out an on_fail backoff" do
+    let(:backing_off) do
+      Workspace::WorkflowDefinition.parse(<<~YAML, id: "back", source: "global", path: "/defs/back.yml")
+        stall: 1m
+        steps:
+          plan:
+            prompt: Plan it.
+            context: continue
+          build:
+            prompt: Build it.
+            context: continue
+            timeout: 1m
+            on_timeout: fail
+            on_fail: {goto: plan, max: 2, context: continue, backoff: 5m}
+      YAML
+    end
+
+    before do
+      begin_run(backing_off)
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.report("wr_1", status: "fail", summary: "no")
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    it "is not stalled: nothing is recorded or acted on before the time, whatever the idle and timeout rules say" do
+      advance(299)
+      pane_shows("idle", idle_seconds: 5000)
+
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "backoff", "cause" => "retry_backoff", "step" => "build")
+      expect(row["message"]).to include("starts again at 2026-10-04T12:05:00Z", "in 1 seconds")
+      expect(types).not_to include("step_stalled")
+      expect(store.find("wr_1")).to include("current" => "build", "state" => "waiting")
+    end
+
+    it "starts the retry once the time has passed, with no daemon needed to decide, and a second pass does nothing" do
+      advance(300)
+      pane_shows("idle")
+
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "retried", "cause" => "retry_backoff", "action" => "retry", "step" => "build")
+      expect(store.find("wr_1")).to include("current" => "plan", "state" => "running", "reason" => nil)
+      expect(store.find("wr_1")).not_to have_key("backoff")
+      expect(types.last(3)).to eq(%w[step_retry_started step_dispatching step_dispatched])
+      expect(only_row(sweep.call)["reason"]).not_to eq("backoff")
+    end
+
+    it "reports what it would do under --dry-run and changes nothing" do
+      advance(300)
+      before = store.find("wr_1")
+
+      row = only_row(sweep.call(dry_run: true))
+
+      expect(row).to include("outcome" => "dry_run", "action" => "retry", "cause" => "retry_backoff")
+      expect(store.find("wr_1")).to eq(before)
+    end
+
+    it "leaves the retry alone when the caller refuses, and when a resume got there first" do
+      advance(300)
+      expect(only_row(sweep.call(allow: ->(_run) { "not this one" }))).to include("outcome" => "nothing", "reason" => "refused")
+      expect(store.find("wr_1")).to include("state" => "waiting")
+
+      engine.resume("wr_1")
+      expect(only_row(sweep.call)["outcome"]).to eq("nothing")
+      expect(store.find("wr_1")["current"]).to eq("plan")
+      expect(panes.kicks.size).to eq(3)
+    end
+
+    it "starts a dead daemon first when the retry is due, spends nothing, and retries on the next pass" do
+      panes.daemon = false
+      advance(300)
+      before = store.find("wr_1")
+
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "respawned", "cause" => "daemon_down")
+      expect(panes.respawns).to eq(["app.worktree-x"])
+      expect(store.find("wr_1")).to eq(before)
+      expect(types).not_to include("step_stalled")
+      expect(only_row(sweep.call)).to include("outcome" => "retried", "cause" => "retry_backoff")
+    end
+
+    it "only reports the respawn under --dry-run" do
+      panes.daemon = false
+      advance(300)
+      before = store.find("wr_1")
+
+      expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "dry_run", "action" => "respawn_daemon")
+      expect(panes.respawns).to eq([])
+      expect(store.find("wr_1")).to eq(before)
+    end
+
+    it "needs no daemon before the time: the wait is read from the file" do
+      panes.daemon = false
+      advance(10)
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "backoff")
+      expect(panes.respawns).to eq([])
+    end
+
+    it "hands a due retry whose line meets a busy pane to the sweep's redelivery, which types it later" do
+      advance(300)
+      panes.kick_result = {ok: false, code: "pane_busy", message: "pane %5 is busy"}
+      pane_shows("idle", idle_seconds: 600)
+
+      expect(only_row(sweep.call)).to include("outcome" => "retried")
+      expect(store.find("wr_1")).to include("current" => "plan", "state" => "waiting")
+      expect(store.find("wr_1")["reason"]["details"]).to include("kind" => "dispatch", "error" => "pane_busy")
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "backoff", "cause" => "undelivered")
+
+      advance(61)
+      panes.kick_result = {ok: true}
+      expect(only_row(sweep.call)).to include("outcome" => "redelivered", "cause" => "undelivered")
+      expect(store.find("wr_1")).to include("current" => "plan", "state" => "running")
+    end
+
+    it "says a due retry was held when the pane id was reused, as nothing and not as retried or failed" do
+      panes.changed << "%5"
+      advance(300)
+
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "retry_blocked", "cause" => "retry_backoff", "action" => "retry")
+      expect(row["message"]).to include("--pane")
+      expect(store.find("wr_1")["backoff"]).to include("blocked" => "pane_changed")
+      expect(panes.kicks.size).to eq(2)
+      expect(types).to include("step_retry_blocked")
+    end
+
+    it "leaves a retry that was held because its pane is gone to a person" do
+      panes.gone << "%5"
+      advance(300)
+      engine.tick("wr_1")
+      held = store.find("wr_1")
+      expect(held["backoff"]).to include("blocked" => "pane_gone")
+
+      row = only_row(sweep.call)
+      expect(row).to include("outcome" => "nothing", "reason" => "retry_blocked")
+      expect(store.find("wr_1")).to eq(held)
+    end
+
+    it "does nothing for a run cancelled during the wait" do
+      engine.cancel("wr_1")
+      advance(300)
+
+      expect(only_row(sweep.call(run: "wr_1"))).to include("outcome" => "nothing", "reason" => "finished")
+    end
+  end
 end

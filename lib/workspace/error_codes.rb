@@ -240,6 +240,7 @@ module Workspace
       "workflow_needs_claude" => "workflow start was asked to run in a workspace whose agent kind is not claude; the run's steps need a Claude Code pane. Nothing was created. details.agent_kind.",
       "agent_not_ready" => "workflow start made the workspace but its coding agent was not ready in time. The workspace is kept. details.workspace, details.path, details.next.",
       "pane_has_run" => "The pane already runs another workflow run.",
+      "pane_changed" => "A workflow run's waiting retry found its pane is another pane now (a tmux restart reused the id), or cannot be shown to be the same one; nothing was typed. A `waiting_you` reason on the run, not an error envelope.",
       "checkout_has_run" => "The checkout already has a workflow run going. details.worktree, details.run_id, details.step, details.state, details.next (the cancel command).",
       "unknown_run" => "No workflow run has that id.",
       "unknown_step" => "workflow attempts or audit --attempt-of named a step the run doesn't have. details.run_id, details.step, details.steps (the run's step ids).",

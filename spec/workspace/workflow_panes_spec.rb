@@ -129,6 +129,34 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(panes.alive?("wr_1")).to be false
     end
 
+    it "keeps what identifies the pane after the binding is gone, and tells that pane from a reused id" do
+      bind
+      identity = panes.identity("wr_1")
+      panes.unbind("wr_1")
+
+      expect(identity).to eq("session" => "app", "pane_slot" => "app:0.1")
+      expect(panes.same_pane?("%5", identity)).to be true
+      allow(tmux).to receive(:session_name_for_pane).with("%5").and_return("other")
+      expect(panes.same_pane?("%5", identity)).to be false
+      allow(tmux).to receive(:session_name_for_pane).with("%5").and_return("app")
+      allow(tmux).to receive(:pane_slot).with("%5").and_return("app:1.0")
+      expect(panes.same_pane?("%5", identity)).to be false
+    end
+
+    it "reads a tmux that can't be run as not the same pane, never an error" do
+      bind
+      identity = panes.identity("wr_1")
+      allow(tmux).to receive(:session_name_for_pane).and_raise(Errno::ENOENT)
+
+      expect(panes.same_pane?("%5", identity)).to be false
+      expect(panes.identity("wr_1")).to eq(identity)
+    end
+
+    it "has no identity for an unbound run, and proves no pane without one" do
+      expect(panes.identity("wr_9")).to be_nil
+      expect(panes.same_pane?("%5", nil)).to be false
+    end
+
     it "does not count a pane that is gone, or one bound to something other than a run" do
       bind
       allow(tmux).to receive(:session_name_for_pane).with("%5").and_return(nil)

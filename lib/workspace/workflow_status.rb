@@ -190,7 +190,7 @@ module Workspace
     # is seen and no lock is asked for again, while it keeps what it holds.
     def daemon_warning(run, working, warnings)
       # A run that waits for a person needs no daemon until that person acts.
-      return unless working || run["parked"] || run.dig("reason", "code") == "waiting_lock"
+      return unless working || run["parked"] || %w[waiting_lock retry_backoff].include?(run.dig("reason", "code"))
       return if @panes.daemon_running?(run["workspace"])
       warnings << "Workflow run #{run["id"]} will not move: '#{run["workspace"]}' has no agent daemon running. It keeps the locks it holds " \
         "and its place in a queue. Launch the workspace and run `workspace workflow resume #{run["id"]}`, or end it with " \
@@ -322,6 +322,8 @@ module Workspace
       cancel = action("workflow cancel", id)
       resume = action("workflow resume", id)
       focus = action("focus", run["workspace"], "--pane", pane.to_s)
+      # A held retry would block again on the same pane: the resume has to name another one.
+      return [action("workflow resume", id, needs: [need("pane", "--pane")]), cancel] if run.dig("backoff", "blocked") && run["state"] == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}
@@ -339,6 +341,8 @@ module Workspace
         else [resume, cancel]
         end
       when "turn_ended_incomplete" then [focus, resume, cancel]
+      # A resume skips the wait and starts the retry now.
+      when "retry_backoff" then [resume, cancel]
       when "failed_check"
         # A moved HEAD or changed config can't pass again, and base_sha is never re-recorded: only a new run goes on.
         if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))

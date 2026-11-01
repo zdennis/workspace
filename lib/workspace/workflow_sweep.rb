@@ -44,6 +44,10 @@ module Workspace
   # definition's key). A retried attempt does not count against `max_attempts`. When the retries run out the
   # run stays as it was, waiting for a person, and the sweep records `redelivery_exhausted` once.
   #
+  # For a run whose failed step waits out an `on_fail` `backoff` ({WorkflowEngine.backoff}): before the time, nothing
+  # (reason `backoff`, no stall is recorded); after it, the retry starts as a tick or a resume would start it
+  # (outcome `retried`).
+  #
   # A run with a live park, a step that is checking, or no step being worked
   # on is left alone, except that a missing daemon is started for it. Every
   # change goes through {WorkflowEngine} under the run's own lock, and only
@@ -82,7 +86,7 @@ module Workspace
     #   returns nil to go on or a sentence to leave the run alone
     # @return [Array<Hash>] one row per run looked at, and one `failed` row (`unreadable_run`) for each run file
     #   that can't be read when no run or workspace is named: "workspace", "outcome" (`nothing`, `recorded`,
-    #   `evaluated`, `interrupted`, `timed_out`, `respawned`, `redelivered`, `failed`, `dry_run`), "reason" (for a retry also `backoff`, `pane_busy`,
+    #   `evaluated`, `interrupted`, `timed_out`, `respawned`, `redelivered`, `retried`, `failed`, `dry_run`), "reason" (for a retry also `backoff`, `pane_busy`,
     #   `not_delivered`, `waiting_lock`), "message", "run_id",
     #   "step", "attempt", "cause", "action"
     # @raise [Workspace::Error] code `unknown_run` for a +run+ that does not exist
@@ -115,6 +119,9 @@ module Workspace
       return row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
       state = run["steps"].fetch(run["current"])
       running = state["state"] == "running"
+      backoff = WorkflowEngine.backoff(run, @clock.call)
+      return sweep_backoff(run, backoff, pass) if backoff
+      return blocked_row(run) if run.dig("backoff", "blocked") && run["state"] == "waiting"
       daemon_needed = running || state["state"] == "checking" || run["parked"] || run.dig("reason", "code") == "waiting_lock"
       if running && !@panes.alive?(run["id"])
         pane = run["pane"]
@@ -135,6 +142,28 @@ module Workspace
     rescue SystemCallError => e
       program = e.message[/ - (\S+)/, 1]
       row(run, "failed", reason: "tool_unavailable", message: "could not run #{program || "a program the sweep needs"}: #{e.message.lines.first.to_s.strip}. Put it on PATH.")
+    end
+
+    # The step failed and its `on_fail` retry waits out a `backoff`: not a stall. Once the time has come the retry
+    # starts, as a tick or a resume would start it.
+    def sweep_backoff(run, info, pass)
+      what = "step #{run["current"]} failed; step #{info[:to]} starts again at #{info[:until]}"
+      return row(run, "nothing", reason: "backoff", cause: "retry_backoff", message: "#{what} (in #{info[:wait]} seconds)") if info[:state] == :waiting
+      message = "#{what}, and that time has passed"
+      # A retry types a line, which only a running daemon's turn end follows up; the next pass retries after a respawn.
+      return respawn(run, pass, notes: false) if daemon_down?(run["workspace"], pass)
+      return row(run, "dry_run", message: message, cause: "retry_backoff", action: "retry") if pass[:dry_run]
+      refusal = pass[:allow]&.call(run)
+      return row(run, "nothing", reason: "refused", message: refusal, cause: "retry_backoff") if refusal
+      outcome = @engine.retry_backoff(run["id"], step: run["current"], attempt: attempt_of(run))
+      return engine_row(run, outcome, "retried", cause: "retry_backoff", message: message, action: "retry") unless outcome == :blocked
+      blocked_row(run)
+    end
+
+    # The pane the retry would type into is no longer the run's. Not a failure: the sweep cannot fix it, and a person can.
+    def blocked_row(run)
+      row(run, "nothing", reason: "retry_blocked", cause: "retry_backoff", action: "retry",
+        message: "the retry of step #{run.dig("backoff", "to")} is held: its pane is no longer the run's. Resume the run with --pane for another agent pane, or cancel it")
     end
 
     # The step waits on a line that was not delivered, and {WorkflowEngine.redelivery} says where a retry stands.
@@ -221,7 +250,7 @@ module Workspace
     end
 
     # Starts the workspace's daemon. The run is not acted on again in this pass.
-    def respawn(run, pass)
+    def respawn(run, pass, notes: true)
       workspace = run["workspace"]
       message = "the agent daemon of '#{workspace}' is not running, so no turn's end is seen"
       unless @panes.session_live?(workspace)
@@ -230,12 +259,12 @@ module Workspace
       return row(run, "dry_run", message: message, cause: "daemon_down", action: "respawn_daemon") if pass[:dry_run]
       started = (pass[:daemons][workspace] ||= @panes.respawn_daemon(workspace))
       attempt = attempt_of(run)
-      @engine.note_stall(run["id"], step: run["current"], attempt: attempt, cause: "daemon_down", data: {"workspace" => workspace})
+      @engine.note_stall(run["id"], step: run["current"], attempt: attempt, cause: "daemon_down", data: {"workspace" => workspace}) if notes
       unless started[:ok]
         return row(run, "failed", reason: "daemon_not_started", cause: "daemon_down", action: "respawn_daemon",
           message: "#{message}, and it could not be started#{": #{started[:detail]}" if started[:detail]}")
       end
-      @engine.note_recovery(run["id"], step: run["current"], attempt: attempt, cause: "daemon_down", action: "daemon_respawned")
+      @engine.note_recovery(run["id"], step: run["current"], attempt: attempt, cause: "daemon_down", action: "daemon_respawned") if notes
       row(run, "respawned", cause: "daemon_down", action: "respawn_daemon", message: "#{message}; it is running again, and the pane is read on the next pass")
     end
 

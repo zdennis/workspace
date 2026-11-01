@@ -3,7 +3,7 @@
 # a binding that goes stale when its pane is no longer where it was bound
 # (`stale`), and a kick that types nothing when it reports a failure.
 class FakeWorkflowPanes
-  attr_reader :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone, :rows, :respawns
+  attr_reader :changed, :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone, :rows, :respawns
   attr_accessor :kick_result, :bind_error, :daemon, :respawn_result, :on_row, :session
 
   def initialize
@@ -14,6 +14,7 @@ class FakeWorkflowPanes
     @idle = []
     @turn_over = []
     @gone = []
+    @changed = []
     @agents_gone = []
     @daemon = true
     @rows = {}
@@ -58,6 +59,11 @@ class FakeWorkflowPanes
     @daemon = true if @respawn_result[:ok]
     @respawn_result
   end
+
+  def identity(run_id) = pane_of(run_id) ? {"session" => "app", "pane_slot" => "app:0.1"} : nil
+
+  # A pane in +changed+ is a reused id: tmux has it, in another session.
+  def same_pane?(pane, identity) = !identity.nil? && !@gone.include?(pane) && !@changed.include?(pane)
 
   def bind(workspace:, pane:, **fields)
     raise @bind_error if @bind_error

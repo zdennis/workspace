@@ -251,6 +251,29 @@ module Workspace
       false
     end
 
+    # What identifies the pane a run is bound to: the session and window slot the binding recorded, the facts
+    # {#same_pane?} compares later, once the binding is gone.
+    #
+    # @param run_id [String]
+    # @return [Hash{String=>String}, nil] nil when the run has no binding or the binding recorded no session
+    def identity(run_id)
+      pane = pane_of(run_id)
+      entry = pane && @bindings.binding_for(pane)
+      return nil unless entry && entry["session"].is_a?(String)
+      entry.slice("session", "pane_slot")
+    end
+
+    # @param pane [String] a pane id
+    # @param identity [Hash, nil] from {#identity}
+    # @return [Boolean] whether +pane+ is still in the session (and slot) the identity names, by the rule of a
+    #   binding's stale check; false for no identity, a pane tmux does not have, or a pane id reused elsewhere
+    def same_pane?(pane, identity)
+      return false unless identity.is_a?(Hash) && identity["session"].is_a?(String)
+      !@bindings.stale?(identity, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane))
+    rescue SystemCallError
+      false
+    end
+
     # Binds the pane to a step of a run, replacing its earlier binding. The
     # paths are left out when they are longer than a binding field may be.
     #

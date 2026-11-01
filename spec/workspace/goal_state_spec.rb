@@ -151,6 +151,12 @@ RSpec.describe Workspace::GoalState do
     expect(goal(run: run(reason: reason))).to have_attributes(state: "waiting_lock", waiting_on: "lock")
   end
 
+  it "is working while a failed step's retry waits out its backoff, which a timer starts" do
+    reason = {"code" => "retry_backoff", "details" => {"step" => "verify", "to" => "build", "until" => "2026-10-04T12:02:00Z"}, "actions" => []}
+
+    expect(goal(run: run(reason: reason))).to have_attributes(state: "working", waiting_on: "agent")
+  end
+
   it "is working on the agent when the turn or the plan is working" do
     expect(goal(turn_state: "working")).to have_attributes(state: "working", waiting_on: "agent")
     expect(goal(member: member_row(plan: "working")).next_step).to eq("event" => "turn_ended", "action" => nil)

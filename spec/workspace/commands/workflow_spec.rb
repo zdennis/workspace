@@ -260,6 +260,8 @@ RSpec.describe Workspace::Commands::Workflow do
           "waiting_lock: queued for devenv, 2 of 3, held by the dev environment in /src/app-tax (pid 4242)",
         reason("waiting_lock", {"resource" => "test-db", "position" => 1, "total" => 1, "holder" => {"pid" => 77, "kind" => "agent", "worktree" => "/src/app"}}) =>
           "waiting_lock: queued for test-db, 1 of 1, held by an agent in /src/app (pid 77)",
+        reason("retry_backoff", {"step" => "verify", "to" => "build", "until" => "2026-10-04T12:02:00Z", "seconds" => 120.0}) =>
+          "retry_backoff: step verify failed; step build starts again at 2026-10-04T12:02:00Z (after 120 seconds), or sooner with a resume",
         reason("waiting_you", {"kind" => "prompt", "pane" => "%5", "message" => "Claude needs your permission"}) =>
           "waiting_you: pane %5 is waiting for an answer: Claude needs your permission",
         reason("waiting_you", {"kind" => "ask", "ask" => "a1", "question" => "Postgres or sqlite?"}) =>

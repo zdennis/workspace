@@ -294,6 +294,24 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(snapshot_client).not_to have_received(:fetch)
   end
 
+  it "offers a resume (which skips the wait) and a cancel for a retry waiting out its backoff, without looking at the pane" do
+    wait = {"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan", "to" => "plan", "until" => "2026-10-04T13:05:00Z", "seconds" => 300.0}}
+    create(state: "waiting", step_state: "failed", reason: wait, bound: false)
+
+    expect(current("wr_1")["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+    expect(snapshot_client).not_to have_received(:fetch)
+  end
+
+  it "offers a resume that names a pane for a retry held because its pane is no longer the run's" do
+    held = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "dispatch", "step" => "plan", "error" => "pane_has_run", "pane" => "%5"}}
+    create(state: "waiting", step_state: "failed", reason: held, bound: false)
+    store.update("wr_1") { |run| run["backoff"] = {"until" => "t", "to" => "plan", "blocked" => "pane_has_run"} }
+
+    expect(current("wr_1")["reason"]["actions"]).to eq(
+      [action("workflow resume", "wr_1", needs: [{"name" => "pane", "flag" => "--pane"}]), action("workflow cancel", "wr_1")]
+    )
+  end
+
   it "offers `dev down` when the lock is held by a dev environment, which is what frees it" do
     lock = {"code" => "waiting_lock", "since" => "t",
             "details" => {"resource" => "devenv", "holder" => {"pid" => 700, "kind" => "process", "worktree" => "/src/app-tax"}}}
@@ -465,6 +483,13 @@ RSpec.describe Workspace::WorkflowStatus do
         "Launch the workspace and run `workspace workflow resume wr_1`, or end it with `workspace workflow cancel wr_1`."
       )
       expect(warnings.grep(/Workflow run wr_2 will not move/).size).to eq(1)
+    end
+
+    it "warns for a retry waiting out its backoff, which only a timer or the sweep starts" do
+      create(state: "waiting", step_state: "failed", bound: false,
+        reason: {"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan", "to" => "plan", "until" => "2026-10-04T13:05:00Z", "seconds" => 300.0}})
+
+      expect(status.runs["warnings"].grep(/Workflow run wr_1 will not move/).size).to eq(1)
     end
 
     it "does not warn for a run that waits for a person, or a finished one" do

@@ -916,8 +916,8 @@ module Workspace
         undelivered = reason && reason.dig("details", "kind") == "dispatch"
         describe(shown)
         @output.puts message if message
-        {"workspace" => run["workspace"], "outcome" => undelivered ? "failed" : verb, "reason" => reason&.fetch("code"),
-         "message" => undelivered ? reason.dig("details", "message") : message, "run" => shown}
+        {"workspace" => run["workspace"], "outcome" => (undelivered && verb != "unchanged") ? "failed" : verb, "reason" => reason&.fetch("code"),
+         "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
       end
 
       def describe(run)
@@ -974,6 +974,8 @@ module Workspace
           else
             "step #{details["step"]}'s check #{details["timed_out"] ? "ran past its time limit" : "exited #{details["exit_code"].inspect}"}; log: #{details["log"]}"
           end
+        when "retry_backoff"
+          "step #{details["step"]} failed; step #{details["to"]} starts again at #{details["until"]} (after #{details["seconds"].to_f.round} seconds), or sooner with a resume"
         when "pane_gone" then "pane #{details["pane"]} of #{details["workspace"]} is not running#{": #{details["message"]}" if details["message"]}"
         else details.to_s
         end

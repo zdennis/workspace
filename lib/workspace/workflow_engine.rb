@@ -114,6 +114,27 @@ module Workspace
       nil
     end
 
+    # Where an `on_fail` retry's wait stands. A step that failed with `on_fail: {backoff: ...}` stores `backoff` on
+    # the run (`until`, `to`, `text`, `context`) and reads `waiting` with the reason `retry_backoff`; nothing is
+    # held meanwhile (no attempt, binding or lock). The retry starts when the time has come: by {#tick}, by
+    # `workflow sweep` ({#retry_backoff}), or at once by a person's resume.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Hash, nil] nil when the run waits out no backoff (an old run too); else :state (`:waiting` or
+    #   `:due`), :wait (seconds left, 0 when due), :until (ISO time), :to (the step the retry goes back to)
+    def self.backoff(run, now)
+      stored = run["backoff"]
+      return nil unless stored.is_a?(Hash) && run["state"] == "waiting" && stored["to"].is_a?(String) && !stored["blocked"]
+      # A time that can't be read is taken as over: a wait must not outlast what could be measured.
+      wait = begin
+        Time.iso8601(stored["until"].to_s) - now
+      rescue ArgumentError
+        0
+      end
+      {state: (wait > 0) ? :waiting : :due, wait: [wait.ceil, 0].max, until: stored["until"], to: stored["to"]}
+    end
+
     # Where a run's parked resume stands.
     #
     # @param run [Hash{String=>Object}] a stored run
@@ -158,9 +179,11 @@ module Workspace
     #   (default: one reading HEAD through `guard`)
     # @param require_check [Workspace::WorkflowRequire, nil] checks a step's `require:` proofs
     #   (default: one over `guard` and `gate_note`)
+    # @param log_tail [Workspace::WorkflowLogTail, nil] reads the end of a failed check's log for `on_fail`'s `log_tail`
+    #   (default: a new one)
     # @param clock [#call] returns the current Time
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-      env_stopper: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, clock: -> { Time.now })
+      env_stopper: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, clock: -> { Time.now })
       @store = store
       @resources = resources
       @composer = composer
@@ -178,6 +201,7 @@ module Workspace
       @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard, clock: clock)
       @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
         commands_config: commands_config, checker: checker)
+      @log_tail = log_tail || WorkflowLogTail.new
       @clock = clock
       @delivery = nil
     end
@@ -191,6 +215,7 @@ module Workspace
     BACKGROUND_HOLD = 90 * 60
 
     # Whether a run is one only a timer will wake: a resume is parked on it,
+    # an `on_fail` retry's backoff is over,
     # it waits for a lock, its check was started and never reported back
     # (the process running it died), judged by the check's time limit plus a
     # minute, or it has been held for background tasks longer than
@@ -198,9 +223,10 @@ module Workspace
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
-    # @return [Symbol, nil] :parked, :lock, :background, :check, or nil
+    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :check, or nil
     def self.wakeable?(run, now)
       return :parked if run["parked"]
+      return :backoff if backoff(run, now)&.fetch(:state) == :due
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
@@ -600,7 +626,8 @@ module Workspace
       result
     end
 
-    # The periodic look at a run nothing else will wake: one waiting for a
+    # The periodic look at a run nothing else will wake: one whose `on_fail`
+    # backoff is over starts its retry, one waiting for a
     # lock asks for it again, a hold for background tasks that passed
     # {BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, and a check
     # that never reported back (its process died) is run again. Does nothing
@@ -613,6 +640,9 @@ module Workspace
       acted = false
       run = transition(run_id, nonblocking: true) do |stored|
         case self.class.wakeable?(stored, @clock.call)
+        when :backoff
+          acted = true
+          start_retry(stored)
         when :lock
           acted = true
           dispatch(stored)
@@ -748,6 +778,25 @@ module Workspace
       :redelivered
     end
 
+    # Starts an `on_fail` retry whose backoff is over, as the sweep's act. Does nothing unless the run is still on
+    # that step and attempt and {.backoff} says the wait is over, so a resume, a cancel or a tick that got there
+    # first stands.
+    #
+    # @param run_id [String]
+    # @param step [String] the failed step the sweep saw
+    # @param attempt [Integer, nil] that step's last attempt the sweep saw
+    # @return [Symbol] :retried, :blocked (the pane is no longer the run's; the run waits for a person, nothing is spent), :moved_on or :busy
+    def retry_backoff(run_id, step:, attempt:)
+      outcome = :moved_on
+      run = transition(run_id, nonblocking: true) do |stored|
+        next unless sweep_target?(stored, step, attempt, false)
+        next unless self.class.backoff(stored, @clock.call)&.fetch(:state) == :due
+        start_retry(stored)
+        outcome = stored.dig("backoff", "blocked") ? :blocked : :retried
+      end
+      run ? outcome : :busy
+    end
+
     # Takes the right to interrupt a step past its `timeout:`, as a pending mark, so two sweeps at once press the
     # keys once. A pending mark older than {INTERRUPT_CLAIM_SECONDS} can be taken over. Follow it with
     # {#interrupt_sent}, with the lock given up while the keys are pressed.
@@ -874,11 +923,23 @@ module Workspace
       # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
       unchanged = from ? nil : left_alone(stored, state, pane, turn_over)
       return [nil, unchanged] if unchanged
+      # A wait whose pane would not take the retry is held before anything is written: no rebind, note, event or reset.
+      held = held_by_pane(stored, pane, from)
+      return [nil, held] if held
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
       drop_park(stored, "taken_over")
       add_resume_note(stored, note)
+      # A resume skips the wait of a retry; `--from` goes elsewhere and drops it.
+      waiting_retry = stored.delete("backoff")
+      # A stored wait that names no step to go back to is dropped; the failed step is resumed as it stands.
+      waiting_retry = nil unless waiting_retry.is_a?(Hash) && waiting_retry["to"].is_a?(String)
+      if waiting_retry && !from
+        event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"], "backoff" => "skipped")
+        start_retry(stored, waiting_retry, proven: !pane.nil?)
+        return [nil, held_retry_sentence(stored)]
+      end
       if from
         event(stored, "run_resumed", "from" => from)
         stored["current"] = from
@@ -901,6 +962,19 @@ module Workspace
       else dispatch(stored)
       end
       [check, nil]
+    end
+
+    # The read-only decision of a resume over a retry's wait: the sentence saying why the retry can't start in the
+    # pane it would use (an explicit +pane+ counts as proven), after recording the hold once; nil when it can start
+    # or the run waits out no (readable) backoff.
+    def held_by_pane(stored, pane, from)
+      waiting = stored["backoff"]
+      return nil if from || !(waiting.is_a?(Hash) && waiting["to"].is_a?(String))
+      check_pane(pane, run_id: stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
+      problem = retry_pane_problem(stored, waiting, pane: pane, proven: !pane.nil?)
+      return nil unless problem
+      hold_retry(stored, waiting, problem, pane: pane || bound_pane(stored))
+      held_retry_sentence(stored)
     end
 
     def add_resume_note(run, note)
@@ -1085,7 +1159,7 @@ module Workspace
     def check_pane(pane, run_id: nil)
       return unless pane
       bound = @panes.run_on(pane)
-      other = (bound && active?(bound)) ? bound : parked_on(pane, run_id)
+      other = (bound && active?(bound)) ? bound : (parked_on(pane, run_id) || backoff_on(pane, run_id))
       return unless other
       raise Workspace::Error.new("Pane #{pane} is already running workflow run #{other}. Cancel it, or pass --pane for another agent pane.",
         code: "pane_has_run", details: {"pane" => pane, "run_id" => other})
@@ -1117,6 +1191,16 @@ module Workspace
       now = @clock.call
       @store.active.find do |run|
         run["id"] != run_id && self.class.parked(run, now) == :waiting && (run["parked"]["pane"] || run["pane"]) == pane
+      end&.fetch("id")
+    end
+
+    # Another run whose `on_fail` retry waits for +pane+: the wait unbinds the pane but the retry types into it. The wait
+    # holds the pane only while it is still the pane the wait began in (a dead or reused id holds nothing).
+    def backoff_on(pane, run_id)
+      @store.active.find do |run|
+        waiting = run["backoff"]
+        run["id"] != run_id && run["state"] == "waiting" && waiting.is_a?(Hash) && !waiting["blocked"] &&
+          (waiting["pane"] || run["pane"]) == pane && @panes.same_pane?(pane, waiting["identity"])
       end&.fetch("id")
     end
 
@@ -1184,6 +1268,58 @@ module Workspace
       when "checking"
         "the check of step #{run["current"]} is still running" unless self.class.lost_check?(run, @clock.call)
       end
+    end
+
+    # Ends an `on_fail` retry's wait: tells the target step what failed (the text kept when the step failed) and
+    # starts it, as the loop would have without a backoff.
+    # +proven+ is a pane the person named: that is their proof it is the right pane, so its identity is not compared
+    # (it must still exist and not belong to another run).
+    def start_retry(run, stored = run.delete("backoff"), proven: false)
+      problem = retry_pane_problem(run, stored, proven: proven)
+      return hold_retry(run, stored, problem) if problem
+      to = stored["to"]
+      run["pending_context"] << stored["text"] if stored["text"].is_a?(String)
+      event(run, "step_retry_started", "from" => run["current"], "to" => to)
+      run["current"] = to
+      run["reason"] = nil
+      dispatch(run, context: stored["context"])
+    end
+
+    # Why the pane a waiting retry would type into is no longer the run's: another run took it, or tmux no longer has it.
+    def retry_pane_problem(run, stored, proven: false, pane: nil)
+      pane ||= bound_pane(run)
+      return nil unless pane
+      other = @panes.run_on(pane)
+      if other && other != run["id"] && active?(other)
+        return {code: "pane_has_run", message: "pane #{pane} is now running workflow run #{other}. Name another agent pane with `workflow resume --pane PANE`"}
+      end
+      return {code: "pane_gone", message: "pane #{pane} is gone. Name another agent pane with `workflow resume --pane PANE`"} if @panes.pane_gone?(pane)
+      # A pane a person named for the resume was checked then; the wait's facts are about the pane it began in.
+      return nil if proven || (stored["pane"] && stored["pane"] != pane)
+      return nil if @panes.same_pane?(pane, stored["identity"])
+      reason = stored["identity"] ? "does not look like the pane the run was in (a tmux restart reuses pane ids, and closing a pane beside it renumbers it; it may be fine)" : "can't be shown to be the pane the run was in (it may be fine)"
+      {code: "pane_changed", message: "pane #{pane} #{reason}. Name it with `--pane #{pane}` to resume in it"}
+    end
+
+    # The retry is not started and not spent: the wait is kept, marked `blocked` so a tick or the sweep leaves it,
+    # and the run waits for a person. A resume (with `--pane` for another pane) starts the retry.
+    def hold_retry(run, stored, problem, pane: bound_pane(run))
+      # The same hold again (same code, same pane) changes nothing: no new reason, no event.
+      held = run["backoff"]
+      same = held.is_a?(Hash) && held["blocked"] == problem[:code] && run.dig("reason", "details", "pane") == pane &&
+        run.dig("reason", "details", "error") == problem[:code]
+      return if same
+      run["backoff"] = stored.merge("blocked" => problem[:code])
+      run["reason"] = reason((problem[:code] == "pane_gone") ? "pane_gone" : "waiting_you",
+        {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"], "error" => problem[:code],
+         "message" => "the retry of step #{stored["to"]} was not started: #{problem[:message]}. Or cancel the run."})
+      event(run, "step_retry_blocked", "from" => run["current"], "to" => stored["to"], "code" => problem[:code])
+    end
+
+    # Why a resume that skipped the wait still started nothing; nil when the retry started.
+    def held_retry_sentence(run)
+      return nil unless run.dig("backoff", "blocked")
+      run.dig("reason", "details", "message").to_s.sub(/\.\z/, "")
     end
 
     # Starts the current step: takes its resources, writes its instructions,
@@ -1673,6 +1809,7 @@ module Workspace
 
     def finish(run, state)
       drop_park(run, "ended")
+      run.delete("backoff")
       release(run)
       @panes.unbind(run["id"])
       run["state"] = state
@@ -1698,8 +1835,11 @@ module Workspace
       spent = attempts >= run["definition"]["max_attempts"]
       if on_fail && run["loops"].fetch(edge, 0) < on_fail["max"] && !spent
         run["loops"][edge] = run["loops"].fetch(edge, 0) + 1
-        run["pending_context"] << loop_context(run, step, on_fail, failure, run["loops"][edge])
-        event(run, "step_looped", "from" => step["id"], "to" => on_fail["goto"], "count" => run["loops"][edge])
+        text = loop_context(run, step, on_fail, failure, run["loops"][edge])
+        wait = WorkflowDefinition.backoff(on_fail)
+        event(run, "step_looped", {"from" => step["id"], "to" => on_fail["goto"], "count" => run["loops"][edge]}.merge(wait ? {"backoff" => wait} : {}))
+        return wait_to_retry(run, step, on_fail, text, wait, attempt) if wait
+        run["pending_context"] << text
         run["current"] = on_fail["goto"]
         return dispatch(run, context: on_fail["context"])
       end
@@ -1709,9 +1849,26 @@ module Workspace
                                               "attempts" => attempts, "max_attempts" => run["definition"]["max_attempts"]}.merge(failure))
     end
 
+    # No attempt, pane binding or lock is held while the retry waits: the run reads `waiting` with the reason
+    # `retry_backoff`, and the step stays `failed` until {#start_retry}.
+    def wait_to_retry(run, step, on_fail, text, wait, attempt)
+      release(run)
+      pane = bound_pane(run)
+      identity = @panes.identity(run["id"])
+      @panes.unbind(run["id"])
+      time = (@clock.call + wait).utc.iso8601
+      run["backoff"] = {"until" => time, "to" => on_fail["goto"], "context" => on_fail["context"], "text" => text, "pane" => pane, "identity" => identity}.compact
+      run["state"] = "waiting"
+      run["reason"] = reason("retry_backoff", {"step" => step["id"], "attempt" => attempt["n"], "to" => on_fail["goto"], "until" => time,
+                                               "seconds" => wait, "loops" => run["loops"]})
+    end
+
     def loop_context(run, step, on_fail, failure, count)
-      "The #{step["id"]} step failed and sent the run back to this step (time #{count} of #{on_fail["max"]}): #{failure_text(failure)}. " \
+      text = "The #{step["id"]} step failed and sent the run back to this step (time #{count} of #{on_fail["max"]}): #{failure_text(failure)}. " \
         "Its files are in #{run["artifacts_dir"]}. Fix what it found."
+      lines = WorkflowDefinition.log_tail(on_fail)
+      tail = (lines && failure["log"].is_a?(String)) ? @log_tail.block(failure["log"], lines: lines) : nil
+      tail ? "#{text}\n\n#{tail}" : text
     end
 
     def require_failure(unmet)

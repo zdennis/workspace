@@ -186,7 +186,7 @@ module Workspace
 
     def set_by_ending?(reason, attempt)
       details = reason["details"].is_a?(Hash) ? reason["details"] : {}
-      (reason["code"] == "failed_check" && details["attempt"] == attempt["n"]) || (reason["code"] == "waiting_you" && details["kind"] == "gate")
+      (%w[failed_check retry_backoff].include?(reason["code"]) && details["attempt"] == attempt["n"]) || (reason["code"] == "waiting_you" && details["kind"] == "gate")
     end
 
     # The agent, session and usage of the attempt that is ending. Every part is nil when it can't be told.

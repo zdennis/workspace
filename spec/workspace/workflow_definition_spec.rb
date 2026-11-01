@@ -252,6 +252,40 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(step["on_fail"]).to eq("goto" => "a", "max" => 1, "context" => nil)
   end
 
+  describe "on_fail log_tail and backoff" do
+    def on_fail(text) = parse("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: #{text}\n").steps.last["on_fail"]
+
+    it "stores a line count and a backoff in seconds, and leaves both out when unset" do
+      expect(on_fail("{goto: a, log_tail: 40, backoff: 2m}")).to eq("goto" => "a", "max" => 1, "context" => nil, "log_tail" => 40, "backoff" => 120.0)
+      expect(on_fail("{goto: a, backoff: 90}")).to include("backoff" => 90.0)
+      expect(on_fail("{goto: a}")).not_to include("log_tail", "backoff")
+    end
+
+    it "collects a problem for each bad value" do
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, log_tail: 0, backoff: soon}\n")).to eq([
+        "step b: on_fail log_tail must be a whole number from 1 to 200, got 0",
+        "step b: on_fail backoff: expected a duration like \"20\", \"20s\", \"5m\" or \"1h\", got \"soon\""
+      ])
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, log_tail: 201, backoff: 2d}\n").size).to eq(2)
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, log_tail: 2.5, backoff: 0}\n").size).to eq(2)
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, backoff: 25h}\n").first).to include("at most 86400")
+    end
+
+    it "reads both through class readers that take nil, a missing key and a bad stored value" do
+      expect(described_class.backoff(nil)).to be_nil
+      expect(described_class.backoff("goto" => "a")).to be_nil
+      expect(described_class.backoff("backoff" => "2m")).to be_nil
+      expect(described_class.backoff("backoff" => -1)).to be_nil
+      expect(described_class.backoff("backoff" => 10**9)).to be_nil
+      expect(described_class.backoff("backoff" => 120.0)).to eq(120.0)
+      expect(described_class.log_tail(nil)).to be_nil
+      expect(described_class.log_tail("log_tail" => "40")).to be_nil
+      expect(described_class.log_tail("log_tail" => 0)).to be_nil
+      expect(described_class.log_tail("log_tail" => 9999)).to be_nil
+      expect(described_class.log_tail("log_tail" => 40)).to eq(40)
+    end
+  end
+
   it "reads a prompt from prompt_file, beside the definition" do
     Dir.mktmpdir("wf-def") do |dir|
       File.write(File.join(dir, "build.md"), "Build from a file.\n")
