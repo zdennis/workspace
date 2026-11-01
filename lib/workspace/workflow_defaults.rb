@@ -7,28 +7,42 @@ module Workspace
       @config_resolver = config_resolver
     end
 
-    # The stored workflow id for a kind of ref. `workflows.by_ref.<kind>` wins
-    # over `workflows.default`; each is read from the worktree, project and
-    # global files, the first that sets it winning. With no workspace, only the
-    # global file is read. A project or worktree file that can't be parsed is
-    # skipped for both keys, and the global values are used. A global file
-    # that can't be parsed reads as unset. A malformed value is returned as it
-    # is, for the catalog to refuse.
+    # The stored workflow id for a kind of ref. See {#lookup}.
     #
     # @param kind [String] one of `ConfigSchema::WORKFLOW_REF_KINDS`
     # @param workspace [String, nil] the workspace whose layers are read
     # @return [String, nil] the stored workflow id, nil when neither key is set
     # @raise [KeyError] if the kind has no declared key
     def id_for(kind, workspace: nil)
-      value = workspace.nil? ? read(kind, "", upto: "global") : read(kind, workspace)
-      value&.to_s
+      lookup(kind, workspace: workspace)&.fetch(:id)
+    end
+
+    # The stored workflow id for a kind of ref, with the config key that
+    # answered. `workflows.by_ref.<kind>` wins over `workflows.default`; each
+    # is read from the worktree, project and global files, the first that sets
+    # it winning. With no workspace, only the global file is read. A project
+    # or worktree file that can't be parsed is skipped for both keys, and the
+    # global values are used. A global file that can't be parsed reads as
+    # unset. A malformed value is returned as it is, for the catalog to refuse.
+    #
+    # @param kind [String] one of `ConfigSchema::WORKFLOW_REF_KINDS`
+    # @param workspace [String, nil] the workspace whose layers are read
+    # @return [Hash, nil] `{id:, key:}`, where key is `workflows.by_ref.<kind>`
+    #   or `workflows.default`; nil when neither key is set
+    # @raise [KeyError] if the kind has no declared key
+    def lookup(kind, workspace: nil)
+      workspace.nil? ? read(kind, "", upto: "global") : read(kind, workspace)
     end
 
     private
 
     def read(kind, workspace, upto: nil)
       view = @config_resolver.view(workspace: workspace, upto: upto)
-      view.raw("workflows.by_ref.#{kind}") || view.raw("workflows.default")
+      ["workflows.by_ref.#{kind}", "workflows.default"].each do |key|
+        value = view.raw(key)
+        return {id: value.to_s, key: key} if value
+      end
+      nil
     rescue Workspace::ConfigParseError
       raise if upto
       read(kind, workspace, upto: "global")
