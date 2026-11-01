@@ -34,6 +34,13 @@ module Workspace
       # @!attribute checkout [String, nil] the ref `start` is given; a bare `#N` names the repository `gh pr view` read
       Plan = Struct.new(:definition, :ref, :branch, :project, :path, :would_create, :inputs, :ticket, :spec_path, :checked, :warnings, :prompt, :checkout, keyword_init: true)
 
+      # Where `workflow start` was called from, when the ref is to run in that checkout.
+      #
+      # @!attribute workspace [String] the workspace of the checkout
+      # @!attribute path [String] the checkout's path
+      # @!attribute caller_pane [String, nil] the pane the command runs in (`$TMUX_PANE`)
+      Here = Struct.new(:workspace, :path, :caller_pane, keyword_init: true)
+
       # @param catalog [Workspace::WorkflowCatalog]
       # @param workflow_defaults [Workspace::WorkflowDefaults] the id to use when none is named
       # @param engine [Workspace::WorkflowEngine] checks the run would pass, through #preflight
@@ -81,14 +88,16 @@ module Workspace
       # @param agent_kind [String, nil]
       # @param prompt_timeout [Numeric, nil] seconds to wait for the agent
       # @param dry_run [Boolean] check everything and create nothing
+      # @param here [Here, nil] run in this checkout instead of making one; the ref's checkout must be the same directory
       # @return [Hash{String=>Object}] the action row: outcome "dry_run" with "workflow", "step", "project",
       #   "branch", "path", "would_create", "inputs", "packs", "warnings" and, "ticket" (nil when none was read)
       # @raise [Workspace::UsageError] no ref and no prompt, both a ref and a branch, an empty slug, or an invalid branch name
       # @raise [Workspace::Error] code `unknown_workflow`, `no_default_workflow`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
       #   request), `fork_pull_request`, `branch_exists`, or {Workspace::WorkflowEngine#preflight}'s (`input_required`,
-      #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout)
+      #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout); with +here+,
+      #   `branch_exists` when the ref's checkout is not the one it runs in
       def call(id: nil, ref: nil, positional: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
-        agent_kind: nil, prompt_timeout: nil, dry_run: false)
+        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil)
         prompt = prompt.to_s.strip
         prompt = nil if prompt.empty?
         id, ref = split(id, ref, positional, prompt)
@@ -107,12 +116,46 @@ module Workspace
           warnings.each { |warning| @output.puts "Warning: #{warning}" }
         end
         plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, **where)
+        return run_here(plan, here, note: note, dry_run: dry_run) if here
         return dry_run_row(id, plan) if dry_run
 
         start_workspace(plan, note: note, base: base, headless: headless, agent_kind: agent_kind, prompt_timeout: prompt_timeout, slug: slug)
       end
 
+      # The checkout's root, the project it belongs to and the project's workspace name.
+      #
+      # @return [Hash{Symbol=>Object}] +root+, +project+ ({Workspace::StartRef::Project}) and +project_workspace+
+      # @raise [Workspace::Error] outside a git repository
+      def locate_project
+        root = @git.root or raise Workspace::Error, "workflow start must run inside a git repository."
+        project = @start_ref.project(root)
+        project_workspace = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
+        {root: root, project: project, project_workspace: project_workspace}
+      end
+
       private
+
+      # Runs the workflow in the checkout the command was called from. `plan` has made every
+      # check; nothing is made and no agent is waited for.
+      def run_here(plan, here, note:, dry_run:)
+        refuse_other_checkout!(plan, here) unless same_checkout?(plan.path, here.path)
+        write_ticket(plan, plan.spec_path, here.path) unless dry_run
+        row = @workflow.run(id: plan.definition.to_h["id"], workspace: here.workspace, worktree: here.path, inputs: plan.inputs, note: note, dry_run: dry_run, caller_pane: here.caller_pane)
+        row.merge("project" => plan.project.name, "branch" => plan.branch, "path" => here.path, "would_create" => false,
+          "ticket" => plan.ticket&.slice("key", "title", "url"), "warnings" => plan.warnings)
+      end
+
+      # A path that can't be read counts as a different one.
+      def same_checkout?(planned, here)
+        planned && File.realpath(planned) == File.realpath(here)
+      rescue SystemCallError
+        false
+      end
+
+      def refuse_other_checkout!(plan, here)
+        raise Workspace::Error.new("The checkout for the branch #{plan.branch} is at #{plan.path}, not the one this runs in (#{here.path}).",
+          code: "branch_exists", details: {"branch" => plan.branch, "path" => plan.path, "worktree" => @git.worktree_exists?(plan.path)})
+      end
 
       # A lone positional that is a known workflow is the id. Otherwise it is the ref, except that
       # a branch-shaped one beside a prompt stays an id (a mistyped one, `unknown_workflow`).
@@ -127,13 +170,6 @@ module Workspace
       def check_usage!(ref, prompt, branch)
         raise Workspace::UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." unless ref || prompt
         raise Workspace::UsageError, "--branch names the branch for a --prompt; with a REF the branch comes from the ref." if ref && branch
-      end
-
-      def locate_project
-        root = @git.root or raise Workspace::Error, "workflow start must run inside a git repository."
-        project = @start_ref.project(root)
-        project_workspace = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
-        {root: root, project: project, project_workspace: project_workspace}
       end
 
       # The workflow config names for this kind of ref, read for the project's workspace (the
