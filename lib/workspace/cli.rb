@@ -5000,7 +5000,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start status events files attempts audit stats sweep resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5045,7 +5045,8 @@ module Workspace
         opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
         opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
         opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
-        opts.on("--last DURATION", "stats: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
+        opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
+        opts.on("--last DURATION", "stats, compare: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
         opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
         opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
         opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
@@ -5101,23 +5102,24 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, stats, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
       source_path = args.shift if %w[add update].include?(subcommand)
       start_ref = args.shift if subcommand == "start"
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
                "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
       raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?))
 
       raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
       raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
       raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
-      raise UsageError, "--last is for `workflow stats ID`." if options[:last] && subcommand != "stats"
-      raise UsageError, "--project is for `workflow status` and `workflow stats`." if options[:project] && !%w[status stats].include?(subcommand)
-      raise UsageError, "workflow stats covers every workspace unless --name or --project narrows it; --all is not needed." if subcommand == "stats" && options[:all]
+      raise UsageError, "--last is for `workflow stats ID` and `workflow compare ID`." if options[:last] && !%w[stats compare].include?(subcommand)
+      raise UsageError, "--by is for `workflow compare ID`." if options[:compare_by] && subcommand != "compare"
+      raise UsageError, "--project is for `workflow status`, `workflow stats` and `workflow compare`." if options[:project] && !%w[status stats compare].include?(subcommand)
+      raise UsageError, "workflow #{subcommand} covers every workspace unless --name or --project narrows it; --all is not needed." if %w[stats compare].include?(subcommand) && options[:all]
       raise UsageError, "workflow sweep takes a RUN or --name WORKSPACE, not both." if subcommand == "sweep" && subject && options[:name]
       schedule = options[:schedule_flags].first
       raise UsageError, "--install, --uninstall and --installed are for `workflow sweep`." if schedule && subcommand != "sweep"
@@ -5165,6 +5167,11 @@ module Workspace
         last = workflow_last(options[:last])
         scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
         result = @workflow_command.stats(workflow: subject, last: last, last_text: options[:last], scope: scope, json: options[:json])
+        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      when "compare"
+        last = workflow_last(options[:last])
+        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
+        result = @workflow_command.compare(workflow: subject, by: options[:compare_by] || "definition", last: last, last_text: options[:last], scope: scope, json: options[:json])
         @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
       when "audit"
         result = @workflow_command.audit(run: subject, step: options[:attempt_of], json: options[:json])

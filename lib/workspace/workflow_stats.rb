@@ -29,43 +29,21 @@ module Workspace
   class WorkflowStats
     # @param store [Workspace::WorkflowRunStore] reads the run files and their histories
     # @param clock [#call] returns the current Time
-    def initialize(store:, clock: -> { Time.now })
-      @store = store
-      @clock = clock
-    end
-
-    # The runs of a workflow that start inside the window, newest first. A run file that cannot be read as a
-    # run counts in `unreadable` (it cannot be told which workflow it belongs to, so it is counted at any
-    # scope). A run with no usable start time is left out of a window and named in `undated`.
-    #
-    # @param workflow [String] the definition id the runs were started from
-    # @param last [Numeric, nil] only runs that started in the last this many seconds (a run that started exactly then is in)
-    # @param include [#call, nil] given a run, true to keep it (a workspace or project filter)
-    # A run found in both directories (caught while moving to the archive) is read once, from the runs directory.
-    # @return [Hash{String=>Object}] "runs" (the stored runs), "unreadable" (a count) and "undated" (a count)
-    def runs(workflow:, last: nil, include: nil)
-      cutoff = last && (@clock.call - last)
-      undated = 0
-      kept = (@store.active + @store.archived).uniq { |run| run["id"] }.select do |run|
-        next false unless run["workflow"] == workflow
-        next false if include && !include.call(run)
-        next true unless cutoff
-        started = time_of(run["created_at"]) || time_of(run["started_at"])
-        undated += 1 unless started
-        started && started >= cutoff
-      end
-      {"runs" => kept.sort_by { |run| [run["created_at"].to_s, run["id"].to_s] }.reverse, "unreadable" => @store.unreadable(archived: true).size, "undated" => undated}
+    # @param loader [Workspace::WorkflowRunLoader] the run loading shared with `workflow compare`
+    def initialize(store:, clock: -> { Time.now }, loader: WorkflowRunLoader.new(store: store, clock: clock))
+      @loader = loader
     end
 
     # @param workflow [String]
-    # @param last [Numeric, nil] see {#runs}
-    # @param include [#call, nil] see {#runs}
+    # @param last [Numeric, nil] see {WorkflowRunLoader#load}
+    # @param include [#call, nil] see {WorkflowRunLoader#load}
+    # @param loaded [Hash, nil] the answer of {WorkflowRunLoader#load}, when the caller has read it already
     # @return [Hash{String=>Object}] "runs" (how many were read), "unreadable" (files that are no run, plus runs whose
     #   content was the wrong shape), "undated", "steps" (one row per step: "step", "attempts", "passed", "failed",
     #   "not_delivered", "unfinished", "median_seconds", "resumes", "tokens_from_unfinished" (attempts with no outcome whose tokens are in the mean), "tokens" => {"mean", "runs_counted", "runs_uncounted"})
     #   in the order of the newest run's definition then the others, and "unattributed_resumes"
-    def read(workflow:, last: nil, include: nil)
-      loaded = runs(workflow: workflow, last: last, include: include)
+    def read(workflow:, last: nil, include: nil, loaded: nil)
+      loaded ||= @loader.load(workflow: workflow, last: last, include: include)
       rows = {}
       unattributed = 0
       malformed = 0
@@ -74,7 +52,7 @@ module Workspace
       loaded["runs"].each do |run|
         row_ids = step_ids(run)
         found = tally(run)
-        resumes = resumes_of(run)
+        resumes = @loader.resumes(run)
       rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
         malformed += 1
       else
@@ -86,6 +64,20 @@ module Workspace
       end
       steps = order(rows, first_ids || []).map { |row| finish(row) }
       {"runs" => used, "unreadable" => loaded["unreadable"] + malformed, "undated" => loaded["undated"], "steps" => steps, "unattributed_resumes" => unattributed}
+    end
+
+    # How one attempt counts: `:passed` and `:failed` by its stored outcome, `:not_delivered` for one that never
+    # reached the agent (or was typed again), `:unfinished` for anything else.
+    #
+    # @param attempt [Hash{String=>Object}]
+    # @return [Symbol]
+    def self.kind_of(attempt)
+      return :not_delivered if attempt["outcome"] == "not_delivered" || attempt["redelivered"] == true
+      case attempt["outcome"]
+      when "passed" then :passed
+      when "failed" then :failed
+      else :unfinished
+      end
     end
 
     private
@@ -165,43 +157,13 @@ module Workspace
       !going
     end
 
-    def kind_of(attempt)
-      return :not_delivered if attempt["outcome"] == "not_delivered" || attempt["redelivered"] == true
-      case attempt["outcome"]
-      when "passed" then :passed
-      when "failed" then :failed
-      else :unfinished
-      end
-    end
+    def kind_of(attempt) = self.class.kind_of(attempt)
 
     def seconds_of(attempt)
-      started = time_of(attempt["started_at"])
-      ended = time_of(attempt["ended_at"])
+      started = @loader.time_of(attempt["started_at"])
+      ended = @loader.time_of(attempt["ended_at"])
       return nil unless started && ended && ended >= started
       ended - started
-    end
-
-    def time_of(text)
-      text.is_a?(String) ? Time.iso8601(text) : nil
-    rescue ArgumentError
-      nil
-    end
-
-    # {step id => count}; the key nil holds resumes that name no step.
-    def resumes_of(run)
-      counts = Hash.new(0)
-      since = 0
-      loop do
-        page = @store.events(run["id"], since: since)
-        page["events"].each do |event|
-          next unless event["type"] == "run_resumed"
-          step = [event["from"], event["step"]].find { |value| value.is_a?(String) && !value.empty? }
-          counts[step] += 1
-        end
-        break unless page["truncated"]
-        since = page["next_since"]
-      end
-      counts
     end
   end
 end

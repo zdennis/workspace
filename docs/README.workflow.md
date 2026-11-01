@@ -20,6 +20,7 @@ workspace workflow files RUN [--json]
 workspace workflow attempts RUN [--attempt-of STEP] [--json]
 workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
+workspace workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
@@ -46,6 +47,7 @@ workspace step status [--json]
 | `workflow attempts` | What a run recorded about each attempt, going or finished: outcome, failure code, HEAD before and after, hashes, packs, outputs, check, agent, session, tokens and reasons. Reads the run file and writes nothing. See [Reading a run's attempts](#reading-a-runs-attempts) |
 | `workflow audit` | Check the evidence copies a run kept against the hashes recorded for them, going or finished. Exits 1 when a copy changed, is gone or was replaced. Reads the run file and the evidence directory and writes nothing. See [Auditing a run's evidence](#auditing-a-runs-evidence) |
 | `workflow stats` | How each step of a workflow went across its runs, going and finished, in every workspace unless `--name` or `--project` narrows it: attempts, passes, failures, median time, resumes and tokens per run. `--last DURATION` keeps the runs started in that window. Reads the run files and writes nothing. See [Step statistics](#step-statistics) |
+| `workflow compare` | Sets a workflow's runs side by side, grouped by the definition they ran or by the text of one pack their agent was sent: runs, share that passed first time and resumes per run, always with a warning that it shows a direction and proves nothing. Reads the run files and writes nothing. See [Comparing runs](#comparing-runs) |
 | `workflow files` | The files a run keeps: each attempt's prompt, check log and proof logs and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
 | `workflow sweep` | One pass over the runs going: record a pane or agent that is gone, start an agent daemon that is not running, decide a step whose agent ended its turn unseen, and apply a step's `on_timeout`. Needs no agent daemon. See [Sweeping stopped runs](#sweeping-stopped-runs) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step. Refused with `--from` at a waiting gate from a pane a run is bound to. Run from the pane it would type into, it is [parked](#resuming-from-the-runs-own-pane) (outcome `parked`) and carried out after the agent ends its turn |
@@ -496,7 +498,41 @@ Where other attempts go: an attempt that was never delivered to the agent (`not_
 
 `TOKENS/RUN` never hides a missing count. An attempt whose `usage` is null (another agent than Claude Code, a run from before tokens were recorded, or a heavy attempt the transcript tail could not cover) makes its whole run uncounted for that step. The mean is over the counted runs only; `*` after it marks a step where some runs were left out, and `-` a step where no run was counted. `--json` gives `runs_counted` and `runs_uncounted` for every step.
 
-`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"runs":N,"unreadable":N,"undated":N,"unattributed_resumes":N,"steps":[...]}`, each step `{"step","attempts","passed","failed","not_delivered","unfinished","median_seconds":N-or-null,"resumes","tokens_from_unfinished","tokens":{"mean":N-or-null,"runs_counted","runs_uncounted"}}`. A run file that cannot be read (the runs directory or the archive) counts in `unreadable`, since it cannot be told which workflow it belongs to: a damaged file of another workflow makes `partial` too; then `status` is `partial`, the exit code is 3 and the text output warns, because the figures are incomplete. Needs `workflow` 23 in `capabilities`.
+`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"runs":N,"unreadable":N,"undated":N,"unattributed_resumes":N,"steps":[...]}`, each step `{"step","attempts","passed","failed","not_delivered","unfinished","median_seconds":N-or-null,"resumes","tokens_from_unfinished","tokens":{"mean":N-or-null,"runs_counted","runs_uncounted"}}`. A run file that cannot be read (the runs directory or the archive) counts in `unreadable`, since it cannot be told which workflow it belongs to: a damaged file of another workflow makes `partial` too; then `status` is `partial`, the exit code is 3 and the text output warns, because the figures are incomplete. Needs `workflow` 23 in `capabilities` (`compare`: 24).
+
+### Comparing runs
+
+`workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]` sets the runs of definition `ID` side by side, to see whether a change to the definition or to a pack moved the results:
+
+```
+$ workspace workflow compare rpiv-auto-approve --by pack:plan-review
+SHA       RUNS  PASS-1ST  RESUMES/RUN
+1dd4e0aa     6       33%          1.5
+9ae2b7c1     4       75%          0.5
+Too few runs to call this a difference; tasks also differ between runs, so this shows a direction and does not prove a cause.
+```
+
+Scope, `--last`, `--name`, `--project` (`--all` is refused), an `ID` with no definition on disk and the damaged-file behaviour are those of [`workflow stats`](#step-statistics): unreadable run files make `status` `partial`, exit 3 and a warning. `--by` is `definition` (the default) or `pack:NAME`; any other text is a usage error. It reads only what each run stored, so older runs can lack the hashes.
+
+A run counts in exactly one group:
+
+| `--by` | The run's group |
+|--------|-----------------|
+| `definition` | The run's `definition_sha256` (the definition it was started from, kept whole in the run, so it cannot change mid-run), else the one `definition_sha256` its attempts agree on |
+| `pack:NAME` | The `sha256` of pack `NAME` (its name or its full ref) in the `packs` its delivered attempts recorded. The pack's text can change between attempts of one run: such a run is in the `mixed` group, under neither sha |
+
+A run with no readable hash is in the `unknown` group: for `pack:`, a run whose delivered attempts recorded no `packs` at all (stored before they were recorded) or no hash for the pack. A run whose attempts recorded `packs` without `NAME`, and a run that never delivered an attempt (`not_delivered` only, or none), are in no group and are counted apart (`without_pack`, `no_attempts`). A `NAME` no run used is not an error: the groups are empty (exit 0), because an archived run may not have kept it, and the output says so.
+
+| Column | Meaning |
+|--------|---------|
+| `SHA` | The first 8 characters in the table, all 64 in `--json`; `unknown` and `mixed` as described above |
+| `RUNS` | Every run in the group, going and finished |
+| `PASS-1ST` | The share of the group's settled runs that were a first try: they `completed` and every step they reached had exactly one delivered attempt, which passed. A rejected gate, a `resume --from` rerun or a loop adds an attempt, so it is a miss. An attempt that never reached the agent does not count, so a redelivery is not a miss. Settled runs are: every `completed` run, and a `cancelled` run or a run waiting on `failed_check` or `budget_spent` that missed. A cancelled run with no miss and any other run still going are left out (`cancelled` and `running` in `--json`), so an abandoned clean run or a run in progress counts neither way. A stuck run counts as a miss while it waits (`stuck` in `--json`); a later resume can move it to a completed miss, never to a first try. `-` when none settled. `resume --pane` on a running step whose pane died starts a second attempt, so it reads as a miss though nothing failed (accepted). In a completed run an attempt with no outcome (passed over by `resume --from` a later step) is a miss too. No run is stored as `failed`: the engine ends runs `completed` or `cancelled` |
+| `RESUMES/RUN` | The `run_resumed` events in the group's histories (every run of the group, counted as in `workflow stats`) divided by `RUNS`, one decimal |
+
+The output always ends with the sample warning, and `--json` always carries it as `warning`. Its first clause, `Too few runs to call this a difference;`, is dropped once every group has at least 20 settled runs and there are at least two groups. The rest stays: the tasks differ between runs, so compare shows a direction and does not prove a cause.
+
+`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"by":"definition"|"pack:NAME","runs":N,"matched":N,"without_pack":N,"no_attempts":N,"unreadable":N,"undated":N,"warning":TEXT,"groups":[...]}`, each group `{"sha","runs","settled","first_try","pass_first_percent":N-or-null,"running","cancelled","stuck","resumes","resumes_per_run"}`. `runs` counts the runs read and `matched` those in a group. Needs `workflow` 24 in `capabilities`.
 
 ### Auditing a run's evidence
 

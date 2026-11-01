@@ -32,6 +32,7 @@ module Workspace
       # @param sweep [Workspace::WorkflowSweep, nil] looks at the runs still going and acts on the stopped ones (`sweep`)
       # @param needs_me [Workspace::WorkflowNeedsMe, nil] narrows the runs to the ones that wait for a person (`status --needs-me`)
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
+      # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -40,7 +41,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, pid: Process.pid,
+      def initialize(catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, compare: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -55,6 +56,7 @@ module Workspace
         @schedule = schedule
         @needs_me = needs_me
         @stats = stats
+        @compare = compare
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -335,11 +337,7 @@ module Workspace
       # @return [Hash] `exit_code` 3 when a run file could not be read (the figures are then incomplete), else 0
       def stats(workflow:, last: nil, last_text: nil, scope: nil, json: false)
         raise Workspace::Error, "workflow stats is not available: no stats reader was wired" unless @stats
-        include = if scope&.workspace
-          ->(run) { run["workspace"] == scope.workspace }
-        elsif scope&.project
-          ->(run) { @status.in_project?(run, scope.project) }
-        end
+        include = scope_filter(scope)
         result = @stats.read(workflow: workflow, last: last, include: include)
         partial = result["unreadable"].positive?
         if json
@@ -349,6 +347,34 @@ module Workspace
             "unattributed_resumes" => result["unattributed_resumes"], "steps" => result["steps"])
         else
           print_stats(workflow, last_text, result)
+        end
+        {exit_code: partial ? 3 : 0}
+      end
+
+      COMPARE_HEADER = %w[SHA RUNS PASS-1ST RESUMES/RUN].freeze
+
+      # Prints the runs of a workflow in groups by definition or pack text, side by side (see
+      # {Workspace::WorkflowCompare} for what a run counts under and what PASS-1ST means), and always the
+      # warning that this shows a direction and proves nothing. Reads the run files and writes nothing.
+      #
+      # @param workflow [String] a definition id; it need not exist now
+      # @param by [String] "definition" or "pack:NAME"
+      # @param last [Numeric, nil] only runs started in the last this many seconds
+      # @param last_text [String, nil] the `--last` text
+      # @param scope [Workspace::StatusScope::Scope, nil] narrows to one workspace or project
+      # @param json [Boolean]
+      # @return [Hash] `exit_code` 3 when a run file could not be read, else 0
+      # @raise [Workspace::UsageError] for a `by` that is not `definition` or `pack:NAME`
+      def compare(workflow:, by: "definition", last: nil, last_text: nil, scope: nil, json: false)
+        raise Workspace::Error, "workflow compare is not available: no compare reader was wired" unless @compare
+        result = @compare.read(workflow: workflow, by: by, last: last, include: scope_filter(scope))
+        partial = result["unreadable"].positive?
+        if json
+          document("workflow" => workflow, "status" => partial ? "partial" : "ok", "last" => last_text,
+            "since" => last && (@clock.call - last).utc.iso8601, "workspace" => scope&.workspace, "project" => scope&.project&.name,
+            **result)
+        else
+          print_compare(workflow, last_text, result)
         end
         {exit_code: partial ? 3 : 0}
       end
@@ -660,6 +686,45 @@ module Workspace
         end
         return unless summary
         @output.puts "Looked at #{rows.size} run#{"s" unless rows.size == 1}; #{shown.empty? ? "nothing to report" : "#{shown.size} reported above"}."
+      end
+
+      def scope_filter(scope)
+        if scope&.workspace
+          ->(run) { run["workspace"] == scope.workspace }
+        elsif scope&.project
+          ->(run) { @status.in_project?(run, scope.project) }
+        end
+      end
+
+      def print_compare(workflow, last_text, result)
+        window = last_text ? " started in the last #{TerminalText.escape(last_text)}" : ""
+        name = TerminalText.escape(workflow)
+        by = TerminalText.escape(result["by"])
+        groups = result["groups"]
+        if groups.empty?
+          what = result["by"].start_with?("pack:") ? "run of #{name}#{window} used #{by.sub("pack:", "pack ")}" : "run of #{name}#{window}"
+          @output.puts "No #{what}."
+        else
+          rows = [COMPARE_HEADER] + groups.map { |each| compare_cells(each).map { |cell| TerminalText.escape(cell) } }
+          widths = rows.transpose.map { |column| column.map(&:length).max }
+          rows.each { |line| @output.puts line.each_with_index.map { |cell, i| i.zero? ? cell.ljust(widths[i]) : cell.rjust(widths[i]) }.join("  ") }
+          @output.puts "#{result["matched"]} #{(result["matched"] == 1) ? "run" : "runs"} of #{name}#{window}, grouped by #{by}."
+        end
+        running = groups.sum { |each| each["running"] }
+        cancelled = groups.sum { |each| each["cancelled"] }
+        @output.puts "PASS-1ST is the share of settled runs that completed with every step passing on its one delivered attempt. Settled: completed, or cancelled or stuck after a miss (a stuck run counts as a miss while it waits)." if groups.any?
+        @output.puts "#{running} run#{"s" unless running == 1} still going and #{cancelled} cancelled with no miss, left out of PASS-1ST." if running.positive? || cancelled.positive?
+        @output.puts "#{result["without_pack"]} run#{"s" unless result["without_pack"] == 1} did not use #{by.sub("pack:", "pack ")} and #{(result["without_pack"] == 1) ? "is" : "are"} in no group." if result["without_pack"].positive?
+        @output.puts "#{result["no_attempts"]} run#{"s" unless result["no_attempts"] == 1} never delivered an attempt and #{(result["no_attempts"] == 1) ? "is" : "are"} in no group." if result["no_attempts"].positive?
+        @output.puts "unknown: runs stored without the hash; mixed: runs that saw more than one." if groups.any? { |each| %w[unknown mixed].include?(each["sha"]) }
+        @output.puts result["warning"]
+        @output.puts "Warning: #{result["undated"]} run#{"s" unless result["undated"] == 1} with no start time left out of the window." if result["undated"].positive?
+        @output.puts "Warning: #{result["unreadable"]} run file#{"s" unless result["unreadable"] == 1} could not be read; the figures are incomplete." if result["unreadable"].positive?
+      end
+
+      def compare_cells(group)
+        percent = group["pass_first_percent"] ? "#{group["pass_first_percent"]}%" : "-"
+        [group["sha"].to_s[0, 8], group["runs"], percent, format("%.1f", group["resumes_per_run"])].map(&:to_s)
       end
 
       def print_stats(workflow, last_text, result)

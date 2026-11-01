@@ -549,6 +549,41 @@ module Workspace
           ["workspace workflow stats rpiv --json", "for a script: counts, median_seconds and tokens per step"]
         ]
       },
+      "compare" => {
+        usage: ["workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Set a workflow's runs side by side, grouped by definition or pack text",
+        about: [
+          "ID is a workflow definition id; it need not exist now. Covers the runs going and finished, in every workspace unless",
+          "--name or --project narrows it. --by definition (the default) groups runs by the sha256 of the definition they ran;",
+          "--by pack:NAME groups them by the sha256 of that pack's text in the instructions their agent was sent. A run counts in one",
+          "group. If a pack's text changed between a run's attempts, the run is in the mixed group; a run stored without the hash",
+          "is in the unknown group. A run that did not use the pack, or never delivered an attempt, is counted apart and in no group,",
+          "and a pack no run used gives no groups (exit 0), since archived runs may not have kept it.",
+          "",
+          "RUNS is every run in the group. PASS-1ST is the share of settled runs that were a first try: they completed and every",
+          "step they reached had one delivered attempt, which passed (a rejected gate, a `resume --from` rerun or a loop is a miss;",
+          "an attempt that never reached the agent is not). Settled runs: every completed run, plus a cancelled run or a run waiting",
+          "on failed_check or budget_spent that missed. A clean cancelled run and a run still going are left out. A stuck run counts",
+          "as a miss while it waits; resuming it can only make it a completed miss, never a first try.",
+          "RESUMES/RUN is the group's `workflow resume` count (every run in it) divided by its runs. SHA is the first 8 characters; --json has all 64.",
+          "",
+          "This shows a direction and proves nothing: the tasks differ between runs. The result always ends with a warning saying",
+          "so (the `warning` key of --json), and says the sample is too small while any group has fewer than 20 settled runs or there",
+          "is only one group. A run file that cannot be read exits 3 (status partial), as in `workflow stats`."
+        ],
+        options: [
+          ["--by GROUP", "definition (default) or pack:NAME, a pack's name such as plan-review"],
+          ["--last DURATION", "Only runs started in the last DURATION (30d, 2w, 12h, 90m); a bare number means seconds"],
+          name_opt("Only that workspace's runs"),
+          ["--project [NAME]", "Only that project's runs (NAME, or the project of the current workspace)"],
+          JSON_OPT
+        ],
+        examples: [
+          ["workspace workflow compare rpiv-auto-approve", "runs grouped by the definition they ran"],
+          ["workspace workflow compare rpiv-auto-approve --by pack:plan-review", "did changing that pack's text change the results?"],
+          ["workspace workflow compare rpiv --by pack:commits --last 30d --json", "for a script: groups with full shas, counts and the warning"]
+        ]
+      },
       "sweep" => {
         usage: ["workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]", "workflow sweep --install | --uninstall [--dry-run] [--json]", "workflow sweep --installed [--json]"],
         summary: "One pass over the runs going: act on the ones that have stopped",
