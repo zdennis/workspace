@@ -22,6 +22,16 @@ module Workspace
       # The workspace name `render` shows when the working directory is in no workspace.
       RENDER_WORKSPACE = "<workspace>".freeze
 
+      # Why a report's code is refused for being one the engine sets itself; nil for any other. The one rule
+      # `step done --code` and `workflow simulate`'s `code:` share.
+      #
+      # @param code [String, nil]
+      # @return [String, nil] the sentence after "--code ", or nil when the code is allowed
+      def self.engine_code_refusal(code)
+        return nil unless code && Workspace::WorkflowEngine::ENGINE_CODES.include?(code)
+        "#{code} is a word the engine sets itself (#{Workspace::WorkflowEngine::ENGINE_CODES.join(", ")}); choose another."
+      end
+
       # What `step done --status` accepts.
       REPORT_STATUSES = %w[pass fail].freeze
 
@@ -39,6 +49,7 @@ module Workspace
       # @param needs_me [Workspace::WorkflowNeedsMe, nil] narrows the runs to the ones that wait for a person (`status --needs-me`)
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
       # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
+      # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -48,7 +59,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, compare: nil, step_check: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -66,6 +77,7 @@ module Workspace
         @stats = stats
         @compare = compare
         @step_check = step_check
+        @simulator = simulator
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -210,6 +222,27 @@ module Workspace
           @error_output.puts check_summary(result)
         end
         {exit_code: result["passed"] ? 0 : 1}
+      end
+
+      # Plays a workflow through the real engine with the scripted fake agent in +script+ and prints the
+      # transitions (see {Workspace::WorkflowSimulator}). It makes no real run, pane, lock, inbox item or
+      # notification, and writes only to a temporary directory it removes. A simulated stop (a failed check,
+      # a spent budget) is the answer, not an error: the exit code is 0.
+      #
+      # @param id [String] a workflow id
+      # @param script [String] the path of the script file
+      # @param inputs [Hash{String=>String}] input values; they win over the script's `inputs:`
+      # @param json [Boolean]
+      # @return [void]
+      # @raise [Workspace::Error] code `unknown_workflow`, `invalid_workflow`, `invalid_script`, `input_required`, `invalid_input`
+      # @raise [Workspace::UsageError] when the script can't be read
+      def simulate(id:, script:, inputs: {}, json: false)
+        raise Workspace::Error, "workflow simulate is not available: no simulator was wired" unless @simulator
+        definition = @catalog.find(id)
+        parsed = WorkflowSimScript.parse(read_script(script), definition: definition.to_h, source: script)
+        result = @simulator.call(definition: definition, script: parsed, inputs: inputs)
+        return document(result.merge("script" => script)) if json
+        print_simulation(result, script)
       end
 
       # Saves a definition as a user's file, `ID.yml` in the workflows directory, after
@@ -656,8 +689,8 @@ module Workspace
       def step_done(pane:, status: "pass", summary: nil, code: nil)
         raise UsageError, "--status must be pass or fail, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
         raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || CODE_PATTERN.match?(code)
-        if code && Workspace::WorkflowEngine::ENGINE_CODES.include?(code)
-          raise UsageError, "--code #{code} is a word the engine sets itself (#{Workspace::WorkflowEngine::ENGINE_CODES.join(", ")}); choose another."
+        if (refusal = self.class.engine_code_refusal(code))
+          raise UsageError, "--code #{refusal}"
         end
         run_id = bound_run!(pane)
         reported = @engine.report(run_id, status: status, summary: summary, code: code)
@@ -728,6 +761,39 @@ module Workspace
         made = result["artifacts_created"] ? " (made for this check, empty)" : ""
         "step #{TerminalText.escape(result["step"])} check #{result["passed"] ? "passed" : "failed"}: #{how}, #{result["duration"]}s; log #{TerminalText.escape(result["log"])}; " \
           "artifacts #{TerminalText.escape(result["artifacts"])}#{made}"
+      end
+
+      # The script's text, read as bytes so that a file that is not UTF-8 is a problem the script check lists.
+      def read_script(path)
+        raise UsageError, "Can't read #{path}: not a regular file" unless File.stat(path).file?
+        File.binread(path, WorkflowSimScript::MAX_BYTES + 1).to_s.dup.force_encoding(Encoding::UTF_8)
+      rescue SystemCallError => e
+        raise UsageError, "Can't read #{path}: #{e.message.sub(/ (@ .*)?- .*\z/, "")}"
+      end
+
+      # The text of `simulate`: the outcome, the history as it happened, then each step's attempts and the budget.
+      def print_simulation(result, script)
+        @output.puts "Simulated #{TerminalText.escape(result["workflow"])} with #{TerminalText.escape(script)}: #{result["actions"]} actions, outcome #{result["outcome"]}."
+        if result["capped"]
+          @output.puts "The simulation was cut off after #{result["max_actions"]} actions (the cap) with the run still going; the history below is what happened before that."
+        elsif (stopped = result["stopped"])
+          at = "step #{TerminalText.escape(stopped["step"])}#{", attempt #{stopped["attempt"]}" if stopped["attempt"]}"
+          @output.puts "The run stopped at #{at}, waiting for a person: #{TerminalText.escape(stopped["reason"] || "no reason stored")}."
+        end
+        @output.puts ""
+        result["transitions"].each do |event|
+          details = event.except("n", "at", "type").map { |key, value| "#{key}=#{TerminalText.escape(value.is_a?(String) ? value : JSON.generate(value))}" }
+          @output.puts "  #{format("%3d", event["n"])}  +#{event["at"]}s  #{TerminalText.escape(event["type"])}#{"  #{details.join(" ")}" unless details.empty?}"
+        end
+        @output.puts ""
+        result["steps"].each do |step|
+          outcomes = step["attempts"].map { |each| "#{each["outcome"] || "unfinished"}#{" (#{each["code"]})" if each["code"]}" }
+          @output.puts "#{TerminalText.escape(step["id"])}: #{step["attempts"].size} attempt#{"s" unless step["attempts"].size == 1}#{": #{outcomes.join(", ")}" unless outcomes.empty?}"
+        end
+        if (budget = result["budget"])
+          @output.puts "tokens: #{budget["used"]} of #{budget["allowance"]} used#{" (spent)" if budget["spent"]}"
+        end
+        @output.puts "Nothing ran: status checks and require proofs came from the script, and no real run, pane, lock or inbox item was made."
       end
 
       # The instructions to the output: as they are to a pipe or file, with each line escaped on a terminal.

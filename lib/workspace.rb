@@ -327,6 +327,8 @@ require_relative "workspace/workflow_needs_me"
 require_relative "workspace/workflow_run_loader"
 require_relative "workspace/workflow_stats"
 require_relative "workspace/workflow_compare"
+require_relative "workspace/workflow_sim_script"
+require_relative "workspace/workflow_simulator"
 require_relative "workspace/workflow_run_health"
 require_relative "workspace/workflow_sweep"
 require_relative "workspace/sweep_schedule"
@@ -673,6 +675,7 @@ module Workspace
       stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader),
       compare: WorkflowCompare.new(loader: workflow_run_loader),
       step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
+      simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { WorkflowEngine.new(**parts) }),
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,

@@ -464,6 +464,40 @@ module Workspace
           ["workspace workflow check rpiv verify --json", "one document: passed, exit_code, log and artifacts"]
         ]
       },
+      "simulate" => {
+        usage: ["workflow simulate ID --script FILE [--input KEY=VALUE]... [--json]"],
+        summary: "Play a workflow through the real engine with a scripted fake agent and print the transitions",
+        about: [
+          "Tests a workflow's loops, gates, retries and token budget without spending a run. The real engine moves the",
+          "run; a fake agent acts when a step waits for it: it writes the step's `produces` files, reports if the script",
+          "says so, and ends its turn. A fake person approves or rejects each gate. The simulation ends when the run",
+          "finishes, when it waits for a person (a failed check, a spent budget, a missing file), or after 200 actions,",
+          "which it says.",
+          "",
+          "Nothing real is touched: the run, checkout and files live in a temporary directory that is removed, the pane",
+          "is only a name, and no tmux, agent daemon, lock, inbox, notification or event log is used. `status:` checks",
+          "and `require:` proofs are never run; the script states how each comes out. A stop is the answer, not an",
+          "error: the exit code is 0. Time moves a second per agent turn and when a retry's backoff is waited out.",
+          "",
+          "The script is YAML with `inputs:` (values for the workflow's inputs; --input wins) and `steps:`, a list per",
+          "step with one entry per attempt, in order. An attempt with no entry does the plain thing: writes every file,",
+          "passes its check and proofs, approves its gate, uses no tokens. Keys of an attempt:",
+          "  writes: [FILE]   the files written (default: all of the step's produces:)",
+          "  report: pass|fail, summary: TEXT, code: WORD   what `step done` says",
+          "  check: pass|fail|timeout|error, log: TEXT   how the `status:` check ends, and its log",
+          "  require: {NAME: pass|fail}   how each `require:` proof ends",
+          "  gate: approve|reject, note: TEXT   the person's decision at the step's gate",
+          "  tokens: N   the attempt's tokens, counted against `budget:`",
+          "A script with an unknown key, a step, input, file or proof the workflow lacks, or a bad value is refused with",
+          "invalid_script, listing every problem."
+        ],
+        options: [["--script FILE", "The script (required; at most 64 KiB)"], ["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable)"], JSON_OPT],
+        examples: [
+          ["workspace workflow simulate rpiv --script fail-verify-twice.yml", "see the verify loop send the run back to implement twice"],
+          ["workspace workflow simulate rpiv --script spend-tokens.yml --input task=x", "see a budget hold the run before an attempt"],
+          ["workspace workflow simulate explore --script gate-reject.yml --json", "one document: the outcome, each step's attempts and every transition"]
+        ]
+      },
       "start" => {
         usage: ["workflow start --ref REF [--force] [--dry-run] [--json]", "workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",

@@ -228,6 +228,7 @@ module Workspace
       "use_ask_answer" => "An `ask:` id can't be acked or snoozed: a question leaves the inbox when it is answered or withdrawn. `details.id`.",
       "invalid_cursor" => "events --since was given something that isn't a cursor an events line printed.",
       "invalid_workflow" => "A workflow definition file doesn't pass the checks.",
+      "invalid_script" => "workflow simulate: the script has a problem (not YAML, an unknown key, a step, input, file or proof the workflow lacks, a bad value, over 64 KiB). details.script, details.workflow, details.problems (every one, up to 50), details.count.",
       "invalid_input" => "A workflow input's value doesn't match the `pattern:` its definition declares. `details.workflow`, `details.input`, `details.pattern`; never the value.",
       "workflow_exists" => "workflow add found a user's file of that id already there (a link counts); nothing was written. details.workflow, details.path.",
       "stale_workflow" => "workflow update --if-sha256: the user's file changed since that sha256 (or can't be read). details.sha256 is the current one, details.workflow, details.path.",

@@ -13,6 +13,7 @@ workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow render ID STEP [--name WORKSPACE] [--input KEY=VALUE]... [--json]
 workspace workflow check ID STEP [--artifacts DIR] [--name WORKSPACE] [--json]
+workspace workflow simulate ID --script FILE [--input KEY=VALUE]... [--json]
 workspace workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]
                          [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]
 workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]
@@ -59,13 +60,15 @@ workspace step status [--json]
 | `workflow approve` | Pass a gate. Refused from a pane a run is bound to, and from a process under the run's own pane, so an agent doesn't approve its own plan by mistake. Records the gate's note when it names one. See [Passing a gate](#passing-a-gate) |
 | `workflow reject` | Turn a gate down: the gated step, or an earlier one named with `--to`, runs again with the note in its instructions. Refused where `approve` is |
 | `step done` | For the agent: record what it says about its step, then end the turn. Optional |
+| `workflow simulate` | Play a workflow through the real engine with a scripted fake agent and print the transitions; nothing real runs. See [Simulating a workflow](#simulating-a-workflow) |
 | `step status` | For the agent: which run, step and attempt its pane is on, and whether the files the step must leave exist |
 
 | Option | Description |
 |--------|-------------|
 | `--name WORKSPACE` | `run`: the workspace to run in. `render`, `check`: the workspace whose packs and commands are read. `status`: only this workspace's runs still going |
 | `--artifacts DIR` | `check`: an existing directory standing for the run's artifacts (`WORKSPACE_RUN_ARTIFACTS`); default an empty temporary one |
-| `--input KEY=VALUE` | `run`, `start`, `render`: a value for one of the workflow's inputs (repeatable) |
+| `--script FILE` | `simulate`: the script of what the fake agent does and how each check comes out |
+| `--input KEY=VALUE` | `run`, `start`, `render`, `simulate`: a value for one of the workflow's inputs (repeatable) |
 | `--note TEXT` | `run`, `start`: added to every step's instructions. `resume`, `approve`, `reject`: added to the next attempt's |
 | `--pane PANE` | `run`, `resume`: the pane to run in (`%19` or `0.1`), instead of the workspace's Claude pane |
 | `--from STEP` | `resume`: start again at this step |
@@ -419,6 +422,43 @@ On a terminal the text is written with control, bidi and zero-width characters e
 **Artifacts.** `--artifacts DIR` must be an existing directory (a relative path is taken from the current directory); otherwise it is `artifacts_not_directory`. It is what `WORKSPACE_RUN_ARTIFACTS` holds, and workspace never writes to it. Without `--artifacts` an empty directory is made in a new temporary directory and reported on stderr (`artifacts_created` in `--json`), so a check that reads a file fails the way it would in a run that wrote none. The check log is always written in that temporary directory (`workspace-check-*` under the system temp directory), never in a run's area, and is left in place; its path is reported. The next check removes this user's `workspace-check-*` directories a day old or more (links are not followed). The log's size is not bounded, as a run's check log is not. A check that runs for more than a day can lose its directory to another check's sweep. An empty `--artifacts ''` is refused like any other path that is not a directory. Nothing else changes: no run file, event, binding or lock. A step's `uses:` locks are not taken, so a check that needs the dev environment or test database must be run with the same care as running that command by hand.
 
 **Output and exit.** The last 40 lines of the check's output go to the output (escaped through `TerminalText` on a terminal, as `render` does); a summary line (passed or failed, the exit code or timeout, the duration, the log and artifacts paths) goes to stderr. Exit 0 when the check passes, 1 when it fails, times out or can't start. `--json` prints `ok: true` with a `passed` boolean (the check ran; as `workflow audit` prints `clean`) and exits 0 or 1 by it.
+
+### Simulating a workflow
+
+`workflow simulate ID --script FILE` walks the real engine through a workflow with a scripted fake agent and prints every transition, so a loop, a retry's backoff, a gate or a token budget can be tried without spending a run:
+
+```
+workspace workflow simulate rpiv --script fail-verify-twice.yml --input task=x
+```
+
+The engine is the real one (`WorkflowEngine`); what it touches is replaced. The run file, its history, the checkout and the artifacts live in a temporary directory that is removed afterwards. The pane is only a name. There is no tmux, agent daemon, lock, inbox item, notification or event-log line, and nothing is written to the real run store. `status:` commands and `require:` proofs are never run: the script says how each ends. Time moves a second for each agent turn (so a file an earlier attempt left reads as stale, as in a real run) and when a retry's `backoff:` is waited out, so the same script prints the same transcript every time.
+
+The fake agent acts when a step waits for it. It writes the step's `produces:` files (non-empty, as a strict run needs), reports if the script says so, and ends its turn, which is what makes the engine decide the step. At a gate a fake person approves or rejects. The simulation ends when the run is `completed`, `failed` or `cancelled`, when it waits for a person (outcome `stopped`: a `failed_check` once `on_fail` and `max_attempts` are used up, a spent token budget, a turn that ended without its files, or an engine refusal, which the history shows as `simulated_refused`), or when it has taken 200 actions (outcome `capped`, `capped: true`, and the text says so). A stop is the answer, not an error: the exit code is 0.
+
+The script is YAML, at most 64 KiB, with two keys. `inputs:` gives values for the workflow's inputs (`--input` wins). `steps:` maps a step id to a list with one entry per attempt of that step, counting an `on_fail` loop's reruns and a rejected gate's:
+
+```yaml
+inputs: {task: add a hello script}
+steps:
+  verify:
+    - {check: fail, log: "2 failures", tokens: 40000}   # attempt 1
+    - {check: fail, tokens: 40000}                      # attempt 2
+    - {}                                                # attempt 3 passes
+```
+
+| Key of an attempt | Meaning (default) |
+|-------------------|-------------------|
+| `writes` | The `produces:` files written (all of them) |
+| `report`, `summary`, `code` | What `step done` says; `report: fail` fails the step at the turn's end (nothing reported) |
+| `check` | How the step's `status:` check ends: `pass`, `fail`, `timeout` or `error` (`pass`); only for a step that has one |
+| `log` | The check log's text, which `on_fail`'s `log_tail` reads |
+| `require` | A map of the step's `require:` names to `pass` or `fail` (`pass`); a failing one fails the step with `require_NAME` |
+| `gate`, `note` | `approve` or `reject` at the step's gate, and the note (`approve`) |
+| `tokens` | The attempt's output tokens, counted against `budget:` (0) |
+
+An attempt the list has no entry for does the plain thing. A script with a key, step, input, file or proof the workflow does not have, a bad value, a `code:` the engine sets itself (as `step done --code` refuses), or text that is not YAML is refused with `invalid_script`, listing every problem in `details.problems`. The composed instructions are the workflow's and the step's own text, without library packs: use `workflow render` for the real text.
+
+Limits: the checkout stub reads no repository, so a `guard:` can never fail and no `guard` failure can be scripted; `start`'s refusals for an unset `commands.test`/`lint` and for a first-step pack the library can't find are not made here (use `workflow validate`); locks are always free, so a `uses:` wait is not simulated; there is no daemon, so a sweep, a timeout or a lost turn is not either; a person's `resume` is not scripted, so a stop ends the simulation.
 
 ### Adding a definition
 
@@ -1029,6 +1069,8 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 `workflow render --json` prints `{"schema_version":1,"ok":true,"workflow":ID,"step":STEP,"workspace":NAME,"worktree":PATH,"inputs":{},"gate":"approve"-or-null,"packs":[REF,...],"instructions_path":PATH,"previews":[{"name":"run","value":"wr_preview"},...],"warnings":[{"code":"not_in_checkout","message":TEXT}],"text":TEXT}` (`text` is the instructions unescaped; `instructions_path` is where a real attempt's file would go; needs `workflow` 25; see [rendering](#rendering-a-steps-instructions)).
 
+`workflow simulate --json` prints `{"schema_version":1,"ok":true,"workflow":ID,"script":PATH,"inputs":{},"outcome":"completed"|"failed"|"cancelled"|"stopped"|"capped","stopped":{"step","attempt","reason"}-or-null,"capped":BOOL,"max_actions":200,"actions":N,"run":{"state","current","reason","loops"},"steps":[{"id","state","attempts":[{"n","outcome","code"}]}],"budget":{...}-or-null,"transitions":[{"n","at","type",...}]}`. `at` is seconds into the simulated time; each transition carries the keys of the run-history event of that `type`, plus `simulated_agent`, `simulated_person`, `simulated_wait` and `simulated_refused` lines for the fake agent's and person's own moves. `budget` is the run's token reading (`used`, `allowance`, `spent`, ...) when the definition declares one.
+
 `workflow update --json` prints the same row with `outcome` `updated` (or `dry_run`) and the new `sha256`. Refusals print the error envelope: `invalid_workflow`, `unknown_workflow`, `builtin_workflow` (`details.workflow`), `stale_workflow` (`details.workflow`, `details.path`, `details.sha256` of the current file, or `null` when unreadable) or `usage`. For example `{"schema_version":1,"ok":false,"error":"The workflow file /home/me/.config/workspace/workflows/ship.yml changed: its sha256 is 9f2c..., not ab12.... Nothing was changed.","details":{"workflow":"ship","path":"/home/me/.config/workspace/workflows/ship.yml","sha256":"9f2c..."}}`.
 
 `workflow remove --json` prints the same row with `outcome` `removed` (or `dry_run`), `workflow` and `path` (the file removed, or that would be). Refusals print the error envelope: `invalid_workflow` (an id that could not be a file name, or a directory at the path), `unknown_workflow`, `builtin_workflow`, `confirmation_required` or `usage`.
@@ -1075,6 +1117,8 @@ workspace workflow render rpiv plan --input task="add a hello script"
 workspace workflow render rpiv plan --input task=x --json | jq -r .text
 workspace workflow check rpiv-auto-approve plan_review --artifacts ./fixture
 workspace workflow check rpiv verify --json | jq .passed
+workspace workflow simulate rpiv --script fail-verify-twice.yml --input task=x
+workspace workflow simulate rpiv --script fail-verify-twice.yml --input task=x --json | jq '.steps'
 workspace workflow run rpiv --name my-app.worktree-pdf --input task="PROJ-101 invoice PDF export" --dry-run
 workspace workflow run rpiv --input task="PROJ-101 invoice PDF export" --note "Keep the public API as it is."
 workspace workflow start rpiv PROJ-101 --dry-run --json
