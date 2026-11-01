@@ -1,6 +1,6 @@
 ---
 name: workspace-lifecycle
-description: "Create, bring back and end `workspace` projects and worktrees: `start` from a ticket, PR or branch; `launch` (open a project's panes in iTerm); `promote` main changes or commits made on main by mistake; `restore` after a reboot; wind down: stop, finish, kill, prune (merged PRs), remove a stale config. Not plain git branches. Never end one unasked: read the which-ending table first."
+description: "Create, bring back and end `workspace` projects and worktrees: `start` from a ticket, PR or branch; `launch` (open panes in iTerm); `promote` changes or commits made on main by mistake; `restore` after a reboot; wind down: stop, finish, kill, prune (merged PRs), remove stale config. Not plain git branches or workflow runs (workspace-workflow). Never end one unasked: read the which-ending table."
 ---
 
 Written against workspace 0.75.0; check with the working --help form.
@@ -51,7 +51,7 @@ These create or bring back work. Do them when the task calls for it and say what
 
 `start` has no `--dry-run`. An unknown play, pack, agent, skill or recipe fails before anything is created.
 
-`go [REF | "TEXT"]` starts a workflow with one argument: a ticket, PR, issue or branch, or text with a space that names a new branch. In a linked worktree workspace off the default branch it runs the workflow there (bare `go` too); anywhere else it makes or reuses a worktree workspace, as `workflow start` does. It prints the workflow it chose and why (`--workflow`, then `workflows.by_ref.KIND`, `workflows.default`, then `pr-feedback` for a PR, else `rpiv`). Free text does not become the `task` input for a new worktree: pass `--input task=TEXT`. It refuses the default branch and the main checkout's branch (`branch_not_allowed`), a branch name that already exists (`branch_exists`) and an unknown or case-different name (`unknown_ref`, `details.did_you_mean`). Run `go ... --dry-run --json` first.
+To start a workflow, use skill workspace-workflow.
 
 `launch PROJECT...` opens existing projects in iTerm2 (`--headless` for plain tmux). It accepts `--prompt`, `--play` and `--pack` (no `--recipe`, `--agent` or `--skill`). `--reattach` reuses an existing launcher pane. A running session is reused as it is.
 
