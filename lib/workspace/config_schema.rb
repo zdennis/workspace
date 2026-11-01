@@ -441,6 +441,8 @@ module Workspace
         doc: "`true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set"),
       Key.new(name: "launch.restore_window_position", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `launch` puts a window back where it was when the workspace was stopped, if that spot is still on a connected screen (default `true`). `false` tiles every new window, as `launch --arrange` does; `stop` saves the position either way. See [`launch`](README.launch.md#window-position)"),
+      Key.new(name: "launch.window_width_percent", scope: :global, type: :percent, settable: true, examples: ["22", "66"], default: 22, min: 1, max: 100, parser: PERCENT,
+        doc: "Width of a window `launch` tiles, as a percent of the active screen's width, 1 to 100 (default `22`). Tiled windows overlap when they don't all fit side by side. A window put back at its saved position keeps its saved size; see [`launch`](README.launch.md#window-position)"),
       # Packs suit projects differently, and compose already knows the cwd.
       Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["binding, commits"], default: DEFAULT_PACKS, parser: PACK_LIST,
         doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \

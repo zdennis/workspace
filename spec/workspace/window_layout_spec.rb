@@ -12,6 +12,14 @@ RSpec.describe Workspace::WindowLayout do
       expect(result).to eq([])
     end
 
+    it "sizes each window from width_percent, overlapping when they don't fit" do
+      result = layout.calculate_positions(
+        screen_x: 0, screen_y: 0, screen_w: 1000, screen_h: 1000, count: 2, width_percent: 66
+      )
+      expect(result.map { |pos| pos[:width] }).to eq([660, 660])
+      expect(result.map { |pos| pos[:x] }).to eq([0, 340])
+    end
+
     it "centers a single window on 1920x1080" do
       result = layout.calculate_positions(
         screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 1
@@ -200,6 +208,37 @@ RSpec.describe Workspace::WindowLayout, "screen reading" do
     stub_screen('{"frame_x":0,"frame_y":0,"frame_width":1000,"frame_height":1000}')
     expect(window_manager).to receive(:set_window_bounds).with(1, anything, anything, 220, 900)
     layout.arrange(entries, quiet: true)
+  end
+
+  context "with launch.window_width_percent" do
+    let(:stored) { nil }
+    let(:layout) { described_class.new(window_manager: window_manager, config: config, width_percent: -> { stored }, output: output, error_output: error_output) }
+
+    before { stub_screen('{"frame_x":0,"frame_y":0,"frame_width":1000,"frame_height":1000}') }
+
+    it "uses 22 percent when unset" do
+      expect(window_manager).to receive(:set_window_bounds).with(1, anything, anything, 220, 900)
+      layout.arrange(entries, quiet: true)
+    end
+
+    context "when set" do
+      let(:stored) { 66 }
+
+      it "uses the stored width" do
+        expect(window_manager).to receive(:set_window_bounds).with(1, anything, anything, 660, 900)
+        layout.arrange(entries, quiet: true)
+      end
+    end
+
+    context "when the stored value is out of range" do
+      let(:stored) { 0 }
+
+      it "warns and uses 22 percent" do
+        expect(window_manager).to receive(:set_window_bounds).with(1, anything, anything, 220, 900)
+        layout.arrange(entries, quiet: true)
+        expect(error_output.string).to include("launch.window_width_percent must be an integer between 1 and 100; using 22")
+      end
+    end
   end
 
   it "warns and leaves windows alone when the reading has no usable numbers" do

@@ -59,6 +59,7 @@ If a prompt can't be sent, `launch` still finishes the launch and runs `post_lau
 - A window that was already open (a reused pane) is never moved to a saved position.
 - `launch --arrange` tiles every window for this launch. The next `stop` saves the tiled position.
 - `workspace config set launch.restore_window_position false` does the same on every launch; `stop` still saves positions.
+- `workspace config set launch.window_width_percent 66` sets how wide a tiled window is, as a percent of the active screen's width (default 22). A restored window keeps its saved size, so an existing workspace takes the new width from `launch --arrange`.
 - A saved position on no connected screen prints `Warning: saved_window_offscreen: ...` on stderr and the window is tiled. A `window.json` that cannot be read prints `Warning: window_position_unreadable: ...`, the window is tiled and the file is left alone. Under `--json` both are also in `warnings`.
 - The position is kept in `~/.local/state/workspace/<name>/window.json`. `kill` removes it for a worktree workspace.
 

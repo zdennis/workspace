@@ -1503,6 +1503,36 @@
       ]
     },
     {
+      "key": "launch.window_width_percent",
+      "scope": "global",
+      "type": "percent",
+      "value": null,
+      "masked": false,
+      "default": 22,
+      "effective": 22,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Width of a window `launch` tiles, as a percent of the active screen's width, 1 to 100 (default `22`). Tiled windows overlap when they don't all fit side by side. A window put back at its saved position keeps its saved size; see [`launch`](README.launch.md#window-position)",
+      "problems": [],
+      "min": 1,
+      "max": 100
+    },
+    {
       "key": "workflows.defaults.include",
       "scope": "global",
       "type": "text",
