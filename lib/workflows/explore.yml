@@ -9,11 +9,22 @@ inputs:
   task:
     description: The question to explore, or the path of a brief.
     required: true
+  topic:
+    description: A short title for file names and inbox titles (letters, digits, . _ -, no spaces; up to 60 characters); when left out the agent picks a few words itself.
+    required: false
+    pattern: '[A-Za-z0-9][A-Za-z0-9._-]{0,59}'
 
 instructions: |
-  You are exploring {{inputs.task}} in workspace {{workspace}}.
-  Change no code and commit nothing. Every artifact goes under {{artifacts}}/.
+  You are exploring a question in workspace {{workspace}}. Change no code and commit nothing.
+  The notes go in the notes directory (`workspace notes dir --create`); only the small
+  run files named in each step go under {{artifacts}}/.
   Cite evidence as path:line, a commit or a link, and mark inference as inference.
+  Use today's date from `date +%F` for <date>. <topic> is "{{inputs.topic}}" (when that is
+  empty, choose two to five words in lower case with hyphens).
+
+  The brief:
+
+  {{inputs.task}}
 
 max_attempts: 6
 
@@ -22,10 +33,11 @@ steps:
     title: Survey
     include: [notes, report]
     prompt: |
-      Answer {{inputs.task}} from the code, docs, tests, event logs and past runs.
-      Write the survey as <date>-<topic>-survey.md in the notes directory
-      (`workspace notes dir --create`): the questions, what exists today, each gap with its
-      evidence, and which gaps you would report on, ranked, for the person to prune. On a
+      Answer the brief above from the code, docs, tests, event logs and past runs.
+      Write the survey as <date>-<topic>-survey.md in the notes directory: the questions, what exists today, each gap with its
+      evidence, and which gaps you would report on, ranked, for the person to prune. Parts of the brief that
+      ask for what the report must contain (examples, diagrams, a format) belong to the report
+      step: only note them here. On a
       rerun after a rejection, update that note and follow the rejection's text.
       Then write {{artifacts}}/survey.md: first line `note: <file name of the note>`, then
       the ranked gaps, one line each.
@@ -44,7 +56,9 @@ steps:
     include: [notes, report]
     prompt: |
       Read the approved survey note your instructions name, and keep to the person's
-      approval note if there is one: what they cut stays out of the report.
+      approval note under `## For this attempt`: what they cut stays out of the report. Check
+      `workspace workflow status` (`steps[].gate_note` of survey) if that section is missing.
+      Meet the brief's requirements for the report here.
       Write the report as <date>-<topic>-report.md in the notes directory: the verdict first,
       then ranked recommendations, then the detail. Give each missing feature a concrete
       example of its use and a Mermaid diagram where it helps. Have a skeptical sub-agent

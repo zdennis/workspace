@@ -766,7 +766,7 @@ A workflow's steps can hand the agent shell commands that hold the run's artifac
 
 ### The `explore` preset
 
-`explore` answers a question and changes no code: it surveys, waits for you to prune what it found, then writes a report. Use it for a gap analysis or design research, where `rpiv` would go on to build something. It needs no `commands.test`.
+`explore` answers a question and changes no code: it surveys, waits for you to prune what it found, then writes a report. The brief (`--input task=`, or `--prompt`) is sent once, in the run's instructions, so it can run to many paragraphs; the optional `--input topic="upload-resume"` gives the `<topic>` of the note names and inbox titles (letters, digits, `.`, `_`, `-`, no spaces, up to 60 characters), and without it the agent chooses two to five words. The notes go in the notes directory and only `survey.md` and `report.md` in the run's artifacts. A requirement in the brief about what the report holds (examples, diagrams) is kept for the `report` step. `report` finds your approval note under `## For this attempt`, and `workflow status --json` shows it as the survey step's `gate_note`. Use it for a gap analysis or design research, where `rpiv` would go on to build something. It needs no `commands.test`.
 
 ```sh
 workspace workflow run explore --input task="What would make uploads resumable?"
@@ -972,10 +972,10 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
         "holder":{"run_id":"wr_261004121500ab12","step":"verify","workspace":"api.worktree-tax","worktree":"/src/api-tax","kind":"run"}},
       "actions":[{"action":"workflow status","args":["wr_261004121500ab12"],"needs":[]},{"action":"workflow cancel","args":["wr_2610041230559x3k"],"needs":[]}]},
     "flags":[]},
-  "steps":[{"id":"research","title":"Research","state":"passed","attempts":1,"gate":null,"gate_file":null,"note_changed":false},
-    {"id":"plan","title":"Plan","state":"passed","attempts":1,"gate":"approved","gate_file":null,"note_changed":false},
-    {"id":"implement","title":"Implement","state":"passed","attempts":2,"gate":null,"gate_file":null,"note_changed":false},
-    {"id":"verify","title":"Verify","state":"waiting","attempts":0,"gate":null,"gate_file":null,"note_changed":false}],
+  "steps":[{"id":"research","title":"Research","state":"passed","attempts":1,"gate":null,"gate_note":null,"gate_file":null,"note_changed":false},
+    {"id":"plan","title":"Plan","state":"passed","attempts":1,"gate":"approved","gate_note":null,"gate_file":null,"note_changed":false},
+    {"id":"implement","title":"Implement","state":"passed","attempts":2,"gate":null,"gate_note":null,"gate_file":null,"note_changed":false},
+    {"id":"verify","title":"Verify","state":"waiting","attempts":0,"gate":null,"gate_note":null,"gate_file":null,"note_changed":false}],
   "base_sha":"3b1d2c4e5f60718293a4b5c6d7e8f9012a3b4c5d","pane":"%19","task":"3f9a1c2e","inputs":{"task":"PROJ-101 invoice PDF export","spec":""},"loops":{"verify->implement":1},
   "artifacts_dir":"/src/api-pdf/.workflow/wr_2610041230559x3k",
   "events_path":"/Users/me/.local/state/workspace/.workflows/runs/wr_2610041230559x3k.events.jsonl"}],
@@ -984,7 +984,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 - A run's `state` is `running`, `waiting`, `completed` or `cancelled` (`cancelled_by` is `cancel` or `kill`). A run with a reason reads `waiting`; a stored `turn_ended_incomplete` hidden by a working pane or by its 10-second hold-back, and a `turn_ended_background` hold, leave `state` `running` with no reason.
 - `current.flags` lists what `status` read about the step now: `timed_out` (past its `timeout`), `delivering` (its line is still on its way to the agent), `parked` (a resume is stored for later), `idle` (the turn ended unseen and the pane is quiet; `workflow resume` decides it) and `background_work` (a `turn_ended_background` hold). It is `[]` when none applies.
-- A step's `state` is `pending`, `waiting` (not started: a lock, or a line that could not be typed), `running`, `checking` (its check, or a `require:` proof that runs outside the run's lock, is running), `passed` or `failed`. `gate` is `waiting`, `approved`, `rejected` or `null`. `gate_file` is `{path, sha256}` as approve recorded it, or `null`; `note_changed` is true when that note's bytes differ now (see [Passing a gate](#passing-a-gate)).
+- A step's `state` is `pending`, `waiting` (not started: a lock, or a line that could not be typed), `running`, `checking` (its check, or a `require:` proof that runs outside the run's lock, is running), `passed` or `failed`. `gate` is `waiting`, `approved`, `rejected` or `null`. `gate_note` is the text the person gave to `approve` or `reject` with `--note`, as stored, or `null` when none was given (and for a run stored before the field was shown); it is the same text the next attempt's instructions carry under `## For this attempt`. `gate_file` is `{path, sha256}` as approve recorded it, or `null`; `note_changed` is true when that note's bytes differ now (see [Passing a gate](#passing-a-gate)).
 - `warnings` are strings: a workspace's agent daemon did not answer, so a permission prompt would not show; a run will not move because its workspace has no agent daemon; a run file can't be read or shown.
 - `events_path` is the run's own history, one JSON line per transition (`run_started`, `resume_parked` and `resume_parked_ended` (a resume stored for later and how it ended), `step_dispatching` (the attempt is stored and its line about to be typed), `step_dispatched` (the daemon answered; `delivered` says whether the line landed, `warning` when background work may have been lost to the `/clear` (a moving screen, or a running sub-agent), `proof_missing` when a moving screen wasn't accepted), `step_reported`, `check_finished`, `proof_finished` (a `require:` proof run outside the lock: `proof`, `passed`), `step_passed`, `step_failed`, `step_looped` (`backoff` in seconds when the retry waits), `step_retry_started` (the wait ended; `from`, `to`), `step_retry_blocked` (the wait ended but its pane is no longer the run's, so nothing was started; `from`, `to`, `code`), `gate_waiting`, `gate_approved` and `gate_rejected` (with `note` when the person gave one; `gate_approved` with `sha256` when it recorded a note), `run_resumed`, `run_completed`, `run_cancelled`), each with `ts` and `type`.
 

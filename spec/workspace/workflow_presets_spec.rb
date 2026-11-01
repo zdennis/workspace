@@ -110,6 +110,43 @@ RSpec.describe "the shipped workflow presets" do
   describe "explore" do
     let(:steps) { catalog.find("explore").to_h["steps"] }
 
+    it "sends the brief once, in the instructions, with an optional one-line topic" do
+      data = catalog.find("explore").to_h
+      texts = [data["instructions"]] + steps.map { |step| step["prompt"] }
+      expect(texts.sum { |text| text.scan("{{inputs.task}}").size }).to eq(1)
+      expect(data["instructions"]).to include("{{inputs.task}}")
+      expect(data["inputs"]["topic"]).to include("required" => false)
+      topic = Regexp.new("\\A(?:#{data["inputs"]["topic"]["pattern"]})\\z")
+      expect(topic).to match("upload-resume")
+      expect(topic).not_to match("two\nlines")
+      expect(topic).not_to match("two words")
+    end
+
+    it "refuses a topic with a space or a placeholder through the engine's input check, and takes a slug or none" do
+      data = catalog.find("explore").to_h
+      check = ->(topic) { Workspace::WorkflowEngine.allocate.send(:check_inputs, data, {"task" => "q", "topic" => topic}) }
+      ["bad{{", "two words", "a\nb", "-lead"].each do |bad|
+        expect { check.call(bad) }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq("invalid_input")
+          expect(error.details).to include("input" => "topic")
+        }
+      end
+      expect(check.call("upload-resume")).to include("topic" => "upload-resume")
+      expect(check.call("")).to include("topic" => "")
+    end
+
+    it "puts notes in the notes directory and only the run files under the artifacts directory" do
+      instructions = catalog.find("explore").to_h["instructions"].gsub(/\s+/, " ")
+      expect(instructions).not_to include("Every artifact goes under")
+      expect(instructions).to include("notes go in the notes directory").and include("run files")
+    end
+
+    it "points the report at the approval note and keeps the brief's report requirements for it" do
+      survey, report = steps.map { |step| step["prompt"].gsub(/\s+/, " ") }
+      expect(survey).to include("belong to the report step")
+      expect(report).to include("## For this attempt").and include("gate_note")
+    end
+
     it "keys the report's item apart from the survey's, which the report closes" do
       survey, report = steps.map { |step| [step["prompt"].gsub(/\s+/, " "), step["require"].first["inbox_item"]] }
       expect(survey.last).not_to eq(report.last)

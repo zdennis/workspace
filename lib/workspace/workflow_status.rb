@@ -240,11 +240,12 @@ module Workspace
       run["state"]
     end
 
-    # An approved gate's note, as recorded, and whether its bytes changed since.
+    # An approved gate's note file, as recorded, and whether its bytes changed since; `gate_note` is the text the person
+    # gave to approve or reject (null when none, and for a run stored before it was shown).
     def step_row(step, state, run)
       file = state.dig("gate", "file")
       {"id" => step["id"], "title" => step["title"], "state" => state["state"], "attempts" => state["attempts"].size,
-       "gate" => state.dig("gate", "state"), "gate_file" => file,
+       "gate" => state.dig("gate", "state"), "gate_note" => state.dig("gate", "note"), "gate_file" => file,
        "note_changed" => file ? WorkflowGateNote.sha256(file["path"]) != file["sha256"] : false}
     end
 

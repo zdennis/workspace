@@ -70,8 +70,8 @@ RSpec.describe Workspace::WorkflowStatus do
       "id" => "wr_1", "workflow" => "rpiv", "title" => "RPIV", "workspace" => "app", "project" => "app", "worktree" => "/src/app", "state" => "running",
       "created_at" => "2026-10-04T12:00:00Z", "started_at" => "2026-10-04T12:00:00Z", "ended_at" => nil, "cancelled_by" => nil,
       "current" => {"step" => "plan", "attempt" => 2, "state" => "running", "reason" => nil, "flags" => []},
-      "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_file" => nil, "note_changed" => false},
-        {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil, "gate_file" => nil, "note_changed" => false}],
+      "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_note" => nil, "gate_file" => nil, "note_changed" => false},
+        {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil, "gate_note" => nil, "gate_file" => nil, "note_changed" => false}],
       "base_sha" => nil, "pane" => "%5", "task" => "t1", "inputs" => {"task" => "X-1"}, "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
       "events_path" => File.join(@dir, "runs", "wr_1.events.jsonl")
     }])
@@ -629,6 +629,15 @@ RSpec.describe Workspace::WorkflowStatus do
 
       expect(result["runs"].first["current"]["reason"]["details"]).to include("gate_file" => nil, "gate_file_error" => "gate_note_unreadable")
       expect(result["warnings"]).to eq(["The gate of step plan in run wr_1 has no note that can be read: 2026-10-29-pr-7-feedback.md no such file in the notes directory."])
+    end
+
+    it "shows the text the person gave to approve a gate as gate_note, null for a run stored without one" do
+      gated("note: 2026-10-29-pr-7-feedback.md")
+      row = -> { status.run("wr_1")["runs"].first["steps"].find { |step| step["id"] == "plan" } }
+      store.update("wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved", "note" => "Cut gap 3.\nKeep the rest."} }
+      expect(row.call).to include("gate" => "approved", "gate_note" => "Cut gap 3.\nKeep the rest.", "gate_file" => nil)
+      store.update("wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved"} }
+      expect(row.call).to include("gate" => "approved", "gate_note" => nil)
     end
 
     it "shows the hash approve recorded on the step's row, and note_changed once the note's bytes differ" do
