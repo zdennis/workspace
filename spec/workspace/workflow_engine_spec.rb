@@ -3941,4 +3941,153 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(store.find("wr_1")["steps"]["second"]["attempts"].size).to eq(2)
     end
   end
+
+  describe "the history an attempt keeps" do
+    # [where, code, until?] for every entry of the run, attempts in order then the run's own list.
+    def entries(id = "wr_1")
+      run = store.find(id)
+      from_attempts = run["steps"].flat_map do |step, state|
+        state["attempts"].flat_map { |attempt| Array(attempt["reasons"]).map { |e| ["#{step}.#{attempt["n"]}", e["code"], e["until"]] } }
+      end
+      # The first entry of the run's own list is the `not_started` reason that create sets; the dispatch ends it.
+      own = Array(run["reasons"])
+      own = own.drop(1) if own.first && own.first["since"] == run["created_at"] && own.first["code"] == "waiting_you"
+      from_attempts + own.map { |e| ["run:#{e["step"]}", e["code"], e["until"]] }
+    end
+
+    it "records the first reason, set in create, when the run is never dispatched" do
+      run = start(three_steps, dispatch: false)
+
+      expect(run["reasons"]).to match([include("code" => "waiting_you", "step" => "plan", "until" => nil)])
+    end
+
+    it "keeps a gate's wait on the attempt it ended, closes it on approve, and ignores a tick while it stands" do
+      start
+      artifact("plan.md")
+      now[0] += 5
+      engine.turn_ended("wr_1", pane: "%5")
+      now[0] += 5
+      engine.tick("wr_1")
+      engine.tick("wr_1")
+
+      expect(entries).to eq([["plan.1", "waiting_you", nil]])
+
+      now[0] += 50
+      engine.approve("wr_1")
+      expect(store.find("wr_1")["steps"]["plan"]["attempts"].first["reasons"]).to eq([{"code" => "waiting_you", "since" => "2026-10-04T12:00:05Z", "until" => "2026-10-04T12:01:00Z"}])
+    end
+
+    it "closes a gate's wait on reject, and the rerun opens no entry of its own" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      now[0] += 10
+      engine.reject("wr_1", note: "Too big.")
+
+      expect(entries).to eq([["plan.1", "waiting_you", "2026-10-04T12:00:10Z"]])
+    end
+
+    it "keeps a wait for a lock on the run, with its step, until the step starts" do
+      locked = definition("steps:\n  verify:\n    prompt: P\n    uses: [test-db]\n")
+      start(locked, inputs: {}, pane: "%5", workspace: "app.worktree-a")
+      now[0] += 10
+      start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+      engine.cancel("wr_1")
+      now[0] += 30
+      engine.tick("wr_2")
+
+      expect(entries("wr_2")).to eq([["run:verify", "waiting_lock", "2026-10-04T12:00:40Z"]])
+    end
+
+    it "keeps a failed check on the attempt that failed, until a person resumes" do
+      check_results << {exit_code: 1, timed_out: false}
+      one = definition("steps:\n  verify:\n    prompt: P\n    status: {command: test, timeout: 5m}\n")
+      start(one, inputs: {})
+      now[0] += 5
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(entries).to eq([["verify.1", "failed_check", nil]])
+
+      now[0] += 5
+      engine.resume("wr_1")
+      expect(entries).to eq([["verify.1", "failed_check", "2026-10-04T12:00:10Z"]])
+    end
+
+    it "opens no entry when on_fail sends the run straight back" do
+      to_verify
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(entries.reject { |where, *| where == "plan.1" }).to eq([])
+    end
+
+    it "closes an open attempt's reason on cancel and when the workspace is killed" do
+      one = definition("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n")
+      start(one, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(entries).to eq([["a.1", "turn_ended_incomplete", nil]])
+      now[0] += 7
+      engine.cancel("wr_1")
+      expect(entries).to eq([["a.1", "turn_ended_incomplete", "2026-10-04T12:00:07Z"]])
+
+      start(one, inputs: {}, pane: "%6", workspace: "app.worktree-y")
+      engine.turn_ended("wr_2", pane: "%6")
+      engine.workspace_killed("app.worktree-y")
+      expect(entries("wr_2")).to eq([["a.1", "turn_ended_incomplete", "2026-10-04T12:00:07Z"]])
+    end
+
+    it "records a parked resume and closes it when it is released" do
+      panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+      start(three_steps.then { definition("steps:\n  work:\n    prompt: P\n") }, inputs: {})
+      panes.kick_result = {ok: true}
+      id = engine.park("wr_1")["parked"]["id"]
+      expect(entries.map { |_, code, finish| [code, finish] }).to include(["parked", nil])
+      now[0] += 9
+      engine.release_park("wr_1", id)
+
+      expect(entries.select { |_, code, _| code == "parked" }).to all(satisfy { |entry| entry.last })
+    end
+
+    it "keeps one entry for a wait a park interrupted and gave back (round 2, 7)" do
+      check_results << {exit_code: 1, timed_out: false}
+      one = definition("steps:\n  verify:\n    prompt: P\n    status: {command: test, timeout: 5m}\n")
+      start(one, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+      now[0] += 5
+      engine.park("wr_1")
+      expect(entries).to eq([["verify.1", "failed_check", "2026-10-04T12:00:05Z"], ["run:verify", "parked", nil]])
+
+      now[0] += 5
+      store.update("wr_1") { |run| run.delete("parked") }
+      engine.tick("wr_1")
+      engine.cancel("wr_1") if entries.none? { |_, code, finish| code == "failed_check" && finish.nil? }
+      expect(entries.count { |_, code, _| code == "failed_check" }).to eq(1)
+    end
+
+    it "closes a failed-check entry on a resume to another step" do
+      check_results << {exit_code: 1, timed_out: false}
+      two = definition("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n    status: {command: test, timeout: 5m}\n")
+      start(two, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", pane: "%5")
+      now[0] += 3
+      engine.resume("wr_1", from: "a")
+
+      expect(entries).to eq([["b.1", "failed_check", "2026-10-04T12:00:03Z"]])
+    end
+
+    it "reads a run stored without session, agent, usage or reasons through report, approve and cancel" do
+      start(three_steps)
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      store.update("wr_1") do |run|
+        run.delete("reasons")
+        run["steps"].each_value { |state| state["attempts"].each { |attempt| %w[session agent usage reasons].each { |key| attempt.delete(key) } } }
+      end
+
+      expect { engine.approve("wr_1") }.not_to raise_error
+      expect { engine.report("wr_1", status: "pass", summary: "ok") }.not_to raise_error
+      expect { engine.cancel("wr_1") }.not_to raise_error
+      expect(store.find("wr_1")["state"]).to eq("cancelled")
+    end
+  end
 end

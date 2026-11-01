@@ -132,7 +132,7 @@ module Workspace
       @env_stopper = env_stopper
       @event_log = event_log
       @task_store = task_store
-      @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard)
+      @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard, clock: clock)
       @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
         commands_config: commands_config, checker: checker)
       @clock = clock
@@ -267,7 +267,7 @@ module Workspace
         check_checkout(worktree)
       }) { |created| created["artifacts_dir"] = artifacts_dir(worktree, created["id"]) }
       event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
-      return run unless dispatch
+      return transition(run["id"]) { |_stored| } unless dispatch
       transition(run["id"]) { |stored| dispatch(stored) }
     end
 
@@ -670,7 +670,10 @@ module Workspace
       @delivery = nil
       run = @store.update(run_id, nonblocking: nonblocking) do |stored|
         before = fingerprint(stored)
+        was_open = @attempt_record.open_attempt(stored)
+        @attempt_record.reasons(run: stored)
         yield stored
+        @attempt_record.reasons(run: stored, was_open: was_open)
         stored
       end
       delivery, @delivery = @delivery, nil

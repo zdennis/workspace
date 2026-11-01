@@ -273,10 +273,19 @@ module Workspace
     # still matches what was recorded.
     #
     # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @param timeout [Numeric, nil] seconds to wait; nil waits as long as tmux takes. With a timeout, a
+    #   run past it raises Timeout::Error and a missing tmux raises Errno::ENOENT (the caller rescues);
+    #   a failing tmux still answers nil, as a gone pane does
     # @return [String, nil] the server's process id, or nil if the pane is gone
-    def server_pid_for_pane(pane_id)
-      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", pane_id, "\#{pid}")
-      return nil unless status.success?
+    def server_pid_for_pane(pane_id, timeout: nil)
+      argv = ["tmux", "display-message", "-p", "-t", pane_id, "\#{pid}"]
+      if timeout
+        stdout, _, success = TimedProcess.run(argv, chdir: Dir.pwd, timeout: timeout)
+        return nil unless success
+      else
+        stdout, _, status = Open3.capture3(*argv)
+        return nil unless status.success?
+      end
       pid = stdout.strip
       pid.empty? ? nil : pid
     end

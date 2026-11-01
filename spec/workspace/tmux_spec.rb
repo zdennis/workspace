@@ -1489,6 +1489,15 @@ RSpec.describe Workspace::Tmux do
       expect(Open3).to have_received(:capture3).with("tmux", "display-message", "-p", "-t", "%19", "\#{pid}")
     end
 
+    it "waits at most the timeout when given one, and is nil when tmux does not answer in time" do
+      allow(Workspace::TimedProcess).to receive(:run).and_return(["4242\n", "", true])
+      expect(tmux.server_pid_for_pane("%19", timeout: 2)).to eq("4242")
+      expect(Workspace::TimedProcess).to have_received(:run).with(["tmux", "display-message", "-p", "-t", "%19", "\#{pid}"], chdir: Dir.pwd, timeout: 2)
+
+      allow(Workspace::TimedProcess).to receive(:run).and_raise(Timeout::Error)
+      expect { tmux.server_pid_for_pane("%19", timeout: 2) }.to raise_error(Timeout::Error)
+    end
+
     it "is nil when the pane is gone" do
       allow(Open3).to receive(:capture3).and_return(["", "can't find pane: %19", failed])
 
