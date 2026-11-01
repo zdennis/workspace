@@ -1,0 +1,53 @@
+schema_version: 1
+id: explore
+title: Explore and report
+description: Read-only research into a question, a gate on the findings, then a report note. Changes no code.
+
+inputs:
+  task:
+    description: The question to explore, or the path of a brief.
+    required: true
+
+instructions: |
+  You are exploring {{inputs.task}} in workspace {{workspace}}.
+  Change no code and commit nothing. Every artifact goes under {{artifacts}}/.
+  Cite evidence as path:line, a commit or a link, and mark inference as inference.
+
+max_attempts: 6
+
+steps:
+  survey:
+    title: Survey
+    include: [notes, report]
+    prompt: |
+      Answer {{inputs.task}} from the code, docs, tests, event logs and past runs.
+      Write the survey as <date>-<topic>-survey.md in the notes directory
+      (`workspace notes dir --create`): the questions, what exists today, each gap with its
+      evidence, and which gaps you would report on, ranked, for the person to prune. On a
+      rerun after a rejection, update that note and follow the rejection's text.
+      Then write {{artifacts}}/survey.md: first line `note: <file name of the note>`, then
+      the ranked gaps, one line each.
+      Post last, after survey.md is written, as the report pack says, naming the note: title
+      `Survey: <topic>`, type `review_request`, `--link-run {{run}} --dedupe-key explore:{{run}}
+      --expires 168h`.
+    produces: [survey.md]
+    guard: unchanged
+    gate: approve
+    timeout: 90m
+
+  report:
+    title: Report
+    include: [notes, report]
+    prompt: |
+      Read the approved survey note your instructions name, and keep to the person's
+      approval note if there is one: what they cut stays out of the report.
+      Write the report as <date>-<topic>-report.md in the notes directory: the verdict first,
+      then ranked recommendations, then the detail. Give each missing feature a concrete
+      example of its use and a Mermaid diagram where it helps. Have a skeptical sub-agent
+      check every claim against the code and fix what it finds.
+      Write the note's file name to {{artifacts}}/report.md and run
+      `workspace inbox done --dedupe-key explore:{{run}} --name {{workspace}}`, then hand the
+      note back with the title `Report: <topic>`.
+    produces: [report.md]
+    guard: config
+    timeout: 90m

@@ -12,8 +12,42 @@ RSpec.describe "the shipped workflow presets" do
   it "parses every file in lib/workflows" do
     ids = Dir[File.join(config.builtin_workflows_dir, "*.yml")].map { |path| File.basename(path, ".yml") }
 
-    expect(ids).to include("rpiv", "rpiv-auto-approve", "pr-feedback", "investigate")
+    expect(ids).to include("rpiv", "rpiv-auto-approve", "pr-feedback", "investigate", "explore")
     ids.each { |id| expect(catalog.find(id).source).to eq("builtin") }
+  end
+
+  describe "explore" do
+    let(:definition) { catalog.find("explore").to_h }
+    let(:steps) { definition["steps"] }
+    let(:survey) { steps.find { |step| step["id"] == "survey" } }
+    let(:report) { steps.find { |step| step["id"] == "report" } }
+
+    it "surveys behind a gate with nothing changed, then reports" do
+      expect(steps.map { |step| step["id"] }).to eq(%w[survey report])
+      expect(survey).to include("gate" => "approve", "guard" => "unchanged")
+      expect(report).to include("guard" => "config")
+    end
+
+    it "needs no project command, and requires a task" do
+      expect(steps.map { |step| step["status"] }.compact).to be_empty
+      expect(definition["inputs"]["task"]).to include("required" => true)
+    end
+
+    it "names the survey note on survey.md's first line, so the gate is about it" do
+      expect(survey["include"]).to include("report")
+      expect(survey["prompt"]).to include("first line `note: <file name of the note>`")
+      expect(survey["prompt"].index("{{artifacts}}/survey.md: first line")).to be < survey["prompt"].index("Post last")
+    end
+
+    it "closes the survey's inbox item under the key it posted" do
+      expect(survey["prompt"].gsub(/\s+/, " ")).to include("--dedupe-key explore:{{run}}")
+      expect(report["prompt"]).to include("workspace inbox done --dedupe-key explore:{{run}}")
+    end
+
+    it "writes report.md before the report pack hands the note back, since nothing may change after" do
+      expect(report["include"]).to include("report")
+      expect(report["prompt"].index("{{artifacts}}/report.md")).to be < report["prompt"].index("hand the\n")
+    end
   end
 
   describe "rpiv-auto-approve" do
