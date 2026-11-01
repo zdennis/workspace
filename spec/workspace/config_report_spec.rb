@@ -552,6 +552,59 @@ RSpec.describe Workspace::ConfigReport do
       expect { report.show("API") }.not_to raise_error
     end
 
+    describe "default workflow keys" do
+      let(:catalog) { instance_double(Workspace::WorkflowCatalog) }
+      subject(:report) { described_class.new(project_settings: settings, project_config: project_config, notes_dir: notes_dir, catalog: catalog) }
+
+      before { allow(catalog).to receive(:known?) { |id| id == "rpiv" } }
+
+      def found(name = "api")
+        report.validate(name)["problems"].map { |p| [p["layer"], p["code"], p["severity"], p["key"]] }
+      end
+
+      it "warns on a workflows.default no workflow has" do
+        write("api", "workflows:\n  default: nosuch\n")
+        expect(found).to eq([["project", "unknown_default_workflow", "warning", "workflows.default"]])
+        expect(report.validate("api")["valid"]).to be(true)
+      end
+
+      it "warns on a stale workflows.by_ref.jira" do
+        write("api", "workflows:\n  by_ref:\n    jira: nosuch\n")
+        expect(found).to eq([["project", "unknown_default_workflow", "warning", "workflows.by_ref.jira"]])
+      end
+
+      it "does not warn on a known id" do
+        write("api", "workflows:\n  default: rpiv\n  by_ref:\n    jira: rpiv\n")
+        expect(found).to eq([])
+      end
+
+      it "warns in a global file as well as a project file" do
+        write(:global, "workflows:\n  default: gone\n")
+        write("api", "workflows:\n  by_ref:\n    branch: nosuch\n")
+        expect(found).to contain_exactly(
+          ["project", "unknown_default_workflow", "warning", "workflows.by_ref.branch"],
+          ["global", "unknown_default_workflow", "warning", "workflows.default"]
+        )
+      end
+
+      it "gives a malformed value the value problem only" do
+        write("api", "workflows:\n  default: Not Valid\n")
+        expect(found.map { |row| row[1] }).to eq(["invalid_value"])
+        expect(catalog).not_to have_received(:known?)
+      end
+
+      it "gives a stored Integer the value problem and raises nothing" do
+        write("api", "workflows:\n  default: 5\n")
+        expect(found.map { |row| row[1] }).to eq(["invalid_value"])
+      end
+
+      it "checks nothing without a catalog" do
+        write("api", "workflows:\n  default: nosuch\n")
+        plain = described_class.new(project_settings: settings, project_config: project_config, notes_dir: notes_dir)
+        expect(plain.validate("api")["problems"]).to eq([])
+      end
+    end
+
     it "raises unknown_workspace for a name nothing knows" do
       expect { report.show("nope") }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("unknown_workspace")

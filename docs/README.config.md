@@ -352,6 +352,7 @@ Checks the files `config show --json` lists, without writing anything: YAML synt
 | `escaped_path` | warning | A path key (`notes.dir`, `notes.default_dir`) has a backslash before a space or `~`, as if typed for a shell; config values are used as written, so the directory name would contain the backslash |
 | `shared_notes_dir` | warning | `notes.default_dir` is an absolute path (or `~/…`) with no `{workspace}` or `{branch}`, in a project that has worktrees, so they would all share one notes directory |
 | `unknown_spine_template` | warning | `spine.template` names no `spine` library entry, so `spine init` would answer `unknown_template` |
+| `unknown_default_workflow` | warning | `workflows.default` or a `workflows.by_ref.<kind>` names no workflow, so `workflow start` would refuse it with `unknown_workflow` |
 | `not_read` | info | The key is set where no reader looks: a parent-scoped key in a worktree's file, or global `hooks` |
 
 New codes may be added; treat an unknown one by its `severity`.
