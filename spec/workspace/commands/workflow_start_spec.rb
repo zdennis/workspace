@@ -566,7 +566,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       row = build_command(real_engine).call(id: "flow", prompt: "x", branch: "mine", dry_run: true)
 
-      expect(row).to include("outcome" => "dry_run", "path" => repo)
+      expect(row).to include("outcome" => "dry_run", "path" => repo, "would_create" => false)
     end
 
     it "is refused for rpiv, whose research and plan steps are guarded" do
@@ -1376,6 +1376,16 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       row = command.call(positional: "rpivv", dry_run: true)
 
       expect(row["warnings"]).to contain_exactly(a_string_including("\"rpivv\" is not a known workflow", "rpiv comes from config", "Known: flow, rpiv"))
+    end
+
+    it "keeps the warning when a check then refuses the start" do
+      allow(workflow_defaults).to receive(:id_for).with("branch", workspace: nil).and_return("rpiv")
+      allow(engine).to receive(:preflight).and_raise(Workspace::Error.new("Needs task.", code: "input_required", details: {"inputs" => ["task"]}))
+
+      error = error_of { command.call(positional: "rpivv", dry_run: true) }
+
+      expect(error.code).to eq("input_required")
+      expect(error.details).to include("inputs" => ["task"], "warnings" => [a_string_including("\"rpivv\" is not a known workflow")])
     end
 
     it "does not warn for a lone ticket, whose shape is no accident" do

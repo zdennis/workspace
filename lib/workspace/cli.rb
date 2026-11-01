@@ -5250,10 +5250,15 @@ module Workspace
       when "start"
         inputs = workflow_inputs(options[:inputs])
         workflow_action("workflow start", options) do
-          row = @workflow_start_command.call(id: start_ref && subject, ref: options[:ref] || start_ref, positional: (start_ref || options[:ref]) ? nil : subject, route: !options[:ref].nil?, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
-            note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
-            prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run], force: options[:force] == true)
-          Array(row && row["warnings"]).each { |warning| @error_output.puts "Warning: #{TerminalText.escape(warning.to_s)}" } unless options[:json]
+          begin
+            row = @workflow_start_command.call(id: start_ref && subject, ref: options[:ref] || start_ref, positional: (start_ref || options[:ref]) ? nil : subject, route: !options[:ref].nil?, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
+              note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
+              prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run], force: options[:force] == true)
+          rescue Workspace::Error => e
+            print_start_warnings(e.details["warnings"], options)
+            raise
+          end
+          print_start_warnings(row && row["warnings"], options)
           row
         end
       when "resume"
@@ -5369,6 +5374,12 @@ module Workspace
     end
 
     # Runs a workflow or step mutation under {#run_action}, with the command's row as the one result.
+    # `workflow start`'s warnings, on success or above its refusal; `--json` carries them in the document.
+    def print_start_warnings(warnings, options)
+      return if options[:json]
+      Array(warnings).each { |warning| @error_output.puts "Warning: #{TerminalText.escape(warning.to_s)}" }
+    end
+
     def workflow_action(action, options)
       run_action(action, json: options[:json]) do
         row = yield

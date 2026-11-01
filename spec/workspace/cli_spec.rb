@@ -6892,6 +6892,17 @@ RSpec.describe Workspace::CLI do
         expect(workflow_command.calls).to be_empty
       end
 
+      it "prints a refusal's warnings once on stderr in text mode, and leaves them to the document under --json" do
+        start_command.error = Workspace::Error.new("Needs task.", code: "input_required", details: {"warnings" => ["\"rpvi\" is not a known workflow"]})
+
+        expect { cli.run(["workflow", "start", "rpvi", "--dry-run"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string.scan("Warning: \"rpvi\" is not a known workflow").size).to eq(1)
+
+        error_output.truncate(0)
+        expect { cli.run(["workflow", "start", "rpvi", "--dry-run", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).not_to include("Warning:")
+      end
+
       it "passes --force on, and prints the row's warnings on stderr in text mode only" do
         start_command.row = start_command.row.merge("warnings" => ["rpiv applies to jira, not branch. Continuing because of --force."])
         cli.run(["workflow", "start", "rpiv", "x", "--force"])

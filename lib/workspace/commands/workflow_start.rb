@@ -128,7 +128,7 @@ module Workspace
           definition = @catalog.find(id, project: project)
           warnings = read_as_branch(ref, id, project) if positional
         end
-        plan = plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, force: force, catalog_project: project, **where)
+        plan = keeping_warnings(warnings) { plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, force: force, catalog_project: project, **where) }
         row = if here
           run_here(plan, here, note: note, dry_run: dry_run)
         elsif dry_run
@@ -574,6 +574,15 @@ module Workspace
 
       # A UsageError stays one; any other class becomes a plain Workspace::Error, as in promote, because
       # the subclasses do not share a constructor.
+      # A refusal from the checks keeps the warnings gathered so far, so a mistyped id still gets said.
+      def keeping_warnings(warnings)
+        yield
+      rescue Workspace::Error => e
+        raise if warnings.empty?
+        klass = e.is_a?(Workspace::UsageError) ? Workspace::UsageError : Workspace::Error
+        raise klass.new(e.message, code: e.code, details: e.details.merge("warnings" => warnings), retry_with: e.retry)
+      end
+
       def with_next(error, plan, inputs, note, workspace, path, warnings)
         # A refusal that already names its own next command (checkout_has_run's cancel) keeps it and its message.
         return error if error.respond_to?(:details) && error.details.is_a?(Hash) && error.details["next"]
