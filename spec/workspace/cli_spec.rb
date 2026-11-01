@@ -12679,6 +12679,13 @@ RSpec.describe Workspace::CLI do
         expect(hooks.runs.map { |r| r[:event] }).to eq(["post_focus"])
       end
 
+      it "names focus.chain and the way to plain focus in its help" do
+        cli, = action_cli
+        help = a_string_including("focus.chain", "workspace config set focus.chain focus", "a warning, not an error")
+
+        expect { cli.run(["focus", "--help"]) }.to raise_error(SystemExit).and output(help).to_stdout
+      end
+
       it "answers a missing window with the error envelope" do
         focus = Workspace::Commands::Focus.new(state: CLITestHelpers::FakeState.new, window_manager: CLITestHelpers::FakeWindowManager.new, output: StringIO.new)
         cli, raw, = action_cli(focus_command: focus)

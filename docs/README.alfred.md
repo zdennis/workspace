@@ -20,6 +20,8 @@ workspace alfred <subcommand>
 
 The workflow lets you type 'wf' in Alfred to list and focus active workspace projects. Assign a hotkey in Alfred Preferences > Workflows > Workspace Focus.
 
+The workflow calls `window-tool focus` directly, so it stays plain: it does not read `focus.chain` and does not center or dim (see [`focus`](README.focus.md#focus-chain)).
+
 Requires Alfred to be installed with the workflows directory at its default location.
 
 ## Examples

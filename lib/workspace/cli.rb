@@ -649,7 +649,7 @@ module Workspace
           event-log       Show or compact the event log (state changes and agent activity)
           events          Read or follow the event log and every agent's hook events as one stream
           finish          Verify a worktree is clean and pushed, then remove it (default: the current one; optionally opens a PR)
-          focus           Bring a project's iTerm window to the front (not for headless projects)
+          focus           Bring a project's iTerm window to the front, centered and dimmed by focus.chain (not for headless projects)
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
@@ -1383,7 +1383,10 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace focus [options] [project]"
         opts.separator ""
-        opts.separator "Bring the project's iTerm window to the front."
+        opts.separator "Bring the project's iTerm window to the front, then run the window-tool steps of the"
+        opts.separator "global focus.chain (default: center the window, dim the others for 3 seconds)."
+        opts.separator "A failed step is a warning, not an error. `workspace config set focus.chain focus` gives"
+        opts.separator "plain focus. See docs/README.focus.md."
         opts.separator "Auto-detects the project from the current directory if not specified."
         opts.separator ""
         opts.separator "Options:"
