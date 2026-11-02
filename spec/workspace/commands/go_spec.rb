@@ -464,6 +464,84 @@ RSpec.describe Workspace::Commands::Go do
       expect(command.call(argument: "PROJ-1")["decision"]).to include("kind" => "jira", "route" => "start")
     end
 
+    describe "a lone lowercase key" do
+      let(:not_found) { Workspace::Error.new("no ticket", code: "ticket_not_found") }
+      let(:unavailable) { Workspace::Error.new("no jira", code: "ticket_source_unavailable") }
+
+      it "is the ticket once the ticket is found" do
+        row = command.call(argument: "proj-1")
+
+        expect(row["decision"]).to include("kind" => "jira", "route" => "start")
+        expect(ticket_source).to have_received(:fetch).with(have_attributes(key: "PROJ-1", branch: "proj-1"), chdir: root)
+        expect(workflow_start).to have_received(:call).with(hash_including(ref: "PROJ-1"))
+      end
+
+      it "is the real branch when one has that exact name, and reads no ticket" do
+        allow(git).to receive(:branch_names).and_return(%w[main proj-1])
+        allow(git).to receive(:local_branch_names).and_return(%w[main proj-1])
+
+        expect(command.call(argument: "proj-1")["decision"]["kind"]).to eq("branch")
+        expect(ticket_source).not_to have_received(:fetch)
+      end
+
+      it "reuses a branch of another case through the ticket" do
+        allow(git).to receive(:branch_names).and_return(%w[PROJ-1 main])
+        allow(git).to receive(:local_branch_names).and_return(%w[PROJ-1 main])
+
+        expect(command.call(argument: "proj-1")["decision"]).to include("kind" => "jira", "route" => "start")
+      end
+
+      it "stays unknown_ref when the ticket is not found" do
+        allow(ticket_source).to receive(:fetch).and_raise(not_found)
+
+        expect(refusal(argument: "proj-1").code).to eq("unknown_ref")
+        expect_nothing_ran
+      end
+
+      it "stays unknown_ref when the ticket source is unavailable" do
+        allow(ticket_source).to receive(:fetch).and_raise(unavailable)
+
+        expect(refusal(argument: "proj-1").code).to eq("unknown_ref")
+      end
+
+      it "says why when the ticket tool failed" do
+        allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("jira timed out", code: "ticket_source_unavailable", details: {"reason" => "timeout"}))
+
+        expect(refusal(argument: "proj-1").code).to eq("unknown_ref")
+        expect(output.string).to include("Warning: PROJ-1 could not be read as a ticket: jira timed out")
+      end
+
+      it "says nothing more when there is no ticket tool" do
+        allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("jira is missing", code: "ticket_source_unavailable", details: {"reason" => "missing"}))
+
+        expect(refusal(argument: "proj-1").code).to eq("unknown_ref")
+        expect(output.string).not_to include("could not be read as a ticket")
+      end
+
+      it "re-raises any other ticket error" do
+        allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("boom", code: "other"))
+
+        expect(refusal(argument: "proj-1").code).to eq("other")
+      end
+
+      it "leaves release-2 as unknown_ref when no ticket is found" do
+        allow(ticket_source).to receive(:fetch).and_raise(not_found)
+
+        expect(refusal(argument: "release-2").code).to eq("unknown_ref")
+      end
+
+      it "never looks up pr-12" do
+        refusal(argument: "pr-12")
+
+        expect(ticket_source).not_to have_received(:fetch)
+      end
+
+      it "keeps the new-branch behaviour with --workflow" do
+        expect(refusal(argument: "proj-1", workflow: "rpiv", inputs: {"task" => "x"})).to be_nil
+        expect(ticket_source).not_to have_received(:fetch)
+      end
+    end
+
     context "with a branch named exactly as the ticket" do
       let(:names) { %w[PROJ-1 feature main] }
 

@@ -177,8 +177,29 @@ module Workspace
         return Reading.new(kind: "prompt", text: argument) if argument.match?(/[[:space:]]/)
 
         ref = @start_ref.call(argument, root: root)
+        ref = ticket_for_word(argument, ref, root, workflow) || ref
         check_name!(ref, root, workflow)
         Reading.new(kind: ref.kind, ref: ref)
+      end
+
+      # A lone lowercase key is a ticket only once its ticket is found, so an input refused today
+      # stays refused: an exact branch of that name, a name for a workflow and any miss leave the word as it was.
+      def ticket_for_word(word, ref, root, workflow)
+        return nil unless ref.kind == "branch" && workflow.nil?
+        return nil if @git.branch_names(root).include?(word)
+
+        key = RefInText.word_key(word) or return nil
+        ticket = @start_ref.call(key, root: root)
+        begin
+          @ticket_source.fetch(ticket, chdir: root)
+        rescue Workspace::Error => e
+          raise unless %w[ticket_not_found ticket_source_unavailable].include?(e.code)
+
+          failed = e.code == "ticket_source_unavailable" && e.details["reason"] != "missing"
+          @output.puts "Warning: #{key} could not be read as a ticket: #{TerminalText.escape(e.message)}" if failed
+          return nil
+        end
+        ticket
       end
 
       # Looks for the one pull request, issue or ticket a sentence names. A mention of another
