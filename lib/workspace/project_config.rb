@@ -52,6 +52,7 @@ module Workspace
         .gsub("{{PROJECT_NAME}}", name)
         .gsub("{{WORKSPACE_NAME}}", name)
         .gsub("{{PROJECT_ROOT}}", root)
+        .gsub("{{DISPLAY_NAME}}", banner_text(name))
         .gsub("{{CONFIG_PATH}}", config_path)
 
       content = with_agent_kind(content, default_kind(name), name, strict: false)

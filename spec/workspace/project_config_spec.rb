@@ -83,6 +83,20 @@ RSpec.describe Workspace::ProjectConfig do
       expect(content).to include("config: #{File.join(tmpdir, "workspace.myapp.yml")}")
     end
 
+    it "spaces the banner text of the shipped project template and keeps the real name everywhere else" do
+      template = File.expand_path("../../lib/templates/workspace.project-template.yml", __dir__)
+      allow(config).to receive(:project_template_path).and_return(template)
+
+      pc.create("my-app.v2", "/tmp/my-app.v2")
+
+      content = File.read(File.join(tmpdir, "workspace.my-app.v2.yml"))
+      expect(content).to include('ascii-banner "my app v2"')
+      expect(content).to include("name: my-app.v2")
+      expect(content).to include("root: /tmp/my-app.v2")
+      expect(content).to include("@workspace my-app.v2 || true")
+      expect(content).to include("echo 'Ready to work on my-app.v2'")
+    end
+
     it "skips creation when config already exists" do
       File.write(File.join(tmpdir, "workspace.existing.yml"), "name: existing\n")
       result = pc.create("existing", "/tmp/existing")
