@@ -70,6 +70,13 @@ module Workspace
 
     # @param project_name [String] parent project name
     # @param worktree_name [String] worktree directory name
+    # @return [String] the tmux session name {#create_worktree} gives that worktree
+    def worktree_session_name(project_name, worktree_name)
+      "#{project_name}.wt-#{@git.sanitize_for_filesystem(worktree_name)}".tr(".", "-").downcase
+    end
+
+    # @param project_name [String] parent project name
+    # @param worktree_name [String] worktree directory name
     # @param worktree_path [String] full path to the worktree
     # @param branch_name [String] git branch name
     # @param task_id [String, nil] the workspace's task id; exported as `WORKSPACE_TASK`
@@ -80,8 +87,7 @@ module Workspace
     # @raise [Workspace::Error] if the worktree template is missing
     def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false, task_id: nil, agent_kind: nil)
       project_name = WorkspaceName.normalize(project_name)
-      tmux_session_name = "#{project_name}.wt-#{@git.sanitize_for_filesystem(worktree_name)}"
-        .tr(".", "-").downcase
+      tmux_session_name = worktree_session_name(project_name, worktree_name)
       config_name = settle_worktree_name(project_name, worktree_name, worktree_path)
       config_path = @config.config_path_for(config_name)
 

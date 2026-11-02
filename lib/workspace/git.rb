@@ -136,6 +136,24 @@ module Workspace
       end
     end
 
+    # Whether `git worktree lock` was run on a linked worktree, which makes `git worktree move` refuse it.
+    #
+    # @param repo [String] any checkout of the repository
+    # @param worktree [String] the worktree to look up
+    # @return [Boolean] false for a worktree git does not list, or when git cannot answer
+    def worktree_locked?(repo, worktree)
+      stdout, _, status = capture_git("-C", repo, "worktree", "list", "--porcelain")
+      return false unless status.success?
+      target = File.realpath(worktree)
+      stdout.scrub.split(/\n\n+/).any? do |block|
+        lines = block.lines.map(&:strip)
+        listed = lines.find { |line| line.start_with?("worktree ") }&.delete_prefix("worktree ")
+        listed && File.realpath(listed) == target && lines.any? { |line| line == "locked" || line.start_with?("locked ") }
+      end
+    rescue SystemCallError
+      false
+    end
+
     # `git worktree move OLD NEW`; git refuses a locked worktree.
     #
     # @param path [String] the main checkout (where git runs)

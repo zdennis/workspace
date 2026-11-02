@@ -212,6 +212,25 @@ RSpec.describe Workspace::Git do
     end
   end
 
+  describe "#worktree_locked?" do
+    it "is true only for a worktree git lock was run on" do
+      Dir.mktmpdir do |dir|
+        repo = File.join(File.realpath(dir), "repo")
+        other = File.join(File.realpath(dir), "other")
+        quiet = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+        system("git", "init", "-q", repo, exception: true)
+        system("git", "-C", repo, *quiet, "commit", "-q", "--allow-empty", "-m", "x", exception: true)
+        system("git", "-C", repo, "worktree", "add", "-q", "-b", "b", other, exception: true)
+
+        expect(git.worktree_locked?(repo, other)).to be(false)
+        system("git", "-C", repo, "worktree", "lock", "--reason", "usb", other, exception: true)
+        expect(git.worktree_locked?(repo, other)).to be(true)
+        expect(git.worktree_locked?(repo, repo)).to be(false)
+        expect(git.worktree_locked?(repo, File.join(dir, "gone"))).to be(false)
+      end
+    end
+  end
+
   describe "#remove_worktree" do
     let(:worktree_path) { "/Users/me/project/.worktrees/feature-x" }
 

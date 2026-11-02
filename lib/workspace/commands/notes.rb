@@ -52,10 +52,12 @@ module Workspace
       #
       # @param name [String] the workspace
       # @param create [Boolean] make the directory; inside the checkout, also list it in `info/exclude`
+      # @param root [String, nil] the checkout to resolve against, when it is not where the workspace's
+      #   config says (a rename moved it); the config's root when nil
       # @return [Hash] `workspace`, `dir`, `source`, `exists`, `inside_worktree`, `excluded`
       # @raise [Workspace::Error] as {#dir}
-      def info(name:, create: false)
-        root = checkout_root(name)
+      def info(name:, create: false, root: nil)
+        root = root ? File.expand_path(root) : checkout_root(name)
         result = resolve(name, root)
         path = result.path
         real_root = real(root)
@@ -94,13 +96,27 @@ module Workspace
         File.expand_path(root)
       end
 
+      # The inputs of the rule that places a workspace's notes, apart from its own `notes.dir`, for
+      # {Workspace::NotesDir#path_for}.
+      #
+      # @param name [String] the workspace
+      # @return [Hash] `:template` (the valid `notes.default_dir`, or nil) and `:main_dir` (the main
+      #   checkout workspace's notes directory, for a worktree with no template; else nil)
+      def location_rule(name:)
+        view = @config_resolver.view(workspace: name)
+        parent = WorkspaceLineage.split_worktree_name(name)&.first
+        template = valid(view, "default_dir")
+        {template: template, main_dir: (parent && template.nil?) ? main_notes_dir(parent) : nil}
+      end
+
       private
 
       def resolve(name, root)
         view = @config_resolver.view(workspace: name)
         parent = WorkspaceLineage.split_worktree_name(name)&.first
-        template = valid(view, "default_dir")
-        main_dir = (parent && template.nil?) ? main_notes_dir(parent) : nil
+        rule = location_rule(name: name)
+        template = rule[:template]
+        main_dir = rule[:main_dir]
         result = @notes_dir.resolve(stored: valid(view, "dir"), template: template,
           worktree: !parent.nil?, root: root, workspace: name, main_dir: main_dir)
         return result if result.path
