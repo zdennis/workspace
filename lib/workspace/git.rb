@@ -448,9 +448,8 @@ module Workspace
     # @return [Hash] parsed result with :type and :value keys; a +:pr_url+ or +:issue_url+ result also has
     #   +:repo+ (+"owner/repo"+, or nil for a bare +#n+) and +:number+
     def parse_start_input(input)
-      if input.match?(%r{https?://.*atlassian\.net/browse/([A-Z]+-\d+)})
-        key = input.match(%r{/browse/([A-Z]+-\d+)})[1]
-        return {type: :jira_key, value: key}
+      if (match = input.match(%r{https?://.*atlassian\.net/browse/([A-Za-z]+-\d+)}))
+        return {type: :jira_key, value: match[1].upcase}
       end
 
       if (match = input.match(%r{https?://github\.com/([^/]+/[^/]+)/pull/(\d+)}))

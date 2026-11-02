@@ -10,7 +10,7 @@ module Workspace
     # @!attribute parsed [Hash] {Git#parse_start_input}'s answer
     # @!attribute kind [String] "jira", "github_pr", "github_issue" or "branch"
     # @!attribute key [String] the ticket's own name: the JIRA key, `owner/repo#41` (`#41` with no repository), or the branch
-    # @!attribute branch [String] the branch `start` works on: `pr-<n>` for a pull request, `issue-<n>` for an issue, else the input's value
+    # @!attribute branch [String] the branch `start` works on: `pr-<n>` for a pull request, `issue-<n>` for an issue, the lowercase key (or the existing branch it matches without case) for a JIRA ref, else the input's value
     # @!attribute pr [Hash, nil] the parsed result when the ref is a pull request, which `start` checks out with gh
     Ref = Struct.new(:input, :parsed, :kind, :key, :branch, :pr, keyword_init: true)
 
@@ -21,6 +21,18 @@ module Workspace
     # @!attribute from_worktree [Boolean] whether the checkout was a linked worktree, so +root+ is its parent's
     Project = Struct.new(:root, :name, :from_worktree, keyword_init: true)
 
+    # The branch names a JIRA key is matched against.
+    #
+    # @!attribute local [Array<String>] local branch names
+    # @!attribute all [Array<String>] local and origin branch names
+    BranchNames = Struct.new(:local, :all, keyword_init: true)
+
+    # No branches at all: a JIRA key then gets its plain lowercase branch, whatever the current directory holds.
+    BranchNames::NONE = BranchNames.new(local: [].freeze, all: [].freeze).freeze
+
+    # The kind of each type {Git#parse_start_input} answers; any other type is a "branch".
+    KINDS = {pr_url: "github_pr", issue_url: "github_issue", jira_key: "jira"}.freeze
+
     # @param git [Workspace::Git] reads the input
     # @param lineage [Workspace::WorkspaceLineage] finds the parent repository of a linked worktree
     def initialize(git:, lineage: WorkspaceLineage.new)
@@ -29,21 +41,32 @@ module Workspace
     end
 
     # @param input [String] JIRA key or URL, pull request URL or ref, issue URL, or branch name
+    # @param root [String, nil] a checkout of the repository whose branches a JIRA key is matched against; nil means the current directory's
+    # @param names [BranchNames, nil] the branch names, when the caller already has them; +root+ is ignored then
     # @return [Ref]
-    def call(input)
+    def call(input, root: nil, names: nil)
       parsed = @git.parse_start_input(input)
-      case parsed[:type]
-      when :pr_url
+      case KINDS.fetch(parsed[:type], "branch")
+      when "github_pr"
         Ref.new(input: input, parsed: parsed, kind: "github_pr", key: github_key(parsed[:repo], parsed[:number]),
           branch: "pr-#{parsed[:number]}", pr: parsed)
-      when :issue_url
+      when "github_issue"
         number = parsed[:number] || parsed[:value][/\d+/]
         Ref.new(input: input, parsed: parsed, kind: "github_issue", key: github_key(parsed[:repo], number), branch: parsed[:value])
-      when :jira_key
-        Ref.new(input: input, parsed: parsed, kind: "jira", key: parsed[:value], branch: parsed[:value])
+      when "jira"
+        Ref.new(input: input, parsed: parsed, kind: "jira", key: parsed[:value],
+          branch: jira_branch(parsed[:value], root, names))
       else
         Ref.new(input: input, parsed: parsed, kind: "branch", key: parsed[:value], branch: parsed[:value])
       end
+    end
+
+    # The kind of a ref, from parsing alone: no git is run and no branches are read.
+    #
+    # @param input [String]
+    # @return [String] "jira", "github_pr", "github_issue" or "branch"
+    def kind(input)
+      KINDS.fetch(@git.parse_start_input(input)[:type], "branch")
     end
 
     # The longest slug, in characters.
@@ -63,7 +86,17 @@ module Workspace
       cut.sub(/-\z/, "")
     end
 
-    # The ref with the title's words added to its branch (`PROJ-123-fix-login`,
+    # Whether a branch is the ref's branch with a title's words added (`proj-123-fix-login` or `PROJ-123-fix-login` for
+    # `proj-123`), ignoring case so an older uppercase branch still counts.
+    #
+    # @param branch [String]
+    # @param ref [Ref]
+    # @return [Boolean]
+    def slug_branch?(branch, ref)
+      branch.downcase.start_with?("#{ref.branch.downcase}-")
+    end
+
+    # The ref with the title's words added to its branch (`proj-123-fix-login`,
     # `issue-42-fix-login`). A pull request or a plain branch, a missing title
     # and a title with no letters or digits all come back unchanged.
     #
@@ -94,6 +127,29 @@ module Workspace
     end
 
     private
+
+    # The lowercase key, unless a branch that matches it without case exists, which is used by its real
+    # name. Picked in order: the lowercase key among the local names, any-case match among them, the
+    # lowercase key among all names, any-case match among them. A key that lowercases to `pr-<n>` or
+    # `issue-<n>` keeps its case, since those names belong to pull requests and issues.
+    def jira_branch(key, root, names)
+      return key if key.downcase.match?(/\A(pr|issue)-\d+\z/)
+
+      lower = key.downcase
+      unless names
+        root ||= @git.root
+        return lower unless root
+
+        names = BranchNames.new(local: @git.local_branch_names(root), all: @git.branch_names(root))
+      end
+      [names.local, names.all].each do |list|
+        return lower if list.include?(lower)
+
+        match = list.select { |name| name.casecmp?(key) }.min
+        return match if match
+      end
+      lower
+    end
 
     def github_key(repo, number)
       "#{repo}##{number}"

@@ -5,7 +5,7 @@ RSpec.describe Workspace::Commands::Start do
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
   let(:input) { StringIO.new }
-  let(:git) { double("git") }
+  let(:git) { double("git", local_branch_names: [], branch_names: []) }
   let(:project_config) do
     double("project_config", existing_name: nil).tap { |pc| allow(pc).to receive(:settle_worktree_name) { |project, dir, _path| "#{project}.worktree-#{dir}" } }
   end
@@ -238,24 +238,24 @@ RSpec.describe Workspace::Commands::Start do
       it "uses it as branch name" do
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
         allow(git).to receive(:create_worktree)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
         allow(launch_command).to receive(:call)
 
         command.call("PROJ-123")
 
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {})
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"], prompts: {})
       end
     end
 
     context "agent hook installation" do
       let(:backup) { Workspace::FileBackup.new(output: output) }
       let(:hook_installer) { Workspace::HookInstaller.new(backup: backup, output: output, input: input) }
-      let(:worktree_path) { File.join(tmpdir, ".worktrees", "PROJ-123") }
+      let(:worktree_path) { File.join(tmpdir, ".worktrees", "proj-123") }
       let(:settings_path) { File.join(worktree_path, ".claude", "settings.local.json") }
       let(:tracked_settings_path) { File.join(worktree_path, ".claude", "settings.json") }
 
@@ -271,12 +271,12 @@ RSpec.describe Workspace::Commands::Start do
         FileUtils.mkdir_p(worktree_path)
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
         allow(git).to receive(:create_worktree)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
         allow(launch_command).to receive(:call)
       end
 
@@ -390,7 +390,7 @@ RSpec.describe Workspace::Commands::Start do
         it "installs hooks and the status line when that program is on PATH" do
           command.call("PROJ-123")
 
-          expect(agent_commands).to have_received(:executable_for).with("myproject.worktree-PROJ-123", "claude").at_least(:once)
+          expect(agent_commands).to have_received(:executable_for).with("myproject.worktree-proj-123", "claude").at_least(:once)
           expect(JSON.parse(File.read(settings_path))["hooks"]).to have_key("PreToolUse")
           expect(JSON.parse(File.read(settings_path))["statusLine"]).to include("command" => "workspace statusline")
         end
@@ -506,20 +506,20 @@ RSpec.describe Workspace::Commands::Start do
       it "passes prompt through to launch command and returns its result" do
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
         allow(git).to receive(:create_worktree)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
-        launch_result = {exit_code: 1, prompt_failures: {"myproject.worktree-PROJ-123" => "no coding agent"}}
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
+        launch_result = {exit_code: 1, prompt_failures: {"myproject.worktree-proj-123" => "no coding agent"}}
         allow(launch_command).to receive(:call).and_return(launch_result)
 
         result = command.call("PROJ-123", prompt: "Fix the bug")
 
         expect(launch_command).to have_received(:call).with(
-          ["myproject.worktree-PROJ-123"],
-          prompts: {"myproject.worktree-PROJ-123" => "Fix the bug"}
+          ["myproject.worktree-proj-123"],
+          prompts: {"myproject.worktree-proj-123" => "Fix the bug"}
         )
         expect(result).to eq(launch_result)
       end
@@ -541,13 +541,13 @@ RSpec.describe Workspace::Commands::Start do
       before do
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
         allow(git).to receive(:create_worktree)
         allow(project_config).to receive(:exists?).and_return(false)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
         allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
         library.global_store.write("play", "kickoff", "# Kickoff\n")
       end
@@ -555,23 +555,23 @@ RSpec.describe Workspace::Commands::Start do
       it "sends a line pointing at the play, then the --prompt text" do
         play_command.call("PROJ-123", plays: ["kickoff"], prompt: "Start at CLI27.")
 
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
-          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\n\nStart at CLI27."},
-          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path, "plays" => [{"id" => "play/kickoff", "instructions" => global_path}]}})
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"],
+          prompts: {"myproject.worktree-proj-123" => "Read \"#{global_path}\" and follow it.\n\nStart at CLI27."},
+          bindings: {"myproject.worktree-proj-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path, "plays" => [{"id" => "play/kickoff", "instructions" => global_path}]}})
       end
 
       it "sends one line per play in order, binds the first as id and lists all, and reports each in --json" do
         review_path = library.global_store.path_for("play", "review")
         library.global_store.write("play", "review", "# Review\n")
         allow(launch_command).to receive(:call)
-          .and_return({exit_code: 0, prompt_failures: {}, bound_panes: {"myproject.worktree-PROJ-123" => "%5"}})
+          .and_return({exit_code: 0, prompt_failures: {}, bound_panes: {"myproject.worktree-proj-123" => "%5"}})
 
         play_command.call("PROJ-123", plays: %w[kickoff play/review kickoff], prompt: "Go.", json: true)
 
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"],
           quiet: true,
-          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\nRead \"#{review_path}\" and follow it.\n\nGo."},
-          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path,
+          prompts: {"myproject.worktree-proj-123" => "Read \"#{global_path}\" and follow it.\nRead \"#{review_path}\" and follow it.\n\nGo."},
+          bindings: {"myproject.worktree-proj-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path,
                                                        "plays" => [{"id" => "play/kickoff", "instructions" => global_path}, {"id" => "play/review", "instructions" => review_path}]}})
         payload = JSON.parse(output.string)
         expect(payload["plays"].map { |p| p["ref"] }).to eq(%w[play/kickoff play/review])
@@ -594,7 +594,7 @@ RSpec.describe Workspace::Commands::Start do
       end
 
       describe "with a recipe" do
-        let(:name) { "myproject.worktree-PROJ-123" }
+        let(:name) { "myproject.worktree-proj-123" }
 
         def recipe(body, name: "review-pass")
           library.global_store.write("recipe", name, body)
@@ -715,9 +715,9 @@ RSpec.describe Workspace::Commands::Start do
       it "sends only the line pointing at the play without --prompt" do
         play_command.call("PROJ-123", plays: ["kickoff"])
 
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
-          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it."},
-          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path, "plays" => [{"id" => "play/kickoff", "instructions" => global_path}]}})
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"],
+          prompts: {"myproject.worktree-proj-123" => "Read \"#{global_path}\" and follow it."},
+          bindings: {"myproject.worktree-proj-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path, "plays" => [{"id" => "play/kickoff", "instructions" => global_path}]}})
       end
 
       it "uses the parent project's play over the global one" do
@@ -739,7 +739,7 @@ RSpec.describe Workspace::Commands::Start do
 
       it "reports the pane the play was bound to in --json" do
         allow(launch_command).to receive(:call)
-          .and_return({exit_code: 0, prompt_failures: {}, bound_panes: {"myproject.worktree-PROJ-123" => "%5"}})
+          .and_return({exit_code: 0, prompt_failures: {}, bound_panes: {"myproject.worktree-proj-123" => "%5"}})
 
         play_command.call("PROJ-123", plays: ["kickoff"], json: true)
 
@@ -748,19 +748,19 @@ RSpec.describe Workspace::Commands::Start do
 
       it "reports the play as not delivered, with exit 1, when the prompt was not sent" do
         allow(launch_command).to receive(:call)
-          .and_return({exit_code: 1, prompt_failures: {"myproject.worktree-PROJ-123" => "no coding agent"}})
+          .and_return({exit_code: 1, prompt_failures: {"myproject.worktree-proj-123" => "no coding agent"}})
 
         result = play_command.call("PROJ-123", plays: ["kickoff"], json: true)
 
         payload = JSON.parse(output.string)
         expect(result).to eq({exit_code: 1})
         expect(payload["play"]).to include("delivered" => false)
-        expect(payload["prompt_failures"]).to eq("myproject.worktree-PROJ-123" => "no coding agent")
+        expect(payload["prompt_failures"]).to eq("myproject.worktree-proj-123" => "no coding agent")
       end
 
       it "reports the play as not delivered when the session did not start" do
         allow(launch_command).to receive(:call)
-          .and_return({exit_code: 1, prompt_failures: {}, start_failures: {"myproject.worktree-PROJ-123" => "tmux refused"}})
+          .and_return({exit_code: 1, prompt_failures: {}, start_failures: {"myproject.worktree-proj-123" => "tmux refused"}})
 
         play_command.call("PROJ-123", plays: ["kickoff"], json: true)
 
@@ -786,15 +786,15 @@ RSpec.describe Workspace::Commands::Start do
         it "sends the notes pack before the prompt with no flags" do
           packs_command.call("PROJ-123", prompt: "Go.")
 
-          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {"myproject.worktree-PROJ-123" => "#{notes_text.strip}\n\nGo."}, report_panes: true,
-            bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/notes", "packs" => ["notes"], "keep_existing" => true}})
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"], prompts: {"myproject.worktree-proj-123" => "#{notes_text.strip}\n\nGo."}, report_panes: true,
+            bindings: {"myproject.worktree-proj-123" => {"kind" => "play", "id" => "play/notes", "packs" => ["notes"], "keep_existing" => true}})
         end
 
         it "binds the pane to the packs it was sent when there is no play, and leaves a live binding alone" do
           packs_command.call("PROJ-123", packs: %w[review])
 
           expect(launch_command).to have_received(:call).with(anything, hash_including(
-            bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/notes", "packs" => %w[notes review], "keep_existing" => true}}
+            bindings: {"myproject.worktree-proj-123" => {"kind" => "play", "id" => "play/notes", "packs" => %w[notes review], "keep_existing" => true}}
           ))
         end
 
@@ -802,7 +802,7 @@ RSpec.describe Workspace::Commands::Start do
           packs_command.call("PROJ-123", plays: ["kickoff"], packs: %w[review])
 
           expect(launch_command).to have_received(:call).with(anything, hash_including(
-            bindings: {"myproject.worktree-PROJ-123" => hash_including("id" => "play/kickoff", "instructions" => global_path, "packs" => %w[notes review])}
+            bindings: {"myproject.worktree-proj-123" => hash_including("id" => "play/kickoff", "instructions" => global_path, "packs" => %w[notes review])}
           ))
         end
 
@@ -815,30 +815,30 @@ RSpec.describe Workspace::Commands::Start do
         it "sends the play line, then the packs, then the prompt, with --pack after the automatic pack" do
           packs_command.call("PROJ-123", plays: ["kickoff"], packs: %w[review], prompt: "Go.")
 
-          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], hash_including(
-            prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\n\n#{notes_text}\n## From pack review (built-in)\n\nReview the diff.\n\nGo."}
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"], hash_including(
+            prompts: {"myproject.worktree-proj-123" => "Read \"#{global_path}\" and follow it.\n\n#{notes_text}\n## From pack review (built-in)\n\nReview the diff.\n\nGo."}
           ))
         end
 
         it "sends only the packs when there is no prompt" do
           packs_command.call("PROJ-123")
 
-          expect(launch_command).to have_received(:call).with(anything, hash_including(prompts: {"myproject.worktree-PROJ-123" => notes_text.strip}))
+          expect(launch_command).to have_received(:call).with(anything, hash_including(prompts: {"myproject.worktree-proj-123" => notes_text.strip}))
         end
 
         it "sends no automatic pack with no_packs, or when notes.instructions is false" do
           packs_command.call("PROJ-123", no_packs: true)
-          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {})
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"], prompts: {})
 
           project_settings.data[project_name] = {"notes" => {"instructions" => "false"}} if project_settings.respond_to?(:data)
           allow(project_settings).to receive(:load).with(project_name).and_return({"notes" => {"instructions" => "false"}})
-          allow(project_settings).to receive(:load).with(/-PROJ-123\z/).and_return({"notes" => {"instructions" => "false"}})
+          allow(project_settings).to receive(:load).with(/-proj-123\z/).and_return({"notes" => {"instructions" => "false"}})
           packs_command.call("PROJ-123")
-          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}).twice
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"], prompts: {}).twice
         end
 
         it "reports the packs, where each went, in --json" do
-          allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}, delivered_panes: {"myproject.worktree-PROJ-123" => "%4"}})
+          allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}, delivered_panes: {"myproject.worktree-proj-123" => "%4"}})
 
           packs_command.call("PROJ-123", packs: %w[review], json: true)
 
@@ -849,7 +849,7 @@ RSpec.describe Workspace::Commands::Start do
         end
 
         it "reports the packs as not delivered when the prompt was not sent" do
-          allow(launch_command).to receive(:call).and_return({exit_code: 1, prompt_failures: {"myproject.worktree-PROJ-123" => "agent not ready"}, delivered_panes: {}})
+          allow(launch_command).to receive(:call).and_return({exit_code: 1, prompt_failures: {"myproject.worktree-proj-123" => "agent not ready"}, delivered_panes: {}})
 
           packs_command.call("PROJ-123", json: true)
 
@@ -862,13 +862,13 @@ RSpec.describe Workspace::Commands::Start do
           packs_command.call("PROJ-123", packs: %w[review])
           packs_command.call("PROJ-123", plays: ["kickoff"])
 
-          expect(launch_command).to have_received(:call).with(anything, hash_including(optional: {"myproject.worktree-PROJ-123" => ["notes"]})).once
+          expect(launch_command).to have_received(:call).with(anything, hash_including(optional: {"myproject.worktree-proj-123" => ["notes"]})).once
           expect(launch_command).to have_received(:call).with(anything, hash_not_including(:optional)).exactly(3).times
         end
 
         it "exits 0 with delivered false, a null pane and a warning when the automatic pack was skipped" do
-          message = "the notes pack was not sent to myproject.worktree-PROJ-123: no coding agent is running"
-          allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}, delivered_panes: {}, skipped_prompts: {"myproject.worktree-PROJ-123" => message}})
+          message = "the notes pack was not sent to myproject.worktree-proj-123: no coding agent is running"
+          allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}, delivered_panes: {}, skipped_prompts: {"myproject.worktree-proj-123" => message}})
 
           result = packs_command.call("PROJ-123", json: true)
 
@@ -910,7 +910,7 @@ RSpec.describe Workspace::Commands::Start do
               pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
               handoff_config: handoff_config, main_agent: main_agent)
           end
-          let(:name) { "myproject.worktree-PROJ-123" }
+          let(:name) { "myproject.worktree-proj-123" }
 
           before { library.builtin_store.write("play", "handoff", "Run the check.\n") }
 
@@ -990,11 +990,11 @@ RSpec.describe Workspace::Commands::Start do
 
               it "sends no prompt at all when the skipped pack was the only one" do
                 allow(project_settings).to receive(:load).with(project_name).and_return({"notes" => {"instructions" => "false"}})
-                allow(project_settings).to receive(:load).with(/-PROJ-123\z/).and_return({"notes" => {"instructions" => "false"}})
+                allow(project_settings).to receive(:load).with(/-proj-123\z/).and_return({"notes" => {"instructions" => "false"}})
                 packs_command.call("PROJ-123", json: true)
 
                 expect(JSON.parse(output.string)["packs"]).to eq([{"name" => "handoff", "source" => "config", "delivered" => false, "pane" => nil, "reason" => "handoff_unsupported_agent"}])
-                expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}, quiet: true)
+                expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"], prompts: {}, quiet: true)
               end
             end
           end
@@ -1030,7 +1030,7 @@ RSpec.describe Workspace::Commands::Start do
           lineage: Workspace::WorkspaceLineage.new, project_config: project_config)
       end
       let(:installer) { instance_double(Workspace::LibraryInstaller) }
-      let(:worktree_path) { File.join(tmpdir, ".worktrees", "PROJ-123") }
+      let(:worktree_path) { File.join(tmpdir, ".worktrees", "proj-123") }
       let(:kit_command) do
         described_class.new(git: git, project_config: project_config, project_settings: project_settings,
           launch_command: launch_command, library: library, library_installer: installer,
@@ -1047,13 +1047,13 @@ RSpec.describe Workspace::Commands::Start do
       before do
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
         allow(git).to receive(:create_worktree)
         allow(project_config).to receive(:exists?).and_return(false)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
         allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
         allow(installer).to receive(:relative_path).and_return(".claude/x")
         allow(installer).to receive(:copy) { |entry, worktree:, project:| copied(entry["ref"]) }
@@ -1064,7 +1064,7 @@ RSpec.describe Workspace::Commands::Start do
       end
 
       it "copies each entry into the worktree after its config is written and before launch" do
-        expect(project_config).to receive(:create_worktree).ordered.and_return("myproject.worktree-PROJ-123")
+        expect(project_config).to receive(:create_worktree).ordered.and_return("myproject.worktree-proj-123")
         expect(installer).to receive(:copy).with(hash_including("ref" => "agent/reviewer"), worktree: worktree_path, project: kind_of(String)).ordered
           .and_return(copied("agent/reviewer"))
         expect(installer).to receive(:copy).with(hash_including("ref" => "agent/planner"), worktree: worktree_path, project: kind_of(String)).ordered
@@ -1196,10 +1196,10 @@ RSpec.describe Workspace::Commands::Start do
       it "skips creation and launches directly" do
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(true)
         allow(git).to receive(:create_worktree)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
         allow(launch_command).to receive(:call)
 
         command.call("PROJ-123")
@@ -1212,32 +1212,32 @@ RSpec.describe Workspace::Commands::Start do
       it "warns on stderr when --base is given but ignored" do
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(true)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
         allow(launch_command).to receive(:call)
 
         command.call("PROJ-123", base: "develop")
 
-        expect(error_output.string).to include("Note: --base ignored; branch 'PROJ-123' already exists.")
+        expect(error_output.string).to include("Note: --base ignored; branch 'proj-123' already exists.")
       end
 
       it "writes .workspace-project marker in existing worktree" do
-        worktree_path = File.join(tmpdir, ".worktrees", "PROJ-123")
+        worktree_path = File.join(tmpdir, ".worktrees", "proj-123")
         FileUtils.mkdir_p(worktree_path)
 
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(true)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
         allow(launch_command).to receive(:call)
 
         command.call("PROJ-123")
 
         marker = File.join(worktree_path, ".workspace-project")
         expect(File.exist?(marker)).to be true
-        expect(File.read(marker)).to eq("myproject.worktree-PROJ-123")
+        expect(File.read(marker)).to eq("myproject.worktree-proj-123")
       end
     end
 
@@ -1272,23 +1272,23 @@ RSpec.describe Workspace::Commands::Start do
 
     context "with a new worktree" do
       it "writes .workspace-project marker after creation" do
-        worktree_path = File.join(tmpdir, ".worktrees", "PROJ-456")
+        worktree_path = File.join(tmpdir, ".worktrees", "proj-456")
 
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-456").and_return({type: :jira_key, value: "PROJ-456"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-456").and_return("PROJ-456")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-456").and_return("proj-456")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-456").and_return(true)
+        allow(git).to receive(:branch_exists?).with("proj-456").and_return(true)
         allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(worktree_path) }
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-456")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-456")
         allow(launch_command).to receive(:call)
 
         command.call("PROJ-456")
 
         marker = File.join(worktree_path, ".workspace-project")
         expect(File.exist?(marker)).to be true
-        expect(File.read(marker)).to eq("myproject.worktree-PROJ-456")
+        expect(File.read(marker)).to eq("myproject.worktree-proj-456")
       end
     end
 
@@ -1516,14 +1516,14 @@ RSpec.describe Workspace::Commands::Start do
           "worktree_hooks" => {"post_launch" => "echo worktree launched", "post_focus" => "echo focused"}
         })
 
-        worktree_config = "#{parent_name}.worktree-PROJ-789"
+        worktree_config = "#{parent_name}.worktree-proj-789"
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-789").and_return({type: :jira_key, value: "PROJ-789"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-789").and_return("PROJ-789")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-789").and_return("proj-789")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-789").and_return(true)
-        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "PROJ-789")) }
+        allow(git).to receive(:branch_exists?).with("proj-789").and_return(true)
+        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "proj-789")) }
         allow(project_config).to receive(:create_worktree).and_return(worktree_config)
         allow(launch_command).to receive(:call)
 
@@ -1540,14 +1540,14 @@ RSpec.describe Workspace::Commands::Start do
         parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
         File.write(project_settings.project_config_path(parent_name), "a: [\n")
 
-        worktree_config = "#{parent_name}.worktree-PROJ-789"
+        worktree_config = "#{parent_name}.worktree-proj-789"
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-789").and_return({type: :jira_key, value: "PROJ-789"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-789").and_return("PROJ-789")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-789").and_return("proj-789")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-789").and_return(true)
-        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "PROJ-789")) }
+        allow(git).to receive(:branch_exists?).with("proj-789").and_return(true)
+        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "proj-789")) }
         allow(project_config).to receive(:create_worktree).and_return(worktree_config)
         allow(launch_command).to receive(:call)
 
@@ -1559,7 +1559,7 @@ RSpec.describe Workspace::Commands::Start do
 
       it "does not overwrite existing worktree hooks" do
         parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
-        worktree_config = "#{parent_name}.worktree-PROJ-789"
+        worktree_config = "#{parent_name}.worktree-proj-789"
         project_settings.save(parent_name, {
           "worktree_hooks" => {"post_launch" => "echo from parent"}
         })
@@ -1569,7 +1569,7 @@ RSpec.describe Workspace::Commands::Start do
 
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-789").and_return({type: :jira_key, value: "PROJ-789"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-789").and_return("PROJ-789")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-789").and_return("proj-789")
         allow(git).to receive(:worktree_exists?).and_return(true)
         allow(project_config).to receive(:create_worktree).and_return(worktree_config)
         allow(launch_command).to receive(:call)
@@ -1582,16 +1582,16 @@ RSpec.describe Workspace::Commands::Start do
 
       it "does nothing when parent has no worktree_hooks" do
         parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
-        worktree_config = "#{parent_name}.worktree-PROJ-789"
+        worktree_config = "#{parent_name}.worktree-proj-789"
         project_settings.save(parent_name, {"hooks" => {"post_launch" => "echo parent"}})
 
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-789").and_return({type: :jira_key, value: "PROJ-789"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-789").and_return("PROJ-789")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-789").and_return("proj-789")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-789").and_return(true)
-        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "PROJ-789")) }
+        allow(git).to receive(:branch_exists?).with("proj-789").and_return(true)
+        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "proj-789")) }
         allow(project_config).to receive(:create_worktree).and_return(worktree_config)
         allow(launch_command).to receive(:call)
 
@@ -1687,12 +1687,12 @@ RSpec.describe Workspace::Commands::Start do
       before do
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
         allow(git).to receive(:create_worktree)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-proj-123")
       end
 
       it "emits the documented schema and nothing else on stdout" do
@@ -1705,12 +1705,12 @@ RSpec.describe Workspace::Commands::Start do
         expect(payload).to include(
           "schema_version" => 1,
           "project" => Workspace::WorkspaceLineage.name_from_path(tmpdir),
-          "workspace" => "myproject.worktree-PROJ-123",
-          "path" => File.join(tmpdir, ".worktrees", "PROJ-123"),
-          "branch" => "PROJ-123",
+          "workspace" => "myproject.worktree-proj-123",
+          "path" => File.join(tmpdir, ".worktrees", "proj-123"),
+          "branch" => "proj-123",
           "created" => true
         )
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}, quiet: true)
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"], prompts: {}, quiet: true)
       end
 
       context "with a task store" do
@@ -1721,18 +1721,18 @@ RSpec.describe Workspace::Commands::Start do
         end
 
         before do
-          allow(project_config).to receive(:settle_worktree_name).and_return("myproject.worktree-PROJ-123")
+          allow(project_config).to receive(:settle_worktree_name).and_return("myproject.worktree-proj-123")
           allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
         end
 
         it "records the task before the config is written, and passes its id and title through" do
           task_command.call("PROJ-123", json: true, title: "Fix login")
 
-          task = task_store.active_for("myproject.worktree-PROJ-123")
-          expect(task).to include("title" => "Fix login", "ref" => "PROJ-123", "branch" => "PROJ-123",
-            "path" => File.join(tmpdir, ".worktrees", "PROJ-123"))
+          task = task_store.active_for("myproject.worktree-proj-123")
+          expect(task).to include("title" => "Fix login", "ref" => "PROJ-123", "branch" => "proj-123",
+            "path" => File.join(tmpdir, ".worktrees", "proj-123"))
           expect(project_config).to have_received(:create_worktree)
-            .with(Workspace::WorkspaceLineage.name_from_path(tmpdir), "PROJ-123", anything, "PROJ-123", quiet: true, task_id: task["id"])
+            .with(Workspace::WorkspaceLineage.name_from_path(tmpdir), "proj-123", anything, "proj-123", quiet: true, task_id: task["id"])
           expect(JSON.parse(output.string)["task"]).to eq("id" => task["id"], "title" => "Fix login")
         end
 
@@ -1743,19 +1743,19 @@ RSpec.describe Workspace::Commands::Start do
 
           expect(first).to eq(exit_code: 0)
           expect(Dir.glob(File.join(tmpdir, "tasks", "*.json")).size).to eq(1)
-          expect(task_store.active_for("myproject.worktree-PROJ-123")["title"]).to eq("B")
+          expect(task_store.active_for("myproject.worktree-proj-123")["title"]).to eq("B")
         end
 
         it "treats a blank title as no title" do
           task_command.call("PROJ-123", json: true, title: "  ")
 
-          expect(task_store.active_for("myproject.worktree-PROJ-123")["title"]).to be_nil
+          expect(task_store.active_for("myproject.worktree-proj-123")["title"]).to be_nil
         end
 
         it "starts with no title when none is given" do
           task_command.call("PROJ-123", json: true)
 
-          expect(task_store.active_for("myproject.worktree-PROJ-123")["title"]).to be_nil
+          expect(task_store.active_for("myproject.worktree-proj-123")["title"]).to be_nil
           expect(JSON.parse(output.string)["task"]["title"]).to be_nil
         end
       end
@@ -1775,7 +1775,7 @@ RSpec.describe Workspace::Commands::Start do
           allow(git).to receive(:sanitize_for_filesystem) { |name| name }
           allow(git).to receive(:branch_exists?).and_return(true)
           allow(git).to receive(:worktree_branches).and_return([])
-          allow(project_config).to receive(:settle_worktree_name).and_return("myproject.worktree-PROJ-123")
+          allow(project_config).to receive(:settle_worktree_name).and_return("myproject.worktree-proj-123")
           allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
         end
 
@@ -1783,7 +1783,7 @@ RSpec.describe Workspace::Commands::Start do
           ticket_command.call("PROJ-123", json: true, title_from_ticket: true)
 
           expect(payload["task"]["title"]).to eq("Fix the Login: redirect (v2)!")
-          expect(payload["branch"]).to eq("PROJ-123")
+          expect(payload["branch"]).to eq("proj-123")
           expect(ticket_source).to have_received(:fetch).with(an_object_having_attributes(kind: "jira"), chdir: tmpdir)
         end
 
@@ -1797,15 +1797,15 @@ RSpec.describe Workspace::Commands::Start do
         it "puts the title's words in the branch of a JIRA ref with --slug, and fills the title" do
           ticket_command.call("PROJ-123", json: true, slug: true)
 
-          expect(payload["branch"]).to eq("PROJ-123-fix-the-login-redirect-v2")
+          expect(payload["branch"]).to eq("proj-123-fix-the-login-redirect-v2")
           expect(payload["task"]["title"]).to eq("Fix the Login: redirect (v2)!")
-          expect(git).to have_received(:create_worktree).with(File.join(tmpdir, ".worktrees", "PROJ-123-fix-the-login-redirect-v2"), "PROJ-123-fix-the-login-redirect-v2", base: nil, quiet: true)
+          expect(git).to have_received(:create_worktree).with(File.join(tmpdir, ".worktrees", "proj-123-fix-the-login-redirect-v2"), "proj-123-fix-the-login-redirect-v2", base: nil, quiet: true)
         end
 
         it "slugs the --title it was given" do
           ticket_command.call("PROJ-123", json: true, slug: true, title: "Other words")
 
-          expect(payload["branch"]).to eq("PROJ-123-other-words")
+          expect(payload["branch"]).to eq("proj-123-other-words")
           expect(ticket_source).not_to have_received(:fetch)
         end
 
@@ -1823,9 +1823,9 @@ RSpec.describe Workspace::Commands::Start do
 
           ticket_command.call("PROJ-123", json: true, slug: true)
 
-          expect(payload["branch"]).to eq("PROJ-123")
+          expect(payload["branch"]).to eq("proj-123")
           expect(payload["task"]["title"]).to be_nil
-          expect(payload["warnings"]).to include(/Could not read the ticket's title \(ticket_source_unavailable\).*not installed/, /--slug left the branch as 'PROJ-123'/)
+          expect(payload["warnings"]).to include(/Could not read the ticket's title \(ticket_source_unavailable\).*not installed/, /--slug left the branch as 'proj-123'/)
         end
 
         def reuse_worktree(*branches, path_of:)
@@ -1834,38 +1834,48 @@ RSpec.describe Workspace::Commands::Start do
         end
 
         it "reuses the worktree already made for the plain branch" do
-          reuse_worktree("PROJ-123", path_of: "PROJ-123")
+          reuse_worktree("proj-123", path_of: "proj-123")
 
           ticket_command.call("PROJ-123", json: true, slug: true)
 
-          expect(payload["branch"]).to eq("PROJ-123")
+          expect(payload["branch"]).to eq("proj-123")
           expect(payload["created"]).to be(false)
         end
 
         it "reuses the worktree an earlier --slug run made, even when the ticket was retitled or cannot be read" do
-          reuse_worktree("PROJ-123-old-title", "PROJ-1234-other", path_of: "PROJ-123-old-title")
+          reuse_worktree("proj-123-old-title", "proj-1234-other", path_of: "proj-123-old-title")
           allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("`jira` did not answer in time.", code: "ticket_source_unavailable"))
+
+          ticket_command.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("proj-123-old-title")
+          expect(payload["created"]).to be(false)
+        end
+
+        it "reuses the worktree an earlier run made under an uppercase key, and still reads the ticket by its uppercase key" do
+          reuse_worktree("PROJ-123-old-title", path_of: "PROJ-123-old-title")
 
           ticket_command.call("PROJ-123", json: true, slug: true)
 
           expect(payload["branch"]).to eq("PROJ-123-old-title")
           expect(payload["created"]).to be(false)
+          expect(ticket_source).to have_received(:fetch).with(an_object_having_attributes(kind: "jira", key: "PROJ-123"), anything)
         end
 
         it "prefers the worktree of the slugged branch over the plain one" do
-          reuse_worktree("PROJ-123", "PROJ-123-fix-the-login-redirect-v2", path_of: "PROJ-123-fix-the-login-redirect-v2")
+          reuse_worktree("proj-123", "proj-123-fix-the-login-redirect-v2", path_of: "proj-123-fix-the-login-redirect-v2")
 
           ticket_command.call("PROJ-123", json: true, slug: true)
 
-          expect(payload["branch"]).to eq("PROJ-123-fix-the-login-redirect-v2")
+          expect(payload["branch"]).to eq("proj-123-fix-the-login-redirect-v2")
         end
 
         it "does not mistake another ticket whose key starts the same for this one" do
-          allow(git).to receive(:worktree_branches).and_return(["PROJ-1234-other"])
+          allow(git).to receive(:worktree_branches).and_return(["proj-1234-other"])
 
           ticket_command.call("PROJ-123", json: true, slug: true)
 
-          expect(payload["branch"]).to eq("PROJ-123-fix-the-login-redirect-v2")
+          expect(payload["branch"]).to eq("proj-123-fix-the-login-redirect-v2")
           expect(payload["created"]).to be(true)
         end
 
@@ -1875,7 +1885,7 @@ RSpec.describe Workspace::Commands::Start do
           ticket_command.call("PROJ-123", json: true, slug: true)
 
           expect(payload["task"]["title"]).to eq("Fix it [31m now")
-          expect(payload["branch"]).to eq("PROJ-123-fix-it-31m-now")
+          expect(payload["branch"]).to eq("proj-123-fix-it-31m-now")
         end
 
         it "warns when --slug is given and no ticket source is wired" do
@@ -1884,8 +1894,8 @@ RSpec.describe Workspace::Commands::Start do
 
           bare.call("PROJ-123", json: true, slug: true)
 
-          expect(payload["branch"]).to eq("PROJ-123")
-          expect(payload["warnings"]).to include(/--slug left the branch as 'PROJ-123'/)
+          expect(payload["branch"]).to eq("proj-123")
+          expect(payload["warnings"]).to include(/--slug left the branch as 'proj-123'/)
         end
 
         it "fills the title of a pull request from gh without changing its branch" do
@@ -1928,7 +1938,7 @@ RSpec.describe Workspace::Commands::Start do
         command.call("PROJ-123", json: true)
 
         expect(JSON.parse(output.string)).not_to have_key("task")
-        expect(project_config).to have_received(:create_worktree).with(Workspace::WorkspaceLineage.name_from_path(tmpdir), "PROJ-123", anything, "PROJ-123", quiet: true)
+        expect(project_config).to have_received(:create_worktree).with(Workspace::WorkspaceLineage.name_from_path(tmpdir), "proj-123", anything, "proj-123", quiet: true)
       end
 
       it "reports headless: false in the JSON by default" do
@@ -1943,18 +1953,18 @@ RSpec.describe Workspace::Commands::Start do
 
       it "launches headless and reports whether the session was already running" do
         allow(launch_command).to receive(:call)
-          .and_return({exit_code: 0, prompt_failures: {}, headless: true, reused: ["myproject.worktree-PROJ-123"], start_failures: {}})
+          .and_return({exit_code: 0, prompt_failures: {}, headless: true, reused: ["myproject.worktree-proj-123"], start_failures: {}})
 
         command.call("PROJ-123", json: true, headless: true)
 
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}, headless: true, quiet: true)
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-proj-123"], prompts: {}, headless: true, quiet: true)
         payload = JSON.parse(output.string)
         expect(payload).to include("headless" => true, "session_reused" => true)
       end
 
       it "reports a session that could not be started as the JSON error" do
         allow(launch_command).to receive(:call).and_return({exit_code: 1, prompt_failures: {}, headless: true,
-          reused: [], start_failures: {"myproject.worktree-PROJ-123" => "tmuxinator exited 1"}})
+          reused: [], start_failures: {"myproject.worktree-proj-123" => "tmuxinator exited 1"}})
 
         result = command.call("PROJ-123", json: true, headless: true)
 
@@ -2181,7 +2191,7 @@ RSpec.describe Workspace::Commands::Start do
   describe "#call with --no-launch and --agent-kind" do
     let(:main_agent) { double("main_agent", kind: "claude") }
     let(:which) { ->(_exe) { true } }
-    let(:name) { "myproject.worktree-PROJ-123" }
+    let(:name) { "myproject.worktree-proj-123" }
     subject(:command) do
       described_class.new(git: git, project_config: project_config, project_settings: project_settings,
         launch_command: launch_command, main_agent: main_agent, which: which, output: output, error_output: error_output, input: input)
@@ -2190,10 +2200,10 @@ RSpec.describe Workspace::Commands::Start do
     before do
       allow(git).to receive(:root).and_return(tmpdir)
       allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+      allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
       allow(git).to receive(:worktree_exists?).and_return(false)
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-      allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+      allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
       allow(git).to receive(:create_worktree)
       allow(project_config).to receive(:create_worktree).and_return(name)
       allow(project_config).to receive(:check_agent_kind!)
@@ -2355,7 +2365,7 @@ RSpec.describe Workspace::Commands::Start do
   end
 
   describe "#call with --spine, --no-spine and spine.auto" do
-    let(:name) { "myproject.worktree-PROJ-123" }
+    let(:name) { "myproject.worktree-proj-123" }
     let(:library) { double("library") }
     let(:spine_exists) { [false] }
     let(:composer) { double("composer") }
@@ -2373,10 +2383,10 @@ RSpec.describe Workspace::Commands::Start do
     before do
       allow(git).to receive(:root).and_return(tmpdir)
       allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+      allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
       allow(git).to receive(:worktree_exists?).and_return(false)
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-      allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+      allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
       allow(git).to receive(:create_worktree)
       allow(project_config).to receive(:create_worktree).and_return(name)
       allow(launch_command).to receive(:call)
@@ -2401,7 +2411,7 @@ RSpec.describe Workspace::Commands::Start do
       command.call("PROJ-123", spine: true, json: true)
 
       expect(events.map(&:first)).to eq(%i[compose init compose])
-      expect(events.last.last).to eq(File.join(tmpdir, ".worktrees", "PROJ-123"))
+      expect(events.last.last).to eq(File.join(tmpdir, ".worktrees", "proj-123"))
       expect(spine_init).to have_received(:call).with(name: name, template: nil, print: false)
       expect(launch_command).to have_received(:call).with([name], hash_including(prompts: {name => "SPINE PACK"}))
       payload = JSON.parse(output.string)
@@ -2489,7 +2499,7 @@ RSpec.describe Workspace::Commands::Start do
   end
 
   describe "#call with --plan" do
-    let(:name) { "myproject.worktree-PROJ-123" }
+    let(:name) { "myproject.worktree-proj-123" }
     let(:plan_play) { {"ref" => "play/implementation-plan", "path" => "/lib/play/implementation-plan.md"} }
     let(:library) { double("library", pack: [plan_play, "body"]) }
     let(:plan_command) { double("plan_command") }
@@ -2503,10 +2513,10 @@ RSpec.describe Workspace::Commands::Start do
     before do
       allow(git).to receive(:root).and_return(tmpdir)
       allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+      allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
       allow(git).to receive(:worktree_exists?).and_return(false)
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-      allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+      allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
       allow(git).to receive(:create_worktree)
       allow(project_config).to receive(:create_worktree).and_return(name)
       allow(launch_command).to receive(:call)

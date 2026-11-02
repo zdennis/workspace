@@ -289,7 +289,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
 
     expect(row["inputs"]["task"]).to eq("PROJ-1: Fix login (https://acme.atlassian.net/browse/PROJ-1)")
-    expect(row["branch"]).to eq("PROJ-1")
+    expect(row["branch"]).to eq("proj-1")
     expect(ticket_source).to have_received(:fetch).with(having_attributes(kind: "jira"), chdir: root)
   end
 
@@ -339,7 +339,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
   it "reports the file the ticket body would go to as spec, only when spec is declared and not given" do
     row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
-    expect(row["inputs"]["spec"]).to eq("/src/app/.worktrees/PROJ-1/.workflow/tickets/PROJ-1.md")
+    expect(row["inputs"]["spec"]).to eq("/src/app/.worktrees/proj-1/.workflow/tickets/PROJ-1.md")
 
     given = command.call(id: "flow", ref: "PROJ-1", inputs: {"spec" => "x.md"}, dry_run: true)
     expect(given["inputs"]["spec"]).to eq("x.md")
@@ -383,7 +383,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
   it "reuses an existing workspace for a named --branch or a ticket ref" do
     branches << "mine"
-    worktrees << "/src/app/.worktrees/mine" << "/src/app/.worktrees/PROJ-1"
+    worktrees << "/src/app/.worktrees/mine" << "/src/app/.worktrees/proj-1"
 
     named = command.call(id: "flow", prompt: "x", branch: "mine", dry_run: true)
     ticketed = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
@@ -404,7 +404,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "reports the worktree where start would adopt a branch checked out elsewhere" do
-    allow(git).to receive(:find_worktree_by_branch).with("PROJ-1", repo: root).and_return("/elsewhere/proj-1")
+    allow(git).to receive(:find_worktree_by_branch).with("proj-1", repo: root).and_return("/elsewhere/proj-1")
 
     row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
 
@@ -412,14 +412,14 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "checks the agent kind of a reused worktree's own workspace, and the project's under its normalized name" do
-    worktrees << "/src/app/.worktrees/PROJ-1"
+    worktrees << "/src/app/.worktrees/proj-1"
     allow(project_config).to receive(:existing_name).with("app").and_return("App")
     allow(project_config).to receive(:project_root_for).with("App").and_return(root)
     allow(agent_commands).to receive(:kind).with("App").and_return("claude")
     allow(agent_commands).to receive(:kind).with("app.worktree-x").and_return("codex")
 
     expect { command.call(id: "flow", ref: "PROJ-1", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_needs_claude") }
-    expect(project_config).to have_received(:worktree_config_name).with("App", "PROJ-1")
+    expect(project_config).to have_received(:worktree_config_name).with("App", "proj-1")
   end
 
   it "refuses before anything is made when the agent kind is not claude" do
@@ -431,7 +431,28 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "adds the ticket title's words to the branch with slug" do
-    expect(command.call(id: "flow", ref: "PROJ-1", slug: true, dry_run: true)["branch"]).to eq("PROJ-1-fix-login")
+    expect(command.call(id: "flow", ref: "PROJ-1", slug: true, dry_run: true)["branch"]).to eq("proj-1-fix-login")
+  end
+
+  it "reuses an old uppercase slug branch from the lowercase key with slug" do
+    branches << "PROJ-1-fix-login"
+    worktrees << "/src/app/.worktrees/PROJ-1-fix-login"
+
+    row = command.call(id: "flow", ref: "PROJ-1", slug: true, dry_run: true)
+
+    expect(row["branch"]).to eq("proj-1-fix-login")
+    expect(row["would_create"]).to be(true)
+    expect(ticket_source).to have_received(:fetch).with(an_object_having_attributes(key: "PROJ-1"), anything)
+  end
+
+  it "plans the real name of a branch only origin has, read from the project's root" do
+    allow(git).to receive(:local_branch_names).with(root).and_return([])
+    allow(git).to receive(:branch_names).with(root).and_return(%w[Proj-1])
+
+    row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
+
+    expect(row["branch"]).to eq("Proj-1")
+    expect(ticket_source).to have_received(:fetch).with(an_object_having_attributes(key: "PROJ-1"), anything)
   end
 
   describe "a ticket that can't be read" do
@@ -458,7 +479,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     it "warns that --slug was ignored" do
       row = command.call(id: "flow", ref: "PROJ-1", prompt: "Fix login", slug: true, dry_run: true)
 
-      expect(row["branch"]).to eq("PROJ-1")
+      expect(row["branch"]).to eq("proj-1")
       expect(row["warnings"]).to include("--slug ignored: ticket unreadable")
     end
 
@@ -501,9 +522,9 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "checks the tree of a reused or adopted checkout" do
-    worktrees << "/src/app/.worktrees/PROJ-1"
+    worktrees << "/src/app/.worktrees/proj-1"
     command.call(id: "flow", ref: "PROJ-1", dry_run: true)
-    expect(engine).to have_received(:preflight).with(hash_including(tree: "/src/app/.worktrees/PROJ-1"))
+    expect(engine).to have_received(:preflight).with(hash_including(tree: "/src/app/.worktrees/proj-1"))
 
     allow(git).to receive(:find_worktree_by_branch).with("mine", repo: root).and_return("/elsewhere/mine")
     command.call(id: "flow", prompt: "x", branch: "mine", dry_run: true)
@@ -1054,28 +1075,28 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
 
       expect(row).to eq(
-        "workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would create the workspace for PROJ-1 in app and start flow at step plan.", "workflow" => "flow", "step" => "plan",
-        "project" => "app", "branch" => "PROJ-1", "path" => "/src/app/.worktrees/PROJ-1", "would_create" => true,
+        "workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would create the workspace for proj-1 in app and start flow at step plan.", "workflow" => "flow", "step" => "plan",
+        "project" => "app", "branch" => "proj-1", "path" => "/src/app/.worktrees/proj-1", "would_create" => true,
         "inputs" => {"task" => "PROJ-1: Fix login (https://acme.atlassian.net/browse/PROJ-1)",
-                     "spec" => "/src/app/.worktrees/PROJ-1/.workflow/tickets/PROJ-1.md"},
+                     "spec" => "/src/app/.worktrees/proj-1/.workflow/tickets/PROJ-1.md"},
         "packs" => ["play/binding"], "warnings" => [],
         "ticket" => {"key" => "PROJ-1", "title" => "Fix login", "url" => "https://acme.atlassian.net/browse/PROJ-1"}
       )
-      expect(output.string).to match(/Would create the workspace for PROJ-1 in app and start flow at step plan/)
+      expect(output.string).to match(/Would create the workspace for proj-1 in app and start flow at step plan/)
     end
   end
 
   describe "creating the workspace" do
     let(:dir) { Dir.mktmpdir("wfs") }
-    let(:path) { File.join(dir, ".worktrees", "PROJ-1") }
-    let(:started) { {"workspace" => "app.worktree-PROJ-1", "path" => path, "branch" => "PROJ-1", "created" => true, "task" => {"id" => "t1", "title" => "Fix login"}} }
+    let(:path) { File.join(dir, ".worktrees", "proj-1") }
+    let(:started) { {"workspace" => "app.worktree-proj-1", "path" => path, "branch" => "proj-1", "created" => true, "task" => {"id" => "t1", "title" => "Fix login"}} }
 
     before do
       allow(git).to receive(:root).and_return(dir)
       allow(start).to receive(:payload).and_return({exit_code: 0, json: started})
-      allow(tmux).to receive(:session_name_for).with("app.worktree-PROJ-1").and_return("app-wt")
+      allow(tmux).to receive(:session_name_for).with("app.worktree-proj-1").and_return("app-wt")
       allow(readiness).to receive(:wait).and_return(ready)
-      allow(workflow).to receive(:run).and_return({"workspace" => "app.worktree-PROJ-1", "outcome" => "started", "run_id" => "wr_1"})
+      allow(workflow).to receive(:run).and_return({"workspace" => "app.worktree-proj-1", "outcome" => "started", "run_id" => "wr_1"})
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -1089,7 +1110,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       allow(catalog).to receive(:find) { |_id, project: nil| (project == "team-app") ? team : preset }
       allow(workflow).to receive(:run) do |id:, project: nil, **|
         ran << catalog.find(id, project: project)
-        {"workspace" => "app.worktree-PROJ-1", "outcome" => "started", "run_id" => "wr_1"}
+        {"workspace" => "app.worktree-proj-1", "outcome" => "started", "run_id" => "wr_1"}
       end
 
       command.call(id: "flow", ref: "PROJ-1")
@@ -1103,8 +1124,8 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       expect(start).to have_received(:payload).with("PROJ-1", yes: true, base: "main", headless: true, spine: false, no_packs: true, title: "Fix login")
       expect(readiness).to have_received(:deadline_in).with(30)
       expect(readiness).to have_received(:wait).with("app-wt", deadline: 99.0, detector: :detector)
-      expect(workflow).to have_received(:run).with(hash_including(id: "flow", workspace: "app.worktree-PROJ-1", worktree: path, pane: "%7", note: nil))
-      expect(row).to include("outcome" => "started", "run_id" => "wr_1", "branch" => "PROJ-1", "path" => path, "created" => true,
+      expect(workflow).to have_received(:run).with(hash_including(id: "flow", workspace: "app.worktree-proj-1", worktree: path, pane: "%7", note: nil))
+      expect(row).to include("outcome" => "started", "run_id" => "wr_1", "branch" => "proj-1", "path" => path, "created" => true,
         "task" => {"id" => "t1", "title" => "Fix login"}, "warnings" => [])
       expect(row["ticket"]).to include("key" => "PROJ-1")
     end
@@ -1160,8 +1181,8 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
         expect(e.code).to eq("error")
-        expect(e.details).to include("workspace" => "app.worktree-PROJ-1", "path" => path)
-        expect(e.details["next"].first).to start_with("workspace workflow run flow --name app.worktree-PROJ-1")
+        expect(e.details).to include("workspace" => "app.worktree-proj-1", "path" => path)
+        expect(e.details["next"].first).to start_with("workspace workflow run flow --name app.worktree-proj-1")
       end
     end
 
@@ -1178,7 +1199,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
         expect(e.code).to eq("start_failed")
         expect(e.message).to include("Could not start the workspace session")
-        expect(e.details["next"].first).to start_with("workspace workflow run flow --name app.worktree-PROJ-1")
+        expect(e.details["next"].first).to start_with("workspace workflow run flow --name app.worktree-proj-1")
       end
       expect(readiness).not_to have_received(:wait)
     end
@@ -1206,8 +1227,8 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       expect { command.call(id: "flow", ref: "PROJ-1", inputs: {"task" => "do it"}) }.to raise_error(Workspace::Error) do |e|
         expect(e.code).to eq("agent_not_ready")
         expect(e.message).to include("(waited up to 60s)")
-        expect(e.details).to include("workspace" => "app.worktree-PROJ-1", "path" => path)
-        expect(e.details["next"].first).to start_with("workspace workflow run flow --name app.worktree-PROJ-1 --input task=do\\ it")
+        expect(e.details).to include("workspace" => "app.worktree-proj-1", "path" => path)
+        expect(e.details["next"].first).to start_with("workspace workflow run flow --name app.worktree-proj-1 --input task=do\\ it")
       end
       expect(workflow).not_to have_received(:run)
     end
@@ -1234,7 +1255,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "still starting up"))
 
       expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
-        expect(e.message).to include("The workspace app.worktree-PROJ-1 is at #{path}")
+        expect(e.message).to include("The workspace app.worktree-proj-1 is at #{path}")
       end
     end
 
@@ -1243,8 +1264,8 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       expect { command.call(id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
         expect(e.code).to eq("pane_has_run")
-        expect(e.details).to include("pane" => "%7", "workspace" => "app.worktree-PROJ-1", "path" => path)
-        expect(e.details["next"].first).to match(/\Aworkspace workflow run flow --name app\.worktree-PROJ-1 /)
+        expect(e.details).to include("pane" => "%7", "workspace" => "app.worktree-proj-1", "path" => path)
+        expect(e.details["next"].first).to match(/\Aworkspace workflow run flow --name app\.worktree-proj-1 /)
       end
     end
 
@@ -1361,7 +1382,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       row = command.call(positional: "PROJ-1", dry_run: true)
 
-      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
+      expect(row).to include("workflow" => "rpiv", "branch" => "proj-1")
     end
 
     it "takes a lone unknown branch as the ref, kind branch" do
@@ -1443,7 +1464,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       row = command.call(positional: "PROJ-1", prompt: "keep it small", dry_run: true)
 
-      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
+      expect(row).to include("workflow" => "rpiv", "branch" => "proj-1")
       expect(ticket_source).to have_received(:fetch).with(having_attributes(kind: "jira"), chdir: root)
     end
 
@@ -1458,7 +1479,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       row = command.call(positional: "PROJ-1", prompt: "  ", dry_run: true)
 
-      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
+      expect(row).to include("workflow" => "rpiv", "branch" => "proj-1")
     end
 
     it "keeps a known first argument and a ref as id and ref, and an unknown first argument unknown" do
@@ -1516,7 +1537,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
   describe "with here:" do
     let(:dir) { Dir.mktmpdir }
-    let(:checkout) { File.join(dir, ".worktrees", "PROJ-1") }
+    let(:checkout) { File.join(dir, ".worktrees", "proj-1") }
     let(:here) { described_class::Here.new(workspace: "app.proj-1", path: checkout, caller_pane: "%3") }
     let(:run_row) { {"workspace" => "app.proj-1", "outcome" => "started", "run" => "r1"} }
 
@@ -1562,7 +1583,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       row = command.call(id: "flow", ref: "PROJ-1", here: here)
 
       expect(workflow).to have_received(:run).with(id: "flow", workspace: "app.proj-1", worktree: checkout, inputs: hash_including("task"), note: nil, dry_run: false, caller_pane: "%3", project: nil)
-      expect(row).to include("outcome" => "started", "project" => anything, "branch" => "PROJ-1", "path" => checkout, "would_create" => false, "warnings" => [], "ticket" => {"key" => "PROJ-1", "title" => "Fix login", "url" => ticket["url"]})
+      expect(row).to include("outcome" => "started", "project" => anything, "branch" => "proj-1", "path" => checkout, "would_create" => false, "warnings" => [], "ticket" => {"key" => "PROJ-1", "title" => "Fix login", "url" => ticket["url"]})
     end
 
     it "writes the ticket file on a real run and not on a dry run" do
@@ -1607,5 +1628,31 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
   it "makes locate_project public" do
     expect(command.locate_project).to include(root: root, project_workspace: "app")
+  end
+
+  describe "#tracks_repository?" do
+    it "is true for origin" do
+      expect(command.tracks_repository?(root, "o/r")).to be true
+    end
+
+    it "is true for upstream" do
+      remotes["upstream"] = "git@github.com:u/p.git"
+
+      expect(command.tracks_repository?(root, "u/p")).to be true
+    end
+
+    it "ignores case" do
+      expect(command.tracks_repository?(root, "O/R")).to be true
+    end
+
+    it "is false for another repository" do
+      expect(command.tracks_repository?(root, "x/y")).to be false
+    end
+
+    it "is false with no remotes" do
+      remotes.clear
+
+      expect(command.tracks_repository?(root, "o/r")).to be false
+    end
   end
 end

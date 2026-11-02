@@ -35,7 +35,7 @@ The command reads and writes nothing in the repository: no worktree, branch, con
 
 With no repository in the ref, `gh` uses the repository of the checkout. Each tool answers within 10 seconds, and keeps its own sign-in; `workspace` never reads, stores or prints a credential. The body is cut to 64 KB. A JIRA description in Atlassian's rich-text form is turned into plain text.
 
-`branch` is the branch `start` would work on: the JIRA key, `pr-41` for a pull request, `issue-42` for an issue, or the branch name. `workspace` is the workspace `start` would reuse, found the way `start` finds it: a worktree at `.worktrees/<branch>`, else a worktree that holds the branch anywhere. It is `null` when there is none, and when the branch is only checked out in the main checkout.
+`branch` is the branch `start` would work on: the lowercase JIRA key (`proj-123`, or an existing branch that matches the key apart from case, by its own name), `pr-41` for a pull request, `issue-42` for an issue, or the branch name. `workspace` is the workspace `start` would reuse, found the way `start` finds it: a worktree at `.worktrees/<branch>`, else a worktree that holds the branch anywhere. It is `null` when there is none, and when the branch is only checked out in the main checkout.
 
 Plain output is the key and title, the URL, a `Workspace: ... (already exists)` line when there is one, and the body.
 
@@ -52,7 +52,7 @@ Exit 0, or 1 with an error (the [`--json` error envelope](README.json.md) under 
 ## JSON output
 
 ```json
-{"schema_version":1,"ok":true,"ref":"PROJ-123","kind":"jira","key":"PROJ-123","title":"Fix the login redirect","body":"After signing in ...","url":"https://acme.atlassian.net/browse/PROJ-123","branch":"PROJ-123","workspace":"api.worktree-PROJ-123"}
+{"schema_version":1,"ok":true,"ref":"PROJ-123","kind":"jira","key":"PROJ-123","title":"Fix the login redirect","body":"After signing in ...","url":"https://acme.atlassian.net/browse/PROJ-123","branch":"proj-123","workspace":"api.worktree-proj-123"}
 ```
 
 | Field | Meaning |
@@ -81,7 +81,7 @@ Each is asked for `--limit` rows; the merged rows are sorted by `updated_at`, ne
 A tool that is not installed, did not answer in time or failed (for example, it is not signed in) is a warning in `warnings`, never an error: the other sources still answer, and the exit status is 0. With no `--json`, a warning goes to stderr as `Warning: ...`, and stdout lists `KEY  state  title` (`(pull request)` after a pull request's key), with `[workspace: NAME]` when one exists.
 
 ```json
-{"schema_version":1,"ok":true,"filter":"assigned","limit":20,"tickets":[{"ref":"PROJ-123","kind":"jira","key":"PROJ-123","title":"Fix the login redirect","url":"https://acme.atlassian.net/browse/PROJ-123","source":"jira","state":"In Progress","updated_at":"2026-10-17T09:12:00.000+0000","branch":"PROJ-123","slug_branch":"PROJ-123-fix-the-login-redirect","workspace":"api.worktree-proj-123"}],"warnings":[{"source":"gh","code":"ticket_source_unavailable","reason":"missing","message":"`gh` is not installed."}]}
+{"schema_version":1,"ok":true,"filter":"assigned","limit":20,"tickets":[{"ref":"PROJ-123","kind":"jira","key":"PROJ-123","title":"Fix the login redirect","url":"https://acme.atlassian.net/browse/PROJ-123","source":"jira","state":"In Progress","updated_at":"2026-10-17T09:12:00.000+0000","branch":"proj-123","slug_branch":"proj-123-fix-the-login-redirect","workspace":"api.worktree-proj-123"}],"warnings":[{"source":"gh","code":"ticket_source_unavailable","reason":"missing","message":"`gh` is not installed."}]}
 ```
 
 | Field | Meaning |
@@ -94,7 +94,7 @@ A tool that is not installed, did not answer in time or failed (for example, it 
 | `state` | `gh`: `open` (lowercase). `jira`: the status name as JIRA spells it |
 | `updated_at` | When the tool says the ticket last changed, in its own format (`gh` UTC, `jira` with an offset); `null` if it says nothing |
 | `slug_branch` | The branch `start --slug` would make from the title; equal to `branch` for a pull request |
-| `workspace` | The workspace that already exists for the ticket, found by `slug_branch`, `branch`, or any worktree branch that starts `<branch>-`; else `null` |
+| `workspace` | The workspace that already exists for the ticket, found by `slug_branch`, `branch`, or any worktree branch that starts `<branch>-` in any letter case; else `null` |
 | `warnings[]` | One per source that failed: `source`, `code` (`ticket_source_unavailable`), `reason` (`missing`, `timeout` or `error`), `detail` (for `error`), `message`. An empty array when every source answered |
 
 Usage errors (exit 1, a `usage` code under `--json`): `--limit` outside 1 to 100, an unknown `--source`, or a list option given to `show`. `unknown_workspace` for a bad `--name`.

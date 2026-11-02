@@ -129,13 +129,13 @@ RSpec.describe "delivery adversarial (CLI/UX)" do
 
     it "Start#call returns a Hash with :exit_code and :prompt_failures, or nil, from the launch command" do
       tmpdir = Dir.mktmpdir
-      git = double("git")
+      git = double("git", local_branch_names: [], branch_names: [])
       allow(git).to receive(:root).and_return(tmpdir)
       allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
-      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+      allow(git).to receive(:sanitize_for_filesystem).with("proj-123").and_return("proj-123")
       allow(git).to receive(:worktree_exists?).and_return(false)
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-      allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+      allow(git).to receive(:branch_exists?).with("proj-123").and_return(true)
       allow(git).to receive(:create_worktree)
       project_config = double("project_config", create_worktree: "myproject.worktree-PROJ-123", existing_name: nil)
       allow(project_config).to receive(:settle_worktree_name) { |project, dir, _path| "#{project}.worktree-#{dir}" }

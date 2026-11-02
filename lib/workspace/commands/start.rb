@@ -226,7 +226,7 @@ module Workspace
         @plays = [resolve_plan_play(root)] if @plays.empty? && plan && !no_launch
         @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @effective_kind)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root, project_name)
-        ref = @start_ref.call(input_string)
+        ref = @start_ref.call(input_string, root: root)
         ref = apply_ticket_title(ref, root, quiet: quiet, title_from_ticket: title_from_ticket || slug, slug: slug)
 
         # A PR is checked out by `gh pr checkout` under its own number, never by
@@ -647,7 +647,7 @@ module Workspace
         if %w[jira github_issue].include?(ref.kind)
           existing = @git.worktree_branches(repo: root)
           reuse = [slugged.branch, ref.branch].find { |branch| existing.include?(branch) } ||
-            existing.find { |branch| branch.start_with?("#{ref.branch}-") }
+            existing.find { |branch| @start_ref.slug_branch?(branch, ref) }
           return ref.dup.tap { |copy| copy.branch = reuse } if reuse
         end
         if slugged.branch == ref.branch

@@ -7,8 +7,12 @@ module Workspace
     # holds whichever way the ref ends up running.
     #
     # Free text always makes a new worktree workspace off the default branch, even from inside a
-    # linked worktree workspace; `--here` runs it in this checkout instead. Bare `go` and a ref
-    # for the current branch run in place without `--here`. In place means only a linked worktree
+    # linked worktree workspace; `--here` runs it in this checkout instead. A sentence that
+    # names exactly one pull request, issue or ticket (a link, else a bare JIRA key whose ticket
+    # reads) is that ref with the sentence as its prompt, checked like a ref typed alone; two,
+    # none, or a ticket that can't be read keep it free text, with a warning when it matters.
+    # With `--here` or `--text` nothing is extracted. Bare `go` and a ref for the current
+    # branch run in place without `--here`. In place means only a linked worktree
     # that is the detected workspace, off the default branch ({#checkout_here}); `go` never puts
     # a run on the default branch or the main checkout's branch.
     #
@@ -22,9 +26,15 @@ module Workspace
       # What the argument was read as.
       #
       # @!attribute kind [String] the kind the workflow is chosen for: a {StartRef::Ref} kind, or "prompt"
-      # @!attribute text [String, nil] the free text; nil when +ref+ is set
-      # @!attribute ref [Workspace::StartRef::Ref, nil] nil when +text+ is set; both are nil for no argument
-      Reading = Struct.new(:kind, :text, :ref, keyword_init: true)
+      # @!attribute text [String, nil] the free text; set with +ref+ when a ref was read out of it
+      # @!attribute ref [Workspace::StartRef::Ref, nil] the ref typed alone or read out of the text; both it and +text+ are nil for no argument
+      # @!attribute extracted [String, nil] the token read out of the text (a canonical URL or an uppercase key); nil otherwise
+      # @!attribute warnings [Array<String>] why a sentence stayed free text, or which mention was dropped
+      Reading = Struct.new(:kind, :text, :ref, :extracted, :warnings, keyword_init: true) do
+        def initialize(warnings: [], **rest)
+          super
+        end
+      end
 
       # @param workflow_start [Workspace::Commands::WorkflowStart]
       # @param workflow [Workspace::Commands::Workflow]
@@ -35,9 +45,10 @@ module Workspace
       # @param project_detector [Workspace::ProjectDetector]
       # @param project_config [Workspace::ProjectConfig]
       # @param go_task [Workspace::Commands::GoTask] adds `--here` text to the plan of a run already going
+      # @param ticket_source [Workspace::TicketSource] reads a bare key found in text, to know it is a ticket
       # @param output [IO]
       # @param working_dir [String] the directory the command runs in
-      def initialize(workflow_start:, workflow:, workflow_defaults:, catalog:, start_ref:, git:, project_detector:, project_config:, go_task:, output: $stdout, working_dir: Dir.pwd)
+      def initialize(workflow_start:, workflow:, workflow_defaults:, catalog:, start_ref:, git:, project_detector:, project_config:, go_task:, ticket_source:, output: $stdout, working_dir: Dir.pwd)
         @workflow_start = workflow_start
         @workflow = workflow
         @workflow_defaults = workflow_defaults
@@ -47,11 +58,12 @@ module Workspace
         @project_detector = project_detector
         @project_config = project_config
         @go_task = go_task
+        @ticket_source = ticket_source
         @output = output
         @working_dir = working_dir
       end
 
-      # @param argument [String, nil] a ticket, pull request, issue, branch, or free text (any whitespace inside it); nil for none
+      # @param argument [String, nil] a ticket, pull request, issue or branch; a sentence (any whitespace inside it) that is free text, or holds one pull request, issue or ticket that is then the ref; nil for none
       # @param workflow [String, nil] the workflow, from `--workflow`
       # @param inputs [Hash{String=>String}] values from `--input`
       # @param headless [Boolean]
@@ -59,13 +71,17 @@ module Workspace
       # @param caller_pane [String, nil] the pane the command runs in (`$TMUX_PANE`)
       # @param here [Boolean] run free text in this checkout (`--here`) instead of a new workspace
       # @param base [String, nil] the ref a new branch starts from (`--base`); refused when go runs in place
+      # @param text [Boolean] read the argument as plain text (`--text`): no identifier is taken out of it
       # @return [Hash{String=>Object}] the row of `workflow run` or `workflow start` (of `plan task add` on the task path, route `task`), plus "decision" (+workflow+, +source+,
-      #   +kind+, +route+, +reason+) and "warnings"
-      # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch
+      #   +kind+, +route+, +reason+, +extracted+: the token read out of the text, else nil) and "warnings"
+      # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch, or `--text` with no argument or one holding no whitespace
       # @raise [Workspace::Error] outside a git repository; code `go_here_unavailable` (`--here` where this checkout can't run in place), `unknown_ref`, `unknown_base`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
-      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil)
+      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil, text: false)
         argument = argument&.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
         raise Workspace::UsageError, "go was given an empty argument. Name a ref, or quote free text." if argument == ""
+        if text && (argument.nil? || !argument.match?(/[[:space:]]/))
+          raise Workspace::UsageError, argument ? "--text needs a quoted sentence with a space in it (got #{argument.inspect}). Quote the sentence, or drop --text." : "--text needs a quoted sentence; none was given."
+        end
 
         root = @git.root
         project = root && @start_ref.project(root)
@@ -79,10 +95,12 @@ module Workspace
             code: "go_here_unavailable", details: {"path" => root})
         end
 
-        reading = classify(argument, root, workflow)
+        reading = classify(argument, root, workflow, here || text)
         if reading.ref
-          refuse_protected!(reading.ref.branch, project)
-          refuse_other_branch!(reading.ref.branch, project)
+          naming(reading.extracted) do
+            refuse_protected!(reading.ref.branch, project)
+            refuse_other_branch!(reading.ref.branch, project)
+          end
         end
 
         same_branch = reading.ref && checkout && same_name?(resolved(reading.ref.branch, project), resolved(@git.worktree_branch(root), project))
@@ -94,7 +112,7 @@ module Workspace
           return @go_task.add(run, reading.text, checkout, flags: {workflow: workflow, inputs: inputs, base: base}, dry_run: dry_run)
         end
         check_base!(base, root, in_place)
-        refuse_slug!(StartRef.slug(reading.text), project) if reading.text && !in_place
+        refuse_slug!(StartRef.slug(reading.text), project) if reading.text && !reading.ref && !in_place
         # In place the worktree is known, so its own setting counts; a new checkout has none yet.
         project_workspace = @workflow_start.locate_project[:project_workspace]
         # A project's keys count only where the user's config ties it to this checkout, as for `workflow start`.
@@ -102,20 +120,21 @@ module Workspace
         id, source, definition = choose(workflow, reading.kind, tied && (in_place ? checkout.workspace : tied), tied)
         route = in_place ? "run" : "start"
         reason = reason_for(source, reading.kind)
-        warnings = unused_text_warnings(reading, definition, inputs, id, route)
+        warnings = reading.warnings + unused_text_warnings(reading, definition, inputs, id, route)
         @output.puts "go: #{id} (#{reason}), #{route_words(route, reading)}."
         warnings.each { |warning| @output.puts "Warning: #{warning}" }
 
         shared = {id: id, inputs: inputs, dry_run: dry_run}
         shared[:base] = base if base
+        shared[:prompt] = reading.text if reading.ref && reading.text
         row = if reading.ref
-          @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? checkout : nil, **shared)
+          naming(reading.extracted) { @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? checkout : nil, **shared) }
         elsif in_place
           run_here(reading.text, definition, checkout, project_workspace, **shared)
         else
           start_from_text(reading.text, project, definition, headless: headless, **shared)
         end
-        decision = {"workflow" => id, "source" => source, "kind" => reading.kind, "route" => route, "reason" => reason}
+        decision = {"workflow" => id, "source" => source, "kind" => reading.kind, "route" => route, "reason" => reason, "extracted" => reading.extracted}
         row.merge("decision" => decision, "warnings" => Array(row["warnings"]) + warnings)
       end
 
@@ -156,14 +175,87 @@ module Workspace
         nil
       end
 
-      # The whitespace test comes first, so a URL inside a sentence is never read as a ref.
-      def classify(argument, root, workflow)
+      # A refusal of a ref read out of a sentence names the way out. The refusal is a copy of the
+      # same error (class, code, details, retry and any attributes kept) with the sentence added to its
+      # message. One that already names a next command is left alone: the workspace exists, and --text
+      # would make a second. A nil token (a ref the person typed) changes nothing.
+      def naming(token)
+        yield
+      rescue Workspace::Error => e
+        raise if token.nil? || (e.details.is_a?(Hash) && e.details["next"])
+
+        message = "#{e.message} The text contains #{token}, which go read as a ref. Pass --text to treat the whole text as plain text."
+        copy = e.dup
+        copy.define_singleton_method(:to_s) { message }
+        raise copy
+      end
+
+      # The whitespace test comes first, so a lone word is never read as a sentence. A sentence
+      # is read for an identifier unless `--here` or `--text` says it is the task as written.
+      def classify(argument, root, workflow, here)
         return Reading.new(kind: "prompt") if argument.nil?
+        return read_text(argument, root, workflow) if argument.match?(/[[:space:]]/) && !here
         return Reading.new(kind: "prompt", text: argument) if argument.match?(/[[:space:]]/)
 
-        ref = @start_ref.call(argument)
+        ref = @start_ref.call(argument, root: root)
+        ref = ticket_for_word(argument, ref, root, workflow) || ref
         check_name!(ref, root, workflow)
         Reading.new(kind: ref.kind, ref: ref)
+      end
+
+      # A lone lowercase key is a ticket only once its ticket is found, so an input refused today
+      # stays refused: an exact branch of that name, a name for a workflow and any miss leave the word as it was.
+      def ticket_for_word(word, ref, root, workflow)
+        return nil unless ref.kind == "branch" && workflow.nil?
+        return nil if @git.branch_names(root).include?(word)
+
+        key = RefInText.word_key(word) or return nil
+        ticket = @start_ref.call(key, root: root)
+        begin
+          @ticket_source.fetch(ticket, chdir: root)
+        rescue Workspace::Error => e
+          raise unless %w[ticket_not_found ticket_source_unavailable].include?(e.code)
+
+          failed = e.code == "ticket_source_unavailable" && e.details["reason"] != "missing"
+          @output.puts "Warning: #{key} could not be read as a ticket: #{TerminalText.escape(e.message)}" if failed
+          return nil
+        end
+        ticket
+      end
+
+      # Looks for the one pull request, issue or ticket a sentence names. A mention of another
+      # repository is dropped; links beat bare keys; more than one identifier, or none, is free
+      # text. A link is proof enough, a bare key needs its ticket to read.
+      def read_text(text, root, workflow)
+        warnings = []
+        found = RefInText.scan(text).reject do |hit|
+          next false if hit.repo.nil? || @workflow_start.tracks_repository?(root, hit.repo)
+
+          warnings << "#{hit.token} is a repository this project does not track, so it is read as a mention."
+          true
+        end
+        links = found.select(&:link)
+        found = links unless links.empty?
+        if found.size > 1
+          warnings << "The text names #{found.map(&:token).join(" and ")}, so it is read as free text. To use one, run `workspace go ID --input task=TEXT`."
+          return Reading.new(kind: "prompt", text: text, warnings: warnings)
+        end
+        return Reading.new(kind: "prompt", text: text, warnings: warnings) if found.empty?
+
+        hit = found.first
+        ref = @start_ref.call(hit.token, root: root)
+        unless hit.link
+          begin
+            @ticket_source.fetch(ref, chdir: root)
+          rescue Workspace::Error => e
+            raise unless %w[ticket_not_found ticket_source_unavailable].include?(e.code)
+
+            warnings << "#{hit.token} in the text was not read as a ticket, so the text is free text: #{TerminalText.escape(e.message)}"
+            return Reading.new(kind: "prompt", text: text, warnings: warnings)
+          end
+        end
+        naming(hit.token) { check_name!(ref, root, workflow) }
+        Reading.new(kind: ref.kind, text: text, ref: ref, extracted: hit.token, warnings: warnings)
       end
 
       # `Git#branch_exists?` asks the filesystem, where on macOS `MAIN` opens `main`, so names are
@@ -329,9 +421,10 @@ module Workspace
       end
 
       def route_words(route, reading)
-        return "runs in this worktree" if route == "run"
+        return "runs in this worktree#{" (from #{reading.extracted} in the text)" if reading.extracted}" if route == "run"
 
-        reading.ref ? "makes or reuses the worktree workspace for #{reading.ref.branch}" : "makes a new worktree workspace"
+        words = reading.ref ? "makes or reuses the worktree workspace for #{reading.ref.branch}" : "makes a new worktree workspace"
+        reading.extracted ? "#{words} (from #{reading.extracted} in the text)" : words
       end
 
       def unused_text_warnings(reading, definition, inputs, id, route)
@@ -344,7 +437,7 @@ module Workspace
         end
         return [] unless why
 
-        ["The text is not the task: #{why}.#{" The text still names the new branch." if route == "start"}"]
+        ["The text is not the task: #{why}.#{" The text still names the new branch." if route == "start" && !reading.ref}"]
       end
 
       def declares_task?(definition)

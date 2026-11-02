@@ -51,7 +51,8 @@ module Workspace
         project = @start_ref.project(checkout_root(name))
         found = @source.list(filter: filter, limit: limit, chdir: project.root, sources: sources.empty? ? Workspace::TicketSource::SOURCES : sources.uniq)
         branches = @git.worktree_branches(repo: project.root)
-        tickets = found["rows"].map { |row| list_row(row, project, branches) }
+        names = Workspace::StartRef::BranchNames.new(local: @git.local_branch_names(project.root), all: @git.branch_names(project.root))
+        tickets = found["rows"].map { |row| list_row(row, project, branches, names) }
 
         document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "filter" => filter, "limit" => limit,
                     "tickets" => tickets, "warnings" => found["warnings"]}
@@ -69,8 +70,8 @@ module Workspace
       # @raise [Workspace::Error] `unknown_workspace`, not in a git repository, `ticket_not_found`,
       #   or `ticket_source_unavailable`
       def show(input, name: nil, json: false)
-        ref = @start_ref.call(input)
         project = @start_ref.project(checkout_root(name))
+        ref = @start_ref.call(input, root: project.root)
         workspace = existing_workspace(project, ref.branch)
         ticket = @source.fetch(ref, chdir: project.root)
 
@@ -87,11 +88,11 @@ module Workspace
       private
 
       # A `show` document without the body, plus where the ticket came from and when it changed.
-      def list_row(row, project, branches)
-        ref = @start_ref.call(row["ref"])
+      def list_row(row, project, branches, names)
+        ref = @start_ref.call(row["ref"], names: names)
         slug_branch = @start_ref.slugged(ref, row["title"]).branch
         candidates = [slug_branch, ref.branch]
-        candidates += branches.select { |branch| branch.start_with?("#{ref.branch}-") } if %w[jira github_issue].include?(ref.kind)
+        candidates += branches.select { |branch| @start_ref.slug_branch?(branch, ref) } if %w[jira github_issue].include?(ref.kind)
         workspace = candidates.uniq.filter_map { |branch| existing_workspace(project, branch) }.first
         {"ref" => row["ref"], "kind" => ref.kind, "key" => ref.key, "title" => row["title"], "url" => row["url"],
          "source" => row["source"], "state" => row["state"], "updated_at" => row["updated_at"], "branch" => ref.branch,

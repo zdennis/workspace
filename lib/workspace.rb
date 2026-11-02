@@ -206,6 +206,7 @@ require_relative "workspace/window_liveness"
 require_relative "workspace/agent_readiness"
 require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
+require_relative "workspace/ref_in_text"
 require_relative "workspace/start_ref"
 require_relative "workspace/timed_process"
 require_relative "workspace/ssh_host_resolver"
@@ -737,7 +738,7 @@ module Workspace
     go_task = Commands::GoTask.new(engine: workflow_engine, plan_task: plan_task_command, access: plan_access, output: output)
     go_command = Commands::Go.new(
       workflow_start: workflow_start_command, workflow: workflow_command, workflow_defaults: workflow_defaults, catalog: workflow_catalog,
-      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, output: output
+      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, output: output
     )
     held_locks = HeldLocks.new(lock_namespace: lock_namespace, lock_holder: lock_holder, bound_run: bound_run, env: env)
     promote_command = Commands::Promote.new(

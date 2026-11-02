@@ -87,7 +87,7 @@ module Workspace
         return entry(read([name], warnings), name) if name
         document = read([], warnings)
         parsed = parse_ref(ref)
-        matches = members(document).select { |_, member| parsed && member.dig("git", "branch") == parsed[:branch] }
+        matches = members(document).select { |_, member| parsed && same_branch?(member.dig("git", "branch"), parsed) }
         name = single(ref, matches.map { |_, member| member["workspace"] }.uniq, matches)
         matches.find { |_, member| member["workspace"] == name }
       end
@@ -136,15 +136,20 @@ module Workspace
       end
 
       def parse_ref(ref)
-        parsed = @start_ref.call(ref)
-        {branch: parsed.branch, key: parsed.key}
+        parsed = @start_ref.call(ref, names: StartRef::BranchNames::NONE)
+        {branch: parsed.branch, key: parsed.key, kind: parsed.kind}
       rescue Workspace::Error, ArgumentError
         nil
       end
 
       def task_matches?(record, ref, parsed)
         return true if record["ref"] == ref || record["branch"] == ref
-        parsed && (record["ref"] == parsed[:key] || record["branch"] == parsed[:branch])
+        parsed && (record["ref"] == parsed[:key] || same_branch?(record["branch"], parsed))
+      end
+
+      # A JIRA ref's branch is lowercase but an older one may not be; any other branch name is exact.
+      def same_branch?(branch, parsed)
+        (parsed[:kind] == "jira") ? branch.to_s.casecmp?(parsed[:branch]) : branch == parsed[:branch]
       end
 
       def members(document)

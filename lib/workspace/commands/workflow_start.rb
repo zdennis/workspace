@@ -170,6 +170,16 @@ module Workspace
         require_claude!(@agent_commands.kind(workspace, project: project))
       end
 
+      # Whether +repo+ (`owner/repo`, any case) on github.com is a repository the project at +root+
+      # tracks as origin or upstream. Reads git config only, no network.
+      #
+      # @param root [String] the project checkout
+      # @param repo [String] `owner/repo`
+      # @return [Boolean]
+      def tracks_repository?(root, repo)
+        tracked_repositories(root).include?("github.com/#{repo}".downcase)
+      end
+
       private
 
       # Runs the workflow in the checkout the command was called from. `plan` has made every
@@ -199,7 +209,7 @@ module Workspace
       def split(id, ref, positional, prompt, project)
         return [id, ref] unless positional
         return [positional, nil] if @catalog.known?(positional, project: project)
-        return [nil, positional] if prompt.nil? || @start_ref.call(positional).kind != "branch"
+        return [nil, positional] if prompt.nil? || @start_ref.kind(positional) != "branch"
 
         [positional, nil]
       end
@@ -209,7 +219,7 @@ module Workspace
       def route_ref(ref, force:, dry_run:)
         root = @git.root or raise Workspace::Error, "workflow start must run inside a git repository."
         resolved = @workflow_project.for_directory(root)
-        kind = @start_ref.call(ref).kind
+        kind = @start_ref.kind(ref)
         route = @router.route(kind: kind, workspace: resolved&.project, ref: ref, force: force, registered: !resolved.nil?)
         from = (route["definition_source"] == "project") ? " (this project's definition)" : ""
         why = if route["source"] != "default" then "the only workflow that fits #{kind}"
@@ -230,14 +240,14 @@ module Workspace
       # Config is read from the project the checkout is tied to, as `--ref` does: a clone that only shares a
       # project's directory name gets the global keys.
       def default_id(ref, project)
-        kind = ref ? @start_ref.call(ref).kind : "prompt"
+        kind = ref ? @start_ref.kind(ref) : "prompt"
         @workflow_defaults.id_for(kind, workspace: project) || raise_no_default(kind, ref, project)
       end
 
       # A word that names no workflow reads as a branch, so a mistyped id would otherwise start the
       # configured workflow on a new branch with nothing said.
       def read_as_branch(ref, id, project)
-        return [] unless @start_ref.call(ref).kind == "branch"
+        return [] unless @start_ref.kind(ref) == "branch"
 
         ["#{ref.inspect} is not a known workflow, so it was read as a branch and #{id} comes from config. Known: #{@catalog.known_ids(project: project).join(", ")}."]
       end
@@ -257,7 +267,7 @@ module Workspace
         else
           require_claude!(agent_kind || @agent_commands.kind(project_workspace))
         end
-        resolved = ref && @start_ref.call(ref)
+        resolved = ref && @start_ref.call(ref, root: root)
         check_applies_to!(definition, resolved, ref, warnings, force: force)
         ticket = read_ticket(resolved, root, definition, inputs: inputs, prompt: prompt, slug: slug, warnings: warnings)
         allowed = tracked_repositories(root)

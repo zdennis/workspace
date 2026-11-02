@@ -8074,19 +8074,22 @@ module Workspace
 
     def go_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace go [REF | \"TEXT\"] [--workflow ID] [--input KEY=VALUE]... [--here] [--base REF] [--dry-run] [--json]"
+        opts.banner = "Usage: workspace go [REF | \"TEXT\"] [--workflow ID] [--input KEY=VALUE]... [--here] [--text] [--base REF] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "Start a workflow with one argument. A ticket, pull request, issue or branch is the ref; text with a space"
-        opts.separator "is free text that names a new branch. Free text always makes a new worktree workspace off the default branch,"
+        opts.separator "is free text that names a new branch, unless it holds one pull request, issue or ticket (see below)."
+        opts.separator "Free text always makes a new worktree workspace off the default branch,"
         opts.separator "even from inside a worktree workspace; --here runs it in this checkout instead. A ref makes or reuses its worktree"
         opts.separator "workspace, as `workflow start` does, unless it is the branch you are on; bare `workspace go` runs here too, in a"
         opts.separator "linked worktree workspace off the default branch. go never runs on the default branch or the main checkout's"
         opts.separator "branch. It prints the workflow it chose and why (--workflow, then workflows.by_ref.KIND, workflows.default,"
-        opts.separator "then built in: pr-feedback for a pull request, else rpiv) before it acts."
+        opts.separator "then built in: pr-feedback for a pull request, else rpiv) before it acts. A sentence that holds one pull"
+        opts.separator "request, issue or ticket (a key in uppercase) is read as that ref, with the sentence as the task; --text keeps it plain."
         opts.separator ""
         opts.on("--workflow ID", "Use this workflow instead of the configured one") { |v| options[:workflow] = v }
         opts.on("--input KEY=VALUE", "Set a workflow input; repeatable") { |v| options[:inputs] << v }
         opts.on("--here", "Run free text in this worktree workspace instead of making a new one; refused where go can't run in place") { options[:here] = true }
+        opts.on("--text", "Treat the quoted sentence as plain text; find no ticket, pull request or issue in it") { options[:text] = true }
         opts.on("--base REF", "Start a new branch from this branch, tag or commit instead of the default branch; refused when go runs in place") { |v| options[:base] = v }
         opts.on("--dry-run", "Check everything and create nothing") { options[:dry_run] = true }
         opts.on("--json", "Print one JSON document; other output goes to stderr") { options[:json] = true }
@@ -8095,6 +8098,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace go PROJ-123    # a ticket: make or reuse its worktree workspace and start the chosen workflow"
         opts.separator "  workspace go \"try the thing\"    # free text: a new branch named from it, in a new worktree workspace, even from inside one"
+        opts.separator "  workspace go --text \"fix the login timeout from PROJ-123\"    # plain text: a new branch named from it, nothing read as a ticket"
         opts.separator "  workspace go --here \"try the thing\"    # in a worktree workspace off the default branch: run the workflow here, with the text as the task"
         opts.separator "  workspace go    # in a worktree workspace off the default branch: run the workflow here"
         opts.separator "  workspace go \"try the thing\" --base origin/main    # start the new branch from origin's main, when the local default branch may be behind"
@@ -8119,7 +8123,7 @@ module Workspace
       inputs = workflow_inputs(options[:inputs])
       workflow_action("go", options) do
         @go_command.call(argument: args.first, workflow: options[:workflow], inputs: inputs, headless: @launch_mode.resolve(nil).headless?,
-          dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], here: options.fetch(:here, false), base: options[:base])
+          dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], here: options.fetch(:here, false), base: options[:base], text: options.fetch(:text, false))
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)

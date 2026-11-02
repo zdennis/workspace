@@ -75,7 +75,7 @@ RSpec.describe Workspace::Commands::Go, "with a real WorkflowStart and Git" do
     allow(git).to receive(:root).and_return(from)
     command = described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog,
       start_ref: start_ref, git: git, project_detector: Workspace::ProjectDetector.new(state: state, project_config: project_config),
-      project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), output: StringIO.new, working_dir: from)
+      project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), ticket_source: instance_double(Workspace::TicketSource), output: StringIO.new, working_dir: from)
     command.call(**args)
   end
 
