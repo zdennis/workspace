@@ -422,7 +422,7 @@ RSpec.describe Workspace::Commands::Go do
       let(:names) { %w[abc-7 feature main pr-12] }
 
       [nil, "rpiv"].each do |flag|
-        {"PR-12" => "pr-12", "ABC-7" => "abc-7", "https://acme.atlassian.net/browse/PR-12" => "pr-12"}.each do |word, real|
+        {"PR-12" => "pr-12", "https://acme.atlassian.net/browse/PR-12" => "pr-12"}.each do |word, real|
           it "refuses #{word} as unknown_ref naming #{real}, with --workflow #{flag.inspect}" do
             error = refusal(argument: word, workflow: flag, inputs: {"task" => "x"})
 
@@ -432,6 +432,28 @@ RSpec.describe Workspace::Commands::Go do
           end
         end
       end
+    end
+
+    it "reuses a branch that differs from the key only in case, by its real name" do
+      allow(git).to receive(:local_branch_names).and_return([])
+      allow(git).to receive(:branch_names).and_return([])
+      allow(git).to receive(:local_branch_names).with(root).and_return(%w[abc-7])
+      allow(git).to receive(:branch_names).with(root).and_return(%w[abc-7])
+      allow(start_ref).to receive(:call).and_call_original
+
+      row = command.call(argument: "ABC-7")
+
+      expect(row["decision"]).to include("kind" => "jira", "route" => "start")
+      expect(start_ref).to have_received(:call).with("ABC-7", root: root)
+    end
+
+    it "reuses a branch that only origin has, under its real name" do
+      allow(git).to receive(:local_branch_names).and_return(%w[main])
+      allow(git).to receive(:branch_names).and_return(%w[Proj-1 main])
+      allow(start_ref).to receive(:call).and_call_original
+
+      expect(command.call(argument: "PROJ-1")["decision"]).to include("kind" => "jira", "route" => "start")
+      expect(start_ref.call("PROJ-1", root: root).branch).to eq("Proj-1")
     end
 
     it "keeps a ticket with no such branch" do
@@ -508,11 +530,11 @@ RSpec.describe Workspace::Commands::Go do
         end
       end
 
-      it "refuses a ticket key the same way" do
+      it "settles a ticket key on the local branch instead of refusing it" do
         allow(git).to receive(:local_branch_names).and_return(%w[abc-7])
         allow(git).to receive(:branch_names).and_return(%w[ABC-7 abc-7])
 
-        expect(refusal(argument: "ABC-7").details).to include("did_you_mean" => "abc-7")
+        expect(command.call(argument: "ABC-7")["decision"]).to include("kind" => "jira", "route" => "start")
       end
     end
 

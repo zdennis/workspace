@@ -144,7 +144,7 @@ RSpec.describe "workspace start adversarial CLI specs" do
     begin
       output = StringIO.new
       error_output = StringIO.new
-      git = double("git")
+      git = double("git", local_branch_names: [], branch_names: [])
       project_config = double("project_config", existing_name: nil)
       allow(project_config).to receive(:settle_worktree_name) { |project, dir, _path| "#{project}.worktree-#{dir}" }
       project_settings = CLITestHelpers::FakeProjectSettings.new
@@ -152,10 +152,10 @@ RSpec.describe "workspace start adversarial CLI specs" do
 
       allow(git).to receive(:root).and_return(tmpdir)
       allow(git).to receive(:parse_start_input).with("PROJ-1").and_return({type: :jira_key, value: "PROJ-1"})
-      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-1").and_return("PROJ-1")
+      allow(git).to receive(:sanitize_for_filesystem).with("proj-1").and_return("proj-1")
       allow(git).to receive(:worktree_exists?).and_return(false)
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-      allow(git).to receive(:branch_exists?).with("PROJ-1").and_return(true)
+      allow(git).to receive(:branch_exists?).with("proj-1").and_return(true)
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
       allow(git).to receive(:create_worktree)
       allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-1")
@@ -184,7 +184,7 @@ RSpec.describe "workspace start adversarial CLI specs" do
     tmpdir = Dir.mktmpdir
     begin
       output = StringIO.new
-      git = double("git")
+      git = double("git", local_branch_names: [], branch_names: [])
       project_config = double("project_config", existing_name: nil)
       allow(project_config).to receive(:settle_worktree_name) { |project, dir, _path| "#{project}.worktree-#{dir}" }
       project_settings = CLITestHelpers::FakeProjectSettings.new

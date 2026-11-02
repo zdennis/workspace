@@ -161,7 +161,7 @@ module Workspace
         return Reading.new(kind: "prompt") if argument.nil?
         return Reading.new(kind: "prompt", text: argument) if argument.match?(/[[:space:]]/)
 
-        ref = @start_ref.call(argument)
+        ref = @start_ref.call(argument, root: root)
         check_name!(ref, root, workflow)
         Reading.new(kind: ref.kind, ref: ref)
       end

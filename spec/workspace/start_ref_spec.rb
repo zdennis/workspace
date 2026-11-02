@@ -10,19 +10,112 @@ RSpec.describe Workspace::StartRef do
     it "reads a JIRA key" do
       ref = resolver.call("PROJ-123")
 
-      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "PROJ-123", pr: nil)
+      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "proj-123", pr: nil)
     end
 
     it "reads the key out of a JIRA URL" do
       ref = resolver.call("https://acme.atlassian.net/browse/PROJ-123")
 
-      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "PROJ-123")
+      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "proj-123")
     end
 
     it "reads a lowercase key in a JIRA URL as the ticket" do
       ref = resolver.call("https://acme.atlassian.net/browse/proj-123")
 
       expect(ref).to have_attributes(kind: "jira", key: "PROJ-123")
+    end
+
+    it "uses the lowercase key outside a repository" do
+      allow(git).to receive(:root).and_return(nil)
+
+      expect(resolver.call("PROJ-1").branch).to eq("proj-1")
+    end
+
+    context "with a branch that matches a JIRA key without case" do
+      before do
+        allow(git).to receive(:root).and_return("/src/app")
+        allow(git).to receive(:local_branch_names).with("/src/app").and_return(locals)
+        allow(git).to receive(:branch_names).with("/src/app").and_return(locals + remotes)
+      end
+
+      let(:locals) { [] }
+      let(:remotes) { [] }
+
+      context "that is local" do
+        let(:locals) { %w[Proj-1 main] }
+
+        it "uses its real name" do
+          expect(resolver.call("PROJ-1")).to have_attributes(input: "PROJ-1", key: "PROJ-1", branch: "Proj-1")
+        end
+      end
+
+      context "that is local while another is on origin" do
+        let(:locals) { %w[PROJ-1] }
+        let(:remotes) { %w[proj-1] }
+
+        it "prefers the local name" do
+          expect(resolver.call("PROJ-1").branch).to eq("PROJ-1")
+        end
+      end
+
+      context "when a stray uppercase branch sorts before the lowercase one" do
+        let(:locals) { %w[PROJ-1 proj-1] }
+
+        it "prefers the exact lowercase key" do
+          expect(resolver.call("PROJ-1").branch).to eq("proj-1")
+        end
+      end
+
+      context "that is local in another case while the exact lowercase key is on origin" do
+        let(:locals) { %w[Proj-1] }
+        let(:remotes) { %w[proj-1] }
+
+        it "prefers the local name" do
+          expect(resolver.call("PROJ-1").branch).to eq("Proj-1")
+        end
+      end
+
+      context "when origin has the exact lowercase key and a stray uppercase one" do
+        let(:remotes) { %w[PROJ-1 proj-1] }
+
+        it "prefers the exact lowercase key" do
+          expect(resolver.call("PROJ-1").branch).to eq("proj-1")
+        end
+      end
+
+      context "when branches differ only in case among the any-case matches" do
+        let(:locals) { %w[Proj-1 PROJ-1] }
+
+        it "picks the same one whatever the order" do
+          expect(resolver.call("PROJ-1").branch).to eq("PROJ-1")
+        end
+      end
+
+      context "that is only on origin" do
+        let(:remotes) { %w[Proj-1] }
+
+        it "uses the name origin has" do
+          expect(resolver.call("PROJ-1").branch).to eq("Proj-1")
+        end
+      end
+
+      context "for a key that lowercases to a pull request or issue branch" do
+        let(:locals) { %w[pr-12 issue-9] }
+
+        it "keeps the key as parsed" do
+          expect(resolver.call("PR-12").branch).to eq("PR-12")
+          expect(resolver.call("ISSUE-9").branch).to eq("ISSUE-9")
+          expect(resolver.call("https://acme.atlassian.net/browse/PR-12").branch).to eq("PR-12")
+        end
+      end
+
+      it "reads the branches of the root it is given, or uses the names it is handed" do
+        allow(git).to receive(:local_branch_names).with("/other").and_return(%w[Proj-1])
+        allow(git).to receive(:branch_names).with("/other").and_return(%w[Proj-1])
+
+        expect(resolver.call("PROJ-1", root: "/other").branch).to eq("Proj-1")
+        expect(resolver.call("PROJ-1", root: "/other", names: described_class::BranchNames.new(local: [], all: [])).branch).to eq("proj-1")
+      end
     end
 
     it "reads a pull request URL as the pr-<n> branch start checks it out under" do
@@ -96,21 +189,36 @@ RSpec.describe Workspace::StartRef do
     end
   end
 
+  describe "#kind" do
+    it "reads the kind of a ref without running git or reading branches" do
+      allow(git).to receive(:root)
+      allow(git).to receive(:local_branch_names)
+      allow(git).to receive(:branch_names)
+
+      kinds = %w[PROJ-1 #9 https://github.com/o/r/issues/4 https://github.com/o/r/pull/3 feature/x].map { |ref| resolver.kind(ref) }
+
+      expect(kinds).to eq(%w[jira github_pr github_issue github_pr branch])
+      expect(git).not_to have_received(:root)
+      expect(git).not_to have_received(:local_branch_names)
+      expect(git).not_to have_received(:branch_names)
+    end
+  end
+
   describe "#slugged" do
     it "adds the slug to a JIRA key and to an issue branch, leaving the original ref alone" do
       jira = resolver.call("PROJ-123")
       issue = resolver.call("https://github.com/o/r/issues/42")
 
-      expect(resolver.slugged(jira, "Fix login").branch).to eq("PROJ-123-fix-login")
+      expect(resolver.slugged(jira, "Fix login").branch).to eq("proj-123-fix-login")
       expect(resolver.slugged(issue, "Fix login").branch).to eq("issue-42-fix-login")
-      expect(jira.branch).to eq("PROJ-123")
+      expect(jira.branch).to eq("proj-123")
     end
 
     it "leaves a pull request, a branch, and a ref with no usable title unchanged" do
       expect(resolver.slugged(resolver.call("#9"), "Fix").branch).to eq("pr-9")
       expect(resolver.slugged(resolver.call("feature/x"), "Fix").branch).to eq("feature/x")
-      expect(resolver.slugged(resolver.call("PROJ-1"), nil).branch).to eq("PROJ-1")
-      expect(resolver.slugged(resolver.call("PROJ-1"), "!!!").branch).to eq("PROJ-1")
+      expect(resolver.slugged(resolver.call("PROJ-1"), nil).branch).to eq("proj-1")
+      expect(resolver.slugged(resolver.call("PROJ-1"), "!!!").branch).to eq("proj-1")
     end
   end
 

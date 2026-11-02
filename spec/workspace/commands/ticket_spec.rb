@@ -45,26 +45,48 @@ RSpec.describe Workspace::Commands::Ticket do
       expect(document).to eq(
         "schema_version" => 1, "ok" => true, "ref" => "PROJ-123", "kind" => "jira", "key" => "PROJ-123",
         "title" => "Fix it", "body" => "Details", "url" => "https://acme.atlassian.net/browse/PROJ-123",
-        "branch" => "PROJ-123", "workspace" => nil
+        "branch" => "proj-123", "workspace" => nil
       )
       expect(source).to have_received(:fetch).with(an_object_having_attributes(kind: "jira"), chdir: repo)
     end
 
     it "names the workspace when start would find its worktree already there" do
-      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "PROJ-123"))
+      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "proj-123"))
 
       in_repo { command.show("PROJ-123", json: true) }
 
-      expect(document["workspace"]).to eq("api.worktree-PROJ-123")
+      expect(document["workspace"]).to eq("api.worktree-proj-123")
     end
 
     it "names the workspace by the spelling its config already has" do
-      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "PROJ-123"))
-      allow(project_config).to receive(:existing_name).with("api.worktree-PROJ-123").and_return("Api.worktree-PROJ-123")
+      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "proj-123"))
+      allow(project_config).to receive(:existing_name).with("api.worktree-proj-123").and_return("Api.worktree-proj-123")
 
       in_repo { command.show("PROJ-123", json: true) }
 
-      expect(document["workspace"]).to eq("Api.worktree-PROJ-123")
+      expect(document["workspace"]).to eq("Api.worktree-proj-123")
+    end
+
+    it "finds a worktree an older start made under the uppercase key, and reads the ticket by that key" do
+      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "PROJ-123"))
+
+      in_repo { command.show("PROJ-123", json: true) }
+
+      expect(document).to include("key" => "PROJ-123", "branch" => "PROJ-123", "workspace" => "api.worktree-PROJ-123")
+      expect(source).to have_received(:fetch).with(an_object_having_attributes(key: "PROJ-123"), chdir: repo)
+    end
+
+    it "matches the ref against the branches of the project --name picks" do
+      other = File.join(@dir, "other")
+      FileUtils.mkdir_p(other)
+      sh("init", "-q", dir: other)
+      sh("commit", "-q", "--allow-empty", "-m", "init", dir: other)
+      sh("branch", "Proj-123", dir: other)
+      allow(project_config).to receive(:project_root_for).with("other.worktree-x").and_return(other)
+
+      in_repo { command.show("PROJ-123", name: "other.worktree-x", json: true) }
+
+      expect(document["branch"]).to eq("Proj-123")
     end
 
     it "names the worktree of a pull request by its pr-<n> branch" do
@@ -102,20 +124,20 @@ RSpec.describe Workspace::Commands::Ticket do
     it "looks in the parent project when run from inside a linked worktree" do
       linked = File.join(repo, ".worktrees", "x")
       sh("worktree", "add", "-q", "-b", "x", linked)
-      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "PROJ-123"))
+      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "proj-123"))
 
       Dir.chdir(linked) { command.show("PROJ-123", json: true) }
 
-      expect(document["workspace"]).to eq("api.worktree-PROJ-123")
+      expect(document["workspace"]).to eq("api.worktree-proj-123")
     end
 
     it "looks in the project --name names, from wherever it is run" do
       allow(project_config).to receive(:project_root_for).with("api").and_return(repo)
-      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "PROJ-123"))
+      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "proj-123"))
 
       Dir.chdir(@dir) { command.show("PROJ-123", name: "api", json: true) }
 
-      expect(document["workspace"]).to eq("api.worktree-PROJ-123")
+      expect(document["workspace"]).to eq("api.worktree-proj-123")
     end
 
     it "fails with unknown_workspace for a --name no workspace has" do
@@ -164,10 +186,10 @@ RSpec.describe Workspace::Commands::Ticket do
       expect(document["tickets"].first).to eq(
         "ref" => "PROJ-123", "kind" => "jira", "key" => "PROJ-123", "title" => "Fix the login redirect",
         "url" => "https://acme.atlassian.net/browse/PROJ-123", "source" => "jira", "state" => "In Progress",
-        "updated_at" => "2026-10-17T09:00:00Z", "branch" => "PROJ-123", "slug_branch" => "PROJ-123-fix-the-login-redirect", "workspace" => nil
+        "updated_at" => "2026-10-17T09:00:00Z", "branch" => "proj-123", "slug_branch" => "proj-123-fix-the-login-redirect", "workspace" => nil
       )
       expect(document["tickets"].map { |t| [t["kind"], t["key"], t["branch"], t["slug_branch"]] }).to eq(
-        [["jira", "PROJ-123", "PROJ-123", "PROJ-123-fix-the-login-redirect"],
+        [["jira", "PROJ-123", "proj-123", "proj-123-fix-the-login-redirect"],
           ["github_issue", "o/r#7", "issue-7", "issue-7-crash"],
           ["github_pr", "o/r#9", "pr-9", "pr-9"]]
       )
@@ -188,12 +210,12 @@ RSpec.describe Workspace::Commands::Ticket do
 
     it "names the workspace that exists for a ticket's plain branch, its slugged branch, or an older slug" do
       sh("worktree", "add", "-q", "-b", "issue-7", File.join(repo, ".worktrees", "issue-7"))
-      sh("worktree", "add", "-q", "-b", "PROJ-123-older-title", File.join(repo, ".worktrees", "PROJ-123-older-title"))
+      sh("worktree", "add", "-q", "-b", "PROJ-123-older-title", File.join(repo, ".worktrees", "proj-123-older-title"))
       sh("worktree", "add", "-q", "-b", "pr-9", File.join(repo, ".worktrees", "pr-9"))
 
       in_repo { command.list(json: true) }
 
-      expect(document["tickets"].map { |t| t["workspace"] }).to eq(["api.worktree-PROJ-123-older-title", "api.worktree-issue-7", "api.worktree-pr-9"])
+      expect(document["tickets"].map { |t| t["workspace"] }).to eq(["api.worktree-proj-123-older-title", "api.worktree-issue-7", "api.worktree-pr-9"])
     end
 
     it "carries the source's warnings in the document, and still exits normally" do
@@ -203,6 +225,18 @@ RSpec.describe Workspace::Commands::Ticket do
 
       expect(document["warnings"]).to eq(warnings)
       expect(error_output.string).to eq("")
+    end
+
+    it "finds the worktree of an old uppercase slug branch, listing the branches once for all rows" do
+      sh("worktree", "add", "-q", "-b", "PROJ-123-old-title", File.join(repo, ".worktrees", "PROJ-123-old-title"))
+      allow(git).to receive(:branch_names).and_call_original
+      allow(git).to receive(:local_branch_names).and_call_original
+
+      in_repo { command.list(json: true) }
+
+      expect(document["tickets"].first["workspace"]).to eq("api.worktree-PROJ-123-old-title")
+      expect(git).to have_received(:branch_names).once
+      expect(git).to have_received(:local_branch_names).once
     end
 
     it "prints text rows on stdout and warnings on stderr" do
@@ -244,14 +278,14 @@ RSpec.describe Workspace::Commands::Ticket do
 
   describe "#show as text" do
     it "prints the key and title, the URL, a note about an existing workspace, and the body" do
-      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "PROJ-123"))
+      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "proj-123"))
 
       in_repo { command.show("PROJ-123") }
 
       expect(output.string).to eq(<<~TEXT)
         PROJ-123  Fix it
         https://acme.atlassian.net/browse/PROJ-123
-        Workspace: api.worktree-PROJ-123 (already exists)
+        Workspace: api.worktree-proj-123 (already exists)
 
         Details
       TEXT

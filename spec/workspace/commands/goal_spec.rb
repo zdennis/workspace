@@ -30,7 +30,7 @@ RSpec.describe Workspace::Commands::Goal do
       end
     end
   end
-  let(:parsed_ref) { Struct.new(:branch, :key) }
+  let(:parsed_ref) { Struct.new(:branch, :key, :kind) }
   let(:start_ref) { instance_double(Workspace::StartRef) }
   let(:plan_path) { File.join(@dir, "IMPLEMENTATION_PLAN.md") }
   let(:plan) { instance_double(Workspace::Commands::Plan, path_for: plan_path) }
@@ -121,6 +121,44 @@ RSpec.describe Workspace::Commands::Goal do
         output.rewind
         command.show(ref, json: true)
         expect(goal["workspace"]).to eq("lab-wc-lab-1")
+      end
+    end
+
+    context "with a ticket key whose branch case differs" do
+      let(:names) { Workspace::StartRef::BranchNames::NONE }
+
+      it "reads the ref without looking at the current directory's branches" do
+        allow(start_ref).to receive(:call).with("PROJ-1", names: names).and_return(parsed_ref.new("proj-1", "PROJ-1", "jira"))
+        tasks["lab-wc-lab-1"] = {"id" => "t_1", "workspace" => "lab-wc-lab-1", "title" => "T", "ref" => "PROJ-1", "branch" => "PROJ-1"}
+
+        command.show("PROJ-1", json: true)
+
+        expect(goal["workspace"]).to eq("lab-wc-lab-1")
+      end
+
+      it "matches a task recorded under the uppercase branch" do
+        allow(start_ref).to receive(:call).with("proj-1", names: names).and_return(parsed_ref.new("proj-1", "proj-1", "jira"))
+        tasks["lab-wc-lab-1"] = {"id" => "t_1", "workspace" => "lab-wc-lab-1", "title" => "T", "ref" => "OTHER", "branch" => "PROJ-1"}
+
+        command.show("proj-1", json: true)
+
+        expect(goal["workspace"]).to eq("lab-wc-lab-1")
+      end
+
+      it "gives the same answer from a directory holding an uppercase branch" do
+        repo = File.join(@dir, "repo")
+        FileUtils.mkdir_p(repo)
+        Open3.capture2e("git", "-C", repo, "init", "-q")
+        Open3.capture2e("git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i")
+        Open3.capture2e("git", "-C", repo, "branch", "PROJ-1")
+        real = Workspace::StartRef.new(git: Workspace::Git.new(output: StringIO.new, input: StringIO.new))
+        tasks["lab-wc-lab-1"] = {"id" => "t_1", "workspace" => "lab-wc-lab-1", "title" => "T", "ref" => "OTHER", "branch" => "proj-1"}
+        allow(start_ref).to receive(:call) { |ref, **options| real.call(ref, **options) }
+
+        Dir.chdir(repo) { command.show("PROJ-1", json: true) }
+
+        expect(goal["workspace"]).to eq("lab-wc-lab-1")
+        expect(start_ref).to have_received(:call).with("PROJ-1", names: names)
       end
     end
 
@@ -260,6 +298,26 @@ RSpec.describe Workspace::Commands::Goal do
       command.show("lab-wc-lab-1", json: true)
 
       expect(snapshot_calls).to eq([[["lab-wc-lab-1"], {inferred: true}]])
+    end
+
+    context "with a workspace on an uppercase branch" do
+      let(:member) { member_row(branch: "PROJ-1") }
+
+      it "finds it from the lowercase JIRA branch" do
+        allow(start_ref).to receive(:call).with("proj-1", names: Workspace::StartRef::BranchNames::NONE).and_return(parsed_ref.new("proj-1", "proj-1", "jira"))
+
+        command.show("proj-1", json: true)
+
+        expect(goal["workspace"]).to eq("lab-wc-lab-1")
+      end
+    end
+
+    context "with a workspace on a branch that differs from a plain branch ref only in case" do
+      let(:member) { member_row(branch: "Feature") }
+
+      it "needs the exact case" do
+        expect { command.show("feature", json: true) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_goal") }
+      end
     end
 
     it "reads the snapshot once when it resolves a branch" do
