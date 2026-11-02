@@ -454,7 +454,7 @@ module Workspace
     window_positions = WindowPositions.new(dir: config.state_dir, logger: logger)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, width_percent: -> { project_settings.load_global.dig("launch", "window_width_percent") }, output: output, error_output: error_output, logger: logger)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
-    workspace_name = WorkspaceName.new(project_config: project_config)
+    workspace_name = WorkspaceName.new(project_config: project_config, state: state)
     project_detector = ProjectDetector.new(state: state, project_config: project_config, workspace_name: workspace_name)
     bookkeeping_exclude = BookkeepingExclude.new(git: git, git_exclude: GitExclude.new(git: git))
     file_backup = FileBackup.new(output: output, excluder: bookkeeping_exclude)
