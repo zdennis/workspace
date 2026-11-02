@@ -858,11 +858,23 @@ module Workspace
       raise UsageError, "--no-packs cannot be combined with --handoff." if no_packs && handoff == true
 
       run_action("launch", json: json) do
-        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
+        launched = launch_projects(args.map { |arg| launch_arg(arg) }, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
           packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true, arrange: arrange)
         {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
          warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values + (launched[:result]&.dig(:warnings) || [])}
       end
+    end
+
+    # A launch argument as `launch_projects` should get it: a path or an existing directory stays
+    # as typed, any other word is settled to a workspace's on-disk name (a short name resolves).
+    # `relaunch` and `restore` call `launch_projects` directly, with state keys, and skip this.
+    #
+    # @param arg [String]
+    # @return [String]
+    # @raise [Workspace::Error] `ambiguous_workspace` when several workspaces share the suffix
+    def launch_arg(arg)
+      _name, root = @project_config.resolve_project_arg(arg)
+      root ? arg : settle_name(arg)
     end
 
     # Launches the given project args (already parsed, no leading flags) and

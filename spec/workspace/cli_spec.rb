@@ -14068,4 +14068,72 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("No pipeline work in flight for a.worktree-fix-login")
     end
   end
+
+  describe "short workspace names given to launch" do
+    let(:configs) { ["a.worktree-fix-login", "c.worktree-twin", "d.worktree-twin", "a.worktree-foo", "b.worktree-foo"] }
+    let(:project_config) do
+      instance_double(Workspace::ProjectConfig, available_projects: configs).tap do |pc|
+        allow(pc).to receive(:existing_name) { |name| configs.find { |known| known.casecmp?(name.to_s) } }
+        allow(pc).to receive(:project_root_for) { |name| configs.include?(name) ? "/roots/#{name}" : nil }
+        allow(pc).to receive(:resolve_project_arg) do |arg|
+          if arg.include?("/") || File.directory?(arg)
+            [File.basename(arg), File.expand_path(arg)]
+          else
+            [arg, nil]
+          end
+        end
+      end
+    end
+    let(:state) { CLITestHelpers::FakeState.new }
+    let(:workspace_name) { Workspace::WorkspaceName.new(project_config: project_config, state: state) }
+    let(:launch_command) { double("launch", call: {exit_code: 0, prompt_failures: {}}) }
+    let(:stop_command) { instance_double(Workspace::Commands::Stop, call: [], warnings: []) }
+    let(:built) do
+      build_test_cli(project_config: project_config, workspace_name: workspace_name, state: state,
+        launch_command: launch_command, stop_command: stop_command)
+    end
+    let(:cli) { built[0] }
+
+    it "launches the full name for a short one" do
+      cli.run(["launch", "fix-login"])
+
+      expect(launch_command).to have_received(:call).with(["a.worktree-fix-login"], anything)
+    end
+
+    it "keeps a directory named like the suffix as a path" do
+      allow(project_config).to receive(:create) { |name, _root| name }
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "fix-login")
+        Dir.mkdir(path)
+        cli.run(["launch", path])
+
+        expect(project_config).to have_received(:create).with("fix-login", File.expand_path(path))
+      end
+      expect(launch_command).to have_received(:call).with(["fix-login"], anything)
+    end
+
+    it "raises on an ambiguous name in a list and launches nothing" do
+      expect { cli.run(["launch", "fix-login", "twin"]) }.to raise_error(FakeSystemExit)
+
+      expect(built[2].string).to include("matches more than one workspace")
+      expect(launch_command).not_to have_received(:call)
+    end
+
+    it "relaunch passes a state key with no config through, raising nothing" do
+      state["foo"] = {}
+      state["a.worktree-foo"] = {}
+
+      cli.run(["relaunch"])
+
+      expect(launch_command).to have_received(:call).with(array_including("foo"), anything)
+    end
+
+    it "restore --all passes a state key with no config through to launch" do
+      state["foo"] = {}
+
+      cli.send(:launch_for_restore, ["foo"])
+
+      expect(launch_command).to have_received(:call).with(["foo"], anything)
+    end
+  end
 end
