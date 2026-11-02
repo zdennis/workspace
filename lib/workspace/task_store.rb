@@ -96,6 +96,24 @@ module Workspace
       end
     end
 
+    # Rewrites the `workspace`, `branch` and `path` of one live task (a
+    # rename). Other fields are kept; archived tasks are not reached.
+    #
+    # @param id [String] the task id
+    # @param workspace [String] the new workspace (config) name
+    # @param branch [String, nil]
+    # @param path [String, nil]
+    # @return [Hash, nil] the updated record, or nil when no live task has that id
+    def update(id, workspace:, branch:, path:)
+      with_lock do
+        record = active_records.find { |r| r["id"] == id }
+        next nil unless record
+        record = record.merge("workspace" => workspace, "branch" => branch, "path" => path)
+        write_record(@dir, record)
+        record
+      end
+    end
+
     # @return [Array<Hash>] archived tasks, newest first
     def archived
       records_in(@archive_dir).sort_by { |r| r["archived_at"].to_s }.reverse
