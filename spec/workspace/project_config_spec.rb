@@ -837,7 +837,8 @@ RSpec.describe Workspace::ProjectConfig do
 
       expect { pc.create("notes", root) }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("workspace_name_case_conflict")
-        expect(e.message).to include("'Notes'").and include("next time its agentd starts")
+        expect(e.message).to include("'Notes'").and include("'notes'").and include(other_root).and include("share config and state files").and include("a directory with a different name")
+        expect(e.message).not_to match(/renamed/)
         expect(e.details).to include("existing" => "Notes", "name" => "notes", "existing_root" => other_root)
       }
       expect(Dir.glob(File.join(tmpdir, "workspace.*.yml")).size).to eq(1)

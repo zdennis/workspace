@@ -30,7 +30,7 @@ Feature `add_json` in [`capabilities`](README.capabilities.md).
 
 Creates a tmuxinator config for each specified directory. The project name is derived from the directory name. For paths inside a `.worktrees/` directory, the repo name is prepended to avoid collisions across repositories (e.g. `repo/.worktrees/MYJIRA-123` → `repo-MYJIRA-123`). Does nothing if a config already exists for that project.
 
-New workspace names are lowercase (`~/Code/MyApp` becomes `myapp`; a branch's worktree is `myapp.worktree-proj-123`). If a config already exists whose name differs only in case, a different workspace (another directory) is refused with `workspace_name_case_conflict`, naming the existing workspace; it is renamed to lowercase the next time its agentd starts. The same workspace (same directory) written earlier with mixed case, such as `~/Notes` for an existing `Notes`, is reused under its own name.
+New workspace names are lowercase (`~/Code/MyApp` becomes `myapp`; a branch's worktree is `myapp.worktree-proj-123`). If a config already exists whose name differs only in case, a different workspace (another directory) is refused with `workspace_name_case_conflict`, naming the existing workspace. The same workspace (same directory) written earlier with mixed case, such as `~/Notes` for an existing `Notes`, is reused under its own name.
 
 The generated config uses the standard project template with 3 panes: a banner pane, a Claude pane, and a shell pane.
 
