@@ -12,6 +12,26 @@ RSpec.describe Workspace::Git do
       expect(result).to eq({type: :jira_key, value: "PROJ-123"})
     end
 
+    it "uppercases a lowercase key in a JIRA URL" do
+      result = git.parse_start_input("https://mycompany.atlassian.net/browse/proj-123")
+      expect(result).to eq({type: :jira_key, value: "PROJ-123"})
+    end
+
+    it "uppercases a mixed-case key in a JIRA URL" do
+      result = git.parse_start_input("https://mycompany.atlassian.net/browse/Proj-123")
+      expect(result).to eq({type: :jira_key, value: "PROJ-123"})
+    end
+
+    it "reads the key out of a JIRA URL with a query string" do
+      result = git.parse_start_input("https://mycompany.atlassian.net/browse/PROJ-123?focusedId=1")
+      expect(result).to eq({type: :jira_key, value: "PROJ-123"})
+    end
+
+    it "leaves a lowercase bare key a branch" do
+      result = git.parse_start_input("proj-123")
+      expect(result).to eq({type: :branch, value: "proj-123"})
+    end
+
     it "parses a GitHub PR URL" do
       result = git.parse_start_input("https://github.com/owner/repo/pull/471")
       expect(result).to eq({type: :pr_url, value: "https://github.com/owner/repo/pull/471", repo: "owner/repo", number: "471"})

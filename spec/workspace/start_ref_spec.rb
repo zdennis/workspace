@@ -19,6 +19,12 @@ RSpec.describe Workspace::StartRef do
       expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "PROJ-123")
     end
 
+    it "reads a lowercase key in a JIRA URL as the ticket" do
+      ref = resolver.call("https://acme.atlassian.net/browse/proj-123")
+
+      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123")
+    end
+
     it "reads a pull request URL as the pr-<n> branch start checks it out under" do
       ref = resolver.call("https://github.com/org/repo/pull/41")
 
