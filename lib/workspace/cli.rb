@@ -1551,7 +1551,7 @@ module Workspace
           raise UsageError, parser.help
         end
       elsif args.size >= 2
-        project = args[0]
+        project = settle_name(args[0])
         spec = args[1]
       else
         raise UsageError, parser.help
@@ -1673,7 +1673,7 @@ module Workspace
         raise UsageError, parser.help unless project
         command = args[0]
       elsif args.size >= 2
-        project = args[0]
+        project = settle_name(args[0])
         # Join trailing args so `workspace run proj echo hello world` sends the whole
         # command rather than silently dropping everything after the first word.
         command = args[1..].join(" ")
@@ -4069,7 +4069,7 @@ module Workspace
         opts.on("--json") { as_json = true }
       end
       parser.parse!(args)
-      project = args.shift
+      project = settle_name(args.shift)
       raise UsageError, pipeline_page("status") if project.nil?
 
       entries = read_pipeline_state(project)
@@ -4122,7 +4122,7 @@ module Workspace
         opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      project = args.shift
+      project = settle_name(args.shift)
       raise UsageError, pipeline_page("reset") if project.nil? || args.any?
 
       run_action("pipeline reset", json: json) do
@@ -4148,7 +4148,7 @@ module Workspace
         opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      project = args.shift
+      project = settle_name(args.shift)
       raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{pipeline_page(verb)}" if args.any?
       [project, work_item, body, json]
     end
@@ -6619,7 +6619,7 @@ module Workspace
       parser.parse!(args)
 
       if window_id
-        project = args.first
+        project = settle_name(args.first)
         raise UsageError, "Project name required with --window-id\n\n#{parser.help}" unless project
         run_action("repair", json: json) do
           @repair_command.set_window_id(project, window_id)

@@ -13996,4 +13996,76 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Unknown workspace 'nothing'")
     end
   end
+
+  describe "short workspace names at raw positionals" do
+    let(:configs) { ["a.worktree-fix-login", "c.worktree-twin", "d.worktree-twin"] }
+    let(:project_config) do
+      instance_double(Workspace::ProjectConfig, available_projects: configs).tap do |pc|
+        allow(pc).to receive(:existing_name) { |name| configs.find { |known| known.casecmp?(name.to_s) } }
+        allow(pc).to receive(:project_root_for) { |name| configs.include?(name) ? "/roots/#{name}" : nil }
+      end
+    end
+    let(:state) { CLITestHelpers::FakeState.new }
+    let(:workspace_name) { Workspace::WorkspaceName.new(project_config: project_config, state: state) }
+    let(:run_command) { CLITestHelpers::FakeRunCommand.new }
+    let(:resize_command) { double("resize", call: nil) }
+    let(:repair_command) { double("repair", set_window_id: nil) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:config) do
+      dir = tmpdir
+      Class.new(Workspace::Config) do
+        define_method(:pipeline_state_path) { |name| File.join(dir, "#{name}-pipeline.json") }
+      end.new
+    end
+    let(:built) do
+      build_test_cli(project_config: project_config, workspace_name: workspace_name, state: state, run_command: run_command,
+        resize_command: resize_command, repair_command: repair_command, project_detector: detector, config: config)
+    end
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+
+    after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
+
+    it "run SHORT cmd reaches the command with the full name" do
+      cli.run(["run", "fix-login", "echo hi"])
+
+      expect(run_command.calls.first).to include(project: "a.worktree-fix-login", command: "echo hi")
+    end
+
+    it "resize SHORT spec reaches the command with the full name" do
+      cli.run(["resize", "fix-login", "50%,50%"])
+
+      expect(resize_command).to have_received(:call).with("a.worktree-fix-login", "50%,50%")
+    end
+
+    it "keeps a one-word run or resize as the command or spec, with the project detected" do
+      cli.run(["run", "fix-login"])
+      cli.run(["resize", "50%,50%"])
+
+      expect(run_command.calls.first).to include(project: "detected-ws", command: "fix-login")
+      expect(resize_command).to have_received(:call).with("detected-ws", "50%,50%")
+    end
+
+    it "raises ambiguous_workspace for run before anything is sent" do
+      expect { cli.run(["run", "twin", "echo hi"]) }.to raise_error(FakeSystemExit)
+
+      expect(built[2].string).to include("matches more than one workspace")
+      expect(run_command.calls).to be_empty
+    end
+
+    it "repair SHORT --window-id gets the full name" do
+      cli.run(["repair", "fix-login", "--window-id", "1"])
+
+      expect(repair_command).to have_received(:set_window_id).with("a.worktree-fix-login", 1)
+    end
+
+    it "pipeline status SHORT reads the full name's state" do
+      File.write(config.pipeline_state_path("a.worktree-fix-login"), "{}")
+
+      cli.run(["pipeline", "status", "fix-login"])
+
+      expect(output.string).to include("No pipeline work in flight for a.worktree-fix-login")
+    end
+  end
 end
