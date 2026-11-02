@@ -244,6 +244,8 @@ module Workspace
       args = argv.dup
       @logger.enable! if args.delete("--debug")
       @input.no_input! if take_no_input_flag!(args) && @input.respond_to?(:no_input!)
+      @name_help_asked = help_before_separator?(args)
+      @name_quiet = json_flag?(args)
       settle_name_flags!(args)
       plain = HelpJson.strip(args)
       return run_help_json(plain) if plain
@@ -535,18 +537,44 @@ module Workspace
       stop = args.index("--") || args.size
       stop.times do |i|
         if args[i] == "--name" && i + 1 < stop
-          args[i + 1] = @workspace_name.match(args[i + 1]) || args[i + 1]
+          args[i + 1] = given_name(args[i + 1]) || args[i + 1]
         elsif args[i].start_with?("--name=")
           value = args[i].delete_prefix("--name=")
-          args[i] = "--name=#{@workspace_name.match(value) || value}"
+          args[i] = "--name=#{given_name(value) || value}"
         end
       end
+    end
+
+    # The one place a typed workspace name is settled. Answers the on-disk name, or nil
+    # when the name matches nothing. A short name (a worktree suffix) resolves through
+    # WorkspaceName#for_input, and one stderr line says which workspace it reached, unless
+    # `--json` is given. While help is asked for, only the exact name (ignoring case)
+    # counts, so help never fails on an ambiguous name. A CLI built with no WorkspaceName
+    # asks the project config.
+    #
+    # @param name [String, nil]
+    # @return [String, nil]
+    # @raise [Workspace::Error] `ambiguous_workspace` when several workspaces share the suffix
+    def given_name(name)
+      return @project_config.existing_name(name) unless @workspace_name
+
+      found = @name_help_asked ? @workspace_name.match(name) : @workspace_name.for_input(name)
+      if found && !WorkspaceName.same?(found, name) && !@name_quiet
+        @error_output.puts TerminalText.escape("Workspace '#{name}' is #{found}.")
+      end
+      found
+    end
+
+    # @param argv [Array<String>]
+    # @return [Boolean] whether `--help` or `-h` appears before a bare `--`
+    def help_before_separator?(argv)
+      argv.take_while { |arg| arg != "--" }.any? { |arg| arg == "--help" || arg == "-h" }
     end
 
     # @param name [String, nil] a workspace or project name as given
     # @return [String, nil] the on-disk name of the config it matches ignoring case, else the name as given
     def settle_name(name)
-      (@workspace_name && name) ? (@workspace_name.match(name) || name) : name
+      (@workspace_name && name) ? (given_name(name) || name) : name
     end
 
     # Takes the first positional off +args+ as the workspace when a workspace of that name has a
@@ -556,7 +584,7 @@ module Workspace
     # @param args [Array<String>] positionals, modified in place
     # @return [String, nil] the workspace's on-disk name, or the current value (nil) when the first is not one
     def take_known_workspace!(args)
-      known = @project_config.existing_name(args.first)
+      known = given_name(args.first)
       args.shift if known
       known
     end
@@ -4653,7 +4681,7 @@ module Workspace
       else
         # `ui open WORKSPACE` is the task view of a workspace that has a config; any other word is a typo.
         word = args.first
-        known = options[:name] ? nil : @project_config.existing_name(word)
+        known = options[:name] ? nil : given_name(word)
         unless known
           why = options[:name] ? "#{word} is not a view, and --name already names the workspace" : "Unknown view or workspace '#{word}'"
           raise UsageError, "#{why}: views are #{Commands::Ui::VIEWS.keys.join(", ")}. Run 'workspace ui open --help'."

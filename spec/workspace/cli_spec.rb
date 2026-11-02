@@ -13862,4 +13862,138 @@ RSpec.describe Workspace::CLI do
       end
     end
   end
+
+  describe "short workspace names" do
+    let(:configs) { ["a.worktree-fix-login", "b.worktree-other", "c.worktree-twin", "d.worktree-twin", "notes", "e.worktree-notes"] }
+    let(:project_config) do
+      instance_double(Workspace::ProjectConfig, available_projects: configs).tap do |pc|
+        allow(pc).to receive(:existing_name) { |name| configs.find { |known| known.casecmp?(name.to_s) } }
+        allow(pc).to receive(:project_root_for) { |name| configs.include?(name) ? "/roots/#{name}" : nil }
+      end
+    end
+    let(:state) { CLITestHelpers::FakeState.new }
+    let(:workspace_name) { Workspace::WorkspaceName.new(project_config: project_config, state: state) }
+    let(:stop_command) { instance_double(Workspace::Commands::Stop, call: [], warnings: []) }
+    let(:ask_command) { CLITestHelpers::FakeAskCommand.new }
+    let(:config_command) { CLITestHelpers::FakeConfigCommand.new }
+    let(:ui_command) { CLITestHelpers::FakeUiCommand.new }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) do
+      build_test_cli(project_config: project_config, workspace_name: workspace_name, state: state, stop_command: stop_command,
+        ask_command: ask_command, config_command: config_command, ui_command: ui_command, project_detector: detector)
+    end
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "settles --name SHORT and --name=SHORT to the full name, and says so" do
+      cli.run(["stop", "--name", "fix-login"])
+      cli.run(["stop", "--name=FIX-login"])
+
+      expect(stop_command).to have_received(:call).with(["a.worktree-fix-login"]).twice
+      expect(error_output.string).to eq("Workspace 'fix-login' is a.worktree-fix-login.\nWorkspace 'FIX-login' is a.worktree-fix-login.\n")
+    end
+
+    it "prints no note for the full name" do
+      cli.run(["stop", "--name", "a.worktree-fix-login"])
+
+      expect(stop_command).to have_received(:call).with(["a.worktree-fix-login"])
+      expect(error_output.string).to eq("")
+    end
+
+    it "settles a short positional in pick_workspace_name, also beside the same workspace by full --name" do
+      expect(cli.send(:pick_workspace_name, nil, "fix-login")).to eq("a.worktree-fix-login")
+      expect(cli.send(:pick_workspace_name, "a.worktree-fix-login", "fix-login")).to eq("a.worktree-fix-login")
+    end
+
+    it "takes a short workspace for ask list, config get and ui open" do
+      cli.run(["ask", "list", "fix-login"])
+      cli.run(["config", "get", "fix-login", "some.key"])
+      cli.run(["ui", "open", "fix-login"])
+
+      expect(ask_command.calls.first[:working_dir]).to eq("/roots/a.worktree-fix-login")
+      expect(config_command.calls.first).to include(action: :get, project: "a.worktree-fix-login", key: "some.key")
+      expect(ui_command.calls).to eq([{view: "task", workspace: "a.worktree-fix-login", print_only: false}])
+    end
+
+    it "keeps `ui open notes` as the view when a workspace has the suffix notes" do
+      cli.run(["ui", "open", "notes"])
+
+      expect(ui_command.calls).to eq([{view: "notes", workspace: "detected-ws", print_only: false}])
+    end
+
+    it "leaves `ask list junk` and `ui open typo` to their own parsing" do
+      expect(cli.send(:take_known_workspace!, args = ["junk"])).to be_nil
+      expect(args).to eq(["junk"])
+      expect { cli.run(["ui", "open", "typo"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unknown view or workspace 'typo'")
+      expect(ui_command.calls).to be_empty
+    end
+
+    it "names the full workspace on stderr for stop SHORT and kill SHORT" do
+      kill_command = instance_double(Workspace::Commands::Kill, call: "a.worktree-fix-login")
+      cli, _, error_output = build_test_cli(project_config: project_config, workspace_name: workspace_name, state: state, stop_command: stop_command, kill_command: kill_command)
+
+      cli.run(["stop", "fix-login"])
+      cli.run(["kill", "fix-login"])
+
+      expect(stop_command).to have_received(:call).with(["a.worktree-fix-login"])
+      expect(kill_command).to have_received(:call).with("a.worktree-fix-login", anything)
+      expect(error_output.string.scan("Workspace 'fix-login' is a.worktree-fix-login.").size).to eq(2)
+    end
+
+    it "keeps an active workspace with no config: stop foo gets foo, with no note" do
+      configs << "b.worktree-foo"
+      state["foo"] = {}
+
+      cli.run(["stop", "foo"])
+
+      expect(stop_command).to have_received(:call).with(["foo"])
+      expect(error_output.string).to eq("")
+    end
+
+    it "answers an ambiguous --name with one error envelope on stdout under --json" do
+      expect { cli.run(["stop", "--name", "twin", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      doc = JSON.parse(output.string)
+      expect(doc["code"]).to eq("ambiguous_workspace")
+      expect(doc["details"]).to include("name" => "twin", "matches" => ["c.worktree-twin", "d.worktree-twin"])
+      expect(error_output.string).to eq("")
+    end
+
+    it "answers an ambiguous --name on stderr without --json" do
+      expect { cli.run(["stop", "--name", "twin"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("'twin' matches more than one workspace")
+      expect(output.string).to eq("")
+    end
+
+    it "prints help for an ambiguous --name, with --json too, and for events" do
+      cli.run(["plan", "status", "--help", "--name", "twin"])
+      expect(output.string).to include("workspace plan status")
+      expect(error_output.string).to eq("")
+
+      output.truncate(0)
+      cli.run(["plan", "status", "--help", "--json", "--name", "twin"])
+      expect(output.string).to include("workspace plan status")
+      expect(error_output.string).to eq("")
+
+      output.truncate(0)
+      cli.run(["events", "--name", "twin", "--help"])
+      expect(output.string).to include("Usage: workspace events")
+      expect(error_output.string).to eq("")
+    end
+
+    it "writes no note under --json when the command then fails" do
+      expect { cli.run(["stop", "--name", "fix-login", "--all", "--json"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).to eq("")
+    end
+
+    it "leaves a name that matches nothing to the command's unknown_workspace" do
+      expect { cli.run(["events", "--name", "nothing"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).to include("Unknown workspace 'nothing'")
+    end
+  end
 end
