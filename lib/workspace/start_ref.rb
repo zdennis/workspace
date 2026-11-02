@@ -86,7 +86,7 @@ module Workspace
       cut.sub(/-\z/, "")
     end
 
-    # Whether a branch is the ref's branch with a title's words added (`PROJ-123-fix-login` for
+    # Whether a branch is the ref's branch with a title's words added (`proj-123-fix-login` or `PROJ-123-fix-login` for
     # `proj-123`), ignoring case so an older uppercase branch still counts.
     #
     # @param branch [String]
@@ -96,7 +96,7 @@ module Workspace
       branch.downcase.start_with?("#{ref.branch.downcase}-")
     end
 
-    # The ref with the title's words added to its branch (`PROJ-123-fix-login`,
+    # The ref with the title's words added to its branch (`proj-123-fix-login`,
     # `issue-42-fix-login`). A pull request or a plain branch, a missing title
     # and a title with no letters or digits all come back unchanged.
     #

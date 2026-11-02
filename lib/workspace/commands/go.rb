@@ -11,8 +11,8 @@ module Workspace
     # names exactly one pull request, issue or ticket (a link, else a bare JIRA key whose ticket
     # reads) is that ref with the sentence as its prompt, checked like a ref typed alone; two,
     # none, or a ticket that can't be read keep it free text, with a warning when it matters.
-    # With `--here` nothing is extracted. Bare `go` and a ref
-    # for the current branch run in place without `--here`. In place means only a linked worktree
+    # With `--here` or `--text` nothing is extracted. Bare `go` and a ref for the current
+    # branch run in place without `--here`. In place means only a linked worktree
     # that is the detected workspace, off the default branch ({#checkout_here}); `go` never puts
     # a run on the default branch or the main checkout's branch.
     #
@@ -63,7 +63,7 @@ module Workspace
         @working_dir = working_dir
       end
 
-      # @param argument [String, nil] a ticket, pull request, issue, branch, or free text (any whitespace inside it); nil for none
+      # @param argument [String, nil] a ticket, pull request, issue or branch; a sentence (any whitespace inside it) that is free text, or holds one pull request, issue or ticket that is then the ref; nil for none
       # @param workflow [String, nil] the workflow, from `--workflow`
       # @param inputs [Hash{String=>String}] values from `--input`
       # @param headless [Boolean]
