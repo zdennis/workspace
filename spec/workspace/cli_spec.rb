@@ -120,6 +120,7 @@ RSpec.describe Workspace::CLI do
       push_command: overrides[:push_command],
       pr_feedback_command: overrides[:pr_feedback_command],
       promote_command: overrides[:promote_command],
+      rename_command: overrides[:rename_command],
       projects_command: overrides[:projects_command],
       groups_command: overrides[:groups_command],
       capabilities_command: overrides[:capabilities_command],
@@ -8962,6 +8963,67 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to start_with("Usage: workspace go")
       expect(go_command.calls).to be_empty
+    end
+  end
+
+  describe "#run with rename" do
+    let(:rename_command) { instance_double(Workspace::Commands::Rename) }
+    let(:output) { StringIO.new }
+    let(:gate) { Workspace::OutputGate.new(output) }
+    let(:built) { build_test_cli(output: gate, rename_command: rename_command) }
+    let(:cli) { built[0] }
+    let(:error_output) { built[2] }
+    let(:result) do
+      {"project" => "api", "workspace" => {"from" => "api.worktree-old", "to" => "api.worktree-new"},
+       "branch" => {"from" => "old", "to" => "new"}, "path" => {"from" => "/a/old", "to" => "/a/new"},
+       "session" => {"from" => "api.worktree-old", "to" => "api.worktree-new"},
+       "notes" => {"action" => "stays", "from" => nil, "to" => nil, "reason" => "same"},
+       "warnings" => [{"code" => "x", "message" => "careful"}], "resume" => false, "dry_run" => false,
+       "next" => "Run `workspace restore api.worktree-new`."}
+    end
+
+    before { allow(rename_command).to receive(:call).and_return(result) }
+
+    it "takes NEW alone and renames the workspace of the working directory" do
+      allow(cli).to receive(:workspace_here).and_return("api.worktree-old")
+      cli.run(["rename", "new"])
+
+      expect(rename_command).to have_received(:call).with(workspace: "api.worktree-old", new: "new", dry_run: false)
+      expect(output.string).to include("api.worktree-old -> api.worktree-new").and include("Run `workspace restore")
+      expect(built[2].string).to include("Warning: careful")
+    end
+
+    it "takes WORKSPACE NEW, passing a name that no config has any more on to the command" do
+      cli.run(["rename", "api.worktree-old", "new", "--dry-run"])
+
+      expect(rename_command).to have_received(:call).with(workspace: "api.worktree-old", new: "new", dry_run: true)
+    end
+
+    it "takes --name WS" do
+      cli.run(["rename", "new", "--name", "api.worktree-old"])
+
+      expect(rename_command).to have_received(:call).with(workspace: "api.worktree-old", new: "new", dry_run: false)
+    end
+
+    it "refuses a workspace both before NEW and with --name, and no NEW" do
+      expect { cli.run(["rename", "a", "b", "--name", "c"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect { cli.run(["rename"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(rename_command).not_to have_received(:call)
+    end
+
+    it "prints one document with --json" do
+      cli.run(["rename", "a", "new", "--json"])
+
+      document = JSON.parse(output.string)
+      expect(document).to include("ok" => true, "warnings" => [{"code" => "x", "message" => "careful"}])
+      expect(document["results"].first).to include("workspace" => "api.worktree-new", "next" => result["next"])
+    end
+
+    it "shows help without renaming" do
+      cli.run(["rename", "--help"])
+
+      expect(output.string).to include("Usage: workspace rename [WORKSPACE] NEW")
+      expect(rename_command).not_to have_received(:call)
     end
   end
 

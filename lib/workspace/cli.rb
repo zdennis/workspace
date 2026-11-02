@@ -15,7 +15,7 @@ module Workspace
     # is mistaken for one (see the "Unknown option before the subcommand"
     # hint).
     SUBCOMMANDS = %w[
-      init doctor launch start stop add add-project kill finish relaunch restore
+      init doctor launch start stop add add-project kill rename finish relaunch restore
       focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go
       capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
@@ -34,6 +34,7 @@ module Workspace
     # @param hook_runner [Workspace::HookRunner] lifecycle hook execution
     # @param launch_command [Workspace::Commands::Launch] pre-built launch command
     # @param kill_command [Workspace::Commands::Kill] pre-built kill command
+    # @param rename_command [Workspace::Commands::Rename, nil] pre-built rename command
     # @param finish_command [Workspace::Commands::Finish] pre-built finish command
     # @param start_command [Workspace::Commands::Start] pre-built start command
     # @param stop_command [Workspace::Commands::Stop] pre-built stop command (session-only teardown)
@@ -129,7 +130,7 @@ module Workspace
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
     # @param sleeper [#call] sleeps the given seconds, injected for fast tests
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, go_command: nil, workflow_project: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, go_command: nil, workflow_project: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
       @config = config
       @state = state
       @project_config = project_config
@@ -147,6 +148,7 @@ module Workspace
       @hooks_command = hooks_command
       @launch_command = launch_command
       @kill_command = kill_command
+      @rename_command = rename_command
       @finish_command = finish_command
       @start_command = start_command
       @stop_command = stop_command
@@ -268,6 +270,8 @@ module Workspace
         cmd_add(args)
       when "kill"
         cmd_kill(args)
+      when "rename"
+        cmd_rename(args)
       when "finish"
         cmd_finish(args)
       when "relaunch"
@@ -713,6 +717,7 @@ module Workspace
           relaunch        Stop and relaunch all active workspace projects
           remove          Forget a stopped project: delete its generated config and state (default: the current one; your files stay)
           repair          Rebuild state from live iTerm windows
+          rename          Rename a stopped worktree workspace: branch, directory, name and session
           resize          Resize tmux panes for a running project
           restore         Bring back agent panes after a reboot: recreate them and resume their sessions (default: the current one; --all)
           run             Send a shell command to a pane in a running project's tmux session
@@ -1366,6 +1371,78 @@ module Workspace
           {results: [action_row(target, "cancelled", reason: "declined", message: "Not confirmed; nothing was removed.")], status: "cancelled"}
         end
       end
+    end
+
+    def cmd_rename(args)
+      dry_run = false
+      json = false
+      help = false
+      name = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace rename [WORKSPACE] NEW [--name WS] [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "Give a stopped worktree workspace a new branch, and with it a new directory,"
+        opts.separator "workspace name and tmux session. Run 'workspace stop' first: a workspace with a"
+        opts.separator "session or a daemon is refused. Nothing is launched afterwards. 'workspace restore'"
+        opts.separator "with the new workspace name resumes its agent conversations; 'workspace launch'"
+        opts.separator "starts new ones. The remote branch is left alone."
+        opts.separator ""
+        opts.separator "The workspace is the one given, else the one the current directory is in. Name it"
+        opts.separator "either as WORKSPACE before NEW or with --name, not both. A rename that stopped"
+        opts.separator "part way prints the command that finishes it: run it again, from anywhere."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--name NAME", "The workspace to rename (default: the one detected from the current directory)") { |v| name = v }
+        opts.on("--dry-run", "Print what would change and what is refused; change nothing") { dry_run = true }
+        opts.on("--json", "Print one document (see docs/README.json.md) instead of text, which goes",
+          "to stderr; a refusal is the error envelope") { json = true }
+        opts.on("-h", "--help", "Show this help") { help = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace rename fix-login-v2    # rename the stopped workspace you are in to the branch fix-login-v2"
+        opts.separator "  workspace rename --dry-run fix-login-v2    # show the plan and any refusal; change nothing"
+        opts.separator "  workspace rename myproject.worktree-fix-login fix-login-v2    # name the workspace first, from anywhere"
+        opts.separator "  workspace rename fix-login-v2 --name myproject.worktree-fix-login    # the same, naming it with a flag"
+        opts.separator "  workspace rename fix-login-v2 --json    # one document with the plan, warnings and the next step"
+      end
+      parser.parse!(args)
+      return @output.puts(parser.help) if help
+
+      raise UsageError, "workspace rename needs the new branch name. Run 'workspace rename --help'." if args.empty?
+      raise UsageError, "workspace rename takes [WORKSPACE] NEW; got: #{args.join(" ")}. Run 'workspace rename --help'." if args.size > 2
+      raise UsageError, "Name the workspace either before the new name or with --name, not both. Run 'workspace rename --help'." if args.size == 2 && name
+      new = args.pop
+      given = args.first || name
+      # A half-done rename has moved its config, so the old name may no longer settle; the command
+      # reads the journal before it refuses a name.
+      target = given ? (given_name(given) || given) : current_workspace!(nil)
+      raise Error, "rename is not available: no rename command was wired" unless @rename_command
+
+      run_action("rename", json: json) do
+        result = @rename_command.call(workspace: target, new: new, dry_run: dry_run)
+        if json
+          {results: [action_row(result.dig("workspace", "to"), dry_run ? "dry_run" : "renamed", previous_workspace: result.dig("workspace", "from"), **result.slice("project", "branch", "path", "session", "notes", "resume", "dry_run", "next"))],
+           warnings: result["warnings"], status: dry_run ? "dry_run" : nil}
+        else
+          print_rename(result)
+          {}
+        end
+      end
+    end
+
+    RENAME_NOTES_TEXT = {"move" => "move", "with_checkout" => "move with the checkout", "stays" => "stay where they are"}.freeze
+    private_constant :RENAME_NOTES_TEXT
+
+    def print_rename(result)
+      @output.puts "Dry run: nothing was changed. Run it again without --dry-run to rename." if result["dry_run"]
+      %w[workspace branch session path].each do |key|
+        from, to = result[key].values_at("from", "to")
+        @output.puts "#{key.capitalize.ljust(10)}#{(from == to) ? "#{to} (unchanged)" : "#{from} -> #{to}"}"
+      end
+      notes = result["notes"]
+      @output.puts "Notes     #{RENAME_NOTES_TEXT.fetch(notes["action"], notes["action"])}#{" #{notes["from"]} -> #{notes["to"]}" if notes["to"]}#{" (#{notes["reason"]})" if notes["reason"]}"
+      result["warnings"].each { |w| @error_output.puts TerminalText.escape("Warning: #{w["message"]}") }
+      @output.puts result["next"] if result["next"]
     end
 
     def cmd_finish(args)

@@ -111,6 +111,7 @@ module Workspace
         "split_cwd" => 1,
         "launch_prompt_status" => 1,
         "kill_branches" => 1,
+        "rename" => 1,
         "help_json" => 1
       }.freeze
 

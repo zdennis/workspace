@@ -881,6 +881,15 @@ module Workspace
       restart_agent_command: restart_agent_command, notes: notes_command, binder: binding_command, library: library,
       output: output, error_output: error_output)
 
+    rename_journal = RenameJournal.new(config: config)
+    rename_plan = RenamePlan.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes_command,
+      notes_dir: NotesDir.new(git: git), workflow_engine: workflow_engine, dev_lock: ->(path) { dev_command.lock_held_by?(path) },
+      journal: rename_journal.method(:read))
+    rename_command = Commands::Rename.new(plan: rename_plan, journal: rename_journal, git: git, config: config, project_config: project_config,
+      project_settings: project_settings, tmux: tmux, state: state, notes: notes_command, name_migration: name_migration, task_store: task_store,
+      inbox_store_factory: inbox_store_factory, session_ledger: session_ledger, pane_bindings: pane_bindings, event_log: event_log,
+      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, error_output: error_output)
+
     CLI.new(
       config: config,
       state: state,
@@ -896,6 +905,7 @@ module Workspace
       workspace_name: workspace_name,
       launch_command: launch_command,
       kill_command: kill_command,
+      rename_command: rename_command,
       finish_command: finish_command,
       start_command: start_command,
       stop_command: stop_command,
