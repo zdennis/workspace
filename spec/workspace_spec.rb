@@ -406,5 +406,30 @@ RSpec.describe Workspace do
       expect(installer.instance_variable_get(:@dirs)).to be_a(Workspace::LibraryInstallDirs)
       expect(installer.instance_variable_get(:@dirs).instance_variable_get(:@config_resolver)).to be_a(Workspace::ConfigResolver)
     end
+
+    it "builds a doctor that no longer reports mixed-case workspace names" do
+      require "tmpdir"
+      saved = %w[HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME].to_h { |k| [k, ENV[k]] }
+      Dir.mktmpdir("wsd", File.realpath("/tmp")) do |home|
+        ENV["HOME"] = home
+        ENV["XDG_CONFIG_HOME"] = File.join(home, ".config")
+        ENV["XDG_STATE_HOME"] = File.join(home, ".local", "state")
+        ENV["XDG_DATA_HOME"] = File.join(home, ".local", "share")
+        ENV["XDG_CACHE_HOME"] = File.join(home, ".cache")
+        FileUtils.mkdir_p(File.join(home, ".config", "tmuxinator"))
+        FileUtils.mkdir_p(File.join(home, ".config", "workspace", "projects"))
+        File.write(File.join(home, ".config", "tmuxinator", "workspace.Notes.yml"), "name: workspace-Notes\n")
+        File.write(File.join(home, ".config", "workspace", "projects", "Notes.yml"), "{}\n")
+        File.write(File.join(home, ".workspace-state.json"), JSON.generate("Notes" => {"iterm_window_id" => 1}))
+
+        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
+        rows = cli.instance_variable_get(:@doctor).report(headless: true)[:rows]
+
+        expect(rows.map { |r| r[:id] }).not_to include("mixed-case-workspaces")
+        expect(rows.map { |r| r[:message] }.join("\n")).not_to match(/capitals/)
+      end
+    ensure
+      ENV.update(saved)
+    end
   end
 end

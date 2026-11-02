@@ -57,7 +57,6 @@ module Workspace
     # @param snapshot_client [Workspace::AgentSnapshotClient, nil] reads the session
     #   monitor's snapshot, to diagnose the context readability of panes whose
     #   agent workspace reads by scraping the pane itself (Codex); nil skips that check
-    # @param name_migration [Workspace::NameMigration, nil] says which mixed-case workspaces are still to be renamed; nil skips that check
     # @param project_catalog [Workspace::ProjectCatalog, nil] lists the known projects' repositories for the leftover promote snapshot check; nil skips it
     # @param agent_commands [Workspace::AgentCommands, nil] says which program each agent's configured command
     #   starts, which is what must be on PATH; nil looks for each agent's own executable
@@ -71,7 +70,7 @@ module Workspace
     # @param output [IO] output stream for results
     # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -86,7 +85,6 @@ module Workspace
       @project_settings = project_settings || ProjectSettings.new(config: config)
       @plan = plan
       @snapshot_client = snapshot_client
-      @name_migration = name_migration
       @project_catalog = project_catalog
       @agent_commands = agent_commands
       @project_config = project_config
@@ -143,7 +141,6 @@ module Workspace
       dependency_checks.each { |entry| run_dependency_check(entry, mode) }
       check_templates
       check_duplicate_window_ids
-      check_mixed_case_workspaces
       check_promote_snapshots
       check_session_monitoring
       check_agent_panes(stale - fixed)
@@ -471,28 +468,6 @@ module Workspace
       else
         add_row("state-window-ids", "ok", "state: no duplicate window IDs")
       end
-    end
-
-    # Warns about a workspace still written with capitals, or a rename that
-    # did not finish; the rename itself is {NameMigration}'s, so its own
-    # knowledge of what it renames says what is left.
-    def check_mixed_case_workspaces
-      return unless @name_migration
-
-      begin
-        pending = @name_migration.pending
-      rescue SystemCallError, IOError, Workspace::Error => e
-        add_row("mixed-case-workspaces", "skipped", "workspace names (could not be checked: #{e.message}, skipped)")
-        return
-      end
-      if pending.empty?
-        add_row("mixed-case-workspaces", "ok", "workspace names: all lowercase")
-        return
-      end
-
-      list = pending.map { |entry| entry["remaining"].empty? ? entry["name"] : "#{entry["name"]} (#{entry["remaining"].join(", ")})" }
-      add_row("mixed-case-workspaces", "warn", "workspace names with capitals, to be renamed to lowercase: #{list.join("; ")}",
-        fix: "the next agentd start renames each one, or run 'workspace launch #{pending.first["workspace"]}' now")
     end
 
     # Warns about a promote that stopped part way: `CheckoutMove` keeps the

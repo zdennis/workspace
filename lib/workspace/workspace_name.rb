@@ -1,6 +1,6 @@
 module Workspace
-  # The one place a workspace name is compared or settled. Names are lowercase
-  # going forward, but configs written earlier keep their mixed case on disk,
+  # The one place a workspace name is compared or settled. New names are
+  # written in lowercase, but configs written earlier keep their mixed case on disk,
   # and macOS file systems ignore case, so `notes` and `Notes` reach the same
   # files and socket. Callers use #resolve at an input, and .same? to compare.
   class WorkspaceName

@@ -177,9 +177,9 @@ module Workspace
       existing = variants.first
       existing_root = project_root_for(existing)
       raise Workspace::Error.new(
-        "Can't create workspace '#{wanted}': workspace '#{existing}' (#{existing_root || "root unknown"}) already exists and differs only in case. " \
-        "'#{existing}' will be renamed to lowercase the next time its agentd starts; " \
-        "until then, use '#{existing}' (see `workspace list`) or use a different directory name.",
+        "Can't create workspace '#{wanted}': workspace '#{existing}' (#{existing_root || "root unknown"}) already exists and differs only in case, " \
+        "and the two would share config and state files on a disk that ignores case. " \
+        "If you meant that workspace, use '#{existing}' (see `workspace list`); otherwise use a directory with a different name.",
         code: "workspace_name_case_conflict",
         details: {"name" => wanted, "existing" => existing, "existing_root" => existing_root}
       )
