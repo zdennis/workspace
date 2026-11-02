@@ -13916,6 +13916,14 @@ RSpec.describe Workspace::CLI do
       expect(ui_command.calls).to eq([{view: "task", workspace: "a.worktree-fix-login", print_only: false}])
     end
 
+    it "says so on stderr for a short workspace at ask list, config get and ui open" do
+      cli.run(["ask", "list", "fix-login"])
+      cli.run(["config", "get", "fix-login", "some.key"])
+      cli.run(["ui", "open", "fix-login"])
+
+      expect(error_output.string.scan("Workspace 'fix-login' is a.worktree-fix-login.").size).to eq(3)
+    end
+
     it "keeps `ui open notes` as the view when a workspace has the suffix notes" do
       cli.run(["ui", "open", "notes"])
 
@@ -13982,6 +13990,31 @@ RSpec.describe Workspace::CLI do
       cli.run(["events", "--name", "twin", "--help"])
       expect(output.string).to include("Usage: workspace events")
       expect(error_output.string).to eq("")
+    end
+
+    it "prints help for an ambiguous --name given -h" do
+      cli.run(["plan", "status", "-h", "--name", "twin"])
+
+      expect(output.string).to include("workspace plan status")
+      expect(error_output.string).to eq("")
+    end
+
+    it "does not read --help after a bare -- as asking for help" do
+      expect { cli.run(["stop", "--name", "twin", "--", "--help"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).to include("'twin' matches more than one workspace")
+    end
+
+    it "does not read --json after a bare -- as quieting the note" do
+      cli.run(["stop", "--name", "fix-login", "--", "--json"])
+
+      expect(error_output.string).to include("Workspace 'fix-login' is a.worktree-fix-login.")
+    end
+
+    it "writes no note under --json-envelope" do
+      expect { cli.run(["stop", "--name", "fix-login", "--all", "--json-envelope"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).not_to include("Workspace 'fix-login' is")
     end
 
     it "writes no note under --json when the command then fails" do
@@ -14058,6 +14091,14 @@ RSpec.describe Workspace::CLI do
       cli.run(["repair", "fix-login", "--window-id", "1"])
 
       expect(repair_command).to have_received(:set_window_id).with("a.worktree-fix-login", 1)
+    end
+
+    it "settles the workspace of every other pipeline verb" do
+      [["reset", "twin"], ["advance", "twin", "--work-item", "T-1"]].each do |verb_args|
+        built[2].truncate(0)
+        expect { cli.run(["pipeline", *verb_args]) }.to raise_error(FakeSystemExit)
+        expect(built[2].string).to include("'twin' matches more than one workspace")
+      end
     end
 
     it "pipeline status SHORT reads the full name's state" do

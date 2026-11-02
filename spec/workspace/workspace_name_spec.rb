@@ -108,6 +108,19 @@ RSpec.describe Workspace::WorkspaceName do
       expect(described_class.new(project_config: project_config).for_input("foo")).to eq("b.worktree-foo")
     end
 
+    it "raises on a tie with no state" do
+      projects.push("a.worktree-foo")
+      expect { described_class.new(project_config: project_config).for_input("foo") }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("ambiguous_workspace") }
+    end
+
+    it "raises on a tie between suffixes that differ only in case" do
+      projects.push("a.worktree-Foo")
+      expect { names.for_input("foo") }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["matches"]).to eq(["a.worktree-Foo", "b.worktree-foo"])
+      }
+    end
+
     it "does not load state when nothing hits" do
       names.for_input("zzz")
       expect(state).not_to have_received(:load)
