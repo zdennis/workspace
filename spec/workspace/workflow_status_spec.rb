@@ -73,8 +73,21 @@ RSpec.describe Workspace::WorkflowStatus do
       "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_note" => nil, "gate_file" => nil, "note_changed" => false},
         {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil, "gate_note" => nil, "gate_file" => nil, "note_changed" => false}],
       "base_sha" => nil, "pane" => "%5", "task" => "t1", "inputs" => {"task" => "X-1"}, "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
-      "events_path" => File.join(@dir, "runs", "wr_1.events.jsonl")
+      "events_path" => File.join(@dir, "runs", "wr_1.events.jsonl"), "guard_warnings" => []
     }])
+  end
+
+  it "lists the guard's warnings of every attempt, oldest first" do
+    create
+    store.update("wr_1") do |run|
+      run["steps"]["research"]["attempts"].last["warnings"] = [{"code" => "config_changed", "at" => "2026-10-04T12:10:00Z", "message" => "m"}]
+      run["steps"]["plan"]["attempts"].last["warnings"] = [{"code" => "config_changed", "at" => "2026-10-04T12:20:00Z", "message" => "n"}]
+    end
+
+    expect(status.run("wr_1")["runs"].first["guard_warnings"]).to eq([
+      {"code" => "config_changed", "at" => "2026-10-04T12:10:00Z", "message" => "m", "step" => "research", "attempt" => 1},
+      {"code" => "config_changed", "at" => "2026-10-04T12:20:00Z", "message" => "n", "step" => "plan", "attempt" => 2}
+    ])
   end
 
   it "says pane_gone when the pane an agent should be working in is not there, and how to get going again" do
@@ -665,7 +678,7 @@ RSpec.describe Workspace::WorkflowStatus do
       create(state: "waiting", step_state: "failed", reason: reason, bound: false, base_sha: "abc123")
     end
 
-    %w[no_commit head_moved config_changed hooks_changed hidden_changed].each do |code|
+    %w[no_commit head_moved hooks_changed hidden_changed].each do |code|
       it "offers only cancel for #{code}, which a resume can't get past" do
         failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
 
@@ -674,8 +687,8 @@ RSpec.describe Workspace::WorkflowStatus do
       end
     end
 
-    %w[tracked_changed operation_in_progress].each do |code|
-      it "offers resume, resume --from and cancel for #{code}, which the person can clear" do
+    %w[tracked_changed operation_in_progress config_changed].each do |code|
+      it "offers resume, resume --from and cancel for #{code}, which the person can clear or a resume now passes" do
         failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
 
         expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])

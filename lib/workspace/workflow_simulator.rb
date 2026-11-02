@@ -260,6 +260,10 @@ module Workspace
         nil
       end
 
+      def config_change(*, **)
+        nil
+      end
+
       def remote_head(_worktree)
         {"unread" => "simulated"}
       end

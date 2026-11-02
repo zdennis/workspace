@@ -313,6 +313,15 @@ RSpec.describe Workspace::Commands::Workflow do
   describe "#status" do
     def workspace_scope(name) = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: name)
 
+    it "prints the guard's warnings, the run having gone on" do
+      warned = shown("guard_warnings" => [{"code" => "config_changed", "step" => "plan", "attempt" => 2, "message" => "the config changed"}])
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [warned], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("warning: config_changed at step plan (attempt 2): the config changed\n")
+    end
+
     it "prints where a parked resume waits and until when" do
       parked = shown("state" => "running", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "flags" => ["parked"], "reason" => nil,
                                                          "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})

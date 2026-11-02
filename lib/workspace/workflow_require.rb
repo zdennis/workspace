@@ -184,7 +184,7 @@ module Workspace
     end
 
     def tracked_clean(run)
-      paths = @guard.dirty_paths(run["worktree"])
+      paths = @guard.dirty_paths(run["worktree"], base: run)
       return unproven("required no changed tracked files, but git could not say") if paths.nil?
       return {"detail" => "required no changed tracked files, found a rebase, merge, cherry-pick, revert or bisect in progress (or git could not say)"} if @guard.operation_in_progress?(run["worktree"])
       return nil if paths.empty?

@@ -21,9 +21,19 @@ module Workspace
   # snapshot of the config, hooks, replace refs and hidden-file flags. {#check}
   # compares the checkout with it and answers with the first code that fails,
   # in this order: `no_commit`, `head_moved`, `operation_in_progress`,
-  # `config_changed`, `hooks_changed`, `hidden_changed`, `tracked_changed`. The
-  # scope `config` checks `no_commit`, then the config, hooks and hidden flags.
-  # A part git can't read at check time is a failure, whatever it was at the start.
+  # `hooks_changed`, `hidden_changed`, `tracked_changed`. The scope `config`
+  # checks `no_commit`, then the hooks and hidden flags. A part git can't read at
+  # check time is a failure, whatever it was at the start.
+  #
+  # A changed config never fails a step: {#config_change} reports it, apart from
+  # {#check}, so it can't hide a failure and the engine can warn. The common dir's
+  # `config` is shared with every workspace of the repository, which is why the
+  # config digest reads it through `git config --list` and leaves out what other
+  # workspaces change in the normal course of things: other branches' `branch.*`
+  # sections, and other linked worktrees' `config.worktree` files. Once the
+  # `filter.*` entries differ from the base's, {#dirty_paths} turns every filter
+  # off, so a filter written during the step neither runs in the guard's git nor
+  # hides an edit; any other config change leaves the project's filters working.
 
   class WorkflowGuard
     # Seconds one git call may take.
@@ -39,7 +49,23 @@ module Workspace
     MAX_PATHS = 20
 
     # The codes {#check} answers with, in the order it looks for them.
-    CODES = %w[no_commit head_moved operation_in_progress config_changed hooks_changed hidden_changed tracked_changed].freeze
+    CODES = %w[no_commit head_moved operation_in_progress hooks_changed hidden_changed tracked_changed].freeze
+
+    # The code of {#config_change}'s answer: a warning, never a failed step.
+    CONFIG_CHANGED = "config_changed"
+
+    # What {#config_digest} reads, recorded in `base_guard` as `config_format`. A run with
+    # no such key holds a digest of the raw files, which no reading of today can match.
+    CONFIG_FORMAT = 2
+
+    # {#config_change}'s "reading" for a config that can't be read.
+    UNREADABLE = "unreadable"
+
+    # A `branch.<name>.<variable>` key: `branch.sort` and its like (two parts) are settings, not a branch's section.
+    BRANCH_KEY = /\Abranch\.(.+)\.[^.]+\z/m
+
+    # A `filter.<name>.<variable>` key.
+    FILTER_KEY = /\Afilter\.(.+)\.[^.]+\z/m
 
     # Seconds {#remote_head} waits for the remote.
     REMOTE_TIMEOUT = 15
@@ -73,14 +99,15 @@ module Workspace
 
     # @param worktree [String] a checkout
     # @return [Hash{String=>Object}] "base_sha" (nil on an unborn branch or when git can't answer)
-    #   and "base_guard" ("config_sha256", "hooks_sha256", "hidden_sha256"; each nil when unreadable)
+    #   and "base_guard" ("config_sha256", "hooks_sha256", "hidden_sha256", "filter_sha256", each nil when unreadable, and "config_format")
     def base(worktree)
-      {"base_sha" => head(worktree), "base_guard" => snapshot(worktree)}
+      {"base_sha" => head(worktree), "base_guard" => snapshot(worktree).merge("config_format" => CONFIG_FORMAT, "filter_sha256" => filter_digest(filter_entries(worktree)))}
     end
 
     # @param worktree [String] a checkout
-    # @return [Hash{String=>String, nil}] the SHA-256 of the common dir's `config`, the
-    #   worktree's `config.worktree`, every linked worktree's `config.worktree`, `info/attributes`
+    # @return [Hash{String=>String, nil}] the SHA-256 of the common dir's `config` and the
+    #   worktree's `config.worktree` (as `git config --list` reads them, included files in
+    #   place, other branches' `branch.*` sections left out), `info/attributes`
     #   and the `refs/replace/` refs; of the effective hooks directory (the repository config's
     #   `core.hooksPath`, else the common dir's `hooks`) over sorted relative paths, modes,
     #   contents and symlink targets; and of the `git ls-files -v` lines tagged lowercase
@@ -91,7 +118,7 @@ module Workspace
 
     # @param worktree [String] a checkout
     # @param base [Hash{String=>Object}] {#base}'s answer, or a run, which holds the same keys
-    # @param scope [String] "unchanged" (everything) or "config" (config, hooks and hidden flags only)
+    # @param scope [String] "unchanged" (everything) or "config" (hooks and hidden flags only)
     # @return [Hash{String=>Object}, nil] nil when the checkout passes; else "code" (see {CODES}),
     #   "paths" (up to {MAX_PATHS}, for `tracked_changed`; empty for the other codes), and
     #   "base_sha"/"head" for `head_moved`
@@ -103,14 +130,32 @@ module Workspace
         return failure("head_moved", "base_sha" => base_sha, "head" => current) if current != base_sha
         return failure("operation_in_progress") if operation_in_progress?(worktree)
       end
-      %w[config hooks hidden].each do |part|
+      %w[hooks hidden].each do |part|
         now = snapshot_part(worktree, part)
         return failure("#{part}_changed") if now.nil? || now != base.dig("base_guard", "#{part}_sha256")
       end
       return nil unless scope == "unchanged"
-      paths = dirty_paths(worktree)
+      paths = dirty_paths(worktree, base: base)
       return failure("tracked_changed", "paths" => paths || []) if paths.nil? || paths.any?
       nil
+    end
+
+    # Whether the config reads differently from the last reading the caller knows of. An unreadable
+    # config is a change too, and a config back at the base's reading is none. Never raises.
+    #
+    # @param worktree [String] a checkout
+    # @param base [Hash{String=>Object}] {#base}'s answer, or a run, which holds the same keys
+    # @param seen [String, nil] the "reading" of the last warning; nil for none, which compares with the base
+    # @return [Hash{String=>Object}, nil] nil when nothing changed; else "code" ({CONFIG_CHANGED}, or nil when the config
+    #   came back to the base's reading, which is no warning: drop `seen`), "reading" (the digest or {UNREADABLE}, to pass
+    #   as `seen` next time) and, with a code, "old_format" (true when the base was recorded before {CONFIG_FORMAT},
+    #   so the difference may be no change at all)
+    def config_change(worktree, base, seen: nil)
+      reading = config_digest(worktree) || UNREADABLE
+      stored = base["base_guard"] || {}
+      return nil if reading == seen
+      return (seen ? {"code" => nil, "reading" => reading} : nil) if reading == stored["config_sha256"]
+      {"code" => CONFIG_CHANGED, "reading" => reading, "old_format" => seen.nil? && stored["config_format"] != CONFIG_FORMAT}
     end
 
     # Never raises: a checkout that is gone, a timeout and a failed git all read nil.
@@ -218,11 +263,18 @@ module Workspace
     end
     private :default_branch?
 
+    # With a `base`, `filter.*` entries that differ from the ones it recorded have every filter turned off for the
+    # status: a clean filter set during the step must not run here or report an edited file as clean. A base with no
+    # such record (a run stored before it existed) and any other config change leave the filters on.
+    #
     # @param worktree [String] a checkout
+    # @param base [Hash{String=>Object}, nil] {#base}'s answer, or a run
     # @return [Array<String>, nil] up to {MAX_PATHS} changed tracked paths (staged or not; untracked files,
     #   submodules and `assume-unchanged`/`skip-worktree` files are not seen); nil when git can't answer
-    def dirty_paths(worktree)
-      out, ok = git(worktree, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all")
+    def dirty_paths(worktree, base: nil)
+      options = base ? filter_options(worktree, base) : []
+      return nil unless options
+      out, ok = git(worktree, *options, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all")
       return nil unless ok
       fields = out.split("\0")
       paths = []
@@ -251,11 +303,7 @@ module Workspace
     end
 
     def snapshot_part(worktree, part)
-      case part
-      when "config" then config_digest(worktree)
-      when "hooks" then hooks_digest(worktree)
-      else hidden_digest(worktree)
-      end
+      (part == "hooks") ? hooks_digest(worktree) : hidden_digest(worktree)
     end
 
     def git_path(worktree, name)
@@ -273,25 +321,83 @@ module Workspace
     end
 
     def config_digest(worktree)
-      paths = %w[config config.worktree info/attributes].map { |name| git_path(worktree, name) }
-      return nil if paths.any?(&:nil?)
-      common, found = git(worktree, "rev-parse", "--git-common-dir")
-      return nil unless found
-      linked = File.expand_path(common.chomp, worktree)
+      config_paths = %w[config config.worktree].map { |name| git_path(worktree, name) }
+      attributes = git_path(worktree, "info/attributes")
+      return nil if attributes.nil? || config_paths.any?(&:nil?)
+      own, known = own_branch(worktree)
+      return nil unless known
       refs, listed = git(worktree, "for-each-ref", "refs/replace/")
       return nil unless listed
       digest = Digest::SHA256.new
-      (paths + linked_worktree_configs(linked)).each { |path| feed_file(digest, path) }
+      return nil unless config_paths.all? { |path| feed_config(digest, worktree, path, own) }
+      feed_file(digest, attributes)
       feed(digest, "replace", refs)
       digest.hexdigest
     rescue
       nil
     end
 
-    def linked_worktree_configs(common)
-      Dir.glob("*/config.worktree", base: File.join(common, "worktrees")).sort.map { |name| File.join(common, "worktrees", name) }
-    rescue SystemCallError
-      []
+    # @return [Array(String, Boolean)] the checked-out branch (nil on a detached HEAD), and whether git could say
+    def own_branch(worktree)
+      ref, ok, code = git(worktree, "symbolic-ref", "-q", "HEAD")
+      return [ref.strip.delete_prefix("refs/heads/"), true] if ok
+      [nil, code == 1]
+    end
+
+    # Feeds one config file as git reads it, so comments and layout don't count. Included files are read in
+    # place and `include.path` is an entry like any other: a new include, or a change inside an included file,
+    # changes the digest. Only the sections of other branches are dropped, and those change no git command run here.
+    #
+    # @return [Boolean] false when git can't read the file
+    def feed_config(digest, worktree, path, own)
+      stat = File.lstat(path)
+      feed(digest, path, "link", File.readlink(path)) if stat.symlink?
+      out, ok = git(worktree, "config", "--includes", "--file", path, "--list", "-z")
+      return false unless ok
+      feed(digest, path, "entries", *out.split("\0").reject { |entry| other_branch?(entry, own) })
+      true
+    rescue Errno::ENOENT
+      feed(digest, path, "absent")
+      true
+    end
+
+    def other_branch?(entry, own)
+      name = entry[/\A[^\n]*/][BRANCH_KEY, 1]
+      !name.nil? && name != own
+    end
+
+    # @return [Array<String>, nil] the effective `filter.*` entries, as `key\nvalue`, none being []; nil when git can't read them
+    def filter_entries(worktree)
+      out, ok, code = git(worktree, "config", "--includes", "-z", "--get-regexp", '^filter\.')
+      return out.split("\0") if ok
+      (code == 1) ? [] : nil
+    end
+
+    def filter_digest(entries)
+      return nil unless entries
+      digest = Digest::SHA256.new
+      feed(digest, *entries)
+      digest.hexdigest
+    end
+
+    # Entries that can't be read leave the filters on: git reading the same config for the status fails with it, so
+    # no filter runs, and a failure to read them is not evidence of a changed filter.
+    #
+    # @return [Array<String>, nil] the options for the status; nil when a changed filter can't be turned off
+    def filter_options(worktree, base)
+      stored = base.dig("base_guard", "filter_sha256")
+      return [] unless stored
+      entries = filter_entries(worktree)
+      return [] if entries.nil? || filter_digest(entries) == stored
+      filters_off(entries)
+    end
+
+    # The `-c` options that empty every filter named, whatever attribute would select it. A name
+    # `git -c` can't carry answers nil, which fails the check, rather than leaving that filter on.
+    def filters_off(entries)
+      names = entries.filter_map { |entry| entry[/\A[^\n]*/][FILTER_KEY, 1] }.uniq
+      return nil if names.any? { |name| name.include?("=") }
+      names.flat_map { |name| ["-c", "filter.#{name}.clean=", "-c", "filter.#{name}.smudge=", "-c", "filter.#{name}.process=", "-c", "filter.#{name}.required=false"] }
     end
 
     def feed_file(digest, path)

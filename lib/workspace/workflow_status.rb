@@ -37,7 +37,7 @@ module Workspace
     SNAPSHOT_TIMEOUT = 1.0
 
     # The guard codes a resume can't get past.
-    FINAL_GUARDS = %w[no_commit head_moved config_changed hooks_changed hidden_changed].freeze
+    FINAL_GUARDS = %w[no_commit head_moved hooks_changed hidden_changed].freeze
 
     # Seconds after an attempt starts during which an idle pane is not flagged `idle`.
     IDLE_GRACE = 30
@@ -185,8 +185,18 @@ module Workspace
             .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)),
         "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
         "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
-        "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"])
+        "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"]),
+        "guard_warnings" => guard_warnings(run)
       }.merge(budget_row(run))
+    end
+
+    # What the guard warned of on any attempt, oldest first; the run went on past each.
+    def guard_warnings(run)
+      run["steps"].flat_map do |id, state|
+        state["attempts"].flat_map do |attempt|
+          Array(attempt["warnings"]).map { |each| each.merge("step" => id, "attempt" => attempt["n"]) }
+        end
+      end.sort_by { |each| each["at"].to_s }
     end
 
     # The token budget as it stands, only for a run whose definition declares one. `used` is a minimum: it leaves
@@ -448,7 +458,7 @@ module Workspace
       when "retry_backoff" then [resume, cancel]
       when "budget_spent" then [resume, cancel]
       when "failed_check"
-        # A moved HEAD or changed config can't pass again, and base_sha is never re-recorded: only a new run goes on.
+        # A moved HEAD or changed hooks can't pass again, and base_sha is never re-recorded: only a new run goes on.
         if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))
           [cancel]
         else
