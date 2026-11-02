@@ -1,6 +1,6 @@
 ---
 name: workspace-lifecycle
-description: "Create, bring back and end `workspace` projects and worktrees: `start` from a ticket, PR or branch; `launch` (open panes in iTerm); `promote` main changes made by mistake; `rename` a worktree's branch; `restore` after a reboot; wind down: stop, finish, kill, prune (merged PRs), remove config. Not plain git branches or workflow runs (workspace-workflow). Never end one unasked: read the which-ending table."
+description: "Create, bring back and end `workspace` projects and worktrees: `start` from a ticket, PR or branch; `launch` (open iTerm panes); `promote` changes made on main; `rename` a worktree's branch; `restore` after a reboot; wind down: stop, finish, kill, prune (merged PRs), remove config. Not plain git branches or workflow runs (workspace-workflow). Never end one unasked: read the which-ending table."
 ---
 
 Written against workspace 0.75.0; check with the working --help form.
