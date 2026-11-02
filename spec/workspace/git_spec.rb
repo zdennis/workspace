@@ -956,6 +956,68 @@ RSpec.describe Workspace::Git do
     end
   end
 
+  describe "moving and renaming" do
+    around do |example|
+      Dir.mktmpdir("wt-rename") do |dir|
+        @repo = File.realpath(dir)
+        example.run
+      end
+    end
+
+    def g(*args)
+      out, status = Open3.capture2e("git", "-C", @repo, "-c", "user.name=t", "-c", "user.email=t@example.com", *args)
+      raise "git #{args.join(" ")} failed: #{out}" unless status.success?
+      out
+    end
+
+    before do
+      g("init", "-q", "-b", "main")
+      g("commit", "-q", "--allow-empty", "-m", "init")
+      g("worktree", "add", "-q", "-b", "old", File.join(@repo, "old"))
+    end
+
+    describe "#move_worktree" do
+      it "moves the worktree" do
+        success, = git.move_worktree(@repo, File.join(@repo, "old"), File.join(@repo, "new"))
+
+        expect(success).to be true
+        expect(File.directory?(File.join(@repo, "new"))).to be true
+        expect(File.exist?(File.join(@repo, "old"))).to be false
+      end
+
+      it "refuses a locked worktree and answers git's stderr" do
+        g("worktree", "lock", File.join(@repo, "old"))
+
+        success, stderr = git.move_worktree(@repo, File.join(@repo, "old"), File.join(@repo, "new"))
+
+        expect(success).to be false
+        expect(stderr).to match(/lock/)
+        expect(File.directory?(File.join(@repo, "old"))).to be true
+      end
+    end
+
+    describe "#rename_branch" do
+      it "renames the branch and carries its branch.<old>.* keys" do
+        g("config", "branch.old.workspace-created", "true")
+
+        success, = git.rename_branch(@repo, "old", "renamed")
+
+        expect(success).to be true
+        expect(g("config", "--get", "branch.renamed.workspace-created").strip).to eq("true")
+        expect(Open3.capture2e("git", "-C", @repo, "config", "--get", "branch.old.workspace-created").last).not_to be_success
+      end
+
+      it "fails with stderr when the new name is taken" do
+        g("branch", "taken")
+
+        success, stderr = git.rename_branch(@repo, "old", "taken")
+
+        expect(success).to be false
+        expect(stderr).to match(/already exists/)
+      end
+    end
+  end
+
   describe "#find_worktree_by_branch" do
     it "returns the worktree path when a worktree exists for the branch" do
       porcelain = <<~OUTPUT

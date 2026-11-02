@@ -136,6 +136,29 @@ module Workspace
       end
     end
 
+    # `git worktree move OLD NEW`; git refuses a locked worktree.
+    #
+    # @param path [String] the main checkout (where git runs)
+    # @param old_path [String] the worktree today
+    # @param new_path [String] where it goes
+    # @return [Array(Boolean, String)] success and git's stderr
+    def move_worktree(path, old_path, new_path)
+      _, stderr, success = run_git(path, "worktree", "move", old_path, new_path, timeout: QUICK_TIMEOUT)
+      [success, stderr]
+    end
+
+    # `git branch -m OLD NEW` in +path+; git carries the `branch.OLD.*` config
+    # keys to the new name and refuses a name that is taken.
+    #
+    # @param path [String] a checkout of the repository
+    # @param old_name [String]
+    # @param new_name [String]
+    # @return [Array(Boolean, String)] success and git's stderr
+    def rename_branch(path, old_name, new_name)
+      _, stderr, success = run_git(path, "branch", "-m", old_name, new_name, timeout: QUICK_TIMEOUT)
+      [success, stderr]
+    end
+
     # @param path [String] the checkout
     # @param onto [String] a ref
     # @return [Array(Boolean, String)] success and git's stderr
