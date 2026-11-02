@@ -1261,6 +1261,134 @@ RSpec.describe Workspace::Commands::Go do
     end
   end
 
+  describe "--text" do
+    let(:pr) { "https://github.com/o/r/pull/12" }
+    let(:hint) { "The text contains #{pr}, which go read as a ref. Pass --text to treat the whole text as plain text." }
+
+    it "keeps a sentence naming a pull request as a prompt, read by no one" do
+      row = command.call(argument: "fix #{pr}", text: true)
+
+      expect(row["decision"]).to include("kind" => "prompt", "extracted" => nil)
+      expect(ticket_source).not_to have_received(:fetch)
+      expect(workflow_start).to have_received(:call).with(hash_including(prompt: "fix #{pr}"))
+      expect(workflow_start).not_to have_received(:call).with(hash_including(:ref))
+    end
+
+    it "is allowed with --here, and changes nothing there" do
+      row = command.call(argument: "fix #{pr}", text: true, here: true)
+
+      expect(row["decision"]).to include("kind" => "prompt", "extracted" => nil)
+    end
+
+    it "refuses an argument with no whitespace" do
+      error = refusal(argument: "oneword", text: true)
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.message).to eq(%(--text needs a quoted sentence with a space in it (got "oneword"). Quote the sentence, or drop --text.))
+      expect_nothing_ran
+    end
+
+    it "refuses no argument" do
+      error = refusal(text: true)
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.message).to eq("--text needs a quoted sentence; none was given.")
+    end
+
+    it "adds the way out to a fork refusal on an extracted ref, keeping code, details and retry" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::Error.new("fork", code: "fork_pull_request", details: {"reason" => "x"}, retry_with: {"a" => 1}))
+
+      error = refusal(argument: "fix #{pr}")
+
+      expect(error.code).to eq("fork_pull_request")
+      expect(error.message).to eq("fork #{hint}")
+      expect(error.details).to eq({"reason" => "x"})
+      expect(error.retry).to eq({"a" => 1})
+    end
+
+    it "adds it to a gh failure from WorkflowStart" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::Error.new("gh failed", code: "ticket_source_unavailable"))
+
+      error = refusal(argument: "fix #{pr}")
+
+      expect(error.code).to eq("ticket_source_unavailable")
+      expect(error.message).to eq("gh failed #{hint}")
+    end
+
+    context "with a branch that differs only in case" do
+      let(:names) { %w[Pr-12 feature main] }
+      let(:local_names) { names }
+
+      it "adds it to a case clash on an extracted ref" do
+        error = refusal(argument: "see #{pr}")
+
+        expect(error.code).to eq("unknown_ref")
+        expect(error.message).to end_with(hint)
+      end
+    end
+
+    it "adds it to a protected branch refusal on an extracted ref" do
+      allow(git).to receive(:default_branch_name).and_return("pr-12")
+
+      expect(refusal(argument: "see #{pr}").message).to end_with(hint)
+    end
+
+    context "with a reused checkout holding another branch" do
+      include_context "main checkout"
+
+      it "adds it to the branch_exists refusal from refuse_other_branch!" do
+        allow(git).to receive(:worktree_exists?) { |checked| checked == "/src/app/.worktrees/pr-12" }
+        allow(git).to receive(:worktree_branch).with("/src/app/.worktrees/pr-12").and_return("other")
+
+        error = refusal(argument: "see #{pr}")
+
+        expect(error.code).to eq("branch_exists")
+        expect(error.message).to end_with(hint)
+      end
+    end
+
+    it "leaves the same refusals on a lone ref as they were" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::Error.new("fork", code: "fork_pull_request"))
+
+      expect(refusal(argument: pr).message).to eq("fork")
+    end
+
+    it "adds nothing when the refusal names its own next command" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::Error.new("exists", code: "checkout_has_run", details: {"next" => "workspace workflow cancel"}))
+
+      expect(refusal(argument: "fix #{pr}").message).to eq("exists")
+    end
+
+    it "keeps a UsageError a UsageError" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::UsageError.new("bad", code: "usage"))
+
+      error = refusal(argument: "fix #{pr}")
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.message).to end_with(hint)
+    end
+
+    it "keeps a ConfigParseError's class and attributes" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::ConfigParseError.new("/c.yml", "bad yaml"))
+
+      error = refusal(argument: "fix #{pr}")
+
+      expect(error).to be_a(Workspace::ConfigParseError)
+      expect([error.path, error.reason]).to eq(["/c.yml", "bad yaml"])
+      expect(error.message).to eq("Cannot parse /c.yml: bad yaml. #{hint}")
+    end
+
+    it "keeps an UnsavedWorkError's class and attributes" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::UnsavedWorkError.new("dirty", unsaved: {"files" => 1}))
+
+      error = refusal(argument: "fix #{pr}")
+
+      expect(error).to be_a(Workspace::UnsavedWorkError)
+      expect(error.unsaved).to eq({"files" => 1})
+      expect(error.message).to eq("dirty #{hint}")
+    end
+  end
+
   describe "warnings" do
     let(:yaml) { "steps:\n  plan:\n    prompt: Plan.\n" }
 

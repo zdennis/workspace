@@ -8891,13 +8891,19 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["go", "try the thing", "--workflow", "investigate", "--input", "task=x", "--input", "spec=y", "--dry-run"])
 
-      expect(go_command.calls).to eq([{argument: "try the thing", workflow: "investigate", inputs: {"task" => "x", "spec" => "y"}, headless: false, dry_run: true, caller_pane: "%9", here: false, base: nil}])
+      expect(go_command.calls).to eq([{argument: "try the thing", workflow: "investigate", inputs: {"task" => "x", "spec" => "y"}, headless: false, dry_run: true, caller_pane: "%9", here: false, base: nil, text: false}])
     end
 
     it "passes --here to go" do
       cli.run(["go", "try the thing", "--here"])
 
       expect(go_command.calls.last).to include(argument: "try the thing", here: true)
+    end
+
+    it "passes --text to go" do
+      cli.run(["go", "fix PROJ-1", "--text"])
+
+      expect(go_command.calls.last).to include(argument: "fix PROJ-1", text: true)
     end
 
     it "passes --base to go" do

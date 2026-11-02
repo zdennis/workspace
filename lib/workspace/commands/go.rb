@@ -71,13 +71,17 @@ module Workspace
       # @param caller_pane [String, nil] the pane the command runs in (`$TMUX_PANE`)
       # @param here [Boolean] run free text in this checkout (`--here`) instead of a new workspace
       # @param base [String, nil] the ref a new branch starts from (`--base`); refused when go runs in place
+      # @param text [Boolean] read the argument as plain text (`--text`): no identifier is taken out of it
       # @return [Hash{String=>Object}] the row of `workflow run` or `workflow start` (of `plan task add` on the task path, route `task`), plus "decision" (+workflow+, +source+,
       #   +kind+, +route+, +reason+, +extracted+: the token read out of the text, else nil) and "warnings"
-      # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch
+      # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch, or `--text` with no argument or one holding no whitespace
       # @raise [Workspace::Error] outside a git repository; code `go_here_unavailable` (`--here` where this checkout can't run in place), `unknown_ref`, `unknown_base`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
-      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil)
+      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil, text: false)
         argument = argument&.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
         raise Workspace::UsageError, "go was given an empty argument. Name a ref, or quote free text." if argument == ""
+        if text && (argument.nil? || !argument.match?(/[[:space:]]/))
+          raise Workspace::UsageError, argument ? "--text needs a quoted sentence with a space in it (got #{argument.inspect}). Quote the sentence, or drop --text." : "--text needs a quoted sentence; none was given."
+        end
 
         root = @git.root
         project = root && @start_ref.project(root)
@@ -91,10 +95,12 @@ module Workspace
             code: "go_here_unavailable", details: {"path" => root})
         end
 
-        reading = classify(argument, root, workflow, here)
+        reading = classify(argument, root, workflow, here || text)
         if reading.ref
-          refuse_protected!(reading.ref.branch, project)
-          refuse_other_branch!(reading.ref.branch, project)
+          naming(reading.extracted) do
+            refuse_protected!(reading.ref.branch, project)
+            refuse_other_branch!(reading.ref.branch, project)
+          end
         end
 
         same_branch = reading.ref && checkout && same_name?(resolved(reading.ref.branch, project), resolved(@git.worktree_branch(root), project))
@@ -122,7 +128,7 @@ module Workspace
         shared[:base] = base if base
         shared[:prompt] = reading.text if reading.ref && reading.text
         row = if reading.ref
-          @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? checkout : nil, **shared)
+          naming(reading.extracted) { @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? checkout : nil, **shared) }
         elsif in_place
           run_here(reading.text, definition, checkout, project_workspace, **shared)
         else
@@ -169,8 +175,23 @@ module Workspace
         nil
       end
 
+      # A refusal of a ref read out of a sentence names the way out. The refusal is a copy of the
+      # same error (class, code, details, retry and any attributes kept) with the sentence added to its
+      # message. One that already names a next command is left alone: the workspace exists, and --text
+      # would make a second. A nil token (a ref the person typed) changes nothing.
+      def naming(token)
+        yield
+      rescue Workspace::Error => e
+        raise if token.nil? || (e.details.is_a?(Hash) && e.details["next"])
+
+        message = "#{e.message} The text contains #{token}, which go read as a ref. Pass --text to treat the whole text as plain text."
+        copy = e.dup
+        copy.define_singleton_method(:to_s) { message }
+        raise copy
+      end
+
       # The whitespace test comes first, so a lone word is never read as a sentence. A sentence
-      # is read for an identifier unless `--here` says it is the task as written.
+      # is read for an identifier unless `--here` or `--text` says it is the task as written.
       def classify(argument, root, workflow, here)
         return Reading.new(kind: "prompt") if argument.nil?
         return read_text(argument, root, workflow) if argument.match?(/[[:space:]]/) && !here
@@ -233,7 +254,7 @@ module Workspace
             return Reading.new(kind: "prompt", text: text, warnings: warnings)
           end
         end
-        check_name!(ref, root, workflow)
+        naming(hit.token) { check_name!(ref, root, workflow) }
         Reading.new(kind: ref.kind, text: text, ref: ref, extracted: hit.token, warnings: warnings)
       end
 
