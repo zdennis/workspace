@@ -81,7 +81,7 @@ A refusal changes nothing. The full list with `details` is in [JSON output](READ
 
 A journal file is written before the first git step. If the two git steps fail they are undone in reverse and the command ends in `rename_failed`: nothing changed, no journal left. A signal (INT, TERM, HUP) waits for the step under way, then stops the same way.
 
-A failure after the git steps keeps the journal and ends in `rename_incomplete`. The message prints the command that finishes it; run it again, from anywhere. Each step judges what is done by the state it finds, so a re-run skips finished work. A different `NEW` while a journal stands is refused (`rename_in_progress`). If no tmuxinator config is left under either name, a re-run can't help; `details.fix` gives the `rm` of the journal, and `workspace start` remakes the workspace.
+A failure after the git steps keeps the journal and ends in `rename_incomplete`. The message prints the command that finishes it; run it again, from anywhere. Each step judges what is done by the state it finds, so a re-run skips finished work. The journal is deleted last but for the `workspace_renamed` event, which follows it: a journal that can't be deleted keeps the rename unfinished with no event written, and the re-run writes it once. A different `NEW` while a journal stands is refused (`rename_in_progress`). If no tmuxinator config is left under either name, a re-run can't help; `details.fix` gives the `rm` of the journal, and `workspace start` remakes the workspace.
 
 ## The agent's conversation
 

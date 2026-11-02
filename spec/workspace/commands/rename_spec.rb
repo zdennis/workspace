@@ -645,6 +645,22 @@ RSpec.describe Workspace::Commands::Rename do
       expect(File.read(File.join(moved, "my-notes", "note.md"))).to eq("mine")
     end
 
+    it "repoints a notes.dir that is a link in the checkout to a directory outside it" do
+      outside = File.join(Dir.mktmpdir("rename-notes-outside"), "vault")
+      FileUtils.mkdir_p(outside)
+      File.write(File.join(outside, "note.md"), "mine")
+      inside = File.join(linked, "my-notes")
+      File.symlink(outside, inside)
+      project_settings.save(old, {"notes" => {"dir" => inside}})
+
+      rename
+
+      expect(stored_notes(new)).to eq(File.join(moved, "my-notes"))
+      expect(File.read(File.join(moved, "my-notes", "note.md"))).to eq("mine")
+    ensure
+      FileUtils.rm_rf(File.dirname(outside)) if outside
+    end
+
     it "rewrites a notes.dir that goes with the checkout on the first run too" do
       inside = File.join(linked, "my-notes")
       FileUtils.mkdir_p(inside)
@@ -707,25 +723,106 @@ RSpec.describe Workspace::Commands::Rename do
     end
   end
 
-  describe Workspace::RenameJournal do
-    it "reads a journal by the new name, and leaves out one it can't read" do
-      FileUtils.mkdir_p(config.rename_journal_dir)
-      File.write(config.rename_journal_path("other"), "{")
-      File.write(journal_path, JSON.generate("workspace" => old, "new_workspace" => new))
+  describe "the journal" do
+    it "is rename_failed with nothing changed when it can not be written on a first run" do
+      allow(journal).to receive(:write).and_raise(Errno::ENOSPC)
 
-      expect(journal.read(new)).to include("workspace" => old)
-      expect(journal.read("nobody")).to be_nil
-      expect(journal.read("../x")).to be_nil
+      error = refused("rename_failed")
+
+      expect(error.details).to include("step" => "journal", "rolled_back" => true)
+      expect(File.exist?(journal_path)).to be(false)
+      expect(branch_of(linked)).to eq("feat/a")
+      expect(Dir.exist?(moved)).to be(false)
     end
 
-    it "says a workspace's own unreadable journal is a rename in progress" do
-      FileUtils.mkdir_p(config.rename_journal_dir)
-      File.write(journal_path, "{")
+    it "keeps the journal when it can not be deleted after the git steps were undone; the re-run finishes" do
+      allow(git).to receive(:rename_branch).and_return([false, "no"])
+      allow(journal).to receive(:delete).and_raise(Errno::EACCES)
 
-      expect { journal.read(old) }.to raise_error(Workspace::Error) { |e|
-        expect(e.code).to eq("rename_in_progress")
-        expect(e.details).to include("path" => journal_path, "rerun" => false, "fix" => "rm #{journal_path}")
-      }
+      error = refused("rename_incomplete")
+
+      expect(error.details["failed"]).to eq(["journal"])
+      expect(File.exist?(journal_path)).to be(true)
+      expect(branch_of(linked)).to eq("feat/a")
+      expect(Dir.exist?(moved)).to be(false)
+      allow(git).to receive(:rename_branch).and_call_original
+      allow(journal).to receive(:delete).and_call_original
+
+      expect(rename["resume"]).to be(true)
+      expect_finished
+    end
+
+    it "writes workspace_renamed once when the delete fails at the end and the re-run finishes" do
+      fail_once(journal, :delete)
+
+      error = refused("rename_incomplete")
+
+      expect(error.details["failed"]).to eq(["journal"])
+      expect(File.exist?(journal_path)).to be(true)
+      expect(events).to eq([])
+
+      rename
+
+      expect(File.exist?(journal_path)).to be(false)
+      expect(events.size).to eq(1)
+    end
+
+    it "skips the worktree move when the directory moved and the branch did not, and renames the branch" do
+      allow(git).to receive(:rename_branch).and_return([false, "no"])
+      calls = 0
+      allow(git).to receive(:move_worktree).and_wrap_original do |original, *args|
+        ((calls += 1) == 2) ? [false, "busy"] : original.call(*args)
+      end
+      refused("rename_incomplete")
+      expect(Dir.exist?(linked)).to be(false)
+      expect(branch_of(moved)).to eq("feat/a")
+      allow(git).to receive(:rename_branch).and_call_original
+      expect(git).not_to receive(:move_worktree)
+
+      rename
+
+      expect_finished
+    end
+  end
+
+  describe "notes.dir after the move" do
+    let(:notes_move) { Workspace::RenamePlan::NotesMove.new(action: "move", from: notes_a, to: notes_b) }
+    let(:plan) { instance_double(Workspace::RenamePlan::Plan, notes: notes_move, workspace: old, new_workspace: new) }
+
+    [
+      ["notes is not a Hash", "oops"],
+      ["notes.dir is not a String", {"dir" => 5}],
+      ["notes.dir names neither end", {"dir" => "/somewhere/else"}]
+    ].each do |label, notes|
+      it "leaves the settings alone when #{label}" do
+        project_settings.save(old, {"notes" => notes})
+        expect(project_settings).not_to receive(:save)
+
+        command.send(:write_notes_dir, plan)
+
+        expect(project_settings.load(old)["notes"]).to eq(notes)
+      end
+    end
+
+    it "pins the new directory when notes.dir is spelled through a symlinked parent" do
+      File.symlink(repo, File.join(home, "link"))
+      inside = File.join(home, "link", ".worktrees", "feat-a", "my-notes")
+      FileUtils.mkdir_p(inside)
+      project_settings.save(old, {"notes" => {"dir" => inside}})
+
+      rename
+
+      expect(stored_notes(new)).to eq(File.join(moved, "my-notes"))
+    end
+
+    it "moves a dangling symlink as the notes directory" do
+      FileUtils.rm_rf(notes_a)
+      File.symlink(File.join(home, "nowhere"), notes_a)
+
+      command.send(:move_notes, plan)
+
+      expect(File.symlink?(notes_a)).to be(false)
+      expect(File.symlink?(notes_b)).to be(true)
     end
   end
 end

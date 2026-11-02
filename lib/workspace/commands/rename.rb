@@ -316,15 +316,15 @@ module Workspace
             details: {"workspace" => plan.workspace, "new_workspace" => plan.new_workspace, "new_branch" => plan.new_branch,
                       "failed" => ["tmuxinator_config"], "problems" => ["#{path} is missing"], "rerun" => false, "fix" => "rm #{journal}"}.merge(signals.report))
         end
+        attempt(plan, "journal", -> { @journal.delete(plan.workspace) }, signals)
         @event_log&.record(type: "workspace_renamed", project: plan.new_workspace,
           data: {"workspace" => plan.new_workspace, "from" => plan.workspace, "branch" => plan.new_branch, "from_branch" => plan.branch,
                  "session" => plan.new_session, "from_session" => plan.session, "renamed" => progress[:renamed], "failed" => []})
-        attempt(plan, "journal", -> { @journal.delete(plan.workspace) }, signals)
       end
 
       def report(plan, warnings, dry_run:)
         plan.to_h.merge("warnings" => plan.warnings + warnings, "dry_run" => dry_run,
-          "next" => dry_run ? nil : "Run `workspace restore #{plan.new_workspace}` to resume the conversation; a plain `workspace launch #{plan.new_workspace}` starts a new one.")
+          "next" => dry_run ? nil : "Run `workspace restore #{Shellwords.escape(plan.new_workspace)}` to resume the conversation; a plain `workspace launch #{Shellwords.escape(plan.new_workspace)}` starts a new one.")
       end
 
       def rerun(plan)

@@ -486,6 +486,18 @@ RSpec.describe Workspace::RenamePlan do
       expect(refusal("workspace_running").details).to include("session" => "api-wt-feat-a", "reason" => "agent", "fix" => "workspace stop #{workspace}")
     end
 
+    it "escapes a workspace name with a shell metacharacter in the commands it gives" do
+      odd = "api.worktree-feat-a;x"
+      roots[odd] = linked
+      allow(tmux).to receive(:session_exists?).and_return(true)
+
+      expect { plan.call(workspace: odd, new: "feat/b") }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("workspace_running")
+        expect(e.details["fix"]).to eq("workspace stop #{Shellwords.escape(odd)}")
+        expect(e.message).to include("`workspace stop #{Shellwords.escape(odd)}`")
+      end
+    end
+
     it "names the unlock command for a locked worktree" do
       sh("worktree", "lock", linked)
 
@@ -497,6 +509,16 @@ RSpec.describe Workspace::RenamePlan do
 
       it "names the dev down command" do
         expect(refusal("dev_lock_held").details).to include("fix" => "workspace dev down #{workspace}")
+      end
+
+      it "escapes the workspace name" do
+        odd = "api.worktree-feat-a;x"
+        roots[odd] = linked
+
+        expect { plan.call(workspace: odd, new: "feat/b") }.to raise_error(Workspace::Error) do |e|
+          expect(e.code).to eq("dev_lock_held")
+          expect(e.details["fix"]).to eq("workspace dev down #{Shellwords.escape(odd)}")
+        end
       end
     end
 

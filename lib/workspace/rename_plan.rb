@@ -253,7 +253,7 @@ module Workspace
         unlock = "git worktree unlock #{Shellwords.escape(checkout)}"
         raise refusal("rename_locked_worktree", "The worktree at #{checkout} is locked (git worktree lock), and git won't move it. Run `#{unlock}` first.", "path" => checkout, "fix" => unlock)
       end
-      stop = "workspace stop #{workspace}"
+      stop = "workspace stop #{Shellwords.escape(workspace)}"
       if @tmux.session_exists?(session)
         raise refusal("workspace_running", "The tmux session of '#{workspace}' is running. Run `#{stop}` first.", "workspace" => workspace, "session" => session, "reason" => "session", "fix" => stop)
       end
@@ -265,7 +265,7 @@ module Workspace
         raise refusal("run_active", "Workflow run #{run["id"]} is still going on this checkout; its files hold the path. Let it finish or cancel it first.", "run_id" => run["id"], "path" => checkout)
       end
       if @dev_lock.call(checkout)
-        down = "workspace dev down #{workspace}"
+        down = "workspace dev down #{Shellwords.escape(workspace)}"
         raise refusal("dev_lock_held", "This checkout holds the devenv lock. Run `#{down}` first.", "path" => checkout, "workspace" => workspace, "fix" => down)
       end
     end
@@ -273,7 +273,7 @@ module Workspace
     # Past the config step the workspace answers to the new name, and can be launched under it.
     def check_new_stopped(new_workspace, new_session)
       return unless @config.agent_running?(new_workspace)
-      stop = "workspace stop #{new_workspace}"
+      stop = "workspace stop #{Shellwords.escape(new_workspace)}"
       raise refusal("workspace_running", "The agent daemon of '#{new_workspace}' is running. Run `#{stop}` first.", "workspace" => new_workspace, "session" => new_session, "reason" => "agent", "fix" => stop)
     end
 
@@ -353,6 +353,11 @@ module Workspace
       current = @notes.info(name: workspace, root: checkout)["dir"]
       return stays(current, "unresolved") unless current
       rule = @notes.location_rule(name: workspace)
+      # Judged by the spelling first: a link inside the checkout moves with it, wherever it points.
+      root = File.expand_path(checkout)
+      if current.start_with?("#{root}/")
+        return NotesMove.new(action: "with_checkout", from: current, to: File.join(new_path, current.delete_prefix("#{root}/")))
+      end
       real_root = real(checkout)
       if real(current).start_with?("#{real_root}/")
         return NotesMove.new(action: "with_checkout", from: current, to: File.join(new_path, real(current).delete_prefix("#{real_root}/")))
