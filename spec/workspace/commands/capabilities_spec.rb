@@ -164,6 +164,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("ticket" => 2)
     end
 
+    it "reports go 3 once go reads an identifier out of free text" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("go" => 3)
+    end
+
     it "reports goal 2 once goal show and goal list exist" do
       command.call(json: true)
 

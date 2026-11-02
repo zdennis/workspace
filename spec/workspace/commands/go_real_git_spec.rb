@@ -63,7 +63,7 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
     allow(git).to receive(:root).and_return(from)
     command = described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog,
       start_ref: Workspace::StartRef.new(git: git), git: git, project_detector: Workspace::ProjectDetector.new(state: state, project_config: project_config),
-      project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), output: StringIO.new, working_dir: from)
+      project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), ticket_source: instance_double(Workspace::TicketSource), output: StringIO.new, working_dir: from)
     command.call(**args)
   end
 
@@ -102,6 +102,18 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
       go(@worktree, argument: "try the thing", base: "HEAD")
 
       expect(workflow_start).to have_received(:call).with(hash_including(base: "HEAD"))
+    end
+  end
+
+  describe "a sentence with a pull request URL" do
+    it "is read as that pull request through real Git and StartRef" do
+      init
+      allow(workflow_start).to receive(:tracks_repository?).and_return(true)
+
+      row = go(@repo, argument: "please fix https://github.com/o/r/pull/12 now")
+
+      expect(row["decision"]).to include("kind" => "github_pr", "workflow" => "pr-feedback", "extracted" => "https://github.com/o/r/pull/12")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "https://github.com/o/r/pull/12", prompt: "please fix https://github.com/o/r/pull/12 now"))
     end
   end
 

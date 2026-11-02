@@ -45,7 +45,7 @@ module Workspace
         @output.puts "The agent takes it when it next reads the plan." unless dry_run
         @output.puts "Warning: #{PAUSED_WARNING}" if paused
         reason = "run #{run["id"]} is going on this checkout, so the text is a task in its plan"
-        decision = {"workflow" => run["workflow"], "source" => "run", "kind" => "prompt", "route" => "task", "reason" => reason}
+        decision = {"workflow" => run["workflow"], "source" => "run", "kind" => "prompt", "route" => "task", "reason" => reason, "extracted" => nil}
         row.merge("workspace" => checkout.workspace, "run_id" => run["id"], "decision" => decision, "warnings" => paused ? [PAUSED_WARNING] : [])
       end
 

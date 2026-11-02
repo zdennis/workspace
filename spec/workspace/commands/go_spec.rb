@@ -29,6 +29,7 @@ RSpec.describe Workspace::Commands::Go do
   let(:project_detector) { instance_double(Workspace::ProjectDetector, detect: detected) }
   let(:project_config) { instance_double(Workspace::ProjectConfig, project_root_for: configured_root) }
   let(:output) { StringIO.new }
+  let(:ticket_source) { instance_double(Workspace::TicketSource, fetch: {"title" => "T"}) }
   let(:running) { nil }
   let(:go_task) { instance_double(Workspace::Commands::GoTask, run_for: running) }
   let(:start_row) { {"workspace" => "app.worktree-x", "outcome" => "started", "warnings" => ["from start"]} }
@@ -36,7 +37,7 @@ RSpec.describe Workspace::Commands::Go do
 
   subject(:command) do
     described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog, start_ref: start_ref,
-      git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, output: output, working_dir: root || "/nowhere")
+      git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, output: output, working_dir: root || "/nowhere")
   end
 
   before do
@@ -57,6 +58,7 @@ RSpec.describe Workspace::Commands::Go do
     allow(workflow_defaults).to receive(:lookup).and_return(stored_default)
     allow(File).to receive(:realpath).and_call_original
     allow(File).to receive(:realpath).with(%r{\A/(src|home)}) { |path| path }
+    allow(workflow_start).to receive(:tracks_repository?) { |_root, repo| repo == "o/r" }
     allow(workflow_start).to receive(:call).and_return(start_row)
     allow(workflow).to receive(:run).and_return(run_row)
   end
@@ -377,12 +379,12 @@ RSpec.describe Workspace::Commands::Go do
   end
 
   describe "classifying" do
-    it "reads a URL inside a sentence as free text" do
-      expect(start_ref).not_to receive(:call)
-
+    it "reads a URL inside a sentence as that ref, with the sentence as the prompt" do
       row = command.call(argument: "see https://github.com/o/r/pull/1 please")
 
-      expect(row["decision"]["kind"]).to eq("prompt")
+      expect(row["decision"]).to include("kind" => "github_pr", "workflow" => "pr-feedback", "extracted" => "https://github.com/o/r/pull/1")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "https://github.com/o/r/pull/1", prompt: "see https://github.com/o/r/pull/1 please"))
+      expect(output.string).to include("makes or reuses the worktree workspace for pr-1 (from https://github.com/o/r/pull/1 in the text)")
     end
 
     it "strips a ref before reading it" do
@@ -392,14 +394,16 @@ RSpec.describe Workspace::Commands::Go do
       expect(workflow_start).to have_received(:call).with(hash_including(ref: "#12"))
     end
 
-    it "reads a URL after a no-break space as free text" do
-      expect(start_ref).not_to receive(:call)
-
-      expect(command.call(argument: "see https://github.com/o/r/pull/1")["decision"]["kind"]).to eq("prompt")
+    it "reads a URL after a no-break space as that ref" do
+      expect(command.call(argument: "see https://github.com/o/r/pull/1")["decision"]["kind"]).to eq("github_pr")
     end
 
     it "reads an ideographic space as free text" do
       expect(command.call(argument: "fix　bug")["decision"]["kind"]).to eq("prompt")
+    end
+
+    it "reads a URL after an ideographic space as that ref" do
+      expect(command.call(argument: "see　https://github.com/o/r/issues/4")["decision"]["kind"]).to eq("github_issue")
     end
 
     context "with a pull request or issue whose branch differs only in case from a real one" do
@@ -1014,6 +1018,171 @@ RSpec.describe Workspace::Commands::Go do
     end
   end
 
+  describe "reading an identifier out of free text" do
+    let(:pr) { "https://github.com/o/r/pull/12" }
+
+    def prompt_row(argument, **args)
+      command.call(argument: argument, **args)
+    end
+
+    it "reads a JIRA key whose ticket reads, and passes the sentence as the prompt" do
+      row = prompt_row("fix PROJ-1 login")
+
+      expect(ticket_source).to have_received(:fetch).with(having_attributes(kind: "jira", key: "PROJ-1"), chdir: root)
+      expect(row["decision"]).to include("kind" => "jira", "extracted" => "PROJ-1")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "PROJ-1", prompt: "fix PROJ-1 login"))
+    end
+
+    it "reads an Atlassian link with no ticket read before WorkflowStart" do
+      row = prompt_row("fix https://acme.atlassian.net/browse/proj-9 now")
+
+      expect(ticket_source).not_to have_received(:fetch)
+      expect(row["decision"]).to include("kind" => "jira", "extracted" => "PROJ-9")
+    end
+
+    [
+      ["ticket_not_found", nil, "no such ticket"],
+      ["ticket_source_unavailable", "missing", "jira is missing"],
+      ["ticket_source_unavailable", "timeout", "jira timed out"],
+      ["ticket_source_unavailable", "error", "jira failed"]
+    ].each do |code, reason, message|
+      it "keeps the text free on #{code} #{reason}, with the error's message in a warning" do
+        allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new(message, code: code, details: {"reason" => reason}))
+
+        row = prompt_row("fix PROJ-1 login")
+
+        expect(row["decision"]).to include("kind" => "prompt", "extracted" => nil)
+        expect(row["warnings"].join).to include(message)
+        expect(output.string).to include("Warning: PROJ-1 in the text was not read as a ticket")
+        expect(workflow_start).to have_received(:call).with(hash_including(prompt: "fix PROJ-1 login"))
+        expect(workflow_start).not_to have_received(:call).with(hash_including(:ref))
+      end
+    end
+
+    it "escapes control characters from the ticket tool's message" do
+      allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("bad\e[31m", code: "ticket_not_found"))
+
+      row = prompt_row("fix PROJ-1 login")
+
+      expect(row["warnings"].join).to include("bad\\e[31m")
+      expect(output.string).not_to include("\e[31m")
+    end
+
+    it "does not catch other errors from the ticket read" do
+      allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("boom", code: "other"))
+
+      expect(refusal(argument: "fix PROJ-1 login").code).to eq("other")
+    end
+
+    it "drops a link for a repository the project does not track, with a warning" do
+      row = prompt_row("see https://github.com/x/y/pull/3 here")
+
+      expect(row["decision"]).to include("kind" => "prompt", "extracted" => nil)
+      expect(row["warnings"].join).to include("https://github.com/x/y/pull/3")
+    end
+
+    it "reads the one key left after a foreign link is dropped" do
+      row = prompt_row("PROJ-1 see https://github.com/x/y/pull/3")
+
+      expect(row["decision"]).to include("kind" => "jira", "extracted" => "PROJ-1")
+      expect(row["warnings"].join).to include("x/y/pull/3")
+    end
+
+    it "takes the link over a bare key without reading the ticket" do
+      row = prompt_row("PROJ-1: fix #{pr}")
+
+      expect(ticket_source).not_to have_received(:fetch)
+      expect(row["decision"]).to include("kind" => "github_pr", "extracted" => pr)
+    end
+
+    it "keeps two links as free text, naming them and the way out" do
+      row = prompt_row("#{pr} and https://github.com/o/r/issues/5")
+
+      expect(row["decision"]["kind"]).to eq("prompt")
+      expect(row["warnings"].join).to include(pr, "issues/5", "workspace go ID --input task=TEXT")
+    end
+
+    it "keeps two bare keys as free text" do
+      row = prompt_row("PROJ-1 and PROJ-2 clash")
+
+      expect(row["decision"]["kind"]).to eq("prompt")
+      expect(row["warnings"].join).to include("PROJ-1 and PROJ-2")
+      expect(ticket_source).not_to have_received(:fetch)
+    end
+
+    it "counts one identifier repeated once" do
+      expect(prompt_row("#{pr} again #{pr}")["decision"]["extracted"]).to eq(pr)
+    end
+
+    it "extracts nothing with --here, and never gives the task path a ref" do
+      allow(go_task).to receive(:run_for).and_return({"id" => "wr_1"})
+      allow(go_task).to receive(:add).and_return({"outcome" => "added"})
+
+      prompt_row("fix #{pr}", here: true)
+
+      expect(go_task).to have_received(:add).with({"id" => "wr_1"}, "fix #{pr}", anything, anything)
+      expect(workflow_start).not_to have_received(:call)
+    end
+
+    it "reads no ticket and starts nothing for the sentence under --here with no run going" do
+      row = prompt_row("fix PROJ-1", here: true)
+
+      expect(ticket_source).not_to have_received(:fetch)
+      expect(row["decision"]).to include("kind" => "prompt", "route" => "run", "extracted" => nil)
+    end
+
+    context "when the extracted branch is this checkout's" do
+      let(:current_branch) { "pr-12" }
+
+      it "runs in place through WorkflowStart with the text" do
+        row = prompt_row("fix #{pr}")
+
+        expect(row["decision"]).to include("route" => "run", "kind" => "github_pr")
+        expect(workflow_start).to have_received(:call).with(hash_including(ref: pr, prompt: "fix #{pr}", here: an_instance_of(Workspace::Commands::WorkflowStart::Here)))
+        expect(output.string).to include("runs in this worktree (from #{pr} in the text)")
+      end
+    end
+
+    it "gets a sentence of only punctuation and a URL past the slug check" do
+      expect(prompt_row("!! #{pr} ??")["decision"]["kind"]).to eq("github_pr")
+    end
+
+    it "keeps a sentence with no identifier as before" do
+      expect(prompt_row("fix the bug")["decision"]).to include("kind" => "prompt", "extracted" => nil)
+    end
+
+    it "still refuses a protected branch an identifier names" do
+      allow(git).to receive(:default_branch_name).and_return("pr-12")
+
+      expect(refusal(argument: "see #{pr}").code).to eq("branch_not_allowed")
+      expect_nothing_ran
+    end
+
+    context "with a branch that differs only in case" do
+      let(:names) { %w[Pr-12 feature main] }
+      let(:local_names) { names }
+
+      it "still refuses the case clash" do
+        expect(refusal(argument: "see #{pr}").code).to eq("unknown_ref")
+      end
+    end
+
+    it "makes the same row under --dry-run" do
+      real = prompt_row("fix #{pr}")
+      dry = prompt_row("fix #{pr}", dry_run: true)
+
+      expect(dry["decision"]).to eq(real["decision"])
+      expect(workflow_start).to have_received(:call).with(hash_including(dry_run: true, ref: pr))
+    end
+
+    it "leaves out the new-branch sentence when a ref supplied the branch" do
+      allow(workflow).to receive(:run)
+      row = prompt_row("fix #{pr}", inputs: {"task" => "mine"})
+
+      expect(row["warnings"]).to include("The text is not the task: --input task was given.")
+    end
+  end
+
   describe "warnings" do
     let(:yaml) { "steps:\n  plan:\n    prompt: Plan.\n" }
 
@@ -1066,7 +1235,7 @@ RSpec.describe Workspace::Commands::Go do
       dry = command.call(argument: "other", dry_run: true)
 
       expect(dry["decision"]).to eq(real["decision"])
-      expect(dry["decision"]).to eq("workflow" => "rpiv", "source" => "built_in", "kind" => "branch", "route" => "start", "reason" => "built in for branch")
+      expect(dry["decision"]).to eq("workflow" => "rpiv", "source" => "built_in", "kind" => "branch", "route" => "start", "reason" => "built in for branch", "extracted" => nil)
     end
   end
 end
