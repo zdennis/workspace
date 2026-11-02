@@ -122,4 +122,127 @@ RSpec.describe Workspace::WorkspaceStoreRename do
     expect(listing(config.tmuxinator_dir)).to eq(["workspace.proj.worktree-other.yml"])
     expect(File.read(config.agent_log_path(new))).to eq("old log\n")
   end
+
+  it "says nothing about a foreign marker when no new root is given, as the lowercase migration runs" do
+    write(File.join(checkout, ".workspace-project"), "elsewhere")
+
+    expect(rename.call.warnings).to eq([])
+  end
+
+  it "says nothing about a marker that already names the new name" do
+    write(File.join(checkout, ".workspace-project"), new)
+
+    expect(rename.call.warnings).to eq([])
+  end
+
+  it "words the held-back warning with a given retry hint, and keeps the default text" do
+    write(config.agent_log_path(new), "taken\n")
+    expect(rename.call.warnings.last).to end_with("until the steps above succeed; the next agentd start tries again (a name already taken has to be cleared by hand)")
+
+    hinted = described_class.new(config: config, project_config: project_config, tmux: tmux, state: state,
+      project_catalog_factory: -> { Workspace::ProjectCatalog.new(project_config: project_config, git: git) },
+      old: old, new: new, session: "proj-wt-feat", new_session: "proj-wt-other", retry_hint: "run `workspace rename` again")
+    expect(hinted.call.warnings.last).to end_with("until the steps above succeed; run `workspace rename` again")
+  end
+
+  describe "a config generated from the real templates" do
+    let(:templates) { File.expand_path("../../lib/templates", __dir__) }
+    let(:new_root) { File.join(home, "src", "proj", ".worktrees", "other").tap { |dir| FileUtils.mkdir_p(dir) } }
+
+    before do
+      FileUtils.mkdir_p(config.tmuxinator_dir)
+      FileUtils.cp(File.join(templates, "workspace.project-template.yml"), config.project_template_path)
+      FileUtils.cp(File.join(templates, "workspace.project-worktree-template.yml"), config.worktree_template_path)
+      FileUtils.rm_f(config.config_path_for(old))
+    end
+
+    def store(old:, new:, session:, new_session:, **options)
+      described_class.new(config: config, project_config: project_config, tmux: tmux, state: state,
+        project_catalog_factory: -> { Workspace::ProjectCatalog.new(project_config: project_config, git: git) },
+        old: old, new: new, session: session, new_session: new_session, **options)
+    end
+
+    it "renames a worktree config everywhere, root and branch included" do
+      name = project_config.create_worktree("proj", "feat", checkout, "feat-branch", quiet: true)
+      expect(name).to eq(old)
+      expect(File.read(config.config_path_for(old))).to include("-t '=proj-wt-feat:'")
+
+      outcome = store(old: old, new: "proj.worktree-feat-2", session: "proj-wt-feat", new_session: "proj-wt-feat-2",
+        root: new_root, branch: "feat-branch", new_branch: "feat-2-branch",
+        display: "proj feat", new_display: "proj feat 2").call
+
+      expect(outcome.failed).to eq([])
+      text = File.read(config.config_path_for("proj.worktree-feat-2"))
+      expect(text).to include("name: proj-wt-feat-2\n", "root: #{new_root}\n", "-t '=proj-wt-feat-2:' @workspace proj.worktree-feat-2 ",
+        "workspace-proj-wt-feat-2:", "2;workspace-proj-wt-feat-2\\a", 'ascii-banner "proj feat 2"', "Worktree — feat-2-branch (proj)")
+      expect(text.lines.first).to eq("# #{config.config_path_for("proj.worktree-feat-2")}\n")
+      expect(text).not_to match(/proj-wt-feat(?!-2)/)
+      expect(text).not_to include("proj.worktree-feat ", "#{checkout}\n", "feat-branch (")
+    end
+
+    it "renames a project config everywhere" do
+      project_config.create("proj", checkout)
+      expect(File.read(config.config_path_for("proj"))).to include("-t '=proj:'")
+
+      outcome = store(old: "proj", new: "other", session: "proj", new_session: "other", root: new_root,
+        display: "proj", new_display: "other").call
+
+      expect(outcome.failed).to eq([])
+      text = File.read(config.config_path_for("other"))
+      expect(text).to include("name: other\n", "root: #{new_root}\n", "-t '=other:' @workspace other ", "workspace-other:",
+        "2;workspace-other\\a", "-t other:0.0", 'ascii-banner "other"', "Ready to work on other'")
+      expect(text.sub("root: #{new_root}", "")).not_to match(/\bproj\b/)
+    end
+
+    it "keeps root and the banner when none are given" do
+      project_config.create_worktree("proj", "feat", checkout, "feat-branch", quiet: true)
+
+      store(old: old, new: new, session: "proj-wt-feat", new_session: "proj-wt-other").call
+
+      text = File.read(config.config_path_for(new))
+      expect(text).to include("root: #{checkout}\n", 'ascii-banner "proj feat"', "Worktree — feat-branch (proj)")
+      expect(text).not_to include("proj-wt-feat")
+    end
+
+    it "leaves the overlapping feat-2 alone when renaming feat" do
+      project_config.create_worktree("proj", "feat", checkout, "feat", quiet: true)
+      text = File.read(config.config_path_for(old))
+      File.write(config.config_path_for(old), text + "  - tmux send-keys -t '=proj-wt-feat-2:' x\n  - echo proj-wt-feat-2 workspace-proj-wt-feat-2 @workspace proj.worktree-feat-2\n")
+
+      store(old: old, new: new, session: "proj-wt-feat", new_session: "proj-wt-other", root: new_root, branch: "feat", new_branch: "other", display: "proj feat", new_display: "proj other").call
+
+      result = File.read(config.config_path_for(new))
+      expect(result).to include("-t '=proj-wt-feat-2:' x", "echo proj-wt-feat-2 workspace-proj-wt-feat-2 @workspace proj.worktree-feat-2")
+      expect(result.gsub("feat-2", "")).not_to include("feat")
+    end
+
+    it "does not match a new session that holds the workspace- prefix a second time" do
+      project_config.create_worktree("proj", "feat", checkout, "feat", quiet: true)
+
+      store(old: old, new: new, session: "proj-wt-feat", new_session: "workspace-proj-wt-feat").call
+
+      text = File.read(config.config_path_for(new))
+      expect(text).to include("-t '=workspace-proj-wt-feat:'")
+      expect(text).not_to include("workspace-workspace-proj-wt-feat:'")
+    end
+
+    it "finds the marker in the new root of a checkout that moved" do
+      project_config.create_worktree("proj", "feat", checkout, "feat", quiet: true)
+      write(File.join(new_root, ".workspace-project"), old)
+
+      store(old: old, new: new, session: "proj-wt-feat", new_session: "proj-wt-other", root: new_root).call
+
+      expect(File.read(File.join(new_root, ".workspace-project")).strip).to eq(new)
+    end
+
+    it "warns about a marker naming neither name when a new root is given" do
+      project_config.create_worktree("proj", "feat", checkout, "feat", quiet: true)
+      write(File.join(new_root, ".workspace-project"), "elsewhere")
+
+      outcome = store(old: old, new: new, session: "proj-wt-feat", new_session: "proj-wt-other", root: new_root).call
+
+      expect(outcome.warnings.size).to eq(1)
+      expect(outcome.warnings.first).to include("marker", '"elsewhere"', "neither #{old} nor #{new}")
+    end
+  end
 end

@@ -20,6 +20,9 @@ module Workspace
     # @!attribute warnings [Array<String>] one line per failed step, plus the held-back config
     Outcome = Struct.new(:renamed, :failed, :warnings, keyword_init: true)
 
+    # The retry hint of the held-back config warning: what the daemon-driven rename does.
+    DEFAULT_RETRY_HINT = "the next agentd start tries again (a name already taken has to be cleared by hand)"
+
     # A target name that is already taken.
     class Conflict < Workspace::Error; end
 
@@ -42,7 +45,15 @@ module Workspace
     # @param new [String] the name it gets
     # @param session [String] the tmux session name now
     # @param new_session [String] the tmux session name it gets
-    def initialize(config:, project_config:, tmux:, state:, project_catalog_factory:, old:, new:, session:, new_session:)
+    # @param root [String, nil] the config's new `root:`; nil keeps the line as it is
+    # @param branch [String, nil] the branch the worktree template's banner line names now
+    # @param new_branch [String, nil] the branch it gets; nil keeps that line as it is
+    # @param display [String, nil] the banner text (`ascii-banner "..."`) now
+    # @param new_display [String, nil] the banner text it gets; nil keeps the banner as it is
+    # @param retry_hint [String] what the held-back config warning says about trying again
+    def initialize(config:, project_config:, tmux:, state:, project_catalog_factory:, old:, new:, session:, new_session:,
+      root: nil, branch: nil, new_branch: nil, display: nil, new_display: nil,
+      retry_hint: DEFAULT_RETRY_HINT)
       @config = config
       @project_config = project_config
       @tmux = tmux
@@ -52,6 +63,12 @@ module Workspace
       @new = new
       @session = session
       @new_session = new_session
+      @root = root
+      @branch = branch
+      @new_branch = new_branch
+      @display = display
+      @new_display = new_display
+      @retry_hint = retry_hint
     end
 
     # Runs every step. Never raises for a failed step.
@@ -81,13 +98,13 @@ module Workspace
       step.call("inbox") { move(@config.inbox_path("workspace", old), @config.inbox_path("workspace", new)) }
       step.call("project_inbox") { move_project_inbox }
       step.call("state") { rename_state_key }
-      step.call("marker") { rewrite_marker }
+      step.call("marker") { rewrite_marker(outcome) }
       # A config under the new name means done, so it waits until every other
       # step went through, and the next call tries the failed ones again.
       if outcome.failed.empty?
         step.call("tmuxinator_config") { rewrite_config }
       else
-        outcome.warnings << "#{old}: tmuxinator_config not renamed until the steps above succeed; the next agentd start tries again (a name already taken has to be cleared by hand)"
+        outcome.warnings << "#{old}: tmuxinator_config not renamed until the steps above succeed; #{@retry_hint}"
       end
       outcome
     end
@@ -131,25 +148,33 @@ module Workspace
       [old, new]
     end
 
-    # Rewrites a marker that names the old workspace, in any case.
-    def rewrite_marker
-      root = @project_config.project_root_for(@old)
-      return nil unless root.is_a?(String) && !root.empty?
-
-      path = File.join(File.expand_path(root), WorkspaceLineage::MARKER_FILE)
-      return nil unless File.file?(path)
+    # Rewrites a marker that names the old workspace, in any case. A marker
+    # that names neither the old nor the new name stays as it is, with a warning
+    # when a new root was given; the lowercase migration gives none and stays silent.
+    # The marker is looked for in the new root first, for a checkout that moved.
+    def rewrite_marker(outcome)
+      old_root = @project_config.project_root_for(@old)
+      roots = [@root, old_root].select { |root| root.is_a?(String) && !root.empty? }.uniq
+      path = roots.map { |root| File.join(File.expand_path(root), WorkspaceLineage::MARKER_FILE) }.find { |candidate| File.file?(candidate) }
+      return nil unless path
 
       content = File.read(path).strip
-      return nil unless content.casecmp?(@old) && content != @new
+      return nil if content == @new
+      unless content.casecmp?(@old)
+        outcome.warnings << "#{@old}: marker #{path} names #{content.inspect}, neither #{@old} nor #{@new}; left as it is" if @root
+        return nil
+      end
 
       write_through_temp(path, @new)
       [@old, @new]
     end
 
-    # Rewrites the session name where the templates put it (the `name:` line,
-    # `tmux ... -t <session>:` targets, the `workspace-<session>` window) and
-    # the config's own path on its first line. The `root:` line and other text
-    # keep their case.
+    # Rewrites the names where the templates put them: the `name:` line, the
+    # `tmux ... -t <session>:` and `-t '=<session>:'` targets, the
+    # `workspace-<session>` window and title, `@workspace`, the "Ready to work
+    # on" line, the config's own path on its first line, and, when given, the
+    # `root:` line, the banner and the worktree line's branch. Each name is
+    # matched whole, so `feat` does not touch `feat-2`. Other text keeps its case.
     def rewrite_config
       old = @old
       new = @new
@@ -159,13 +184,21 @@ module Workspace
       return nil unless listed?(from)
       raise Conflict, "#{to} already exists" if listed?(to)
 
-      quoted = Regexp.escape(@session)
+      session = Regexp.escape(@session)
+      name = Regexp.escape(old)
       text = File.read(from).each_line.with_index.map do |line, index|
         line = line.sub("workspace.#{old}.yml", "workspace.#{new}.yml") if index.zero? && line.start_with?("#")
-        next line.sub(/\A(name:\s*)#{quoted}(?=\s*\z)/) { "#{$1}#{new_session}" } if line.start_with?("name:")
+        next line.sub(/\A(name:\s*)#{session}(?=\s*\z)/) { "#{$1}#{new_session}" } if line.start_with?("name:")
+        next line.sub(/\A(root:\s*).*?(?=\s*\z)/) { "#{$1}#{@root}" } if line.start_with?("root:") && @root
         next line if line.match?(/\A\s*root:/)
 
-        line.gsub(/(-t\s+)#{quoted}(?=:)/) { "#{$1}#{new_session}" }.gsub(/workspace-#{quoted}(?![\w.-])/, "workspace-#{new_session}")
+        # One pass over both forms: a new session such as `workspace-a` must not be matched again.
+        line = line.gsub(/(-t\s+['"]?=?)#{session}(?=:)|(?<![\w.-])(workspace-)#{session}(?![\w.-])/) { "#{$1 || $2}#{new_session}" }
+          .gsub(/(@workspace\s+)#{name}(?![\w.-])/) { "#{$1}#{new}" }
+          .sub(/(echo 'Ready to work on )#{name}(?=')/) { "#{$1}#{new}" }
+        line = line.sub(/(ascii-banner ")#{Regexp.escape(@display)}(?=")/) { "#{$1}#{@new_display}" } if @display && @new_display
+        line = line.sub(/(Worktree — )#{Regexp.escape(@branch)}(?= \()/) { "#{$1}#{@new_branch}" } if @branch && @new_branch
+        line
       end.join
 
       # Between the two renames no config exists for a moment; the daemon's
