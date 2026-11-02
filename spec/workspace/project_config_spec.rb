@@ -114,7 +114,7 @@ RSpec.describe Workspace::ProjectConfig do
       expect(content).to include("root: /tmp/worktrees/PROJ-123")
       expect(content).to include("project: myapp")
       expect(content).to include("branch: PROJ-123")
-      expect(content).to include("display: myapp/PROJ-123")
+      expect(content).to include("display: myapp PROJ 123")
     end
 
     it "records the workspace name on the session in the shipped worktree template" do
@@ -125,6 +125,30 @@ RSpec.describe Workspace::ProjectConfig do
 
       content = File.read(File.join(tmpdir, "workspace.myapp.worktree-feat.yml"))
       expect(content).to include("tmux set-option -t '=myapp-wt-feat:' @workspace myapp.worktree-feat || true")
+    end
+
+    context "with the shipped worktree template" do
+      before do
+        template = File.expand_path("../../lib/templates/workspace.project-worktree-template.yml", __dir__)
+        allow(config).to receive(:worktree_template_path).and_return(template)
+      end
+
+      it "spaces the banner text and keeps the real names everywhere else" do
+        pc.create_worktree("myapp", "feat.x-y_z", "/tmp/wt/feat.x-y_z", "feat.x-y_z", quiet: true)
+
+        content = File.read(File.join(tmpdir, "workspace.myapp.worktree-feat.x-y_z.yml"))
+        expect(content).to include('ascii-banner "myapp feat x y_z"')
+        expect(content).to include("root: /tmp/wt/feat.x-y_z")
+        expect(content).to include("@workspace myapp.worktree-feat.x-y_z || true")
+        expect(content).to include("echo 'Worktree — feat.x-y_z (myapp)'")
+      end
+
+      it "keeps non-ASCII letters in the banner text" do
+        pc.create_worktree("myapp", "café-x", "/tmp/wt/café-x", "café-x", quiet: true)
+
+        content = File.read(File.join(tmpdir, "workspace.myapp.worktree-café-x.yml"))
+        expect(content).to include('ascii-banner "myapp café x"')
+      end
     end
 
     it "records it in the shipped project template too, ahead of the && chain and unable to break it" do

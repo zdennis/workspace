@@ -100,7 +100,7 @@ module Workspace
         .gsub("{{WORKTREE_PATH}}", worktree_path)
         .gsub("{{PROJECT_NAME}}", project_name)
         .gsub("{{WORKTREE_BRANCH}}", branch_name)
-        .gsub("{{DISPLAY_NAME}}", "#{project_name}/#{worktree_name}")
+        .gsub("{{DISPLAY_NAME}}", banner_text("#{project_name}/#{worktree_name}"))
         .gsub("{{CONFIG_PATH}}", config_path)
         .sub(/^\{\{PRE_WINDOW\}\}\n/, task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "")
 
@@ -316,6 +316,11 @@ module Workspace
     end
 
     private
+
+    # ascii-banner wraps only at whitespace, so an unspaced name shrinks to tiny type.
+    def banner_text(text)
+      text.gsub(/[^[:word:]]/, " ")
+    end
 
     # @return [Array<String, nil>] the programs of the one pane line that differs between two contents:
     #   the first `||` half whose program changed, else the first half
