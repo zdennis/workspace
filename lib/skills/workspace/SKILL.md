@@ -33,7 +33,7 @@ If a row matches, load that skill now, before running anything.
 | Where do the notes go? | `workspace notes dir --name WS` | Prints the path alone. |
 | What does this CLI support? | `workspace capabilities --json` | Read `features.NAME`. 0 or missing means absent. Never compare `version`. |
 
-A worktree workspace is named `<project>.worktree-<branch>`, lowercase, for example `workspace.worktree-workspace-skills`; read the exact name from `workspace list --json`. Pass that whole name to `--name`, not the bare branch. A wrong name gives `unknown_workspace`.
+A worktree workspace is named `<project>.worktree-<branch>`, lowercase, for example `workspace.worktree-workspace-skills`; read the exact name from `workspace list --json`. Scripts and agents should keep passing that whole name to `--name`, because a short name (the part after `.worktree-`) can turn ambiguous once another project gains the same branch; people can use the short form. A wrong name gives `unknown_workspace`.
 
 ## Everything else
 

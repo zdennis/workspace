@@ -6931,7 +6931,7 @@ module Workspace
           options[:types].concat(value.split(",").map(&:strip).reject(&:empty?))
         end
         opts.on("--since CURSOR", "Resume after the line that printed CURSOR") { |value| options[:since] = value }
-        opts.on("--name WS", "Only this workspace's events (exact name; its worktree workspaces are not included)") { |value| options[:name] = settle_name(value) }
+        opts.on("--name WS", "Only this workspace's events (this workspace only; its worktree workspaces are not included)") { |value| options[:name] = settle_name(value) }
         opts.on("-h", "--help", "Show this help") { help = true }
         opts.separator ""
         opts.separator "Without --since, --follow starts at the end of every file, and a plain read prints"

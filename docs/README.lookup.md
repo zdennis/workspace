@@ -23,6 +23,8 @@ Searches for a workspace project using one of these methods, in order:
    - Example: `PUFFINS-1876-use-lock-version` → finds `growth-engine.worktree-PUFFINS-1876-use-lock-version`
    - Also handles fuzzy matching for branch names with special characters
 
+`lookup` keeps this looser match and takes the first hit; `--name` on other commands refuses a tie with `ambiguous_workspace`.
+
 ## Examples
 
 ```sh

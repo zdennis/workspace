@@ -14,6 +14,7 @@ module Workspace
         "envelope" => 1,
         "error_codes" => 1,
         "name_scope" => 1,
+        "name_suffix" => 1,
         "no_input" => 1,
         "action_json" => 1,
         "sessions" => 3,
