@@ -10,6 +10,8 @@ module Workspace
   # appears in both by adding a row with a stable `id`.
   class Doctor
     SYMBOLS = {"ok" => "✓", "warn" => "⚠", "fail" => "✗", "skipped" => "⊘"}.freeze
+    STATUS_COLORS = {"ok" => "\e[32m", "warn" => "\e[33m", "fail" => "\e[31m", "skipped" => "\e[2m"}.freeze
+    COLOR_RESET = "\e[0m"
 
     # Looks a command up on PATH with `which` and reads its version output.
     class CommandProbe
@@ -67,8 +69,9 @@ module Workspace
     # @param run_health [Workspace::WorkflowRunHealth, nil] reads orphaned workflow runs and leaked run locks; nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
+    # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -96,6 +99,7 @@ module Workspace
       @file_backup = file_backup || FileBackup.new(output: output)
       @working_dir = working_dir
       @output = output
+      @env = env
       @rows = []
     end
 
@@ -112,12 +116,12 @@ module Workspace
       @output.puts ""
       @output.puts "  mode: #{result[:mode]["headless"] ? "headless" : "iTerm2"} (#{result[:mode]["reason"]})"
       result[:rows].each do |row|
-        @output.puts "  #{SYMBOLS.fetch(row[:status])}  #{row[:message]}"
+        @output.puts "  #{paint(STATUS_COLORS.fetch(row[:status]), "#{SYMBOLS.fetch(row[:status])}  #{row[:message]}")}"
         row[:hints].each { |hint| @output.puts "     ↳ #{hint.gsub("\n", "\n     ")}" }
       end
       @output.puts ""
       raise Workspace::Error, "#{result[:issues]} issue(s) found." if result[:issues] > 0
-      @output.puts "Everything looks good!"
+      @output.puts paint(STATUS_COLORS.fetch("ok"), "Everything looks good!")
     end
 
     # Runs every check and returns the findings without printing them (a
@@ -169,6 +173,12 @@ module Workspace
     end
 
     private
+
+    # Wraps text in a color on a terminal, unless a non-empty NO_COLOR turns color off.
+    def paint(code, text)
+      return text unless @output.tty? && @env["NO_COLOR"].to_s.empty?
+      "#{code}#{text}#{COLOR_RESET}"
+    end
 
     # Adds one finding.
     #

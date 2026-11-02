@@ -42,6 +42,81 @@ RSpec.describe Workspace::Doctor do
     expect(output.string.length).to be > 0
   end
 
+  describe "color" do
+    let(:terminal) { Class.new(StringIO) { def tty? = true }.new }
+
+    def run_with_rows(doctor, *rows)
+      allow(doctor).to receive(:report).and_return(
+        {mode: {"headless" => true, "reason" => "test"}, rows: rows, issues: 0}
+      )
+      doctor.run
+    end
+
+    def row(status, message, hints: [])
+      {id: "x", status: status, message: message, hints: hints}
+    end
+
+    def terminal_doctor(env: {}, stream: terminal)
+      build_doctor(output: stream, env: env)
+    end
+
+    {
+      "ok" => "\e[32m✓  all good\e[0m",
+      "warn" => "\e[33m⚠  all good\e[0m",
+      "fail" => "\e[31m✗  all good\e[0m",
+      "skipped" => "\e[2m⊘  all good\e[0m"
+    }.each do |status, painted|
+      it "paints the symbol and message of a #{status} row, indent outside" do
+        run_with_rows(terminal_doctor, row(status, "all good"))
+
+        expect(terminal.string).to include("  #{painted}\n")
+      end
+    end
+
+    it "paints the closing line green" do
+      run_with_rows(terminal_doctor)
+
+      expect(terminal.string).to end_with("\e[32mEverything looks good!\e[0m\n")
+    end
+
+    it "leaves the header, mode line and hints plain" do
+      run_with_rows(terminal_doctor, row("fail", "broken", hints: ["fix: do it"]))
+
+      expect(terminal.string.lines.reject { |line| line.include?("broken") || line.include?("Everything") }.join).not_to include("\e[")
+      expect(terminal.string).to include("     ↳ fix: do it\n")
+    end
+
+    it "prints no color with a non-empty NO_COLOR" do
+      run_with_rows(terminal_doctor(env: {"NO_COLOR" => "1"}), row("ok", "all good"))
+
+      expect(terminal.string).not_to include("\e[")
+    end
+
+    it "keeps color with an empty NO_COLOR" do
+      run_with_rows(terminal_doctor(env: {"NO_COLOR" => ""}), row("ok", "all good"))
+
+      expect(terminal.string).to include("\e[32m✓  all good\e[0m")
+    end
+
+    it "prints no color when the stream is not a terminal" do
+      run_with_rows(build_doctor(env: {}), row("fail", "broken"))
+
+      expect(output.string).not_to include("\e[")
+    end
+
+    it "keeps the messages #report returns plain on a terminal" do
+      result = terminal_doctor.report(headless: true)
+
+      expect(result[:rows].map { |r| r[:message] }.join).not_to include("\e[")
+    end
+
+    it "paints through an OutputGate around a terminal, as build_cli wires it" do
+      run_with_rows(terminal_doctor(stream: Workspace::OutputGate.new(terminal)), row("ok", "all good"))
+
+      expect(terminal.string).to include("\e[32m✓  all good\e[0m")
+    end
+  end
+
   it "checks for required commands and templates" do
     doctor = build_doctor
     begin

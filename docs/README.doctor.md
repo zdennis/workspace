@@ -57,6 +57,8 @@ At most 20 run rows are shown across the three kinds, then one `workflow-runs` r
 
 A `--fix` that cannot do anything is reported as a failed check (`✗  --fix: ...`) among the others.
 
+On a terminal, each row is colored by its status: green for `✓`, yellow for `⚠`, red for `✗` and dim for `⊘`. When nothing is wrong, the closing `Everything looks good!` is green too. Color needs a terminal, so a pipe or a redirect stays plain, and a non-empty `NO_COLOR` turns it off. `--json` is never colored.
+
 Exits with a non-zero status if any issues are found, so it can be used in scripts.
 
 ## JSON output
