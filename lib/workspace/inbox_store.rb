@@ -164,6 +164,25 @@ module Workspace
       transition_where(to, by, snooze_until) { |r| r["dedupe_key"] == key }
     end
 
+    # Sets `scope.key` and `scope.name` on every item of this file, for a
+    # workspace renamed after its inbox file was moved to the new name. Nothing
+    # else changes (ids, links and timestamps stay as they are). A missing file
+    # is left missing; an item whose `scope` is not a Hash is left alone.
+    #
+    # @param key [String] the new scope key
+    # @param name [String] the new scope name
+    # @return [Integer] how many items were rewritten
+    def rescope(key:, name:)
+      return 0 unless File.exist?(@path)
+      with_lock do |data|
+        records_in(data).count do |record|
+          next false unless record["scope"].is_a?(Hash)
+          record["scope"] = record["scope"].merge("key" => key, "name" => name)
+          true
+        end
+      end
+    end
+
     private
 
     def transition_where(to, by, snooze_until)

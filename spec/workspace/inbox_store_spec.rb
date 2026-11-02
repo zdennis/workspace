@@ -572,4 +572,26 @@ RSpec.describe Workspace::InboxStore do
       expect(JSON.parse(File.read(path)).size).to eq(205)
     end
   end
+
+  describe "#rescope" do
+    it "rewrites scope key and name on every item and keeps ids, links and times" do
+      a = store.add(fields.merge("links" => {"pr" => "https://example.com/1"}))
+      b = store.add(fields.merge("title" => "Second"))
+      later = Time.utc(2026, 10, 17, 9, 0, 0)
+      moved = described_class.new(path: path, scope: "workspace:api", clock: -> { later }, error_output: err)
+
+      expect(moved.rescope(key: "web", name: "web")).to eq(2)
+
+      items = moved.list
+      expect(items.map { |i| i["id"] }).to eq([a["id"], b["id"]])
+      expect(items.map { |i| i["scope"] }).to all(eq({"kind" => "workspace", "key" => "web", "name" => "web"}))
+      expect(items.first["links"]).to eq({"pr" => "https://example.com/1"})
+      expect(items.map { |i| i["updated_at"] }).to all(eq("2026-10-16T12:00:00Z"))
+    end
+
+    it "does nothing and creates nothing when the file is missing" do
+      expect(store.rescope(key: "web", name: "web")).to eq(0)
+      expect(File.exist?(path)).to be(false)
+    end
+  end
 end
