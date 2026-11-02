@@ -194,6 +194,43 @@ RSpec.describe Workspace::WorkflowRequire do
       expect(check({"tracked_clean" => true})).to be_nil
     end
 
+    context "with the config changed since the run's base" do
+      let(:marker) { File.join(@dir, "ran") }
+
+      before do
+        git("config", "filter.up.clean", "tr a-z A-Z")
+        File.write(File.join(repo, ".gitattributes"), "a.txt filter=up\n")
+        git("add", ".gitattributes")
+        git("add", "--renormalize", ".")
+        git("commit", "-q", "-m", "filter")
+      end
+
+      let(:started) { run.merge(guard.base(repo)) }
+
+      def tracked_clean(with)
+        stamp = Time.now - 300
+        File.utime(stamp, stamp, File.join(repo, "a.txt"))
+        requirer.check(run: with, step: {"require" => [{"tracked_clean" => true}]}, attempt: {"head" => {"before" => base}})
+      end
+
+      it "passes after a harmless change, the project's filter still working" do
+        started
+        git("config", "branch.main.remote", "origin")
+
+        expect(tracked_clean(started)).to be_nil
+      end
+
+      it "fails with a changed filter turned off, and never runs it" do
+        started
+        File.write(File.join(@dir, "planted.sh"), "#!/bin/sh\ntouch #{marker}\ncat\n")
+        File.chmod(0o755, File.join(@dir, "planted.sh"))
+        git("config", "filter.up.clean", File.join(@dir, "planted.sh"))
+
+        expect(tracked_clean(started)).to include("code" => "require_tracked_clean", "paths" => ["a.txt"])
+        expect(File.exist?(marker)).to be(false)
+      end
+    end
+
     it "fails naming the changed tracked paths" do
       File.write(File.join(repo, "a.txt"), "changed\n")
       expect(check({"tracked_clean" => true})).to include("code" => "require_tracked_clean", "paths" => ["a.txt"], "detail" => /found 1 \(a.txt\)/)

@@ -40,7 +40,7 @@ module Workspace
 
     # Restart errors that mean there is no pane to type into.
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
-    ENGINE_CODES = (WorkflowGuard::CODES + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out]).freeze
+    ENGINE_CODES = (WorkflowGuard::CODES + [WorkflowGuard::CONFIG_CHANGED] + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out]).freeze
 
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
 
@@ -237,10 +237,11 @@ module Workspace
     #   (default: a new one)
     # @param alerts [Workspace::WorkflowAlerts, nil] tells a person of a gate, a failure, a stall or a finish through `alerts.notify`
     #   (default: none)
+    # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
     # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
     # @param clock [#call] returns the current Time
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-      env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, clock: -> { Time.now })
+      env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now })
       @store = store
       @resources = resources
       @composer = composer
@@ -261,6 +262,7 @@ module Workspace
         commands_config: commands_config, checker: checker)
       @log_tail = log_tail || WorkflowLogTail.new
       @alerts = alerts
+      @inbox_for = inbox_for
       @clock = clock
       @delivery = nil
     end
@@ -2171,11 +2173,53 @@ module Workspace
 
     def guard_check(run, step)
       found = @guard.check(run["worktree"], run, step["guard"])
+      note_config_change(run, step)
       return nil unless found
       {"cause" => "guard", "guard" => found["code"], "paths" => found["paths"], "base_sha" => found["base_sha"], "head" => found["head"]}
         .compact.merge(code_for(found["code"], nil))
     rescue => e
       {"cause" => "check", "error" => "the guard could not run (#{e.class})"}.merge(code_for("check_error", nil))
+    end
+
+    # A changed repository config is a warning and the step goes on. `guard_config_seen` holds the reading last
+    # warned of, so each distinct change warns once, on the attempt that first saw it, whatever steps follow; a
+    # config back at the base's reading clears it. It is set only once the attempt holds the warning, so one that
+    # could not be recorded is tried again at the next guarded step. A warning that can't be recorded must not stop the step.
+    def note_config_change(run, step)
+      found = @guard.config_change(run["worktree"], run, seen: run["guard_config_seen"])
+      return unless found
+      return run.delete("guard_config_seen") unless found["code"]
+      attempt = step_state(run)["attempts"].last
+      (attempt["warnings"] ||= []) << {"code" => found["code"], "at" => now_iso, "message" => config_warning(found)}
+      run["guard_config_seen"] = found["reading"]
+      event(run, "guard_warning", "step" => step["id"], "attempt" => attempt["n"], "code" => found["code"], "inbox" => post_config_warning(run, step, attempt, found))
+    rescue
+      nil
+    end
+
+    def config_warning(found)
+      return "this run started before the config was read this way, so the difference may be no change at all; the run went on" if found["old_format"]
+      "#{GUARD_TEXT.fetch(found["code"])}; the run went on"
+    end
+
+    # One item per run, whatever the number of changes; a later change opens it again if it was closed. Under the run's lock, as `inbox_item` reads.
+    #
+    # @return [Boolean] whether the item was written
+    def post_config_warning(run, step, attempt, found)
+      return false unless @inbox_for
+      workspace = run["workspace"]
+      @inbox_for.call(workspace).upsert({
+        "type" => "alert", "scope" => {"kind" => "workspace", "key" => workspace, "name" => workspace},
+        "title" => "Workflow run #{run["id"]}: the repository's config changed",
+        "body" => "At step #{step["id"]} (attempt #{attempt["n"]}): #{config_warning(found)}. Check `git -C #{run["worktree"]} config --list` if you did not expect it; `workspace workflow status #{run["id"]}` lists every warning.",
+        "source" => {"kind" => "workflow", "ref" => run["id"], "url" => nil},
+        "dedupe_key" => "workflow-guard:#{run["id"]}:#{found["code"]}",
+        "created_by" => {"kind" => "cli", "pane" => nil, "session_id" => nil, "tmux_server" => nil},
+        "links" => {"run_id" => run["id"], "step" => step["id"], "attempt" => attempt["n"]}, "expires_at" => nil, "note" => nil
+      }, reopen: true)
+      true
+    rescue Workspace::Error, SystemCallError
+      false
     end
 
     # The one code key of a failed step: an agent's word when it gave one, else the engine's.
@@ -2186,7 +2230,7 @@ module Workspace
     GUARD_TEXT = {
       "no_commit" => "the checkout had no commit to start from",
       "operation_in_progress" => "a git operation (merge, rebase, cherry-pick, revert or bisect) is in progress",
-      "config_changed" => "the repository's config or attributes changed since the run started",
+      "config_changed" => "the repository's config, attributes or replace refs changed",
       "hooks_changed" => "the repository's hooks changed since the run started",
       "hidden_changed" => "tracked files were hidden from git (assume-unchanged or skip-worktree) since the run started"
     }.freeze

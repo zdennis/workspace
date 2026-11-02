@@ -3507,7 +3507,7 @@ RSpec.describe Workspace::WorkflowEngine do
       run = start(guarded, inputs: {})
 
       expect(run["base_sha"]).to eq(`git -C #{worktree} rev-parse HEAD`.strip)
-      expect(run["base_guard"].keys).to eq(%w[config_sha256 hooks_sha256 hidden_sha256])
+      expect(run["base_guard"].keys).to eq(%w[config_sha256 hooks_sha256 hidden_sha256 config_format filter_sha256])
       expect(store.find("wr_1")["base_guard"]).to eq(run["base_guard"])
     end
 
@@ -3522,6 +3522,137 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["reason"]["details"]).to include("cause" => "guard", "guard" => "head_moved", "code" => "head_moved", "code_source" => "engine", "paths" => [],
         "base_sha" => run["base_sha"])
       expect(run["steps"]["diagnose"]["attempts"].last).to include("outcome" => "failed")
+    end
+
+    describe "a changed repository config" do
+      let(:inbox) { Workspace::InboxStore.new(path: File.join(worktree, "..", "inbox-#{File.basename(worktree)}.json")) }
+      subject(:engine) { engine_with(inbox_for: ->(_workspace) { inbox }) }
+
+      after { FileUtils.rm_f([inbox.instance_variable_get(:@path), "#{inbox.instance_variable_get(:@path)}.lock"]) }
+
+      def set_config(key, value)
+        system("git", "-C", worktree, "config", key, value, exception: true)
+      end
+
+      def warnings(run)
+        run["steps"].values.flat_map { |state| state["attempts"].flat_map { |attempt| Array(attempt["warnings"]) } }
+      end
+
+      def to_second_step
+        artifact("note.md")
+        engine.turn_ended("wr_1", pane: "%5")
+      end
+
+      it "passes the step, records the warning on the attempt, and posts one inbox item" do
+        start(guarded, inputs: {})
+        set_config("core.fsmonitor", "true")
+
+        run = to_second_step
+
+        expect(run["current"]).to eq("fix")
+        expect(run["steps"]["diagnose"]["attempts"].last).to include("outcome" => "passed", "warnings" => [include("code" => "config_changed")])
+        expect(inbox.list.map { |item| item.slice("type", "dedupe_key") }).to eq([{"type" => "alert", "dedupe_key" => "workflow-guard:wr_1:config_changed"}])
+        expect(inbox.list.first["links"]).to include("run_id" => "wr_1", "step" => "diagnose", "attempt" => 1)
+        expect(store.events("wr_1")["events"].map { |each| each["type"] }).to include("guard_warning")
+      end
+
+      it "warns once, not again at the next step" do
+        start(guarded, inputs: {})
+        set_config("alias.x", "status")
+        to_second_step
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+        expect(warnings(run).size).to eq(1)
+        expect(run["state"]).to eq("completed")
+        expect(inbox.list.size).to eq(1)
+      end
+
+      it "warns of a second, different change on the same item" do
+        start(guarded, inputs: {})
+        set_config("alias.x", "status")
+        to_second_step
+        set_config("alias.y", "log")
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(warnings(run).size).to eq(2)
+        expect(inbox.list.size).to eq(1)
+      end
+
+      it "says nothing when the config came back to the base's reading, and forgets the last warning" do
+        start(guarded, inputs: {})
+        set_config("alias.x", "status")
+        to_second_step
+        system("git", "-C", worktree, "config", "--unset", "alias.x", exception: true)
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(warnings(run).size).to eq(1)
+        expect(run).not_to have_key("guard_config_seen")
+      end
+
+      it "tries again at the next guarded step when the warning could not be recorded" do
+        start(guarded, inputs: {})
+        set_config("alias.x", "status")
+        allow(engine).to receive(:config_warning).and_raise(RuntimeError)
+        run = to_second_step
+        expect(run["current"]).to eq("fix")
+        expect(run).not_to have_key("guard_config_seen")
+        allow(engine).to receive(:config_warning).and_call_original
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["steps"]["fix"]["attempts"].last["warnings"].size).to eq(1)
+      end
+
+      it "says nothing of another branch's section" do
+        start(guarded, inputs: {})
+        set_config("branch.other.workspace-created", "true")
+
+        expect(warnings(to_second_step)).to eq([])
+        expect(inbox.list).to eq([])
+      end
+
+      it "warns and still fails when the hooks changed too" do
+        start(guarded, inputs: {})
+        set_config("core.hooksPath", "/tmp/planted-hooks")
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]["details"]).to include("code" => "hooks_changed", "cause" => "guard")
+        expect(warnings(run).map { |each| each["code"] }).to eq(["config_changed"])
+      end
+
+      it "warns at most for a run whose digest was made the old way" do
+        start(guarded, inputs: {})
+        store.update("wr_1") { |run| run["base_guard"] = run["base_guard"].except("config_format").merge("config_sha256" => "0" * 64) }
+
+        run = to_second_step
+
+        expect(run["current"]).to eq("fix")
+        expect(warnings(run)).to match([include("code" => "config_changed", "message" => a_string_matching(/may be no change/))])
+        run = engine.turn_ended("wr_1", pane: "%5")
+        expect(run["state"]).to eq("completed")
+        expect(warnings(run).size).to eq(1)
+      end
+
+      it "goes on when the inbox can't be written" do
+        failing = engine_with(inbox_for: ->(_workspace) { raise Errno::EACCES })
+        start(guarded, inputs: {})
+        set_config("alias.x", "status")
+        artifact("note.md")
+
+        run = failing.turn_ended("wr_1", pane: "%5")
+
+        expect(run["current"]).to eq("fix")
+        expect(warnings(run).size).to eq(1)
+      end
+
+      it "never refuses a start for it: a preflight has no base to differ from" do
+        set_config("alias.x", "status")
+
+        expect { engine.preflight(definition: guarded, workspace: "app", worktree: worktree, inputs: {}) }.not_to raise_error
+      end
     end
 
     it "fails with tracked_changed and names the paths" do

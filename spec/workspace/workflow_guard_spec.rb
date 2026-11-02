@@ -44,8 +44,9 @@ RSpec.describe Workspace::WorkflowGuard do
 
   it "records HEAD and a snapshot, and passes a checkout nothing changed in" do
     expect(base["base_sha"]).to eq(git("rev-parse", "HEAD").strip)
-    expect(base["base_guard"].keys).to eq(%w[config_sha256 hooks_sha256 hidden_sha256])
-    expect(base["base_guard"].values).to all(match(/\A\h{64}\z/))
+    expect(base["base_guard"].keys).to eq(%w[config_sha256 hooks_sha256 hidden_sha256 config_format filter_sha256])
+    expect(base["base_guard"].except("config_format").values).to all(match(/\A\h{64}\z/))
+    expect(base["base_guard"]["config_format"]).to eq(2)
     expect(check).to be_nil
   end
 
@@ -230,57 +231,295 @@ RSpec.describe Workspace::WorkflowGuard do
     end
   end
 
-  describe "config_changed" do
+  describe "#config_change" do
     let(:marker) { File.join(@dir, "ran") }
+    let(:hooks) { File.join(@dir, "hooks") }
 
-    it "finds a core.fsmonitor set in the repository config, and never runs the command" do
+    def change(seen: nil, on: repo, from: base)
+      guard.config_change(on, from, seen: seen)
+    end
+
+    def config_file
+      File.join(repo, ".git", "config")
+    end
+
+    it "is nil, and check passes, with nothing changed" do
+      expect(change).to be_nil
+    end
+
+    it "ignores layout and comments, which git's reading drops" do
+      File.write(config_file, "# a comment\n#{File.read(config_file)}\n")
+
+      expect(change).to be_nil
+    end
+
+    it "ignores `workspace-created` added for another branch" do
+      git("config", "branch.other.workspace-created", "true")
+
+      expect(change).to be_nil
+      expect(check).to be_nil
+    end
+
+    it "ignores another branch's remote, and a branch name with dots and slashes" do
+      git("config", "branch.feature/a.b.remote", "origin")
+      git("config", "branch.feature/a.b.merge", "refs/heads/x")
+
+      expect(change).to be_nil
+    end
+
+    it "warns of the checkout's own branch's remote, and the step passes" do
+      git("config", "branch.main.remote", "elsewhere")
+
+      expect(change).to include("code" => "config_changed", "old_format" => false)
+      expect(check).to be_nil
+      expect(check("config")).to be_nil
+    end
+
+    it "keeps two-part keys of the [branch] section, which are settings and not a branch's" do
+      git("config", "branch.autoSetupRebase", "always")
+
+      expect(change).to include("code" => "config_changed")
+    end
+
+    it "ignores every branch's section on a detached HEAD" do
+      git("checkout", "-q", "--detach")
+      detached = guard.base(repo)
+      git("config", "branch.main.remote", "elsewhere")
+
+      expect(guard.config_change(repo, detached)).to be_nil
+    end
+
+    it "warns of a core.fsmonitor, the step passes, and the command never runs" do
       File.write(File.join(@dir, "fsmonitor.sh"), "#!/bin/sh\ntouch #{marker}\n")
       File.chmod(0o755, File.join(@dir, "fsmonitor.sh"))
       git("config", "core.fsmonitor", File.join(@dir, "fsmonitor.sh"))
 
-      expect(check).to include("code" => "config_changed")
+      expect(change).to include("code" => "config_changed")
+      expect(check).to be_nil
       write("a.txt", "x\n")
       check
       expect(File.exist?(marker)).to be(false)
     end
 
-    it "finds a core.hooksPath set in the repository config" do
-      git("config", "core.hooksPath", File.join(@dir, "hooks"))
+    it "warns of a change to info/attributes" do
+      FileUtils.mkdir_p(File.join(repo, ".git", "info"))
+      File.write(File.join(repo, ".git", "info", "attributes"), "a.txt -diff\n")
 
-      expect(check).to include("code" => "config_changed")
+      expect(change).to include("code" => "config_changed")
     end
 
-    it "finds a clean filter that lies about a tracked file, and never runs it" do
-      File.write(File.join(@dir, "filter.sh"), "#!/bin/sh\ntouch #{marker}\ncat\n")
+    it "warns of a change to the checkout's own config.worktree" do
+      File.write(File.join(repo, ".git", "config.worktree"), "[core]\n\tfsmonitor = true\n")
+
+      expect(change).to include("code" => "config_changed")
+    end
+
+    it "warns of the own config.worktree of a linked worktree" do
+      linked = File.join(@dir, "linked")
+      git("worktree", "add", "-q", "-b", "other", linked)
+      start = guard.base(linked)
+      File.write(File.join(repo, ".git", "worktrees", "linked", "config.worktree"), "[core]\n\tfsmonitor = true\n")
+
+      expect(change(on: linked, from: start)).to include("code" => "config_changed")
+    end
+
+    it "ignores another linked worktree's config.worktree" do
+      linked = File.join(@dir, "linked")
+      git("worktree", "add", "-q", "-b", "other", linked)
+      start = guard.base(repo)
+      File.write(File.join(repo, ".git", "worktrees", "linked", "config.worktree"), "[core]\n\tfsmonitor = true\n")
+
+      expect(change(from: start)).to be_nil
+    end
+
+    it "warns of a new include, and of a change inside an included file" do
+      extra = File.join(repo, ".git", "extra.cfg")
+      File.write(extra, "[alias]\n\tx = status\n")
+      git("config", "include.path", "extra.cfg")
+      expect(change).to include("code" => "config_changed")
+
+      included = guard.base(repo)
+      expect(guard.config_change(repo, included)).to be_nil
+      File.write(extra, "[alias]\n\tx = log\n")
+      expect(guard.config_change(repo, included)).to include("code" => "config_changed")
+    end
+
+    it "still fails hooks_changed for a core.hooksPath, the warning apart" do
+      git("config", "core.hooksPath", hooks)
+
+      expect(change).to include("code" => "config_changed")
+      expect(check).to include("code" => "hooks_changed")
+      expect(check("config")).to include("code" => "hooks_changed")
+    end
+
+    it "lets neither a config change hide a hook nor a hidden flag" do
+      git("config", "alias.x", "status")
+      File.write(File.join(repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\n")
+      expect(check).to include("code" => "hooks_changed")
+      File.delete(File.join(repo, ".git", "hooks", "pre-commit"))
+      git("update-index", "--assume-unchanged", "a.txt")
+      expect(check).to include("code" => "hidden_changed")
+    end
+
+    it "answers with a reading, and nil when asked again with that reading" do
+      git("config", "alias.x", "status")
+      first = change
+
+      expect(first["reading"]).to match(/\A\h{64}\z/)
+      expect(change(seen: first["reading"])).to be_nil
+      git("config", "alias.y", "log")
+      expect(change(seen: first["reading"])).to include("code" => "config_changed", "old_format" => false)
+    end
+
+    it "says nothing, and drops `seen`, when the config comes back to the base's reading" do
+      git("config", "alias.x", "status")
+      first = change
+      git("config", "--unset", "alias.x")
+
+      expect(change(seen: first["reading"])).to eq("code" => nil, "reading" => base["base_guard"]["config_sha256"])
+      expect(change).to be_nil
+    end
+
+    it "says nothing when a config unreadable a moment ago recovers to the base's reading" do
+      expect(change(seen: "unreadable")).to eq("code" => nil, "reading" => base["base_guard"]["config_sha256"])
+    end
+
+    it "warns when a config unreadable a moment ago recovers to something else" do
+      git("config", "alias.x", "status")
+
+      expect(change(seen: "unreadable")).to include("code" => "config_changed", "old_format" => false)
+    end
+
+    it "warns once, marked old_format, for a base whose digest was made the old way" do
+      old = {"base_sha" => base["base_sha"], "base_guard" => base["base_guard"].except("config_format").merge("config_sha256" => "0" * 64)}
+
+      found = guard.config_change(repo, old)
+      expect(found).to include("code" => "config_changed", "old_format" => true)
+      expect(guard.config_change(repo, old, seen: found["reading"])).to be_nil
+      expect(guard.check(repo, old, "unchanged")).to be_nil
+    end
+
+    it "reads an unreadable config as nil, which warns and then stays quiet" do
+      broken = described_class.new(runner: lambda do |argv, **options|
+        next ["", "fatal: bad config\n", false] if argv.include?("--list")
+        Workspace::TimedProcess.run(argv, **options)
+      end)
+
+      expect(broken.snapshot(repo)["config_sha256"]).to be_nil
+      expect(broken.config_change(repo, base)).to include("reading" => "unreadable")
+      expect(broken.config_change(repo, base, seen: "unreadable")).to be_nil
+    end
+  end
+
+  describe "a filter set after the start" do
+    let(:marker) { File.join(@dir, "ran") }
+
+    before do
+      File.write(File.join(@dir, "filter.sh"), "#!/bin/sh\ntouch #{marker}\ncat a.txt.orig 2>/dev/null\n")
       File.chmod(0o755, File.join(@dir, "filter.sh"))
       write(".gitattributes", "a.txt filter=x\n")
       git("add", ".gitattributes")
       git("commit", "-q", "-m", "attributes")
-      fresh = guard.base(repo)
+    end
+
+    let(:fresh) { guard.base(repo) }
+
+    it "finds the edit it would hide, and never runs it" do
+      fresh
       git("config", "filter.x.clean", File.join(@dir, "filter.sh"))
+      git("config", "filter.x.required", "true")
       write("a.txt", "edited\n")
 
-      expect(guard.check(repo, fresh, "unchanged")).to include("code" => "config_changed")
+      expect(guard.check(repo, fresh, "unchanged")).to eq("code" => "tracked_changed", "paths" => ["a.txt"])
+      expect(guard.dirty_paths(repo, base: fresh)).to eq(["a.txt"])
       expect(File.exist?(marker)).to be(false)
     end
 
-    it "finds a change to info/attributes" do
-      FileUtils.mkdir_p(File.join(repo, ".git", "info"))
-      File.write(File.join(repo, ".git", "info", "attributes"), "a.txt -diff\n")
+    it "leaves a filter alone while the config is the base's" do
+      git("config", "filter.x.clean", "cat")
+      started = guard.base(repo)
+      write("a.txt", "edited\n")
 
-      expect(check).to include("code" => "config_changed")
+      expect(guard.dirty_paths(repo, base: started)).to eq(["a.txt"])
     end
 
-    it "finds a change to config.worktree" do
-      File.write(File.join(repo, ".git", "config.worktree"), "[core]\n\tfsmonitor = true\n")
+    it "answers nil for a planted filter whose name git -c can't carry, and never runs it" do
+      fresh
+      git("config", "filter.a=b.clean", File.join(@dir, "filter.sh"))
+      write(".gitattributes", "a.txt filter=a=b\n")
 
-      expect(check).to include("code" => "config_changed")
+      expect(guard.dirty_paths(repo, base: fresh)).to be_nil
+      expect(guard.check(repo, fresh, "unchanged")).to eq("code" => "tracked_changed", "paths" => [])
+      expect(File.exist?(marker)).to be(false)
     end
 
-    it "checks it in the config scope too" do
-      git("config", "alias.x", "status")
+    it "leaves alone a filter with such a name that was there at the start" do
+      git("config", "filter.a=b.clean", "cat")
+      started = guard.base(repo)
 
-      expect(check("config")).to include("code" => "config_changed")
+      expect(guard.dirty_paths(repo, base: started)).to eq([])
+    end
+  end
+
+  describe "a project's own filter, on a file whose stat data is stale" do
+    let(:marker) { File.join(@dir, "ran") }
+
+    before do
+      git("config", "filter.up.clean", "tr a-z A-Z")
+      write(".gitattributes", "a.txt filter=up\n")
+      git("add", ".gitattributes")
+      git("add", "--renormalize", ".")
+      git("commit", "-q", "-m", "filter")
+    end
+
+    let!(:started) { guard.base(repo) }
+
+    def touch_tracked
+      stamp = Time.now - 300
+      File.utime(stamp, stamp, File.join(repo, "a.txt"))
+    end
+
+    it "stays clean with nothing changed" do
+      touch_tracked
+
+      expect(guard.check(repo, started, "unchanged")).to be_nil
+    end
+
+    it "stays clean for a run with no recorded filter digest, whose config digest never matches" do
+      old = {"base_sha" => started["base_sha"],
+             "base_guard" => started["base_guard"].except("config_format", "filter_sha256").merge("config_sha256" => "0" * 64)}
+      touch_tracked
+
+      expect(guard.config_change(repo, old)).to include("old_format" => true)
+      expect(guard.check(repo, old, "unchanged")).to be_nil
+    end
+
+    it "stays clean through a harmless change to the own branch's section" do
+      git("config", "branch.main.remote", "origin")
+      touch_tracked
+
+      expect(guard.config_change(repo, started)).to include("code" => "config_changed")
+      expect(guard.check(repo, started, "unchanged")).to be_nil
+    end
+
+    it "turns the filters off once a filter entry changes, and never runs the new one" do
+      File.write(File.join(@dir, "planted.sh"), "#!/bin/sh\ntouch #{marker}\ncat\n")
+      File.chmod(0o755, File.join(@dir, "planted.sh"))
+      git("config", "filter.up.clean", File.join(@dir, "planted.sh"))
+      touch_tracked
+
+      expect(guard.check(repo, started, "unchanged")).to eq("code" => "tracked_changed", "paths" => ["a.txt"])
+      expect(File.exist?(marker)).to be(false)
+    end
+
+    it "leaves the filters on when the entries can't be read, rather than failing the step" do
+      reader = described_class.new(runner: lambda do |argv, **options|
+        next ["", "fatal: boom\n", false] if argv.include?("--get-regexp")
+        Workspace::TimedProcess.run(argv, **options)
+      end)
+      touch_tracked
+
+      expect(reader.dirty_paths(repo, base: started)).to eq([])
     end
   end
 
@@ -372,11 +611,12 @@ RSpec.describe Workspace::WorkflowGuard do
       write("a.txt", "edited under a replacement\n")
     end
 
-    it "finds a replace ref planted after the start, which would make status read a clean tree" do
+    it "warns of a replace ref planted after the start, and still reads the real tree" do
       replace_head_with_edited_tree
 
-      expect(check).to include("code" => "config_changed")
-      expect(check("config")).to include("code" => "config_changed")
+      expect(guard.config_change(repo, base)).to include("code" => "config_changed")
+      expect(check).to eq("code" => "tracked_changed", "paths" => ["a.txt"])
+      expect(check("config")).to be_nil
     end
 
     it "does not read through a replace ref that was there at the start" do
@@ -398,7 +638,7 @@ RSpec.describe Workspace::WorkflowGuard do
       File.symlink("tárget", File.join(hooks, "ünk"))
       started = guard.base(repo)
 
-      expect(started["base_guard"].values).to all(match(/\A\h{64}\z/))
+      expect(started["base_guard"].except("config_format").values).to all(match(/\A\h{64}\z/))
       expect(guard.check(repo, started, "unchanged")).to be_nil
       File.binwrite(File.join(hooks, "é"), "\xFE".b)
       expect(guard.check(repo, started, "unchanged")).to include("code" => "hooks_changed")
@@ -407,7 +647,7 @@ RSpec.describe Workspace::WorkflowGuard do
     it "reads a changed config in such a path" do
       git("config", "alias.st", "status é")
 
-      expect(check).to include("code" => "config_changed")
+      expect(guard.config_change(repo, base)).to include("code" => "config_changed")
     end
   end
 
@@ -436,15 +676,6 @@ RSpec.describe Workspace::WorkflowGuard do
       expect(broken.snapshot(repo)["hooks_sha256"]).to be_nil
       expect(broken.check(repo, base, "config")).to include("code" => "hooks_changed")
     end
-  end
-
-  it "finds a change to the config.worktree of a linked worktree, from the main checkout" do
-    linked = File.join(@dir, "linked")
-    git("worktree", "add", "-q", "-b", "other", linked)
-    start = guard.base(repo)
-    File.write(File.join(repo, ".git", "worktrees", "linked", "config.worktree"), "[core]\n\tfsmonitor = true\n")
-
-    expect(guard.check(repo, start, "unchanged")).to include("code" => "config_changed")
   end
 
   it "reads a core.hooksPath that comes from an included config file" do

@@ -616,6 +616,8 @@ module Workspace
     workflow_checker = WorkflowCheck.new
     alert_config = AlertConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
+    # Taken under a run's lock, so the inbox's flock is inside it. Nothing takes them the other way round.
+    workflow_inbox_for = ->(workspace) { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) }
     workflow_engine = WorkflowEngine.new(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
@@ -638,8 +640,8 @@ module Workspace
         end),
       require_check: WorkflowRequire.new(guard: workflow_guard, notes_dir_of: workflow_gate_note.method(:notes_dir_of),
         commands_config: commands_config, checker: workflow_checker,
-        # `inbox_item` reads under the run's lock, so the inbox's flock is taken inside it. Nothing takes them the other way round.
-        inbox_for: ->(workspace) { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) }),
+        inbox_for: workflow_inbox_for),
+      inbox_for: workflow_inbox_for,
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
