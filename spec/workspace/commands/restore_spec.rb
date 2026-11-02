@@ -1283,4 +1283,19 @@ RSpec.describe Workspace::Commands::Restore do
       expect(tmux.delivered).to be_empty
     end
   end
+
+  describe "sessions carried by a rename" do
+    it "resumes a stopped session under the new name" do
+      write_config("fresh")
+      started("api:0.2", sid(7), pane_id: "%7", transcript_path: nil)
+      ended("api:0.2", sid(7), "other")
+      ledger.carry(from: "api", to: "fresh", cwd: cwd)
+
+      slot = restore.send(:slots_for, "fresh", "fresh").first
+      plan = {workspace: "fresh", session: "fresh", launch: true, config: nil, slots: [slot]}
+
+      expect(restore.send(:precheck, plan, slot)).to be_nil
+      expect(slot).to include("session_id" => sid(7), "cwd" => cwd, "end_reason" => "other")
+    end
+  end
 end

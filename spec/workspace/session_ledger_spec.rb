@@ -355,3 +355,101 @@ RSpec.describe Workspace::SessionLedger, "#entries_for" do
     end
   end
 end
+
+RSpec.describe Workspace::SessionLedger, "#carry" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:path) { File.join(tmpdir, "ledger.jsonl") }
+  let(:ledger) { described_class.new(path: path, logger: Workspace::Logger.new) }
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  def seed
+    ledger.record("event" => "session_start", "workspace" => "old", "pane_slot" => "old:0.1", "pane_id" => "%3", "tmux_server" => "9",
+      "session_id" => "s1", "transcript_path" => "/t/s1.jsonl", "cwd" => "/w/old", "layout" => "L", "at" => "t1")
+    ledger.record("event" => "session_end", "workspace" => "old", "pane_slot" => "old:0.1", "session_id" => "s1", "reason" => "other", "at" => "t2")
+    ledger.record("event" => "session_start", "workspace" => "old", "pane_slot" => "elsewhere:0.1", "session_id" => "s2", "at" => "t3")
+  end
+
+  def carry
+    ledger.carry(from: "old", to: "new", cwd: "/w/new")
+  end
+
+  it "writes start and end rows under the new names with the new cwd, leaving a foreign session prefix alone" do
+    seed
+
+    carried = carry
+
+    expect(carried.map { |s| s["pane_slot"] }).to eq(["new:0.1"])
+    expect(ledger.slots_for("new")).to match([include("pane_slot" => "new:0.1", "pane_id" => "%3", "tmux_server" => "9", "session_id" => "s1",
+      "transcript_path" => "/t/s1.jsonl", "cwd" => "/w/new", "layout" => "L", "at" => "t1", "ended_at" => "t2", "end_reason" => "other")])
+    expect(ledger.slots_for("old").find { |s| s["session_id"] == "s2" }).not_to have_key("end_reason")
+  end
+
+  it "ends the old slot as renamed so it is no longer resumable, even after a resumable end" do
+    seed
+
+    carry
+
+    old = ledger.slots_for("old").find { |s| s["session_id"] == "s1" }
+    expect(old["end_reason"]).to eq("renamed")
+    expect(Workspace::Commands::Restore::RESUMABLE_END_REASONS).not_to include("renamed")
+  end
+
+  it "ends an old slot that never ended" do
+    ledger.record("event" => "session_start", "workspace" => "old", "pane_slot" => "old:0.1", "session_id" => "s1")
+
+    carry
+
+    expect(ledger.slots_for("new").first).not_to have_key("end_reason")
+    expect(ledger.slots_for("old").first).to include("end_reason" => "renamed")
+  end
+
+  it "is safe to run twice" do
+    seed
+    carry
+
+    expect { expect(carry).to eq([]) }.not_to change { File.readlines(path).length }
+    expect(ledger.slots_for("new").first).to include("end_reason" => "other")
+  end
+
+  it "finishes after a crash between the new rows and the old ends" do
+    seed
+    ledger.record("event" => "session_start", "workspace" => "new", "pane_slot" => "new:0.1", "session_id" => "s1", "at" => "t1")
+    ledger.record("event" => "session_end", "workspace" => "new", "pane_slot" => "new:0.1", "session_id" => "s1", "reason" => "other", "at" => "t2")
+
+    expect { carry }.to change { File.readlines(path).length }.by(1)
+
+    expect(ledger.slots_for("old").find { |s| s["session_id"] == "s1" }["end_reason"]).to eq("renamed")
+    expect(ledger.slots_for("new").first).to include("end_reason" => "other")
+  end
+
+  it "writes only the end a failed run left out" do
+    seed
+    ledger.record("event" => "session_start", "workspace" => "new", "pane_slot" => "new:0.1", "session_id" => "s1", "at" => "t1")
+
+    expect { carry }.to change { File.readlines(path).length }.by(2)
+    expect(ledger.slots_for("new").first).to include("end_reason" => "other")
+  end
+
+  it "ends the old slot without carrying it when the new name holds a different session" do
+    seed
+    ledger.record("event" => "session_start", "workspace" => "new", "pane_slot" => "new:0.1", "session_id" => "other")
+
+    expect(carry).to eq([])
+
+    expect(ledger.slots_for("new").map { |s| s["session_id"] }).to eq(["other"])
+    expect(ledger.slots_for("old").find { |s| s["session_id"] == "s1" }["end_reason"]).to eq("renamed")
+  end
+
+  it "maps a tmux session name that differs from the workspace name" do
+    ledger.record("event" => "session_start", "workspace" => "old.worktree-a", "pane_slot" => "old-a:0.2", "session_id" => "s1")
+
+    ledger.carry(from: "old.worktree-a", to: "new.worktree-b", cwd: "/w/new", from_session: "old-a", to_session: "new-b")
+
+    expect(ledger.slots_for("new.worktree-b").map { |s| s["pane_slot"] }).to eq(["new-b:0.2"])
+  end
+
+  it "does nothing without a ledger" do
+    expect(carry).to eq([])
+  end
+end

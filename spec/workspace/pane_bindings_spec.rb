@@ -398,4 +398,58 @@ RSpec.describe Workspace::PaneBindings do
       expect(File.read(path)).to eq("{not json")
     end
   end
+
+  describe "#rename_workspace" do
+    it "rekeys a parked binding to the new slot and rewrites session only when it matches" do
+      store.bind("%1", "kind" => "run", "id" => "wr_1", "workspace" => "old", "session" => "keep", "pane_slot" => "old:0.1")
+      store.bind("%2", "kind" => "run", "id" => "wr_2", "workspace" => "old", "session" => "old", "pane_slot" => "elsewhere:0.1")
+      store.bind("%3", "kind" => "run", "id" => "wr_3", "workspace" => "old", "session" => "old")
+      store.send(:update) { |all| all["slot:old:0.4"] = {"kind" => "run", "id" => "wr_4", "workspace" => "old", "session" => "old", "pane_slot" => "old:0.4"} }
+
+      store.rename_workspace(from: "old", to: "new")
+
+      all = JSON.parse(File.read(path))
+      expect(all).not_to have_key("slot:old:0.4")
+      expect(all["slot:new:0.4"]).to include("pane_slot" => "new:0.4")
+      expect(all["%1"]).to include("session" => "keep", "pane_slot" => "new:0.1")
+      expect(all["%2"]).to include("pane_slot" => "elsewhere:0.1")
+      expect(all["%3"]).not_to have_key("pane_slot")
+    end
+
+    it "finds a rekeyed parked binding when restore moves it" do
+      store.send(:update) { |all| all["slot:old:0.4"] = {"kind" => "run", "id" => "wr_4", "workspace" => "old", "session" => "old", "pane_slot" => "old:0.4"} }
+      store.rename_workspace(from: "old", to: "new")
+
+      moved = store.move([{from: "%9", to: "%5", session: "new", from_slot: "new:0.4", to_slot: "new:0.4"}])
+
+      expect(moved["%5"]).to include("id" => "wr_4")
+    end
+
+    it "rewrites workspace, session and slot of matching bindings only" do
+      store.bind("%1", "kind" => "run", "id" => "wr_1", "workspace" => "old", "session" => "old", "pane_slot" => "old:0.1")
+      store.bind("%2", "kind" => "run", "id" => "wr_2", "workspace" => "other", "session" => "other", "pane_slot" => "other:0.1")
+
+      expect(store.rename_workspace(from: "old", to: "new")).to eq(1)
+
+      expect(store.binding_for("%1")).to include("workspace" => "new", "session" => "new", "pane_slot" => "new:0.1")
+      expect(store.binding_for("%2")).to include("workspace" => "other", "session" => "other")
+    end
+
+    it "is a no-op the second time and with no file" do
+      expect(store.rename_workspace(from: "old", to: "new")).to eq(0)
+      expect(File.exist?(path)).to be(false)
+      store.bind("%1", "kind" => "run", "id" => "wr_1", "workspace" => "old", "session" => "old")
+      store.rename_workspace(from: "old", to: "new")
+
+      expect(store.rename_workspace(from: "old", to: "new")).to eq(0)
+    end
+
+    it "takes separate tmux session names" do
+      store.bind("%1", "kind" => "run", "id" => "wr_1", "workspace" => "a.worktree-x", "session" => "a-x", "pane_slot" => "a-x:0.2")
+
+      store.rename_workspace(from: "a.worktree-x", to: "a.worktree-y", from_session: "a-x", to_session: "a-y")
+
+      expect(store.binding_for("%1")).to include("session" => "a-y", "pane_slot" => "a-y:0.2")
+    end
+  end
 end
