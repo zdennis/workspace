@@ -1629,4 +1629,30 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   it "makes locate_project public" do
     expect(command.locate_project).to include(root: root, project_workspace: "app")
   end
+
+  describe "#tracks_repository?" do
+    it "is true for origin" do
+      expect(command.tracks_repository?(root, "o/r")).to be true
+    end
+
+    it "is true for upstream" do
+      remotes["upstream"] = "git@github.com:u/p.git"
+
+      expect(command.tracks_repository?(root, "u/p")).to be true
+    end
+
+    it "ignores case" do
+      expect(command.tracks_repository?(root, "O/R")).to be true
+    end
+
+    it "is false for another repository" do
+      expect(command.tracks_repository?(root, "x/y")).to be false
+    end
+
+    it "is false with no remotes" do
+      remotes.clear
+
+      expect(command.tracks_repository?(root, "o/r")).to be false
+    end
+  end
 end

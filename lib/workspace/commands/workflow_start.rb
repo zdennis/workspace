@@ -170,6 +170,16 @@ module Workspace
         require_claude!(@agent_commands.kind(workspace, project: project))
       end
 
+      # Whether +repo+ (`owner/repo`, any case) on github.com is a repository the project at +root+
+      # tracks as origin or upstream. Reads git config only, no network.
+      #
+      # @param root [String] the project checkout
+      # @param repo [String] `owner/repo`
+      # @return [Boolean]
+      def tracks_repository?(root, repo)
+        tracked_repositories(root).include?("github.com/#{repo}".downcase)
+      end
+
       private
 
       # Runs the workflow in the checkout the command was called from. `plan` has made every
