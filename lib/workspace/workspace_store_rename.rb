@@ -23,8 +23,20 @@ module Workspace
     # The retry hint of the held-back config warning: what the daemon-driven rename does.
     DEFAULT_RETRY_HINT = "the next agentd start tries again (a name already taken has to be cleared by hand)"
 
+    # The digits {.staged_name} allows for a process id; no system goes past this.
+    PID_DIGITS = 10
+
     # A target name that is already taken.
     class Conflict < Workspace::Error; end
+
+    # The temporary name the new config is written under, the longest file name the rename makes.
+    #
+    # @param config_file [String] the new config's file name
+    # @param pid [Integer, String] the widest process id when not given
+    # @return [String]
+    def self.staged_name(config_file, pid = "9" * PID_DIGITS)
+      ".#{config_file}.#{pid}.tmp"
+    end
 
     # Whether the directory listing holds this exact name; on a file system
     # that ignores case, File.exist? would also find a name that differs in case.
@@ -138,7 +150,7 @@ module Workspace
       old = @old
       new = @new
       entries = @state.load.to_h
-      return nil unless entries.key?(old)
+      return nil if old == new || !entries.key?(old)
       raise Conflict, "the state file already has #{new}" if entries.key?(new)
 
       value = @state[old]
@@ -181,8 +193,9 @@ module Workspace
       new_session = @new_session
       from = @config.config_path_for(old)
       to = @config.config_path_for(new)
+      recover_swap(from, to)
       return nil unless listed?(from)
-      raise Conflict, "#{to} already exists" if listed?(to)
+      raise Conflict, "#{to} already exists" if from != to && listed?(to)
 
       session = Regexp.escape(@session)
       name = Regexp.escape(old)
@@ -201,11 +214,13 @@ module Workspace
         line
       end.join
 
-      # Between the two renames no config exists for a moment; the daemon's
-      # startup lock is held, and `launch` takes it too.
+      # Between the two renames no config exists for a moment. The startup lock
+      # keeps a daemon from starting; `launch` holds it only while it migrates
+      # a name, so a launch in that moment finds no config. A process killed
+      # there leaves `held` and `staged`, which {#recover_swap} clears up.
       dir = File.dirname(from)
-      staged = File.join(dir, ".workspace.#{new}.yml.#{Process.pid}.tmp")
-      held = File.join(dir, ".workspace.#{old}.yml.#{Process.pid}.old")
+      staged = File.join(dir, self.class.staged_name(File.basename(to), Process.pid))
+      held = File.join(dir, ".#{File.basename(from)}.#{Process.pid}.old")
       File.write(staged, text)
       File.chmod(File.stat(from).mode & 0o7777, staged)
       File.rename(from, held)
@@ -219,6 +234,24 @@ module Workspace
       [from, to]
     ensure
       File.delete(staged) if staged && File.exist?(staged)
+    end
+
+    # What a swap killed part way left behind, under any process id: the old
+    # config held aside comes back unless a config is in place, and the rest goes.
+    def recover_swap(from, to)
+      dir = File.dirname(from)
+      return unless Dir.exist?(dir)
+
+      held = /\A\.#{Regexp.escape(File.basename(from))}\.\d+\.old\z/
+      staged = /\A\.#{Regexp.escape(File.basename(to))}\.\d+\.tmp\z/
+      Dir.children(dir).sort.each do |entry|
+        path = File.join(dir, entry)
+        if entry.match?(staged)
+          File.delete(path)
+        elsif entry.match?(held)
+          (listed?(from) || listed?(to)) ? File.delete(path) : File.rename(path, from)
+        end
+      end
     end
 
     # @param keep_if_taken [Boolean] leave +from+ alone, without a warning, when +to+ exists

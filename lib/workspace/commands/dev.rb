@@ -322,6 +322,20 @@ module Workspace
         {exit_code: 0, stopped: false}
       end
 
+      # Whether a checkout's dev environment holds the `devenv` lock, for `rename`, which moves the
+      # directory it runs in: a live holder of that worktree, or a run's live delegate there. Writes nothing.
+      #
+      # @param path [String] the checkout
+      # @return [Boolean]
+      # @raise [Workspace::Error] if the lock store can't be read
+      def lock_held_by?(path)
+        store = LockStore.new(dir: @lock_namespace.resolve(cwd: path)[:dir], liveness: @lock_holder, terminator: @terminator)
+        holder = store.peek(LOCK_NAME)&.fetch("holder")
+        record = run?(holder) ? holder["delegate"] : holder
+        return false if record.nil? || record["stale"] || !record["worktree"].is_a?(String)
+        CheckoutMove.real_path(record["worktree"]) == CheckoutMove.real_path(path)
+      end
+
       # The dev environment's state as the `dev status --json` payload, without
       # printing it. The ready probe runs only while the environment is running.
       # A `kind: "run"` holder is a workflow run holding the lock: the

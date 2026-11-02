@@ -453,3 +453,104 @@ RSpec.describe Workspace::SessionLedger, "#carry" do
     expect(carry).to eq([])
   end
 end
+
+RSpec.describe Workspace::SessionLedger, "#carry through several renames" do
+  let(:tmpdir) { File.realpath(Dir.mktmpdir) }
+  let(:ledger) { described_class.new(path: File.join(tmpdir, "ledger.jsonl"), logger: Workspace::Logger.new) }
+  let(:transcript) { File.join(tmpdir, "s1.jsonl").tap { |path| File.write(path, "") } }
+  let(:checkout) { tmpdir }
+  let(:restore) do
+    Workspace::Commands::Restore.new(ledger: ledger, tmux: nil, pane_bindings: nil, tmuxinator_report: nil, process_tree: nil, resume_command: nil,
+      output: StringIO.new, error_output: StringIO.new)
+  end
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  before do
+    ledger.record("event" => "session_start", "workspace" => "sa", "pane_slot" => "sa:0.0", "pane_id" => "%1", "tmux_server" => "9",
+      "session_id" => "11111111-1111-1111-1111-111111111111", "transcript_path" => transcript, "cwd" => checkout)
+  end
+
+  def rename(from, to)
+    ledger.carry(from: from, to: to, cwd: checkout, from_session: "s#{from}", to_session: "s#{to}")
+  end
+
+  # What `restore NAME` makes of the slots: the ones nothing rules out.
+  def resumable(name)
+    session = "s#{name}"
+    restore.send(:slots_for, name, session).reject { |slot| restore.send(:precheck, {workspace: name, session: session}, slot) }
+  end
+
+  it "keeps the conversation on a trip there and back" do
+    rename("a", "b")
+    rename("b", "a")
+
+    expect(resumable("a").map { |slot| slot["pane_slot"] }).to eq(["sa:0.0"])
+    expect(resumable("b")).to eq([])
+  end
+
+  it "keeps it through a further rename after the trip" do
+    rename("a", "b")
+    rename("b", "a")
+    rename("a", "d")
+
+    expect(resumable("d").map { |slot| slot["pane_slot"] }).to eq(["sd:0.0"])
+    expect(resumable("a")).to eq([])
+    expect(resumable("b")).to eq([])
+  end
+
+  it "keeps it from A to B to C" do
+    rename("a", "b")
+    rename("b", "c")
+
+    expect(resumable("c").map { |slot| [slot["pane_slot"], slot["transcript_path"]] }).to eq([["sc:0.0", transcript]])
+    expect(resumable("a") + resumable("b")).to eq([])
+  end
+
+  it "keeps it there and back twice" do
+    2.times do
+      rename("a", "b")
+      rename("b", "a")
+    end
+
+    expect(resumable("a").size).to eq(1)
+    expect(resumable("b")).to eq([])
+  end
+
+  it "writes nothing more when the way back runs again" do
+    rename("a", "b")
+    rename("b", "a")
+
+    expect { rename("b", "a") }.not_to change { File.readlines(File.join(tmpdir, "ledger.jsonl")).length }
+    expect(resumable("a").size).to eq(1)
+  end
+
+  it "finishes a way back that stopped after the new row" do
+    rename("a", "b")
+    slot = ledger.slots_for("b", "sb").first
+    ledger.record(slot.slice("pane_id", "tmux_server", "session_id", "transcript_path", "at").merge("event" => "session_start", "workspace" => "a", "pane_slot" => "sa:0.0", "cwd" => checkout))
+
+    rename("b", "a")
+
+    expect(resumable("a").size).to eq(1)
+    expect(resumable("b")).to eq([])
+    expect(ledger.entries_for("a").count { |entry| entry["event"] == "session_start" }).to eq(1)
+  end
+
+  it "keeps an end the session had, there and back" do
+    ledger.record("event" => "session_end", "workspace" => "sa", "pane_slot" => "sa:0.0", "session_id" => "11111111-1111-1111-1111-111111111111", "reason" => "other")
+    rename("a", "b")
+    rename("b", "a")
+
+    expect(resumable("a").first).to include("end_reason" => "other")
+  end
+
+  it "gives a slot that ended renamed to a different session coming in" do
+    ledger.record("event" => "session_start", "workspace" => "b", "pane_slot" => "sb:0.0", "session_id" => "s2", "cwd" => checkout)
+    rename("b", "z")
+    ledger.record("event" => "session_start", "workspace" => "sz", "pane_slot" => "sz:0.1", "session_id" => "s3", "cwd" => checkout)
+
+    expect(ledger.carry(from: "z", to: "b", cwd: checkout, from_session: "sz", to_session: "sb").map { |slot| slot["pane_slot"] }).to include("sb:0.1")
+    expect(ledger.slots_for("b", "sb").find { |slot| slot["session_id"] == "s2" }).to include("pane_slot" => "sb:0.0")
+  end
+end

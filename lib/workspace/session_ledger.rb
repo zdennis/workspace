@@ -191,6 +191,7 @@ module Workspace
     # `restore OLD` does not resume the session `restore NEW` does; an old slot already ended
     # `renamed` is skipped. A slot of another tmux session name is left. One whose new slot is held by a
     # different session is not carried, but is still ended, so one transcript has only one resume.
+    # A new slot that itself ended `renamed` holds nothing, so a rename back to an old name writes anew.
     #
     # @param from [String] the old workspace name
     # @param to [String] the new workspace name
@@ -208,6 +209,7 @@ module Workspace
 
         new_slot = "#{to_session}:#{match[1]}"
         have = carried[new_slot]
+        have = nil if have && have["end_reason"] == RENAMED
         same = have && have["session_id"] == slot["session_id"]
         taken = have && !same
 

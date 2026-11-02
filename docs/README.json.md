@@ -303,7 +303,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 
 ### rename codes
 
-`rename` refuses before it changes anything. Reused codes: `unknown_workspace`, `checkout_missing`, `detached_head`, `rebase_in_progress`, `workspace_name_case_conflict`. `details.workspace` and `details.branch` are the current names; the new ones are `details.new`, or `new_workspace`, `new_branch` and `new_path` in `rename_target_taken`. `details.fix`, where listed, is a command that clears the refusal.
+`rename` refuses before it changes anything, except `rename_failed` (undone) and `rename_incomplete` (finish it by running the same command). Reused codes: `unknown_workspace`, `checkout_missing`, `detached_head`, `rebase_in_progress`, `workspace_name_case_conflict`. `details.workspace` and `details.branch` are the current names; the new ones are `details.new`, or `new_workspace`, `new_branch` and `new_path` in `rename_target_taken`. `details.fix`, where listed, is a command that clears the refusal.
 
 | Code | Meaning |
 |---|---|
@@ -315,10 +315,13 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `rename_pull_request_branch` | The branch, or the new name, is a `pr-N` branch. `details.branch`, `details.new`. |
 | `rename_no_change` | The branch already has that name. `details.branch`. |
 | `rename_invalid_name` | The new name is not a branch name git accepts, leaves no directory name, or makes a config file name (`workspace.<name>.yml`) over 255 bytes. `details.new`; for the length `details.reason` (`too_long`), `details.bytes`, `details.limit`. |
-| `rename_target_taken` | A new name is taken. `details.taken`: any of `branch`, `branch_conflict` (a branch that can't coexist with the new name as a git ref, `a` and `a/b`; `details.conflicting_branch`), `directory`, `config`, `state_key`, `state_dir`, `session` (the new tmux session name), `notes_target` (`details.notes_path`); `details.new_workspace`, `details.new_branch`, `details.new_path` (always the new checkout path). |
+| `rename_target_taken` | A new name is taken. `details.taken`: any of `branch`, `branch_conflict` (a branch that can't coexist with the new name as a git ref, `a` and `a/b`; `details.conflicting_branch`), `directory`, `config`, `state_key`, `state_dir`, `project_settings`, `socket`, `agent_log`, `inbox`, `hook_events`, `session` (the new tmux session name), `notes_target` (`details.notes_path`); `details.new_workspace`, `details.new_branch`, `details.new_path` (always the new checkout path), `details.paths` (the files in the way, by what is taken), `details.fix` (the `rm` command, when only `agent_log`, `socket` or `hook_events` are in the way). |
 | `rename_case_only` | The new worktree directory differs from the old one only in case, which the file system may not move. `details.from`, `details.to`. |
 | `rename_locked_worktree` | The worktree is locked (`git worktree lock`). `details.path`, `details.fix` (`git worktree unlock PATH`). |
-| `rename_in_progress` | An earlier rename was started and not finished; run the same command again to finish it. `details.workspace`, `details.new_branch` (the name that rename was for), `details.rerun` (`true`). |
+| `rename_in_progress` | An earlier rename was started and not finished; run the same command again to finish it. `details.workspace`, `details.new_branch` (the name that rename was for), `details.rerun` (`true`), `details.fix` (the command). A journal that can't be read, or whose checkout is gone, gives `details.path` (the journal file), `details.rerun` `false` and `details.fix` (the `rm` command). |
+| `rename_notes_other_volume` | The notes would move to another volume, which a rename can't do. `details.workspace`, `details.new`, `details.from`, `details.to`. |
+| `rename_failed` | A git step failed and was undone, or the rename could not begin. Nothing changed and no journal is left. `details.workspace`, `details.new_branch`, `details.step` (`startup_lock`, `journal`, `worktree_move`, `branch_rename`), `details.rolled_back`, `details.signal` when a signal stopped it. |
+| `rename_incomplete` | The rename stopped after the git steps, or the undo of one failed. The journal is kept; the same command finishes it. `details.workspace`, `details.new_workspace`, `details.new_branch`, `details.failed` (the steps; `startup_lock` on a re-run that could not take it), `details.problems`, `details.rerun` (`true`, or `false` when no config is left under either name and a re-run can not finish), `details.fix` (the command, or the `rm` of the journal), `details.signal` when a signal stopped it. |
 
 The plan (`rename --dry-run --json`, from `RenamePlan::Plan#to_h`) has these fields:
 

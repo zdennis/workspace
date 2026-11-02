@@ -49,6 +49,22 @@ RSpec.describe Workspace::WorkspaceStoreRename do
     Dir.children(dir).sort
   end
 
+  it "rewrites the config in place when only the branch changes, the name staying" do
+    path = config.config_path_for(old)
+    write(path, "name: proj-wt-feat\nroot: #{checkout}\n  - echo 'Worktree — a/b (x)'\n")
+    state.load
+    state[old] = {"unique_id" => "u"}
+    state.save
+
+    outcome = described_class.new(config: config, project_config: project_config, tmux: tmux, state: state,
+      project_catalog_factory: -> { Workspace::ProjectCatalog.new(project_config: project_config, git: git) },
+      old: old, new: old, session: "proj-wt-feat", new_session: "proj-wt-feat", root: checkout, branch: "a/b", new_branch: "a-b").call
+
+    expect(outcome.failed).to eq([])
+    expect(File.read(path)).to include("Worktree — a-b (x)")
+    expect(state.load.to_h).to have_key(old)
+  end
+
   def yml
     <<~YML
       # #{config.config_path_for(old)}
@@ -143,6 +159,47 @@ RSpec.describe Workspace::WorkspaceStoreRename do
       project_catalog_factory: -> { Workspace::ProjectCatalog.new(project_config: project_config, git: git) },
       old: old, new: new, session: "proj-wt-feat", new_session: "proj-wt-other", retry_hint: "run `workspace rename` again")
     expect(hinted.call.warnings.last).to end_with("until the steps above succeed; run `workspace rename` again")
+  end
+
+  context "after a process was killed swapping the config" do
+    let(:from) { config.config_path_for(old) }
+    let(:to) { config.config_path_for(new) }
+    let(:held) { File.join(config.tmuxinator_dir, ".workspace.#{old}.yml.4242.old") }
+    let(:staged) { File.join(config.tmuxinator_dir, ".workspace.#{new}.yml.4242.tmp") }
+
+    it "brings the held config back and finishes" do
+      File.rename(from, held)
+      write(staged, "partial")
+
+      expect(rename.call.failed).to eq([])
+
+      expect(listing(config.tmuxinator_dir)).to eq(["workspace.proj.worktree-other.yml"])
+      expect(File.read(to)).to include("name: proj-wt-other\n")
+    end
+
+    it "clears the held config when the new one was already in place" do
+      File.write(to, "name: done\n")
+      File.rename(from, held)
+
+      rename.call
+
+      expect(listing(config.tmuxinator_dir)).to eq(["workspace.proj.worktree-other.yml"])
+      expect(File.read(to)).to eq("name: done\n")
+    end
+
+    it "leaves another workspace's files alone" do
+      other = File.join(config.tmuxinator_dir, ".workspace.proj.worktree-feat-2.yml.4242.old")
+      write(other, "theirs")
+
+      rename.call
+
+      expect(File.read(other)).to eq("theirs")
+    end
+  end
+
+  it "stages the new config under the name it reports" do
+    expect(described_class.staged_name("workspace.a.yml", 12)).to eq(".workspace.a.yml.12.tmp")
+    expect(described_class.staged_name("workspace.a.yml").bytesize).to eq(".workspace.a.yml..tmp".bytesize + described_class::PID_DIGITS)
   end
 
   describe "a config generated from the real templates" do

@@ -30,6 +30,9 @@ module Workspace
     # A target name that is already taken (see {WorkspaceStoreRename::Conflict}).
     Conflict = WorkspaceStoreRename::Conflict
 
+    # A startup lock in {#with_locks} that could not be taken; errors from its block pass as they are.
+    class LockUnavailable < StandardError; end
+
     # @param config [Workspace::Config]
     # @param project_config [Workspace::ProjectConfig] reads a config's root
     # @param tmux [Workspace::Tmux] reads and renames sessions
@@ -83,6 +86,28 @@ module Workspace
     # @return [String]
     def lock_path(name)
       @config.agent_lock_path(WorkspaceName.normalize(name))
+    end
+
+    # Waits for the startup locks of several names, in sorted order so two callers never deadlock,
+    # and holds them around the block.
+    #
+    # @param names [Array<String>] workspace names, in any case
+    # @yield with every lock held
+    # @return [Object] the block's value
+    # @raise [LockUnavailable] when a lock file can't be opened or locked
+    def with_locks(*names)
+      files = []
+      begin
+        names.map { |name| lock_path(name) }.uniq.sort.each do |path|
+          files << File.open(path, File::RDWR | File::CREAT, 0o600)
+          files.last.flock(File::LOCK_EX)
+        end
+      rescue SystemCallError => e
+        raise LockUnavailable, e.message
+      end
+      yield
+    ensure
+      files.each(&:close)
     end
 
     private
@@ -143,10 +168,6 @@ module Workspace
       # Names only, never paths or messages, like every lifecycle event.
       @event_log&.record(type: "workspace_renamed", project: new,
         data: {"workspace" => new, "from" => old, "renamed" => outcome.renamed.map { |entry| entry["what"] }, "failed" => outcome.failed})
-    end
-
-    def listed?(path)
-      WorkspaceStoreRename.listed?(path)
     end
   end
 end

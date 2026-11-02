@@ -12,12 +12,13 @@ module Workspace
   #
   # The workspace must be stopped: a live tmux session or agent daemon is `workspace_running`.
   #
-  # A re-run that finishes a half-done rename passes `resume: true` to {#call}. It reads the checkout
-  # from wherever it is now, the old path or the new one, and skips only what the rename's own earlier
+  # A re-run that finishes a half-done rename passes `resume: true` to {#call}. The names and the notes
+  # decision come from the journal, since the rename's own steps change what they are worked out from.
+  # It reads the checkout from wherever it is now, the old path or the new one, and skips only what those
   # steps would trip: `rename_no_change`, the journal that says a rename is in progress (when it is for
   # the same NEW), the target directory once the old path is gone, the branch checks once the branch is
-  # already NEW and the notes target once the old path is gone. While the old path still exists the full
-  # `rename_target_taken` check runs.
+  # already NEW, and a config, state key, state directory or left file under the new name once the old one is gone.
+  # Both present is a real conflict. While the old path still exists the rest of `rename_target_taken` runs.
   class RenamePlan
     # What happens to the notes directory.
     #
@@ -79,6 +80,9 @@ module Workspace
     # A branch `gh pr checkout` made.
     PULL_REQUEST_BRANCH = /\Apr-\d+\z/
 
+    # What the plan can name a delete for: the other files hold what a person wrote or was told.
+    DISPOSABLE = %w[agent_log socket hook_events].freeze
+
     # The longest file name most file systems take, in bytes.
     NAME_MAX_BYTES = 255
 
@@ -107,10 +111,13 @@ module Workspace
     # @param workflow_engine [Workspace::WorkflowEngine] says whether a run is going on the checkout
     # @param dev_lock [#call] `(checkout_path)` to whether the checkout holds the `devenv` lock
     # @param journal [#call] `(workspace)` to the journal of a half-done rename of that workspace, a Hash
-    #   with `"new_branch"`, or nil
+    #   with `"new_branch"` and the first run's `"path"`, `"new_workspace"`, `"session"`, `"new_session"` and
+    #   `"notes"`, or nil
     # @param transcripts [#call] `(checkout_path)` to whether Claude Code keeps conversations for it
+    # @param device [#call] `(path)` to the device number of the volume the path itself is on
     def initialize(git:, project_config:, config:, tmux:, state:, notes:, notes_dir:, workflow_engine:,
-      dev_lock: ->(_path) { false }, journal: ->(_workspace) {}, transcripts: ->(path) { self.class.transcripts?(path) })
+      dev_lock: ->(_path) { false }, journal: ->(_workspace) {}, transcripts: ->(path) { self.class.transcripts?(path) },
+      device: ->(path) { File.lstat(path).dev })
       @git = git
       @project_config = project_config
       @config = config
@@ -122,6 +129,7 @@ module Workspace
       @dev_lock = dev_lock
       @journal = journal
       @transcripts = transcripts
+      @device = device
     end
 
     # @param workspace [String] the workspace's full name, already settled by the caller
@@ -134,10 +142,11 @@ module Workspace
     #   and the codes in {Workspace::ErrorCodes} that start with `rename_`, plus `workspace_running`,
     #   `run_active` and `dev_lock_held`; `workspace_name_case_conflict` from the name rule
     def call(workspace:, new:, resume: false, old_branch: nil)
-      root = @project_config.project_root_for(workspace)
+      journal = check_journal(workspace, new, resume)
+      recorded = resume ? journal.to_h : {}
+      root = recorded["path"] || @project_config.project_root_for(workspace)
       raise refusal("unknown_workspace", "Unknown workspace '#{workspace}'. Run 'workspace list --all' to see the names.", "name" => workspace) unless root
 
-      check_journal(workspace, new, resume)
       path = File.expand_path(root)
       dir = @git.sanitize_for_filesystem(new)
       new_path = File.join(File.dirname(path), dir)
@@ -146,14 +155,16 @@ module Workspace
       branch = current_branch(checkout, workspace)
       old_branch = (resume && old_branch) || branch
       check_names(old_branch, new, dir, path, resume)
-      check_state(workspace, checkout)
+      session = recorded["session"] || @tmux.session_name_for(workspace)
+      check_state(workspace, session, checkout)
 
-      new_workspace = @project_config.settle_worktree_name(project, dir, new_path)
+      new_workspace = recorded["new_workspace"] || @project_config.settle_worktree_name(project, dir, new_path)
       check_length(new, new_workspace)
-      session = @tmux.session_name_for(workspace)
-      new_session = @project_config.worktree_session_name(project, dir)
+      new_session = recorded["new_session"] || @project_config.worktree_session_name(project, dir)
+      check_new_stopped(new_workspace, new_session) if resume
       check_taken(workspace, new_workspace, new, new_session, session, path, new_path, checkout, branch, old_branch, resume)
-      notes = notes_move(workspace, new_workspace, old_branch, new, path, new_path, checkout, resume)
+      notes = recorded["notes"] ? journaled_notes(recorded["notes"]) : notes_move(workspace, new_workspace, old_branch, new, path, new_path, checkout)
+      check_notes_volume(workspace, new, notes)
 
       Plan.new(project: project, workspace: workspace, new_workspace: new_workspace, branch: old_branch, new_branch: new,
         path: path, new_path: new_path, session: session, new_session: new_session, notes: notes,
@@ -212,15 +223,29 @@ module Workspace
     # A journal for NEW is a rename to finish (a re-run with resume); one for another name, or any
     # journal without resume, is refused. This runs before every check that the rename's own steps could
     # trip, so a crashed rename is always reported as in progress.
+    #
+    # @return [Hash, nil] the journal to go on with
     def check_journal(workspace, new, resume)
       journal = @journal.call(workspace)
       return unless journal
-      return if resume && journal["new_branch"] == new
-      raise refusal("rename_in_progress", "A rename of '#{workspace}' to '#{journal["new_branch"]}' was started and not finished. Run the same command again to finish it.",
-        "workspace" => workspace, "new_branch" => journal["new_branch"], "rerun" => true)
+      name = journal["workspace"] || workspace
+      check_journal_checkout(journal, name)
+      return journal if resume && journal["new_branch"] == new
+      rerun = "workspace rename #{Shellwords.escape(name)} #{Shellwords.escape(journal["new_branch"].to_s)}"
+      raise refusal("rename_in_progress", "A rename of '#{name}' to '#{journal["new_branch"]}' was started and not finished. Run `#{rerun}` to finish it.",
+        "workspace" => name, "new_branch" => journal["new_branch"], "rerun" => true, "fix" => rerun)
     end
 
-    def check_state(workspace, checkout)
+    # With neither checkout there no re-run can finish, and only deleting the journal lets go of the name.
+    def check_journal_checkout(journal, workspace)
+      paths = [journal["path"], journal["new_path"]].compact
+      return if paths.empty? || paths.any? { |path| Dir.exist?(path) }
+      file = @config.rename_journal_path(workspace)
+      raise refusal("rename_in_progress", "A rename of '#{workspace}' was started, but its checkout is gone (#{paths.uniq.join(", ")}), so it can't finish. Delete #{file} to clear it.",
+        "workspace" => workspace, "new_branch" => journal["new_branch"], "path" => file, "rerun" => false, "fix" => "rm #{Shellwords.escape(file)}")
+    end
+
+    def check_state(workspace, session, checkout)
       if @git.rebase_in_progress?(checkout)
         raise refusal("rebase_in_progress", "A rebase is stopped in #{checkout}. Finish or abort it first.", "path" => checkout, "workspace" => workspace)
       end
@@ -228,7 +253,6 @@ module Workspace
         unlock = "git worktree unlock #{Shellwords.escape(checkout)}"
         raise refusal("rename_locked_worktree", "The worktree at #{checkout} is locked (git worktree lock), and git won't move it. Run `#{unlock}` first.", "path" => checkout, "fix" => unlock)
       end
-      session = @tmux.session_name_for(workspace)
       stop = "workspace stop #{workspace}"
       if @tmux.session_exists?(session)
         raise refusal("workspace_running", "The tmux session of '#{workspace}' is running. Run `#{stop}` first.", "workspace" => workspace, "session" => session, "reason" => "session", "fix" => stop)
@@ -246,17 +270,26 @@ module Workspace
       end
     end
 
-    # The tmuxinator config is `workspace.<name>.yml`, unhashed, and is the last file the rename writes.
+    # Past the config step the workspace answers to the new name, and can be launched under it.
+    def check_new_stopped(new_workspace, new_session)
+      return unless @config.agent_running?(new_workspace)
+      stop = "workspace stop #{new_workspace}"
+      raise refusal("workspace_running", "The agent daemon of '#{new_workspace}' is running. Run `#{stop}` first.", "workspace" => new_workspace, "session" => new_session, "reason" => "agent", "fix" => stop)
+    end
+
+    # The tmuxinator config is `workspace.<name>.yml`, unhashed, and is the last file the rename writes,
+    # by way of a longer temporary name.
     def check_length(new, new_workspace)
-      file = File.basename(@config.config_path_for(new_workspace))
+      file = WorkspaceStoreRename.staged_name(File.basename(@config.config_path_for(new_workspace)))
       return if file.bytesize <= NAME_MAX_BYTES
-      raise refusal("rename_invalid_name", "'#{new}' makes a workspace config file name of #{file.bytesize} bytes; the limit is #{NAME_MAX_BYTES}. Pick a shorter name.",
+      raise refusal("rename_invalid_name", "'#{new}' makes a temporary workspace config file name of #{file.bytesize} bytes; the limit is #{NAME_MAX_BYTES}. Pick a shorter name.",
         "new" => new, "reason" => "too_long", "bytes" => file.bytesize, "limit" => NAME_MAX_BYTES)
     end
 
     # While the old path exists nothing of the rename has run that these checks could trip, so all of
     # them run. On a re-run past the git move the directory is the rename's own, and a branch already
-    # named NEW is the rename's own too.
+    # named NEW is the rename's own too. So is a store under the new name once the old one is gone.
+    # Files left under the new name are found here, before git moves anything: see {#leftovers}.
     def check_taken(workspace, new_workspace, new, new_session, session, path, new_path, checkout, branch, old_branch, resume)
       moved = resume && !Dir.exist?(path)
       taken = []
@@ -272,14 +305,38 @@ module Workspace
       end
       taken << "directory" if !moved && new_path != path && (File.exist?(new_path) || File.symlink?(new_path))
       if new_workspace != workspace
-        taken << "config" if @project_config.existing_name(new_workspace)
-        taken << "state_key" if @state.keys.any? { |key| key.casecmp?(new_workspace) }
-        taken << "state_dir" if File.exist?(@config.pipeline_state_dir(new_workspace))
+        keys = @state.keys
+        taken << "config" if @project_config.existing_name(new_workspace) && (!resume || @project_config.existing_name(workspace))
+        taken << "state_key" if keys.any? { |key| key.casecmp?(new_workspace) } && (!resume || keys.include?(workspace))
+        taken << "state_dir" if File.exist?(@config.pipeline_state_dir(new_workspace)) && (!resume || File.exist?(@config.pipeline_state_dir(workspace)))
+        files = leftovers(workspace, new_workspace, resume)
+        taken.concat(files.keys)
       end
       taken << "session" if new_session != session && @tmux.session_exists?(new_session)
       return if taken.empty?
+      if files&.any?
+        details["paths"] = files
+        details["fix"] = "rm #{files.values.map { |file| Shellwords.escape(file) }.join(" ")}" if (taken - DISPOSABLE).empty?
+      end
       raise refusal("rename_target_taken", "Can't rename '#{workspace}' to '#{new}': already taken (#{taken.join(", ")}).",
         {"taken" => taken, "new_workspace" => new_workspace, "new_branch" => new, "new_path" => new_path}.merge(details))
+    end
+
+    # What `kill` and a dead daemon leave under a name, and the store step would stop on. An event log
+    # counts on a first run only: on a re-run the new one is a launch's, and the step joins the two.
+    #
+    # @return [Hash{String=>String}] what is taken to its path
+    def leftovers(workspace, new_workspace, resume)
+      stores = {"project_settings" => ->(name) { @config.project_config_path(name) }, "socket" => ->(name) { @config.agent_socket_path(name) },
+                "agent_log" => ->(name) { @config.agent_log_path(name) }, "inbox" => ->(name) { @config.inbox_path("workspace", name) }}
+      found = stores.select { |_, path| listed?(path.call(new_workspace)) && (!resume || listed?(path.call(workspace))) }.transform_values { |path| path.call(new_workspace) }
+      events = HookEventLog.path_for(@config.hook_events_dir, new_workspace)
+      found["hook_events"] = events if !resume && listed?(events)
+      found
+    end
+
+    def listed?(path)
+      WorkspaceStoreRename.listed?(path)
     end
 
     # Git keeps refs as files, so `a` and `a/b` can't both be branches.
@@ -290,13 +347,9 @@ module Workspace
     end
 
     # Notes move only when they sit where the rule put them for the old names. A directory inside the
-    # checkout goes with it. A target that exists is `rename_target_taken` (`notes_target`).
-    #
-    # The notes directory is resolved against +checkout+, where the checkout is now: after the git move
-    # the workspace's config still names the old path, which no longer exists. A re-run past the git
-    # move that finds the rule's answer for the new names but a directory at the old names' place is
-    # a move not done yet.
-    def notes_move(workspace, new_workspace, old_branch, new, path, new_path, checkout, resume)
+    # checkout goes with it. A target that isn't free (see {NotesCarry.clash?}) is `rename_target_taken`
+    # (`notes_target`). A re-run never comes here: it goes by what the journal recorded, {#journaled_notes}.
+    def notes_move(workspace, new_workspace, old_branch, new, path, new_path, checkout)
       current = @notes.info(name: workspace, root: checkout)["dir"]
       return stays(current, "unresolved") unless current
       rule = @notes.location_rule(name: workspace)
@@ -307,16 +360,13 @@ module Workspace
 
       old_default = @notes_dir.path_for(template: rule[:template], worktree: true, root: path, workspace: workspace, branch: old_branch, main_dir: rule[:main_dir])
       target = @notes_dir.path_for(template: rule[:template], worktree: true, root: new_path, workspace: new_workspace, branch: new, main_dir: rule[:main_dir])
-      if resume && old_default && target && real(current) == real(target) && real(old_default) != real(current) && Dir.exist?(old_default)
-        current = old_default
-      end
       return stays(current, "custom") unless old_default && real(old_default) == real(current)
 
       return stays(current, "unresolved") unless target
       return stays(current, "same") if real(target) == real(current)
       return stays(current, "nested") if nested?(current, target)
 
-      if !(resume && !Dir.exist?(path)) && (File.exist?(target) || File.symlink?(target))
+      if NotesCarry.clash?(target, directory: true)
         raise refusal("rename_target_taken", "Can't rename '#{workspace}' to '#{new}': the notes directory #{target} already exists.",
           "taken" => ["notes_target"], "new_workspace" => new_workspace, "new_branch" => new, "new_path" => new_path, "notes_path" => target)
       end
@@ -324,6 +374,24 @@ module Workspace
     rescue Workspace::Error => e
       raise if e.code == "rename_target_taken"
       stays(nil, "unresolved", "#{e.code}: #{e.message}")
+    end
+
+    # A rename can't cross volumes, and by the notes step git has already moved. A re-run whose notes
+    # have gone has nothing to check.
+    def check_notes_volume(workspace, new, notes)
+      return unless notes.action == "move"
+      from = @device.call(notes.from)
+      target = notes.to
+      target = File.dirname(target) until File.exist?(target)
+      return if from == @device.call(real(target))
+      raise refusal("rename_notes_other_volume", "Can't rename '#{workspace}' to '#{new}': the notes at #{notes.from} would move to #{notes.to}, on another volume. Change notes.default_dir so they stay, or move them to that volume first.",
+        "workspace" => workspace, "new" => new, "from" => notes.from, "to" => notes.to)
+    rescue SystemCallError
+      nil
+    end
+
+    def journaled_notes(notes)
+      NotesMove.new(action: notes["action"], from: notes["from"], to: notes["to"], reason: notes["reason"], problem: notes["problem"])
     end
 
     def stays(current, reason, problem = nil)

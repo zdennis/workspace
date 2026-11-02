@@ -13,6 +13,17 @@ module Workspace
     # The file name of the plan, as `PlanFile` has it.
     PLAN_FILE = PlanFile::FILE_NAME
 
+    # Whether what is at +target+ stops a move to it: a link, or anything there but the empty
+    # directory a directory may land on. `promote` and `rename` both go by this.
+    #
+    # @param target [String]
+    # @param directory [Boolean] whether a directory is being moved
+    # @return [Boolean]
+    def self.clash?(target, directory:)
+      return true if File.symlink?(target)
+      File.exist?(target) && !(directory && File.directory?(target) && Dir.empty?(target))
+    end
+
     # @param spine_init [Workspace::Commands::SpineInit, nil] adds the ship stage a moved spine lacks
     # @param clock [#call] returns the Time that stamps a renamed original
     def initialize(spine_init: nil, clock: -> { Time.now })
@@ -93,7 +104,7 @@ module Workspace
         return "skipped"
       end
       target = File.join(to, rel)
-      return clash(target) if File.exist?(target) && !(directory && empty_directory?(target)) || File.symlink?(target)
+      return clash(target) if self.class.clash?(target, directory: directory)
       return "would_move" if @dry_run
 
       FileUtils.mkdir_p(to)
@@ -110,10 +121,6 @@ module Workspace
     def clash(target)
       warn_item("notes_clash", "#{target} is there already; the one in the main checkout was left alone.", "path" => target)
       "skipped"
-    end
-
-    def empty_directory?(path)
-      File.directory?(path) && !File.symlink?(path) && Dir.empty?(path)
     end
 
     # Copies to a temp file beside +target+ and links it into place only after the whole copy, so a

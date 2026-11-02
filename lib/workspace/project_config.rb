@@ -322,12 +322,15 @@ module Workspace
       File.delete(tmp) if tmp && File.exist?(tmp)
     end
 
-    private
-
     # ascii-banner wraps only at whitespace, so an unspaced name shrinks to tiny type.
+    #
+    # @param text [String]
+    # @return [String] the text the templates' banner line shows
     def banner_text(text)
       text.gsub(/[^[:word:]]/, " ")
     end
+
+    private
 
     # @return [Array<String, nil>] the programs of the one pane line that differs between two contents:
     #   the first `||` half whose program changed, else the first half

@@ -57,6 +57,12 @@ RSpec.describe Workspace::RenamePlan do
     allow(project_config).to receive(:worktree_session_name) { |project, dir| "#{project}.wt-#{dir}".tr(".", "-").downcase }
     allow(config).to receive(:pipeline_state_dir) { |name| File.join(@dir, "state", name) }
     allow(config).to receive(:config_path_for) { |name| File.join(@dir, "tmuxinator", "workspace.#{name}.yml") }
+    allow(config).to receive(:project_config_path) { |name| File.join(@dir, "projects", "#{name}.yml") }
+    allow(config).to receive(:agent_socket_path) { |name| File.join(@dir, "run", "#{name}.sock") }
+    allow(config).to receive(:agent_log_path) { |name| File.join(@dir, "run", "#{name}.log") }
+    allow(config).to receive(:inbox_path) { |_kind, name| File.join(@dir, "inbox", "#{name}.json") }
+    allow(config).to receive(:hook_events_dir).and_return(File.join(@dir, "events"))
+    allow(config).to receive(:rename_journal_path) { |name| File.join(@dir, "renames", "#{name}.json") }
   end
 
   describe "#call" do
@@ -143,10 +149,50 @@ RSpec.describe Workspace::RenamePlan do
         expect(result.warnings.map { |w| w["code"] }).to include("notes_nested")
       end
 
-      it "refuses a notes target that exists" do
+      it "refuses a notes target that holds files" do
         FileUtils.mkdir_p(File.join(main_notes, "feat-b"))
+        File.write(File.join(main_notes, "feat-b", "other.md"), "theirs")
 
         expect(refusal("rename_target_taken").details).to include("taken" => ["notes_target"])
+      end
+
+      it "takes an empty notes target, as the move does" do
+        FileUtils.mkdir_p(File.join(main_notes, "feat-b"))
+
+        expect(plan.call(workspace: workspace, new: "feat/b").notes.action).to eq("move")
+      end
+
+      describe "on two volumes" do
+        subject(:plan) do
+          described_class.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
+            notes_dir: notes_dir, workflow_engine: engine, transcripts: transcripts, device: device)
+        end
+
+        before { FileUtils.mkdir_p(current_notes) }
+
+        context "when the nearest existing parent of the target is on another volume" do
+          let(:device) { ->(path) { (path == current_notes) ? 1 : 2 } }
+
+          it "refuses before anything moves" do
+            expect(refusal("rename_notes_other_volume").details).to include("from" => current_notes, "to" => File.join(main_notes, "feat-b"), "workspace" => workspace)
+          end
+        end
+
+        context "when both are on one volume" do
+          let(:device) { ->(_path) { 1 } }
+
+          it "moves the notes" do
+            expect(plan.call(workspace: workspace, new: "feat/b").notes.action).to eq("move")
+          end
+        end
+
+        context "when the notes have gone on a re-run" do
+          let(:device) { ->(path) { (path == current_notes) ? raise(Errno::ENOENT, path) : 2 } }
+
+          it "has nothing to check" do
+            expect(plan.call(workspace: workspace, new: "feat/b").notes.action).to eq("move")
+          end
+        end
       end
 
       it "stays when the notes directory cannot be worked out" do
@@ -334,9 +380,85 @@ RSpec.describe Workspace::RenamePlan do
 
     it "names the notes path apart from the checkout's new path" do
       FileUtils.mkdir_p(File.join(main_notes, "feat-b"))
+      File.write(File.join(main_notes, "feat-b", "other.md"), "theirs")
 
       expect(refusal("rename_target_taken").details).to include("new_path" => File.join(repo, ".worktrees", "feat-b"),
         "notes_path" => File.join(main_notes, "feat-b"))
+    end
+
+    it "counts the temporary name the config is written under against the limit" do
+      fits_alone = "x" * (255 - "workspace.api.worktree-.yml".bytesize)
+
+      error = nil
+      expect { plan.call(workspace: workspace, new: fits_alone) }.to raise_error(Workspace::Error) { |e| error = e }
+      expect(error.code).to eq("rename_invalid_name")
+      expect(error.details).to include("reason" => "too_long", "bytes" => 255 + 1 + 1 + 10 + 4)
+    end
+
+    it "takes the longest name whose temporary name fits" do
+      fits = "x" * (255 - ".workspace.api.worktree-.yml..tmp".bytesize - 10)
+
+      expect(plan.call(workspace: workspace, new: fits).new_branch).to eq(fits)
+    end
+
+    describe "files left under the new name" do
+      let(:new_workspace) { "api.worktree-feat-b" }
+
+      def leave(path)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "left")
+      end
+
+      {
+        "project_settings" => ->(dir, name) { File.join(dir, "projects", "#{name}.yml") },
+        "socket" => ->(dir, name) { File.join(dir, "run", "#{name}.sock") },
+        "agent_log" => ->(dir, name) { File.join(dir, "run", "#{name}.log") },
+        "inbox" => ->(dir, name) { File.join(dir, "inbox", "#{name}.json") },
+        "hook_events" => ->(dir, name) { File.join(dir, "events", "#{name}.jsonl") }
+      }.each do |taken, path_of|
+        it "refuses #{taken}, with its path" do
+          path = path_of.call(@dir, new_workspace)
+          leave(path)
+
+          error = refusal("rename_target_taken")
+
+          expect(error.details).to include("taken" => [taken], "paths" => {taken => path})
+        end
+      end
+
+      it "gives a delete for logs and a socket, quoted" do
+        leave(File.join(@dir, "run", "#{new_workspace}.log"))
+        leave(File.join(@dir, "events", "#{new_workspace}.jsonl"))
+
+        expect(refusal("rename_target_taken").details["fix"]).to eq("rm #{Shellwords.escape(File.join(@dir, "run", "#{new_workspace}.log"))} #{Shellwords.escape(File.join(@dir, "events", "#{new_workspace}.jsonl"))}")
+      end
+
+      it "gives no delete while something a person wrote is in the way" do
+        leave(File.join(@dir, "run", "#{new_workspace}.log"))
+        leave(File.join(@dir, "inbox", "#{new_workspace}.json"))
+
+        expect(refusal("rename_target_taken").details).not_to have_key("fix")
+      end
+
+      it "gives no delete while another name is taken" do
+        leave(File.join(@dir, "run", "#{new_workspace}.log"))
+        allow(tmux).to receive(:session_exists?).with("api-wt-feat-b").and_return(true)
+        allow(tmux).to receive(:session_exists?).with("api-wt-feat-a").and_return(false)
+
+        expect(refusal("rename_target_taken").details).not_to have_key("fix")
+      end
+    end
+
+    it "says how to clear a journal whose checkouts are both gone" do
+      journal = ->(_workspace) { {"workspace" => workspace, "new_branch" => "feat/b", "path" => File.join(@dir, "gone-a"), "new_path" => File.join(@dir, "gone-b")} }
+      stuck = described_class.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
+        notes_dir: notes_dir, workflow_engine: engine, journal: journal)
+
+      expect { stuck.call(workspace: workspace, new: "feat/b", resume: true) }.to raise_error(Workspace::Error) { |e|
+        file = File.join(@dir, "renames", "#{workspace}.json")
+        expect(e.code).to eq("rename_in_progress")
+        expect(e.details).to include("path" => file, "rerun" => false, "fix" => "rm #{Shellwords.escape(file)}")
+      }
     end
 
     it "refuses a new name whose config file name passes 255 bytes" do
@@ -413,6 +535,35 @@ RSpec.describe Workspace::RenamePlan do
     end
   end
 
+  describe "resume: true with files under both names" do
+    let(:journal) { ->(_workspace) { {"new_branch" => "feat/b", "path" => linked} } }
+
+    before do
+      FileUtils.mkdir_p(File.join(@dir, "run"))
+      FileUtils.mkdir_p(File.join(@dir, "events"))
+      File.write(File.join(@dir, "run", "api.worktree-feat-b.log"), "moved")
+      File.write(File.join(@dir, "events", "api.worktree-feat-b.jsonl"), "launch")
+    end
+
+    def plan_it = plan.call(workspace: workspace, new: "feat/b", resume: true, old_branch: "feat/a")
+
+    it "takes a log that moved as the rename's own" do
+      expect(plan_it.resume).to be(true)
+    end
+
+    it "refuses a log still under both names" do
+      File.write(File.join(@dir, "run", "#{workspace}.log"), "old")
+
+      expect(refusal("rename_target_taken", resume: true, old_branch: "feat/a").details["taken"]).to eq(["agent_log"])
+    end
+
+    it "leaves an event log under both names for the step to join" do
+      File.write(File.join(@dir, "events", "#{workspace}.jsonl"), "old")
+
+      expect(plan_it.resume).to be(true)
+    end
+  end
+
   describe "resume: true" do
     let(:journal) { ->(_workspace) { {"new_branch" => "feat/b"} } }
     let(:moved) { File.join(repo, ".worktrees", "feat-b") }
@@ -431,6 +582,7 @@ RSpec.describe Workspace::RenamePlan do
 
     it "checks the target notes directory while the old path still exists" do
       FileUtils.mkdir_p(File.join(main_notes, "feat-b"))
+      File.write(File.join(main_notes, "feat-b", "other.md"), "theirs")
 
       expect(refusal("rename_target_taken", resume: true, old_branch: "feat/a").details).to include("taken" => ["notes_target"])
     end
@@ -453,15 +605,69 @@ RSpec.describe Workspace::RenamePlan do
       move_checkout
       sh("branch", "-m", "feat/a", "feat/b", dir: moved)
       FileUtils.mkdir_p(File.join(main_notes, "feat-b"))
+      allow(journal).to receive(:call).and_return({"new_branch" => "feat/b", "notes" => {"action" => "move", "from" => current_notes, "to" => File.join(main_notes, "feat-b")}})
 
       result = plan.call(workspace: workspace, new: "feat/b", resume: true, old_branch: "feat/a")
 
       expect(result.new_path).to eq(moved)
     end
 
+    context "with the first run's journal" do
+      let(:recorded) do
+        {"new_branch" => "feat/b", "branch" => "feat/a", "path" => linked, "new_path" => moved, "new_workspace" => "api.worktree-recorded", "session" => "recorded-old",
+         "new_session" => "recorded-new", "notes" => {"action" => "with_checkout", "from" => "/old/n", "to" => "/new/n", "reason" => nil, "problem" => nil}}
+      end
+      let(:journal) { ->(_workspace) { recorded } }
+      let(:result) { plan.call(workspace: workspace, new: "feat/b", resume: true, old_branch: "feat/a") }
+
+      before do
+        move_checkout
+        allow(project_config).to receive(:project_root_for).with(workspace).and_return(nil)
+      end
+
+      it "goes by its names and path, with the old config gone" do
+        expect(result).to have_attributes(path: linked, new_workspace: "api.worktree-recorded", session: "recorded-old", new_session: "recorded-new")
+      end
+
+      it "takes its notes decision without resolving anything" do
+        allow(notes).to receive(:info).and_raise("not called")
+
+        expect(result.notes).to have_attributes(action: "with_checkout", from: "/old/n", to: "/new/n")
+      end
+
+      it "keeps a problem it recorded for the warning" do
+        recorded["notes"] = {"action" => "stays", "from" => nil, "to" => nil, "reason" => "unresolved", "problem" => "x: y"}
+
+        expect(result.warnings.map { |warning| warning["code"] }).to include("notes_unresolved")
+      end
+
+      it "refuses a daemon running under the new name" do
+        allow(config).to receive(:agent_running?).with("api.worktree-recorded").and_return(true)
+
+        expect { result }.to raise_error(Workspace::Error) { |e| expect(e.details).to include("workspace" => "api.worktree-recorded", "reason" => "agent") }
+      end
+
+      it "counts each store under the new name as its own once the old one is gone" do
+        allow(project_config).to receive(:existing_name).with("api.worktree-recorded").and_return("api.worktree-recorded")
+        allow(state).to receive(:keys).and_return(["api.worktree-recorded"])
+        FileUtils.mkdir_p(File.join(@dir, "state", "api.worktree-recorded"))
+
+        expect(result.new_workspace).to eq("api.worktree-recorded")
+      end
+
+      it "calls each store a conflict while the old one is there too" do
+        allow(project_config).to receive(:existing_name).and_return("taken")
+        allow(state).to receive(:keys).and_return([workspace, "api.worktree-recorded"])
+        FileUtils.mkdir_p(File.join(@dir, "state", "api.worktree-recorded"))
+        FileUtils.mkdir_p(File.join(@dir, "state", workspace))
+
+        expect { result }.to raise_error(Workspace::Error) { |e| expect(e.details["taken"]).to eq(%w[config state_key state_dir]) }
+      end
+    end
+
     it "still refuses a config another workspace took, once moved" do
       move_checkout
-      allow(project_config).to receive(:existing_name).with("api.worktree-feat-b").and_return("api.worktree-feat-b")
+      allow(project_config).to receive(:existing_name).and_return("api.worktree-feat-b")
 
       expect(refusal("rename_target_taken", resume: true, old_branch: "feat/a").details["taken"]).to eq(["config"])
     end
@@ -483,16 +689,6 @@ RSpec.describe Workspace::RenamePlan do
       allow(notes).to receive(:info).and_return({"dir" => File.join(moved, "tmp", "workspace-notes")})
 
       expect(plan.call(workspace: workspace, new: "feat/b", resume: true, old_branch: "feat/a").notes.action).to eq("with_checkout")
-    end
-
-    it "still moves notes the rule gives under the new names when they are still at the old place" do
-      move_checkout
-      sh("branch", "-m", "feat/a", "feat/b", dir: moved)
-      FileUtils.mkdir_p(current_notes)
-      allow(notes).to receive(:info).and_return({"dir" => File.join(main_notes, "feat-b")})
-
-      expect(plan.call(workspace: workspace, new: "feat/b", resume: true, old_branch: "feat/a").notes)
-        .to have_attributes(action: "move", from: current_notes)
     end
 
     it "still refuses a journal for another name" do
