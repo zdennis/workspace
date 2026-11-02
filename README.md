@@ -117,6 +117,7 @@ workspace <subcommand> [options]
 | rebase | [README](docs/README.rebase.md) | Rebase a workspace's branch onto the default branch (`--onto local\|update\|remote\|upstream`); a conflict is aborted and reported |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
 | remove | [README](docs/README.remove.md) | Delete a stopped project (default: the one you are in)'s tmuxinator config, project settings and state entry (never its directory or notes) |
+| rename | [README](docs/README.rename.md) | Give a stopped worktree workspace a new branch, directory, name and session; `--dry-run` previews, a rename that stopped part way is finished by running it again |
 | restore | [README](docs/README.restore.md) | Bring back agent panes after a reboot: launch the workspace you are in (`--all`: every active one), recreate recorded agent panes (hand-split ones too) and resume their sessions with `claude --resume`; `--dry-run` shows the plan and what can't be matched |
 | report-run-status | [README](docs/README.report-run-status.md) | Internal: write run result for --wait (called by shell wrapper) |
 | run | [README](docs/README.run.md) | Send a shell command to a pane in a project's tmux session |
