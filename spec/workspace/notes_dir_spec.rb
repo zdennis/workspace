@@ -88,6 +88,39 @@ RSpec.describe Workspace::NotesDir do
     end
   end
 
+  describe "#path_for" do
+    def path_for(template: nil, worktree: true, root: "/src/api/.worktrees/new", workspace: "api.worktree-new", branch: "new/thing", main_dir: "/n")
+      notes_dir.path_for(template: template, worktree: worktree, root: root, workspace: workspace, branch: branch, main_dir: main_dir)
+    end
+
+    it "fills {workspace} and {branch} from the given values, reading no checkout" do
+      expect(git).not_to receive(:worktree_branch)
+      expect(path_for(template: "/n/{workspace}/{branch}")).to eq("/n/api.worktree-new/new-thing")
+      expect(path_for(template: "~/notes/{branch}")).to eq("/home/me/notes/new-thing")
+      expect(path_for(template: "rel/{workspace}")).to eq("/src/api/.worktrees/new/rel/api.worktree-new")
+    end
+
+    it "is nil when the rule needs a branch that is not given, or a root" do
+      expect(path_for(template: "/n/{branch}", branch: nil)).to be_nil
+      expect(path_for(template: "rel", root: nil)).to be_nil
+    end
+
+    it "gives a worktree with no rule the main directory plus the sanitized branch" do
+      expect(path_for).to eq("/n/new-thing")
+      expect(path_for(branch: "Spine")).to eq("/n/Spine-branch")
+    end
+
+    it "gives tmp/workspace-notes in the checkout without a rule, a worktree, a main directory or a branch" do
+      expect(path_for(worktree: false)).to eq("/src/api/.worktrees/new/tmp/workspace-notes")
+      expect(path_for(main_dir: nil)).to eq("/src/api/.worktrees/new/tmp/workspace-notes")
+      expect(path_for(branch: nil)).to eq("/src/api/.worktrees/new/tmp/workspace-notes")
+    end
+
+    it "lets the rule win over the main directory" do
+      expect(path_for(template: "/r/{workspace}")).to eq("/r/api.worktree-new")
+    end
+  end
+
   describe "#resolve" do
     def resolve(stored: nil, template: nil, worktree: true)
       notes_dir.resolve(stored: stored, template: template, worktree: worktree, root: "/src/api/.worktrees/x", workspace: "api.worktree-x")

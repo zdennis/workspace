@@ -36,8 +36,31 @@ module Workspace
     # @return [Result]
     def resolve(stored:, template:, worktree:, root:, workspace:, main_dir: nil)
       return Result.new(path: File.expand_path(stored), source: worktree ? "worktree" : "project") if stored
-      inherited = template.nil? && worktree && inherited_path(main_dir, root)
-      Result.new(path: inherited || default_path(template, root: root, workspace: workspace), source: "default")
+      inherits = template.nil? && worktree && main_dir
+      branch = root && @git.worktree_branch(root) if inherits || template&.include?("{branch}")
+      path = path_for(template: template, worktree: worktree, root: root, workspace: workspace, branch: branch, main_dir: main_dir)
+      Result.new(path: path, source: "default")
+    end
+
+    # Where the rule puts the notes for a workspace name and branch, leaving out the workspace's own
+    # `notes.dir`. It reads no config and no checkout, so it answers for a name and branch that do not
+    # exist yet. The order is: the `notes.default_dir` template with `{workspace}` and `{branch}`; else,
+    # for a worktree with a main checkout notes directory, that directory plus the sanitized branch;
+    # else `tmp/workspace-notes` in the checkout (the same fallback {#resolve} uses).
+    #
+    # @param template [String, nil] the project's valid `notes.default_dir`
+    # @param worktree [Boolean] whether the workspace is a worktree
+    # @param root [String, nil] the checkout root
+    # @param workspace [String] the workspace name
+    # @param branch [String, nil] the branch; nil when it is not known
+    # @param main_dir [String, nil] the main checkout workspace's notes directory (see {#main_dir})
+    # @return [String, nil] the absolute directory; nil when the rule needs a root or a branch that isn't known
+    def path_for(template:, worktree:, root:, workspace:, branch:, main_dir: nil)
+      if template.nil? && worktree
+        inherited = inherited_path(main_dir, branch)
+        return inherited if inherited
+      end
+      fill_rule(template || FALLBACK, root: root, workspace: workspace, branch: branch)
     end
 
     # @param stored [String, nil] the main checkout workspace's valid `notes.dir`
@@ -54,10 +77,14 @@ module Workspace
     # @return [String, nil] the absolute directory; nil when the rule needs a root or a branch that isn't known
     def default_path(template, root:, workspace:)
       rule = template || FALLBACK
-      if rule.include?("{branch}")
-        branch = root && @git.worktree_branch(root)
-        return nil unless branch
-      end
+      branch = root && @git.worktree_branch(root) if rule.include?("{branch}")
+      fill_rule(rule, root: root, workspace: workspace, branch: branch)
+    end
+
+    private
+
+    def fill_rule(rule, root:, workspace:, branch:)
+      return nil if rule.include?("{branch}") && !branch
       filled = rule
         .gsub("{workspace}") { @git.sanitize_for_filesystem(workspace) }
         .gsub("{branch}") { @git.sanitize_for_filesystem(branch) }
@@ -70,11 +97,8 @@ module Workspace
       end
     end
 
-    private
-
-    def inherited_path(main_dir, root)
-      branch = main_dir && root && @git.worktree_branch(root)
-      name = branch && @git.sanitize_for_filesystem(branch)
+    def inherited_path(main_dir, branch)
+      name = main_dir && branch && @git.sanitize_for_filesystem(branch)
       return nil if name.nil? || name.empty?
       name += "-branch" if RESERVED.include?(name.downcase)
       File.join(main_dir, name)
