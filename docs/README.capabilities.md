@@ -20,7 +20,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 
 ```json
 {"schema_version":1,"ok":true,"version":"0.27.1",
- "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
+ "features":{"envelope":1,"error_codes":1,"name_scope":1,"name_suffix":1,"no_input":1,"action_json":1,
    "sessions":3,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":6,"waiting_detail":1,"events_follow":1,"events_tool_input":1,
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"spawn_cleanup":2,"focus_pane":1,"focus_cycle":1,"state_done":1,
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":2,
@@ -46,6 +46,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `envelope` | `--json` failures are the error envelope, and successes carry `schema_version` and `ok` (see [`--json` output](README.json.md)) |
 | `error_codes` | Error envelopes carry a stable `code` |
 | `name_scope` | `--name` on `ask`, `lock`, `dev` and `config` |
+| `name_suffix` | A workspace name may be the part after `.worktree-`; a tie is `ambiguous_workspace` |
 | `no_input` | `--no-input` and `WORKSPACE_NO_INPUT` |
 | `action_json` | `--json` action documents on the lifecycle commands, `dev up|down`, `lock release`, `config set`, `pipeline start|advance|reset`, and `agent run --json` |
 | `sessions` | `sessions --json`. Revision 2: each coding-agent pane carries `last_event_at`, `current_tool`, `current_tool_since` and `subagents` (see [`sessions`](README.sessions.md#tool-status-fields)). Revision 3: each pane carries `activity_state`, `main_turn_over_since`, `transcript_path` and `open_tools`, and the document a top-level `features` list (see [turn-end fields](README.sessions.md#turn-end-fields)); a daemon from before has none of them, which a caller reads as "not available" |

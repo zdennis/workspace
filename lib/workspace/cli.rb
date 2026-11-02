@@ -244,6 +244,8 @@ module Workspace
       args = argv.dup
       @logger.enable! if args.delete("--debug")
       @input.no_input! if take_no_input_flag!(args) && @input.respond_to?(:no_input!)
+      @name_help_asked = help_before_separator?(args)
+      @name_quiet = json_flag?(args)
       settle_name_flags!(args)
       plain = HelpJson.strip(args)
       return run_help_json(plain) if plain
@@ -535,18 +537,44 @@ module Workspace
       stop = args.index("--") || args.size
       stop.times do |i|
         if args[i] == "--name" && i + 1 < stop
-          args[i + 1] = @workspace_name.match(args[i + 1]) || args[i + 1]
+          args[i + 1] = given_name(args[i + 1]) || args[i + 1]
         elsif args[i].start_with?("--name=")
           value = args[i].delete_prefix("--name=")
-          args[i] = "--name=#{@workspace_name.match(value) || value}"
+          args[i] = "--name=#{given_name(value) || value}"
         end
       end
+    end
+
+    # The one place a typed workspace name is settled. Answers the on-disk name, or nil
+    # when the name matches nothing. A short name (a worktree suffix) resolves through
+    # WorkspaceName#for_input, and one stderr line says which workspace it reached, unless
+    # `--json` is given. While help is asked for, only the exact name (ignoring case)
+    # counts, so help never fails on an ambiguous name. A CLI built with no WorkspaceName
+    # asks the project config.
+    #
+    # @param name [String, nil]
+    # @return [String, nil]
+    # @raise [Workspace::Error] `ambiguous_workspace` when several workspaces share the suffix
+    def given_name(name)
+      return @project_config.existing_name(name) unless @workspace_name
+
+      found = @name_help_asked ? @workspace_name.match(name) : @workspace_name.for_input(name)
+      if found && !WorkspaceName.same?(found, name) && !@name_quiet
+        @error_output.puts TerminalText.escape("Workspace '#{name}' is #{found}.")
+      end
+      found
+    end
+
+    # @param argv [Array<String>]
+    # @return [Boolean] whether `--help` or `-h` appears before a bare `--`
+    def help_before_separator?(argv)
+      argv.take_while { |arg| arg != "--" }.any? { |arg| arg == "--help" || arg == "-h" }
     end
 
     # @param name [String, nil] a workspace or project name as given
     # @return [String, nil] the on-disk name of the config it matches ignoring case, else the name as given
     def settle_name(name)
-      (@workspace_name && name) ? (@workspace_name.match(name) || name) : name
+      (@workspace_name && name) ? (given_name(name) || name) : name
     end
 
     # Takes the first positional off +args+ as the workspace when a workspace of that name has a
@@ -556,7 +584,7 @@ module Workspace
     # @param args [Array<String>] positionals, modified in place
     # @return [String, nil] the workspace's on-disk name, or the current value (nil) when the first is not one
     def take_known_workspace!(args)
-      known = @project_config.existing_name(args.first)
+      known = given_name(args.first)
       args.shift if known
       known
     end
@@ -830,11 +858,23 @@ module Workspace
       raise UsageError, "--no-packs cannot be combined with --handoff." if no_packs && handoff == true
 
       run_action("launch", json: json) do
-        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
+        launched = launch_projects(args.map { |arg| launch_arg(arg) }, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
           packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true, arrange: arrange)
         {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
          warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values + (launched[:result]&.dig(:warnings) || [])}
       end
+    end
+
+    # A launch argument as `launch_projects` should get it: a path or an existing directory stays
+    # as typed, any other word is settled to a workspace's on-disk name (a short name resolves).
+    # `relaunch` and `restore` call `launch_projects` directly, with state keys, and skip this.
+    #
+    # @param arg [String]
+    # @return [String]
+    # @raise [Workspace::Error] `ambiguous_workspace` when several workspaces share the suffix
+    def launch_arg(arg)
+      _name, root = @project_config.resolve_project_arg(arg)
+      root ? arg : settle_name(arg)
     end
 
     # Launches the given project args (already parsed, no leading flags) and
@@ -1523,7 +1563,7 @@ module Workspace
           raise UsageError, parser.help
         end
       elsif args.size >= 2
-        project = args[0]
+        project = settle_name(args[0])
         spec = args[1]
       else
         raise UsageError, parser.help
@@ -1645,7 +1685,7 @@ module Workspace
         raise UsageError, parser.help unless project
         command = args[0]
       elsif args.size >= 2
-        project = args[0]
+        project = settle_name(args[0])
         # Join trailing args so `workspace run proj echo hello world` sends the whole
         # command rather than silently dropping everything after the first word.
         command = args[1..].join(" ")
@@ -4041,7 +4081,7 @@ module Workspace
         opts.on("--json") { as_json = true }
       end
       parser.parse!(args)
-      project = args.shift
+      project = settle_name(args.shift)
       raise UsageError, pipeline_page("status") if project.nil?
 
       entries = read_pipeline_state(project)
@@ -4094,7 +4134,7 @@ module Workspace
         opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      project = args.shift
+      project = settle_name(args.shift)
       raise UsageError, pipeline_page("reset") if project.nil? || args.any?
 
       run_action("pipeline reset", json: json) do
@@ -4120,7 +4160,7 @@ module Workspace
         opts.on("--json") { json = true }
       end
       parser.parse!(args)
-      project = args.shift
+      project = settle_name(args.shift)
       raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{pipeline_page(verb)}" if args.any?
       [project, work_item, body, json]
     end
@@ -4653,7 +4693,7 @@ module Workspace
       else
         # `ui open WORKSPACE` is the task view of a workspace that has a config; any other word is a typo.
         word = args.first
-        known = options[:name] ? nil : @project_config.existing_name(word)
+        known = options[:name] ? nil : given_name(word)
         unless known
           why = options[:name] ? "#{word} is not a view, and --name already names the workspace" : "Unknown view or workspace '#{word}'"
           raise UsageError, "#{why}: views are #{Commands::Ui::VIEWS.keys.join(", ")}. Run 'workspace ui open --help'."
@@ -6591,7 +6631,7 @@ module Workspace
       parser.parse!(args)
 
       if window_id
-        project = args.first
+        project = settle_name(args.first)
         raise UsageError, "Project name required with --window-id\n\n#{parser.help}" unless project
         run_action("repair", json: json) do
           @repair_command.set_window_id(project, window_id)
@@ -6891,7 +6931,7 @@ module Workspace
           options[:types].concat(value.split(",").map(&:strip).reject(&:empty?))
         end
         opts.on("--since CURSOR", "Resume after the line that printed CURSOR") { |value| options[:since] = value }
-        opts.on("--name WS", "Only this workspace's events (exact name; its worktree workspaces are not included)") { |value| options[:name] = settle_name(value) }
+        opts.on("--name WS", "Only this workspace's events (this workspace only; its worktree workspaces are not included)") { |value| options[:name] = settle_name(value) }
         opts.on("-h", "--help", "Show this help") { help = true }
         opts.separator ""
         opts.separator "Without --since, --follow starts at the end of every file, and a plain read prints"

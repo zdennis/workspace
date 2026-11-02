@@ -56,4 +56,79 @@ RSpec.describe Workspace::WorkspaceName do
       expect(names.match("nOtEs")).to eq("Notes")
     end
   end
+
+  describe "#for_input" do
+    let(:state_keys) { [] }
+    let(:state) { instance_double(Workspace::State, load: nil, keys: state_keys) }
+    let(:projects) { ["workspace", "workspace.worktree-workspace", "b.worktree-foo", "Notes.worktree-Fix", "a.worktree-"] }
+    subject(:names) { described_class.new(project_config: project_config, state: state) }
+
+    it "prefers the exact name to a suffix" do
+      expect(names.for_input("workspace")).to eq("workspace")
+    end
+
+    it "prefers a case-insensitive exact name to a suffix" do
+      expect(names.for_input("WORKSPACE")).to eq("workspace")
+    end
+
+    it "answers the config whose suffix matches, in any case" do
+      expect(names.for_input("foo")).to eq("b.worktree-foo")
+      expect(names.for_input("FIX")).to eq("Notes.worktree-Fix")
+    end
+
+    it "is nil for the project alone or part of a suffix" do
+      expect(names.for_input("b")).to be_nil
+      expect(names.for_input("fo")).to be_nil
+    end
+
+    it "raises with sorted matches on a tie" do
+      projects.push("a.worktree-foo")
+      expect { names.for_input("foo") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("ambiguous_workspace")
+        expect(e.details).to eq("name" => "foo", "matches" => ["a.worktree-foo", "b.worktree-foo"])
+      }
+    end
+
+    it "is nil for nil and empty, and an empty suffix is no hit" do
+      expect(names.for_input(nil)).to be_nil
+      expect(names.for_input("")).to be_nil
+    end
+
+    context "with an active workspace named foo and no config" do
+      let(:state_keys) { ["foo"] }
+
+      it "keeps the name, also on a tie" do
+        expect(names.for_input("foo")).to be_nil
+        projects.push("a.worktree-foo")
+        expect(names.for_input("foo")).to be_nil
+      end
+    end
+
+    it "answers a suffix hit with no state" do
+      expect(described_class.new(project_config: project_config).for_input("foo")).to eq("b.worktree-foo")
+    end
+
+    it "raises on a tie with no state" do
+      projects.push("a.worktree-foo")
+      expect { described_class.new(project_config: project_config).for_input("foo") }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("ambiguous_workspace") }
+    end
+
+    it "raises on a tie between suffixes that differ only in case" do
+      projects.push("a.worktree-Foo")
+      expect { names.for_input("foo") }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["matches"]).to eq(["a.worktree-Foo", "b.worktree-foo"])
+      }
+    end
+
+    it "does not load state when nothing hits" do
+      names.for_input("zzz")
+      expect(state).not_to have_received(:load)
+    end
+
+    it "leaves match and resolve alone for a bare suffix" do
+      expect(names.match("foo")).to be_nil
+      expect(names.resolve("foo")).to eq("foo")
+    end
+  end
 end

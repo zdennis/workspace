@@ -8,6 +8,7 @@ module Workspace
       "error" => "Any failure without a more specific code.",
       "usage" => "A bad option, a missing or extra argument, or an unknown subcommand.",
       "unknown_workspace" => "The named workspace isn't known.",
+      "ambiguous_workspace" => "A short workspace name matches more than one workspace (the part after .worktree- in two projects). details.name, details.matches (sorted full names); give the full name.",
       "workspace_name_case_conflict" => "A new workspace's name differs only in case from the name of an existing workspace with a different directory. details.name, details.existing, details.existing_root.",
       "not_in_workspace" => "No workspace could be detected from the working directory.",
       "no_daemon" => "No agent daemon is running for the workspace.",
