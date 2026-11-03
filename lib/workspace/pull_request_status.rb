@@ -14,8 +14,9 @@ module Workspace
     MAX_FAILED_CHECKS = 20
 
     FIELDS = "number,url,title,state,isDraft,reviewDecision,mergeable,statusCheckRollup".freeze
+    SUMMARY_FIELDS = "number,url,title,state".freeze
     HEAD_FIELDS = "state,isCrossRepository,headRefName,headRefOid,headRepository,headRepositoryOwner".freeze
-    private_constant :FIELDS, :HEAD_FIELDS
+    private_constant :FIELDS, :SUMMARY_FIELDS, :HEAD_FIELDS
 
     # Origin URLs {.github_repo} reads: https, ssh:// and scp-like, each with an optional user and `.git`.
     REMOTE_URLS = [
@@ -71,16 +72,17 @@ module Workspace
     #   "passing", "failing", "pending", "failed" => [names]}}`, or `{"available" => false, "reason" =>
     #   "gh_missing" | "timeout" | "error"}` (`detail` only with "error")
     def call(path)
-      stdout, stderr, success = @runner.call(["pr", "view", "--json", FIELDS], chdir: path, timeout: @timeout)
-      return facts(JSON.parse(stdout)) if success
-      return {"available" => true, "found" => false} if stderr.to_s.include?("no pull requests found")
-      {"available" => false, "reason" => "error", "detail" => stderr.to_s.scrub.lines.first.to_s.strip[0, 200]}
-    rescue Errno::ENOENT
-      {"available" => false, "reason" => "gh_missing"}
-    rescue Timeout::Error
-      {"available" => false, "reason" => "timeout"}
-    rescue JSON::ParserError, SystemCallError
-      {"available" => false, "reason" => "error", "detail" => "unreadable reply from gh"}
+      view(path, FIELDS) { |doc| facts(doc) }
+    end
+
+    # The same lookup as {#call} with only the identity of the pull request, no checks.
+    #
+    # @param path [String] the checkout; `gh` finds the pull request from its current branch
+    # @return [Hash] `{"available" => true, "found" => false}`, or `{"available" => true, "found" => true,
+    #   "number", "url", "title", "state"}`, or `{"available" => false, "reason" => "gh_missing" | "timeout" |
+    #   "error"}` (`detail` only with "error")
+    def summary(path)
+      view(path, SUMMARY_FIELDS) { |doc| identity(doc) }
     end
 
     # Reads where a pull request's head is, for `push` to check a PR checkout against.
@@ -119,6 +121,25 @@ module Workspace
 
     def run_gh(args, chdir:, timeout:)
       TimedProcess.run(["gh", *args], chdir: chdir, timeout: timeout)
+    end
+
+    def view(path, fields)
+      stdout, stderr, success = @runner.call(["pr", "view", "--json", fields], chdir: path, timeout: @timeout)
+      return yield(JSON.parse(stdout)) if success
+      return {"available" => true, "found" => false} if stderr.to_s.include?("no pull requests found")
+      {"available" => false, "reason" => "error", "detail" => stderr.to_s.scrub.lines.first.to_s.strip[0, 200]}
+    rescue Errno::ENOENT
+      {"available" => false, "reason" => "gh_missing"}
+    rescue Timeout::Error
+      {"available" => false, "reason" => "timeout"}
+    rescue JSON::ParserError, SystemCallError
+      {"available" => false, "reason" => "error", "detail" => "unreadable reply from gh"}
+    end
+
+    def identity(doc)
+      raise JSON::ParserError, "not an object" unless doc.is_a?(Hash)
+      {"available" => true, "found" => true,
+       "number" => doc["number"], "url" => doc["url"], "title" => doc["title"], "state" => doc["state"]}
     end
 
     def facts(doc)

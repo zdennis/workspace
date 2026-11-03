@@ -39,6 +39,59 @@ RSpec.describe Workspace::PullRequestStatus do
     expect(described_class.new(runner: runner).call("/w")["review_decision"]).to eq("APPROVED")
   end
 
+  describe "#summary" do
+    it "asks gh for the identity fields only, in the checkout, with the timeout" do
+      runner, calls = runner_returning(stdout: pr_json)
+
+      described_class.new(runner: runner, timeout: 3).summary("/work/tree")
+
+      expect(calls).to eq([{args: ["pr", "view", "--json", "number,url,title,state"], chdir: "/work/tree", timeout: 3}])
+    end
+
+    it "answers an open pull request with no checks" do
+      runner, = runner_returning(stdout: pr_json)
+
+      expect(described_class.new(runner: runner).summary("/w")).to eq(
+        "available" => true, "found" => true, "number" => 7, "url" => "https://github.com/o/r/pull/7",
+        "title" => "Fix it", "state" => "OPEN"
+      )
+    end
+
+    it "reports a branch with no pull request as found: false" do
+      runner, = runner_returning(stderr: "no pull requests found for branch \"x\"", success: false)
+
+      expect(described_class.new(runner: runner).summary("/w")).to eq("available" => true, "found" => false)
+    end
+
+    it "reports gh missing" do
+      runner = ->(*, **) { raise Errno::ENOENT }
+
+      expect(described_class.new(runner: runner).summary("/w")).to eq("available" => false, "reason" => "gh_missing")
+    end
+
+    it "reports a timeout" do
+      runner = ->(*, **) { raise Timeout::Error }
+
+      expect(described_class.new(runner: runner).summary("/w")).to eq("available" => false, "reason" => "timeout")
+    end
+
+    it "reports a gh failure with its first line" do
+      runner, = runner_returning(stderr: "boom\nmore", success: false)
+
+      expect(described_class.new(runner: runner).summary("/w")).to eq("available" => false, "reason" => "error", "detail" => "boom")
+    end
+
+    ["not json", "[]"].each do |reply|
+      it "reports the reply #{reply.inspect} as an error" do
+        runner, = runner_returning(stdout: reply)
+
+        expect(described_class.new(runner: runner).summary("/w")).to eq(
+          "available" => false, "reason" => "error", "detail" => "unreadable reply from gh"
+        )
+      end
+    end
+  end
+
   describe "checks" do
     let(:rollup) do
       [
