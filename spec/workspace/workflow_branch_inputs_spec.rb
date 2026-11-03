@@ -81,7 +81,7 @@ RSpec.describe Workspace::WorkflowBranchInputs do
   end
 
   it "fills nothing for a protected branch" do
-    allow(protected_branch).to receive(:call).and_return({"reason" => "default"})
+    allow(protected_branch).to receive(:call).and_return({reason: "default_branch", path: "/src/app"})
     expect(run).to eq([inputs, {}])
     expect(pull_request_status).not_to have_received(:summary)
   end

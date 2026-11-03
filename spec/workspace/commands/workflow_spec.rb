@@ -301,6 +301,15 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(row["message"]).to end_with(" Fills task from pull request #12.")
       end
 
+      it "names the pull request the task came from, not a pr given by --input" do
+        allow(branch_inputs).to receive(:call).and_return([{"pr" => "99", "task" => "#12: Fix it"}, {"task" => "pull_request"}])
+
+        row = filling.run(id: "flow", workspace: "app", worktree: "/src/app", inputs: {"pr" => "99"}, dry_run: true, fill_from_branch: true)
+
+        expect(engine).to have_received(:preflight).with(hash_including(inputs: {"pr" => "99", "task" => "#12: Fix it"}))
+        expect(row["message"]).to end_with(" Fills task from pull request #12.")
+      end
+
       it "keeps an explicit input the fill left alone" do
         allow(branch_inputs).to receive(:call).and_return([{"task" => "X-1"}, {}])
 

@@ -368,7 +368,7 @@ module Workspace
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
       def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false)
         definition = @catalog.find(id, project: project)
-        filled, from = fill_from_branch ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
+        filled, from = (fill_from_branch && @branch_inputs) ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
         if dry_run
           pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace, start_daemon: false)
           checked = @engine.preflight(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id)
@@ -1391,8 +1391,8 @@ module Workspace
         return "" if from.empty?
         pull = from.select { |_, source| source == "pull_request" }.keys
         if pull.any?
-          number = filled["pr"] || filled["task"].to_s[/\A#(\d+)/, 1]
-          " Fills #{pull.sort.reverse.join(" and ")} from pull request ##{number}."
+          number = from["pr"] ? filled["pr"] : filled["task"].to_s[/\A#(\d+)/, 1]
+          " Fills #{(WorkflowBranchInputs::FILLABLE & pull).join(" and ")} from pull request ##{number}."
         else
           " Fills #{from.keys.join(" and ")} from branch #{filled["task"].to_s.delete_prefix("Branch ")}."
         end
