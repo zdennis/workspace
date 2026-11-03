@@ -143,7 +143,36 @@ RSpec.describe Workspace::Commands::Workflow do
       command.show(id: "flow", json: true)
 
       expect(json).to eq("schema_version" => 1, "ok" => true,
-        "workflow" => definition.to_h.merge("source" => "global", "project" => nil, "path" => "/defs/flow.yml", "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256))
+        "workflow" => definition.to_h.merge("inputs" => definition.to_h["inputs"].merge("task" => definition.to_h["inputs"]["task"].merge("fills_from_branch" => true))).merge("source" => "global", "project" => nil, "path" => "/defs/flow.yml", "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256))
+    end
+  end
+
+  describe "#show marking inputs a branch fills" do
+    def shown_inputs(yaml)
+      defn = Workspace::WorkflowDefinition.parse(yaml, id: "flow", source: "global", path: "/defs/flow.yml")
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(defn)
+      before = Marshal.load(Marshal.dump(defn.to_h))
+      command.show(id: "flow", json: true)
+      expect(defn.to_h).to eq(before)
+      json.dig("workflow", "inputs")
+    end
+
+    it "marks task and pr" do
+      inputs = shown_inputs("inputs:\n  task:\n  pr:\n  other:\nsteps:\n  a:\n    prompt: Go.\n")
+      expect(inputs["task"]).to include("fills_from_branch" => true)
+      expect(inputs["pr"]).to include("fills_from_branch" => true)
+      expect(inputs["other"]).not_to include("fills_from_branch")
+    end
+
+    it "marks task but not spec" do
+      inputs = shown_inputs("inputs:\n  task:\n  spec:\nsteps:\n  a:\n    prompt: Go.\n")
+      expect(inputs["task"]).to include("fills_from_branch" => true)
+      expect(inputs["spec"]).not_to include("fills_from_branch")
+    end
+
+    it "marks nothing when neither is declared" do
+      inputs = shown_inputs("inputs:\n  spec:\nsteps:\n  a:\n    prompt: Go.\n")
+      expect(inputs.values.flat_map(&:keys)).not_to include("fills_from_branch")
     end
   end
 

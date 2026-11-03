@@ -108,7 +108,7 @@ module Workspace
         definition = @catalog.find(id, project: project)
         data = definition.to_h
         if json
-          return document("workflow" => data.merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)))
+          return document("workflow" => with_branch_fills(data).merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)))
         end
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
@@ -1141,6 +1141,15 @@ module Workspace
       # How a definition being read finds the workflow its `extends:` names.
       def parent_lookup(project: nil)
         ->(id, below: nil) { @catalog.parent(id, below: below, project: project) }
+      end
+
+      # The definition document with +fills_from_branch+ on each declared input `workflow run` fills from the branch.
+      def with_branch_fills(data)
+        inputs = (data["inputs"] || {}).dup
+        WorkflowBranchInputs::FILLABLE.each do |name|
+          inputs[name] = (inputs[name] || {}).merge("fills_from_branch" => true) if inputs.key?(name)
+        end
+        data.merge("inputs" => inputs)
       end
 
       # The `extends` field of a definition document: the parents nearest first, left out when there are none.
