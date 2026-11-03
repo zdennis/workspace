@@ -7,7 +7,7 @@ use_when: A question to answer by reading, with no code change.
 
 inputs:
   task:
-    description: The question to explore, or the path of a brief.
+    description: The question to explore, or the path of a brief. `workflow run` fills it from the open pull request, else `Branch NAME`, when left out.
     required: true
   topic:
     description: A short title for file names and inbox titles (letters, digits, . _ -, no spaces; up to 60 characters); when left out the agent picks a few words itself.

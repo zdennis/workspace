@@ -53,7 +53,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 ## Other forms
 
 - `workflow start [ID] [REF | --prompt TEXT]` has what `go` lacks: `--branch`, `--slug`, `--note`, `--agent-kind`, `--[no-]headless`, `--prompt-timeout`. `workflow start --help` lists them.
-- `workflow run ID` runs in an existing checkout, with `--name` and `--pane`. It makes nothing, reads no ticket and does no fork check. It parks as `go` does.
+- `workflow run ID` runs in an existing checkout, with `--name` and `--pane`. It makes nothing and does no fork check. With no `--input` it fills an unset `task` and `pr` from the branch's open pull request (else `task` is `Branch NAME`), never on the default branch or in the main checkout. It parks as `go` does.
 - For any other `workflow` verb (`workflow show`, `workflow validate` and the rest), read `workspace workflow --help`.
 
 ## Presets

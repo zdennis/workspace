@@ -252,7 +252,7 @@ module Workspace
       "workflow_exists" => "workflow add found a user's file of that id already there (a link counts); nothing was written. details.workflow, details.path.",
       "stale_workflow" => "workflow update --if-sha256: the user's file changed since that sha256 (or can't be read). details.sha256 is the current one, details.workflow, details.path.",
       "builtin_workflow" => "workflow update or workflow remove found only a preset of that id, no file of the user's; save a copy with workflow add. details.workflow.",
-      "input_required" => "workflow run is missing a required input.",
+      "input_required" => "workflow run is missing a required input. Pass it with --input; a task or pr input is filled from the branch's pull request or name, except on the default branch or in the main checkout.",
       "workflow_command_unset" => "A step's check names the project's test or lint command and the project has none (also `workflow check`).",
       "step_without_status" => "workflow check named a step that has no `status:` command. details.workflow, details.step.",
       "artifacts_not_directory" => "workflow check --artifacts named a path that is not an existing directory. details.path.",

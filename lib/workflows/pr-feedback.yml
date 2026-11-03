@@ -8,9 +8,9 @@ applies_to: [github_pr, branch]
 
 inputs:
   task:
-    description: What the run is about. `workflow start` fills it from the pull request.
+    description: What the run is about. `workflow start` and `workflow run` fill it from the pull request.
   pr:
-    description: The pull request number the branch is expected to have (digits only). `workflow start` fills it from a pull request ref; when set, triage stops if the branch's pull request has another number. Only the number is compared, not the repository.
+    description: The pull request number the branch is expected to have (digits only). `workflow start` fills it from a pull request ref and `workflow run` from the branch's open pull request; when set, triage stops if the branch's pull request has another number. Only the number is compared, not the repository.
 
 instructions: |
   You are handling review feedback on {{inputs.task}} in workspace {{workspace}}, branch
