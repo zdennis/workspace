@@ -187,6 +187,7 @@ require_relative "workspace/spine_config"
 require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
 require_relative "workspace/project_config"
+require_relative "workspace/protected_branch"
 require_relative "workspace/osascript_runner"
 require_relative "workspace/ui_app_probe"
 require_relative "workspace/iterm"
@@ -673,6 +674,7 @@ module Workspace
     workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
     workflow_needs_me = WorkflowNeedsMe.new
+    protected_branch = ProtectedBranch.new(git: git)
     workflow_command = Commands::Workflow.new(
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
@@ -744,7 +746,7 @@ module Workspace
     go_task = Commands::GoTask.new(engine: workflow_engine, plan_task: plan_task_command, access: plan_access, output: output)
     go_command = Commands::Go.new(
       workflow_start: workflow_start_command, workflow: workflow_command, workflow_defaults: workflow_defaults, catalog: workflow_catalog,
-      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, output: output
+      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, protected_branch: protected_branch, output: output
     )
     held_locks = HeldLocks.new(lock_namespace: lock_namespace, lock_holder: lock_holder, bound_run: bound_run, env: env)
     promote_command = Commands::Promote.new(
