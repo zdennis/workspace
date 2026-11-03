@@ -47,6 +47,19 @@ RSpec.describe Workspace::Commands::Notes do
     allow(project_config).to receive(:project_root_for) { |name| roots[name] }
   end
 
+  describe "#location_rule" do
+    it "gives the template and the main notes directory a worktree with no template inherits from" do
+      expect(command.location_rule(name: "api.worktree-x")).to eq(template: nil, main_dir: "#{repo}/tmp/workspace-notes")
+      expect(command.location_rule(name: "api")).to eq(template: nil, main_dir: nil)
+    end
+
+    it "leaves the main directory out when the project sets a rule" do
+      write_config("api", "notes:\n  default_dir: \"/n/{branch}\"\n")
+
+      expect(command.location_rule(name: "api.worktree-x")).to eq(template: "/n/{branch}", main_dir: nil)
+    end
+  end
+
   describe "#dir" do
     it "prints the absolute path alone, tmp/workspace-notes in the checkout by default" do
       command.dir(name: "api")

@@ -136,6 +136,47 @@ module Workspace
       end
     end
 
+    # Whether `git worktree lock` was run on a linked worktree, which makes `git worktree move` refuse it.
+    #
+    # @param repo [String] any checkout of the repository
+    # @param worktree [String] the worktree to look up
+    # @return [Boolean] false for a worktree git does not list, or when git cannot answer
+    def worktree_locked?(repo, worktree)
+      stdout, _, status = capture_git("-C", repo, "worktree", "list", "--porcelain")
+      return false unless status.success?
+      target = File.realpath(worktree)
+      stdout.scrub.split(/\n\n+/).any? do |block|
+        lines = block.lines.map(&:strip)
+        listed = lines.find { |line| line.start_with?("worktree ") }&.delete_prefix("worktree ")
+        listed && File.realpath(listed) == target && lines.any? { |line| line == "locked" || line.start_with?("locked ") }
+      end
+    rescue SystemCallError
+      false
+    end
+
+    # `git worktree move OLD NEW`; git refuses a locked worktree.
+    #
+    # @param path [String] the main checkout (where git runs)
+    # @param old_path [String] the worktree today
+    # @param new_path [String] where it goes
+    # @return [Array(Boolean, String)] success and git's stderr
+    def move_worktree(path, old_path, new_path)
+      _, stderr, success = run_git(path, "worktree", "move", old_path, new_path, timeout: QUICK_TIMEOUT)
+      [success, stderr]
+    end
+
+    # `git branch -m OLD NEW` in +path+; git carries the `branch.OLD.*` config
+    # keys to the new name and refuses a name that is taken.
+    #
+    # @param path [String] a checkout of the repository
+    # @param old_name [String]
+    # @param new_name [String]
+    # @return [Array(Boolean, String)] success and git's stderr
+    def rename_branch(path, old_name, new_name)
+      _, stderr, success = run_git(path, "branch", "-m", old_name, new_name, timeout: QUICK_TIMEOUT)
+      [success, stderr]
+    end
+
     # @param path [String] the checkout
     # @param onto [String] a ref
     # @return [Array(Boolean, String)] success and git's stderr

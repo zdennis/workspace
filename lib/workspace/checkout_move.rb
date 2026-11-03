@@ -294,6 +294,7 @@ module Workspace
         @tag = "workspace promote: #{@branch} #{id}"
         @done = []
         @warnings = facts[:warnings].dup
+        @signals = DeferredSignals.new
       end
 
       # A Ctrl-C, SIGTERM or SIGHUP while the move runs waits for the step under way to end,
@@ -305,7 +306,7 @@ module Workspace
       # @return [Hash] `:facts`, `:snapshot`, `:main_clean`, `:warnings`
       # @raise [Workspace::Error] `stash_failed`, `move_failed` or `move_incomplete`
       def call
-        deferring_signals do
+        @signals.hold do
           @recorded = @git.snapshot_trees(@root, skip: @facts[:left_behind]) or
             raise Workspace::Error, "Could not record the state of #{@root} (git write-tree or git add failed). Nothing was moved."
           stash if changes?
@@ -326,26 +327,8 @@ module Workspace
 
       private
 
-      # The signals a move holds until the step under way has ended.
-      DEFERRED_SIGNALS = %w[INT TERM HUP].freeze
-
-      def deferring_signals
-        previous = {}
-        DEFERRED_SIGNALS.each do |name|
-          handler = Signal.trap(name) { @signal ||= name }
-          # A signal the process ignores (nohup's SIGHUP) stays ignored.
-          ignored = handler.nil? || handler == "IGNORE"
-          ignored ? Signal.trap(name, handler) : previous[name] = handler
-        end
-        yield
-      ensure
-        previous.each { |name, handler| Signal.trap(name, handler) }
-        # Not named in a move_failed or move_incomplete: the work moved, or nothing did.
-        Process.kill(@signal, Process.pid) if @signal && !@signal_reported
-      end
-
       def halt_if_signalled
-        raise StepFailed, "interrupted by SIG#{@signal}" if @signal
+        raise StepFailed, "interrupted by SIG#{@signals.caught}" if @signals.caught
       end
 
       def changes?
@@ -428,8 +411,8 @@ module Workspace
       # @return [Workspace::Error] `move_failed`, for the caller to raise; an undo that fails raises `move_incomplete`
       def roll_back(error)
         failed = @step
-        @signal ||= Signal.signame(error.signo) if error.is_a?(SignalException)
-        reason = if @signal then "interrupted by SIG#{@signal}"
+        @signals.note(Signal.signame(error.signo)) if error.is_a?(SignalException)
+        reason = if @signals.caught then "interrupted by SIG#{@signals.caught}"
         elsif error.is_a?(StepFailed) then error.message
         else
           "#{error.class}: #{error.message}"
@@ -453,7 +436,7 @@ module Workspace
         end
         undo("rollback_verify") { compare(@root) or raise StepFailed, "#{@root} does not match what it was before the move" }
         Workspace::Error.new("Could not move the work: #{reason}. Nothing moved: the main checkout is as it was.",
-          code: MOVE_FAILED, details: {"step" => failed, "rolled_back" => true, "snapshot" => release}.merge(signal_details))
+          code: MOVE_FAILED, details: {"step" => failed, "rolled_back" => true, "snapshot" => release}.merge(@signals.report))
       end
 
       # The preflight saw no such branch, so one at the base commit now is the one this move made.
@@ -476,13 +459,7 @@ module Workspace
           code: MOVE_INCOMPLETE,
           details: {"step" => @step, "steps_done" => @done.dup, "snapshot" => snapshot_details(kept: true),
                     "main_branch" => @git.worktree_branch(@root), "worktree" => (@worktree if worktree_registered?),
-                    "recover" => recover_commands}.merge(signal_details))
-      end
-
-      def signal_details
-        return {} unless @signal
-        @signal_reported = true
-        {"signal" => "SIG#{@signal}"}
+                    "recover" => recover_commands}.merge(@signals.report))
       end
 
       def recover_commands

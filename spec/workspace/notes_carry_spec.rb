@@ -286,3 +286,39 @@ RSpec.describe Workspace::NotesCarry do
     expect(described_class.new.call(from: from, to: to)).to include("spine" => "moved", "ship" => nil)
   end
 end
+
+RSpec.describe Workspace::NotesCarry, ".clash?" do
+  around { |example|
+    Dir.mktmpdir { |dir|
+      @dir = dir
+      example.run
+    }
+  }
+
+  let(:path) { File.join(@dir, "target") }
+
+  it "is false for nothing there" do
+    expect(described_class.clash?(path, directory: true)).to be(false)
+  end
+
+  it "takes an empty directory only for a directory" do
+    Dir.mkdir(path)
+
+    expect(described_class.clash?(path, directory: true)).to be(false)
+    expect(described_class.clash?(path, directory: false)).to be(true)
+  end
+
+  it "is true for a directory that holds files, a file, and a link to anything" do
+    Dir.mkdir(path)
+    File.write(File.join(path, "note.md"), "x")
+    expect(described_class.clash?(path, directory: true)).to be(true)
+
+    file = File.join(@dir, "file")
+    File.write(file, "x")
+    expect(described_class.clash?(file, directory: false)).to be(true)
+
+    link = File.join(@dir, "link")
+    File.symlink(File.join(@dir, "empty"), link)
+    expect(described_class.clash?(link, directory: true)).to be(true)
+  end
+end

@@ -36,6 +36,16 @@ RSpec.describe Workspace::ErrorCodes do
     expect((codes + warnings).uniq - described_class::REGISTRY.keys).to eq([])
   end
 
+  it "registers every code and warning code rename can give" do
+    source = File.read(File.join(root, "lib/workspace/rename_plan.rb"))
+    codes = source.scan(/refusal\("([a-z_]+)"/).flatten.uniq
+    warnings = source.scan(/"code" => "([a-z_]+)"/).flatten.uniq
+    expect(codes).to include("workspace_running", "run_active", "dev_lock_held", "rename_target_taken", "rename_in_progress")
+    doc = File.read(File.join(root, "docs/README.json.md"))
+    expect(codes - described_class::REGISTRY.keys).to eq([])
+    expect(warnings.reject { |code| doc.include?("`#{code}`") }).to eq([])
+  end
+
   it "documents every registered code in docs/README.json.md" do
     doc = File.read(File.join(root, "docs/README.json.md"))
     missing = described_class::REGISTRY.keys.reject { |code| doc.include?("`#{code}`") }

@@ -305,3 +305,43 @@ RSpec.describe Workspace::NameMigration do
       File.basename(config.agent_log_path(long.downcase)))
   end
 end
+
+RSpec.describe Workspace::NameMigration, "#with_locks" do
+  let(:home) { Dir.mktmpdir("ws-locks", "/tmp") }
+  let(:paths) { {"b" => File.join(home, "b.lock"), "a" => File.join(home, "a.lock")} }
+  let(:config) { instance_double(Workspace::Config) }
+  let(:migration) { described_class.new(config: config, project_config: nil, tmux: nil, state: nil, event_log: nil, project_catalog_factory: nil) }
+
+  before { allow(config).to receive(:agent_lock_path) { |name| paths.fetch(name) } }
+  after { FileUtils.remove_entry(home) }
+
+  def free?(path) = File.open(path, File::RDWR | File::CREAT) { |file| file.flock(File::LOCK_EX | File::LOCK_NB) } == 0
+
+  it "holds each lock around the block, in sorted order, and lets go" do
+    taken = []
+    allow(File).to receive(:open).and_wrap_original do |original, *args, **options, &block|
+      taken << args.first if paths.value?(args.first) && !block
+      original.call(*args, **options, &block)
+    end
+
+    answer = migration.with_locks("b", "a", "a") do
+      expect(paths.values.map { |path| free?(path) }).to eq([false, false])
+      :done
+    end
+
+    expect(answer).to eq(:done)
+    expect(taken).to eq(paths.values.sort)
+    expect(paths.values.map { |path| free?(path) }).to eq([true, true])
+  end
+
+  it "raises LockUnavailable for a lock it can't take, and lets go of the ones it has" do
+    paths["b"] = File.join(home, "no", "such", "dir", "b.lock")
+
+    expect { migration.with_locks("a", "b") { raise "not reached" } }.to raise_error(described_class::LockUnavailable)
+    expect(free?(paths["a"])).to be(true)
+  end
+
+  it "passes on an error from the block as it is" do
+    expect { migration.with_locks("a") { raise Errno::EACCES, "step" } }.to raise_error(Errno::EACCES)
+  end
+end

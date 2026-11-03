@@ -447,6 +447,44 @@ RSpec.describe Workspace::Commands::Dev do
     end
   end
 
+  describe "#lock_held_by?" do
+    let(:liveness) { FakeLockIdentity.new(pid: 1) }
+    let(:subject_dev) { dev(lock_holder: liveness) }
+
+    def hold(record)
+      FileUtils.mkdir_p(lock_dir)
+      File.write(File.join(lock_dir, "locks.json"), JSON.generate("devenv" => {"holder" => record, "queue" => []}))
+    end
+
+    before { FileUtils.mkdir_p([main, login]) }
+
+    it "is false with no holder, and makes no lock directory" do
+      expect(subject_dev.lock_held_by?(main)).to be(false)
+      expect(File.exist?(lock_dir)).to be(false)
+    end
+
+    it "is true for a live holder of the checkout and false for another's" do
+      hold({"kind" => "process", "pid" => 2, "started" => "start-2", "waiter_pid" => 2, "waiter_started" => "start-2", "worktree" => main})
+
+      expect(subject_dev.lock_held_by?(main)).to be(true)
+      expect(subject_dev.lock_held_by?(login)).to be(false)
+    end
+
+    it "is false for a dead holder" do
+      hold({"kind" => "process", "pid" => 2, "started" => "other", "waiter_pid" => 2, "waiter_started" => "other", "worktree" => main})
+
+      expect(subject_dev.lock_held_by?(main)).to be(false)
+    end
+
+    it "looks at a run's live delegate, not the run" do
+      hold({"kind" => "run", "run_id" => "wr_1", "worktree" => main})
+      expect(subject_dev.lock_held_by?(main)).to be(false)
+
+      hold({"kind" => "run", "run_id" => "wr_1", "worktree" => login, "delegate" => {"pid" => 2, "started" => "start-2", "worktree" => main}})
+      expect(subject_dev.lock_held_by?(main)).to be(true)
+    end
+  end
+
   describe "#down" do
     it "stops the env from any worktree of the repo and frees the lock" do
       dev.up(working_dir: login)

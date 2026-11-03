@@ -65,6 +65,43 @@ module Workspace
       entry.is_a?(Hash) ? entry : nil
     end
 
+    # Points the bindings of a renamed workspace at its new names, for `rename`: every binding whose
+    # `workspace` is the old name gets the new one, its tmux `session` the new session name, and its
+    # `pane_slot` the new session prefix. A binding parked under `slot:<old slot>` is rekeyed to the new slot. Bindings of
+    # other workspaces are left as they are. Safe to run again: once renamed nothing matches the old name.
+    #
+    # @param from [String] the old workspace name
+    # @param to [String] the new workspace name
+    # @param from_session [String] the old tmux session name
+    # @param to_session [String] the new tmux session name
+    # @return [Integer] how many bindings were changed
+    # @raise [SystemCallError] if the file can't be written
+    def rename_workspace(from:, to:, from_session: from, to_session: to)
+      return 0 unless read.values.any? { |entry| entry.is_a?(Hash) && entry["workspace"] == from }
+
+      changed = 0
+      update do |all|
+        rekeys = {}
+        all.each do |key, entry|
+          next unless entry.is_a?(Hash) && entry["workspace"] == from
+
+          entry["workspace"] = to
+          entry["session"] = to_session if entry["session"] == from_session
+          slot = entry["pane_slot"]
+          if slot.is_a?(String) && slot.start_with?("#{from_session}:")
+            entry["pane_slot"] = "#{to_session}#{slot.delete_prefix(from_session)}"
+            rekeys[key] = "#{PARKED}#{entry["pane_slot"]}" if key == "#{PARKED}#{slot}"
+          end
+          changed += 1
+        end
+        rekeys.each do |old_key, new_key|
+          entry = all.delete(old_key)
+          all[new_key] ||= entry
+        end
+      end
+      changed
+    end
+
     # Finds the pane bound to a subject, wherever `restore` moved its binding.
     # A binding kept under its slot (see {#move}) has no pane and is skipped.
     #

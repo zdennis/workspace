@@ -178,10 +178,63 @@ module Workspace
       nil
     end
 
+    # Copies a stopped workspace's sessions to its new name for `rename`, so `restore NEW` resumes
+    # them. For each slot of {#slots_for} under the old workspace and tmux session names it appends a
+    # SessionStart (and, when the session had ended, a SessionEnd with the same reason) under the new
+    # names, with the new directory. `transcript_path`, `session_id`, `pane_id`, `tmux_server`,
+    # `layout`, `kind` and the original times are kept; the pane slot swaps its session prefix.
+    # Claude Code's transcripts are not touched.
+    #
+    # Safe to run again. A session already carried to the same slot is not written twice, and a start
+    # a failed run left without its end gets only the end. Once the new rows are written, each old slot
+    # gets a SessionEnd with reason `renamed` (not resumable, and later than any end it had), so
+    # `restore OLD` does not resume the session `restore NEW` does; an old slot already ended
+    # `renamed` is skipped. A slot of another tmux session name is left. One whose new slot is held by a
+    # different session is not carried, but is still ended, so one transcript has only one resume.
+    # A new slot that itself ended `renamed` holds nothing, so a rename back to an old name writes anew.
+    #
+    # @param from [String] the old workspace name
+    # @param to [String] the new workspace name
+    # @param cwd [String] the checkout's new path
+    # @param from_session [String] the old tmux session name
+    # @param to_session [String] the new tmux session name
+    # @return [Array<Hash{String=>Object}>] the slots carried or finished by this call
+    # @raise [SystemCallError] if the ledger exists but can't be read
+    def carry(from:, to:, cwd:, from_session: from, to_session: to)
+      carried = existing_slots(to, to_session)
+      slots_for(from, from_session).filter_map do |slot|
+        next if slot["end_reason"] == RENAMED
+        match = /\A#{Regexp.escape(from_session)}:(.+)\z/.match(slot["pane_slot"].to_s)
+        next unless match
+
+        new_slot = "#{to_session}:#{match[1]}"
+        have = carried[new_slot]
+        have = nil if have && have["end_reason"] == RENAMED
+        same = have && have["session_id"] == slot["session_id"]
+        taken = have && !same
+
+        unless same || taken
+          record(slot.slice(*SLOT_FIELDS).merge("event" => "session_start", "workspace" => to, "pane_slot" => new_slot, "cwd" => cwd))
+        end
+        if slot["ended_at"] && !taken && !(same && have["ended_at"])
+          record({"event" => "session_end", "at" => slot["ended_at"], "workspace" => to, "pane_slot" => new_slot,
+                  "session_id" => slot["session_id"], "reason" => slot["end_reason"]})
+        end
+        record({"event" => "session_end", "workspace" => from, "pane_slot" => slot["pane_slot"],
+                "session_id" => slot["session_id"], "reason" => RENAMED})
+        slot.merge("pane_slot" => new_slot, "cwd" => cwd) unless taken
+      end
+    end
+
     private
 
+    RENAMED = "renamed"
     SLOT_FIELDS = %w[pane_slot pane_id tmux_server session_id transcript_path cwd layout at kind].freeze
     private_constant :SLOT_FIELDS
+
+    def existing_slots(workspace, session)
+      slots_for(workspace, session).to_h { |slot| [slot["pane_slot"], slot] }
+    end
 
     def parse(line)
       entry = JSON.parse(line)

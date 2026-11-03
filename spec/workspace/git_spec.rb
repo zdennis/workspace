@@ -212,6 +212,25 @@ RSpec.describe Workspace::Git do
     end
   end
 
+  describe "#worktree_locked?" do
+    it "is true only for a worktree git lock was run on" do
+      Dir.mktmpdir do |dir|
+        repo = File.join(File.realpath(dir), "repo")
+        other = File.join(File.realpath(dir), "other")
+        quiet = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+        system("git", "init", "-q", repo, exception: true)
+        system("git", "-C", repo, *quiet, "commit", "-q", "--allow-empty", "-m", "x", exception: true)
+        system("git", "-C", repo, "worktree", "add", "-q", "-b", "b", other, exception: true)
+
+        expect(git.worktree_locked?(repo, other)).to be(false)
+        system("git", "-C", repo, "worktree", "lock", "--reason", "usb", other, exception: true)
+        expect(git.worktree_locked?(repo, other)).to be(true)
+        expect(git.worktree_locked?(repo, repo)).to be(false)
+        expect(git.worktree_locked?(repo, File.join(dir, "gone"))).to be(false)
+      end
+    end
+  end
+
   describe "#remove_worktree" do
     let(:worktree_path) { "/Users/me/project/.worktrees/feature-x" }
 
@@ -952,6 +971,68 @@ RSpec.describe Workspace::Git do
         run.call("worktree", "add", "-q", "--detach", File.join(repo, "b"))
 
         expect(git.worktree_branches(repo: repo)).to contain_exactly("main", "PROJ-1-x")
+      end
+    end
+  end
+
+  describe "moving and renaming" do
+    around do |example|
+      Dir.mktmpdir("wt-rename") do |dir|
+        @repo = File.realpath(dir)
+        example.run
+      end
+    end
+
+    def g(*args)
+      out, status = Open3.capture2e("git", "-C", @repo, "-c", "user.name=t", "-c", "user.email=t@example.com", *args)
+      raise "git #{args.join(" ")} failed: #{out}" unless status.success?
+      out
+    end
+
+    before do
+      g("init", "-q", "-b", "main")
+      g("commit", "-q", "--allow-empty", "-m", "init")
+      g("worktree", "add", "-q", "-b", "old", File.join(@repo, "old"))
+    end
+
+    describe "#move_worktree" do
+      it "moves the worktree" do
+        success, = git.move_worktree(@repo, File.join(@repo, "old"), File.join(@repo, "new"))
+
+        expect(success).to be true
+        expect(File.directory?(File.join(@repo, "new"))).to be true
+        expect(File.exist?(File.join(@repo, "old"))).to be false
+      end
+
+      it "refuses a locked worktree and answers git's stderr" do
+        g("worktree", "lock", File.join(@repo, "old"))
+
+        success, stderr = git.move_worktree(@repo, File.join(@repo, "old"), File.join(@repo, "new"))
+
+        expect(success).to be false
+        expect(stderr).to match(/lock/)
+        expect(File.directory?(File.join(@repo, "old"))).to be true
+      end
+    end
+
+    describe "#rename_branch" do
+      it "renames the branch and carries its branch.<old>.* keys" do
+        g("config", "branch.old.workspace-created", "true")
+
+        success, = git.rename_branch(@repo, "old", "renamed")
+
+        expect(success).to be true
+        expect(g("config", "--get", "branch.renamed.workspace-created").strip).to eq("true")
+        expect(Open3.capture2e("git", "-C", @repo, "config", "--get", "branch.old.workspace-created").last).not_to be_success
+      end
+
+      it "fails with stderr when the new name is taken" do
+        g("branch", "taken")
+
+        success, stderr = git.rename_branch(@repo, "old", "taken")
+
+        expect(success).to be false
+        expect(stderr).to match(/already exists/)
       end
     end
   end

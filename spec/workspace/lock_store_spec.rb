@@ -15,6 +15,24 @@ RSpec.describe Workspace::LockStore do
     {kind: "agent", pid: pid, started: started, pane: pane, worktree: worktree}
   end
 
+  describe "#peek" do
+    it "is nil for a lock never taken, and creates nothing" do
+      missing = File.join(tmpdir, "not-made")
+
+      expect(described_class.new(dir: missing, liveness: liveness).peek("devenv")).to be_nil
+      expect(File.exist?(missing)).to be(false)
+    end
+
+    it "flags a dead holder without reaping it" do
+      path = File.join(tmpdir, "locks.json")
+      text = JSON.generate("devenv" => {"holder" => {"kind" => "process", "pid" => 1, "started" => "gone", "waiter_pid" => 1, "waiter_started" => "gone"}, "queue" => []})
+      File.write(path, text)
+
+      expect(store(liveness: FakeLockLiveness.new(dead: [1])).peek("devenv")["holder"]).to include("pid" => 1, "stale" => true)
+      expect(File.read(path)).to eq(text)
+    end
+  end
+
   describe "#run_records" do
     let(:path) { File.join(tmpdir, "locks.json") }
 

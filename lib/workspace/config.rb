@@ -284,6 +284,19 @@ module Workspace
       File.join(state_dir, ".events")
     end
 
+    # Dotted, like {#task_dir}, so no workspace name can produce it. Holds one journal per rename under way.
+    #
+    # @return [String] path to the directory of rename journals
+    def rename_journal_dir
+      File.join(state_dir, ".renames")
+    end
+
+    # @param name [String] the workspace's old name
+    # @return [String] path to the journal of its rename
+    def rename_journal_path(name)
+      File.join(rename_journal_dir, "#{name}.json")
+    end
+
     # @return [String] path to the JSON file binding tmux panes to a run, review or play
     def pane_bindings_path
       File.join(state_dir, "bindings.json")

@@ -750,6 +750,17 @@ module Workspace
       end
     end
 
+    # One lock as {#status} shows it, read without a lock: no directory is made, no file is written and
+    # nothing is reaped, so it is safe for a reader that must change nothing (`rename --dry-run`).
+    #
+    # @param name [String] lock name
+    # @return [Hash, nil] `{"holder" => ..., "queue" => [...]}` with `stale` flags; nil for a lock never taken
+    # @raise [Workspace::Error] if `locks.json` is corrupt
+    def peek(name)
+      entry = read_data[name]
+      entry && within_liveness_snapshot { annotate_entry(entry) }
+    end
+
     # Every `kind: "run"` holder and waiter in this store, read without a lock: no directory is made, no
     # file is written and nothing is reaped, so it is safe for a reader that must change nothing (`doctor`).
     # `locks.json` is replaced whole through a rename, so the read never sees a torn file.

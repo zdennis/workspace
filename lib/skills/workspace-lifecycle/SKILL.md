@@ -1,6 +1,6 @@
 ---
 name: workspace-lifecycle
-description: "Create, bring back and end `workspace` projects and worktrees: `start` from a ticket, PR or branch; `launch` (open panes in iTerm); `promote` changes or commits made on main by mistake; `restore` after a reboot; wind down: stop, finish, kill, prune (merged PRs), remove stale config. Not plain git branches or workflow runs (workspace-workflow). Never end one unasked: read the which-ending table."
+description: "Create, bring back and end `workspace` projects and worktrees: `start` from a ticket, PR or branch; `launch` (open iTerm panes); `promote` changes made on main; `rename` a worktree's branch; `restore` after a reboot; wind down: stop, finish, kill, prune (merged PRs), remove config. Not plain git branches or workflow runs (workspace-workflow). Never end one unasked: read the which-ending table."
 ---
 
 Written against workspace 0.75.0; check with the working --help form.
@@ -57,6 +57,8 @@ To start a workflow, use skill workspace-workflow.
 
 `promote [BRANCH]` moves the staged, unstaged and untracked changes and the branch commits of a main checkout into a new worktree at `.worktrees/BRANCH`, and leaves the main checkout clean on the default branch. Run `promote BRANCH --dry-run --json` first. It refuses while an agent pane of the main checkout works or waits; `--force` overrides that, so ask first. A failure is undone; if the undo fails, the changes stay under `refs/workspace/promote/<id>` and the error lists the git commands to get them back. Nothing launches unless `--launch`. The `promote` pack (`workspace instructions compose --pack promote`) says how to seed the new workspace.
 
+`rename [WS] NEW` gives a stopped worktree workspace the new branch NEW and, with it, a new directory, workspace name and tmux session. Run `stop` first: a running session or daemon is refused (`workspace_running`), as are a workflow run still going and a held dev lock. Run `rename NEW --dry-run --json` first. Then `restore NEWWS` resumes the agent conversations (`launch` starts new ones); rename launches nothing and leaves the remote branch alone. A failed git step is undone (`rename_failed`, nothing changed). A rename that stopped after that (`rename_incomplete`, or `rename_in_progress` on the next try) is finished by the command it prints: run it again, from anywhere, and do not start another rename of that workspace.
+
 `restore [WS \| --all]` recreates the agent panes a reboot or tmux restart took and types `claude --resume <session id>` into each. It never types into a pane that already runs something. Run `restore --dry-run` first. `--all` covers every active workspace; it cannot be combined with a name.
 
-`--dry-run` exists on `prune`, `cleanup`, `remove`, `promote`, `restore`, `projects stop` and `projects kill`; `stop`, `finish`, `kill`, `relaunch`, `start` and `launch` have none. Confirm with the command's `--help` before relying on it.
+`--dry-run` exists on `prune`, `cleanup`, `remove`, `promote`, `rename`, `restore`, `projects stop` and `projects kill`; `stop`, `finish`, `kill`, `relaunch`, `start` and `launch` have none. Confirm with the command's `--help` before relying on it.

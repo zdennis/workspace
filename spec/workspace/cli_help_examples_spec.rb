@@ -43,7 +43,7 @@ module HelpExamplesSpec
     "pr", "pr create", "pr feedback",
     "projects", "projects list", "projects show", "projects members", "projects stop", "projects kill",
     "projects group", "projects group create", "projects group add", "projects group list", "projects group show",
-    "promote", "prune", "push", "reactivate", "rebase", "relaunch", "remove", "repair", "resize", "restore",
+    "promote", "prune", "push", "reactivate", "rebase", "relaunch", "remove", "rename", "repair", "resize", "restore",
     "run", "run-and-report", "report-run-status", "session-event", "sessions", "set-command", "shell-init", "snapshot",
     "review", "review show", "review list",
     "skills", "skills install", "skills uninstall",

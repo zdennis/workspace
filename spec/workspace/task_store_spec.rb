@@ -156,4 +156,29 @@ RSpec.describe Workspace::TaskStore do
       expect(store.archived.map { |r| r["id"] }).to eq(ids.last(3).reverse)
     end
   end
+
+  describe "#update" do
+    it "changes workspace, branch and path and keeps the other fields" do
+      task = store.start(workspace: "w", title: "T", ref: "PROJ-1", branch: "old", path: "/old")
+
+      result = store.update(task["id"], workspace: "w2", branch: "new", path: "/new")
+
+      expect(result).to eq(task.merge("workspace" => "w2", "branch" => "new", "path" => "/new"))
+      expect(store.active_for("w2")).to eq(result)
+      expect(store.active_for("w")).to be_nil
+      expect(Dir.glob(File.join(dir, "*.tmp"))).to be_empty
+    end
+
+    it "does not reach archived tasks" do
+      task = store.start(workspace: "w", branch: "old", path: "/old")
+      store.archive("w", outcome: "merged")
+
+      expect(store.update(task["id"], workspace: "w2", branch: "new", path: "/new")).to be_nil
+      expect(store.archived.first).to include("workspace" => "w", "branch" => "old")
+    end
+
+    it "answers nil for an unknown id" do
+      expect(store.update("deadbeef", workspace: "w2", branch: "b", path: "/p")).to be_nil
+    end
+  end
 end
