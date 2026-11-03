@@ -5362,7 +5362,8 @@ module Workspace
           # The checkout's root, where the run's files go: the named workspace's, or the detected one's.
           root = options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
           @workflow_command.run(id: subject, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: inputs,
-            pane: options[:pane], note: options[:note], dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], project: project)
+            pane: options[:pane], note: options[:note], dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], project: project,
+            fill_from_branch: !root.nil?)
         end
       when "start"
         inputs = workflow_inputs(options[:inputs])

@@ -7098,7 +7098,13 @@ RSpec.describe Workspace::CLI do
       cli.run(["workflow", "run", "rpiv", "--input", "task=PROJ-1 export=pdf", "--input", "spec=", "--note", "Keep it small."])
 
       expect(workflow_command.calls).to eq([[:run, {id: "rpiv", workspace: "detected-ws", worktree: "/some/dir",
-                                                    inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"], project: nil}]])
+                                                    inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"], project: nil, fill_from_branch: false}]])
+    end
+
+    it "fills from the branch only for a checkout it resolved: the --name target's, not the working directory" do
+      cli.run(["workflow", "run", "rpiv", "--name", "api"])
+
+      expect(workflow_command.calls.first.last).to include(worktree: "/work/api", fill_from_branch: true)
     end
 
     it "starts a run in a named workspace from its root, in a named pane, or only checks with --dry-run" do

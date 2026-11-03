@@ -174,7 +174,7 @@ RSpec.describe Workspace::Commands::Workflow do
       row = command.run(id: "flow", workspace: "app", worktree: "/src/app", inputs: {"task" => "X-1"}, note: "Small.")
 
       expect(engine).to have_received(:start).with(definition: definition, workspace: "app", worktree: "/src/app", inputs: {"task" => "X-1"}, pane: "%5", note: "Small.")
-      expect(row).to eq("workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => shown)
+      expect(row).to eq("workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => shown, "inputs_from" => {})
       expect(output.string).to eq("wr_1  flow  app  running  step plan (attempt 1), running\n")
     end
 
@@ -213,9 +213,92 @@ RSpec.describe Workspace::Commands::Workflow do
 
       row = command.run(id: "flow", workspace: "app", worktree: "/src/app", inputs: {"task" => "X"}, dry_run: true)
 
-      expect(row).to eq("workspace" => "app", "outcome" => "dry_run", "reason" => nil, "message" => nil, "workflow" => "flow", "step" => "plan", "pane" => nil,
-        "inputs" => {"task" => "X", "spec" => ""}, "packs" => ["play/binding"])
-      expect(output.string).to eq("Would start flow in app at step plan (its agent daemon is not running; starting the run starts it and picks the Claude pane).\n")
+      line = "Would start flow in app at step plan (its agent daemon is not running; starting the run starts it and picks the Claude pane)."
+      expect(row).to eq("workspace" => "app", "outcome" => "dry_run", "reason" => nil, "message" => line, "workflow" => "flow", "step" => "plan", "pane" => nil,
+        "inputs" => {"task" => "X", "spec" => ""}, "packs" => ["play/binding"], "inputs_from" => {})
+      expect(output.string).to eq("#{line}\n")
+    end
+
+    context "with fill_from_branch" do
+      let(:branch_inputs) { instance_double(Workspace::WorkflowBranchInputs) }
+      let(:pr_filled) { {"task" => "#12: Fix it", "pr" => "12"} }
+      let(:pr_from) { {"task" => "pull_request", "pr" => "pull_request"} }
+      let(:filling) do
+        described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+          branch_inputs: branch_inputs, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+      end
+
+      before do
+        allow(panes).to receive(:default_pane).and_return("%5")
+        allow(engine).to receive(:start).and_return("id" => "wr_1", "workspace" => "app")
+        allow(engine).to receive(:preflight).and_return("step" => "plan", "inputs" => pr_filled, "packs" => [])
+        allow(status).to receive(:run).and_return("runs" => [shown], "warnings" => [])
+      end
+
+      it "passes the same pull request fill to a dry run and a real run" do
+        allow(branch_inputs).to receive(:call).with(definition, "/src/app", {}).and_return([pr_filled, pr_from])
+
+        dry = filling.run(id: "flow", workspace: "app", worktree: "/src/app", dry_run: true, fill_from_branch: true)
+        real = filling.run(id: "flow", workspace: "app", worktree: "/src/app", fill_from_branch: true)
+
+        expect(engine).to have_received(:preflight).with(hash_including(inputs: pr_filled))
+        expect(engine).to have_received(:start).with(hash_including(inputs: pr_filled))
+        expect(dry).to include("inputs_from" => pr_from, "message" => "Would start flow in app at step plan in pane %5. Fills task and pr from pull request #12.")
+        expect(real).to include("inputs_from" => pr_from)
+      end
+
+      it "says a branch fill" do
+        allow(branch_inputs).to receive(:call).and_return([{"task" => "Branch fix-x"}, {"task" => "branch"}])
+
+        row = filling.run(id: "flow", workspace: "app", worktree: "/src/app", dry_run: true, fill_from_branch: true)
+
+        expect(row["message"]).to end_with(" Fills task from branch fix-x.")
+        expect(row["inputs_from"]).to eq("task" => "branch")
+      end
+
+      it "says a pr filled alone from a pull request" do
+        allow(branch_inputs).to receive(:call).and_return([{"task" => "X-1", "pr" => "12"}, {"pr" => "pull_request"}])
+
+        row = filling.run(id: "flow", workspace: "app", worktree: "/src/app", inputs: {"task" => "X-1"}, dry_run: true, fill_from_branch: true)
+
+        expect(row["message"]).to end_with(" Fills pr from pull request #12.")
+      end
+
+      it "says a task filled alone from a pull request" do
+        allow(branch_inputs).to receive(:call).and_return([{"task" => "#12: Fix it"}, {"task" => "pull_request"}])
+
+        row = filling.run(id: "flow", workspace: "app", worktree: "/src/app", dry_run: true, fill_from_branch: true)
+
+        expect(row["message"]).to end_with(" Fills task from pull request #12.")
+      end
+
+      it "keeps an explicit input the fill left alone" do
+        allow(branch_inputs).to receive(:call).and_return([{"task" => "X-1"}, {}])
+
+        filling.run(id: "flow", workspace: "app", worktree: "/src/app", inputs: {"task" => "X-1"}, fill_from_branch: true)
+
+        expect(engine).to have_received(:start).with(hash_including(inputs: {"task" => "X-1"}))
+      end
+
+      it "carries inputs_from on a parked row" do
+        allow(branch_inputs).to receive(:call).and_return([pr_filled, pr_from])
+        allow(filling).to receive(:caller_in_pane?).and_return(true)
+        allow(panes).to receive(:parkable?).and_return(true)
+        allow(filling).to receive(:park_resume).and_return("outcome" => "parked")
+
+        row = filling.run(id: "flow", workspace: "app", worktree: "/src/app", caller_pane: "%5", fill_from_branch: true)
+
+        expect(engine).to have_received(:start).with(hash_including(inputs: pr_filled, dispatch: false))
+        expect(row).to eq("outcome" => "parked", "inputs_from" => pr_from)
+      end
+
+      it "does not ask the branch by default" do
+        expect(branch_inputs).not_to receive(:call)
+
+        row = filling.run(id: "flow", workspace: "app", worktree: "/src/app", inputs: {"task" => "X"})
+
+        expect(row["inputs_from"]).to eq({})
+      end
     end
 
     it "names the pane a dry run would use when the daemon is up" do

@@ -59,7 +59,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -74,6 +74,7 @@ module Workspace
         @sweep = sweep
         @schedule = schedule
         @needs_me = needs_me
+        @branch_inputs = branch_inputs
         @stats = stats
         @compare = compare
         @step_check = step_check
@@ -360,24 +361,30 @@ module Workspace
       # @param project [String, nil] the project whose definitions are read first
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`); a run for that pane is
       #   created and parked, so nothing is typed into the caller
-      # @return [Hash{String=>Object}] the action row; `outcome` is "parked" for a run parked from its own pane
+      # @param fill_from_branch [Boolean] fill +task+ and +pr+ from the branch checked out at +worktree+ when not
+      #   given; only the CLI's `workflow run` passes true, and only for a checkout it resolved
+      # @return [Hash{String=>Object}] the action row, with `inputs_from` (which inputs the branch filled);
+      #   `outcome` is "parked" for a run parked from its own pane
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
-      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil)
+      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false)
         definition = @catalog.find(id, project: project)
+        filled, from = fill_from_branch ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
         if dry_run
           pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace, start_daemon: false)
-          checked = @engine.preflight(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane_id)
-          @output.puts "Would start #{id} in #{workspace} at step #{checked["step"]}" \
-            "#{pane_id ? " in pane #{pane_id}" : " (its agent daemon is not running; starting the run starts it and picks the Claude pane)"}."
-          return {"workspace" => workspace, "outcome" => "dry_run", "reason" => nil, "message" => nil, "workflow" => id,
-                  "step" => checked["step"], "pane" => pane_id, "inputs" => checked["inputs"], "packs" => checked["packs"]}
+          checked = @engine.preflight(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id)
+          line = "Would start #{id} in #{workspace} at step #{checked["step"]}" \
+            "#{pane_id ? " in pane #{pane_id}" : " (its agent daemon is not running; starting the run starts it and picks the Claude pane)"}." \
+            "#{fill_sentence(filled, from)}"
+          @output.puts line
+          return {"workspace" => workspace, "outcome" => "dry_run", "reason" => nil, "message" => line, "workflow" => id,
+                  "step" => checked["step"], "pane" => pane_id, "inputs" => checked["inputs"], "packs" => checked["packs"], "inputs_from" => from}
         end
         pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace)
         if caller_in_pane?(workspace, caller_pane, pane_id) && @panes.parkable?(workspace, pane_id)
-          created = @engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane_id, note: note, dispatch: false)
-          return park_resume(created, from: nil, note: nil, pane: nil, target: pane_id, turn_over: nil)
+          created = @engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, note: note, dispatch: false)
+          return park_resume(created, from: nil, note: nil, pane: nil, target: pane_id, turn_over: nil).merge("inputs_from" => from)
         end
-        row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane_id, note: note), "started")
+        row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, note: note), "started").merge("inputs_from" => from)
       end
 
       # Prints where runs stand: one run, or the runs of a scope.
@@ -1366,6 +1373,18 @@ module Workspace
         return run_id if run_id
         raise Workspace::Error.new("This pane is not bound to a workflow run#{" (not inside tmux)" if pane.nil? || pane.empty?}.",
           code: "not_bound", details: {"pane" => pane})
+      end
+
+      # The dry-run line's note of what the branch filled, empty when it filled nothing.
+      def fill_sentence(filled, from)
+        return "" if from.empty?
+        pull = from.select { |_, source| source == "pull_request" }.keys
+        if pull.any?
+          number = filled["pr"] || filled["task"].to_s[/\A#(\d+)/, 1]
+          " Fills #{pull.sort.reverse.join(" and ")} from pull request ##{number}."
+        else
+          " Fills #{from.keys.join(" and ")} from branch #{filled["task"].to_s.delete_prefix("Branch ")}."
+        end
       end
 
       # The action row for a run after a transition. A step that could not be

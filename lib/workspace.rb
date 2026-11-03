@@ -676,7 +676,9 @@ module Workspace
     workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
     workflow_needs_me = WorkflowNeedsMe.new
     protected_branch = ProtectedBranch.new(git: git)
+    branch_inputs = WorkflowBranchInputs.new(git: git, start_ref: start_ref, protected_branch: protected_branch, pull_request_status: PullRequestStatus.new)
     workflow_command = Commands::Workflow.new(
+      branch_inputs: branch_inputs,
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
       run_files: WorkflowRunFiles.new,
