@@ -1145,7 +1145,9 @@ module Workspace
 
       # The definition document with +fills_from_branch+ on each declared input `workflow run` fills from the branch.
       def with_branch_fills(data)
-        inputs = (data["inputs"] || {}).dup
+        return data unless data["inputs"]
+
+        inputs = data["inputs"].dup
         WorkflowBranchInputs::FILLABLE.each do |name|
           inputs[name] = (inputs[name] || {}).merge("fills_from_branch" => true) if inputs.key?(name)
         end
