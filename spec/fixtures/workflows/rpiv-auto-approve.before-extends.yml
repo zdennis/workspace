@@ -7,7 +7,7 @@ use_when: A feature or change to build end to end when no person will review the
 
 inputs:
   task:
-    description: What to build. A ticket key with a sentence, or a path to a spec in the worktree.
+    description: What to build. A ticket key with a sentence, or a path to a spec in the worktree. `workflow run` fills it from the open pull request, else `Branch NAME`, when left out.
     required: true
   spec:
     description: Optional spec or ticket file to read first.

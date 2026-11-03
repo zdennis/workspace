@@ -46,9 +46,10 @@ module Workspace
       # @param project_config [Workspace::ProjectConfig]
       # @param go_task [Workspace::Commands::GoTask] adds `--here` text to the plan of a run already going
       # @param ticket_source [Workspace::TicketSource] reads a bare key found in text, to know it is a ticket
+      # @param protected_branch [Workspace::ProtectedBranch]
       # @param output [IO]
       # @param working_dir [String] the directory the command runs in
-      def initialize(workflow_start:, workflow:, workflow_defaults:, catalog:, start_ref:, git:, project_detector:, project_config:, go_task:, ticket_source:, output: $stdout, working_dir: Dir.pwd)
+      def initialize(workflow_start:, workflow:, workflow_defaults:, catalog:, start_ref:, git:, project_detector:, project_config:, go_task:, ticket_source:, protected_branch:, output: $stdout, working_dir: Dir.pwd)
         @workflow_start = workflow_start
         @workflow = workflow
         @workflow_defaults = workflow_defaults
@@ -59,6 +60,7 @@ module Workspace
         @project_config = project_config
         @go_task = go_task
         @ticket_source = ticket_source
+        @protected_branch = protected_branch
         @output = output
         @working_dir = working_dir
       end
@@ -103,7 +105,7 @@ module Workspace
           end
         end
 
-        same_branch = reading.ref && checkout && same_name?(resolved(reading.ref.branch, project), resolved(@git.worktree_branch(root), project))
+        same_branch = reading.ref && checkout && @protected_branch.same?(reading.ref.branch, @git.worktree_branch(root), project)
         if here && reading.ref && !same_branch
           raise Workspace::UsageError, "--here runs in this checkout, and #{reading.ref.input} is another branch. Drop --here to make or reuse its worktree workspace."
         end
@@ -168,7 +170,7 @@ module Workspace
         return nil unless configured && File.realpath(File.expand_path(configured)) == File.realpath(root)
 
         branch = @git.worktree_branch(root)
-        return nil if branch.nil? || protected_branch(branch, project)
+        return nil if branch.nil? || @protected_branch.call(branch, project)
 
         WorkflowStart::Here.new(workspace: workspace, path: root, caller_pane: caller_pane)
       rescue SystemCallError
@@ -345,12 +347,12 @@ module Workspace
       # The branch's own protection, else that of what the checkout `start` would reuse holds,
       # because `WorkflowStart#plan` trusts that path.
       def protection_of(branch, project)
-        own = protected_branch(branch, project)
+        own = @protected_branch.call(branch, project)
         return own.merge(branch: branch) if own
 
         path = reused_checkout(branch, project) or return
         held = @git.worktree_branch(path)
-        reused = protected_branch(held, project)
+        reused = @protected_branch.call(held, project)
         reused&.merge(branch: held, path: path)
       end
 
@@ -363,32 +365,6 @@ module Workspace
 
       def worktree_path(branch, project)
         File.join(project.root, ".worktrees", @git.sanitize_for_filesystem(branch))
-      end
-
-      # The one answer to whether a name is the default branch or the main checkout's branch. All
-      # three go through {#resolved} and compare without case, because neither a symref nor a case
-      # alias is a branch of its own: on macOS `git checkout MAIN` leaves HEAD at `refs/heads/MAIN`,
-      # and the commits of either land on `main`.
-      #
-      # @return [Hash, nil] +reason+, and +path+, the checkout that holds the branch (nil when none does)
-      def protected_branch(branch, project)
-        return nil if branch.nil?
-
-        name = resolved(branch, project)
-        default = same_name?(name, resolved(@git.default_branch_name(project.root), project))
-        main_checkout = same_name?(name, resolved(@git.worktree_branch(project.root), project))
-        return nil unless default || main_checkout
-
-        {reason: default ? "default_branch" : "main_checkout",
-         path: main_checkout ? project.root : @git.find_worktree_by_branch(name, repo: project.root)}
-      end
-
-      def resolved(branch, project)
-        branch && @git.branch_target(project.root, branch)
-      end
-
-      def same_name?(branch, other)
-        !other.nil? && branch.casecmp?(other)
       end
 
       # Free text never passes through a ref's checks, and `WorkflowStart` asks the filesystem,

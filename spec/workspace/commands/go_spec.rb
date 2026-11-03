@@ -37,7 +37,7 @@ RSpec.describe Workspace::Commands::Go do
 
   subject(:command) do
     described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog, start_ref: start_ref,
-      git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, output: output, working_dir: root || "/nowhere")
+      git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, protected_branch: Workspace::ProtectedBranch.new(git: git), output: output, working_dir: root || "/nowhere")
   end
 
   before do

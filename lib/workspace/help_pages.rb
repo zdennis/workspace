@@ -406,15 +406,21 @@ module Workspace
           "",
           "Without --dry-run this really starts the run: the first step is typed into the pane, and the",
           "workspace's agent daemon is started if it is not running. Run from the pane it would type into, it",
-          "parks like `workflow resume`: the answer is `parked`, and the caller should end its turn."
+          "parks like `workflow resume`: the answer is `parked`, and the caller should end its turn.",
+          "",
+          "A `task` or `pr` input you leave out is filled from the checkout's branch: from its open pull request,",
+          "else `task` is `Branch NAME`. Nothing is filled on the default branch, in the main checkout, on a",
+          "detached HEAD or during a rebase, so a required input is refused with `input_required`. --dry-run",
+          "says what it would fill."
         ],
         options: [name_opt("The workspace to run in (default: detected from the current directory)"),
-          ["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable)"],
+          ["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable); wins over a value filled from the branch"],
           ["--note TEXT", "Added to every step's instructions"],
           PANE_OPT,
           ["--dry-run", "Report what would start and start nothing"], JSON_OPT],
         examples: [
           ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\"", "start rpiv in this workspace; its first step is typed into the Claude pane"],
+          ["workspace workflow run pr-feedback", "on a pull request's branch: fill task and pr from that pull request"],
           ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --dry-run", "check the inputs and the pane first and start nothing"],
           ["workspace workflow run rpiv --name my-app --input task=\"PROJ-101 invoice PDF export\"", "run in another workspace than the one you are standing in"],
           ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --note \"Keep the change small.\"", "tell every step something extra"],

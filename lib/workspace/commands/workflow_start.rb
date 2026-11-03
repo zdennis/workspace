@@ -329,7 +329,7 @@ module Workspace
       rescue Workspace::Error => e
         raise unless %w[ticket_not_found ticket_source_unavailable].include?(e.code)
         raise if resolved.kind == "github_pr"
-        raise if declared?(definition, "task") && !inputs.key?("task") && prompt.nil?
+        raise if WorkflowSeed.fillable?(definition, "task", inputs) && prompt.nil?
 
         warnings << "Could not read #{resolved.key}: #{e.message}"
         warnings << "--slug ignored: ticket unreadable" if slug
@@ -486,12 +486,8 @@ module Workspace
           code: "branch_exists", details: {"branch" => name, "path" => path, "worktree" => worktree})
       end
 
-      def declared?(definition, name)
-        definition.to_h["inputs"].key?(name)
-      end
-
       def spec_file(definition, resolved, ticket, path, inputs)
-        return nil unless ticket && ticket["body"].to_s.strip != "" && declared?(definition, "spec") && !inputs.key?("spec")
+        return nil unless ticket && ticket["body"].to_s.strip != "" && WorkflowSeed.fillable?(definition, "spec", inputs)
 
         File.join(path, TICKET_DIR, "#{resolved.key.gsub(/[^A-Za-z0-9._-]+/, "-").gsub(/\A-|-\z/, "")}.md")
       end
@@ -499,16 +495,11 @@ module Workspace
       # Only declared inputs, and never one --input set. `pr` is a pull request ref's number.
       def seed(definition, ticket, prompt, inputs, spec_path, resolved)
         seeded = inputs.dup
-        task = task_text(ticket, prompt)
-        seeded["task"] = task if task && declared?(definition, "task") && !inputs.key?("task")
+        task = WorkflowSeed.task_text(ticket, prompt)
+        seeded["task"] = task if task && WorkflowSeed.fillable?(definition, "task", inputs)
         seeded["spec"] = spec_path if spec_path
-        seeded["pr"] = resolved.pr[:number].to_s if resolved&.pr && declared?(definition, "pr") && !inputs.key?("pr")
+        seeded["pr"] = resolved.pr[:number].to_s if resolved&.pr && WorkflowSeed.fillable?(definition, "pr", inputs)
         seeded
-      end
-
-      def task_text(ticket, prompt)
-        line = ticket && [ticket["key"] + (ticket["title"] ? ": #{ticket["title"]}" : ""), ("(#{ticket["url"]})" if ticket["url"])].compact.join(" ")
-        [line, prompt].compact.join("\n\n").then { |text| text.empty? ? nil : text }
       end
 
       def dry_run_row(id, plan)
