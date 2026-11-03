@@ -22,8 +22,10 @@ RSpec.describe Workspace::Commands::Handoff do
 
   subject(:command) do
     described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, notes: notes, binder: binder, library: library, output: output, error_output: error_output)
+      restart_agent_command: restart_agent_command, notes: notes, binder: binder, library: library, output: output, error_output: error_output, env: env)
   end
+
+  let(:env) { {} }
 
   let(:defaults) { {threshold: 11, check_prompt: nil, resume_prompt: nil} }
 
@@ -149,6 +151,67 @@ RSpec.describe Workspace::Commands::Handoff do
         with_sessions([claude_pane.merge("pane_id" => nil)]) do
           expect { command.check(name: "myapp") }.to raise_error(Workspace::UsageError, /No Claude Code or Codex pane found/)
         end
+      end
+    end
+
+    # A workspace can hold several Claude panes; the daemon's first is only an
+    # arbitrary one of them. An agent running `handoff check` or `handoff new`
+    # bare means its own pane, so `TMUX_PANE` is preferred when it names a
+    # restartable pane of the workspace's own session.
+    describe "the calling pane default" do
+      let(:env) { {"TMUX_PANE" => "%5"} }
+      let(:other_pane) { {"index" => 1, "pane_id" => "%9", "kind" => "claude", "context_pct" => 3, "context_error" => nil} }
+      let(:calling_pane) { claude_pane.merge("index" => 2, "pane_id" => "%5", "context_pct" => 42) }
+
+      before { allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted)) }
+
+      it "checks the calling pane over the daemon's first Claude pane" do
+        result = with_sessions([other_pane, calling_pane]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
+
+        expect(result).to eq(exit_code: 1)
+        expect(tmux).to have_received(:deliver).with("myapp", "%5", a_string_including("--pane '%5'"))
+        expect(output.string).to include("42%")
+      end
+
+      it "falls back to the daemon's first Claude pane when the calling pane is a shell pane" do
+        shell_pane = {"index" => 0, "pane_id" => "%5", "kind" => "shell", "context_pct" => 50, "context_error" => nil}
+
+        result = with_sessions([shell_pane, other_pane]) { command.check(name: "myapp") }
+
+        expect(result).to eq(exit_code: 0)
+        expect(output.string).to include("3%")
+      end
+
+      it "falls back to the daemon's first Claude pane when the calling pane isn't listed" do
+        result = with_sessions([other_pane]) { command.check(name: "myapp") }
+
+        expect(result).to eq(exit_code: 0)
+        expect(output.string).to include("3%")
+      end
+
+      it "falls back to the daemon's first Claude pane when the calling pane belongs to another session" do
+        refusal = Workspace::Error.new("Pane %5 belongs to tmux session 'myapp-ui', not 'myapp' (workspace 'myapp').", code: "wrong_session")
+        allow(locator).to receive(:locate).with("myapp", "%5").and_raise(refusal)
+
+        result = with_sessions([other_pane, calling_pane]) { command.check(name: "myapp") }
+
+        expect(result).to eq(exit_code: 0)
+        expect(output.string).to include("3%")
+      end
+
+      it "hands off the calling pane when new is run without --pane" do
+        allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
+
+        with_sessions([other_pane, calling_pane]) { command.new(name: "myapp") }
+
+        expect(restart_agent_command).to have_received(:call).with(hash_including(pane: "%5"))
+      end
+
+      it "loses to an explicit --pane" do
+        result = with_sessions([other_pane, calling_pane]) { command.check(name: "myapp", pane: "%9") }
+
+        expect(result).to eq(exit_code: 0)
+        expect(output.string).to include("3%")
       end
     end
 

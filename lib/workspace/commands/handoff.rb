@@ -15,8 +15,11 @@ module Workspace
     # itself. `new` sends the H2 `restart_agent` flow (`/clear`, confirm,
     # resume prompt) at an explicit pane and returns once it's started.
     #
-    # Neither command ever guesses a pane: `--pane` names one explicitly, or
-    # the daemon's first pane of kind "claude" (else its first "codex" pane) is used. `--pane` takes a tmux
+    # Neither command ever guesses a pane: `--pane` names one explicitly, else
+    # the calling pane is used when it is a Claude Code or Codex pane of the
+    # workspace's own tmux session (so an agent checking itself checks itself),
+    # else the daemon's first "claude" pane (else its first "codex" pane) is
+    # used. `--pane` takes a tmux
     # pane id ("%19", what `$TMUX_PANE` holds in the pane itself), "window.pane",
     # or a pane index in window 0. The id is the one to prefer: it names one
     # pane for its whole life. Either way the pane is looked up in the
@@ -49,7 +52,9 @@ module Workspace
       # @param library [Workspace::Library] finds the built-in `implementation-plan` play
       # @param output [IO] stream for the result (and `--json` output)
       # @param error_output [IO] stream for the "undetermined" reason (non-JSON)
-      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, notes:, binder:, library:, output: $stdout, error_output: $stderr)
+      # @param env [Hash] process environment, for `TMUX_PANE` (the calling
+      #   pane an agent checks from)
+      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, notes:, binder:, library:, output: $stdout, error_output: $stderr, env: ENV)
         @binder = binder
         @library = library
         @config = config
@@ -60,11 +65,13 @@ module Workspace
         @notes = notes
         @output = output
         @error_output = error_output
+        @env = env
       end
 
       # @param name [String] workspace name
       # @param pane [String, nil] pane id ("%19"), "window.pane" or pane
-      #   index; nil picks the daemon's first "claude" pane, else its first "codex" pane
+      #   index; nil prefers the calling pane (`TMUX_PANE`, when it is a restartable pane of the workspace), else
+      #   the daemon's first "claude" pane, else its first "codex" pane
       # @param threshold [Integer, nil] context-usage percent that triggers a
       #   handoff; nil uses `handoff.threshold` (default 11)
       # @param context_pct [Integer, nil] skips detection and uses this value
@@ -99,7 +106,7 @@ module Workspace
         snapshot, error = fetch_sessions(name)
         return undetermined(json, error, doc: doc) if error
 
-        detail = locate(name, pane || default_pane(name, snapshot))
+        detail = locate(name, pane || calling_pane(name, snapshot) || default_pane(name, snapshot))
         pane_info = (snapshot["panes"] || []).find { |p| p["pane_id"] == detail[:id] }
         return undetermined(json, unlisted_reason(name, detail), fix: unlisted_fix(name), doc: doc) unless pane_info
         raise Workspace::UsageError, unsupported_pane_message(name, pane_info) unless pane_kind_ok?(pane_info)
@@ -139,7 +146,8 @@ module Workspace
 
       # @param name [String] workspace name
       # @param pane [String, nil] pane id ("%19"), "window.pane" or pane
-      #   index; nil picks the daemon's first "claude" pane, else its first "codex" pane, same as {#check}
+      #   index; nil prefers the calling pane (`TMUX_PANE`, when it is a restartable pane of the workspace), else
+      #   the daemon's first "claude" pane, else its first "codex" pane, same as {#check}
       # @param handoff_doc [String, nil] path the agent should resume from; with neither this nor
       #   +handoff_prompt+, the workspace's plan when it has one (and the pane is bound to the
       #   `implementation-plan` play), else +HANDOFF.md+ in its notes directory
@@ -153,7 +161,7 @@ module Workspace
         if pane.nil?
           snapshot, error = fetch_sessions(name)
           raise Workspace::Error, error if error
-          pane = default_pane(name, snapshot)
+          pane = calling_pane(name, snapshot) || default_pane(name, snapshot)
         end
 
         unless handoff_prompt || handoff_doc
@@ -385,6 +393,25 @@ module Workspace
         listed = panes.find { |p| p["kind"] == "claude" } || panes.find { |p| p["kind"] == "codex" }
         raise Workspace::UsageError, "No Claude Code or Codex pane found in workspace '#{name}'; pass --pane." unless listed
         listed["pane_id"]
+      end
+
+      # The pane the calling agent runs in, from `TMUX_PANE`: the pane an agent
+      # checking or handing off itself means, preferred over the daemon's
+      # first pane, which a workspace with several Claude panes only picks
+      # arbitrarily. Taken only when the daemon lists it as a restartable
+      # kind (a person running from a shell pane is left to the default) and
+      # it is one of the workspace's own panes; anything else is a nil, never
+      # an error, so the daemon's default still applies.
+      #
+      # @return [String, nil] the pane id, or nil when there is no calling pane to use
+      def calling_pane(name, snapshot)
+        id = @env["TMUX_PANE"]
+        return nil if id.nil? || id.empty?
+        info = (snapshot["panes"] || []).find { |p| p["pane_id"] == id }
+        return nil unless info && RESTARTABLE_KINDS.include?(info["kind"])
+        locate(name, id)[:id]
+      rescue Workspace::Error
+        nil
       end
 
       # Finds the pane in the workspace's own tmux session. A bare index is a

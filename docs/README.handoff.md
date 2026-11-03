@@ -17,7 +17,7 @@ workspace handoff new   [NAME | --name WS] [--pane PANE] [--handoff-doc PATH | -
 
 | Option | Description |
 |--------|-------------|
-| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the daemon's first Claude Code pane, else its first Codex pane. See [Naming the pane](#naming-the-pane) |
+| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the daemon's first Claude Code pane, else its first Codex pane. See [Naming the pane](#naming-the-pane) |
 | `--threshold PCT` | Context-usage percent that triggers a handoff, 1-100 (default: `handoff.threshold`, or 11) |
 | `--context-pct N` | Skip detection and use this value |
 | `--handoff-doc PATH` | Doc the agent updates and resumes from (default: the plan when there is one, else `HANDOFF.md` in the notes directory) |
@@ -28,7 +28,7 @@ workspace handoff new   [NAME | --name WS] [--pane PANE] [--handoff-doc PATH | -
 
 | Option | Description |
 |--------|-------------|
-| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the daemon's first Claude Code pane, else its first Codex pane. See [Naming the pane](#naming-the-pane) |
+| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the daemon's first Claude Code pane, else its first Codex pane. See [Naming the pane](#naming-the-pane) |
 | `--handoff-doc PATH` | Doc the agent reads and resumes from (default: the plan when there is one, else `HANDOFF.md` in the notes directory) |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
 | `--wait` | Wait for the restart to finish and report how it went. Don't use it from the agent being restarted: it would block the turn the restart waits on |
@@ -44,11 +44,11 @@ An explicit `--handoff-doc PATH` is always used as given, plan or no plan, and `
 
 ## Naming the pane
 
-Prefer the pane id. An agent handing itself off passes `--pane "$TMUX_PANE"` to both commands: the id names one pane for its whole life, where an index moves when a pane is split or closed. Quote it, since `%` is special in some shells. The command `check` types into the pane names it the same way (`workspace handoff new NAME --pane '%19' ...`).
+Prefer the pane id. An agent handing itself off passes `--pane "$TMUX_PANE"` to both commands -- what the no-`--pane` default already resolves to for it: the id names one pane for its whole life, where an index moves when a pane is split or closed. Quote it, since `%` is special in some shells. The command `check` types into the pane names it the same way (`workspace handoff new NAME --pane '%19' ...`).
 
 The pane must belong to `NAME`'s own tmux session. Both commands look the pane up there before anything is typed, and from then on name it by its pane id: `check` types into that id, and `new` sends it to the agent daemon. A pane id from another session fails with `wrong_session`, a pane the session doesn't have with `no_such_pane`, a workspace with no tmux session with `no_session`, and anything that isn't a pane id, `window.pane` or an index with `bad_pane`. Each exits 1 with nothing typed, and with `--json` prints the usual error document with that `code`. The session is matched by its exact name, so a workspace `app` never reaches the panes of `app-ui`.
 
-Without `--pane`, both commands use the first Claude Code pane the daemon lists (the first Codex pane when it lists no Claude Code pane), and check it against the workspace's session the same way. In a workspace with more than one agent pane that may not be the caller's, so pass `--pane`.
+Without `--pane`, both commands prefer the calling pane: `$TMUX_PANE` when the daemon lists it as a Claude Code or Codex pane and it belongs to `NAME`'s own tmux session. Otherwise they use the first Claude Code pane the daemon lists (the first Codex pane when it lists no Claude Code pane), checked against the workspace's session the same way. In a workspace with more than one agent pane the fallback may not be the caller's, so pass `--pane`.
 
 An agent daemon started by an older version of workspace can be listing another session's panes. `check` then exits 2 with the reason `the agent daemon for 'NAME' doesn't list pane %19 ...` and the restart command as the fix, or fails with `wrong_session` when `--pane` was left out, and `new` fails with the daemon's `no_such_pane`. `workspace agentd restart NAME` replaces the daemon.
 
@@ -147,7 +147,7 @@ The text of the `/clear` and footer reading come from codex-cli 0.162.1's docume
 
 ## Delivery
 
-`check` types the save-state prompt directly into the named pane and confirms it landed, the same delivery primitive the agent daemon uses for pipeline stages -- but always at the pane you named (or the daemon's first Claude pane), never a pane the daemon picks for you. `new` hands off to `workspace agent-run restart`'s `/clear` + confirm + resume flow; see [README.agent-run.md](README.agent-run.md).
+`check` types the save-state prompt directly into the named pane and confirms it landed, the same delivery primitive the agent daemon uses for pipeline stages -- but always at the pane you named (or the pane picked by the calling-pane default), never a pane the daemon picks for you. `new` hands off to `workspace agent-run restart`'s `/clear` + confirm + resume flow; see [README.agent-run.md](README.agent-run.md).
 
 ## Configuration
 
@@ -226,7 +226,7 @@ or passed through from the daemon: `not_scanned` (not in window 0, or not scanne
 ## Examples
 
 ```sh
-# Check the first Claude pane in "myapp" against the default threshold, with the default doc
+# Check the calling pane (from "$TMUX_PANE") against the default threshold, with the default doc
 workspace handoff check myapp
 workspace handoff check myapp --handoff-doc HANDOFF.md
 

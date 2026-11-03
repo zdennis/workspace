@@ -2781,7 +2781,8 @@ module Workspace
 
     HANDOFF_NAME = name_opt("The workspace, as an option (same as the positional NAME; default: the current directory's)")
     HANDOFF_PANE = ["--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0; " \
-      "must be a pane of NAME's own tmux session (default: the first Claude Code pane, else the first Codex pane; `workspace sessions NAME` lists panes)"].freeze
+      "must be a pane of NAME's own tmux session (default: the calling pane when it is a Claude Code or Codex pane of the workspace, " \
+      "else the first Claude Code pane, else the first Codex pane; `workspace sessions NAME` lists panes)"].freeze
     HANDOFF_PROMPT = ["--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc (not with --handoff-doc)"].freeze
     HANDOFF_DEFAULT_DOC = [
       "With neither --handoff-doc nor --handoff-prompt, the doc is the workspace's plan (IMPLEMENTATION_PLAN.md) when its notes",
@@ -2821,7 +2822,7 @@ module Workspace
         examples: [
           ["workspace handoff check", "this project's agent: a save-state prompt only if it is over the threshold"],
           ["workspace handoff check myapp --threshold 20", "a named workspace, handing off at 20% instead of the configured threshold"],
-          ["workspace handoff check myapp --pane \"$TMUX_PANE\"", "an agent checking its own pane"],
+          ["workspace handoff check myapp --pane \"$TMUX_PANE\"", "the calling pane -- what an agent checking itself gets by default"],
           ["workspace handoff check myapp --handoff-doc \"$(workspace notes dir --name myapp)/HANDOFF.md\"", "name the doc the agent saves its state in"],
           ["workspace handoff check myapp --handoff-prompt \"Continue with the failing specs\"", "resume with this text instead of a doc"],
           ["workspace handoff check myapp --context-pct 5", "use a reading of 5%: under the default threshold, so nothing is sent and it exits 0"],
@@ -2837,8 +2838,9 @@ module Workspace
           "Any conversation not saved in the doc is lost. If /clear is typed but no new conversation shows within 30s,",
           "it stops with clear_not_confirmed and types no resume prompt.",
           "",
-          "Without --pane it restarts the first Claude Code pane the daemon lists, else the first Codex pane, which may not be",
-          "yours: to restart your own pane, pass --pane \"$TMUX_PANE\".",
+          "Without --pane it prefers the calling pane when it is a Claude Code or Codex pane of the workspace, else the first",
+          "Claude Code pane the daemon lists, else the first Codex pane, which may not be yours: to restart a different pane,",
+          "pass --pane.",
           "",
           "Exit codes: 0 the restart started (with --wait, finished), 1 refused or failed. Without --wait, 0 does not mean the",
           "restart worked: a later failure shows only in the agent daemon's log (`workspace daemon log`).",
@@ -2854,7 +2856,7 @@ module Workspace
           ["--wait", "Wait for the restart to finish and report how it went (don't use this from the agent being restarted); without it a refusal (a draft in the input box: pane_busy, input_not_empty) shows only in the daemon's log"],
           ["--json", "Print the result as JSON"]],
         examples: [
-          ["workspace handoff new", "restart this project's coding agent in a fresh conversation (it loses the current one, so save its state first); it picks the first Claude Code pane, else Codex, which may not be yours"],
+          ["workspace handoff new", "restart this project's coding agent in a fresh conversation (it loses the current one, so save its state first); it picks your pane when you run it from a Claude Code or Codex pane, else the first Claude Code pane, else Codex"],
           ["workspace handoff new myapp --pane \"$TMUX_PANE\"", "an agent restarting its own pane"],
           ["workspace handoff new myapp --pane 0.1 --handoff-doc /tmp/myapp-handoff.md", "one pane as window.pane, resuming from this doc"],
           ["workspace handoff new myapp --handoff-prompt \"Continue with the failing specs\"", "resume with this text instead of a doc"],
