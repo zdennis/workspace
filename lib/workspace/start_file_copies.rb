@@ -112,9 +112,13 @@ module Workspace
         # The exclusive create keeps a file that appears between the exists-check
         # and now from being clobbered (EEXIST → skipped), and `perm:` holds the
         # source's mode at creation, so a 0600 `.env` is never even briefly
-        # readable at the umask default.
-        File.open(dest, File::CREAT | File::EXCL | File::WRONLY, perm: mode) { |out| IO.copy_stream(source, out) }
-        File.chmod(mode, dest)
+        # readable at the umask default. The exact mode is set on the open handle,
+        # not the path, so a `chmod` can never follow a symlink swapped in at
+        # the destination.
+        File.open(dest, File::CREAT | File::EXCL | File::WRONLY, perm: mode) do |out|
+          IO.copy_stream(source, out)
+          out.chmod(mode)
+        end
         result["copied"] << rel
       rescue Errno::EEXIST
         result["skipped"] << rel
