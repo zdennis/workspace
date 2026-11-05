@@ -33,7 +33,8 @@ unless ENV["SKIP_SIMPLECOV"]
   end
 end
 
-$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+PROJECT_ROOT = File.expand_path("..", __dir__)
+$LOAD_PATH.unshift File.join(PROJECT_ROOT, "lib")
 require "workspace"
 require "tmpdir"
 
@@ -48,6 +49,14 @@ RSpec.configure do |config|
   config.disable_monkey_patching!
   config.order = :random
   Kernel.srand config.seed
+
+  # The directory a spec sits in is its tier; a type: written on a group wins.
+  %i[unit integration system].each do |tier|
+    config.define_derived_metadata(file_path: %r{/spec/#{tier}/}) { |meta| meta[:type] ||= tier }
+  end
+
+  SpawnGuard.install
+  config.around { |example| SpawnGuard.guard(example) }
 
   config.around do |example|
     Dir.mktmpdir("workspace-spec-codex-home") do |dir|

@@ -283,6 +283,25 @@ init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, 
 - `bin/` is for project executables (the public interface) — only `bin/workspace` belongs here
 - `script/` is for project-specific dev scripts and tooling (e.g., test helpers, one-off utilities)
 
+### Test organization
+
+Every spec sits in one tier directory, which mirrors `lib/`: `spec/unit/workspace/...`, `spec/integration/workspace/...` or `spec/system/workspace/...` (a spec of the spec tooling itself, such as `spec/unit/spawn_guard_spec.rb`, sits directly under its tier). `spec_helper.rb`, `spec/support/` and `spec/fixtures/` are shared and stay at the top of `spec/`. Reach repo files through `PROJECT_ROOT` (set in `spec_helper.rb`), never through `__dir__`, so a spec can move between tiers.
+
+Place a new spec by the first rule that fits:
+
+1. It starts any process (`system`, backticks, `Open3`, `spawn`, `fork`, `IO.popen`, `PTY.spawn`, a real `git`, `tmux`, `osascript`, `ruby`, `sh`), even once or from a thread: **system**.
+2. It wires two or more real Workspace classes that each have behaviour (a command object over a real tmpdir-backed store, the CLI over real collaborators): **integration**.
+   A spec whose collaborators are all doubles, fakes or plain value objects is not integration: when in doubt between the two, pick unit.
+3. Otherwise, one class with doubles, fakes or injected runners: **unit**. Unit specs must be fast.
+
+- Temporary directories are not external: unit and integration specs may read and write under `Dir.mktmpdir`.
+- A stubbed process call (`allow(Open3).to receive(...)`, an injected runner lambda) starts nothing and is fine in any tier. `and_call_original` on a process call does start one, so that spec is system.
+- When a unit-shaped spec needs a few examples that start a process, put those examples in a separate file under `spec/system/` instead of moving the whole file.
+- A helper that memoizes a fixture built by running git, such as `RepoTemplate` in `spec/support/repo_template.rb`, is for system specs only: whether it spawns depends on which spec asked first.
+- Run one tier with `bundle exec rspec spec/unit` (seconds), `spec/integration`, or `spec/system`. The whole suite is still the pre-commit gate.
+
+`spec/support/spawn_guard.rb` enforces the rule. The tier comes from the directory as `type:` metadata, and a `type:` written on a group wins. In a unit or integration example every spawn point is blocked (`SpawnGuard::Violation`, an `Exception`, so `rescue => e` does not catch it) and recorded, and the example fails afterwards even if the code under test caught it with `rescue Exception`. Threads the example starts are checked too. Spawns at load time, in `before(:context)`, or in a thread that outlives its example are not checked, so do not write them. A spec that trips the guard moves to `spec/system/`; there are no exemptions.
+
 ## Orchestration
 
 The main interactive session is an **orchestrator**, not an implementer. Its job is

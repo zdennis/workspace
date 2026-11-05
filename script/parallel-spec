@@ -2,7 +2,7 @@
 # Runs the suite in parallel with parallel_tests. Serial `bundle exec rspec`
 # stays the default and the pre-commit gate.
 #
-#   script/parallel-spec [ARGS...]   ARGS go to parallel_rspec (e.g. spec/workspace/a_spec.rb)
+#   script/parallel-spec [ARGS...]   ARGS go to parallel_rspec (e.g. spec/unit/workspace/a_spec.rb)
 #
 # Only a whole-suite run (no ARGS) uses and refreshes tmp/parallel_runtime_rspec.log; with ARGS, files group by size.
 

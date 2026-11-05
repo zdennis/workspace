@@ -16,6 +16,7 @@ You care about whether changes are tested, whether tests are meaningful (not jus
 - Are system boundaries (AppleScript, tmux, window-tool) wrapped thinly enough to mock?
 - Are command objects tested in isolation from CLI parsing?
 - Are tests fast, focused, and free of unnecessary setup?
+- Does each new or moved spec sit in the right tier (`spec/unit`, `spec/integration`, `spec/system`; see "Test organization" in `.claude/CLAUDE.md`), and does nothing outside `spec/system/` start a process?
 
 ## Review Process
 
