@@ -24,15 +24,20 @@ jobs:
         run: bundle exec standardrb lib/ spec/
 
   specs:
+    name: specs (${{ matrix.group }})
     runs-on: macos-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      SHARDS: 4
-      PROCESSES_PER_SHARD: 3
+        include:
+          - group: unit-integration
+            paths: spec/unit spec/integration
+          - group: system-commands
+            paths: spec/system/workspace/commands
+          - group: system
+            paths: spec/system
+            exclude: spec/system/workspace/commands/
     steps:
       - uses: actions/checkout@v4
 
@@ -52,15 +57,15 @@ jobs:
 
       - name: Specs
         run: |
-          total=$((SHARDS * PROCESSES_PER_SHARD))
-          first=$(( (${{ matrix.shard }} - 1) * PROCESSES_PER_SHARD + 1 ))
-          groups=$(for i in $(seq "$first" $((first + PROCESSES_PER_SHARD - 1))); do printf "%s," "$i"; done); groups=${groups%,}
           mkdir -p tmp
-          bundle exec parallel_rspec -n "$total" --only-group "$groups" --group-by filesize \
-            -o "--format progress --format ParallelTests::RSpec::RuntimeLogger --out tmp/runtime-${{ matrix.shard }}.log"
+          exclude=()
+          if [ -n "${{ matrix.exclude }}" ]; then exclude=(--exclude-pattern "${{ matrix.exclude }}"); fi
+          bundle exec parallel_rspec -n 3 --group-by filesize "${exclude[@]}" \
+            -o "--format progress --format ParallelTests::RSpec::RuntimeLogger --out tmp/runtime-${{ matrix.group }}.log" \
+            ${{ matrix.paths }}
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: runtime-${{ matrix.shard }}
-          path: tmp/runtime-${{ matrix.shard }}.log
+          name: runtime-${{ matrix.group }}
+          path: tmp/runtime-${{ matrix.group }}.log
