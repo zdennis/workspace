@@ -21,37 +21,58 @@ RSpec.describe Workspace::Commands::Dev do
       def load_global = {}
     }.new({"dev" => dev_settings})))
   }
-  let(:lib_dir) { File.join(PROJECT_ROOT, "lib") }
   let(:tmux) { FakeDevWindowTmux.new(method(:spawn_wrapper)) }
 
-  let(:wrapper_script) do
-    <<~RUBY
-      $LOAD_PATH.unshift #{lib_dir.inspect}
-      require "workspace"
-      lock_dir, settings, wait = ARGV
-      ns = Struct.new(:dir) { def resolve(cwd:) = {dir: dir} }.new(lock_dir)
-      store = Struct.new(:data) { def load(_name) = data; def load_global = {} }.new(JSON.parse(settings))
-      liveness = Workspace::LockHolder.new
-      dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
-        dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
-        dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}.merge(ENV.to_h.slice("WORKSPACE_DEV_SESSION", "WORKSPACE_DEV_STARTED_BY_PANE")), poll: 0.05),
-        terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
-      begin
-        exit dev.run(wait: wait == "1", working_dir: Dir.pwd)[:exit_code]
-      rescue Workspace::Error => e
-        warn e.message
-        exit 1
-      end
-    RUBY
-  end
-
+  # The `dev __run` wrapper the fake tmux window starts: a forked copy of this
+  # process, so it skips booting Ruby and loading workspace, then leads its own
+  # process group and runs Dev#run as `workspace dev __run` would.
   def spawn_wrapper(cwd, wait, env = {})
     log = File.join(tmpdir, "wrapper-#{spawned.size}.log")
-    pid = Process.spawn({"SKIP_SIMPLECOV" => "1", **env}, RbConfig.ruby, "-e", wrapper_script, lock_dir,
-      JSON.generate("dev" => dev_settings), wait ? "1" : "0", chdir: cwd, pgroup: true, in: File::NULL, out: log, err: log)
+    settings = JSON.parse(JSON.generate("dev" => dev_settings))
+    $stdout.flush
+    $stderr.flush
+    pid = Process.fork do
+      code = 1
+      begin
+        %w[INT TERM HUP QUIT].each { |signal| trap(signal, "DEFAULT") }
+        Process.setpgid(0, 0)
+        $stdin.reopen(File::NULL)
+        $stdout.reopen(log, "a")
+        $stderr.reopen($stdout)
+        $stdout.sync = $stderr.sync = true
+        env.each { |key, value| ENV[key] = value }
+        Dir.chdir(cwd)
+        code = run_wrapper(settings, wait)
+      rescue Workspace::Error => e
+        warn e.message
+      rescue Exception => e # standard:disable Lint/RescueException
+        warn "#{e.class}: #{e.message}"
+      ensure
+        exit!(code)
+      end
+    end
+    begin
+      Process.setpgid(pid, pid)
+    rescue Errno::EACCES, Errno::ESRCH
+      nil
+    end
     Process.detach(pid)
     spawned << pid
     pid
+  end
+
+  def run_wrapper(settings, wait)
+    ns = Struct.new(:dir) { def resolve(cwd:) = {dir: dir} }.new(lock_dir)
+    store = Struct.new(:data) {
+      def load(_name) = data
+      def load_global = {}
+    }.new(settings)
+    liveness = Workspace::LockHolder.new
+    dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
+      dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
+      dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}.merge(ENV.to_h.slice("WORKSPACE_DEV_SESSION", "WORKSPACE_DEV_STARTED_BY_PANE")), poll: 0.05),
+      terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
+    dev.run(wait: wait, working_dir: Dir.pwd)[:exit_code]
   end
 
   def git(*args)
