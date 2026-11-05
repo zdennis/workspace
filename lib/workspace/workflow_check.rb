@@ -55,12 +55,16 @@ module Workspace
     def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {})
       raise ArgumentError, "give exactly one of command: or argv:" if command.nil? == argv.nil?
       raise ArgumentError, "argv: must be a non-empty array" if argv && (!argv.is_a?(Array) || argv.empty?)
-      FileUtils.mkdir_p(File.dirname(log))
-      opts = {chdir: cwd, pgroup: true, in: File::NULL, out: [log, "w"], err: [:child, :out]}
-      pid = if argv
-        Process.spawn(env, [argv[0], argv[0]], *argv[1..], **opts)
-      else
-        Process.spawn(env, "sh", "-c", command, **opts)
+      log_io = open_log(log)
+      opts = {chdir: cwd, pgroup: true, in: File::NULL, out: log_io, err: [:child, :out]}
+      pid = begin
+        if argv
+          Process.spawn(env, [argv[0], argv[0]], *argv[1..], **opts)
+        else
+          Process.spawn(env, "sh", "-c", command, **opts)
+        end
+      ensure
+        log_io.close
       end
       status = nil
       begin
@@ -76,6 +80,18 @@ module Workspace
     end
 
     private
+
+    # Opens the log without following a link at its last component, and refuses a log whose directory is a
+    # link: the log lives in a checkout an agent can write.
+    def open_log(log)
+      dir = File.dirname(log)
+      FileUtils.mkdir_p(dir)
+      raise Errno::ELOOP, dir if File.lstat(dir).symlink?
+      io = File.open(log, File::WRONLY | File::CREAT | File::TRUNC | File::NOFOLLOW | File::NONBLOCK, 0o600)
+      return io if io.stat.file?
+      io.close
+      raise Errno::EINVAL, log
+    end
 
     # @return [Process::Status, Symbol] how it exited, or :timed_out or :stopped
     def wait(pid, seconds, stop_when = nil)
