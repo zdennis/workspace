@@ -31,6 +31,7 @@ module Workspace
       not_checked = []
       packs(definition, cwd, project, lineage, warnings, not_checked)
       commands(definition, project, warnings, not_checked)
+      execs(definition, project, warnings, not_checked)
       {"warnings" => warnings, "not_checked" => not_checked}
     end
 
@@ -92,6 +93,51 @@ module Workspace
       end
     rescue Workspace::ConfigParseError => e
       not_checked << {"code" => "commands_not_checked", "step" => nil, "message" => "the project's commands could not be read: #{e.message.lines.first.strip}"}
+    end
+
+    # The `require: exec:` entries: the program (argument 1) by the rule `preflight` refuses by, a
+    # `{{changed.tests}}` with no `commands.test_files`, and a list placeholder with no `--` before it.
+    # Outside a checkout there is no project to read `test_files` from and no checkout for a relative
+    # program (`script/check`) to resolve against, so those come back as not checked; a bare or
+    # absolute program is still judged against this process's PATH and HOME.
+    def execs(definition, project, warnings, not_checked)
+      entries = definition.to_h["steps"].flat_map do |step|
+        Array(step["require"]).select { |entry| entry.is_a?(Hash) && entry.key?("exec") }.map { |entry| [step["id"], entry["exec"]] }
+      end
+      return if entries.empty?
+      inputs = definition.to_h["inputs"].keys
+      tests_step = nil
+      entries.each do |step, argv|
+        program = argv.first.to_s
+        if project.nil? && program.include?("/") && !program.start_with?("/", "~/")
+          not_checked << {"code" => "exec_program_not_checked", "step" => step,
+                          "message" => "step #{step} runs #{program}, a program inside the checkout, which was not checked because the current directory is not in a git checkout. Run validate from the project to check it."}
+        elsif (why = WorkflowExecProgram.problem(program, checkout: project&.path))
+          warnings << {"code" => "exec_program_missing", "step" => step,
+                       "message" => "step #{step} runs #{program}, which #{why}, so `start` there would refuse it.#{" A run looks a bare name up on the daemon's PATH, which may differ." if !program.include?("/") && why.include?("PATH")}"}
+        end
+        WorkflowArgv.problems(argv, inputs: inputs).last.each do |text|
+          warnings << {"code" => "exec_list_without_dashes", "step" => step, "message" => "step #{step} exec #{program}: #{text}. Put `--` before the list."}
+        end
+        tests_step ||= step if argv.include?("{{changed.tests}}")
+      end
+      return unless tests_step
+      unless project
+        not_checked << {"code" => "test_files_not_checked", "step" => tests_step,
+                        "message" => "step #{tests_step} uses {{changed.tests}}, which needs the project's commands.test_files, not checked because the current directory is not in a git checkout. Run validate from the project to check it."}
+        return
+      end
+      return unless @commands_config.test_files(project.name).empty?
+      workspace = @project_config.existing_name(project.name)
+      hint = if workspace
+        "workspace config set commands.test_files \"GLOB ...\" --name #{workspace}"
+      else
+        "#{project.name} is not a workspace yet: run `workspace add .` in it, then `workspace config set commands.test_files \"GLOB ...\"`"
+      end
+      warnings << {"code" => "test_files_unset", "step" => tests_step,
+                   "message" => "step #{tests_step} uses {{changed.tests}}, and #{project.name} has no commands.test_files, so `start` there would refuse it. Set it: #{hint}"}
+    rescue Workspace::ConfigParseError => e
+      not_checked << {"code" => "test_files_not_checked", "step" => nil, "message" => "the project's commands.test_files could not be read: #{e.message.lines.first.strip}"}
     end
   end
 end

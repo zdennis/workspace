@@ -107,6 +107,68 @@ RSpec.describe Workspace::WorkflowLint do
     end
   end
 
+  describe "require: exec" do
+    def exec_def(*lines)
+      body = lines.map { |l| "          - exec: #{l.inspect}\n" }.join
+      definition("steps:\n  a:\n    prompt: P\n    require:\n#{body}")
+    end
+
+    before { allow(commands_config).to receive(:test_files).with("proj").and_return(["spec/**/*_spec.rb"]) }
+
+    it "warns of a bare program not on PATH and clears for one that is" do
+      found = lint.call(exec_def("no-such-program-xyz --flag"), cwd: "/repo")
+      expect(found["warnings"]).to match([include("code" => "exec_program_missing", "step" => "a", "message" => /no-such-program-xyz.*is not on PATH.*daemon's PATH/)])
+      expect(lint.call(exec_def("ls -l"), cwd: "/repo")["warnings"]).to eq([])
+    end
+
+    it "resolves a relative program against the checkout" do
+      Dir.mktmpdir do |dir|
+        allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "proj", path: dir, git_common_dir: "#{dir}/.git", is_worktree: false))
+        expect(lint.call(exec_def("script/check"), cwd: dir)["warnings"]).to match([include("code" => "exec_program_missing", "message" => /does not exist/)])
+        FileUtils.mkdir_p("#{dir}/script")
+        File.write("#{dir}/script/check", "#!/bin/sh\n")
+        File.chmod(0o755, "#{dir}/script/check")
+        expect(lint.call(exec_def("script/check"), cwd: dir)["warnings"]).to eq([])
+      end
+    end
+
+    it "warns of a list with no -- before it and clears with one" do
+      found = lint.call(exec_def("ls {{changed.files}}"), cwd: "/repo")
+      expect(found["warnings"]).to match([include("code" => "exec_list_without_dashes", "step" => "a", "message" => /step a exec ls: .*changed.files.*Put `--`/)])
+      expect(lint.call(exec_def("ls -- {{changed.files}}"), cwd: "/repo")["warnings"]).to eq([])
+    end
+
+    it "warns when {{changed.tests}} is used and test_files is unset, naming the workspace, and clears when set" do
+      allow(commands_config).to receive(:test_files).with("proj").and_return([])
+      found = lint.call(exec_def("ls -- {{changed.tests}}"), cwd: "/repo")
+      expect(found["warnings"]).to match([include("code" => "test_files_unset", "message" => /--name proj/)])
+      allow(commands_config).to receive(:test_files).with("proj").and_return(["a"])
+      expect(lint.call(exec_def("ls -- {{changed.tests}}"), cwd: "/repo")["warnings"]).to eq([])
+    end
+
+    it "does not read test_files when no step uses {{changed.tests}}" do
+      lint.call(exec_def("ls -- {{changed.files}}"), cwd: "/repo")
+      expect(commands_config).not_to have_received(:test_files)
+    end
+
+    it "lists test_files as not checked when commands.test_files cannot be parsed" do
+      allow(commands_config).to receive(:test_files).and_raise(Workspace::ConfigParseError.new("/c.yml", "bad yaml"))
+      found = lint.call(exec_def("ls -- {{changed.tests}}"), cwd: "/repo")
+      expect(found["not_checked"]).to match([include("code" => "test_files_not_checked", "step" => nil, "message" => /commands.test_files could not be read.*bad yaml/)])
+    end
+
+    context "outside a git checkout" do
+      let(:git_common_dir) { nil }
+
+      it "lists a relative program and test_files as not checked, and still judges bare programs and lists" do
+        found = lint.call(exec_def("script/check -- {{changed.tests}}", "no-such-program-xyz", "ls {{changed.files}}"), cwd: "/tmp/x")
+        expect(found["not_checked"].map { |n| n["code"] }).to eq(%w[exec_program_not_checked test_files_not_checked])
+        expect(found["warnings"].map { |w| w["code"] }).to eq(%w[exec_program_missing exec_list_without_dashes])
+        expect(commands_config).not_to have_received(:test_files)
+      end
+    end
+  end
+
   it "lists an unreadable config as not checked" do
     allow(commands_config).to receive(:for_project).and_raise(Workspace::ConfigParseError.new("/c.yml", "bad yaml"))
     found = lint.call(definition(yaml), cwd: "/repo")
