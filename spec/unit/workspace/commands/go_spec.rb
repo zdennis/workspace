@@ -1286,6 +1286,62 @@ RSpec.describe Workspace::Commands::Go do
       expect(row["warnings"].join).to include(pr, "issues/5", "workspace go ID --input task=TEXT")
     end
 
+    context "with a JIRA link and a pull request link" do
+      let(:jira_link) { "https://acme.atlassian.net/browse/PUFFINS-123" }
+      let(:pr_link) { "https://github.com/o/r/pull/456" }
+
+      it "plans the combined branch, skips the namer and keeps the sentence as the prompt" do
+        text = "Fix the retry in #{pr_link}, tracked by #{jira_link}"
+        row = prompt_row(text, dry_run: true)
+
+        expect(picker).not_to have_received(:call)
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: text, headless: false, inputs: {}, derived_branch: "PUFFINS-123-pr-456", dry_run: true)
+        expect(row["decision"]).to include("kind" => "prompt", "extracted" => "#{pr_link} and PUFFINS-123")
+      end
+
+      it "still refuses a combined name that is a case alias of an existing branch" do
+        names.push("puffins-123-pr-456")
+        local_names.push("puffins-123-pr-456")
+
+        expect(refusal(argument: "#{jira_link} #{pr_link}").code).to eq("branch_exists")
+        expect_nothing_ran
+      end
+    end
+
+    it "keeps a bare key beside a pull request link a pull request ref, with no namer" do
+      row = prompt_row("fix PROJ-1 per https://github.com/o/r/pull/456")
+
+      expect(picker).not_to have_received(:call)
+      expect(row["decision"]).to include("kind" => "github_pr", "extracted" => "https://github.com/o/r/pull/456")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "https://github.com/o/r/pull/456"))
+    end
+
+    ["https://github.com/o/r/pull/12 and https://github.com/o/r/pull/13", "PROJ-1 and PROJ-2 clash"].each do |text|
+      it "gives #{text.inspect} no combined name" do
+        row = prompt_row(text)
+
+        expect(workflow_start).to have_received(:call).with(hash_including(derived_branch: nil))
+        expect(row["decision"]["extracted"]).to be_nil
+        expect(row["warnings"].join).to include("read as free text")
+        expect(picker).to have_received(:call)
+      end
+    end
+
+    it "gives a JIRA link whose pull request is untracked no combined name" do
+      row = prompt_row("https://acme.atlassian.net/browse/PUFFINS-123 tracked by https://github.com/other/repo/pull/456")
+
+      expect(picker).not_to have_received(:call)
+      expect(row["decision"]).to include("kind" => "jira", "extracted" => "PUFFINS-123")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "PUFFINS-123"))
+    end
+
+    it "takes the key of a lowercase JIRA link as the token reads it" do
+      row = prompt_row("fix https://acme.atlassian.net/browse/puffins-9 per https://github.com/o/r/pull/456", dry_run: true)
+
+      expect(workflow_start).to have_received(:call).with(hash_including(derived_branch: "PUFFINS-9-pr-456"))
+      expect(row["decision"]["extracted"]).to include("PUFFINS-9", "https://github.com/o/r/pull/456")
+    end
+
     it "keeps two bare keys as free text" do
       row = prompt_row("PROJ-1 and PROJ-2 clash")
 
