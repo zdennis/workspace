@@ -20,8 +20,14 @@ jobs:
           ruby-version: "4.0"
           bundler-cache: true
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/rubocop_cache
+          key: rubocop-${{ hashFiles('Gemfile.lock', '.standard.yml') }}-${{ github.sha }}
+          restore-keys: rubocop-${{ hashFiles('Gemfile.lock', '.standard.yml') }}-
+
       - name: Lint
-        run: bundle exec standardrb lib/ spec/
+        run: bundle exec standardrb --parallel lib/ spec/
 
   specs:
     name: specs (${{ matrix.group }})
@@ -33,11 +39,14 @@ jobs:
         include:
           - group: unit-integration
             paths: spec/unit spec/integration
+            processes: 3
           - group: system-commands
             paths: spec/system/workspace/commands
+            processes: 3
           - group: system
             paths: spec/system
             exclude: spec/system/workspace/commands/
+            processes: 6
     steps:
       - uses: actions/checkout@v4
 
@@ -60,7 +69,7 @@ jobs:
           mkdir -p tmp
           exclude=()
           if [ -n "${{ matrix.exclude }}" ]; then exclude=(--exclude-pattern "${{ matrix.exclude }}"); fi
-          bundle exec parallel_rspec -n 3 --group-by filesize "${exclude[@]}" \
+          bundle exec parallel_rspec -n ${{ matrix.processes }} --group-by filesize "${exclude[@]}" \
             -o "--format progress --format ParallelTests::RSpec::RuntimeLogger --out tmp/runtime-${{ matrix.group }}.log" \
             ${{ matrix.paths }}
 
