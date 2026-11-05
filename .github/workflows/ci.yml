@@ -29,6 +29,9 @@ jobs:
       - name: Lint
         run: bundle exec standardrb --parallel lib/ spec/
 
+      - name: Check every spec is in exactly one CI group
+        run: ruby script/check-ci-groups
+
   specs:
     name: specs (${{ matrix.group }})
     runs-on: macos-latest
@@ -40,15 +43,19 @@ jobs:
           - group: unit-integration
             paths: spec/unit spec/integration
             processes: 3
+            no_tmux: true
           - group: system-commands
             paths: spec/system/workspace/commands
             processes: 3
           - group: system-workflow
             paths: spec/system/workspace/workflow_*_spec.rb
             processes: 3
+          - group: system-git
+            paths: spec/system/workspace/checkout_move_spec.rb spec/system/workspace/git_spec.rb spec/system/workspace/git_*_spec.rb
+            processes: 3
           - group: system
             paths: spec/system
-            exclude: ^spec/system/workspace/(commands/|workflow_)
+            exclude: ^spec/system/workspace/(commands/|workflow_[^/]*_spec\.rb$|git(_[^/]*)?_spec\.rb$|checkout_move_spec\.rb$)
             processes: 3
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +66,19 @@ jobs:
           bundler-cache: true
 
       - name: Install tmux
+        if: ${{ !matrix.no_tmux }}
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+          HOMEBREW_NO_ANALYTICS: "1"
         run: brew install tmux
+
+      - uses: actions/cache@v4
+        with:
+          path: tmp/runtime-cache
+          key: runtime-v1-${{ matrix.group }}@${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: runtime-v1-${{ matrix.group }}@
 
       - name: Configure git identity for specs that commit
         run: |
@@ -69,12 +88,16 @@ jobs:
 
       - name: Specs
         run: |
-          mkdir -p tmp
+          mkdir -p tmp/runtime-cache
           exclude=()
           if [ -n "${{ matrix.exclude }}" ]; then exclude=(--exclude-pattern "${{ matrix.exclude }}"); fi
-          bundle exec parallel_rspec -n ${{ matrix.processes }} --group-by filesize "${exclude[@]}" \
+          # Balance processes by the last green run's per-file times; file size until a log exists.
+          grouping=(--group-by filesize)
+          if [ -s tmp/runtime-cache/runtime.log ]; then grouping=(--runtime-log tmp/runtime-cache/runtime.log); fi
+          bundle exec parallel_rspec -n ${{ matrix.processes }} "${grouping[@]}" "${exclude[@]}" \
             -o "--format progress --format ParallelTests::RSpec::RuntimeLogger --out tmp/runtime-${{ matrix.group }}.log" \
             ${{ matrix.paths }}
+          cp tmp/runtime-${{ matrix.group }}.log tmp/runtime-cache/runtime.log
 
       - uses: actions/upload-artifact@v4
         if: always()

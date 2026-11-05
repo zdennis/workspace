@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Fails when a spec file is in zero or more than one CI group. The groups come
+# from the specs job matrix in .github/workflows/ci.yml (paths and exclude).
+# Extra arguments are spec paths added to the files checked.
+require "yaml"
+
+Dir.chdir(File.expand_path("..", __dir__))
+
+matrix = YAML.load_file(".github/workflows/ci.yml").dig("jobs", "specs", "strategy", "matrix", "include")
+
+member = lambda do |group, spec|
+  listed = group["paths"].split.any? do |token|
+    spec == token || spec.start_with?("#{token}/") || File.fnmatch(token, spec, File::FNM_PATHNAME)
+  end
+  listed && !(group["exclude"] && spec.match?(Regexp.new(group["exclude"])))
+end
+
+specs = (Dir.glob("spec/**/*_spec.rb") + ARGV).uniq.sort
+problems = specs.filter_map do |spec|
+  names = matrix.select { |g| member.call(g, spec) }.map { |g| g["group"] }
+  "#{spec}: #{names.empty? ? "in no group" : "in #{names.join(", ")}"}" if names.size != 1
+end
+
+if problems.empty?
+  puts "ok: #{specs.size} specs, each in exactly one of #{matrix.size} groups"
+else
+  warn problems
+  exit 1
+end
