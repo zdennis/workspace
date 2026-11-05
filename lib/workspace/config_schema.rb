@@ -521,7 +521,7 @@ module Workspace
       Key.new(name: "commands.lint", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, examples: ["bundle exec standardrb lib/ spec/"], parser: COMMAND,
         doc: "Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test`"),
       Key.new(name: "commands.test_files", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :text, settable: true, examples: ["spec/**/*_spec.rb test/*_test.rb"], parser: GLOB_LIST,
-        doc: "Globs, relative to the checkout and separated by spaces (or a YAML list), naming the files that count as tests, e.g. `spec/**/*_spec.rb test/*_test.rb`; unset: no test files are named"),
+        doc: "Globs, relative to the checkout and separated by spaces (or a YAML list), naming the files that count as tests, e.g. `spec/**/*_spec.rb test/*_test.rb`; they feed `{{changed.tests}}` in a workflow step's [`require: exec`](README.workflow.md#required-proofs) proof; unset: `{{changed.tests}}` is unproven and no test files are named"),
       # start.copy_files is repo-specific (the gitignored files a worktree needs from the main checkout); read at
       # worktree-creation time only, so a worktree layer is meaningless and not read.
       Key.new(name: "start.copy_files", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :text, settable: true, examples: [".env", ".env,config/database.yml"], parser: COPY_FILES,
