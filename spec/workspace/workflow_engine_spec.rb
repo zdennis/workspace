@@ -396,6 +396,109 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(store.active).to eq([])
     end
 
+    describe "a require: exec program" do
+      let(:exec_path) { File.join(@dir, "bin") }
+      let(:exec_line) { "check --flag" }
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            build:
+              prompt: Build it.
+              require:
+                - exec: #{exec_line.inspect}
+        YAML
+      end
+
+      def make_program(path, mode: 0o755)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "#!/bin/sh\n")
+        File.chmod(mode, path)
+        path
+      end
+
+      def refused(code)
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq(code)
+          yield error if block_given?
+        }
+        expect(store.active).to eq([])
+        expect(Dir.exist?(File.join(worktree, ".workflow"))).to be(false)
+      end
+
+      before do
+        FileUtils.mkdir_p(worktree)
+        stub_const("ENV", ENV.to_h.merge("PATH" => exec_path, "HOME" => @dir))
+      end
+
+      it "refuses a bare name that is not on PATH, naming the step and program" do
+        refused("workflow_program_missing") do |error|
+          expect(error.details).to include("workflow" => "flow", "program" => "check",
+            "steps" => [{"step" => "build", "program" => "check", "problem" => "is not on PATH"}])
+        end
+      end
+
+      it "starts when the bare name is on PATH" do
+        make_program(File.join(exec_path, "check"))
+        expect { start(flow, inputs: {}) }.not_to raise_error
+      end
+
+      context "with an absolute path" do
+        let(:exec_line) { File.join(@dir, "tools", "check") }
+
+        it "refuses one that is not executable" do
+          make_program(exec_line, mode: 0o644)
+          refused("workflow_program_missing") { |error| expect(error.details["steps"].first["problem"]).to match(/not executable/) }
+        end
+
+        it "refuses a directory" do
+          FileUtils.mkdir_p(exec_line)
+          refused("workflow_program_missing") { |error| expect(error.details["steps"].first["problem"]).to match(/not a file/) }
+        end
+      end
+
+      context "with a ~/ path" do
+        let(:exec_line) { "~/tools/check" }
+
+        it "starts when the file exists under HOME" do
+          make_program(File.join(@dir, "tools", "check"))
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+      end
+
+      context "with a relative path" do
+        let(:exec_line) { "script/check" }
+
+        it "refuses one missing from the checkout" do
+          refused("workflow_program_missing")
+        end
+
+        it "starts when the checkout holds it" do
+          make_program(File.join(worktree, "script", "check"))
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+
+        it "does not judge it in preflight for a checkout that is not made yet" do
+          expect { engine.preflight(definition: flow, workspace: "app", worktree: worktree, inputs: {}, tree: nil, checkout: File.join(@dir, "new")) }.not_to raise_error
+        end
+      end
+
+      context "with {{changed.tests}}" do
+        let(:exec_line) { "check -- {{changed.tests}}" }
+
+        before { make_program(File.join(exec_path, "check")) }
+
+        it "refuses when commands.test_files is empty" do
+          allow(commands_config).to receive(:test_files).with("app.worktree-x").and_return([])
+          refused("workflow_test_files_unset") { |error| expect(error.details).to include("workflow" => "flow", "workspace" => "app.worktree-x", "steps" => ["build"]) }
+        end
+
+        it "starts when commands.test_files is set" do
+          allow(commands_config).to receive(:test_files).with("app.worktree-x").and_return(["spec/**/*_spec.rb"])
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+      end
+    end
+
     describe "a require: command" do
       let(:flow) do
         definition(<<~YAML)
@@ -3056,6 +3159,11 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       before do
+        %w[check other].each do |name|
+          FileUtils.mkdir_p(File.join(worktree, "bin"))
+          File.write(File.join(worktree, "bin", name), "#!/bin/sh\n")
+          File.chmod(0o755, File.join(worktree, "bin", name))
+        end
         allow(guard).to receive(:changed_paths).and_return(["a.rb".b])
         allow(commands_config).to receive(:test_files).and_return([])
       end

@@ -340,7 +340,7 @@ module Workspace
     #   step), "pane", "inputs" and "packs" (the refs the first step's instructions use)
     # @raise [Workspace::Error] code `input_required` for a missing input, `usage` for an
     #   unknown one, `workflow_command_unset` when a step's check names a command the
-    #   project has not set, `dirty_worktree` when +tree+ is not clean for a guarded step, `pane_has_run` when the pane already runs a workflow, and
+    #   project has not set, `workflow_test_files_unset` for `{{changed.tests}}` with no `commands.test_files`, `workflow_program_missing` for an `exec` program that can't run (a relative one is judged in +tree+, not at all when it is nil), `dirty_worktree` when +tree+ is not clean for a guarded step, `pane_has_run` when the pane already runs a workflow, and
     #   the composer's errors for a pack that can't be read
     def preflight(definition:, workspace:, worktree:, inputs:, pane: nil, tree: worktree, checkout: nil)
       data = definition.to_h
@@ -350,6 +350,8 @@ module Workspace
       check_tree(data, tree)
       project = @lineage.resolve(cwd: worktree).name
       check_commands(data, project)
+      check_test_files(data, workspace)
+      check_exec_programs(data, tree)
       check_pane(pane)
       check_checkout(tree)
       first = data["steps"].first
@@ -1440,6 +1442,38 @@ module Workspace
         "Workflow #{data["id"]} checks steps with the project's #{roles.join(" and ")} command, and #{project} has none. Set each:\n  #{lines.join("\n  ")}",
         code: "workflow_command_unset", details: {"workflow" => data["id"], "project" => project, "commands" => roles, "steps" => unset}
       )
+    end
+
+    # Every step with an `exec` proof using `{{changed.tests}}` needs the workspace's `commands.test_files`.
+    def check_test_files(data, workspace)
+      steps = exec_steps(data).select { |_step, argv| argv.include?("{{changed.tests}}") }.map(&:first).uniq
+      return if steps.empty? || @commands_config.test_files(workspace).any?
+      raise Workspace::Error.new(
+        "Workflow #{data["id"]} uses {{changed.tests}} in step #{steps.join(", ")}, and #{workspace} has no commands.test_files. Set it: workspace config set commands.test_files \"spec/**/*_spec.rb\" --name #{workspace}",
+        code: "workflow_test_files_unset", details: {"workflow" => data["id"], "workspace" => workspace, "steps" => steps}
+      )
+    end
+
+    # Argument 1 of each `exec` proof must be a program {WorkflowExecProgram} accepts. A relative program is
+    # judged in +tree+, the checkout that exists; nil (a worktree not made yet) leaves it unjudged, since the branch may add it.
+    def check_exec_programs(data, tree)
+      missing = exec_steps(data).filter_map do |step, argv|
+        reason = WorkflowExecProgram.problem(argv.first, checkout: tree)
+        {"step" => step, "program" => argv.first, "problem" => reason} if reason
+      end
+      return if missing.empty?
+      lines = missing.map { |each| "step #{each["step"]}: #{TerminalText.escape(each["program"].to_s.empty? ? "(empty)" : each["program"])} #{TerminalText.escape(each["problem"])}" }
+      raise Workspace::Error.new(
+        "Workflow #{data["id"]} runs programs that can't run:\n  #{lines.join("\n  ")}\nInstall each, fix its path, or edit the workflow. A bare name is looked up on the PATH of the process that starts the step (the daemon's, for a run), which can differ from your shell's.",
+        code: "workflow_program_missing",
+        details: {"workflow" => data["id"], "program" => missing.first["program"], "steps" => missing}
+      )
+    end
+
+    def exec_steps(data)
+      data["steps"].flat_map do |step|
+        Array(step["require"]).select { |entry| entry.is_a?(Hash) && entry["exec"].is_a?(Array) }.map { |entry| [step["id"], entry["exec"]] }
+      end
     end
 
     # +run_id+ is the run asking, which a park of its own can't refuse.
