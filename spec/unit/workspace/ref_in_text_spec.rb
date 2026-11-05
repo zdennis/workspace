@@ -157,8 +157,8 @@ RSpec.describe Workspace::RefInText do
     {
       "https://github.com/o/r/pull/12" => ["github_pr", "o/r#12", "pr-12"],
       "https://github.com/o/r/issues/7" => ["github_issue", "o/r#7", "issue-7"],
-      "PROJ-1" => ["jira", "PROJ-1", "proj-1"],
-      "https://acme.atlassian.net/browse/proj-5" => ["jira", "PROJ-5", "proj-5"]
+      "PROJ-1" => ["jira", "PROJ-1", "PROJ-1"],
+      "https://acme.atlassian.net/browse/proj-5" => ["jira", "PROJ-5", "PROJ-5"]
     }.each do |text, (kind, key, branch)|
       it "reads the token found in #{text} as #{kind}" do
         found = described_class.scan("please look at #{text} soon").fetch(0)

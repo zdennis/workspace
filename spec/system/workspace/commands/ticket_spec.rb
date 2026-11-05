@@ -45,7 +45,7 @@ RSpec.describe Workspace::Commands::Ticket do
       expect(document).to eq(
         "schema_version" => 1, "ok" => true, "ref" => "PROJ-123", "kind" => "jira", "key" => "PROJ-123",
         "title" => "Fix it", "body" => "Details", "url" => "https://acme.atlassian.net/browse/PROJ-123",
-        "branch" => "proj-123", "workspace" => nil
+        "branch" => "PROJ-123", "workspace" => nil
       )
       expect(source).to have_received(:fetch).with(an_object_having_attributes(kind: "jira"), chdir: repo)
     end
@@ -186,10 +186,10 @@ RSpec.describe Workspace::Commands::Ticket do
       expect(document["tickets"].first).to eq(
         "ref" => "PROJ-123", "kind" => "jira", "key" => "PROJ-123", "title" => "Fix the login redirect",
         "url" => "https://acme.atlassian.net/browse/PROJ-123", "source" => "jira", "state" => "In Progress",
-        "updated_at" => "2026-10-17T09:00:00Z", "branch" => "proj-123", "slug_branch" => "proj-123-fix-the-login-redirect", "workspace" => nil
+        "updated_at" => "2026-10-17T09:00:00Z", "branch" => "PROJ-123", "slug_branch" => "PROJ-123-fix-the-login-redirect", "workspace" => nil
       )
       expect(document["tickets"].map { |t| [t["kind"], t["key"], t["branch"], t["slug_branch"]] }).to eq(
-        [["jira", "PROJ-123", "proj-123", "proj-123-fix-the-login-redirect"],
+        [["jira", "PROJ-123", "PROJ-123", "PROJ-123-fix-the-login-redirect"],
           ["github_issue", "o/r#7", "issue-7", "issue-7-crash"],
           ["github_pr", "o/r#9", "pr-9", "pr-9"]]
       )

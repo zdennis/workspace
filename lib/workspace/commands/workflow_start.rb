@@ -94,6 +94,7 @@ module Workspace
       # @param dry_run [Boolean] check everything and create nothing
       # @param here [Here, nil] run in this checkout instead of making one; the ref's checkout must be the same directory
       # @param force [Boolean] start although the workflow's `applies_to:` leaves out the ref's kind
+      # @param derived_branch [String, nil] the branch name for a prompt start, picked by the caller (`go`); unlike +branch+ it is still a derived name, so an existing branch of that name is refused with `branch_exists`
       # @param route [Boolean] +id+ is not given: {Workspace::WorkflowRouter} picks it from the ref's kind (`--ref`); the row
       #   then has "routed" ("ref", "kind", "workflow", "source", "scope", "key")
       # @return [Hash{String=>Object}] the action row: outcome "dry_run" with "workflow", "step", "project",
@@ -104,7 +105,7 @@ module Workspace
       #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout); with +here+,
       #   `branch_exists` when the ref's checkout is not the one it runs in
       def call(id: nil, ref: nil, positional: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
-        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false, route: false)
+        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false, route: false, derived_branch: nil)
         prompt = prompt.to_s.strip
         prompt = nil if prompt.empty?
         project = catalog_project
@@ -128,7 +129,7 @@ module Workspace
           definition = @catalog.find(id, project: project)
           warnings = read_as_branch(ref, id, project) if positional
         end
-        plan = keeping_warnings(warnings) { plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, force: force, catalog_project: project, **where) }
+        plan = keeping_warnings(warnings) { plan(definition, ref: ref, prompt: prompt, branch: branch, slug: slug, inputs: inputs, agent_kind: agent_kind, warnings: warnings, here: here, force: force, catalog_project: project, derived_branch: derived_branch, **where) }
         row = if here
           run_here(plan, here, note: note, dry_run: dry_run)
         elsif dry_run
@@ -178,6 +179,17 @@ module Workspace
       # @return [Boolean]
       def tracks_repository?(root, repo)
         tracked_repositories(root).include?("github.com/#{repo}".downcase)
+      end
+
+      # Refuses a project whose agent is not Claude Code, for a start that makes a new workspace. `go` calls it
+      # before it asks for a branch name, so a start that cannot run never waits for one.
+      #
+      # @param agent_kind [String, nil] the `--agent-kind` override
+      # @param project_workspace [String] the project's workspace, whose `agent.kind` is read
+      # @return [void]
+      # @raise [Workspace::Error] code `workflow_needs_claude`
+      def check_agent_kind!(agent_kind, project_workspace:)
+        require_claude!(agent_kind || @agent_commands.kind(project_workspace))
       end
 
       private
@@ -261,18 +273,18 @@ module Workspace
           code: "no_default_workflow", details: {"kind" => kind, "ref" => ref, "known" => known}.merge(@router.unrouted(kind, workspace: project)))
       end
 
-      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:, force: false, catalog_project: nil)
+      def plan(definition, ref:, prompt:, branch:, slug:, inputs:, agent_kind:, warnings:, here:, root:, project:, project_workspace:, force: false, catalog_project: nil, derived_branch: nil)
         if here && !agent_kind
           check_agent!(here.workspace, project: project_workspace)
         else
-          require_claude!(agent_kind || @agent_commands.kind(project_workspace))
+          check_agent_kind!(agent_kind, project_workspace: project_workspace)
         end
         resolved = ref && @start_ref.call(ref, root: root)
         check_applies_to!(definition, resolved, ref, warnings, force: force)
         ticket = read_ticket(resolved, root, definition, inputs: inputs, prompt: prompt, slug: slug, warnings: warnings)
         allowed = tracked_repositories(root)
         checked = check_pull_request!(definition, resolved, ticket, allowed, "'#{resolved.key}'") if resolved&.kind == "github_pr"
-        name = branch_for(resolved, ticket, root, prompt: prompt, branch: branch, slug: slug)
+        name = branch_for(resolved, ticket, root, prompt: prompt, branch: branch, slug: slug, derived_branch: derived_branch)
         path = File.join(project.root, ".worktrees", @git.sanitize_for_filesystem(name))
         derived = resolved.nil? && branch.nil?
         exists = @git.worktree_exists?(path)
@@ -336,12 +348,12 @@ module Workspace
         nil
       end
 
-      def branch_for(resolved, ticket, project_root, prompt:, branch:, slug:)
+      def branch_for(resolved, ticket, project_root, prompt:, branch:, slug:, derived_branch: nil)
         if resolved
           resolved = @start_ref.slugged(resolved, ticket&.fetch("title")) if slug && ticket
           name = resolved.branch
         else
-          name = branch || StartRef.slug(prompt)
+          name = branch || derived_branch || StartRef.slug(prompt)
           raise Workspace::UsageError, "The prompt has no letters or digits to name a branch from. Pass --branch NAME." if name.empty?
         end
         unless resolved&.pr || @git.valid_branch_name?(project_root, name)
