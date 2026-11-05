@@ -813,6 +813,35 @@
       "problems": []
     },
     {
+      "key": "start.copy_files",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project"
+      ],
+      "layers": [],
+      "doc": "Files `start` copies from the main checkout into a worktree, at the same relative path, as a comma-separated list such as `.env,config/database.yml` (unset: nothing is copied). A file already in the worktree is never overwritten — a re-run of `start` tops up missing files without touching branch-local edits — and the file's mode is kept, so a 0600 `.env` stays 0600. `dev up` copies nothing itself. To refresh a copy, delete the file in the worktree and re-run `start`. `workspace add` does not copy (see [`start`](README.start.md#copy-files))",
+      "problems": []
+    },
+    {
       "key": "notes.dir",
       "scope": "project",
       "type": "path",

@@ -355,6 +355,28 @@ module Workspace
     end
     private_constant :PACK_LIST
 
+    # `start.copy_files`: files copied from the main checkout into a new worktree at `start`.
+    # Stricter than INSTALL_DIR: a trailing `/` names a directory, not a file, and the copy
+    # step needs one unambiguous relative path per entry.
+    COPY_FILES = lambda do |value|
+      entries = (value.is_a?(Array) ? value : value.to_s.split(",")).map { |entry| entry.to_s.strip }
+      raise ArgumentError, "must not be blank" if entries.empty?
+      raise ArgumentError, "must not have an empty entry; separate file paths with commas, e.g. \".env,config/database.yml\"" if entries.include?("")
+      paths = entries.map { |entry| entry.delete_prefix("./") }
+      paths.each do |path|
+        raise ArgumentError, "must name files relative to the checkout, such as .env or config/database.yml; #{path.inspect} is not one" if path.empty? || path.start_with?("/", "~")
+        raise ArgumentError, "must not contain a newline or other control character" if path.match?(/[[:cntrl:]]/)
+        raise ArgumentError, "#{path.inspect} must not contain * ? [ ] or \\; each entry names one file" if path.match?(/[*?\[\]\\]/)
+        raise ArgumentError, "#{path.inspect} must not end with \"/\"; each entry names one file, not a directory" if path.end_with?("/")
+        parts = path.split("/")
+        raise ArgumentError, "#{path.inspect} must not contain \"..\"; it would leave the checkout" if parts.include?("..")
+        raise ArgumentError, "#{path.inspect} must not be or be inside .git" if parts.any? { |part| part.casecmp?(".git") }
+        raise ArgumentError, "#{path.inspect} must be one plain file path; drop any \".\" or \"//\" part" if parts.include?(".") || parts.include?("")
+      end
+      paths.uniq
+    end
+    private_constant :COPY_FILES
+
     # The steps `focus.chain` may name, which keeps out `close`, `quit`, `pick`, `watch`, `wait`, `pip` and `record`.
     FOCUS_CHAIN_COMMANDS = %w[focus center dim highlight flash shake snap maximize].freeze
 
@@ -482,6 +504,10 @@ module Workspace
         doc: "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack"),
       Key.new(name: "commands.lint", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, examples: ["bundle exec standardrb lib/ spec/"], parser: COMMAND,
         doc: "Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test`"),
+      # start.copy_files is repo-specific (the gitignored files a worktree needs from the main checkout); read at
+      # worktree-creation time only, so a worktree layer is meaningless and not read.
+      Key.new(name: "start.copy_files", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :text, settable: true, examples: [".env", ".env,config/database.yml"], parser: COPY_FILES,
+        doc: "Files `start` copies from the main checkout into a worktree, at the same relative path, as a comma-separated list such as `.env,config/database.yml` (unset: nothing is copied). A file already in the worktree is never overwritten — a re-run of `start` tops up missing files without touching branch-local edits — and the file's mode is kept, so a 0600 `.env` stays 0600. `dev up` copies nothing itself. To refresh a copy, delete the file in the worktree and re-run `start`. `workspace add` does not copy (see [`start`](README.start.md#copy-files))"),
       # notes.dir is one checkout's identity: its own file only, never inherited.
       Key.new(name: "notes.dir", scope: :project, overridable_in: [:project, :worktree], type: :path, settable: true, examples: ["/Users/me/notes/api-fix"], parser: ABSOLUTE_PATH, resolve: :own_then_parent,
         doc: "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it). A new worktree is given the main checkout's notes directory plus its branch (unless `notes.default_dir` is set) and keeps that value"),

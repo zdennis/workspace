@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
     expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt events.rotate_size codex.hooks.install])
   end
 
@@ -61,6 +61,39 @@ RSpec.describe Workspace::ConfigSchema do
 
     it "rejects a placeholder other than {workspace} and {branch}" do
       expect { parse("/n/{project}") }.to raise_error(ArgumentError, /{project}.*{workspace}.*{branch}/)
+    end
+  end
+
+  describe "start.copy_files" do
+    def parse(value) = described_class.parse("start.copy_files", value)
+
+    it "accepts a comma-separated list of checkout-relative files, stripping spaces, a leading ./ and repeats" do
+      expect(parse(".env")).to eq(%w[.env])
+      expect(parse(".env, config/database.yml")).to eq(%w[.env config/database.yml])
+      expect(parse("./.env")).to eq(%w[.env])
+      expect(parse(".env,.env,config/database.yml")).to eq(%w[.env config/database.yml])
+      expect(parse([".env", "config/database.yml"])).to eq(%w[.env config/database.yml])
+    end
+
+    it "rejects an empty list or an empty entry, naming the whole value" do
+      [nil, "", " ", ", ", ".env,,config/database.yml", ".env, "].each do |bad|
+        expect { parse(bad) }.to raise_error(ArgumentError, /must not be blank|must not have an empty entry/)
+      end
+    end
+
+    it "rejects paths that leave the checkout or name no one file" do
+      ["/etc/passwd", "~/.env", "~backup.env", "./", ".env/../x", "a/../../x"].each { |bad| expect { parse(bad) }.to raise_error(ArgumentError, /"\.\."|relative to the checkout/) }
+      %w[.git/config .GIT/config a/.git].each { |bad| expect { parse(bad) }.to raise_error(ArgumentError, /\.git/) }
+      %w[config/ a/].each { |bad| expect { parse(bad) }.to raise_error(ArgumentError, /must not end with/) }
+      %w[. a/. a//b].each { |bad| expect { parse(bad) }.to raise_error(ArgumentError, /one plain file path/) }
+      %w[*.env a[b] a?b a\\b].each { |bad| expect { parse(bad) }.to raise_error(ArgumentError, /must not contain \* \? \[ \]/) }
+      expect { parse(".env\nx") }.to raise_error(ArgumentError, /control character/)
+    end
+
+    it "layers global then project and has no default" do
+      key = described_class.key("start.copy_files")
+      expect(key).to have_attributes(scope: :project, resolve: :layered, overridable_in: %i[global project], settable: true, default: nil)
+      expect(key.overridable_in?(:worktree)).to be false
     end
   end
 

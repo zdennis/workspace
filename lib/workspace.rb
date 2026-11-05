@@ -281,6 +281,7 @@ require_relative "workspace/checkout_move"
 require_relative "workspace/notes_dir"
 require_relative "workspace/shell_init"
 require_relative "workspace/notes_setup"
+require_relative "workspace/start_file_copies"
 require_relative "workspace/plan_file"
 require_relative "workspace/plan_paused"
 require_relative "workspace/notes_carry"
@@ -491,6 +492,7 @@ module Workspace
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
+    start_file_copies = StartFileCopies.new(config_resolver: config_resolver)
     # Read through closures: the review command SpineFacts needs, and the workflow store and panes
     # SpineInferred needs, are built further down.
     spine_facts = nil
@@ -735,7 +737,7 @@ module Workspace
     plan_task_command = Commands::PlanTask.new(access: plan_access, output: output)
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog, groups: project_groups,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, hooks_config: hooks_config, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, agent_commands: agent_commands, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, excluder: bookkeeping_exclude, output: output, input: input)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, hooks_config: hooks_config, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, start_file_copies: start_file_copies, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, agent_commands: agent_commands, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, excluder: bookkeeping_exclude, output: output, input: input)
     workflow_defaults = WorkflowDefaults.new(config_resolver: config_resolver)
     workflow_start_command = Commands::WorkflowStart.new(
       catalog: workflow_catalog, workflow_defaults: workflow_defaults, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
