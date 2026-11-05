@@ -1212,6 +1212,98 @@
       "unit": "seconds"
     },
     {
+      "key": "go.branch_namer.enabled",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": true,
+      "effective": true,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project"
+      ],
+      "layers": [],
+      "doc": "Whether `workspace go` asks a headless agent to name the branch for free text (default `true`); `false` skips the call and uses the slug of the text",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
+    },
+    {
+      "key": "go.branch_namer.timeout",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 30,
+      "effective": 30,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project"
+      ],
+      "layers": [],
+      "doc": "How long the headless branch namer may run before it is stopped and the slug of the text is used (default `30s`)",
+      "problems": [],
+      "unit": "seconds"
+    },
+    {
+      "key": "go.branch_namer.command",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "overridable_in": [
+        "global",
+        "project"
+      ],
+      "layers": [],
+      "doc": "Command that names the branch instead of the default agent's headless call (unset: the default agent is used). It is split into arguments with no shell, the description is appended as one last argument, stdin stays closed, and its stdout is the name",
+      "problems": []
+    },
+    {
       "key": "agent.kind",
       "scope": "project",
       "type": "enum",

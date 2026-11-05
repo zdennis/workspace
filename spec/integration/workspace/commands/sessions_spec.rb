@@ -165,15 +165,18 @@ RSpec.describe Workspace::Commands::Sessions do
 
       def with_hung_daemon
         server = UNIXServer.new(socket_path)
+        # Held open until the client returns, so only its timeout can end the wait.
+        release = Queue.new
         listener = Thread.new do
           conn = server.accept
           conn.gets
-          sleep 0.1
+          release.pop(timeout: 2)
           conn.close
         end
         yield
-        listener.join(2)
       ensure
+        release&.push(true)
+        listener&.join(2)
         server&.close
       end
 

@@ -125,13 +125,17 @@ RSpec.describe "workspace --help --json" do
       saved = ENV.to_h
       begin
         ENV.replace("HOME" => home, "PATH" => File.dirname(RbConfig.ruby))
+        # The checkout's own .workspace-project is git-ignored, so a fresh clone has none.
+        File.write(File.join(home, ".workspace-project"), "workspace\n")
         before = Dir.glob("#{home}/**/*", File::FNM_DOTMATCH).sort
         saved_streams = [$stdout, $stderr]
         begin
           $stdout = out
           $stderr = err
-          cli = Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {})
-          cli.run(argv)
+          Dir.chdir(home) do
+            cli = Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {})
+            cli.run(argv)
+          end
         rescue SystemExit => e
           status = e.status
         ensure
