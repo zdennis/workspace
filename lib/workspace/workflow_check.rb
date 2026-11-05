@@ -38,7 +38,11 @@ module Workspace
       )
     end
 
-    # @param command [String] a shell command
+    # Runs either a shell `command:` (through `sh -c`) or an `argv:` array (no shell: the program and its
+    # arguments go to the kernel as they are, so an argument is never split or expanded). Give exactly one.
+    #
+    # @param command [String, nil] a shell command
+    # @param argv [Array<String>, nil] a program and its arguments, run without a shell
     # @param cwd [String] the directory it runs in
     # @param timeout [Numeric] seconds it may run
     # @param log [String] the file its stdout and stderr go to
@@ -47,9 +51,17 @@ module Workspace
     # @param env [Hash{String=>String}] added to the command's environment
     # @return [Hash] :exit_code (nil when it was stopped or never started),
     #   :timed_out, and :error (why it has no exit code) when there is one
-    def call(command:, cwd:, timeout:, log:, stop_when: nil, env: {})
+    # @raise [ArgumentError] when both or neither of command: and argv: are given, or argv: is empty
+    def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {})
+      raise ArgumentError, "give exactly one of command: or argv:" if command.nil? == argv.nil?
+      raise ArgumentError, "argv: must be a non-empty array" if argv && (!argv.is_a?(Array) || argv.empty?)
       FileUtils.mkdir_p(File.dirname(log))
-      pid = Process.spawn(env, "sh", "-c", command, chdir: cwd, pgroup: true, in: File::NULL, out: [log, "w"], err: [:child, :out])
+      opts = {chdir: cwd, pgroup: true, in: File::NULL, out: [log, "w"], err: [:child, :out]}
+      pid = if argv
+        Process.spawn(env, [argv[0], argv[0]], *argv[1..], **opts)
+      else
+        Process.spawn(env, "sh", "-c", command, **opts)
+      end
       status = nil
       begin
         status = wait(pid, timeout, stop_when)

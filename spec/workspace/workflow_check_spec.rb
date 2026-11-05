@@ -181,4 +181,50 @@ RSpec.describe Workspace::WorkflowCheck do
 
     expect(result).to eq(exit_code: nil, timed_out: false, error: "could not run the check (Errno::ENOENT)")
   end
+
+  describe "with argv:" do
+    it "runs the program without a shell and reports a pass" do
+      result = check.call(argv: ["pwd"], cwd: @dir, timeout: 30, log: log)
+
+      expect(result).to eq(exit_code: 0, timed_out: false)
+      expect(File.read(log)).to eq("#{@dir}\n")
+    end
+
+    it "reports the exit status of a program that fails" do
+      expect(check.call(argv: ["sh", "-c", "exit 3"], cwd: @dir, timeout: 30, log: log)).to eq(exit_code: 3, timed_out: false)
+    end
+
+    it "hands an argument with shell characters over as one argument and creates no file" do
+      hostile = "x;touch pwned|sh"
+      result = check.call(argv: ["printf", "[%s]", hostile], cwd: @dir, timeout: 30, log: log)
+
+      expect(result).to eq(exit_code: 0, timed_out: false)
+      expect(File.read(log)).to eq("[#{hostile}]")
+      expect(File.exist?(File.join(@dir, "pwned"))).to be(false)
+    end
+
+    it "runs a one-word program with no arguments without a shell" do
+      expect(check.call(argv: ["true"], cwd: @dir, timeout: 30, log: log)).to eq(exit_code: 0, timed_out: false)
+    end
+
+    it "says the check could not be run when the program is missing" do
+      result = check.call(argv: ["no-such-program-xyz"], cwd: @dir, timeout: 30, log: log)
+
+      expect(result).to eq(exit_code: nil, timed_out: false, error: "could not run the check (Errno::ENOENT)")
+    end
+
+    it "stops the program's group when it runs past the time limit" do
+      timed = described_class.new(kill_grace: 1)
+
+      result = timed.call(argv: ["sh", "-c", "sleep 30 & echo $! > #{marker}; wait"], cwd: @dir, timeout: 1, log: log)
+
+      expect(result).to eq(exit_code: nil, timed_out: true)
+      expect(state_of_child).to satisfy("be gone or a zombie") { |value| value.empty? || value.start_with?("Z") }
+    end
+
+    it "refuses both command: and argv:, and neither" do
+      expect { check.call(command: "true", argv: ["true"], cwd: @dir, timeout: 30, log: log) }.to raise_error(ArgumentError)
+      expect { check.call(cwd: @dir, timeout: 30, log: log) }.to raise_error(ArgumentError)
+    end
+  end
 end
