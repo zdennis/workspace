@@ -653,7 +653,7 @@ module Workspace
           problem "#{where}: require #{name.inspect} is not a proof (known: #{WorkflowRequire::PROOFS.join(", ")})"
           next
         end
-        problem "#{where}: require #{name} is listed twice" if seen.include?(name) && name != "exec"
+        problem "#{where}: require #{name} is listed twice" if seen.include?(name)
         seen << name
         next unless require_value_ok?(name, wanted, where, inputs)
         optional ? {"command" => wanted, "optional" => entry["optional"]} : entry

@@ -287,7 +287,7 @@ module Workspace
     end
 
     # Every file a step left changed against `base`: committed, staged, unstaged and untracked (not ignored) paths.
-    # Deleted files are left out, a rename lists the new path only, and there is no cap. Filters are handled as in
+    # Deleted files are left out, a rename lists the new path only, and git output past MAX_OUTPUT (32 MiB) gives nil. Filters are handled as in
     # {#dirty_paths}, through `base_guard`'s `filter_sha256`.
     #
     # @param worktree [String] a checkout

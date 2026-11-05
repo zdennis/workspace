@@ -634,6 +634,37 @@ RSpec.describe Workspace::WorkflowRequire do
       expect(proven(exec_entry("~/bin/check"), attempt: attempt)).to include("unproven" => true, "program" => "~/bin/check", "detail" => /could not be expanded/)
     end
 
+    it "is unproven when git can't say which branch is checked out and the template uses {{branch}}" do
+      allow(guard).to receive(:branch).and_return(nil)
+      expect(proven(exec_entry("bin/check {{branch}}"), attempt: attempt)).to include("unproven" => true, "program" => "bin/check", "detail" => /git could not say which branch is checked out/)
+      expect(calls).to be_empty
+    end
+
+    it "is unproven when the changed-file lists can't be written" do
+      failing = described_class.new(guard: guard, notes_dir_of: ->(_) { notes }, commands_config: commands, checker: checker,
+        tmpdir: ->(*) { raise Errno::EACCES })
+      found = failing.check(run: run, step: {"require" => [exec_entry("bin/check")]}, attempt: attempt)["outside"]
+      unmet = failing.run_outside(found, cwd: repo, env: {}, stop_when: stop_when)["unmet"]
+      expect(unmet).to include("unproven" => true, "detail" => /changed-file lists could not be written \(Errno::EACCES\)/)
+    end
+
+    it "reads {{ changed.tests }} written with spaces as the list" do
+      expect(proven(exec_entry("bin/check -- '{{ changed.tests }}'"), attempt: attempt)).to be_nil
+      expect(calls.first[:argv]).to eq(["bin/check", "--", "spec/new_spec.rb"])
+    end
+
+    context "with commands.test_files unreadable" do
+      before { allow(commands).to receive(:test_files).and_raise(Workspace::ConfigParseError.new("/x.yml", "bad yaml")) }
+
+      it "is unproven only for a template using {{changed.tests}}" do
+        expect(proven(exec_entry("bin/check -- {{changed.tests}}"), attempt: attempt)).to include("unproven" => true, "detail" => /could not be read .*bad yaml/)
+      end
+
+      it "runs a template that does not use it" do
+        expect(proven(exec_entry("bin/check"), attempt: attempt)).to be_nil
+      end
+    end
+
     it "gives two exec entries their own log and token" do
       step = {"require" => [exec_entry("bin/one"), exec_entry("bin/two")]}
       first = requirer.check(run: run, step: step, attempt: attempt)["outside"]

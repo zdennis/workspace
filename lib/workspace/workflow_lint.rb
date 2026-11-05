@@ -119,7 +119,7 @@ module Workspace
         WorkflowArgv.problems(argv, inputs: inputs).last.each do |text|
           warnings << {"code" => "exec_list_without_dashes", "step" => step, "message" => "step #{step} exec #{program}: #{text}. Put `--` before the list."}
         end
-        tests_step ||= step if argv.include?("{{changed.tests}}")
+        tests_step ||= step if WorkflowArgv.list_names(argv).include?("changed.tests")
       end
       return unless tests_step
       unless project

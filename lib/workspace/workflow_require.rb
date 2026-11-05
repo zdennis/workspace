@@ -37,9 +37,6 @@ module Workspace
     # Seconds a `command` proof may run.
     COMMAND_TIMEOUT = 5 * 60
 
-    # Seconds an `exec` proof may run when its entry gives none (a definition always stores one).
-    EXEC_DEFAULT_TIMEOUT = 5 * 60
-
     # Each list an `exec` template may use: the name of the file it is written to, NUL after each path, in a private
     # directory made for the one run of the proof outside the checkout and removed when the program ends; and the
     # variable that names that file.
@@ -268,7 +265,7 @@ module Workspace
                  "run" => run["id"].to_s, "run.base_sha" => base_sha.to_s, "attempt.head_before" => head_before.to_s}
         .merge(run["inputs"].to_h.to_h { |name, value| ["inputs.#{name}", value.to_s] })
       {"outside" => {"proof" => "exec", "token" => token, "program" => argv.first, "log" => log,
-                     "timeout" => entry["timeout"] || EXEC_DEFAULT_TIMEOUT,
+                     "timeout" => entry["timeout"] || WorkflowDefinition::EXEC_DEFAULT_TIMEOUT,
                      FACTS_KEY => {"argv" => argv, "head_before" => head_before, "base_sha" => base_sha,
                                    "base_guard" => run["base_guard"], "test_files" => globs, "scalars" => scalars}}}
     end
@@ -348,7 +345,7 @@ module Workspace
     end
 
     def list_names(argv)
-      argv.drop(1).filter_map { |arg| arg.match(WorkflowArgv::WHOLE)&.[](1) }.select { |name| WorkflowArgv::LISTS.include?(name) }.uniq
+      WorkflowArgv.list_names(argv)
     end
 
     def test_globs(workspace)

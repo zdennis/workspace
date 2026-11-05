@@ -1446,7 +1446,7 @@ module Workspace
 
     # Every step with an `exec` proof using `{{changed.tests}}` needs the workspace's `commands.test_files`.
     def check_test_files(data, workspace)
-      steps = exec_steps(data).select { |_step, argv| argv.include?("{{changed.tests}}") }.map(&:first).uniq
+      steps = exec_steps(data).select { |_step, argv| WorkflowArgv.list_names(argv).include?("changed.tests") }.map(&:first).uniq
       return if steps.empty? || @commands_config.test_files(workspace).any?
       raise Workspace::Error.new(
         "Workflow #{data["id"]} uses {{changed.tests}} in step #{steps.join(", ")}, and #{workspace} has no commands.test_files. Set it: workspace config set commands.test_files \"spec/**/*_spec.rb\" --name #{workspace}",

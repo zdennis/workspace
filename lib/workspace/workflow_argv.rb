@@ -25,6 +25,13 @@ module Workspace
       [nil, "has an unbalanced quote"]
     end
 
+    # The list placeholders an argv uses as whole arguments after the program, spaces inside the braces allowed.
+    # @param argv [Array<String>]
+    # @return [Array<String>] names from {LISTS}, each once
+    def self.list_names(argv)
+      argv.drop(1).filter_map { |arg| arg.match(WHOLE)&.[](1) }.select { |name| LISTS.include?(name) }.uniq
+    end
+
     # @param argv [Array<String>]
     # @param inputs [Array<String>] the declared input names, for `{{inputs.NAME}}`
     # @return [Array(Array<String>, Array<String>)] `[problems, warnings]`; a warning is a list placeholder with no
