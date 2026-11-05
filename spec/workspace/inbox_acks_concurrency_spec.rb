@@ -10,7 +10,7 @@ RSpec.describe "workspace inbox acks concurrency" do
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 
   it "keeps every entry when two processes each ack 40 distinct ids" do
-    lib = File.expand_path("../../lib", __dir__)
+    lib = File.join(PROJECT_ROOT, "lib")
     script = <<~RUBY
       require "workspace"
       acks = Workspace::InboxAcks.new(path: ARGV[0])

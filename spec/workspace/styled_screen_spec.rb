@@ -4,7 +4,7 @@ require "spec_helper"
 
 RSpec.describe Workspace::StyledScreen do
   def fixture(name)
-    File.read(File.join(__dir__, "..", "fixtures", "claude_screens", name))
+    File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", name))
   end
 
   def parse(raw)
@@ -190,7 +190,7 @@ RSpec.describe Workspace::StyledScreen do
     end
 
     it "gives the plain screen for every fixture, as capture-pane -p does" do
-      Dir[File.join(__dir__, "..", "fixtures", "claude_screens", "*.txt")].each do |path|
+      Dir[File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "*.txt")].each do |path|
         raw = File.read(path)
         plain = raw.gsub(/\e\]8;[^\a\e]*(?:\a|\e\\)/, "").gsub(/\e\[[0-9;:]*m/, "").lines.map(&:rstrip).join("\n") + "\n"
         expect(parse(raw).text).to eq(plain), path

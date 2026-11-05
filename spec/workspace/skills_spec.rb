@@ -1,7 +1,7 @@
 require "spec_helper"
 
 RSpec.describe "lib/skills" do
-  let(:root) { File.expand_path("../../lib/skills", __dir__) }
+  let(:root) { File.join(PROJECT_ROOT, "lib", "skills") }
   let(:skill_dirs) { Dir.children(root).map { |d| File.join(root, d) }.select { |d| File.directory?(d) }.sort }
 
   it "ships the five workspace skills" do
@@ -30,7 +30,7 @@ RSpec.describe "lib/skills" do
   end
 
   it "has script/check-skills read every SKILL.md" do
-    script = File.read(File.expand_path("../../script/check-skills", __dir__))
+    script = File.read(File.join(PROJECT_ROOT, "script", "check-skills"))
     skill_dirs.each do |dir|
       expect(script).to include("#{File.basename(dir)}/SKILL.md")
     end

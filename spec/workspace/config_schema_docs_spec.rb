@@ -3,7 +3,7 @@ require "open3"
 require "tmpdir"
 
 RSpec.describe Workspace::ConfigSchemaDocs do
-  let(:root) { File.expand_path("../..", __dir__) }
+  let(:root) { PROJECT_ROOT }
   let(:doc_path) { File.join(root, "docs/README.config.md") }
 
   it "leaves docs/README.config.md as the schema renders it" do

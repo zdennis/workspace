@@ -38,7 +38,7 @@ class FakePromoteEvents
 end
 
 RSpec.describe Workspace::Commands::Promote do
-  let(:fixtures) { File.expand_path("../../fixtures/promote", __dir__) }
+  let(:fixtures) { File.join(PROJECT_ROOT, "spec", "fixtures", "promote") }
 
   # The JSON type of each value, recursively: a Hash's keys, the first element of a non-empty Array.
   def shape(value)

@@ -41,7 +41,7 @@ RSpec.describe "lock clear adversarial CLI probes" do
   # "a caller that always passes --json" guidance for status/dev status)
   # gets plain stderr text and no machine-readable signal for this outcome.
   it "CU1: lock clear has no --json flag, so the in-progress outcome can't be reported as JSON" do
-    cli_source = File.read(File.join(__dir__, "..", "..", "lib", "workspace", "cli.rb"))
+    cli_source = File.read(File.join(PROJECT_ROOT, "lib", "workspace", "cli.rb"))
     clear_method = cli_source[/def cmd_lock_clear.*?\n    end\n/m]
 
     expect(clear_method).to include("--json"),
@@ -84,7 +84,7 @@ RSpec.describe "lock clear adversarial CLI probes" do
   # a3d00ff introduced; it still only mentions the process-group-could-not-
   # be-stopped case.
   it "CU3: lock help's exit-code note omits the already-being-cleared case" do
-    cli_source = File.read(File.join(__dir__, "..", "..", "lib", "workspace", "cli.rb"))
+    cli_source = File.read(File.join(PROJECT_ROOT, "lib", "workspace", "cli.rb"))
     help_text = cli_source[/def lock_help.*?HELP\n    end\n/m] || cli_source
 
     note = help_text[/Note: `lock release`.*?exit codes above\./m]

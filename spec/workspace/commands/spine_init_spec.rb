@@ -19,7 +19,7 @@ RSpec.describe Workspace::Commands::SpineInit do
   let(:task_store) { instance_double(Workspace::TaskStore, active_for: {"title" => "Fix OAuth refresh (ACME-412)"}) }
   let(:config) do
     instance_double(Workspace::Config, library_dir: File.join(@dir, "library"),
-      builtin_library_dir: File.expand_path("../../../lib/library", __dir__))
+      builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library"))
   end
   let(:library) { Workspace::Library.new(config: config, lineage: lineage, project_config: project_config) }
   let(:checkout) { File.join(@dir, "checkout") }

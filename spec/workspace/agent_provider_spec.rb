@@ -259,7 +259,7 @@ RSpec.describe Workspace::AgentProvider do
   describe "Codex waiting screens" do
     let(:screens) { described_class.find("codex").waiting_screens }
 
-    def fixture(name) = File.read(File.expand_path("../fixtures/codex_screens/#{name}.txt", __dir__))
+    def fixture(name) = File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "codex_screens", "#{name}.txt"))
 
     it "names no waiting screens for the other agents" do
       expect(described_class.all.reject { |p| p.key == "codex" }.map(&:waiting_screens)).to all(be_empty)

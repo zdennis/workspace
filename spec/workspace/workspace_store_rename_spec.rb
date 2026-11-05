@@ -203,7 +203,7 @@ RSpec.describe Workspace::WorkspaceStoreRename do
   end
 
   describe "a config generated from the real templates" do
-    let(:templates) { File.expand_path("../../lib/templates", __dir__) }
+    let(:templates) { File.join(PROJECT_ROOT, "lib", "templates") }
     let(:new_root) { File.join(home, "src", "proj", ".worktrees", "other").tap { |dir| FileUtils.mkdir_p(dir) } }
 
     before do

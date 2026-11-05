@@ -342,7 +342,7 @@ RSpec.describe Workspace::Commands::Capabilities do
   end
 
   it "lists every feature in docs/README.capabilities.md" do
-    doc = File.read(File.expand_path("../../../docs/README.capabilities.md", __dir__))
+    doc = File.read(File.join(PROJECT_ROOT, "docs", "README.capabilities.md"))
     missing = described_class::FEATURES.keys.reject { |feature| doc.include?("`#{feature}`") }
     expect(missing).to eq([])
   end

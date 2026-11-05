@@ -223,7 +223,7 @@ RSpec.describe Workspace::State do
       pid = nil
       allow(File).to receive(:write).and_wrap_original do |original, path, *rest|
         if path.end_with?(".tmp") && pid.nil?
-          pid = Process.spawn(env, RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__), "-e", script,
+          pid = Process.spawn(env, RbConfig.ruby, "-I", File.join(PROJECT_ROOT, "lib"), "-e", script,
             out: File::NULL, err: File::NULL)
           Timeout.timeout(30) { sleep 0.01 until File.exist?(marker) }
           sleep 0.5

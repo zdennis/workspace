@@ -20,7 +20,7 @@ RSpec.describe "EventLog adversarial concurrency" do
   # at the temp dir so its Config resolves the same log file. It touches
   # +marker+ just before appending. Returns its pid.
   def spawn_append(type, project, marker)
-    lib = File.expand_path("../../lib", __dir__)
+    lib = File.join(PROJECT_ROOT, "lib")
     script = <<~RUBY
       require "workspace"
       config = Workspace::Config.new(workspace_dir: ENV["HOME"])

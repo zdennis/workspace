@@ -4,7 +4,7 @@ require "json"
 # Pins `config show --json` so a change to how config is layered can't alter
 # what the report says unnoticed. Regenerate the files with UPDATE_GOLDEN=1.
 RSpec.describe Workspace::ConfigReport, "golden documents" do
-  fixtures = File.expand_path("../fixtures/config_layering", __dir__)
+  fixtures = File.join(PROJECT_ROOT, "spec", "fixtures", "config_layering")
   config_dir = File.join(fixtures, "config")
 
   let(:config) { instance_double(Workspace::Config, workspace_config_dir: config_dir) }

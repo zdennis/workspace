@@ -144,7 +144,7 @@ RSpec.describe Workspace::EventLog, "rotation" do
   end
 
   it "loses and interleaves nothing when several processes append and rotate at once" do
-    lib = File.expand_path("../../lib", __dir__)
+    lib = File.join(PROJECT_ROOT, "lib")
     script = <<~RUBY
       require "workspace"
       config = Workspace::Config.new(workspace_dir: ENV["HOME"])

@@ -138,7 +138,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
     let(:dev_settings) { {"up" => "exec sleep 30", "stop_timeout" => 2, "startup_timeout" => 10} }
     let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
     let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings}))) }
-    let(:lib_dir) { File.expand_path("../../lib", __dir__) }
+    let(:lib_dir) { File.join(PROJECT_ROOT, "lib") }
     let(:tmux) { FakeDevWindowTmux.new(method(:spawn_wrapper)) }
 
     let(:wrapper_script) do

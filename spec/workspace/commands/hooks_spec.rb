@@ -101,7 +101,7 @@ RSpec.describe Workspace::Commands::Hooks do
   end
 
   describe "the CLI" do
-    let(:bin) { File.expand_path("../../../bin/workspace", __dir__) }
+    let(:bin) { File.join(PROJECT_ROOT, "bin", "workspace") }
 
     def cli(*args)
       Open3.capture3({"CODEX_HOME" => File.dirname(codex_path)}, bin, "hooks", "uninstall", *args)

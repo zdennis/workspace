@@ -21,7 +21,7 @@ RSpec.describe Workspace::Commands::Dev do
       def load_global = {}
     }.new({"dev" => dev_settings})))
   }
-  let(:lib_dir) { File.expand_path("../../../lib", __dir__) }
+  let(:lib_dir) { File.join(PROJECT_ROOT, "lib") }
   let(:tmux) { FakeDevWindowTmux.new(method(:spawn_wrapper)) }
 
   let(:wrapper_script) do

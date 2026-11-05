@@ -1,5 +1,5 @@
 RSpec.describe Workspace::ErrorCodes do
-  let(:root) { File.expand_path("../..", __dir__) }
+  let(:root) { PROJECT_ROOT }
 
   it "describes every code" do
     expect(described_class::REGISTRY).to all(satisfy { |code, text| code.match?(/\A[a-z_]+\z/) && !text.empty? })

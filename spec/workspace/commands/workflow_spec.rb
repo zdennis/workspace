@@ -1880,7 +1880,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       shown = JSON.parse(output.string.gsub(File.join(@root, "app"), "/work/app"))
       expect(shown["files"].map { |row| row["kind"] }).to eq(%w[prompt check_log produces produces produces])
-      docs = File.read(File.expand_path("../../../docs/README.workflow.md", __dir__))
+      docs = File.read(File.join(PROJECT_ROOT, "docs", "README.workflow.md"))
       example = docs[/<!-- workflow-files-example -->\n```json\n(.*?)\n```/m, 1]
       expect(JSON.parse(example)).to eq(shown)
     end
@@ -2165,7 +2165,7 @@ RSpec.describe Workspace::Commands::Workflow do
         "truncated" => false, "next_since" => 4,
         "warnings" => ["Line 3 of the history is not a JSON object; skipped."]
       )
-      docs = File.read(File.expand_path("../../../docs/README.workflow.md", __dir__))
+      docs = File.read(File.join(PROJECT_ROOT, "docs", "README.workflow.md"))
       example = docs[/<!-- workflow-events-example -->\n```json\n(.*?)\n```/m, 1]
       expect(JSON.parse(example)).to eq(json)
     end

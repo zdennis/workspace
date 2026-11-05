@@ -132,7 +132,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
       tmux.define_singleton_method(:tmux_load_buffer) { |buf, _| puts(buf) || false }
       tmux.deliver("myapp", "0.1", "hi")
     RUBY
-    lib = File.expand_path("../../lib", __dir__)
+    lib = File.join(PROJECT_ROOT, "lib")
     names = 2.times.map do
       out, status = Open3.capture2(RbConfig.ruby, "-I", lib, "-e", script)
       expect(status).to be_success

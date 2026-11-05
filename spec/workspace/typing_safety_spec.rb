@@ -171,7 +171,7 @@ RSpec.describe Workspace::TypingSafety do
     let(:status) { "  \e[36m[Model]\e[39m status\n" }
 
     def fixture(name)
-      Workspace::StyledScreen.parse(File.read(File.expand_path("../fixtures/claude_screens/#{name}.txt", __dir__)))
+      Workspace::StyledScreen.parse(File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "#{name}.txt")))
     end
 
     def styled(input, tail: rule)

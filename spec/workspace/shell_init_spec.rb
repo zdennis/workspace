@@ -600,7 +600,7 @@ RSpec.describe Workspace::ShellInit do
   describe "workspace shell-init" do
     %w[zsh bash].each do |shell|
       it "prints the #{shell} text" do
-        out, err, status = Open3.capture3(File.expand_path("../../bin/workspace", __dir__), "shell-init", shell)
+        out, err, status = Open3.capture3(File.join(PROJECT_ROOT, "bin", "workspace"), "shell-init", shell)
         expect(status.exitstatus).to eq(0), err
         expect(out).to eq(described_class.text(shell))
       end
@@ -608,7 +608,7 @@ RSpec.describe Workspace::ShellInit do
 
     it "refuses no argument, an unknown shell and two arguments" do
       [[], ["fish"], %w[zsh bash]].each do |args|
-        _, err, status = Open3.capture3(File.expand_path("../../bin/workspace", __dir__), "shell-init", *args)
+        _, err, status = Open3.capture3(File.join(PROJECT_ROOT, "bin", "workspace"), "shell-init", *args)
         expect(status.exitstatus).to eq(1)
         expect(err).to include("Usage: workspace shell-init zsh|bash")
       end

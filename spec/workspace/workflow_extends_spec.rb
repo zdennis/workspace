@@ -370,9 +370,9 @@ RSpec.describe "workflow extends" do
 
   describe "the rpiv-auto-approve preset" do
     it "resolves to exactly what the full file did before it extended rpiv" do
-      presets = File.expand_path("../../lib/workflows", __dir__)
+      presets = File.join(PROJECT_ROOT, "lib", "workflows")
       real = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: presets))
-      before_text = File.read(File.expand_path("../fixtures/workflows/rpiv-auto-approve.before-extends.yml", __dir__))
+      before_text = File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "rpiv-auto-approve.before-extends.yml"))
 
       expected = Workspace::WorkflowDefinition.parse(before_text, id: "rpiv-auto-approve", source: "builtin", path: nil).to_h
       actual = real.find("rpiv-auto-approve").to_h

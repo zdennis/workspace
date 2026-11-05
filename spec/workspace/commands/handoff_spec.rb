@@ -913,7 +913,7 @@ RSpec.describe Workspace::Commands::Handoff do
   end
 
   describe "the built-in play" do
-    let(:play_dir) { File.expand_path("../../../lib/library/play", __dir__) }
+    let(:play_dir) { File.join(PROJECT_ROOT, "lib", "library", "play") }
 
     it "ships implementation-plan with a description and the task syntax" do
       text = File.read(File.join(play_dir, "implementation-plan.md"))
@@ -931,7 +931,7 @@ RSpec.describe Workspace::Commands::Handoff do
   end
 
   describe "the built-in packs" do
-    let(:pack_dir) { File.expand_path("../../../lib/library/play", __dir__) }
+    let(:pack_dir) { File.join(PROJECT_ROOT, "lib", "library", "play") }
 
     it "has the handoff pack leave the doc and the threshold to the command, as the command now does" do
       text = File.read(File.join(pack_dir, "handoff.md"))

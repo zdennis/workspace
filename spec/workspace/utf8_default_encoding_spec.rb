@@ -7,7 +7,7 @@ require "json"
 # Each example starts its own process with no UTF-8 locale, as cron or an app
 # started by launchd would, and changes nothing in the process running the specs.
 RSpec.describe "reading files as UTF-8 whatever the locale" do
-  let(:root) { File.expand_path("../..", __dir__) }
+  let(:root) { PROJECT_ROOT }
 
   around do |example|
     Dir.mktmpdir("ws-utf8") do |dir|

@@ -11,7 +11,7 @@ RSpec.describe "workspace inbox store concurrency" do
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 
   it "leaves 100 distinct records when two processes each add 50 to one scope" do
-    lib = File.expand_path("../../lib", __dir__)
+    lib = File.join(PROJECT_ROOT, "lib")
     script = <<~RUBY
       require "workspace"
       store = Workspace::InboxStore.new(path: ARGV[0])
@@ -30,7 +30,7 @@ RSpec.describe "workspace inbox store concurrency" do
   end
 
   it "leaves one item when two processes each upsert one key 25 times" do
-    lib = File.expand_path("../../lib", __dir__)
+    lib = File.join(PROJECT_ROOT, "lib")
     script = <<~RUBY
       require "workspace"
       store = Workspace::InboxStore.new(path: ARGV[0])

@@ -110,7 +110,7 @@ RSpec.describe Workspace::ConfigLayering do
   end
 
   describe ".default_layer against ConfigReport#target_layer" do
-    fixtures = File.expand_path("../fixtures/config_layering", __dir__)
+    fixtures = File.join(PROJECT_ROOT, "spec", "fixtures", "config_layering")
     let(:config) { instance_double(Workspace::Config, workspace_config_dir: File.join(fixtures, "config")) }
     let(:roots) { {"main" => "/src/main", "main.worktree-a" => "/src/main/.worktrees/a"} }
     let(:project_config) { instance_double(Workspace::ProjectConfig, available_projects: roots.keys) }

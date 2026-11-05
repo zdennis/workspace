@@ -4,7 +4,7 @@ require "json"
 require "tmpdir"
 
 RSpec.describe Workspace::NotePath do
-  rows = JSON.parse(File.read(File.expand_path("../fixtures/note_paths.json", __dir__)))
+  rows = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "note_paths.json")))
   path_of = ->(row) { row["path"].is_a?(Hash) ? row["path"]["bytes"].pack("C*") : row["path"] }
 
   describe ".segments" do

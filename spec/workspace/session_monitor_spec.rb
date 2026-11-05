@@ -43,7 +43,7 @@ RSpec.describe Workspace::SessionMonitor do
     end
 
     def fixture(name)
-      File.read(File.expand_path("../fixtures/claude_screens/#{name}.txt", __dir__))
+      File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "#{name}.txt"))
     end
 
     def show(name)
@@ -1776,7 +1776,7 @@ RSpec.describe Workspace::SessionMonitor do
 
   describe "Codex screens that wait on a person" do
     let(:panes) { [{id: "%3", index: 0, pid: 300, command: "node", cwd: "/project", title: "Codex"}] }
-    let(:fixtures) { File.expand_path("../fixtures/codex_screens", __dir__) }
+    let(:fixtures) { File.join(PROJECT_ROOT, "spec", "fixtures", "codex_screens") }
 
     def screen(name) = File.read(File.join(fixtures, "#{name}.txt"))
 

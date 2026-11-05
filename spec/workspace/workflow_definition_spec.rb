@@ -190,7 +190,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
 
     it "warns for no shipped preset" do
-      presets = File.expand_path("../../lib/workflows", __dir__)
+      presets = File.join(PROJECT_ROOT, "lib", "workflows")
       lookup = ->(id, below: nil) { {"text" => File.read(File.join(presets, "#{id}.yml")), "path" => File.join(presets, "#{id}.yml"), "source" => "builtin"} }
       Dir[File.join(presets, "*.yml")].each do |file|
         expect(described_class.parse(File.read(file), id: File.basename(file, ".yml"), source: "builtin", path: file, parent_lookup: lookup).warnings).to eq([])

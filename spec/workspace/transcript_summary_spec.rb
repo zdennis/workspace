@@ -75,7 +75,7 @@ RSpec.describe Workspace::TranscriptSummary do
     end
 
     context "with the structure of a real transcript" do
-      let(:fixture) { File.expand_path("../fixtures/claude_transcripts/turn_end_then_wake_up.jsonl", __dir__) }
+      let(:fixture) { File.join(PROJECT_ROOT, "spec", "fixtures", "claude_transcripts", "turn_end_then_wake_up.jsonl") }
       let(:records) { File.readlines(fixture).map { |line| JSON.parse(line) } }
       let(:turn_end) { Time.iso8601(records.find { |r| r["subtype"] == "stop_hook_summary" }["timestamp"]) }
 

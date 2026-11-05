@@ -221,7 +221,7 @@ RSpec.describe Workspace::Commands::Init do
 
   describe "#call" do
     context "guards the shipped templates against drifting from a configured claude-dev" do
-      let(:repo_root) { File.expand_path("../../..", __dir__) }
+      let(:repo_root) { PROJECT_ROOT }
       let(:config) { Workspace::Config.new(workspace_dir: repo_root) }
       let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}) }
       let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }

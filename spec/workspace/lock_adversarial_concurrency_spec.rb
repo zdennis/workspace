@@ -4,7 +4,7 @@ require "rbconfig"
 
 RSpec.describe "Lock adversarial concurrency" do
   let(:tmpdir) { Dir.mktmpdir("ws-lock-adv") }
-  let(:lib_dir) { File.expand_path("../../lib", __dir__) }
+  let(:lib_dir) { File.join(PROJECT_ROOT, "lib") }
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 

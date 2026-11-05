@@ -15,7 +15,7 @@ RSpec.describe "workspace ask concurrency and liveness (adversarial)" do
   # Commands::Ask#call, and Notifier#notify only starts a thread. Process exit
   # kills that thread before it spawns the notify command.
   it "AC1: delivers the notify command even though the ask process exits right after recording" do
-    lib = File.expand_path("../../lib", __dir__)
+    lib = File.join(PROJECT_ROOT, "lib")
     marker = File.join(tmpdir, "notified")
     script = <<~RUBY
       require "workspace"

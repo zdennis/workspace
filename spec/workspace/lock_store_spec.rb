@@ -1043,7 +1043,7 @@ RSpec.describe Workspace::LockStore do
       # than relying on Ruby-level thread scheduling.
       worker_script = File.join(tmpdir, "worker.rb")
       File.write(worker_script, <<~RUBY)
-        $LOAD_PATH.unshift(#{File.expand_path("../../lib", __dir__).inspect})
+        $LOAD_PATH.unshift(#{File.join(PROJECT_ROOT, "lib").inspect})
         require "workspace"
 
         i = ARGV[0].to_i

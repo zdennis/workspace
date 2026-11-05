@@ -375,7 +375,7 @@ RSpec.describe Workspace do
       expect(nudger).to be_a(Workspace::WorkflowNudger)
       expect(nudger.instance_variable_get(:@store)).to equal(engine.instance_variable_get(:@store))
       expect(nudger.instance_variable_get(:@panes)).to equal(engine.instance_variable_get(:@panes))
-      expect(nudger.instance_variable_get(:@executable)).to eq(File.expand_path("../bin/workspace", __dir__))
+      expect(nudger.instance_variable_get(:@executable)).to eq(File.join(PROJECT_ROOT, "bin", "workspace"))
     end
 
     it "gives workflow the reader of workspace facts that status --table needs" do

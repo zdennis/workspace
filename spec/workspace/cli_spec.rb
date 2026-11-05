@@ -12092,7 +12092,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
         library = Workspace::Library.new(
-          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library")),
           lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
         )
         launch = nil
@@ -12103,7 +12103,7 @@ RSpec.describe Workspace::CLI do
 
         cli.run(["plan", "start", "--name", "api"])
 
-        play = File.expand_path("../../lib/library/play/implementation-plan.md", __dir__)
+        play = File.join(PROJECT_ROOT, "lib", "library", "play", "implementation-plan.md")
         expect(launched).to eq(ok: true, reason: nil, message: nil, pane: "%5")
         expect(launch.calls.size).to eq(1)
         projects, options = launch.calls.first
@@ -12116,7 +12116,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
         library = Workspace::Library.new(
-          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library")),
           lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
         )
         library.global_store.write("play", "kickoff", "# Kickoff\n")
@@ -12149,7 +12149,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
         library = Workspace::Library.new(
-          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library")),
           lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
         )
         cli, = plan_cli(state: state, project_config: project_config, library: library, &launching(state, result: {exit_code: 1, prompt_failures: {"api" => "never ready"}}))
@@ -12168,7 +12168,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
         library = Workspace::Library.new(
-          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library")),
           lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
         )
         cli, = plan_cli(state: state, project_config: project_config, library: library, &launching(state, result: {exit_code: 0, prompt_failures: {}, delivered_panes: {"api" => "%7"}}))
@@ -12199,7 +12199,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
         library = Workspace::Library.new(
-          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library")),
           lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
         )
         launch = nil

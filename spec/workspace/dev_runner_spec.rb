@@ -11,7 +11,7 @@ RSpec.describe Workspace::DevRunner do
   let(:lock_dir) { File.join(tmpdir, "state", "workspace", "locks", "ns") }
   let(:worktree) { File.join(tmpdir, "app.worktree-login").tap { |d| FileUtils.mkdir_p(d) } }
   let(:output) { StringIO.new }
-  let(:lib_dir) { File.expand_path("../../lib", __dir__) }
+  let(:lib_dir) { File.join(PROJECT_ROOT, "lib") }
   let(:spawned) { [] }
 
   around do |example|

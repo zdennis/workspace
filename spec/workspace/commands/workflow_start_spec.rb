@@ -591,7 +591,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "is refused for rpiv, whose research and plan steps are guarded" do
-      rpiv = Workspace::WorkflowDefinition.parse(File.read(File.expand_path("../../../lib/workflows/rpiv.yml", __dir__)), id: "rpiv", source: "preset", path: "rpiv.yml")
+      rpiv = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv.yml")), id: "rpiv", source: "preset", path: "rpiv.yml")
       allow(catalog).to receive(:find).with("rpiv", project: anything).and_return(rpiv)
 
       expect { build_command(real_engine).call(id: "rpiv", prompt: "x", branch: "mine", dry_run: true) }.to raise_error(Workspace::Error) do |e|

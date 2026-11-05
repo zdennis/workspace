@@ -11,11 +11,11 @@ RSpec.describe Workspace::QuestionClosedCheck do
   end
 
   def fixture(name)
-    File.read(File.expand_path("../fixtures/claude_screens/#{name}.txt", __dir__))
+    File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "#{name}.txt"))
   end
 
   # Captured from Claude Code 2.1.316; see the class comment.
-  Dir[File.expand_path("../fixtures/claude_screens/question_open_*.txt", __dir__)].sort.each do |path|
+  Dir[File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "question_open_*.txt")].sort.each do |path|
     name = File.basename(path, ".txt")
 
     it "reads nothing from the open dialog #{name}" do
@@ -24,7 +24,7 @@ RSpec.describe Workspace::QuestionClosedCheck do
   end
 
   # An empty box left higher up must not stand in for the dialog below it.
-  Dir[File.expand_path("../fixtures/claude_screens/question_open_*.txt", __dir__)].sort.each do |path|
+  Dir[File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "question_open_*.txt")].sort.each do |path|
     name = File.basename(path, ".txt")
 
     it "reads nothing from #{name} with a stale empty box above it" do
@@ -46,7 +46,7 @@ RSpec.describe Workspace::QuestionClosedCheck do
   end
 
   it "has the captured forms of an open dialog to read" do
-    expect(Dir[File.expand_path("../fixtures/claude_screens/question_open_*.txt", __dir__)].size).to be >= 16
+    expect(Dir[File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "question_open_*.txt")].size).to be >= 16
   end
 
   it "reads nothing while PreToolUse hooks run before the dialog draws: the box is empty, the spinner is up" do

@@ -1,7 +1,7 @@
 require "spec_helper"
 
 RSpec.describe Workspace::ConfigSchema do
-  let(:root) { File.expand_path("../..", __dir__) }
+  let(:root) { PROJECT_ROOT }
 
   it "lists the settable keys in the order `config set` has always reported them" do
     expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])

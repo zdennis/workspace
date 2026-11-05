@@ -142,7 +142,7 @@ RSpec.describe Workspace::WorkflowAlerts do
         pid_file = File.join(dir, "pid")
         log = File.join(dir, "log")
         starter = <<~RUBY
-          $LOAD_PATH.unshift(#{File.expand_path("../../lib", __dir__).inspect})
+          $LOAD_PATH.unshift(#{File.join(PROJECT_ROOT, "lib").inspect})
           require "workspace"
           Workspace::WorkflowAlerts.new(alert_config: nil, log_path: #{log.inspect}, timeout: 1)
             .deliver("echo $$ > #{pid_file}; exec sleep 60", {"WORKSPACE_ALERT" => "workflow"})

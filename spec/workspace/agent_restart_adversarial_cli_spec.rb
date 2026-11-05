@@ -87,9 +87,9 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
   # caller who passes --timeout 5 expecting a 5s cap can still block for two
   # full minutes with no way to shorten it, and no documentation warns them.
   it "U2: neither the CLI's --help text nor the docs mention the fixed pane-quiet wait before --timeout applies" do
-    cli_source = File.read(File.join(__dir__, "..", "..", "lib", "workspace", "cli.rb"))
+    cli_source = File.read(File.join(PROJECT_ROOT, "lib", "workspace", "cli.rb"))
     restart_help_source = cli_source[/def cmd_agent_run_restart.*?\n    end\n/m]
-    docs = File.read(File.join(__dir__, "..", "..", "docs", "README.agent-run.md"))
+    docs = File.read(File.join(PROJECT_ROOT, "docs", "README.agent-run.md"))
 
     quiet_number = Regexp.new(Workspace::AgentRestart::QUIET_TIMEOUT.to_s)
     mentions_quiet_bound = ->(text) { quiet_number.match?(text) }

@@ -84,7 +84,7 @@ RSpec.describe Workspace::ProjectConfig do
     end
 
     it "spaces the banner text of the shipped project template and keeps the real name everywhere else" do
-      template = File.expand_path("../../lib/templates/workspace.project-template.yml", __dir__)
+      template = File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-template.yml")
       allow(config).to receive(:project_template_path).and_return(template)
 
       pc.create("my-app.v2", "/tmp/my-app.v2")
@@ -132,7 +132,7 @@ RSpec.describe Workspace::ProjectConfig do
     end
 
     it "records the workspace name on the session in the shipped worktree template" do
-      template = File.expand_path("../../lib/templates/workspace.project-worktree-template.yml", __dir__)
+      template = File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml")
       allow(config).to receive(:worktree_template_path).and_return(template)
 
       pc.create_worktree("myapp", "feat", "/tmp/wt/feat", "feat", quiet: true)
@@ -143,7 +143,7 @@ RSpec.describe Workspace::ProjectConfig do
 
     context "with the shipped worktree template" do
       before do
-        template = File.expand_path("../../lib/templates/workspace.project-worktree-template.yml", __dir__)
+        template = File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml")
         allow(config).to receive(:worktree_template_path).and_return(template)
       end
 
@@ -166,7 +166,7 @@ RSpec.describe Workspace::ProjectConfig do
     end
 
     it "records it in the shipped project template too, ahead of the && chain and unable to break it" do
-      template = File.expand_path("../../lib/templates/workspace.project-template.yml", __dir__)
+      template = File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-template.yml")
       allow(config).to receive(:project_template_path).and_return(template)
 
       pc.create("myapp", "/tmp/myapp")

@@ -38,7 +38,7 @@ module T5StartConcurrencyFakes
     def tmuxinator_dir = @dir
 
     def worktree_template_path
-      File.expand_path("../../lib/templates/workspace.project-worktree-template.yml", __dir__)
+      File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml")
     end
 
     def window_tool = File.join(@dir, "window-tool")
