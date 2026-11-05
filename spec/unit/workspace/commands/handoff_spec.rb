@@ -470,13 +470,14 @@ RSpec.describe Workspace::Commands::Handoff do
       thread = Thread.new do
         client = server.accept
         client.gets
-        client.puts({"workspace" => "myapp", "panes" => panes}.to_json)
-        client.close
         if watch_reply == :gone
+          # Stop listening before answering, so the follow-up connect can not slip into the backlog.
           server.close
           File.delete(socket_path)
-          next
         end
+        client.puts({"workspace" => "myapp", "panes" => panes}.to_json)
+        client.close
+        next if watch_reply == :gone
         client = begin
           server.accept
         rescue IOError
