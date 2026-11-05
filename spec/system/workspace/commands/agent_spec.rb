@@ -1459,7 +1459,10 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     # A daemon already answers for the lowercase name, so the agent stops right after the rename.
-    before { accepter }
+    before do
+      running
+      accepter
+    end
 
     after do
       running.close
