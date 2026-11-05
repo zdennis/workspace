@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { PROJECT_ROOT }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
     expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt events.rotate_size codex.hooks.install])
   end
 
@@ -199,7 +199,7 @@ RSpec.describe Workspace::ConfigSchema do
     it "marks every key that holds a command or hook as sensitive and no duration or prompt" do
       sensitive = described_class.all.select(&:sensitive).map { |key| [key.name, key.scope] }
       expect(sensitive).to contain_exactly(
-        ["dev.up", :project], ["dev.ready", :project], ["alerts.notify", :project], ["commands.test", :project], ["commands.lint", :project], ["agent.commands.claude", :project], ["agent.commands.codex", :project], ["agent.commands.opencode", :project], ["agent.commands.pi", :project], ["statusline.command", :global],
+        ["dev.up", :project], ["dev.ready", :project], ["alerts.notify", :project], ["go.branch_namer.command", :project], ["commands.test", :project], ["commands.lint", :project], ["agent.commands.claude", :project], ["agent.commands.codex", :project], ["agent.commands.opencode", :project], ["agent.commands.pi", :project], ["statusline.command", :global],
         ["hooks", :global], ["hooks", :project], ["worktree_hooks", :project], ["pipeline", :project]
       )
     end
@@ -238,6 +238,9 @@ RSpec.describe Workspace::ConfigSchema do
       expect(described_class.default("agentd.poll_interval")).to eq(10)
       expect(described_class.default("handoff.threshold")).to eq(11)
       expect(described_class.default("alerts.notify")).to be_nil
+      expect(described_class.default("go.branch_namer.enabled")).to be(true)
+      expect(described_class.default("go.branch_namer.timeout")).to eq(30)
+      expect(described_class.default("go.branch_namer.command")).to be_nil
     end
 
     it "gives the two handoff prompts their built-in text as the default" do
@@ -293,6 +296,22 @@ RSpec.describe Workspace::ConfigSchema do
       expect { described_class.parse("events.rotate_size", "abc") }.to raise_error(ArgumentError, /expected a size/)
       expect(described_class.parse("events.rotate_size", "1MB")).to eq(1_048_576)
       expect(described_class.parse("events.rotate_size", "65536")).to eq(65_536)
+    end
+
+    it "checks the go.branch_namer keys" do
+      expect(described_class.parse("go.branch_namer.enabled", "false")).to eq("false")
+      expect { described_class.parse("go.branch_namer.enabled", "maybe") }.to raise_error(ArgumentError, /"true" or "false"/)
+      expect(described_class.parse("go.branch_namer.timeout", "45s")).to eq(45)
+      expect { described_class.parse("go.branch_namer.timeout", "0") }.to raise_error(ArgumentError)
+      expect { described_class.parse("go.branch_namer.timeout", "soon") }.to raise_error(ArgumentError)
+      expect(described_class.parse("go.branch_namer.command", "  my-namer --short ")).to eq("my-namer --short")
+      expect { described_class.parse("go.branch_namer.command", " ") }.to raise_error(ArgumentError, /blank/)
+    end
+
+    it "reads the go.branch_namer keys from the global and project layers only" do
+      %w[enabled timeout command].each do |leaf|
+        expect(described_class.key("go.branch_namer.#{leaf}").overridable_in).to eq([:global, :project])
+      end
     end
 
     it "checks a handoff threshold, a notify command, a prompt and launch.headless" do

@@ -10,7 +10,7 @@ module Workspace
     # @!attribute parsed [Hash] {Git#parse_start_input}'s answer
     # @!attribute kind [String] "jira", "github_pr", "github_issue" or "branch"
     # @!attribute key [String] the ticket's own name: the JIRA key, `owner/repo#41` (`#41` with no repository), or the branch
-    # @!attribute branch [String] the branch `start` works on: `pr-<n>` for a pull request, `issue-<n>` for an issue, the lowercase key (or the existing branch it matches without case) for a JIRA ref, else the input's value
+    # @!attribute branch [String] the branch `start` works on: `pr-<n>` for a pull request, `issue-<n>` for an issue, the key as written (or the existing branch it matches without case) for a JIRA ref, else the input's value
     # @!attribute pr [Hash, nil] the parsed result when the ref is a pull request, which `start` checks out with gh
     Ref = Struct.new(:input, :parsed, :kind, :key, :branch, :pr, keyword_init: true)
 
@@ -27,7 +27,7 @@ module Workspace
     # @!attribute all [Array<String>] local and origin branch names
     BranchNames = Struct.new(:local, :all, keyword_init: true)
 
-    # No branches at all: a JIRA key then gets its plain lowercase branch, whatever the current directory holds.
+    # No branches at all: a JIRA key then gets a branch named after the key as written, whatever the current directory holds.
     BranchNames::NONE = BranchNames.new(local: [].freeze, all: [].freeze).freeze
 
     # The kind of each type {Git#parse_start_input} answers; any other type is a "branch".
@@ -86,8 +86,8 @@ module Workspace
       cut.sub(/-\z/, "")
     end
 
-    # Whether a branch is the ref's branch with a title's words added (`proj-123-fix-login` or `PROJ-123-fix-login` for
-    # `proj-123`), ignoring case so an older uppercase branch still counts.
+    # Whether a branch is the ref's branch with a title's words added (`PROJ-123-fix-login` for
+    # a JIRA ref whose branch is `PROJ-123`), ignoring case so a branch of either case counts.
     #
     # @param branch [String]
     # @param ref [Ref]
@@ -96,7 +96,7 @@ module Workspace
       branch.downcase.start_with?("#{ref.branch.downcase}-")
     end
 
-    # The ref with the title's words added to its branch (`proj-123-fix-login`,
+    # The ref with the title's words added to its branch (`PROJ-123-fix-login`,
     # `issue-42-fix-login`). A pull request or a plain branch, a missing title
     # and a title with no letters or digits all come back unchanged.
     #
@@ -128,8 +128,8 @@ module Workspace
 
     private
 
-    # The lowercase key, unless a branch that matches it without case exists, which is used by its real
-    # name. Picked in order: the lowercase key among the local names, any-case match among them, the
+    # The key as written for a new branch, unless a branch that matches it without case exists, which is used by
+    # its real name. Picked in order: the lowercase key among the local names, any-case match among them, the
     # lowercase key among all names, any-case match among them. A key that lowercases to `pr-<n>` or
     # `issue-<n>` keeps its case, since those names belong to pull requests and issues.
     def jira_branch(key, root, names)
@@ -138,7 +138,7 @@ module Workspace
       lower = key.downcase
       unless names
         root ||= @git.root
-        return lower unless root
+        return key unless root
 
         names = BranchNames.new(local: @git.local_branch_names(root), all: @git.branch_names(root))
       end
@@ -148,7 +148,7 @@ module Workspace
         match = list.select { |name| name.casecmp?(key) }.min
         return match if match
       end
-      lower
+      key
     end
 
     def github_key(repo, number)

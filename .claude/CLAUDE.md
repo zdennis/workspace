@@ -278,6 +278,7 @@ init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, 
 - IO injection: classes accept `output:`, `error_output:`, `input:` for testability
 - YARD docs on all public classes and methods
 - Tests use RSpec, run with `bundle exec rspec`. Serial is the default and the pre-commit gate.
+- For per-commit gating do NOT run the full suite — it takes too long. Run only the targeted spec files that were changed or are obviously impacted, plus `bundle exec standardrb lib/ spec/`. Use `script/parallel-spec` or the full serial suite only when a whole-suite run is explicitly asked for.
 - `script/parallel-spec [ARGS...]` runs the suite in parallel with parallel_tests (one process per performance core; about 44s against 232s serial). Each process gets its own short `HOME` and `XDG_*` directory under `/tmp`, and SimpleCov results merge into `coverage/`. Only a whole-suite run (no arguments) uses and refreshes the timings in `tmp/parallel_runtime_rspec.log` (untracked); with arguments, or before a log exists, files are grouped by size. Extra arguments go to `parallel_rspec`.
 - Lint with `bundle exec standardrb lib/ spec/`
 - `bin/` is for project executables (the public interface) — only `bin/workspace` belongs here

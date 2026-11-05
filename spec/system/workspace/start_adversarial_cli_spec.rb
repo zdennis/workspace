@@ -152,10 +152,10 @@ RSpec.describe "workspace start adversarial CLI specs" do
 
       allow(git).to receive(:root).and_return(tmpdir)
       allow(git).to receive(:parse_start_input).with("PROJ-1").and_return({type: :jira_key, value: "PROJ-1"})
-      allow(git).to receive(:sanitize_for_filesystem).with("proj-1").and_return("proj-1")
+      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-1").and_return("proj-1")
       allow(git).to receive(:worktree_exists?).and_return(false)
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-      allow(git).to receive(:branch_exists?).with("proj-1").and_return(true)
+      allow(git).to receive(:branch_exists?).with("PROJ-1").and_return(true)
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
       allow(git).to receive(:create_worktree)
       allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-1")

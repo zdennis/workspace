@@ -84,6 +84,8 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     allow(git).to receive(:remote_config_url) { |_path, remote| remotes[remote] }
     allow(git).to receive(:remote_effective_url) { |path, remote| expanded.fetch(remote) { git.remote_config_url(path, remote) } }
     allow(git).to receive(:local_branch_exists?) { |name| local_branches.include?(name) }
+    allow(git).to receive(:local_branch_names) { local_branches }
+    allow(git).to receive(:branch_names) { (local_branches + branches).uniq }
     allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition)
     allow(ticket_source).to receive(:fetch).and_return(ticket)
     allow(engine).to receive(:preflight) do |definition:, inputs:, **|
@@ -289,7 +291,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
 
     expect(row["inputs"]["task"]).to eq("PROJ-1: Fix login (https://acme.atlassian.net/browse/PROJ-1)")
-    expect(row["branch"]).to eq("proj-1")
+    expect(row["branch"]).to eq("PROJ-1")
     expect(ticket_source).to have_received(:fetch).with(having_attributes(kind: "jira"), chdir: root)
   end
 
@@ -339,7 +341,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
   it "reports the file the ticket body would go to as spec, only when spec is declared and not given" do
     row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
-    expect(row["inputs"]["spec"]).to eq("/src/app/.worktrees/proj-1/.workflow/tickets/PROJ-1.md")
+    expect(row["inputs"]["spec"]).to eq("/src/app/.worktrees/PROJ-1/.workflow/tickets/PROJ-1.md")
 
     given = command.call(id: "flow", ref: "PROJ-1", inputs: {"spec" => "x.md"}, dry_run: true)
     expect(given["inputs"]["spec"]).to eq("x.md")
@@ -354,6 +356,49 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     expect(row).to include("branch" => "fix-the-login-bug", "path" => "/src/app/.worktrees/fix-the-login-bug", "would_create" => true)
     expect(row["inputs"]["task"]).to eq("Fix the login bug!")
     expect(ticket_source).not_to have_received(:fetch)
+  end
+
+  describe "a derived branch from the caller" do
+    it "names the branch instead of the prompt's slug" do
+      row = command.call(id: "flow", prompt: "Fix the login bug!", derived_branch: "login-fix", dry_run: true)
+
+      expect(row).to include("branch" => "login-fix", "path" => "/src/app/.worktrees/login-fix", "would_create" => true)
+      expect(row["inputs"]["task"]).to eq("Fix the login bug!")
+    end
+
+    it "loses to an explicit branch" do
+      row = command.call(id: "flow", prompt: "Fix the login bug!", branch: "explicit", derived_branch: "login-fix", dry_run: true)
+
+      expect(row).to include("branch" => "explicit", "path" => "/src/app/.worktrees/explicit")
+    end
+
+    it "still refuses a branch or worktree that exists with branch_exists" do
+      branches << "login-fix"
+      expect { command.call(id: "flow", prompt: "Fix it", derived_branch: "login-fix", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("branch_exists")
+        expect(e.details).to include("branch" => "login-fix")
+      end
+
+      branches.clear
+      worktrees << "/src/app/.worktrees/login-fix"
+      expect { command.call(id: "flow", prompt: "Fix it", derived_branch: "login-fix") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("branch_exists") }
+    end
+
+    it "does not touch an explicit --branch, which is reused" do
+      branches << "mine"
+      worktrees << "/src/app/.worktrees/mine"
+
+      row = command.call(id: "flow", prompt: "x", branch: "mine", dry_run: true)
+
+      expect(row).to include("branch" => "mine", "would_create" => false)
+    end
+
+    it "checks the agent kind on its own for go" do
+      allow(agent_commands).to receive(:kind).and_return("codex")
+
+      expect { command.check_agent_kind!(nil, project_workspace: "app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_needs_claude") }
+      expect { command.check_agent_kind!("claude", project_workspace: "app") }.not_to raise_error
+    end
   end
 
   it "asks for --branch when the prompt has no letters or digits" do
@@ -384,6 +429,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   it "reuses an existing workspace for a named --branch or a ticket ref" do
     branches << "mine"
     worktrees << "/src/app/.worktrees/mine" << "/src/app/.worktrees/proj-1"
+    local_branches << "proj-1"
 
     named = command.call(id: "flow", prompt: "x", branch: "mine", dry_run: true)
     ticketed = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
@@ -404,6 +450,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "reports the worktree where start would adopt a branch checked out elsewhere" do
+    local_branches << "proj-1"
     allow(git).to receive(:find_worktree_by_branch).with("proj-1", repo: root).and_return("/elsewhere/proj-1")
 
     row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
@@ -412,6 +459,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "checks the agent kind of a reused worktree's own workspace, and the project's under its normalized name" do
+    local_branches << "proj-1"
     worktrees << "/src/app/.worktrees/proj-1"
     allow(project_config).to receive(:existing_name).with("app").and_return("App")
     allow(project_config).to receive(:project_root_for).with("App").and_return(root)
@@ -431,17 +479,17 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "adds the ticket title's words to the branch with slug" do
-    expect(command.call(id: "flow", ref: "PROJ-1", slug: true, dry_run: true)["branch"]).to eq("proj-1-fix-login")
+    expect(command.call(id: "flow", ref: "PROJ-1", slug: true, dry_run: true)["branch"]).to eq("PROJ-1-fix-login")
   end
 
-  it "reuses an old uppercase slug branch from the lowercase key with slug" do
+  it "reuses an old uppercase slug branch for the key with slug" do
     branches << "PROJ-1-fix-login"
     worktrees << "/src/app/.worktrees/PROJ-1-fix-login"
 
     row = command.call(id: "flow", ref: "PROJ-1", slug: true, dry_run: true)
 
-    expect(row["branch"]).to eq("proj-1-fix-login")
-    expect(row["would_create"]).to be(true)
+    expect(row["branch"]).to eq("PROJ-1-fix-login")
+    expect(row["would_create"]).to be(false)
     expect(ticket_source).to have_received(:fetch).with(an_object_having_attributes(key: "PROJ-1"), anything)
   end
 
@@ -479,7 +527,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     it "warns that --slug was ignored" do
       row = command.call(id: "flow", ref: "PROJ-1", prompt: "Fix login", slug: true, dry_run: true)
 
-      expect(row["branch"]).to eq("proj-1")
+      expect(row["branch"]).to eq("PROJ-1")
       expect(row["warnings"]).to include("--slug ignored: ticket unreadable")
     end
 
@@ -522,6 +570,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   it "checks the tree of a reused or adopted checkout" do
+    local_branches << "proj-1"
     worktrees << "/src/app/.worktrees/proj-1"
     command.call(id: "flow", ref: "PROJ-1", dry_run: true)
     expect(engine).to have_received(:preflight).with(hash_including(tree: "/src/app/.worktrees/proj-1"))
@@ -1075,21 +1124,21 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       row = command.call(id: "flow", ref: "PROJ-1", dry_run: true)
 
       expect(row).to eq(
-        "workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would create the workspace for proj-1 in app and start flow at step plan.", "workflow" => "flow", "step" => "plan",
-        "project" => "app", "branch" => "proj-1", "path" => "/src/app/.worktrees/proj-1", "would_create" => true,
+        "workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would create the workspace for PROJ-1 in app and start flow at step plan.", "workflow" => "flow", "step" => "plan",
+        "project" => "app", "branch" => "PROJ-1", "path" => "/src/app/.worktrees/PROJ-1", "would_create" => true,
         "inputs" => {"task" => "PROJ-1: Fix login (https://acme.atlassian.net/browse/PROJ-1)",
-                     "spec" => "/src/app/.worktrees/proj-1/.workflow/tickets/PROJ-1.md"},
+                     "spec" => "/src/app/.worktrees/PROJ-1/.workflow/tickets/PROJ-1.md"},
         "packs" => ["play/binding"], "warnings" => [],
         "ticket" => {"key" => "PROJ-1", "title" => "Fix login", "url" => "https://acme.atlassian.net/browse/PROJ-1"}
       )
-      expect(output.string).to match(/Would create the workspace for proj-1 in app and start flow at step plan/)
+      expect(output.string).to match(/Would create the workspace for PROJ-1 in app and start flow at step plan/)
     end
   end
 
   describe "creating the workspace" do
     let(:dir) { Dir.mktmpdir("wfs") }
-    let(:path) { File.join(dir, ".worktrees", "proj-1") }
-    let(:started) { {"workspace" => "app.worktree-proj-1", "path" => path, "branch" => "proj-1", "created" => true, "task" => {"id" => "t1", "title" => "Fix login"}} }
+    let(:path) { File.join(dir, ".worktrees", "PROJ-1") }
+    let(:started) { {"workspace" => "app.worktree-proj-1", "path" => path, "branch" => "PROJ-1", "created" => true, "task" => {"id" => "t1", "title" => "Fix login"}} }
 
     before do
       allow(git).to receive(:root).and_return(dir)
@@ -1125,7 +1174,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       expect(readiness).to have_received(:deadline_in).with(30)
       expect(readiness).to have_received(:wait).with("app-wt", deadline: 99.0, detector: :detector)
       expect(workflow).to have_received(:run).with(hash_including(id: "flow", workspace: "app.worktree-proj-1", worktree: path, pane: "%7", note: nil))
-      expect(row).to include("outcome" => "started", "run_id" => "wr_1", "branch" => "proj-1", "path" => path, "created" => true,
+      expect(row).to include("outcome" => "started", "run_id" => "wr_1", "branch" => "PROJ-1", "path" => path, "created" => true,
         "task" => {"id" => "t1", "title" => "Fix login"}, "warnings" => [])
       expect(row["ticket"]).to include("key" => "PROJ-1")
     end
@@ -1134,6 +1183,18 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       command.call(id: "flow", prompt: "Fix the login bug")
 
       expect(start).to have_received(:payload).with("fix-the-login-bug", hash_including(title: "Fix the login bug"))
+    end
+
+    it "starts a derived branch under its own name and, when the run fails, points the retry at the same checkout" do
+      derived_path = File.join(dir, ".worktrees", "login-fix")
+      allow(start).to receive(:payload).and_return({exit_code: 0, json: started.merge("path" => derived_path, "branch" => "login-fix")})
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timed out"))
+
+      expect { command.call(id: "flow", prompt: "Fix the login bug", derived_branch: "login-fix") }.to raise_error(Workspace::Error) do |e|
+        expect(e.details).to include("path" => derived_path, "workspace" => "app.worktree-proj-1")
+        expect(e.details["next"]).to eq(["workspace workflow run flow --name app.worktree-proj-1 --input task=Fix\\ the\\ login\\ bug"])
+      end
+      expect(start).to have_received(:payload).with("login-fix", hash_including(title: "Fix the login bug"))
     end
 
     it "titles the task with only the prompt's first line" do
@@ -1382,7 +1443,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       row = command.call(positional: "PROJ-1", dry_run: true)
 
-      expect(row).to include("workflow" => "rpiv", "branch" => "proj-1")
+      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
     end
 
     it "takes a lone unknown branch as the ref, kind branch" do
@@ -1464,7 +1525,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       row = command.call(positional: "PROJ-1", prompt: "keep it small", dry_run: true)
 
-      expect(row).to include("workflow" => "rpiv", "branch" => "proj-1")
+      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
       expect(ticket_source).to have_received(:fetch).with(having_attributes(kind: "jira"), chdir: root)
     end
 
@@ -1479,7 +1540,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
       row = command.call(positional: "PROJ-1", prompt: "  ", dry_run: true)
 
-      expect(row).to include("workflow" => "rpiv", "branch" => "proj-1")
+      expect(row).to include("workflow" => "rpiv", "branch" => "PROJ-1")
     end
 
     it "keeps a known first argument and a ref as id and ref, and an unknown first argument unknown" do
@@ -1536,6 +1597,8 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
   end
   describe "with here:" do
+    let(:local_branches) { ["proj-1"] }
+
     let(:dir) { Dir.mktmpdir }
     let(:checkout) { File.join(dir, ".worktrees", "proj-1") }
     let(:here) { described_class::Here.new(workspace: "app.proj-1", path: checkout, caller_pane: "%3") }

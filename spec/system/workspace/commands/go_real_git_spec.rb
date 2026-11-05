@@ -7,7 +7,7 @@ require "tmpdir"
 # repositories; only the two commands `go` calls, and the config lookup, are doubles.
 RSpec.describe Workspace::Commands::Go, "against a real repository" do
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: nil, call: {"outcome" => "started"}, check_agent!: nil, locate_project: {project_workspace: "app"}) }
+  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: nil, call: {"outcome" => "started"}, check_agent!: nil, check_agent_kind!: nil, locate_project: {project_workspace: "app"}) }
   let(:workflow) { instance_double(Workspace::Commands::Workflow, run: {"outcome" => "started"}) }
   let(:definition) { Workspace::WorkflowDefinition.parse("inputs:\n  task:\nsteps:\n  plan:\n    prompt: Plan.\n", id: "rpiv", source: "global", path: "/defs/rpiv.yml") }
   let(:catalog) { instance_double(Workspace::WorkflowCatalog, find: definition, known_ids: %w[rpiv]) }
@@ -59,12 +59,12 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
     allow(project_config).to receive(:project_root_for).with("app.worktree-#{File.basename(path)}").and_return(path)
   end
 
-  def go(from, **args)
+  def go(from, picked: Workspace::BranchNamePicker::Result.new(reason: :disabled), **args)
     allow(git).to receive(:root).and_return(from)
     command = described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog,
       start_ref: Workspace::StartRef.new(git: git), git: git, project_detector: Workspace::ProjectDetector.new(state: state, project_config: project_config),
       project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), ticket_source: instance_double(Workspace::TicketSource),
-      protected_branch: Workspace::ProtectedBranch.new(git: git), output: StringIO.new, working_dir: from)
+      protected_branch: Workspace::ProtectedBranch.new(git: git), branch_name_picker: instance_double(Workspace::BranchNamePicker, call: picked), output: StringIO.new, working_dir: from)
     command.call(**args)
   end
 
@@ -266,6 +266,28 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
       expect(error.code).to eq("branch_exists")
       expect(error.details).to eq("branch" => "Feature", "path" => File.join(@repo, ".worktrees", "Feature"), "worktree" => false)
       expect(error.message).to include("Reword the text")
+      expect_nothing_ran
+    end
+
+    it "starts a free-text run on the picked branch" do
+      init
+      picked = Workspace::BranchNamePicker::Result.new(name: "fix-login-bug")
+
+      row = go(@repo, argument: "the login page breaks on safari", picked: picked)
+
+      expect(row["decision"]["route"]).to eq("start")
+      expect(workflow_start).to have_received(:call).with(hash_including(prompt: "the login page breaks on safari", derived_branch: "fix-login-bug"))
+    end
+
+    it "refuses a picked name that is a case alias of an existing branch" do
+      init
+      sh(@repo, "branch", "Fix-Login-Bug")
+      sh(@repo, "pack-refs", "--all")
+
+      error = refusal(@repo, argument: "the login page breaks on safari", picked: Workspace::BranchNamePicker::Result.new(name: "fix-login-bug"))
+
+      expect(error.code).to eq("branch_exists")
+      expect(error.details["branch"]).to eq("Fix-Login-Bug")
       expect_nothing_ran
     end
 

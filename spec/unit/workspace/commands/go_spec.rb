@@ -22,7 +22,9 @@ RSpec.describe Workspace::Commands::Go do
   let(:project) { Workspace::StartRef::Project.new(root: project_root, name: "app", from_worktree: from_worktree) }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
   let(:start_ref) { Workspace::StartRef.new(git: git) }
-  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: tied, check_agent!: nil, locate_project: {root: root, project: project, project_workspace: "app"}) }
+  let(:picked) { Workspace::BranchNamePicker::Result.new(reason: :disabled) }
+  let(:picker) { instance_double(Workspace::BranchNamePicker) }
+  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: tied, check_agent!: nil, check_agent_kind!: nil, locate_project: {root: root, project: project, project_workspace: "app"}) }
   let(:workflow) { instance_double(Workspace::Commands::Workflow) }
   let(:workflow_defaults) { instance_double(Workspace::WorkflowDefaults) }
   let(:catalog) { instance_double(Workspace::WorkflowCatalog, known_ids: %w[pr-feedback rpiv], find: definition) }
@@ -37,7 +39,7 @@ RSpec.describe Workspace::Commands::Go do
 
   subject(:command) do
     described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog, start_ref: start_ref,
-      git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, protected_branch: Workspace::ProtectedBranch.new(git: git), output: output, working_dir: root || "/nowhere")
+      git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, protected_branch: Workspace::ProtectedBranch.new(git: git), branch_name_picker: picker, output: output, working_dir: root || "/nowhere")
   end
 
   before do
@@ -61,6 +63,7 @@ RSpec.describe Workspace::Commands::Go do
     allow(workflow_start).to receive(:tracks_repository?) { |_root, repo| repo == "o/r" }
     allow(workflow_start).to receive(:call).and_return(start_row)
     allow(workflow).to receive(:run).and_return(run_row)
+    allow(picker).to receive(:call) { picked }
   end
 
   def refusal(**args)
@@ -88,7 +91,7 @@ RSpec.describe Workspace::Commands::Go do
       it "starts a new worktree workspace for free text#{" (dry run)" if dry_run}" do
         row = command.call(argument: "fix the bug", dry_run: dry_run)
 
-        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, dry_run: dry_run)
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: dry_run)
         expect(workflow).not_to have_received(:run)
         expect(row["decision"]["route"]).to eq("start")
         expect(output.string).to include("makes a new worktree workspace")
@@ -164,7 +167,7 @@ RSpec.describe Workspace::Commands::Go do
     it "starts a new workspace and touches nothing in the current one" do
       row = command.call(argument: "fix the bug", caller_pane: "%3")
 
-      expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, dry_run: false)
+      expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false)
       expect(workflow).not_to have_received(:run)
       expect(row["decision"]).to include("kind" => "prompt", "route" => "start")
       expect(output.string).to include("makes a new worktree workspace")
@@ -190,6 +193,109 @@ RSpec.describe Workspace::Commands::Go do
     it "refuses a slug that is the default branch" do
       expect(refusal(argument: "main !").code).to eq("branch_not_allowed")
       expect_nothing_ran
+    end
+  end
+
+  describe "the branch namer for free text" do
+    context "with a picked name" do
+      let(:picked) { Workspace::BranchNamePicker::Result.new(name: "fix-login-bug") }
+
+      it "hands the name to WorkflowStart as the derived branch" do
+        row = command.call(argument: "fix the bug", dry_run: true)
+
+        expect(picker).to have_received(:call).with(text: "fix the bug", project: "app", root: root)
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: "fix-login-bug", dry_run: true)
+        expect(row["warnings"]).to eq(["from start"])
+      end
+
+      it "checks the agent kind before asking for a name" do
+        command.call(argument: "fix the bug")
+
+        expect(workflow_start).to have_received(:check_agent_kind!).with(nil, project_workspace: "app").ordered
+        expect(picker).to have_received(:call).ordered
+      end
+
+      context "when the picked name is the default branch" do
+        let(:picked) { Workspace::BranchNamePicker::Result.new(name: "main") }
+
+        it "refuses it" do
+          expect(refusal(argument: "fix the bug").code).to eq("branch_not_allowed")
+          expect_nothing_ran
+        end
+      end
+
+      context "when the picked name differs from an existing branch only in case" do
+        let(:names) { %w[Fix-Login-Bug main] }
+
+        it "refuses it with branch_exists" do
+          expect(refusal(argument: "fix the bug").code).to eq("branch_exists")
+          expect_nothing_ran
+        end
+      end
+
+      it "leaves a ref alone: the picker is not asked" do
+        command.call(argument: "other")
+
+        expect(picker).not_to have_received(:call)
+        expect(workflow_start).not_to have_received(:check_agent_kind!)
+      end
+
+      it "leaves --here text alone: the picker is not asked" do
+        command.call(argument: "fix the bug", here: true)
+
+        expect(picker).not_to have_received(:call)
+        expect(workflow_start).not_to have_received(:check_agent_kind!)
+      end
+    end
+
+    context "when the pick failed" do
+      let(:picked) { Workspace::BranchNamePicker::Result.new(reason: :timeout) }
+
+      it "falls back to the slug, warns, and puts the warning in the row" do
+        row = command.call(argument: "fix the bug")
+
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false)
+        message = "The branch namer failed (timed out); using fix-the-bug from the text instead."
+        expect(output.string).to include("Warning: #{message}")
+        expect(row["warnings"]).to eq(["from start", message])
+      end
+
+      {
+        no_agent: "no agent to ask", output_too_large: "output too large", failed: "the call failed",
+        empty: "no usable name", unknown_thing: "unknown_thing"
+      }.each do |reason, words|
+        it "names the #{reason} failure in the warning" do
+          allow(picker).to receive(:call).and_return(Workspace::BranchNamePicker::Result.new(reason: reason))
+
+          row = command.call(argument: "fix the bug")
+
+          expect(output.string).to include("The branch namer failed (#{words});")
+          expect(row["warnings"].last).to include(words)
+        end
+      end
+    end
+
+    context "when the namer is disabled" do
+      it "falls back to the slug without a warning" do
+        row = command.call(argument: "fix the bug")
+
+        expect(output.string).not_to include("namer")
+        expect(row["warnings"]).to eq(["from start"])
+      end
+    end
+
+    it "refuses an unknown workflow before asking for a name" do
+      allow(catalog).to receive(:find).and_raise(Workspace::Error.new("nope", code: "unknown_workflow"))
+
+      expect(refusal(argument: "fix the bug", workflow: "nope").code).to eq("unknown_workflow")
+      expect(picker).not_to have_received(:call)
+    end
+
+    it "refuses a project that is not Claude Code before asking for a name" do
+      allow(workflow_start).to receive(:check_agent_kind!).and_raise(Workspace::Error.new("no", code: "workflow_needs_claude"))
+
+      expect(refusal(argument: "fix the bug").code).to eq("workflow_needs_claude")
+      expect(picker).not_to have_received(:call)
     end
   end
 
@@ -472,7 +578,7 @@ RSpec.describe Workspace::Commands::Go do
         row = command.call(argument: "proj-1")
 
         expect(row["decision"]).to include("kind" => "jira", "route" => "start")
-        expect(ticket_source).to have_received(:fetch).with(have_attributes(key: "PROJ-1", branch: "proj-1"), chdir: root)
+        expect(ticket_source).to have_received(:fetch).with(have_attributes(key: "PROJ-1", branch: "PROJ-1"), chdir: root)
         expect(workflow_start).to have_received(:call).with(hash_including(ref: "PROJ-1"))
       end
 
@@ -1178,6 +1284,62 @@ RSpec.describe Workspace::Commands::Go do
 
       expect(row["decision"]["kind"]).to eq("prompt")
       expect(row["warnings"].join).to include(pr, "issues/5", "workspace go ID --input task=TEXT")
+    end
+
+    context "with a JIRA link and a pull request link" do
+      let(:jira_link) { "https://acme.atlassian.net/browse/PUFFINS-123" }
+      let(:pr_link) { "https://github.com/o/r/pull/456" }
+
+      it "plans the combined branch, skips the namer and keeps the sentence as the prompt" do
+        text = "Fix the retry in #{pr_link}, tracked by #{jira_link}"
+        row = prompt_row(text, dry_run: true)
+
+        expect(picker).not_to have_received(:call)
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: text, headless: false, inputs: {}, derived_branch: "PUFFINS-123-pr-456", dry_run: true)
+        expect(row["decision"]).to include("kind" => "prompt", "extracted" => "#{pr_link} and PUFFINS-123")
+      end
+
+      it "still refuses a combined name that is a case alias of an existing branch" do
+        names.push("puffins-123-pr-456")
+        local_names.push("puffins-123-pr-456")
+
+        expect(refusal(argument: "#{jira_link} #{pr_link}").code).to eq("branch_exists")
+        expect_nothing_ran
+      end
+    end
+
+    it "keeps a bare key beside a pull request link a pull request ref, with no namer" do
+      row = prompt_row("fix PROJ-1 per https://github.com/o/r/pull/456")
+
+      expect(picker).not_to have_received(:call)
+      expect(row["decision"]).to include("kind" => "github_pr", "extracted" => "https://github.com/o/r/pull/456")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "https://github.com/o/r/pull/456"))
+    end
+
+    ["https://github.com/o/r/pull/12 and https://github.com/o/r/pull/13", "PROJ-1 and PROJ-2 clash"].each do |text|
+      it "gives #{text.inspect} no combined name" do
+        row = prompt_row(text)
+
+        expect(workflow_start).to have_received(:call).with(hash_including(derived_branch: nil))
+        expect(row["decision"]["extracted"]).to be_nil
+        expect(row["warnings"].join).to include("read as free text")
+        expect(picker).to have_received(:call)
+      end
+    end
+
+    it "gives a JIRA link whose pull request is untracked no combined name" do
+      row = prompt_row("https://acme.atlassian.net/browse/PUFFINS-123 tracked by https://github.com/other/repo/pull/456")
+
+      expect(picker).not_to have_received(:call)
+      expect(row["decision"]).to include("kind" => "jira", "extracted" => "PUFFINS-123")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "PUFFINS-123"))
+    end
+
+    it "takes the key of a lowercase JIRA link as the token reads it" do
+      row = prompt_row("fix https://acme.atlassian.net/browse/puffins-9 per https://github.com/o/r/pull/456", dry_run: true)
+
+      expect(workflow_start).to have_received(:call).with(hash_including(derived_branch: "PUFFINS-9-pr-456"))
+      expect(row["decision"]["extracted"]).to include("PUFFINS-9", "https://github.com/o/r/pull/456")
     end
 
     it "keeps two bare keys as free text" do

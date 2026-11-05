@@ -29,7 +29,7 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 | `--yes` | Accept every default instead of prompting (e.g. the default base branch) |
 | `--title TITLE` | A human title for the workspace's task; it is the first `display_label` of its panes in [`sessions --json`](README.sessions.md). See [Tasks](#tasks) |
 | `--title-from-ticket` | Fill the task title from the ticket (`gh` for an issue or pull request, `jira` for a JIRA key) when `--title` is not given. A ticket that cannot be read is a warning, not an error. See [Ticket titles and `--slug`](#ticket-titles-and---slug) |
-| `--slug` | Add the title's words to the branch of a JIRA or issue ref: `proj-123-fix-the-login-bug`, `issue-42-fix-the-login-bug`. Takes the words from `--title`, else from the ticket (it implies `--title-from-ticket`) |
+| `--slug` | Add the title's words to the branch of a JIRA or issue ref: `PROJ-123-fix-the-login-bug`, `issue-42-fix-the-login-bug`. Takes the words from `--title`, else from the ticket (it implies `--title-from-ticket`) |
 | `--headless` / `--no-headless` | Start the session in the background with plain tmux instead of iTerm2; the default follows [`launch`](README.launch.md#headless) |
 | `--json` | Emit the JSON schema below instead of plain text; never prompts. Only the JSON document goes to stdout — progress and warnings go to stderr or the `warnings` field (see [`--json` output](#--json-output)) |
 
@@ -37,7 +37,7 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 
 | Input | Example | Behavior |
 |-------|---------|----------|
-| JIRA issue key | `PROJ-123` | The branch is the lowercase key, `proj-123`. A branch that matches the key apart from case (`PROJ-123`) is used by its own name instead; the local branches are tried first, then origin's. A key that lowercases to `pr-<n>` or `issue-<n>` keeps its case |
+| JIRA issue key | `PROJ-123` | A new branch is the key as written, `PROJ-123`. A branch that matches the key apart from case (`proj-123`) is used by its own name instead; the local branches are tried first, then origin's. A key that lowercases to `pr-<n>` or `issue-<n>` keeps its case |
 | JIRA URL | `https://mycompany.atlassian.net/browse/PROJ-123` | Extracts the key, in any letter case, and names the branch as for a key |
 | GitHub PR URL | `https://github.com/owner/repo/pull/471` | Checks the PR out with `gh pr checkout --worktree` as branch `pr-471` in `.worktrees/pr-471`; works for PRs from forks, and the agent then starts in the fork's code |
 | GitHub PR ref | `#471` or `owner/repo#471` | Same as the PR URL; `#471` means a PR of the current repo. Quote `#n` (`'#471'`), or your shell treats it as a comment. Run it from a checkout of the repo the PR belongs to |
@@ -174,14 +174,18 @@ A branch ref carries no ticket text, so a workflow that requires `task` fails wi
 
 ### Ticket titles and `--slug`
 
-By default a JIRA ref gives the branch `proj-123`, an issue `issue-42`, and the task has no title. `--title-from-ticket` reads the title with the same lookup as [`ticket show`](README.ticket.md) (10 seconds, no prompt, no credential handled by `workspace`) and uses it as the task title, unless `--title` is given. `--slug` adds the title's words to the branch, which is also the worktree directory and the workspace name: `proj-123-fix-the-login-bug`, `issue-42-fix-the-login-bug`.
+By default a JIRA ref gives the branch `PROJ-123`, an issue `issue-42`, and the task has no title. `--title-from-ticket` reads the title with the same lookup as [`ticket show`](README.ticket.md) (10 seconds, no prompt, no credential handled by `workspace`) and uses it as the task title, unless `--title` is given. `--slug` adds the title's words to the branch, which is also the worktree directory and the workspace name: `PROJ-123-fix-the-login-bug`, `issue-42-fix-the-login-bug`.
 
-- The slug is lowercase ASCII letters and digits joined by single hyphens (accents are dropped), cut at a word boundary to 40 characters, so the branch is always a valid ref. The key part of the branch is lowercase, like the workspace name.
+- The slug is lowercase ASCII letters and digits joined by single hyphens (accents are dropped), cut at a word boundary to 40 characters, so the branch is always a valid ref. The key part of a new branch keeps the case it was written in (`PROJ-123`); the workspace name is lowercase.
 - `--slug` takes the words from `--title` when given, else from the ticket, and so implies `--title-from-ticket`.
 - A pull request (`pr-<n>`) and a plain branch are never changed; `--slug` on them, or on a ref whose ticket has no usable title, leaves the branch as it is and adds a warning.
 - A ticket that cannot be read (`gh` or `jira` missing, signed out, slow) is a warning in `warnings` (stderr without `--json`); `start` carries on with the plain branch and no title.
-- A worktree already made for the ticket is reused, not duplicated: the one on the slugged branch, else on the plain branch (`proj-123`), else on any branch that starts `proj-123-`, whatever its case (`PROJ-123-fix-login` from before the branch was lowercase; an earlier `--slug` run under an older title, or when the ticket cannot be read now). A `start` without `--slug` after a slugged one looks only for the plain branch, so pass `--slug` each time.
+- A worktree already made for the ticket is reused, not duplicated: the one on the slugged branch, else on the plain branch (`PROJ-123`, or an existing `proj-123`), else on any branch that starts `proj-123-`, whatever its case (`proj-123-fix-login` from before branches kept the key's case; an earlier `--slug` run under an older title, or when the ticket cannot be read now). A `start` without `--slug` after a slugged one looks only for the plain branch, so pass `--slug` each time.
 - The ticket's title has control characters and runs of whitespace replaced by single spaces before it is used.
+
+### Branch names from `go`
+
+`start` takes the branch you give it or the ref's own (`PROJ-123`, `pr-1234`, `issue-42`). Naming a branch from a description of the work is `go`'s job; see [How a new branch is named](README.go.md#how-a-new-branch-is-named) and the `go.branch_namer.*` keys.
 
 ### Tasks
 
@@ -197,7 +201,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
 `--json`):
 
 ```json
-{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/proj-123","branch":"proj-123","base":null,"created":true,"headless":false,"launched":true,"agent_kind":"claude"}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"launched":true,"agent_kind":"claude"}
 ```
 
 - `ok` — `true` for the success doc, even one carrying `error`/`prompt_failures`
@@ -257,7 +261,7 @@ the coding agent. In that case the success doc above is still emitted, but with
 `error` and `prompt_failures` added and exit code 1:
 
 ```json
-{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/proj-123","branch":"proj-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-proj-123":"agent never became ready"}}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-proj-123":"agent never became ready"}}
 ```
 
 Headless, when tmuxinator can't start the session (it fails, times out after 60

@@ -23,6 +23,9 @@ module Workspace
       BUILT_IN = {"github_pr" => "pr-feedback"}.freeze
       BUILT_IN_OTHERWISE = "rpiv"
 
+      # How a failed branch pick reads in the warning.
+      PICK_REASONS = {no_agent: "no agent to ask", timeout: "timed out", output_too_large: "output too large", failed: "the call failed", empty: "no usable name"}.freeze
+
       # What the argument was read as.
       #
       # @!attribute kind [String] the kind the workflow is chosen for: a {StartRef::Ref} kind, or "prompt"
@@ -30,7 +33,9 @@ module Workspace
       # @!attribute ref [Workspace::StartRef::Ref, nil] the ref typed alone or read out of the text; both it and +text+ are nil for no argument
       # @!attribute extracted [String, nil] the token read out of the text (a canonical URL or an uppercase key); nil otherwise
       # @!attribute warnings [Array<String>] why a sentence stayed free text, or which mention was dropped
-      Reading = Struct.new(:kind, :text, :ref, :extracted, :warnings, keyword_init: true) do
+      # @!attribute combined_branch [String, nil] +KEY-N-pr-M+ when the text holds exactly one JIRA link and one pull request link;
+      #   the new branch's name, so the namer is not asked. Nil otherwise.
+      Reading = Struct.new(:kind, :text, :ref, :extracted, :warnings, :combined_branch, keyword_init: true) do
         def initialize(warnings: [], **rest)
           super
         end
@@ -47,9 +52,10 @@ module Workspace
       # @param go_task [Workspace::Commands::GoTask] adds `--here` text to the plan of a run already going
       # @param ticket_source [Workspace::TicketSource] reads a bare key found in text, to know it is a ticket
       # @param protected_branch [Workspace::ProtectedBranch]
+      # @param branch_name_picker [Workspace::BranchNamePicker] names the branch for free text that starts a new workspace
       # @param output [IO]
       # @param working_dir [String] the directory the command runs in
-      def initialize(workflow_start:, workflow:, workflow_defaults:, catalog:, start_ref:, git:, project_detector:, project_config:, go_task:, ticket_source:, protected_branch:, output: $stdout, working_dir: Dir.pwd)
+      def initialize(workflow_start:, workflow:, workflow_defaults:, catalog:, start_ref:, git:, project_detector:, project_config:, go_task:, ticket_source:, protected_branch:, branch_name_picker:, output: $stdout, working_dir: Dir.pwd)
         @workflow_start = workflow_start
         @workflow = workflow
         @workflow_defaults = workflow_defaults
@@ -61,6 +67,7 @@ module Workspace
         @go_task = go_task
         @ticket_source = ticket_source
         @protected_branch = protected_branch
+        @branch_name_picker = branch_name_picker
         @output = output
         @working_dir = working_dir
       end
@@ -114,12 +121,25 @@ module Workspace
           return @go_task.add(run, reading.text, checkout, flags: {workflow: workflow, inputs: inputs, base: base}, dry_run: dry_run)
         end
         check_base!(base, root, in_place)
-        refuse_slug!(StartRef.slug(reading.text), project) if reading.text && !reading.ref && !in_place
         # In place the worktree is known, so its own setting counts; a new checkout has none yet.
         project_workspace = @workflow_start.locate_project[:project_workspace]
         # A project's keys count only where the user's config ties it to this checkout, as for `workflow start`.
         tied = @workflow_start.catalog_project
         id, source, definition = choose(workflow, reading.kind, tied && (in_place ? checkout.workspace : tied), tied)
+        # Only free text that starts a new workspace asks for a name, and only once every cheap
+        # refusal has had its say: the slug of the text is checked first, so text that could never
+        # name a branch never pays the namer's latency.
+        derived_branch, pick_warnings = nil, []
+        if reading.text && !reading.ref && !in_place
+          @workflow_start.check_agent_kind!(nil, project_workspace: project_workspace)
+          refuse_slug!(StartRef.slug(reading.text), project)
+          if reading.combined_branch
+            derived_branch = reading.combined_branch
+          else
+            derived_branch, pick_warnings = pick_branch(reading.text, project, project_workspace, root)
+          end
+          refuse_slug!(derived_branch || StartRef.slug(reading.text), project)
+        end
         route = in_place ? "run" : "start"
         reason = reason_for(source, reading.kind)
         warnings = reading.warnings + unused_text_warnings(reading, definition, inputs, id, route)
@@ -134,10 +154,10 @@ module Workspace
         elsif in_place
           run_here(reading.text, definition, checkout, project_workspace, **shared)
         else
-          start_from_text(reading.text, project, definition, headless: headless, **shared)
+          start_from_text(reading.text, project, definition, headless: headless, derived_branch: derived_branch, **shared)
         end
         decision = {"workflow" => id, "source" => source, "kind" => reading.kind, "route" => route, "reason" => reason, "extracted" => reading.extracted}
-        row.merge("decision" => decision, "warnings" => Array(row["warnings"]) + warnings)
+        row.merge("decision" => decision, "warnings" => Array(row["warnings"]) + warnings + pick_warnings)
       end
 
       private
@@ -240,7 +260,8 @@ module Workspace
         found = links unless links.empty?
         if found.size > 1
           warnings << "The text names #{found.map(&:token).join(" and ")}, so it is read as free text. To use one, run `workspace go ID --input task=TEXT`."
-          return Reading.new(kind: "prompt", text: text, warnings: warnings)
+          combined = combined_branch(found)
+          return Reading.new(kind: "prompt", text: text, warnings: warnings, combined_branch: combined, extracted: (found.map(&:token).join(" and ") if combined))
         end
         return Reading.new(kind: "prompt", text: text, warnings: warnings) if found.empty?
 
@@ -258,6 +279,21 @@ module Workspace
         end
         naming(hit.token) { check_name!(ref, root, workflow) }
         Reading.new(kind: ref.kind, text: text, ref: ref, extracted: hit.token, warnings: warnings)
+      end
+
+      # The branch name for a sentence that names exactly one JIRA link and one pull request link:
+      # the key as the scan read it, its number, then +pr-+ and the pull request's number. A bare key
+      # beside a pull request link never gets here (links beat bare keys, and the pull request's own
+      # +pr-N+ branch carries push and guard behavior), and neither do two pull requests or two keys.
+      #
+      # @param found [Array<RefInText::Found>] the hits left after the untracked-repository drop
+      # @return [String, nil]
+      def combined_branch(found)
+        jira = found.select { |hit| hit.repo.nil? }
+        prs = found.select { |hit| hit.id.start_with?("github_pr:") }
+        return nil unless found.size == 2 && jira.size == 1 && prs.size == 1 && jira.first.link
+
+        "#{jira.first.token}-pr-#{prs.first.token[%r{/(\d+)\z}, 1]}"
       end
 
       # `Git#branch_exists?` asks the filesystem, where on macOS `MAIN` opens `main`, so names are
@@ -367,6 +403,22 @@ module Workspace
         File.join(project.root, ".worktrees", @git.sanitize_for_filesystem(branch))
       end
 
+      # Asks the branch namer for a name and answers it with the warnings a failed pick earns.
+      #
+      # @return [Array(String, nil, Array<String>)] the agent's pick (nil: the slug of the text is used) and the
+      #   warnings for a pick that failed; those are also printed
+      def pick_branch(text, project, project_workspace, root)
+        picked = @branch_name_picker.call(text: text, project: project_workspace, root: root)
+        return [picked.name, []] if picked.ok?
+        return [nil, []] if picked.reason == :disabled
+
+        fallback = StartRef.slug(text)
+
+        message = "The branch namer failed (#{PICK_REASONS.fetch(picked.reason, picked.reason)}); using #{TerminalText.escape(fallback)} from the text instead."
+        Warn.puts(@output, "Warning: #{message}")
+        [nil, [message]]
+      end
+
       # Free text never passes through a ref's checks, and `WorkflowStart` asks the filesystem,
       # which sees nothing of a packed branch, so the new branch could be a case alias of one.
       def refuse_slug!(slug, project)
@@ -426,8 +478,8 @@ module Workspace
         @workflow.run(id: id, workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane, project: @workflow_start.catalog_project)
       end
 
-      def start_from_text(text, project, definition, **options)
-        @workflow_start.call(prompt: text, **options)
+      def start_from_text(text, project, definition, derived_branch: nil, **options)
+        @workflow_start.call(prompt: text, derived_branch: derived_branch, **options)
       rescue Workspace::Error => e
         raise unless e.code == "branch_exists"
 

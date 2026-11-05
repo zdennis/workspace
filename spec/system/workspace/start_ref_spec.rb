@@ -10,13 +10,13 @@ RSpec.describe Workspace::StartRef do
     it "reads a JIRA key" do
       ref = resolver.call("PROJ-123")
 
-      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "proj-123", pr: nil)
+      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "PROJ-123", pr: nil)
     end
 
     it "reads the key out of a JIRA URL" do
       ref = resolver.call("https://acme.atlassian.net/browse/PROJ-123")
 
-      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "proj-123")
+      expect(ref).to have_attributes(kind: "jira", key: "PROJ-123", branch: "PROJ-123")
     end
 
     it "reads a lowercase key in a JIRA URL as the ticket" do
@@ -25,10 +25,10 @@ RSpec.describe Workspace::StartRef do
       expect(ref).to have_attributes(kind: "jira", key: "PROJ-123")
     end
 
-    it "uses the lowercase key outside a repository" do
+    it "uses the key as written outside a repository" do
       allow(git).to receive(:root).and_return(nil)
 
-      expect(resolver.call("PROJ-1").branch).to eq("proj-1")
+      expect(resolver.call("PROJ-1").branch).to eq("PROJ-1")
     end
 
     context "with a branch that matches a JIRA key without case" do
@@ -46,6 +46,14 @@ RSpec.describe Workspace::StartRef do
 
         it "uses its real name" do
           expect(resolver.call("PROJ-1")).to have_attributes(input: "PROJ-1", key: "PROJ-1", branch: "Proj-1")
+        end
+      end
+
+      context "that is a lowercase branch with no uppercase sibling" do
+        let(:locals) { %w[proj-1 main] }
+
+        it "reuses the existing branch under its own name" do
+          expect(resolver.call("PROJ-1").branch).to eq("proj-1")
         end
       end
 
@@ -114,7 +122,7 @@ RSpec.describe Workspace::StartRef do
         allow(git).to receive(:branch_names).with("/other").and_return(%w[Proj-1])
 
         expect(resolver.call("PROJ-1", root: "/other").branch).to eq("Proj-1")
-        expect(resolver.call("PROJ-1", root: "/other", names: described_class::BranchNames.new(local: [], all: [])).branch).to eq("proj-1")
+        expect(resolver.call("PROJ-1", root: "/other", names: described_class::BranchNames.new(local: [], all: [])).branch).to eq("PROJ-1")
       end
     end
 
@@ -209,16 +217,16 @@ RSpec.describe Workspace::StartRef do
       jira = resolver.call("PROJ-123")
       issue = resolver.call("https://github.com/o/r/issues/42")
 
-      expect(resolver.slugged(jira, "Fix login").branch).to eq("proj-123-fix-login")
+      expect(resolver.slugged(jira, "Fix login").branch).to eq("PROJ-123-fix-login")
       expect(resolver.slugged(issue, "Fix login").branch).to eq("issue-42-fix-login")
-      expect(jira.branch).to eq("proj-123")
+      expect(jira.branch).to eq("PROJ-123")
     end
 
     it "leaves a pull request, a branch, and a ref with no usable title unchanged" do
       expect(resolver.slugged(resolver.call("#9"), "Fix").branch).to eq("pr-9")
       expect(resolver.slugged(resolver.call("feature/x"), "Fix").branch).to eq("feature/x")
-      expect(resolver.slugged(resolver.call("PROJ-1"), nil).branch).to eq("proj-1")
-      expect(resolver.slugged(resolver.call("PROJ-1"), "!!!").branch).to eq("proj-1")
+      expect(resolver.slugged(resolver.call("PROJ-1"), nil).branch).to eq("PROJ-1")
+      expect(resolver.slugged(resolver.call("PROJ-1"), "!!!").branch).to eq("PROJ-1")
     end
   end
 
