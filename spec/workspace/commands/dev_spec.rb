@@ -230,6 +230,112 @@ RSpec.describe Workspace::Commands::Dev do
       end
     end
 
+    describe "project hooks" do
+      let(:events) { [] }
+      let(:hook_runner) do
+        double("hook_runner").tap do |h|
+          allow(h).to receive(:run) { |_project, event, env:|
+            events << [event, env]
+            true
+          }
+        end
+      end
+
+      it "fires pre_dev_up before the wrapper is opened and post_dev_up once the environment is up, with the worktree and branch in the env" do
+        expect(dev(hook_runner: hook_runner).up(working_dir: login)).to eq(exit_code: 0)
+
+        expect(events.map(&:first)).to eq(["pre_dev_up", "post_dev_up"])
+        expect(events[0][1]).to include("WORKSPACE_WORKTREE" => login, "WORKSPACE_BRANCH" => "feat/login")
+        expect(tmux.windows.size).to eq(1)
+      end
+
+      it "fires pre_dev_up once per wrapper created, so a queued start fires it again" do
+        recorder = -> { dev(hook_runner: hook_runner) }
+        recorder.call.up(working_dir: login)
+        stopper = Thread.new do
+          wait_until { output.string.include?("Trying to obtain workspace devenv lock") }
+          recorder.call.down(working_dir: login)
+        end
+
+        expect(recorder.call.up(wait: true, working_dir: main)).to eq(exit_code: 0)
+        stopper.join
+
+        expect(events.map(&:first)).to eq(["pre_dev_up", "post_dev_up", "pre_dev_up", "post_dev_up"])
+      end
+
+      it "fires both hooks on takeover" do
+        dev.up(working_dir: login)
+
+        expect(dev(hook_runner: hook_runner).up(takeover: true, working_dir: main)).to eq(exit_code: 0)
+
+        expect(events.map(&:first)).to eq(["pre_dev_up", "post_dev_up"])
+      end
+
+      it "fires pre_dev_up only when up --queue creates a queued wrapper, and neither when this worktree is already queued" do
+        expect(dev(hook_runner: hook_runner).up(queue: true, working_dir: login)[:status]).to eq("running")
+
+        expect(events.map(&:first)).to eq(["pre_dev_up"])
+        wait_until { holder }
+
+        expect(dev(hook_runner: hook_runner).up(queue: true, working_dir: login)[:status]).to eq("running")
+        expect(events.map(&:first)).to eq(["pre_dev_up"])
+      end
+
+      it "fires both hooks when up --queue runs from the pane bound to the run, which starts at once" do
+        bound_run = instance_double(Workspace::BoundRun, run_id: "wr_1")
+        store = Workspace::LockStore.new(dir: lock_dir, liveness: Workspace::LockHolder.new)
+        store.acquire_run(["devenv"], run: {run_id: "wr_1", step: "implement", worktree: login, pane: "%1"})
+
+        result = dev(bound_run: bound_run, hook_runner: hook_runner).up(queue: true, working_dir: login)
+
+        expect(result[:exit_code]).to eq(0)
+        expect(events.map(&:first)).to eq(["pre_dev_up", "post_dev_up"])
+      end
+
+      it "fires both hooks when up starts the environment as a run's delegate, and neither when the delegate is already running" do
+        bound_run = instance_double(Workspace::BoundRun, run_id: "wr_1")
+        store = Workspace::LockStore.new(dir: lock_dir, liveness: Workspace::LockHolder.new)
+        store.acquire_run(["devenv"], run: {run_id: "wr_1", step: "implement", worktree: login, pane: "%1"})
+
+        expect(dev(bound_run: bound_run, hook_runner: hook_runner).up(working_dir: login)).to eq(exit_code: 0)
+        expect(events.map(&:first)).to eq(["pre_dev_up", "post_dev_up"])
+
+        expect(dev(bound_run: bound_run, hook_runner: hook_runner).up(working_dir: login)).to eq(exit_code: 0)
+        expect(events.map(&:first)).to eq(["pre_dev_up", "post_dev_up"])
+        expect(output.string).to include("Dev environment is already running for app-login (feat/login) under run wr_1.")
+      end
+
+      it "fires neither hook when this worktree's environment is already running" do
+        dev.up(working_dir: login)
+
+        expect(dev(hook_runner: hook_runner).up(working_dir: login)).to eq(exit_code: 0)
+
+        expect(events).to be_empty
+        expect(tmux.windows.size).to eq(1)
+      end
+
+      it "fires pre_dev_up but not post_dev_up when the ready check fails" do
+        dev_settings["ready"] = "port:#{free_port}"
+        dev_settings["ready_timeout"] = 0.5
+
+        expect(dev(hook_runner: hook_runner).up(working_dir: login)).to eq(exit_code: 6)
+
+        expect(events.map(&:first)).to eq(["pre_dev_up"])
+      end
+
+      it "fires neither hook when up is refused, because no command is configured or another worktree holds the lock" do
+        dev.up(working_dir: login)
+
+        dev_settings.delete("up")
+        expect { dev(hook_runner: hook_runner).up(working_dir: main) }.to raise_error(Workspace::Error, /No dev command configured/)
+        expect(events).to be_empty
+
+        dev_settings["up"] = "exec sleep 30"
+        expect(dev(hook_runner: hook_runner).up(working_dir: main)).to eq(exit_code: 1)
+        expect(events).to be_empty
+      end
+    end
+
     it "raises with setup instructions when no dev command is configured" do
       dev_settings.delete("up")
 
@@ -1021,6 +1127,22 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(output.string).to include("Dev environment running for")
     end
 
+    it "fires only post_dev_up when the window is reused — no wrapper was created, but the invocation ends with the env up" do
+      hooks = double("hook_runner")
+      allow(hooks).to receive(:run)
+      allow(tmux).to receive(:close_dead_windows)
+      allow(tmux).to receive(:windows_in_session) do
+        hold(555, worktree: worktree)
+        [{window: "@1", pane: "%12", pid: 555, dead: false}]
+      end
+      allow(tmux).to receive(:new_window)
+
+      expect(dev(hook_runner: hooks).up(working_dir: worktree)).to eq(exit_code: 0)
+
+      expect(hooks).not_to have_received(:run).with(anything, "pre_dev_up", env: anything)
+      expect(hooks).to have_received(:run).with(anything, "post_dev_up", env: anything)
+    end
+
     it "opens its own window when the live devenv window is another worktree's holder" do
       hold(700)
       allow(tmux).to receive(:close_dead_windows)
@@ -1051,6 +1173,21 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
 
       expect(tmux).not_to have_received(:new_window)
       expect(output.string).to include("Dev environment running for")
+    end
+  end
+
+  describe "project hooks" do
+    it "fires pre_dev_up but not post_dev_up when the wrapper exits before it acquired the lock" do
+      hooks = double("hook_runner")
+      allow(hooks).to receive(:run)
+      allow(tmux).to receive(:close_dead_windows)
+      allow(tmux).to receive(:new_window).and_return(555)
+      dead_pids << 555
+
+      expect(dev(hook_runner: hooks).up(working_dir: worktree)).to eq(exit_code: 1)
+
+      expect(hooks).to have_received(:run).with(anything, "pre_dev_up", env: anything)
+      expect(hooks).not_to have_received(:run).with(anything, "post_dev_up", env: anything)
     end
   end
 

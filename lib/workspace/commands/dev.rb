@@ -62,6 +62,9 @@ module Workspace
       #   bound to; nil means no pane counts as bound
       # @param dev_events [Workspace::DevEvents, nil] records `dev_stopped` for the stops this command makes
       #   (`dev_started` and an exit on its own come from the wrapper); nil records nothing
+      # @param hook_runner [Workspace::HookRunner, nil] runs the project's `pre_dev_up` and
+      #   `post_dev_up` hooks; nil runs none. Hooks are advisory: a failure is a warning
+      #   and never stops the `up` this command is making
       # @param snapshot_client [Workspace::AgentSnapshotClient, nil] asks the holder's agent daemon
       #   whether its agent is working, for `dev status --json`; nil reports `none`
       # @param wall_clock [#call] returns the current Time, for how long each waiter has waited
@@ -71,10 +74,11 @@ module Workspace
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
         poll: POLL_SECONDS,
         kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid }, event_log: nil, bound_run: nil,
-        dev_events: nil, snapshot_client: nil, wall_clock: -> { Time.now }, session_ledger: nil)
+        dev_events: nil, hook_runner: nil, snapshot_client: nil, wall_clock: -> { Time.now }, session_ledger: nil)
         @session_ledger = session_ledger
         @bound_run = bound_run
         @dev_events = dev_events
+        @hook_runner = hook_runner
         @snapshot_client = snapshot_client
         @wall_clock = wall_clock
         @lock_namespace = lock_namespace
@@ -758,6 +762,7 @@ module Workspace
         sweep_dead_windows(session) unless takeover
         reused = reusable_window(ctx, session) unless takeover
         return reused if reused
+        run_hook(ctx, "pre_dev_up")
         wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env,
           remain_on_exit: true)
         raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
@@ -821,7 +826,17 @@ module Workspace
         return {exit_code: code} unless code.zero?
 
         @output.puts "Dev environment running for #{label(ctx[:worktree])} (#{ctx[:branch]}) in #{session}:#{WINDOW_NAME}."
+        run_hook(ctx, "post_dev_up")
         {exit_code: 0}
+      end
+
+      # Runs one project hook through the injected runner, with the worktree and
+      # branch in the env (`WORKSPACE_PROJECT` the runner adds itself). Advisory:
+      # the runner never raises, its return value is ignored, and a nil runner
+      # (any direct construction) runs nothing.
+      def run_hook(ctx, event)
+        @hook_runner&.run(ctx[:project], event,
+          env: {"WORKSPACE_WORKTREE" => ctx[:worktree], "WORKSPACE_BRANCH" => ctx[:branch]})
       end
 
       def context(working_dir, tolerate_bad_config: false)
