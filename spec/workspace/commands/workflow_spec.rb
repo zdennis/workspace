@@ -1252,6 +1252,12 @@ RSpec.describe Workspace::Commands::Workflow do
         expect { command.resume(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
       end
 
+      it "is refused for a step with an exec proof, which runs a program" do
+        stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil, "require" => [{"exec" => ["bin/check", "--all"], "timeout" => 300}]}]}
+
+        expect { command.resume(run: "wr_1", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
+      end
+
       it "is not refused for the other proofs, which use the guard's own git" do
         stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil, "require" => [{"commits" => 1}, {"remote_unchanged" => true}]}]}
 

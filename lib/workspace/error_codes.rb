@@ -254,6 +254,8 @@ module Workspace
       "builtin_workflow" => "workflow update or workflow remove found only a preset of that id, no file of the user's; save a copy with workflow add. details.workflow.",
       "input_required" => "workflow run is missing a required input. Pass it with --input; a task or pr input is filled from the branch's pull request or name, except on the default branch or in the main checkout.",
       "workflow_command_unset" => "A step's check names the project's test or lint command and the project has none (also `workflow check`).",
+      "workflow_program_missing" => "A step's `require: exec:` names a program that can't run (not on PATH, not an executable file, or missing in the checkout). details.workflow, details.program (the first), details.steps (each as step, program, problem).",
+      "workflow_test_files_unset" => "A step's `require: exec:` uses {{changed.tests}} and the workspace has no `commands.test_files`. details.workflow, details.workspace, details.steps.",
       "step_without_status" => "workflow check named a step that has no `status:` command. details.workflow, details.step.",
       "artifacts_not_directory" => "workflow check --artifacts named a path that is not an existing directory. details.path.",
       "no_agent_pane" => "No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or plan start or spine start found no agent pane to type into (with --pane, the named pane runs no coding agent).",

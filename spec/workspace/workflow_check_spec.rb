@@ -1,5 +1,6 @@
 require "spec_helper"
 require "tmpdir"
+require "timeout"
 
 RSpec.describe Workspace::WorkflowCheck do
   around do |example|
@@ -180,5 +181,108 @@ RSpec.describe Workspace::WorkflowCheck do
     result = check.call(command: "true", cwd: File.join(@dir, "gone"), timeout: 30, log: log)
 
     expect(result).to eq(exit_code: nil, timed_out: false, error: "could not run the check (Errno::ENOENT)")
+  end
+
+  describe "with argv:" do
+    it "runs the program without a shell and reports a pass" do
+      result = check.call(argv: ["pwd"], cwd: @dir, timeout: 30, log: log)
+
+      expect(result).to eq(exit_code: 0, timed_out: false)
+      expect(File.read(log)).to eq("#{@dir}\n")
+    end
+
+    it "reports the exit status of a program that fails" do
+      expect(check.call(argv: ["sh", "-c", "exit 3"], cwd: @dir, timeout: 30, log: log)).to eq(exit_code: 3, timed_out: false)
+    end
+
+    it "hands an argument with shell characters over as one argument and creates no file" do
+      hostile = "x;touch pwned|sh"
+      result = check.call(argv: ["printf", "[%s]", hostile], cwd: @dir, timeout: 30, log: log)
+
+      expect(result).to eq(exit_code: 0, timed_out: false)
+      expect(File.read(log)).to eq("[#{hostile}]")
+      expect(File.exist?(File.join(@dir, "pwned"))).to be(false)
+    end
+
+    it "runs a one-word program with no arguments without a shell" do
+      expect(check.call(argv: ["true"], cwd: @dir, timeout: 30, log: log)).to eq(exit_code: 0, timed_out: false)
+    end
+
+    it "says the check could not be run when the program is missing" do
+      result = check.call(argv: ["no-such-program-xyz"], cwd: @dir, timeout: 30, log: log)
+
+      expect(result).to eq(exit_code: nil, timed_out: false, error: "could not run the check (Errno::ENOENT)")
+    end
+
+    it "stops the program's group when it runs past the time limit" do
+      timed = described_class.new(kill_grace: 1)
+
+      result = timed.call(argv: ["sh", "-c", "sleep 30 & echo $! > #{marker}; wait"], cwd: @dir, timeout: 1, log: log)
+
+      expect(result).to eq(exit_code: nil, timed_out: true)
+      expect(state_of_child).to satisfy("be gone or a zombie") { |value| value.empty? || value.start_with?("Z") }
+    end
+
+    it "refuses both command: and argv:, and neither" do
+      expect { check.call(command: "true", argv: ["true"], cwd: @dir, timeout: 30, log: log) }.to raise_error(ArgumentError)
+      expect { check.call(cwd: @dir, timeout: 30, log: log) }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe "a planted link" do
+    it "is not followed at the log path, and the outside file is untouched" do
+      outside = File.join(@dir, "outside.txt")
+      File.write(outside, "keep")
+      FileUtils.mkdir_p(File.dirname(log))
+      File.symlink(outside, log)
+
+      result = check.call(command: "echo hi", cwd: @dir, timeout: 30, log: log)
+
+      expect(result[:exit_code]).to be_nil
+      expect(result[:error]).to match(/could not run the check/)
+      expect(File.read(outside)).to eq("keep")
+    end
+
+    it "is refused as the log's directory" do
+      elsewhere = File.join(@dir, "elsewhere")
+      FileUtils.mkdir_p(elsewhere)
+      File.symlink(elsewhere, File.join(@dir, "steps"))
+
+      result = check.call(argv: ["true"], cwd: @dir, timeout: 30, log: log)
+
+      expect(result[:error]).to match(/could not run the check/)
+      expect(Dir.children(elsewhere)).to be_empty
+    end
+
+    it "is not opened when the log path is a FIFO, so the check cannot hang" do
+      FileUtils.mkdir_p(File.dirname(log))
+      File.mkfifo(log)
+      reader = File.open(log, File::RDONLY | File::NONBLOCK)
+
+      result = Timeout.timeout(10) { check.call(command: "echo hi", cwd: @dir, timeout: 30, log: log) }
+
+      expect(result[:exit_code]).to be_nil
+      expect(result[:error]).to match(/could not run the check/)
+    ensure
+      reader&.close
+    end
+
+    it "is not opened when the log path is a FIFO nobody reads" do
+      FileUtils.mkdir_p(File.dirname(log))
+      File.mkfifo(log)
+
+      result = Timeout.timeout(10) { check.call(command: "echo hi", cwd: @dir, timeout: 30, log: log) }
+
+      expect(result[:error]).to match(/could not run the check/)
+    end
+  end
+
+  it "truncates a log that already has content" do
+    FileUtils.mkdir_p(File.dirname(log))
+    File.write(log, "old old old old old\n")
+
+    check.call(command: "echo new", cwd: @dir, timeout: 30, log: log)
+
+    expect(File.read(log)).to eq("new\n")
   end
 end

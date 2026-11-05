@@ -490,6 +490,249 @@ RSpec.describe Workspace::WorkflowRequire do
     expect(check({"tracked_clean" => true}, {"commits" => 1}, {"nonempty" => "x.md"})).to include("proof" => "commits")
   end
 
+  describe "exec" do
+    let(:test_files) { ["spec/**/*_spec.rb"] }
+    let(:commands) { instance_double(Workspace::CommandsConfig, test_files: test_files) }
+    let(:calls) { [] }
+    let(:answer) { {exit_code: 0, timed_out: false} }
+    let(:checker) do
+      double(Workspace::WorkflowCheck).tap do |fake|
+        allow(fake).to receive(:call) do |**kwargs|
+          files = kwargs[:env].select { |name, path| path && name.start_with?("WORKSPACE_") && name.end_with?("FILES", "TESTS") }
+          calls << kwargs.merge(lists: files.transform_values { |path| File.binread(path).split("\0") })
+          answer
+        end
+      end
+    end
+    subject(:requirer) { described_class.new(guard: guard, notes_dir_of: ->(_) { notes }, commands_config: commands, checker: checker) }
+    let(:attempt) { {"n" => 2, "head" => {"before" => base}} }
+
+    def exec_entry(text, timeout: 300)
+      {"exec" => Workspace::WorkflowArgv.split(text).first, "timeout" => timeout}
+    end
+
+    def write(path, text = "x\n")
+      FileUtils.mkdir_p(File.dirname(File.join(repo, path)))
+      File.write(File.join(repo, path), text)
+    end
+
+    before do
+      run.merge!("id" => "wr_1", "project" => "app", "current" => "verify", "base_sha" => base, "inputs" => {"task" => "a b;c"})
+      write("spec/new_spec.rb")
+      write("lib/new.rb")
+    end
+
+    it "passes when the program exits 0, run with no shell in the checkout with each placeholder filled in" do
+      entry = exec_entry("bin/check {{workspace}} {{run}} {{branch}} {{inputs.task}} {{attempt.head_before}} -- {{changed.files}}")
+      expect(proven(entry, attempt: attempt)).to be_nil
+      call = calls.first
+      expect(call).to include(cwd: repo, timeout: 300, stop_when: stop_when, log: %r{/steps/verify\.2\.require-exec-0\.\h{8}\.log\z})
+      expect(call[:argv]).to eq(["bin/check", "app", "wr_1", "main", "a b;c", base, "--", "lib/new.rb", "spec/new_spec.rb"])
+      expect(call[:env]).to include("X" => "1")
+    end
+
+    it "fails with the exit code, the log and the program as written" do
+      answer.replace(exit_code: 4, timed_out: false)
+      found = proven(exec_entry("bin/check -- {{changed.files}}"), attempt: attempt)
+      expect(found).to include("proof" => "exec", "code" => "require_exec", "program" => "bin/check", "exit_code" => 4,
+        "log" => %r{require-exec-0\.\h{8}\.log\z}, "detail" => /required bin\/check to exit 0, found exit 4 \(log /)
+      expect(found).not_to have_key("unproven")
+    end
+
+    it "is unproven on a timeout, a program that can't start, or no exit" do
+      answer.replace(exit_code: nil, timed_out: true)
+      expect(proven(exec_entry("bin/check", timeout: 30), attempt: attempt)).to include("unproven" => true, "program" => "bin/check", "detail" => /ran past 30 seconds/)
+      answer.replace(exit_code: nil, timed_out: false, error: "could not run the check (Errno::ENOENT)")
+      expect(proven(exec_entry("bin/check"), attempt: attempt)).to include("unproven" => true, "detail" => /Errno::ENOENT/)
+      answer.replace(exit_code: nil, timed_out: false, error: "stopped: the run moved on")
+      expect(proven(exec_entry("bin/check"), attempt: attempt)).to include("unproven" => true, "detail" => /stopped/)
+    end
+
+    it "names the list's file and variable when the arguments are too long" do
+      answer.replace(exit_code: nil, timed_out: false, error: "could not run the check (Errno::E2BIG)")
+      found = proven(exec_entry("bin/check -- {{changed.files}}"), attempt: attempt)
+      expect(found).to include("unproven" => true, "detail" => /E2BIG.*\{\{changed\.files\}\} from the file \$WORKSPACE_CHANGED_FILES names instead/)
+    end
+
+    it "keeps only the exit code, timeout flag and error as the record" do
+      answer.replace(exit_code: 4, timed_out: false)
+      pending_proof = requirer.check(run: run, step: {"require" => [exec_entry("bin/check")]}, attempt: attempt)["outside"]
+      expect(pending_proof).to include("proof" => "exec", "index" => 0, "program" => "bin/check", "timeout" => 300, "facts" => hash_including("argv" => ["bin/check"]))
+      expect(requirer.run_outside(pending_proof, cwd: repo)["record"]).to eq("exit_code" => 4, "timed_out" => false)
+    end
+
+    context "with no starting commit" do
+      let(:attempt) { {"n" => 1, "head" => {"before" => nil}} }
+
+      it "is unproven and runs nothing when the template uses a list that needs it" do
+        expect(proven(exec_entry("bin/check -- {{changed.files}}"), attempt: attempt)).to include("code" => "require_exec", "unproven" => true, "program" => "bin/check",
+          "detail" => /\{\{changed\.files\}\} needs the commit this attempt began at, and this attempt has none recorded/)
+        run["base_sha"] = ""
+        expect(proven(exec_entry("bin/check -- {{run.changed.files}}"), attempt: {"n" => 1, "head" => {"before" => base}}))
+          .to include("unproven" => true, "detail" => /\{\{run\.changed\.files\}\} needs the commit the run began at/)
+        expect(calls).to be_empty
+      end
+
+      it "runs a template that does not use it, without that list's variable" do
+        expect(proven(exec_entry("bin/check {{attempt.head_before}}"), attempt: attempt)).to be_nil
+        expect(calls.first[:argv]).to eq(["bin/check", ""])
+        expect(calls.first[:env].keys).to include("WORKSPACE_RUN_CHANGED_FILES")
+        expect(calls.first[:env]).to include("WORKSPACE_CHANGED_FILES" => nil, "WORKSPACE_CHANGED_TESTS" => nil)
+      end
+    end
+
+    it "points each variable at a file holding its NUL-separated list, and filters changed.tests by the globs" do
+      git("add", "-A")
+      git("commit", "-q", "-m", "run so far")
+      later = guard.head(repo)
+      write("spec/later_spec.rb")
+      write("spec/deep/nested_spec.rb")
+      write("spec_helper_spec.rb")
+      expect(proven(exec_entry("bin/check -- {{changed.tests}}"), attempt: {"n" => 1, "head" => {"before" => later}})).to be_nil
+      call = calls.first
+      expect(call[:lists]).to eq(
+        "WORKSPACE_CHANGED_FILES" => ["spec/deep/nested_spec.rb", "spec/later_spec.rb", "spec_helper_spec.rb"],
+        "WORKSPACE_RUN_CHANGED_FILES" => ["lib/new.rb", "spec/deep/nested_spec.rb", "spec/later_spec.rb", "spec/new_spec.rb", "spec_helper_spec.rb"],
+        "WORKSPACE_CHANGED_TESTS" => ["spec/deep/nested_spec.rb", "spec/later_spec.rb"]
+      )
+      paths = call[:env].values_at("WORKSPACE_CHANGED_FILES", "WORKSPACE_RUN_CHANGED_FILES", "WORKSPACE_CHANGED_TESTS")
+      expect(paths.map { |path| File.basename(path) }).to eq(%w[changed-files run-changed-files changed-tests])
+      expect(paths.map { |path| File.dirname(path) }.uniq.size).to eq(1)
+      expect(paths.first).not_to start_with(repo)
+      expect(File.exist?(File.dirname(paths.first))).to be false
+      expect(call[:argv]).to eq(["bin/check", "--", "spec/deep/nested_spec.rb", "spec/later_spec.rb"])
+    end
+
+    context "with commands.test_files unset when the proof runs" do
+      let(:test_files) { [] }
+
+      it "is unproven for a template using {{changed.tests}}, never an empty list" do
+        expect(proven(exec_entry("bin/check -- {{changed.tests}}"), attempt: attempt)).to include("unproven" => true, "detail" => /commands\.test_files, which is not set for app/)
+        expect(calls).to be_empty
+      end
+
+      it "runs another template with no tests variable" do
+        expect(proven(exec_entry("bin/check"), attempt: attempt)).to be_nil
+        expect(calls.first[:env]).to include("WORKSPACE_CHANGED_TESTS" => nil)
+      end
+    end
+
+    it "reads commands.test_files for the run's own workspace, so a worktree's setting counts" do
+      run["workspace"] = "app.worktree-feature"
+      proven(exec_entry("bin/check -- {{changed.tests}}"), attempt: attempt)
+      expect(commands).to have_received(:test_files).with("app.worktree-feature")
+    end
+
+    it "is unproven when git can't list a list the template uses" do
+      allow(guard).to receive(:changed_paths).and_return(nil)
+      expect(proven(exec_entry("bin/check -- {{changed.files}}"), attempt: attempt)).to include("unproven" => true, "detail" => /git could not list the files for \{\{changed\.files\}\}/)
+      expect(calls).to be_empty
+    end
+
+    it "is unproven when the program's ~/ path can't be expanded" do
+      allow(Workspace::WorkflowArgv).to receive(:render).and_raise(ArgumentError, "couldn't find login name")
+      expect(proven(exec_entry("~/bin/check"), attempt: attempt)).to include("unproven" => true, "program" => "~/bin/check", "detail" => /could not be expanded/)
+    end
+
+    it "is unproven when git can't say which branch is checked out and the template uses {{branch}}" do
+      allow(guard).to receive(:branch).and_return(nil)
+      expect(proven(exec_entry("bin/check {{branch}}"), attempt: attempt)).to include("unproven" => true, "program" => "bin/check", "detail" => /git could not say which branch is checked out/)
+      expect(calls).to be_empty
+    end
+
+    it "is unproven when the changed-file lists can't be written" do
+      failing = described_class.new(guard: guard, notes_dir_of: ->(_) { notes }, commands_config: commands, checker: checker,
+        tmpdir: ->(*) { raise Errno::EACCES })
+      found = failing.check(run: run, step: {"require" => [exec_entry("bin/check")]}, attempt: attempt)["outside"]
+      unmet = failing.run_outside(found, cwd: repo, env: {}, stop_when: stop_when)["unmet"]
+      expect(unmet).to include("unproven" => true, "detail" => /changed-file lists could not be written \(Errno::EACCES\)/)
+    end
+
+    it "reads {{ changed.tests }} written with spaces as the list" do
+      expect(proven(exec_entry("bin/check -- '{{ changed.tests }}'"), attempt: attempt)).to be_nil
+      expect(calls.first[:argv]).to eq(["bin/check", "--", "spec/new_spec.rb"])
+    end
+
+    context "with commands.test_files unreadable" do
+      before { allow(commands).to receive(:test_files).and_raise(Workspace::ConfigParseError.new("/x.yml", "bad yaml")) }
+
+      it "is unproven only for a template using {{changed.tests}}" do
+        expect(proven(exec_entry("bin/check -- {{changed.tests}}"), attempt: attempt)).to include("unproven" => true, "detail" => /could not be read .*bad yaml/)
+      end
+
+      it "runs a template that does not use it" do
+        expect(proven(exec_entry("bin/check"), attempt: attempt)).to be_nil
+      end
+    end
+
+    it "gives two exec entries their own log and token" do
+      step = {"require" => [exec_entry("bin/one"), exec_entry("bin/two")]}
+      first = requirer.check(run: run, step: step, attempt: attempt)["outside"]
+      second = requirer.check(run: run, step: step, attempt: attempt, from: first["index"] + 1)["outside"]
+      expect([first["index"], second["index"]]).to eq([0, 1])
+      expect(first["token"]).not_to eq(second["token"])
+      expect(first["log"]).to match(/require-exec-0\.#{first["token"]}\.log\z/)
+      expect(second["log"]).to match(/require-exec-1\.#{second["token"]}\.log\z/)
+    end
+
+    it "is unproven with no checker wired" do
+      bare = described_class.new(guard: guard, notes_dir_of: ->(_) { notes })
+      expect(bare.check(run: run, step: {"require" => [exec_entry("bin/check")]}, attempt: attempt)).to include("code" => "require_exec", "unproven" => true)
+    end
+
+    it "writes the lists only into a private directory it removes, never through a link planted in the checkout" do
+      victim = File.join(@dir, "victim")
+      File.write(victim, "keep\n")
+      FileUtils.mkdir_p(File.join(artifacts, "steps"))
+      %w[changed-files run-changed-files changed-tests].each { |suffix| File.symlink(victim, File.join(artifacts, "steps", "verify.2.#{suffix}")) }
+      outside = File.join(@dir, "elsewhere")
+      FileUtils.mkdir_p(outside)
+      seen = nil
+      allow(checker).to receive(:call) do |**kwargs|
+        dir = File.dirname(kwargs[:env]["WORKSPACE_CHANGED_FILES"])
+        seen = [dir, File.stat(dir).mode & 0o777, File.lstat(kwargs[:env]["WORKSPACE_CHANGED_FILES"]).file?]
+        answer
+      end
+
+      expect(proven(exec_entry("bin/check -- {{changed.tests}}"), attempt: attempt)).to be_nil
+      expect(File.read(victim)).to eq("keep\n")
+      expect(seen[1..]).to eq([0o700, true])
+      expect(seen[0]).not_to start_with(repo)
+      expect(File.exist?(seen[0])).to be false
+    end
+
+    it "removes the private directory when the program raises" do
+      dirs = []
+      allow(checker).to receive(:call) do |**kwargs|
+        dirs << File.dirname(kwargs[:env]["WORKSPACE_CHANGED_FILES"])
+        raise ArgumentError, "boom"
+      end
+      expect(proven(exec_entry("bin/check"), attempt: attempt)).to include("code" => "require_unknown")
+      expect(File.exist?(dirs.first)).to be false
+    end
+
+    it "allows for its git reads before calling an exec proof lost, and nothing more for another proof" do
+      expect(described_class.lost_after({"proof" => "exec", "timeout" => 30})).to eq(30 + 60 + described_class::EXEC_SETUP_SECONDS)
+      expect(described_class.lost_after({"proof" => "command", "timeout" => 30})).to eq(90)
+    end
+
+    it "hands a changed file named like a shell command to a real program as one argument" do
+      write("x;touch pwned|sh")
+      script = File.join(@dir, "check.sh")
+      File.write(script, "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$OUT\"\ntr '\\0' '\\n' < \"$WORKSPACE_CHANGED_FILES\" > \"$OUT.env\"\n")
+      File.chmod(0o755, script)
+      real = described_class.new(guard: guard, notes_dir_of: ->(_) { notes }, commands_config: commands, checker: Workspace::WorkflowCheck.new)
+      out = File.join(@dir, "args.txt")
+      entry = {"exec" => [script, "--", "{{changed.files}}"], "timeout" => 30}
+      pending_proof = real.check(run: run, step: {"require" => [entry]}, attempt: attempt)["outside"]
+      result = real.run_outside(pending_proof, cwd: repo, env: {"OUT" => out})
+      expect(result).to eq("record" => {"exit_code" => 0, "timed_out" => false}, "unmet" => nil)
+      expect(File.read(out).lines(chomp: true)).to eq(["--", "lib/new.rb", "spec/new_spec.rb", "x;touch pwned|sh"])
+      expect(File.read("#{out}.env").lines(chomp: true)).to eq(["lib/new.rb", "spec/new_spec.rb", "x;touch pwned|sh"])
+      expect(File.exist?(File.join(repo, "pwned"))).to be false
+    end
+  end
+
   it "answers a failed proof, never an error, when a collaborator raises" do
     allow(guard).to receive(:commits_since).and_raise("boom")
     expect(check({"commits" => 1})).to include("code" => "require_unknown", "unproven" => true)

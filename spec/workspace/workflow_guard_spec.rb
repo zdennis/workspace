@@ -1093,4 +1093,106 @@ RSpec.describe Workspace::WorkflowGuard do
       expect(guard.dirty_paths(File.join(@dir, "gone"))).to be_nil
     end
   end
+
+  describe "#branch" do
+    it "names the checked-out branch, empty on a detached HEAD, nil where git can't say" do
+      expect(guard.branch(repo)).to eq(git("symbolic-ref", "--short", "HEAD").strip)
+      git("checkout", "-q", "--detach")
+      expect(guard.branch(repo)).to eq("")
+      expect(guard.branch(File.join(repo, "gone"))).to be_nil
+    end
+  end
+
+  describe "#changed_paths" do
+    let(:sha) { git("rev-parse", "HEAD").strip }
+
+    def changed(base_sha = sha)
+      guard.changed_paths(repo, base: base_sha, base_guard: base["base_guard"])
+    end
+
+    it "lists committed, staged, unstaged and untracked files, sorted" do
+      write("c.txt")
+      git("add", "c.txt")
+      git("commit", "-q", "-m", "more")
+      write("dir/b.txt", "edited\n")
+      write("s.txt")
+      git("add", "s.txt")
+      write("u.txt")
+
+      expect(changed(base["base_sha"])).to eq(%w[c.txt dir/b.txt s.txt u.txt])
+    end
+
+    it "leaves out a deleted file and lists a rename by its new path" do
+      git("rm", "-q", "a.txt")
+      git("mv", "dir/b.txt", "dir/moved.txt")
+
+      expect(changed).to eq(["dir/moved.txt"])
+    end
+
+    it "leaves out ignored files" do
+      write(".gitignore", "*.log\n")
+      write("x.log")
+
+      expect(changed).to eq([".gitignore"])
+    end
+
+    it "keeps a name with a newline and spaces whole" do
+      name = "odd name\nwith lines.txt"
+      write(name)
+
+      expect(changed).to eq([name])
+    end
+
+    it "keeps a name with invalid UTF-8 byte-exact" do
+      name = "\xFF.rb".b
+      raw = lambda do |argv, **options|
+        out, err, ok = Workspace::TimedProcess.run(argv, **options)
+        argv.include?("ls-files") ? [out + name + "\0", err, ok] : [out, err, ok]
+      end
+      found = described_class.new(runner: raw).changed_paths(repo, base: sha, base_guard: base["base_guard"])
+
+      expect(found).to eq([name])
+      expect(found.first.bytes).to eq([0xFF, 0x2E, 0x72, 0x62])
+    end
+
+    it "leaves out a nested repository, which git lists as a directory" do
+      nested = File.join(repo, "nested")
+      FileUtils.mkdir_p(nested)
+      system("git", "-C", nested, "init", "-q", out: File::NULL, err: File::NULL)
+      write("nested/f.txt")
+      write("u.txt")
+
+      expect(changed).to eq(["u.txt"])
+    end
+
+    it "is nil for a base that is not a full id or does not exist" do
+      expect(changed("HEAD")).to be_nil
+      expect(changed(nil)).to be_nil
+      expect(changed("0" * 40)).to be_nil
+    end
+
+    it "is nil when git can't answer" do
+      expect(guard.changed_paths(File.join(@dir, "gone"), base: sha, base_guard: nil)).to be_nil
+    end
+
+    it "runs no fsmonitor or hook from the global config" do
+      marker = File.join(@dir, "ran")
+      script = File.join(@dir, "fs.sh")
+      File.write(script, "#!/bin/sh\ntouch #{marker}\n")
+      File.chmod(0o755, script)
+      global = File.join(@dir, "gitconfig")
+      File.write(global, "[core]\n\tfsmonitor = #{script}\n\thooksPath = #{@dir}\n")
+      write("u.txt")
+      saved = ENV["GIT_CONFIG_GLOBAL"]
+      ENV["GIT_CONFIG_GLOBAL"] = global
+
+      expect(changed).to eq(["u.txt"])
+      expect(File.exist?(marker)).to be(false)
+
+      system({"GIT_CONFIG_GLOBAL" => global}, "git", "-C", repo, "status", out: File::NULL, err: File::NULL)
+      expect(File.exist?(marker)).to be(true)
+    ensure
+      ENV["GIT_CONFIG_GLOBAL"] = saved
+    end
+  end
 end

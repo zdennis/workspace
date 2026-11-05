@@ -396,6 +396,109 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(store.active).to eq([])
     end
 
+    describe "a require: exec program" do
+      let(:exec_path) { File.join(@dir, "bin") }
+      let(:exec_line) { "check --flag" }
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            build:
+              prompt: Build it.
+              require:
+                - exec: #{exec_line.inspect}
+        YAML
+      end
+
+      def make_program(path, mode: 0o755)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "#!/bin/sh\n")
+        File.chmod(mode, path)
+        path
+      end
+
+      def refused(code)
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq(code)
+          yield error if block_given?
+        }
+        expect(store.active).to eq([])
+        expect(Dir.exist?(File.join(worktree, ".workflow"))).to be(false)
+      end
+
+      before do
+        FileUtils.mkdir_p(worktree)
+        stub_const("ENV", ENV.to_h.merge("PATH" => exec_path, "HOME" => @dir))
+      end
+
+      it "refuses a bare name that is not on PATH, naming the step and program" do
+        refused("workflow_program_missing") do |error|
+          expect(error.details).to include("workflow" => "flow", "program" => "check",
+            "steps" => [{"step" => "build", "program" => "check", "problem" => "is not on PATH"}])
+        end
+      end
+
+      it "starts when the bare name is on PATH" do
+        make_program(File.join(exec_path, "check"))
+        expect { start(flow, inputs: {}) }.not_to raise_error
+      end
+
+      context "with an absolute path" do
+        let(:exec_line) { File.join(@dir, "tools", "check") }
+
+        it "refuses one that is not executable" do
+          make_program(exec_line, mode: 0o644)
+          refused("workflow_program_missing") { |error| expect(error.details["steps"].first["problem"]).to match(/not executable/) }
+        end
+
+        it "refuses a directory" do
+          FileUtils.mkdir_p(exec_line)
+          refused("workflow_program_missing") { |error| expect(error.details["steps"].first["problem"]).to match(/not a file/) }
+        end
+      end
+
+      context "with a ~/ path" do
+        let(:exec_line) { "~/tools/check" }
+
+        it "starts when the file exists under HOME" do
+          make_program(File.join(@dir, "tools", "check"))
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+      end
+
+      context "with a relative path" do
+        let(:exec_line) { "script/check" }
+
+        it "refuses one missing from the checkout" do
+          refused("workflow_program_missing")
+        end
+
+        it "starts when the checkout holds it" do
+          make_program(File.join(worktree, "script", "check"))
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+
+        it "does not judge it in preflight for a checkout that is not made yet" do
+          expect { engine.preflight(definition: flow, workspace: "app", worktree: worktree, inputs: {}, tree: nil, checkout: File.join(@dir, "new")) }.not_to raise_error
+        end
+      end
+
+      context "with {{changed.tests}}" do
+        let(:exec_line) { "check -- {{changed.tests}}" }
+
+        before { make_program(File.join(exec_path, "check")) }
+
+        it "refuses when commands.test_files is empty" do
+          allow(commands_config).to receive(:test_files).with("app.worktree-x").and_return([])
+          refused("workflow_test_files_unset") { |error| expect(error.details).to include("workflow" => "flow", "workspace" => "app.worktree-x", "steps" => ["build"]) }
+        end
+
+        it "starts when commands.test_files is set" do
+          allow(commands_config).to receive(:test_files).with("app.worktree-x").and_return(["spec/**/*_spec.rb"])
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+      end
+    end
+
     describe "a require: command" do
       let(:flow) do
         definition(<<~YAML)
@@ -1370,7 +1473,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "reserves the require codes so step done --code can't forge them" do
-        expect(described_class::ENGINE_CODES).to include("require_commits", "require_nonempty", "require_plan_status", "require_tracked_clean", "require_command", "require_inbox_item", "require_remote_unchanged", "require_remote_unreachable")
+        expect(described_class::ENGINE_CODES).to include("require_commits", "require_nonempty", "require_plan_status", "require_tracked_clean", "require_command", "require_inbox_item", "require_remote_unchanged", "require_remote_unreachable", "require_exec")
       end
     end
 
@@ -3040,6 +3143,70 @@ RSpec.describe Workspace::WorkflowEngine do
       end
       now[0] += 100_000
       expect(engine.tick("wr_1")["state"]).to eq("completed")
+    end
+
+    context "with exec proofs" do
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            build:
+              prompt: Build it.
+              require:
+                - exec: "bin/check -- {{changed.files}}"
+                  timeout: 30s
+                - exec: bin/other
+        YAML
+      end
+
+      before do
+        %w[check other].each do |name|
+          FileUtils.mkdir_p(File.join(worktree, "bin"))
+          File.write(File.join(worktree, "bin", name), "#!/bin/sh\n")
+          File.chmod(0o755, File.join(worktree, "bin", name))
+        end
+        allow(guard).to receive(:changed_paths).and_return(["a.rb".b])
+        allow(commands_config).to receive(:test_files).and_return([])
+      end
+
+      it "runs each with no shell outside the lock, and records only its own fields on the attempt" do
+        start(flow, inputs: {})
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["state"]).to eq("completed")
+        expect(check_calls.map { |call| call[:argv] }).to eq([["bin/check", "--", "a.rb"], ["bin/other"]])
+        expect(check_calls.map { |call| call[:state_during] }).to eq(%w[checking checking])
+        expect(check_calls.first).to include(cwd: worktree, timeout: 30, env: hash_including("WORKSPACE_RUN_ID" => "wr_1",
+          "WORKSPACE_CHANGED_FILES" => %r{/changed-files\z}))
+        expect(check_calls.first[:env]["WORKSPACE_CHANGED_FILES"]).not_to start_with(worktree)
+        expect(attempt["proofs"].map(&:keys).map(&:sort)).to all(eq(%w[ended_at exit_code index log program proof started_at timed_out timeout token]))
+        expect(attempt["proofs"].map { |proof| proof.values_at("index", "program", "timeout") }).to eq([[0, "bin/check", 30], [1, "bin/other", 300]])
+        expect(attempt["proofs"].map { |proof| proof["log"] }).to match([%r{steps/build\.1\.require-exec-0\.\h{8}\.log\z}, %r{steps/build\.1\.require-exec-1\.\h{8}\.log\z}])
+      end
+
+      it "fails the step with require_exec and the program" do
+        start(flow, inputs: {})
+        check_results << {exit_code: 2, timed_out: false}
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]).to include("code" => "failed_check")
+        expect(run["reason"]["details"]).to include("code" => "require_exec", "code_source" => "engine", "cause" => "require", "require" => "exec",
+          "program" => "bin/check", "exit_code" => 2, "log" => %r{build\.1\.require-exec-0\.\h{8}\.log\z})
+        expect(check_calls.size).to eq(1)
+      end
+
+      it "runs a lost exec proof again on a tick only after its own timeout, 60 seconds and the time its git reads may take" do
+        start(flow, inputs: {})
+        store.update("wr_1") do |run|
+          run["state"] = "running"
+          run["steps"]["build"]["state"] = "checking"
+          run["steps"]["build"]["attempts"].last["proofs"] = [{"proof" => "exec", "index" => 0, "token" => "old", "program" => "bin/check", "timeout" => 30, "started_at" => "2026-10-04T12:00:00Z"}]
+        end
+        now[0] += 90 + Workspace::WorkflowRequire::EXEC_SETUP_SECONDS
+        expect(engine.tick("wr_1")).to be_nil
+        now[0] += 1
+        expect(engine.tick("wr_1")["state"]).to eq("completed")
+        expect(check_calls.map { |call| call[:argv] }).to eq([["bin/check", "--", "a.rb"], ["bin/other"]])
+      end
     end
 
     it "fails an attempt stored with no remote reading as unproven, running no remote read" do

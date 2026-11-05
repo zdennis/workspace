@@ -308,7 +308,7 @@ module Workspace
       attempt = state["attempts"].last
       # A `require:` proof outside the run's lock has its own start and limit; a run stored without `proofs` has neither.
       proof = Array(attempt&.dig("proofs")).find { |each| !each.key?("ended_at") }
-      return now - Time.iso8601(proof["started_at"]) > proof["timeout"] + 60 if proof
+      return now - Time.iso8601(proof["started_at"]) > WorkflowRequire.lost_after(proof) if proof
       started = attempt&.dig("check", "started_at")
       step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
       timeout = step.dig("status", "timeout") || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
@@ -340,7 +340,7 @@ module Workspace
     #   step), "pane", "inputs" and "packs" (the refs the first step's instructions use)
     # @raise [Workspace::Error] code `input_required` for a missing input, `usage` for an
     #   unknown one, `workflow_command_unset` when a step's check names a command the
-    #   project has not set, `dirty_worktree` when +tree+ is not clean for a guarded step, `pane_has_run` when the pane already runs a workflow, and
+    #   project has not set, `workflow_test_files_unset` for `{{changed.tests}}` with no `commands.test_files`, `workflow_program_missing` for an `exec` program that can't run (a relative one is judged in +tree+, not at all when it is nil), `dirty_worktree` when +tree+ is not clean for a guarded step, `pane_has_run` when the pane already runs a workflow, and
     #   the composer's errors for a pack that can't be read
     def preflight(definition:, workspace:, worktree:, inputs:, pane: nil, tree: worktree, checkout: nil)
       data = definition.to_h
@@ -350,6 +350,8 @@ module Workspace
       check_tree(data, tree)
       project = @lineage.resolve(cwd: worktree).name
       check_commands(data, project)
+      check_test_files(data, workspace)
+      check_exec_programs(data, tree)
       check_pane(pane)
       check_checkout(tree)
       first = data["steps"].first
@@ -1442,6 +1444,38 @@ module Workspace
       )
     end
 
+    # Every step with an `exec` proof using `{{changed.tests}}` needs the workspace's `commands.test_files`.
+    def check_test_files(data, workspace)
+      steps = exec_steps(data).select { |_step, argv| WorkflowArgv.list_names(argv).include?("changed.tests") }.map(&:first).uniq
+      return if steps.empty? || @commands_config.test_files(workspace).any?
+      raise Workspace::Error.new(
+        "Workflow #{data["id"]} uses {{changed.tests}} in step #{steps.join(", ")}, and #{workspace} has no commands.test_files. Set it: workspace config set commands.test_files \"spec/**/*_spec.rb\" --name #{workspace}",
+        code: "workflow_test_files_unset", details: {"workflow" => data["id"], "workspace" => workspace, "steps" => steps}
+      )
+    end
+
+    # Argument 1 of each `exec` proof must be a program {WorkflowExecProgram} accepts. A relative program is
+    # judged in +tree+, the checkout that exists; nil (a worktree not made yet) leaves it unjudged, since the branch may add it.
+    def check_exec_programs(data, tree)
+      missing = exec_steps(data).filter_map do |step, argv|
+        reason = WorkflowExecProgram.problem(argv.first, checkout: tree)
+        {"step" => step, "program" => argv.first, "problem" => reason} if reason
+      end
+      return if missing.empty?
+      lines = missing.map { |each| "step #{each["step"]}: #{TerminalText.escape(each["program"].to_s.empty? ? "(empty)" : each["program"])} #{TerminalText.escape(each["problem"])}" }
+      raise Workspace::Error.new(
+        "Workflow #{data["id"]} runs programs that can't run:\n  #{lines.join("\n  ")}\nInstall each, fix its path, or edit the workflow. A bare name is looked up on the PATH of the process that starts the step (the daemon's, for a run), which can differ from your shell's.",
+        code: "workflow_program_missing",
+        details: {"workflow" => data["id"], "program" => missing.first["program"], "steps" => missing}
+      )
+    end
+
+    def exec_steps(data)
+      data["steps"].flat_map do |step|
+        Array(step["require"]).select { |entry| entry.is_a?(Hash) && entry["exec"].is_a?(Array) }.map { |entry| [step["id"], entry["exec"]] }
+      end
+    end
+
     # +run_id+ is the run asking, which a park of its own can't refuse.
     def check_pane(pane, run_id: nil)
       return unless pane
@@ -1930,8 +1964,9 @@ module Workspace
 
     # A proof takes the step to `checking` like a `status:` check, so a resume, a cancel, a tick and {#wanted?}
     # treat it as one. Its record stays open (no `ended_at`) until it is applied, or a next {#evaluate} starts over.
+    # A proof's {WorkflowRequire::FACTS_KEY} (what an `exec` proof read of the run under the lock) goes to {WorkflowRequire#run_outside} only.
     def start_proof(run, step, state, attempt, pending)
-      (attempt["proofs"] ||= []) << pending.merge("started_at" => now_iso)
+      (attempt["proofs"] ||= []) << pending.except(WorkflowRequire::FACTS_KEY).merge("started_at" => now_iso)
       state["state"] = "checking"
       run["state"] = "running"
       run["reason"] = nil
@@ -2166,7 +2201,7 @@ module Workspace
     def require_failure(unmet)
       {"cause" => "require", "require" => unmet["proof"], "detail" => unmet["detail"], "unproven" => unmet["unproven"],
        "required" => unmet["required"], "found" => unmet["found"], "base" => unmet["base"], "paths" => unmet["paths"],
-       "reason" => unmet["reason"], "error" => unmet["error"], "exit_code" => unmet["exit_code"], "log" => unmet["log"],
+       "reason" => unmet["reason"], "error" => unmet["error"], "exit_code" => unmet["exit_code"], "log" => unmet["log"], "program" => unmet["program"],
        "before" => unmet["before"], "after" => unmet["after"]}
         .compact.merge(code_for(unmet["code"], nil))
     end

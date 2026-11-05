@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
     expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt events.rotate_size codex.hooks.install])
   end
 
@@ -61,6 +61,29 @@ RSpec.describe Workspace::ConfigSchema do
 
     it "rejects a placeholder other than {workspace} and {branch}" do
       expect { parse("/n/{project}") }.to raise_error(ArgumentError, /{project}.*{workspace}.*{branch}/)
+    end
+  end
+
+  describe "commands.test_files" do
+    def parse(value) = described_class.parse("commands.test_files", value)
+
+    it "splits a whitespace-separated string into globs" do
+      expect(parse("spec/**/*_spec.rb  test/*_test.rb")).to eq(%w[spec/**/*_spec.rb test/*_test.rb])
+    end
+
+    it "takes a YAML list" do
+      expect(parse(["spec/**/*_spec.rb", "./test/*_test.rb"])).to eq(%w[spec/**/*_spec.rb test/*_test.rb])
+    end
+
+    it "refuses empty, absolute, escaping and non-string values" do
+      ["", "  ", [], "/abs/*.rb", "~/x", "../x/*.rb", [1], ["a\u0001b"]].each do |bad|
+        expect { parse(bad) }.to raise_error(ArgumentError)
+      end
+    end
+
+    it "is a layered project key a worktree may override" do
+      key = described_class.key("commands.test_files")
+      expect([key.scope, key.resolve, key.overridable_in, key.sensitive]).to eq([:project, :layered, [:project, :worktree], false])
     end
   end
 

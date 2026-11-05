@@ -67,6 +67,8 @@ module Workspace
 
     # Seconds a `status:` check may run when it names no timeout.
     DEFAULT_CHECK_TIMEOUT = 20 * 60
+    EXEC_DEFAULT_TIMEOUT = 5 * 60
+    EXEC_MAX_TIMEOUT = 2 * 60 * 60
 
     # The `{{name}}` placeholders a prompt may use besides `{{inputs.NAME}}`.
     VARIABLES = %w[workspace branch artifacts run].freeze
@@ -627,9 +629,13 @@ module Workspace
       return problem("#{where}: require must be a list of proofs such as - commits: 1, got #{value.inspect[0, 60]}") || [] unless value.is_a?(Array)
       seen = []
       value.filter_map do |entry|
+        if entry.is_a?(Hash) && entry.key?("exec")
+          exec = exec_entry_from(entry, where, inputs)
+          exec ? (next exec) : next
+        end
         one_proof = entry.is_a?(Hash) && (entry.size == 1 || entry.keys.sort == %w[command optional])
         unless one_proof
-          problem "#{where}: each require entry must be one proof such as commits: 1 (only command: may take optional: true beside it), got #{entry.inspect[0, 60]}"
+          problem "#{where}: each require entry must be one proof such as commits: 1 (only command: may take optional: true beside it, only exec: may take timeout:), got #{entry.inspect[0, 60]}"
           next
         end
         optional = entry.key?("optional")
@@ -652,6 +658,49 @@ module Workspace
         next unless require_value_ok?(name, wanted, where, inputs)
         optional ? {"command" => wanted, "optional" => entry["optional"]} : entry
       end
+    end
+
+    # `exec: "program args"` with an optional `timeout:`, stored as `{"exec" => argv, "timeout" => seconds}`.
+    def exec_entry_from(entry, where, inputs)
+      label = "#{where}: require exec"
+      if entry.key?("optional")
+        problem "#{label} does not take optional:, which only command: does"
+        return nil
+      end
+      extra = entry.keys - %w[exec timeout]
+      unless extra.empty?
+        problem "#{label} takes only timeout: beside it, got #{extra.map(&:inspect).join(", ")}"
+        return nil
+      end
+      text = entry["exec"]
+      unless text.is_a?(String) && text.valid_encoding?
+        problem "#{label} must be a program and its arguments as one string, got #{text.inspect[0, 60]}"
+        return nil
+      end
+      argv, split_problem = WorkflowArgv.split(text)
+      ok = true
+      if split_problem
+        problem "#{label} #{split_problem}"
+        ok = false
+      else
+        problems, = WorkflowArgv.problems(argv, inputs: inputs.keys)
+        problems.each { |each| problem "#{label} #{each}" }
+        ok = problems.empty?
+      end
+      timeout = EXEC_DEFAULT_TIMEOUT
+      if entry.key?("timeout")
+        if entry["timeout"].nil?
+          problem "#{label} timeout must be a duration such as 10m, got nothing"
+          timeout = nil
+        else
+          timeout = duration_from(entry["timeout"], "#{label} timeout")&.ceil
+        end
+      end
+      if timeout && timeout > EXEC_MAX_TIMEOUT
+        problem "#{label} timeout must be at most 2h, got #{entry["timeout"].inspect[0, 60]}"
+        timeout = nil
+      end
+      (ok && timeout) ? {"exec" => argv, "timeout" => timeout} : nil
     end
 
     def require_value_ok?(name, wanted, where, inputs)

@@ -296,5 +296,41 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
       expect(later).to include("proof" => "nonempty")
       expect(described_class.new(script).check(step: step, attempt: {"n" => 1}, from: 2)).to be_nil
     end
+
+    describe "exec entries" do
+      let(:execs) { [{"commits" => 1}, {"exec" => ["a"], "timeout" => 300}, {"exec" => ["b"], "timeout" => 300}] }
+      let(:step) { {"id" => "t", "require" => execs} }
+
+      def script_for(require_text)
+        Workspace::WorkflowSimScript.parse("steps:\n  t: [{require: #{require_text}}]\n", definition: {"id" => "d", "inputs" => {}, "steps" => [step]}, source: "s")
+      end
+
+      def ask(script, from: 0)
+        described_class.new(script).check(step: step, attempt: {"n" => 1}, from: from)
+      end
+
+      it "gives the i-th exec entry the i-th answer, so the second can fail while the first passes" do
+        script = script_for("{exec: [pass, fail]}")
+        expect(ask(script)).to include("proof" => "exec", "code" => "require_exec", "index" => 2, "detail" => "the script says exec entry 2 of 2 fails")
+        expect(ask(script, from: 2)).to include("proof" => "exec")
+        expect(ask(script, from: 3)).to be_nil
+      end
+
+      it "passes when the failing answer belongs to an entry before where it starts" do
+        expect(ask(script_for("{exec: [fail, pass]}"), from: 2)).to be_nil
+      end
+
+      it "applies a bare value to every exec entry" do
+        script = script_for("{exec: fail}")
+        expect(ask(script, from: 2)).to include("proof" => "exec")
+      end
+
+      it "refuses a list whose length differs from the step's exec count" do
+        expect { script_for("{exec: [pass]}") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("invalid_script")
+          expect(e.details["problems"].join).to match(/exec lists 1 answer, but the step has 2 exec entries/)
+        }
+      end
+    end
   end
 end

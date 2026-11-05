@@ -351,11 +351,19 @@ module Workspace
 
       def check(step:, attempt:, from: 0, **)
         said = @script.attempt(step["id"], attempt["n"]).fetch("require", {})
+        execs = 0
+        total = Array(step["require"]).count { |entry| entry.keys.first == "exec" }
         Array(step["require"]).each_with_index do |entry, index|
-          next if index < from
           name = entry.keys.first
-          next unless said[name] == "fail"
-          return {"proof" => name, "code" => "require_#{name}", "detail" => "the script says the #{name} proof fails", "unproven" => false}
+          result = said[name]
+          if name == "exec"
+            result = result[execs] if result.is_a?(Array)
+            execs += 1
+          end
+          next if index < from
+          next unless result == "fail"
+          detail = (name == "exec") ? "the script says exec entry #{execs} of #{total} fails" : "the script says the #{name} proof fails"
+          return {"proof" => name, "index" => index, "code" => "require_#{name}", "detail" => detail, "unproven" => false}
         end
         nil
       end
