@@ -7,7 +7,7 @@ require "tmpdir"
 # repositories; only the two commands `go` calls, and the config lookup, are doubles.
 RSpec.describe Workspace::Commands::Go, "against a real repository" do
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: nil, call: {"outcome" => "started"}, check_agent!: nil, locate_project: {project_workspace: "app"}) }
+  let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: nil, call: {"outcome" => "started"}, check_agent!: nil, check_agent_kind!: nil, locate_project: {project_workspace: "app"}) }
   let(:workflow) { instance_double(Workspace::Commands::Workflow, run: {"outcome" => "started"}) }
   let(:definition) { Workspace::WorkflowDefinition.parse("inputs:\n  task:\nsteps:\n  plan:\n    prompt: Plan.\n", id: "rpiv", source: "global", path: "/defs/rpiv.yml") }
   let(:catalog) { instance_double(Workspace::WorkflowCatalog, find: definition, known_ids: %w[rpiv]) }
@@ -64,7 +64,8 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
     command = described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog,
       start_ref: Workspace::StartRef.new(git: git), git: git, project_detector: Workspace::ProjectDetector.new(state: state, project_config: project_config),
       project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), ticket_source: instance_double(Workspace::TicketSource),
-      protected_branch: Workspace::ProtectedBranch.new(git: git), output: StringIO.new, working_dir: from)
+      protected_branch: Workspace::ProtectedBranch.new(git: git), branch_name_picker: instance_double(Workspace::BranchNamePicker,
+        call: Workspace::BranchNamePicker::Result.new(reason: :disabled)), output: StringIO.new, working_dir: from)
     command.call(**args)
   end
 

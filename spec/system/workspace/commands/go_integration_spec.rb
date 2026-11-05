@@ -76,7 +76,8 @@ RSpec.describe Workspace::Commands::Go, "with a real WorkflowStart and Git" do
     command = described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog,
       start_ref: start_ref, git: git, project_detector: Workspace::ProjectDetector.new(state: state, project_config: project_config),
       project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), ticket_source: instance_double(Workspace::TicketSource),
-      protected_branch: Workspace::ProtectedBranch.new(git: git), output: StringIO.new, working_dir: from)
+      protected_branch: Workspace::ProtectedBranch.new(git: git), branch_name_picker: instance_double(Workspace::BranchNamePicker,
+        call: Workspace::BranchNamePicker::Result.new(reason: :disabled)), output: StringIO.new, working_dir: from)
     command.call(**args)
   end
 
