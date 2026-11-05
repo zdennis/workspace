@@ -664,6 +664,8 @@ RSpec.describe Workspace::CheckoutMove do
     it "is submodule_changes" do
       lib = File.join(@dir, "lib")
       sh("init", "-q", "-b", "main", lib, dir: @dir)
+      sh("config", "user.name", "t", dir: lib)
+      sh("config", "user.email", "t@example.com", dir: lib)
       commit_file("l.txt", "l\n", "l", dir: lib)
       sh("submodule", "add", "-q", lib, "vendor/lib")
       sh("commit", "-q", "-m", "submodule", "--", ".gitmodules", "vendor/lib")
