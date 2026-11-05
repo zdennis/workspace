@@ -9,9 +9,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+
+      - name: Lint
+        run: bundle exec standardrb lib/ spec/
+
+  specs:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SHARDS: 4
+      PROCESSES_PER_SHARD: 3
     steps:
       - uses: actions/checkout@v4
 
@@ -29,8 +50,17 @@ jobs:
           git config --global user.email "ci@example.com"
           git config --global init.defaultBranch main
 
-      - name: Lint
-        run: bundle exec standardrb lib/ spec/
-
       - name: Specs
-        run: bundle exec rspec --format progress
+        run: |
+          total=$((SHARDS * PROCESSES_PER_SHARD))
+          first=$(( (${{ matrix.shard }} - 1) * PROCESSES_PER_SHARD + 1 ))
+          groups=$(for i in $(seq "$first" $((first + PROCESSES_PER_SHARD - 1))); do printf "%s," "$i"; done); groups=${groups%,}
+          mkdir -p tmp
+          bundle exec parallel_rspec -n "$total" --only-group "$groups" --group-by filesize \
+            -o "--format progress --format ParallelTests::RSpec::RuntimeLogger --out tmp/runtime-${{ matrix.shard }}.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-${{ matrix.shard }}
+          path: tmp/runtime-${{ matrix.shard }}.log
