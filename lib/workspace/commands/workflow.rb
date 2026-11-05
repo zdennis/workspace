@@ -1244,7 +1244,7 @@ module Workspace
       # re-ran its own check from a shell could put a fake `git` first on PATH.
       def checked_step?(run)
         step = Array(run.dig("definition", "steps")).find { |each| each["id"] == run["current"] }
-        !!(step && (step["guard"] || step["status"] || Array(step["require"]).any? { |entry| entry.key?("command") }))
+        !!(step && (step["guard"] || step["status"] || Array(step["require"]).any? { |entry| entry.key?("command") || entry.key?("exec") }))
       end
 
       # The caller is in the pane the resume would type into, so nothing is typed:
