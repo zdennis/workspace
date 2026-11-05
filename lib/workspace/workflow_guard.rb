@@ -286,6 +286,27 @@ module Workspace
       paths.first(MAX_PATHS)
     end
 
+    # Every file a step left changed against `base`: committed, staged, unstaged and untracked (not ignored) paths.
+    # Deleted files are left out, a rename lists the new path only, and there is no cap. Filters are handled as in
+    # {#dirty_paths}, through `base_guard`'s `filter_sha256`.
+    #
+    # @param worktree [String] a checkout
+    # @param base [String] a full commit id (40 or 64 hex digits)
+    # @param base_guard [Hash{String=>Object}, nil] the `base_guard` {#base} recorded
+    # @return [Array<String>, nil] sorted unique binary-encoded paths (bytes exact) relative to the checkout, a nested
+    #   repository (listed as `dir/`) left out; nil when `base` is not a full id
+    #   or git can't answer
+    def changed_paths(worktree, base:, base_guard:)
+      return nil unless base.to_s.match?(/\A(\h{40}|\h{64})\z/)
+      options = filter_options(worktree, {"base_guard" => base_guard})
+      return nil unless options
+      tracked, ok = git(worktree, *options, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=d", base, "--", scrub: false)
+      return nil unless ok
+      untracked, ok = git(worktree, *options, "ls-files", "-z", "--others", "--exclude-standard", scrub: false)
+      return nil unless ok
+      (tracked.b.split("\0".b) + untracked.b.split("\0".b)).reject { |path| path.end_with?("/") }.uniq.sort
+    end
+
     # @param worktree [String] a checkout
     # @return [Boolean] whether a rebase, merge, cherry-pick, revert or bisect is under way; true when git can't say
     def operation_in_progress?(worktree)
@@ -470,17 +491,17 @@ module Workspace
 
     # @param hooks [Boolean] leave `core.hooksPath` alone, to read what it is set to
     # @return [Array(String, Boolean, Integer)] stdout, success, and the exit code (1 for a failure with no message)
-    def git(worktree, *args, hooks: false)
+    def git(worktree, *args, hooks: false, scrub: true)
       env_extra = (args.first == "--version" || !attr_source?(worktree)) ? {} : {"GIT_ATTR_SOURCE" => "HEAD"}
-      run_git(worktree, *args, hooks: hooks, env: env_extra)
+      run_git(worktree, *args, hooks: hooks, env: env_extra, scrub: scrub)
     end
 
-    def run_git(worktree, *args, hooks: false, env: {}, timeout: GIT_TIMEOUT)
+    def run_git(worktree, *args, hooks: false, env: {}, timeout: GIT_TIMEOUT, scrub: true)
       inherited = ENV.keys.select { |name| name.start_with?("GIT_") }.to_h { |name| [name, nil] }
       options = hooks ? HARDENED_OPTIONS : HARDENED_OPTIONS + NO_HOOKS
       out, err, ok = @runner.call([@git_path, *options, "-C", worktree, *args], chdir: worktree, timeout: timeout,
         env: inherited.merge(HARDENED_ENV).merge(env), max_bytes: MAX_OUTPUT)
-      [out.to_s.scrub, ok, exit_code(ok, err)]
+      [scrub ? out.to_s.scrub : out.to_s, ok, exit_code(ok, err)]
     rescue SystemCallError, Timeout::Error, Workspace::TimedProcess::OutputTooLarge
       ["", false, 2]
     end
