@@ -190,7 +190,7 @@ A project can run a script around `dev up` through its `hooks` mapping in `~/.co
 
 Both are advisory: a hook that fails (non-zero exit) is a stderr warning and never stops `dev up`. They run synchronously in the `dev up` process, so a slow hook delays the command. A queued wrapper's `pre_dev_up` can precede the actual start by as long as the queue takes, and can run for a start that is later refused (a takeover that runs into a workflow run) or abandoned (`--max-wait` expiry).
 
-The hook runs with `WORKSPACE_PROJECT` (the project's name), `WORKSPACE_WORKTREE` (the worktree root) and `WORKSPACE_BRANCH` in its environment, from the project's root directory.
+The hook runs with `WORKSPACE_PROJECT` (the project's name), `WORKSPACE_WORKTREE` (the worktree root) and `WORKSPACE_BRANCH` in its environment, from the project's root directory when one can be resolved.
 
 A hook that itself calls `workspace dev` can deadlock on the `devenv` lock or the config file locks — do not start or stop dev environments from a hook.
 
