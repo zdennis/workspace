@@ -241,12 +241,26 @@ RSpec.describe Workspace::Commands::Dev do
         end
       end
 
-      it "fires pre_dev_up before the wrapper is opened and post_dev_up once the environment is up, with the worktree and branch in the env" do
-        expect(dev(hook_runner: hook_runner).up(working_dir: login)).to eq(exit_code: 0)
+      it "fires pre_dev_up before the wrapper window is opened and post_dev_up once the environment is up, with the worktree and branch in the env" do
+        observing_tmux = Class.new(FakeDevWindowTmux) do
+          def initialize(spawner, events)
+            super(spawner)
+            @events = events
+          end
 
-        expect(events.map(&:first)).to eq(["pre_dev_up", "post_dev_up"])
+          def new_window(session, **kwargs)
+            @events << :new_window
+            super
+          end
+        end
+        observing = observing_tmux.new(method(:spawn_wrapper), events)
+        result = dev(tmux: observing, hook_runner: hook_runner).up(working_dir: login)
+
+        expect(result).to eq(exit_code: 0)
+        expect(events.map { |each| each.is_a?(Symbol) ? each : each.first }).to eq(["pre_dev_up", :new_window, "post_dev_up"])
         expect(events[0][1]).to include("WORKSPACE_WORKTREE" => login, "WORKSPACE_BRANCH" => "feat/login")
-        expect(tmux.windows.size).to eq(1)
+        expect(events[2][1]).to include("WORKSPACE_WORKTREE" => login, "WORKSPACE_BRANCH" => "feat/login")
+        expect(observing.windows.size).to eq(1)
       end
 
       it "fires pre_dev_up once per wrapper created, so a queued start fires it again" do
@@ -323,15 +337,27 @@ RSpec.describe Workspace::Commands::Dev do
         expect(events.map(&:first)).to eq(["pre_dev_up"])
       end
 
-      it "fires neither hook when up is refused, because no command is configured or another worktree holds the lock" do
+      it "leaves up unchanged when a hook fails or raises: advisory, exit code unaffected" do
+        advisory = double("hook_runner")
+        allow(advisory).to receive(:run).and_return(false)
+
+        expect(dev(hook_runner: advisory).up(working_dir: login)).to eq(exit_code: 0)
+        expect(output.string).to include("Dev environment running for")
+      end
+
+      it "fires pre_dev_up but not post_dev_up when up is refused because no command is configured" do
+        dev_settings.delete("up")
+
+        expect { dev(hook_runner: hook_runner).up(working_dir: login) }.to raise_error(Workspace::Error, /No dev command configured/)
+
+        expect(events).to be_empty
+      end
+
+      it "fires neither hook when up is refused because another worktree holds the lock" do
         dev.up(working_dir: login)
 
-        dev_settings.delete("up")
-        expect { dev(hook_runner: hook_runner).up(working_dir: main) }.to raise_error(Workspace::Error, /No dev command configured/)
-        expect(events).to be_empty
-
-        dev_settings["up"] = "exec sleep 30"
         expect(dev(hook_runner: hook_runner).up(working_dir: main)).to eq(exit_code: 1)
+
         expect(events).to be_empty
       end
     end

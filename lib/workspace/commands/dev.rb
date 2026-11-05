@@ -750,6 +750,10 @@ module Workspace
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
+      # Opens the wrapper's tmux window, or reuses this worktree's live one.
+      # Firing the project's `pre_dev_up` hook here (once a new window is
+      # actually about to be created) is the one place all four `up` paths
+      # pass through.
       def open_wrapper(ctx, session, wait:, takeover: false, delegate_for: nil)
         env = passthrough_env
         env[TAKEOVER_ENV] = "1" if takeover
@@ -832,8 +836,8 @@ module Workspace
 
       # Runs one project hook through the injected runner, with the worktree and
       # branch in the env (`WORKSPACE_PROJECT` the runner adds itself). Advisory:
-      # the runner never raises, its return value is ignored, and a nil runner
-      # (any direct construction) runs nothing.
+      # the runner is not expected to raise and its return value is ignored, and
+      # a nil runner (any direct construction) runs nothing.
       def run_hook(ctx, event)
         @hook_runner&.run(ctx[:project], event,
           env: {"WORKSPACE_WORKTREE" => ctx[:worktree], "WORKSPACE_BRANCH" => ctx[:branch]})
