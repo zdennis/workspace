@@ -1185,6 +1185,18 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       expect(start).to have_received(:payload).with("fix-the-login-bug", hash_including(title: "Fix the login bug"))
     end
 
+    it "starts a derived branch under its own name and, when the run fails, points the retry at the same checkout" do
+      derived_path = File.join(dir, ".worktrees", "login-fix")
+      allow(start).to receive(:payload).and_return({exit_code: 0, json: started.merge("path" => derived_path, "branch" => "login-fix")})
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timed out"))
+
+      expect { command.call(id: "flow", prompt: "Fix the login bug", derived_branch: "login-fix") }.to raise_error(Workspace::Error) do |e|
+        expect(e.details).to include("path" => derived_path, "workspace" => "app.worktree-proj-1")
+        expect(e.details["next"]).to eq(["workspace workflow run flow --name app.worktree-proj-1 --input task=Fix\\ the\\ login\\ bug"])
+      end
+      expect(start).to have_received(:payload).with("login-fix", hash_including(title: "Fix the login bug"))
+    end
+
     it "titles the task with only the prompt's first line" do
       command.call(id: "flow", prompt: "Fix the login bug\n\nIt fails on Safari.", branch: "fix-login")
 
