@@ -602,6 +602,7 @@ module Workspace
       event_log: event_log,
       bound_run: bound_run,
       dev_events: dev_events,
+      hook_runner: hook_runner,
       snapshot_client: agent_snapshot_client,
       session_ledger: session_ledger,
       output: output,

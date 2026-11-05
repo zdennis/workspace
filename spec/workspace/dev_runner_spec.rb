@@ -692,9 +692,16 @@ RSpec.describe Workspace::ProcessGroupTerminator do
 
   it "reports :not_running for a group that no longer exists" do
     pgid = spawn_group("exit")
-    sleep 0.3
+    # A fixed sleep lost the race with ruby's startup on a loaded machine; wait
+    # for the group to be gone (bounded) instead of guessing how long that takes.
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+    terminator = described_class.new(poll_interval: 0.05)
+    while terminator.running?(pgid)
+      raise "process group never went away" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      sleep 0.05
+    end
 
-    expect(described_class.new.terminate(pgid, stop_timeout: 1)).to eq(:not_running)
+    expect(terminator.terminate(pgid, stop_timeout: 1)).to eq(:not_running)
   end
 
   it "sends SIGTERM to the leader alone when given one, and SIGKILL to the group after stop_timeout" do

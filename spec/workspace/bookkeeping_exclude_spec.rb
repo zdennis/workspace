@@ -30,6 +30,7 @@ RSpec.describe Workspace::BookkeepingExclude do
   before do
     FileUtils.mkdir_p(File.join(repo, ".claude"))
     git("init", "-q")
+    FileUtils.rm_f(exclude_file) # git init ships one with template comments; the specs start from no file
   end
 
   describe "#backup" do

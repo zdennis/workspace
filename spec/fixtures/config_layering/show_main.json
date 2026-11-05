@@ -2056,7 +2056,7 @@
         "worktree"
       ],
       "layers": [],
-      "doc": "Project-specific hooks (e.g., `post_launch`)",
+      "doc": "Project-specific hooks run around workspace commands (e.g., `post_launch`, `pre_dev_up`, `post_dev_up`)",
       "problems": []
     },
     {

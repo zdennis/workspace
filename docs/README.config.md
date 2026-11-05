@@ -381,7 +381,7 @@ New codes may be added; treat an unknown one by its `severity`.
 | Setting | Description |
 |---------|-------------|
 | `dev.configured` | Read-only, shown by `config show --json` only: `effective` is `true` when the project's `dev.up` is set, which is what makes `start` and `launch` send the `dev` pack. Not a key to write |
-| `hooks` | Project-specific hooks (e.g., `post_launch`) |
+| `hooks` | Project-specific hooks run around workspace commands (e.g., `post_launch`, `pre_dev_up`, `post_dev_up`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
 | `pipeline` | Deprecated (use [`workspace workflow`](README.workflow.md)): pipeline stages (`pipeline.panes`: role, timeout) the agent daemon dispatches work through |

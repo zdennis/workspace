@@ -241,7 +241,7 @@ RSpec.describe Workspace::Commands::Notes do
       end
 
       it "raises notes_dir_unwritable when the exclude line can't be written" do
-        FileUtils.mkdir_p(File.dirname(exclude_file))
+        FileUtils.rm_f(exclude_file) # git init ships one; the example needs a directory in its place
         FileUtils.mkdir_p(exclude_file)
 
         expect { command.dir(name: "api.worktree-x", create: true) }.to raise_error(Workspace::Error) { |e|
