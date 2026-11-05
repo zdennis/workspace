@@ -50,6 +50,14 @@ RSpec.configure do |config|
   config.order = :random
   Kernel.srand config.seed
 
+  # The directory a spec sits in is its tier; a type: written on a group wins.
+  %i[unit integration system].each do |tier|
+    config.define_derived_metadata(file_path: %r{/spec/#{tier}/}) { |meta| meta[:type] ||= tier }
+  end
+
+  SpawnGuard.install
+  config.around { |example| SpawnGuard.guard(example) }
+
   config.around do |example|
     Dir.mktmpdir("workspace-spec-codex-home") do |dir|
       ENV["CODEX_HOME"] = dir
