@@ -1,14 +1,17 @@
 schema_version: 1
 id: rpiv-auto-approve
 title: Research, Plan, Implement, Verify (auto-approve)
-description: One feature end to end with no person, three reviewer agents voting on the plan, and a test-backed verify loop.
+description: One feature end to end with no person, three isolated reviewer conversations the engine dispatches on the plan, and a test-backed verify loop.
 extends: rpiv
 
 use_when: A feature or change to build end to end when no person will review the plan.
 
-# Five steps, nine plan rejections and three trips back from verify fit in twenty-nine;
-# three more cover a step run again for a file it didn't write.
-max_attempts: 32
+# A rejection round costs five attempts (plan, three reviewers, the tally; attempts_made
+# counts every step of the run), so nine retries plus the approving round are 50. Research
+# adds 1 and implement and verify with three trips back from verify add 8. Attempts a
+# redelivery re-runs do not count against max_attempts, so 68 is a safe ceiling rather
+# than an exact worst case.
+max_attempts: 68
 
 replace:
   plan:
@@ -40,47 +43,121 @@ replace:
     timeout: 45m
 
 steps:
-  plan_review:
+  review_supportive:
     after: plan
-    title: Plan review
-    # The conversation stays the planner's, so a rejection goes back to the agent that wrote
-    # the plan. The reviewers are sub-agents, so they read it fresh all the same.
-    context: continue
+    title: Supportive review
+    # A conversation of its own, dispatched by the engine: none of the planner's or another
+    # reviewer's reasoning is in it, and the run's attempt record ties it to its session.
+    context: fresh
     prompt: |
-      Decide whether the workspace plan (`workspace plan path`) may go ahead. No person will
-      look at it, so this review is the only approval it gets.
+      You are the supportive reviewer of the workspace plan (`workspace plan path`). No person
+      will look at it, so this review is the only approval it gets.
       Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
-      {{artifacts}}/research.md. Do not edit the plan or change code.
-      Start three reviewer sub-agents in one message, each with its own fresh context, giving each
-      the paths and this task, and none of the others' answers from this round:
-      - supportive: look for what makes the plan sound, and approve unless something would
-        really stop it working.
-      - skeptical: assume the plan is wrong and try to prove it: missing cases, wrong order,
-        steps that can't be undone, requirements of the task it doesn't meet. Approve only
-        if you can't find a blocking problem.
-      - implementer: you will have to build this. Check each task is small, ordered, testable
-        and says enough to start, and approve unless something would really stop you.
-      If {{artifacts}}/plan-approval.md exists, give all three its path: it is the last round's
-      result, there to show what was objected to, and no one's vote carries over. Each checks
-      the objections were answered, and rejects for a new problem only if
-      it blocks the plan.
-      Each answers approve or reject, with its reasons. Don't resolve a disagreement yourself and
-      don't run a reviewer again. The plan is approved when the skeptical reviewer and at least
-      one other approve; the check works that out from the lines below.
-      Write {{artifacts}}/plan-approval.md with exactly these four lines first, in this order and
-      with no other formatting, then each reviewer's reasons:
+      {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
+      but your own verdict file.
+      Your brief: look for what makes the plan sound, and approve unless something would
+      really stop it working.
+      Write {{artifacts}}/approval-supportive.md with exactly these three lines first, in this
+      order and with no other formatting, then your reasons:
+      reviewer: supportive
+      verdict: approve or reject
+      plan_revision: REV
+    produces: [approval-supportive.md]
+    guard: unchanged
+    timeout: 30m
+
+  review_skeptical:
+    after: review_supportive
+    title: Skeptical review
+    context: fresh
+    prompt: |
+      You are the skeptical reviewer of the workspace plan (`workspace plan path`). No person
+      will look at it, so this review is the only approval it gets.
+      Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
+      {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
+      but your own verdict file.
+      Your brief: assume the plan is wrong and try to prove it: missing cases, wrong order,
+      steps that can't be undone, requirements of the task it doesn't meet. Approve only
+      if you can't find a blocking problem.
+      Write {{artifacts}}/approval-skeptical.md with exactly these three lines first, in this
+      order and with no other formatting, then your reasons:
+      reviewer: skeptical
+      verdict: approve or reject
+      plan_revision: REV
+    produces: [approval-skeptical.md]
+    guard: unchanged
+    timeout: 30m
+
+  review_implementer:
+    after: review_skeptical
+    title: Implementer review
+    context: fresh
+    prompt: |
+      You are the implementer reviewer of the workspace plan (`workspace plan path`). No person
+      will look at it, so this review is the only approval it gets. You will have to build this.
+      Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
+      {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
+      but your own verdict file.
+      Your brief: check each task is small, ordered, testable and says enough to start, and
+      approve unless something would really stop you.
+      Write {{artifacts}}/approval-implementer.md with exactly these three lines first, in this
+      order and with no other formatting, then your reasons:
+      reviewer: implementer
+      verdict: approve or reject
+      plan_revision: REV
+    produces: [approval-implementer.md]
+    guard: unchanged
+    timeout: 30m
+
+  plan_review:
+    after: review_implementer
+    title: Plan review
+    # The tally reads the three verdict files and writes the summary the plan step reads for
+    # the last round's objections, and posts the round's outcome to the person's inbox. It is
+    # a fresh conversation with no reviewer's reasoning in it.
+    context: fresh
+    prompt: |
+      Read the three reviewer verdict files under {{artifacts}}: approval-supportive.md,
+      approval-skeptical.md and approval-implementer.md. Each holds its reviewer, verdict and
+      plan_revision header lines, then the reviewer's reasons.
+      Run `workspace plan status --json` and take `plans[0].revision` as REV.
+      Write {{artifacts}}/plan-approval.md with exactly these four lines first, in this order
+      and with no other formatting — each verdict quoted from the matching verdict file:
       plan_revision: REV
       supportive: approve or reject
       skeptical: approve or reject
       implementer: approve or reject
+      Then each reviewer's reasons, quoted from its verdict file.
+      Post one inbox item so the person can audit this round: title `Plan review:
+      <approve|reject>`, type `review_request`, `--link-run {{run}} --dedupe-key
+      rpiv-auto-approve:{{run}} --reopen --expires 168h`, its text the four summary lines.
+      Do not edit the plan, the verdict files, or code.
     produces: [plan-approval.md]
     guard: unchanged
-    # Done only when the skeptic and one other approved the plan as it stands now. A rejection goes back to plan.
+    # Done only when every verdict file is there, each names its own role and the plan as it
+    # stands now, the summary matches the verdicts, and the skeptic plus one other approved.
+    # A rejection or a malformed round goes back to plan.
     status:
       run: |
-        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; revision, supportive, skeptical, implementer = File.readlines(File.join(ENV.fetch("WORKSPACE_RUN_ARTIFACTS"), "plan-approval.md"), chomp: true); exit(plan && plan["revision"] && revision == "plan_revision: #{plan["revision"]}" && skeptical == "skeptical: approve" && (supportive == "supportive: approve" || implementer == "implementer: approve") ? 0 : 1)'
+        workspace plan status --json | ruby -rjson -e '
+          plan = JSON.parse($stdin.read)["plans"].to_a.first
+          dir = ENV.fetch("WORKSPACE_RUN_ARTIFACTS")
+          roles = %w[supportive skeptical implementer]
+          revision = plan && plan["revision"]
+          votes = roles.map do |role|
+            path = File.join(dir, "approval-#{role}.md")
+            lines = File.file?(path) ? File.readlines(path, chomp: true).first(3) : []
+            fields = lines.to_h { |line| [line[/\A[a-z_]+/].to_s, line[/\A[a-z_]+: (.*)\z/, 1].to_s] }
+            next "missing" unless fields["reviewer"] == role && fields["plan_revision"] == revision && %w[approve reject].include?(fields["verdict"])
+            fields["verdict"]
+          end
+          approval = File.join(dir, "plan-approval.md")
+          summary = File.file?(approval) ? File.readlines(approval, chomp: true).first(4) : []
+          expected = ["plan_revision: #{revision}", *roles.each_with_index.map { |role, i| "#{role}: #{votes[i]}" }]
+          exit(revision && summary == expected && votes[1] == "approve" && votes.count("approve") >= 2 ? 0 : 1)
+        '
     on_fail:
       goto: plan
       max: 9
-      context: continue
+      context: fresh
     timeout: 30m

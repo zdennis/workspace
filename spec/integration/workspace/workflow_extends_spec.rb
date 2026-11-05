@@ -378,7 +378,8 @@ RSpec.describe "workflow extends" do
       actual = real.find("rpiv-auto-approve").to_h
 
       expect(actual).to eq(expected)
-      expect(actual["steps"].map { |s| s["id"] }).to eq(%w[research plan plan_review implement verify])
+      expect(actual["steps"].map { |s| s["id"] })
+        .to eq(%w[research plan review_supportive review_skeptical review_implementer plan_review implement verify])
     end
   end
 end

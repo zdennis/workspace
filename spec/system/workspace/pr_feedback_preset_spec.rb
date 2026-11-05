@@ -47,44 +47,78 @@ RSpec.describe "the shipped workflow presets" do
     let(:steps) { catalog.find("rpiv-auto-approve").to_h["steps"] }
     let(:review) { steps.find { |step| step["id"] == "plan_review" } }
     let(:bin) { File.join(dir, "bin") }
+    let(:roles) { %w[supportive skeptical implementer] }
 
-    def check(approval, revision: "abc123")
+    def verdicts(**votes)
+      roles.to_h { |role| [role, "reviewer: #{role}\nverdict: #{votes.transform_keys(&:to_s).fetch(role, "approve")}\nplan_revision: abc123\nreasons\n"] }
+    end
+
+    def check(approval, revision: "abc123", verdicts: nil)
+      verdicts ||= self.verdicts
       FileUtils.mkdir_p(bin)
-      File.write(File.join(dir, "plan-approval.md"), approval)
+      File.write(File.join(dir, "plan-approval.md"), approval) if approval
+      verdicts.each { |role, text| File.write(File.join(dir, "approval-#{role}.md"), text) if text }
       File.write(File.join(bin, "workspace"), "#!/bin/sh\necho '#{JSON.generate("plans" => [{"revision" => revision}])}'\n")
       File.chmod(0o755, File.join(bin, "workspace"))
       env = {"PATH" => "#{bin}:#{ENV["PATH"]}", "WORKSPACE_RUN_ARTIFACTS" => dir}
       Open3.capture2e(env, "sh", "-c", review["status"]["run"]).last.success?
     end
 
-    it "runs rpiv's steps with a reviewed plan and no gate" do
-      expect(steps.map { |step| step["id"] }).to eq(%w[research plan plan_review implement verify])
+    it "runs rpiv's steps with three isolated reviewer steps and a tally, and no gate" do
+      expect(steps.map { |step| step["id"] })
+        .to eq(%w[research plan review_supportive review_skeptical review_implementer plan_review implement verify])
       expect(steps.map { |step| step["gate"] }.compact).to be_empty
-      expect(review["on_fail"]).to include("goto" => "plan", "max" => 9, "context" => "continue")
-      expect(review["context"]).to eq("continue")
+      expect(review["on_fail"]).to include("goto" => "plan", "max" => 9, "context" => "fresh")
+      expect(review["context"]).to eq("fresh")
+      reviewers = steps.select { |step| step["id"].start_with?("review_") }
+      expect(reviewers).to all(include("context" => "fresh", "guard" => "unchanged"))
+      expect(reviewers.map { |step| step["produces"] }).to eq([%w[approval-supportive.md], %w[approval-skeptical.md], %w[approval-implementer.md]])
     end
 
     it "passes only when the skeptic and one other approved the current plan" do
       approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\nimplementer: approve\n"
 
       expect(check(approved)).to be(true)
-      expect(check(approved.sub("skeptical: approve", "skeptical: reject"))).to be(false)
-      expect(check(approved.sub("supportive: approve", "supportive: reject"))).to be(true)
-      expect(check(approved.sub("implementer: approve", "implementer: reject"))).to be(true)
-      expect(check(approved.sub("supportive: approve", "supportive: reject").sub("implementer: approve", "implementer: reject"))).to be(false)
+      expect(check(approved.sub("skeptical: approve", "skeptical: reject"), verdicts: verdicts(skeptical: "reject"))).to be(false)
+      expect(check(approved.sub("supportive: approve", "supportive: reject"), verdicts: verdicts(supportive: "reject"))).to be(true)
+      expect(check(approved.sub("implementer: approve", "implementer: reject"), verdicts: verdicts(implementer: "reject"))).to be(true)
+      expect(check(approved.sub("supportive: approve", "supportive: reject").sub("implementer: approve", "implementer: reject"),
+        verdicts: verdicts(supportive: "reject", implementer: "reject"))).to be(false)
       expect(check(approved, revision: "def456")).to be(false)
     end
 
-    it "reads the votes from the header, never from a reviewer's reasons" do
-      rejected = "plan_revision: abc123\nsupportive: approve\nskeptical: reject\nimplementer: approve\n"
+    it "refuses a round whose verdict files are missing, misattributed, stale or invalid" do
+      approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\nimplementer: approve\n"
 
-      expect(check(rejected)).to be(false)
-      expect(check(rejected + "\n## Reasons\nskeptical: approve\n")).to be(false)
-      expect(check("plan_revision: abc123\nskeptical: approve\nskeptical: reject\nsupportive: approve\n")).to be(false)
+      expect(check(approved, verdicts: verdicts.merge("skeptical" => nil))).to be(false)
+      expect(check(approved, verdicts: verdicts.merge("skeptical" => "reviewer: supportive\nverdict: approve\nplan_revision: abc123\n"))).to be(false)
+      expect(check(approved, verdicts: verdicts.merge("supportive" => "reviewer: skeptical\nverdict: approve\nplan_revision: abc123\n"))).to be(false)
+      expect(check(approved, verdicts: verdicts.merge("skeptical" => "reviewer: skeptical\nverdict: approve\nplan_revision: def456\n"))).to be(false)
+      expect(check(approved, verdicts: verdicts.merge("skeptical" => "reviewer: skeptical\nverdict: maybe\nplan_revision: abc123\n"))).to be(false)
+      # the summary must be what the verdict files say, not the other way round
+      expect(check(approved.sub("supportive: approve", "supportive: reject"))).to be(false)
+      expect(check(approved, verdicts: verdicts(skeptical: "reject"))).to be(false)
     end
 
-    it "leaves attempts for every rejection the loops allow" do
-      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to be >= 29
+    it "refuses a round with no plan-approval.md summary" do
+      approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\nimplementer: approve\n"
+
+      expect(check(nil, verdicts: verdicts)).to be(false)
+      expect(check(approved)).to be(true) # the same fixture passes once the summary is written
+    end
+
+    it "reads the votes from the verdict files' headers, never from a reviewer's reasons" do
+      rejected = "plan_revision: abc123\nsupportive: approve\nskeptical: reject\nimplementer: approve\n"
+
+      expect(check(rejected, verdicts: verdicts(skeptical: "reject"))).to be(false)
+      expect(check(rejected, verdicts: verdicts(skeptical: "reject").merge(
+        "skeptical" => "reviewer: skeptical\nverdict: reject\nplan_revision: abc123\n## Reasons\nskeptical: approve\n"
+      ))).to be(false)
+      expect(check(rejected + "\n## Reasons\nskeptical: approve\n", verdicts: verdicts(skeptical: "reject"))).to be(false)
+    end
+
+    it "leaves attempts for every rejection round the loop allows" do
+      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to be >= 68
     end
   end
 
