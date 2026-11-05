@@ -3,8 +3,8 @@ require "stringio"
 require "tmpdir"
 
 # Adversarial probing of the `dev.startup_timeout` / `dev.ready_timeout`
-# config keys added in 8016f33. See spec/workspace/commands/config_spec.rb
-# and spec/workspace/dev_config_spec.rb for the happy-path coverage this
+# config keys added in 8016f33. See spec/system/workspace/commands/config_spec.rb
+# and spec/unit/workspace/dev_config_spec.rb for the happy-path coverage this
 # commit already added.
 RSpec.describe "dev.startup_timeout / dev.ready_timeout adversarial probing" do
   def build_config_command(output: StringIO.new)

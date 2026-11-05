@@ -3,8 +3,8 @@ require "tmpdir"
 require "socket"
 
 # Adversarial CLI-facing coverage for `workspace agent-run restart` /
-# restart_agent, on top of spec/workspace/commands/restart_agent_spec.rb and
-# spec/workspace/commands/agent_restart_message_spec.rb. Each `it` documents
+# restart_agent, on top of spec/unit/workspace/commands/restart_agent_spec.rb and
+# spec/integration/workspace/commands/agent_restart_message_spec.rb. Each `it` documents
 # one confirmed defect, tagged with an ID (see H2 review notes).
 RSpec.describe "agent-run restart adversarial CLI behavior" do
   # Unix socket paths cap at 104 bytes on macOS, so stay under /tmp directly.

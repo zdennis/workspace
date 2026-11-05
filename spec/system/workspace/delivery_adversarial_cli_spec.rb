@@ -90,7 +90,7 @@ RSpec.describe "delivery adversarial (CLI/UX)" do
     # in the CLI for a shape only Commands::Launch/Commands::Start ever
     # produce, the contract is pinned at the source: both #call methods must
     # return a Hash with :exit_code and :prompt_failures keys (or nil, which
-    # the CLI already handles). spec/workspace/commands/launch_spec.rb:245
+    # the CLI already handles). spec/unit/workspace/commands/launch_spec.rb:245
     # already asserts the exact shape for a real Launch#call; this test
     # holds the same contract for Start#call, and asserts the general shape
     # for both so a future change to either can't drift silently.

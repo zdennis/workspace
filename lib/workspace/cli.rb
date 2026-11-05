@@ -3997,13 +3997,13 @@ module Workspace
         },
         {
           label: "inject --interrupt — urgent steer: stop current stage and redirect",
-          cli: "workspace agent-run inject --interrupt --work-item WC-42 --body \"Stop. Run bundle exec rspec spec/workspace/cli_spec.rb first.\"",
+          cli: "workspace agent-run inject --interrupt --work-item WC-42 --body \"Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.\"",
           message: {
             "type" => "inject",
             "workspace" => name,
             "work_item_ref" => "WC-42",
             "interrupt" => true,
-            "body" => "Stop. Run bundle exec rspec spec/workspace/cli_spec.rb first."
+            "body" => "Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first."
           }
         },
         {

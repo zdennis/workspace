@@ -3,7 +3,7 @@ require "tmpdir"
 
 # Adversarial CLI/UX specs for headless launch (T8). Each `it` is one
 # confirmed defect, tagged with an ID for the report. See
-# spec/workspace/headless_launch_adversarial_concurrency_spec.rb for the
+# spec/system/workspace/headless_launch_adversarial_concurrency_spec.rb for the
 # concurrency-focused half of this review.
 RSpec.describe "headless launch adversarial (CLI/UX)" do
   describe "HU1: relaunch aborts before launching headless projects" do
