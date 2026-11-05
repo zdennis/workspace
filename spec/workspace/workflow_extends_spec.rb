@@ -84,6 +84,14 @@ RSpec.describe "workflow extends" do
     expect(data["steps"].find { |s| s["id"] == "three" }["on_fail"]).to include("goto" => "one")
   end
 
+  it "keeps the stored argv of an exec proof in a replaced step" do
+    write(global_dir, "kid", "extends: base\nreplace:\n  one:\n    prompt: Uno\n    produces: [uno.md]\n    require:\n      - exec: \"script/check -- {{changed.files}}\"\n        timeout: 90s\n")
+
+    one = catalog.find("kid").steps.find { |s| s["id"] == "one" }
+
+    expect(one["require"]).to eq([{"exec" => ["script/check", "--", "{{changed.files}}"], "timeout" => 90}])
+  end
+
   it "keeps a replaced step where it was, ahead of the steps after it" do
     write(global_dir, "kid", "extends: base\nreplace:\n  one: {prompt: Uno, produces: [uno.md]}\n  two: {prompt: Dos, produces: [dos.md]}\n")
 

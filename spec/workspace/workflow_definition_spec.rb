@@ -646,6 +646,78 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(parse(yaml).steps.first["require"]).to eq([{"inbox_item" => "k:{{inputs.task}}"}])
     end
 
+    describe "exec" do
+      def exec_yaml(*entries)
+        "inputs:\n  task: {}\nsteps:\n  build:\n    prompt: B.\n    require:\n#{entries.map { |e| "      - #{e}\n" }.join}"
+      end
+
+      it "stores the argv and the timeout in seconds" do
+        list = parse(exec_yaml("exec: \"script/check --task '{{inputs.task}}' -- {{changed.files}}\"\n        timeout: 10m")).steps.first["require"]
+        expect(list).to eq([{"exec" => ["script/check", "--task", "{{inputs.task}}", "--", "{{changed.files}}"], "timeout" => 600}])
+        expect(list.first.keys.first).to eq("exec")
+      end
+
+      it "defaults the timeout to 5 minutes" do
+        expect(parse(exec_yaml("exec: script/check")).steps.first["require"]).to eq([{"exec" => ["script/check"], "timeout" => 300}])
+      end
+
+      it "accepts two exec entries" do
+        list = parse(exec_yaml("exec: a one", "exec: b two")).steps.first["require"]
+        expect(list.map { |e| e["exec"] }).to eq([%w[a one], %w[b two]])
+      end
+
+      it "refuses what the argv check refuses, each as a problem" do
+        expect(problems(exec_yaml("exec: \"check 'oops\""))).to include(/step build: require exec has an unbalanced quote/)
+        expect(problems(exec_yaml("exec: \"check {{nope}}\""))).to include(/require exec uses \{\{nope\}\}/)
+        expect(problems(exec_yaml("exec: \"check x{{changed.files}}\""))).to include(/require exec uses \{\{changed.files\}\} inside the word/)
+        expect(problems(exec_yaml("exec: \"{{checkout}}/check\""))).to include(/require exec has \{\{checkout\}\} in the program/)
+        expect(problems(exec_yaml("exec: 5"))).to include(/require exec must be a program and its arguments as one string/)
+      end
+
+      it "refuses optional: beside exec" do
+        expect(problems(exec_yaml("exec: check\n        optional: true"))).to include(/require exec does not take optional:/)
+      end
+
+      it "refuses a bad timeout and one over 2 hours, and takes 2h" do
+        expect(problems(exec_yaml("exec: check\n        timeout: soon"))).to include(/require exec timeout/)
+        expect(problems(exec_yaml("exec: check\n        timeout: 3h"))).to include(/require exec timeout must be at most 2h/)
+        expect(parse(exec_yaml("exec: check\n        timeout: 2h")).steps.first["require"]).to eq([{"exec" => ["check"], "timeout" => 7200}])
+      end
+
+      it "refuses a timeout with nothing after it" do
+        expect(problems(exec_yaml("exec: check\n        timeout:"))).to include(/require exec timeout must be a duration such as 10m/)
+        expect(problems(exec_yaml("exec: check\n        timeout: ~"))).to include(/require exec timeout must be a duration such as 10m/)
+      end
+
+      it "refuses a timeout of 0 or below" do
+        expect(problems(exec_yaml("exec: check\n        timeout: 0"))).to include(/require exec timeout: must be greater than 0/)
+        expect(problems(exec_yaml("exec: check\n        timeout: -5"))).to include(/require exec timeout/)
+      end
+
+      it "rounds a fractional timeout up to whole seconds" do
+        expect(parse(exec_yaml("exec: check\n        timeout: 1.5")).steps.first["require"]).to eq([{"exec" => ["check"], "timeout" => 2}])
+      end
+
+      it "reports a bad exec and a bad timeout in one entry" do
+        found = problems(exec_yaml("exec: \"check 'oops\"\n        timeout: soon"))
+        expect(found).to include(/require exec has an unbalanced quote/, /require exec timeout/)
+      end
+
+      it "parses beside another proof and keeps the order" do
+        list = parse(exec_yaml("commits: 1", "exec: check\n        timeout: 1m", "nonempty: x")).steps.first["require"]
+        expect(list.map { |e| e.keys.first }).to eq(%w[commits exec nonempty])
+        expect(list[1]).to eq({"exec" => ["check"], "timeout" => 60})
+      end
+
+      it "refuses a key beside exec other than timeout" do
+        expect(problems(exec_yaml("exec: check\n        extra: 1"))).to include(/require exec takes only timeout:/)
+      end
+
+      it "counts as proof, so the step is not warned about" do
+        expect(parse(exec_yaml("exec: check")).warnings).to eq([])
+      end
+    end
+
     it "defaults to an empty list" do
       expect(parse(minimal).steps.first["require"]).to eq([])
     end
@@ -665,7 +737,7 @@ RSpec.describe Workspace::WorkflowDefinition do
         "step build: require nonempty must be a path under the run's artifacts directory, got \"/abs\"",
         "step build: require plan_status must be active, paused, done, got \"finished\"",
         "step build: require tracked_clean must be true, got false",
-        "step build: require \"bogus\" is not a proof (known: commits, nonempty, plan_status, tracked_clean, command, inbox_item, remote_unchanged)",
+        "step build: require \"bogus\" is not a proof (known: commits, nonempty, plan_status, tracked_clean, command, inbox_item, remote_unchanged, exec)",
         /each require entry must be one proof/
       )
     end

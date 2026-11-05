@@ -32,13 +32,13 @@ module Workspace
   # state) is answered at once.
   class WorkflowRequire
     # The proofs a definition may name.
-    PROOFS = %w[commits nonempty plan_status tracked_clean command inbox_item remote_unchanged].freeze
+    PROOFS = %w[commits nonempty plan_status tracked_clean command inbox_item remote_unchanged exec].freeze
 
     # Seconds a `command` proof may run.
     COMMAND_TIMEOUT = 5 * 60
 
     # The proofs {#run_outside} runs, outside the run's lock.
-    OUTSIDE_LOCK = %w[command remote_unchanged].freeze
+    OUTSIDE_LOCK = %w[command remote_unchanged exec].freeze
 
     # Why a remote has no reading, from {WorkflowGuard#remote_head}.
     UNREAD_TEXT = {
