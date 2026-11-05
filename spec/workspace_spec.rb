@@ -306,6 +306,14 @@ RSpec.describe Workspace do
       expect(dev.instance_variable_get(:@session_ledger)).to equal(session_event.instance_variable_get(:@session_ledger))
     end
 
+    it "wires the shared hook runner into the dev command for the pre_dev_up and post_dev_up hooks" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      dev = cli.instance_variable_get(:@dev_command)
+
+      expect(dev.instance_variable_get(:@hook_runner)).to be_a(Workspace::HookRunner)
+    end
+
     it "wires instructions compose to the library start uses and the binding command binding show uses" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 
