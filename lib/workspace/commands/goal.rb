@@ -147,7 +147,7 @@ module Workspace
         parsed && (record["ref"] == parsed[:key] || same_branch?(record["branch"], parsed))
       end
 
-      # A JIRA ref's branch is lowercase but an older one may not be; any other branch name is exact.
+      # A JIRA ref's branch may be in either case (older ones are lowercase); any other branch name is exact.
       def same_branch?(branch, parsed)
         (parsed[:kind] == "jira") ? branch.to_s.casecmp?(parsed[:branch]) : branch == parsed[:branch]
       end

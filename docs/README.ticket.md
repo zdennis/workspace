@@ -35,7 +35,7 @@ The command reads and writes nothing in the repository: no worktree, branch, con
 
 With no repository in the ref, `gh` uses the repository of the checkout. Each tool answers within 10 seconds, and keeps its own sign-in; `workspace` never reads, stores or prints a credential. The body is cut to 64 KB. A JIRA description in Atlassian's rich-text form is turned into plain text.
 
-`branch` is the branch `start` would work on: the lowercase JIRA key (`proj-123`, or an existing branch that matches the key apart from case, by its own name), `pr-41` for a pull request, `issue-42` for an issue, or the branch name. `workspace` is the workspace `start` would reuse, found the way `start` finds it: a worktree at `.worktrees/<branch>`, else a worktree that holds the branch anywhere. It is `null` when there is none, and when the branch is only checked out in the main checkout.
+`branch` is the branch `start` would work on: the JIRA key as written (`PROJ-123`, or an existing branch that matches the key apart from case, by its own name), `pr-41` for a pull request, `issue-42` for an issue, or the branch name. `workspace` is the workspace `start` would reuse, found the way `start` finds it: a worktree at `.worktrees/<branch>`, else a worktree that holds the branch anywhere. It is `null` when there is none, and when the branch is only checked out in the main checkout.
 
 Plain output is the key and title, the URL, a `Workspace: ... (already exists)` line when there is one, and the body.
 

@@ -40,7 +40,7 @@ workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--t
 
 Whitespace is the test for a sentence: a lone word is a ref, never text. A lone word that names a workflow is not read as one: `go rpiv` looks for a branch called `rpiv`. Use `--workflow rpiv` to name a workflow. A lone JIRA key in lowercase (`proj-123`) is a ticket only when its ticket reads, and `--workflow` turns that lookup off, so the word stays a branch name; a branch of that exact name wins, and a miss leaves the word as it was (`unknown_ref` if no such branch).
 
-The branch of a JIRA ref is the lowercase key, `proj-123`. A branch that matches the key apart from case (`PROJ-123`) is reused by its own name, local branches first, then origin's, so an older uppercase worktree is found. A key that lowercases to `pr-<n>` or `issue-<n>` (`PR-5`, `ISSUE-7`) keeps its case, since those names belong to pull requests and issues. Ticket keys keep their case everywhere else (the decision line, `--input`, the ticket lookup).
+The branch of a new JIRA ref is the key as written, `PROJ-123`. A branch that matches the key apart from case (`proj-123`) is reused by its own name, local branches first, then origin's, so an older lowercase worktree is found. A key that lowercases to `pr-<n>` or `issue-<n>` (`PR-5`, `ISSUE-7`) keeps its case, since those names belong to pull requests and issues. Ticket keys keep their case everywhere else (the decision line, `--input`, the ticket lookup).
 
 Bare `go` outside a checkout it can run in is a usage error. Type a ref (`workspace go PROJ-123`) or quoted free text (`workspace go "fix the login timeout"`) instead.
 
@@ -57,7 +57,7 @@ The default branch is read from `origin/HEAD`, else it is `main` or `master`. If
 
 If `go` runs here (bare, a ref for the current branch, or free text with `--here`) from the Claude Code pane it would type into, it types nothing and answers `parked`: the caller ends its turn and the run starts after it (see [Resuming from the run's own pane](README.workflow.md#resuming-from-the-runs-own-pane)).
 
-Anywhere else, and for free text without `--here`, `go` makes or reuses a new checkout. `--here` where `go` can't run here is refused with `go_here_unavailable` and starts nothing; it never falls through to a new checkout. It looks for the ref's plain branch name (`proj-123`, or the existing branch that matches it apart from case), so a worktree made with `start PROJ-123 --slug` is not found by `go PROJ-123`, which makes a second one; name that branch instead. If the workspace for a worktree is stopped, `--dry-run` passes and the real run then fails at the pane, as `workflow run` does. Bring it up first with `workspace launch NAME`.
+Anywhere else, and for free text without `--here`, `go` makes or reuses a new checkout. `--here` where `go` can't run here is refused with `go_here_unavailable` and starts nothing; it never falls through to a new checkout. It looks for the ref's plain branch name (`PROJ-123`, or the existing branch that matches it apart from case), so a worktree made with `start PROJ-123 --slug` is not found by `go PROJ-123`, which makes a second one; name that branch instead. If the workspace for a worktree is stopped, `--dry-run` passes and the real run then fails at the pane, as `workflow run` does. Bring it up first with `workspace launch NAME`.
 
 ### How the workflow is chosen
 

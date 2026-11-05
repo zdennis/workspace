@@ -578,7 +578,7 @@ RSpec.describe Workspace::Commands::Go do
         row = command.call(argument: "proj-1")
 
         expect(row["decision"]).to include("kind" => "jira", "route" => "start")
-        expect(ticket_source).to have_received(:fetch).with(have_attributes(key: "PROJ-1", branch: "proj-1"), chdir: root)
+        expect(ticket_source).to have_received(:fetch).with(have_attributes(key: "PROJ-1", branch: "PROJ-1"), chdir: root)
         expect(workflow_start).to have_received(:call).with(hash_including(ref: "PROJ-1"))
       end
 
