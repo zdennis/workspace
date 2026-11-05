@@ -43,10 +43,13 @@ jobs:
           - group: system-commands
             paths: spec/system/workspace/commands
             processes: 3
+          - group: system-workflow
+            paths: spec/system/workspace/workflow_*_spec.rb
+            processes: 3
           - group: system
             paths: spec/system
-            exclude: spec/system/workspace/commands/
-            processes: 6
+            exclude: ^spec/system/workspace/(commands/|workflow_)
+            processes: 3
     steps:
       - uses: actions/checkout@v4
 
