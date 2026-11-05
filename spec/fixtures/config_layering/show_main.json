@@ -821,6 +821,35 @@
       "problems": []
     },
     {
+      "key": "commands.test_files",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Globs, relative to the checkout and separated by spaces (or a YAML list), naming the files that count as tests, e.g. `spec/**/*_spec.rb test/*_test.rb`; unset: no test files are named",
+      "problems": []
+    },
+    {
       "key": "start.copy_files",
       "scope": "project",
       "type": "text",

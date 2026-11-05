@@ -446,6 +446,22 @@ module Workspace
     end
     private_constant :WORKFLOW_ALERTS
 
+    # `commands.test_files`: globs, relative to the checkout, naming the files that count as tests.
+    GLOB_LIST = lambda do |value|
+      globs = value.is_a?(Array) ? value : value.to_s.split(/\s+/).reject(&:empty?)
+      raise ArgumentError, "must be one or more globs separated by spaces, e.g. \"spec/**/*_spec.rb test/*_test.rb\"" if globs.empty?
+      globs.map do |glob|
+        raise ArgumentError, "each glob must be a string" unless glob.is_a?(String)
+        glob = glob.strip.delete_prefix("./")
+        raise ArgumentError, "must not have an empty glob" if glob.empty?
+        raise ArgumentError, "must not contain a control character" if glob.match?(/[[:cntrl:]]/)
+        raise ArgumentError, "#{glob.inspect} must be relative to the checkout, not start with / or ~" if glob.start_with?("/", "~")
+        raise ArgumentError, "#{glob.inspect} must not contain \"..\"; it would leave the checkout" if glob.split("/").include?("..")
+        glob
+      end
+    end
+    private_constant :GLOB_LIST
+
     # Every key, settable ones first in the order `config set` lists them,
     # then keys that are documented but edited by hand.
     KEYS = [
@@ -504,6 +520,8 @@ module Workspace
         doc: "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack"),
       Key.new(name: "commands.lint", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, examples: ["bundle exec standardrb lib/ spec/"], parser: COMMAND,
         doc: "Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test`"),
+      Key.new(name: "commands.test_files", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :text, settable: true, examples: ["spec/**/*_spec.rb test/*_test.rb"], parser: GLOB_LIST,
+        doc: "Globs, relative to the checkout and separated by spaces (or a YAML list), naming the files that count as tests, e.g. `spec/**/*_spec.rb test/*_test.rb`; unset: no test files are named"),
       # start.copy_files is repo-specific (the gitignored files a worktree needs from the main checkout); read at
       # worktree-creation time only, so a worktree layer is meaningless and not read.
       Key.new(name: "start.copy_files", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :text, settable: true, examples: [".env", ".env,config/database.yml"], parser: COPY_FILES,

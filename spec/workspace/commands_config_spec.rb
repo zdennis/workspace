@@ -38,4 +38,32 @@ RSpec.describe Workspace::CommandsConfig do
 
     expect(config.for_project("app.worktree-x")).to eq(test: "other", lint: "bin/lint")
   end
+
+  describe "#test_files" do
+    it "is empty when unset or refused, and not a role" do
+      allow(project_settings).to receive(:load).with("app").and_return("commands" => {"test" => "bin/test"})
+      allow(project_settings).to receive(:load).with("bad").and_return("commands" => {"test_files" => "  "})
+
+      expect(config.test_files("app")).to eq([])
+      expect(config.test_files("bad")).to eq([])
+      expect(config.for_project("app").keys).to eq(%i[test lint])
+    end
+
+    it "reads a string or a YAML list" do
+      allow(project_settings).to receive(:load).with("a").and_return("commands" => {"test_files" => "spec/**/*_spec.rb test/*_test.rb"})
+      allow(project_settings).to receive(:load).with("b").and_return("commands" => {"test_files" => ["spec/*_spec.rb"]})
+
+      expect(config.test_files("a")).to eq(%w[spec/**/*_spec.rb test/*_test.rb])
+      expect(config.test_files("b")).to eq(%w[spec/*_spec.rb])
+    end
+
+    it "reads a worktree over its project" do
+      allow(project_settings).to receive(:load).with("app").and_return("commands" => {"test_files" => "a/*.rb"})
+      allow(project_settings).to receive(:load).with("app.worktree-x").and_return("commands" => {"test_files" => "b/*.rb"})
+      allow(project_settings).to receive(:load).with("app.worktree-y").and_return({})
+
+      expect(config.test_files("app.worktree-x")).to eq(%w[b/*.rb])
+      expect(config.test_files("app.worktree-y")).to eq(%w[a/*.rb])
+    end
+  end
 end
