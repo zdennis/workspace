@@ -181,6 +181,21 @@ When that session ends, [`session-event`](README.session-event.md) starts `works
 
 [`kill`](README.kill.md) and [`finish`](README.finish.md) also run `dev down` first when the worktree they remove holds `devenv` (or is the delegate of the workflow run that does). A queued wrapper, and another worktree's environment, are left alone. If the environment cannot be stopped, they say so and go on removing the worktree.
 
+## Hooks
+
+A project can run a script around `dev up` through its `hooks` mapping in `~/.config/workspace/projects/<name>.yml` (hand-edited; `config set` refuses the key). The event names follow the `pre_<verb>` / `post_<verb>` shape the other hooks (`post_launch`, `post_stop`, …) already use:
+
+- `pre_dev_up` fires when `dev up` is about to create a new dev wrapper window — for a plain `up`, `up --wait`/`--max-wait`, `up --queue`, a `--force` takeover, and `up` from a pane bound to a workflow run. It does not fire when the environment is already running for this worktree, when a run's delegate is already running, when `up` is refused (no `dev.up` configured, another worktree holds the lock, the way is not clear), or when `up` reuses the session's live `devenv` window instead of opening a second one.
+- `post_dev_up` fires when a waiting invocation ends with the environment running: after the ready check when one was requested, right after `up` prints `Dev environment running for ...`. It never fires on the plain `--queue` path (`dev wait` confirms the start and fires no hook), on a failed ready check (exit 6), or when the wrapper exits before it held the lock.
+
+Both are advisory: a hook that fails (non-zero exit) is a stderr warning and never stops `dev up`. They run synchronously in the `dev up` process, so a slow hook delays the command. A queued wrapper's `pre_dev_up` can precede the actual start by as long as the queue takes, and can run for a start that is later refused (a takeover that runs into a workflow run) or abandoned (`--max-wait` expiry).
+
+The hook runs with `WORKSPACE_PROJECT` (the project's name), `WORKSPACE_WORKTREE` (the worktree root) and `WORKSPACE_BRANCH` in its environment, from the project's root directory.
+
+A hook that itself calls `workspace dev` can deadlock on the `devenv` lock or the config file locks — do not start or stop dev environments from a hook.
+
+`dev up --json` still runs the hooks: their output is diverted to stderr, and stdout keeps the one JSON document (unlike `finish --json`, which skips the `post_kill` hook).
+
 ## Instructions for agents
 
 `start` and `launch` send an agent the built-in `dev` pack with its first prompt when the project sets `dev.up` and `dev.instructions` is not `false` (it is `true` unless set). The pack is the habit these commands make possible: before the agent implements, tests or verifies anything that needs the running app it runs `dev up --queue`, then `dev wait --max-wait 90s` (the short limit keeps a shell tool from timing out; the agent runs `wait` again on exit 75). It never tests against another worktree's server and never passes `--force`. It runs `dev leave` if it stops waiting, and `dev down` when its work is done or it stops to wait for the person, but only when `dev status` shows its own worktree holds the environment, since `down` stops whichever one is running. It leaves the environment running when it hands off to a fresh conversation.
