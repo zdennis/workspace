@@ -2075,8 +2075,12 @@ module Workspace
           else
             result[:error] ? "check_error" : "check_failed"
           end
-          fail_step(stored, {"cause" => "check", "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
-                             "error" => result[:error], "log" => check["log"]}.compact.merge(code_for(code, nil)))
+          failure = {"cause" => "check", "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
+                     "error" => result[:error], "log" => check["log"]}.compact.merge(code_for(code, nil))
+          if code == "check_failed"
+            failure = failure.merge(reported_check_code(step_def(stored)["status"], check["log"]) || {})
+          end
+          fail_step(stored, failure)
         end
       end
       [run, following]
@@ -2160,7 +2164,12 @@ module Workspace
       edge = on_fail && "#{step["id"]}->#{on_fail["goto"]}"
       attempts = attempts_made(run)
       spent = attempts >= attempt_allowance(run)
-      if on_fail && run["loops"].fetch(edge, 0) < on_fail["max"] && !spent
+      # An `on_fail` `except:` code or cause never loops: the failure falls through to the stop below,
+      # so a run cannot be sent into a step that cannot pass against the same facts (a stale plan's
+      # revision into `plan`, a guard failure into a step guarded the same way).
+      except = Array(on_fail && on_fail["except"])
+      excepted = except.any? { |name| name == failure["code"] || name == failure["cause"] }
+      if on_fail && !excepted && run["loops"].fetch(edge, 0) < on_fail["max"] && !spent
         run["loops"][edge] = run["loops"].fetch(edge, 0) + 1
         text = loop_context(run, step, on_fail, failure, run["loops"][edge])
         wait = WorkflowDefinition.backoff(on_fail)
@@ -2260,6 +2269,35 @@ module Workspace
     # The one code key of a failed step: an agent's word when it gave one, else the engine's.
     def code_for(engine_code, agent_code)
       agent_code ? {"code" => agent_code, "code_source" => "agent"} : {"code" => engine_code, "code_source" => "engine"}
+    end
+
+    # The most of a failed check's log the `report_code` reading looks at.
+    CHECK_CODE_TAIL_BYTES = 4096
+
+    # A step whose `status:` sets `report_code: true` may name its own failure code in the log's
+    # last `code: <name>` line, so a check can tell one failure from another (a plan edited during
+    # review from an ordinary rejected vote). A code the engine already hands out never comes from
+    # a log, and a log whose tail names none leaves the plain `check_failed` standing. The tail is
+    # read as a plain file, never through a link, and nothing here raises.
+    def reported_check_code(status, log)
+      return nil unless status.is_a?(Hash) && status["report_code"] == true
+      line = check_log_last_line(log).to_s.strip
+      match = line.match(/\Acode: (\S+)\z/)
+      return nil if match.nil? || ENGINE_CODES.include?(match[1])
+      {"code" => match[1], "code_source" => "check"}
+    end
+
+    def check_log_last_line(log)
+      return nil unless log.is_a?(String)
+      file = File.lstat(log)
+      return nil unless file.file?
+      opened = File.open(log, "rb")
+      opened.seek([0, file.size - CHECK_CODE_TAIL_BYTES].max)
+      opened.read.to_s.lines.reverse.find { |each| !each.strip.empty? }
+    rescue SystemCallError, IOError
+      nil
+    ensure
+      opened&.close
     end
 
     GUARD_TEXT = {

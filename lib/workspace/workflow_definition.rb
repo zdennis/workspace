@@ -29,13 +29,17 @@ module Workspace
     DEFAULT_ON_TIMEOUT = "warn"
     INPUT_PATTERN_LIMIT = 300
     INPUT_KEYS = %w[description required pattern].freeze
-    ON_FAIL_KEYS = %w[goto max context log_tail backoff].freeze
+    ON_FAIL_KEYS = %w[goto max context log_tail backoff except].freeze
+
+    # The most entries an `on_fail` `except` list may hold, and the most characters of one.
+    MAX_FAIL_EXCEPT = 8
+    MAX_FAIL_EXCEPT_NAME = 60
 
     # The most seconds an `on_fail` `backoff` may be (one day), and the most lines a `log_tail` may be.
     MAX_BACKOFF = 24 * 3600
     MAX_LOG_TAIL = WorkflowLogTail::MAX_LINES
     GUARDS = %w[unchanged config].freeze
-    STATUS_KEYS = %w[command run timeout].freeze
+    STATUS_KEYS = %w[command run timeout report_code].freeze
 
     # How a step starts: in a new conversation, or in the one the pane has.
     CONTEXTS = %w[fresh continue].freeze
@@ -598,11 +602,24 @@ module Workspace
       end
       if value.key?("command")
         role = value["command"]
-        return {"command" => role, "timeout" => timeout} if CommandsConfig::ROLES.include?(role)
-        return problem("#{where}: status command must be one of #{CommandsConfig::ROLES.join(", ")}, got #{role.inspect}")
+        return problem("#{where}: status command must be one of #{CommandsConfig::ROLES.join(", ")}, got #{role.inspect}") unless CommandsConfig::ROLES.include?(role)
+        return {"command" => role, "timeout" => timeout, "report_code" => report_code_from(value, where)}.compact
       end
       run = text_or_nil(value["run"], "#{where}: status run")
-      run && {"run" => run, "timeout" => timeout}
+      return nil if run.nil?
+      {"run" => run, "timeout" => timeout, "report_code" => report_code_from(value, where)}.compact
+    end
+
+    # The opt-in `report_code: true` of a `status:`: a failed check of such a step may take its failure
+    # code from the log's last `code: <name>` line instead of the plain `check_failed` (the engine reads
+    # it in {WorkflowEngine#reported_check_code}). `false` is accepted and means the same as leaving the
+    # key out. Absent from the parsed step unless set to true.
+    def report_code_from(value, where)
+      return nil unless value.key?("report_code")
+      return true if value["report_code"] == true
+      return nil if value["report_code"] == false
+      problem "#{where}: status report_code must be true or false, got #{value["report_code"].inspect}"
+      nil
     end
 
     def on_timeout_from(value, where)
@@ -774,7 +791,16 @@ module Workspace
           problem "#{where}: on_fail backoff: #{e.message}"
         end
       end
-      {"goto" => goto, "max" => max, "context" => context, "log_tail" => log_tail, "backoff" => backoff}.compact.merge("context" => context)
+      except = names(value["except"], "#{where}: on_fail except") if value.key?("except")
+      if except
+        except.each do |name|
+          next if name.length <= MAX_FAIL_EXCEPT_NAME
+          problem "#{where}: on_fail except #{name.inspect} is longer than #{MAX_FAIL_EXCEPT_NAME} characters"
+        end
+        problem "#{where}: on_fail except takes at most #{MAX_FAIL_EXCEPT} codes or causes, got #{except.size}" if except.size > MAX_FAIL_EXCEPT
+      end
+      {"goto" => goto, "max" => max, "context" => context, "log_tail" => log_tail, "backoff" => backoff,
+       "except" => (except unless except.nil? || except.empty?)}.compact.merge("context" => context)
     end
 
     def context_from(value, where)

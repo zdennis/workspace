@@ -136,28 +136,36 @@ steps:
     guard: unchanged
     # Done only when every verdict file is there, each names its own role and the plan as it
     # stands now, the summary matches the verdicts, and the skeptic plus one other approved.
-    # A rejection or a malformed round goes back to plan.
+    # A rejection or a malformed round goes back to plan. A plan edited during review reports
+    # its own code and does not loop: the run stops with the plan file untouched.
     status:
+      report_code: true
       run: |
         workspace plan status --json | ruby -rjson -e '
           plan = JSON.parse($stdin.read)["plans"].to_a.first
           dir = ENV.fetch("WORKSPACE_RUN_ARTIFACTS")
           roles = %w[supportive skeptical implementer]
           revision = plan && plan["revision"]
+          stale = false
           votes = roles.map do |role|
             path = File.join(dir, "approval-#{role}.md")
             lines = File.file?(path) ? File.readlines(path, chomp: true).first(3) : []
             fields = lines.to_h { |line| [line[/\A[a-z_]+/].to_s, line[/\A[a-z_]+: (.*)\z/, 1].to_s] }
+            stale ||= fields.key?("plan_revision") && fields["plan_revision"] != revision
             next "missing" unless fields["reviewer"] == role && fields["plan_revision"] == revision && %w[approve reject].include?(fields["verdict"])
             fields["verdict"]
           end
           approval = File.join(dir, "plan-approval.md")
           summary = File.file?(approval) ? File.readlines(approval, chomp: true).first(4) : []
+          stale ||= summary[0].to_s.start_with?("plan_revision:") && summary[0] != "plan_revision: #{revision}"
           expected = ["plan_revision: #{revision}", *roles.each_with_index.map { |role, i| "#{role}: #{votes[i]}" }]
-          exit(revision && summary == expected && votes[1] == "approve" && votes.count("approve") >= 2 ? 0 : 1)
+          ok = revision && summary == expected && votes[1] == "approve" && votes.count("approve") >= 2
+          puts "code: stale_plan_revision" if !ok && stale
+          exit(ok ? 0 : 1)
         '
     on_fail:
       goto: plan
       max: 9
       context: fresh
+      except: [stale_plan_revision]
     timeout: 30m

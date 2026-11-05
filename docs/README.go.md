@@ -141,7 +141,7 @@ Before it writes anything, `go` refuses when the task would not be picked up:
 
 A plan marked `status: paused` still takes the task, with a warning (printed, and in `warnings`): the agent will not take it until someone resumes the plan with `workspace plan start`.
 
-A task added while an `rpiv-auto-approve` run is in `plan_review` changes the plan's revision. The approval the reviewers write is bound to the revision they read, so the step's check fails. Its `on_fail` sends the run back to `plan` and counts one of that step's retries (`max: 9`), and the plan agent starts again and may rewrite the file, so the new task can be reworded or dropped. Add it before `plan_review` starts, or after the plan is approved.
+A task added while an `rpiv-auto-approve` run is in `plan_review` changes the plan's revision. The approval the reviewers write is bound to the revision they read, so the step's check fails with the code `stale_plan_revision`, which its `on_fail` does not loop on: the run stops (`failed_check`) with the plan file untouched — the check never writes to it — and the concurrent edit keeps exactly the wording you gave it. Recover with `workflow resume --from review_supportive`, which starts a fresh review of the plan as it stands now (the reviewers' verdict files and the tally's summary are written again, because a produced file left over from the earlier round does not count), or `workflow cancel`. Add the task before `plan_review` starts, or after the plan is approved, and no round is spent on it.
 
 ### Pull requests from forks
 

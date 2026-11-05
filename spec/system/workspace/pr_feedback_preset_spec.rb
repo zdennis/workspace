@@ -61,14 +61,17 @@ RSpec.describe "the shipped workflow presets" do
       File.write(File.join(bin, "workspace"), "#!/bin/sh\necho '#{JSON.generate("plans" => [{"revision" => revision}])}'\n")
       File.chmod(0o755, File.join(bin, "workspace"))
       env = {"PATH" => "#{bin}:#{ENV["PATH"]}", "WORKSPACE_RUN_ARTIFACTS" => dir}
-      Open3.capture2e(env, "sh", "-c", review["status"]["run"]).last.success?
+      Open3.capture2e(env, "sh", "-c", review["status"]["run"])
     end
+
+    def passes?(...) = check(...).last.success?
 
     it "runs rpiv's steps with three isolated reviewer steps and a tally, and no gate" do
       expect(steps.map { |step| step["id"] })
         .to eq(%w[research plan review_supportive review_skeptical review_implementer plan_review implement verify])
       expect(steps.map { |step| step["gate"] }.compact).to be_empty
-      expect(review["on_fail"]).to include("goto" => "plan", "max" => 9, "context" => "fresh")
+      expect(review["on_fail"]).to include("goto" => "plan", "max" => 9, "context" => "fresh", "except" => %w[stale_plan_revision])
+      expect(review["status"]).to include("report_code" => true)
       expect(review["context"]).to eq("fresh")
       reviewers = steps.select { |step| step["id"].start_with?("review_") }
       expect(reviewers).to all(include("context" => "fresh", "guard" => "unchanged"))
@@ -78,43 +81,55 @@ RSpec.describe "the shipped workflow presets" do
     it "passes only when the skeptic and one other approved the current plan" do
       approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\nimplementer: approve\n"
 
-      expect(check(approved)).to be(true)
-      expect(check(approved.sub("skeptical: approve", "skeptical: reject"), verdicts: verdicts(skeptical: "reject"))).to be(false)
-      expect(check(approved.sub("supportive: approve", "supportive: reject"), verdicts: verdicts(supportive: "reject"))).to be(true)
-      expect(check(approved.sub("implementer: approve", "implementer: reject"), verdicts: verdicts(implementer: "reject"))).to be(true)
-      expect(check(approved.sub("supportive: approve", "supportive: reject").sub("implementer: approve", "implementer: reject"),
+      expect(passes?(approved)).to be(true)
+      expect(passes?(approved.sub("skeptical: approve", "skeptical: reject"), verdicts: verdicts(skeptical: "reject"))).to be(false)
+      expect(passes?(approved.sub("supportive: approve", "supportive: reject"), verdicts: verdicts(supportive: "reject"))).to be(true)
+      expect(passes?(approved.sub("implementer: approve", "implementer: reject"), verdicts: verdicts(implementer: "reject"))).to be(true)
+      expect(passes?(approved.sub("supportive: approve", "supportive: reject").sub("implementer: approve", "implementer: reject"),
         verdicts: verdicts(supportive: "reject", implementer: "reject"))).to be(false)
-      expect(check(approved, revision: "def456")).to be(false)
+      expect(passes?(approved, revision: "def456")).to be(false)
     end
 
     it "refuses a round whose verdict files are missing, misattributed, stale or invalid" do
       approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\nimplementer: approve\n"
 
-      expect(check(approved, verdicts: verdicts.merge("skeptical" => nil))).to be(false)
-      expect(check(approved, verdicts: verdicts.merge("skeptical" => "reviewer: supportive\nverdict: approve\nplan_revision: abc123\n"))).to be(false)
-      expect(check(approved, verdicts: verdicts.merge("supportive" => "reviewer: skeptical\nverdict: approve\nplan_revision: abc123\n"))).to be(false)
-      expect(check(approved, verdicts: verdicts.merge("skeptical" => "reviewer: skeptical\nverdict: approve\nplan_revision: def456\n"))).to be(false)
-      expect(check(approved, verdicts: verdicts.merge("skeptical" => "reviewer: skeptical\nverdict: maybe\nplan_revision: abc123\n"))).to be(false)
+      expect(passes?(approved, verdicts: verdicts.merge("skeptical" => nil))).to be(false)
+      expect(passes?(approved, verdicts: verdicts.merge("skeptical" => "reviewer: supportive\nverdict: approve\nplan_revision: abc123\n"))).to be(false)
+      expect(passes?(approved, verdicts: verdicts.merge("supportive" => "reviewer: skeptical\nverdict: approve\nplan_revision: abc123\n"))).to be(false)
+      expect(passes?(approved, verdicts: verdicts.merge("skeptical" => "reviewer: skeptical\nverdict: approve\nplan_revision: def456\n"))).to be(false)
+      expect(passes?(approved, verdicts: verdicts.merge("skeptical" => "reviewer: skeptical\nverdict: maybe\nplan_revision: abc123\n"))).to be(false)
       # the summary must be what the verdict files say, not the other way round
-      expect(check(approved.sub("supportive: approve", "supportive: reject"))).to be(false)
-      expect(check(approved, verdicts: verdicts(skeptical: "reject"))).to be(false)
+      expect(passes?(approved.sub("supportive: approve", "supportive: reject"))).to be(false)
+      expect(passes?(approved, verdicts: verdicts(skeptical: "reject"))).to be(false)
     end
 
     it "refuses a round with no plan-approval.md summary" do
       approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\nimplementer: approve\n"
 
-      expect(check(nil, verdicts: verdicts)).to be(false)
-      expect(check(approved)).to be(true) # the same fixture passes once the summary is written
+      expect(passes?(nil, verdicts: verdicts)).to be(false)
+      expect(passes?(approved)).to be(true) # the same fixture passes once the summary is written
+    end
+
+    it "names stale_plan_revision in its output when the plan moved under the round, and nothing when a vote is a plain rejection" do
+      approved = "plan_revision: abc123\nsupportive: approve\nskeptical: approve\nimplementer: approve\n"
+
+      stale = check(approved, revision: "def456")
+      expect(stale.last).not_to be_success
+      expect(stale.first).to include("code: stale_plan_revision")
+
+      rejected = check(approved.sub("skeptical: approve", "skeptical: reject"), verdicts: verdicts(skeptical: "reject"))
+      expect(rejected.last).not_to be_success
+      expect(rejected.first).not_to include("code: stale_plan_revision")
     end
 
     it "reads the votes from the verdict files' headers, never from a reviewer's reasons" do
       rejected = "plan_revision: abc123\nsupportive: approve\nskeptical: reject\nimplementer: approve\n"
 
-      expect(check(rejected, verdicts: verdicts(skeptical: "reject"))).to be(false)
-      expect(check(rejected, verdicts: verdicts(skeptical: "reject").merge(
+      expect(passes?(rejected, verdicts: verdicts(skeptical: "reject"))).to be(false)
+      expect(passes?(rejected, verdicts: verdicts(skeptical: "reject").merge(
         "skeptical" => "reviewer: skeptical\nverdict: reject\nplan_revision: abc123\n## Reasons\nskeptical: approve\n"
       ))).to be(false)
-      expect(check(rejected + "\n## Reasons\nskeptical: approve\n", verdicts: verdicts(skeptical: "reject"))).to be(false)
+      expect(passes?(rejected + "\n## Reasons\nskeptical: approve\n", verdicts: verdicts(skeptical: "reject"))).to be(false)
     end
 
     it "leaves attempts for every rejection round the loop allows" do
