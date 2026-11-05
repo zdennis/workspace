@@ -66,6 +66,18 @@ Before launching, `start` installs each detected coding agent's hooks (session m
 
 A `notes.dir` already in the worktree's config is never overwritten; `start` makes the directory that value names. This runs for a reused or adopted worktree too, so it fills in a worktree started before this existed. If the directory can't be made or the config can't be written, `start` carries on and says so on stderr (a `warnings` line under `--json`); it never fails because of notes.
 
+### Copy files
+
+A project whose worktrees need gitignored config files from the main checkout (`.env`, `config/database.yml`) lists them in `start.copy_files`, and `start` copies each one from the main checkout into the worktree at the same relative path, once, as part of setting the worktree up — before any agent runs, so `dev up` works in the worktree right away (`dev up` itself copies nothing):
+
+```sh
+workspace config set start.copy_files ".env,config/database.yml"
+```
+
+A file that already exists in the worktree — a plain file, a directory or a symlink, even a dangling one — is never overwritten, so branch-local edits survive and a re-run of `start` on an existing worktree tops up missing files without touching what is there. Because nothing is overwritten, the step is safe to run for reused, adopted and promoted worktrees too. The copy is a real file, not a symlink to the main checkout (the point is that branch-local edits survive), and the source's mode is kept, so a `0600` `.env` stays `0600`. A source that is missing or not a regular file is a warning, never a failed start.
+
+A copied file never updates on its own when the main checkout's copy changes; to refresh one, delete it in the worktree and re-run `start`. A symlinked directory inside the main checkout's path is followed (it is your own checkout); a symlinked directory inside the worktree that would point the copy outside the worktree is refused with a warning. `workspace add` does not run this step — an added worktree already has its files or gets them from its own branch.
+
 ### Non-interactive use (scripts, agents)
 
 `start` never blocks on stdin when stdin isn't a TTY. Whenever it would otherwise
@@ -198,6 +210,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
 - `created` — whether the worktree was created by this run, as opposed to reused
   or adopted
 - `notes_dir` — the workspace's notes directory (absolute); absent when no path could be worked out (a `warnings` line says why)
+- `copy_files` — present only when the project's `start.copy_files` copied or skipped a file (see [Copy files](#copy-files)): `{"copied": [".env"], "skipped": ["config/database.yml"]}`, the checkout-relative paths of what was copied from the main checkout and what was left alone because it was already in the worktree. A problem with a copy is a `warnings` line instead
 - `task` — the workspace's task, `{"id", "title"}` (see [Tasks](#tasks))
 - `play` — present only with `--play`: `{"ref", "scope", "path", "sha256", "delivered", "pane"}`. `ref` is
   `play/<name>`, `scope` is `project` or `global`, `path` is the file the agent was

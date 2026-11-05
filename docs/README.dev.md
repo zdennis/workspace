@@ -27,6 +27,8 @@ workspace config set dev.release_on_session_end false   # keep it running after 
 
 `dev.ready` is either `port:N` (passes once `localhost:N` accepts a TCP connection) or a shell command run in the worktree (passes on exit 0).
 
+`dev up` runs only the configured command — it copies nothing into the worktree itself. A worktree that needs the repo's gitignored config files (`.env`, `config/database.yml`) before the dev command can work gets them from [`start`](README.start.md#copy-files): set the project's `start.copy_files` and `workspace start` copies them from the main checkout once, when the worktree is set up, never overwriting a file that is already there.
+
 ## Options (every subcommand)
 
 | Option | Description |
