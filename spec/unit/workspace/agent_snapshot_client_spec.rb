@@ -10,14 +10,18 @@ RSpec.describe Workspace::AgentSnapshotClient do
 
   subject(:client) { described_class.new(config: config, timeout: 0.5) }
 
+  let(:client_done) { Queue.new }
+
   before { allow(config).to receive(:agent_socket_path).with("proj").and_return(socket_path) }
 
   after { FileUtils.remove_entry(tmpdir) }
 
   # Stands in for the daemon: reads the request, then lets the block answer.
+  # A block that waits on client_done holds the connection until the client returns.
   def with_daemon
     server = UNIXServer.new(socket_path)
     received = nil
+    done = client_done
     listener = Thread.new do
       conn = server.accept
       received = JSON.parse(conn.gets)
@@ -26,6 +30,7 @@ RSpec.describe Workspace::AgentSnapshotClient do
       conn&.close
     end
     result = yield_client { received }
+    done << true
     listener.join(2)
     result
   ensure
@@ -127,7 +132,7 @@ RSpec.describe Workspace::AgentSnapshotClient do
     it "raises Unavailable (timeout) when the daemon accepts but never replies, within the bound" do
       @timeout = 0.05
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      outcome = with_daemon { |_conn| sleep 0.15 }
+      outcome = with_daemon { |_conn| client_done.pop(timeout: 2) }
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
 
       expect(outcome[0]).to eq(:error)
@@ -142,7 +147,7 @@ RSpec.describe Workspace::AgentSnapshotClient do
       outcome = with_daemon do |conn|
         conn.write('{"workspace":')
         conn.flush
-        sleep 0.15
+        client_done.pop(timeout: 2)
       end
 
       expect(outcome[1]).to be_a(described_class::Unavailable)
@@ -152,14 +157,16 @@ RSpec.describe Workspace::AgentSnapshotClient do
     it "uses the constructor's timeout when the call gives none" do
       fast = described_class.new(config: config, timeout: 0.03)
       server = UNIXServer.new(socket_path)
+      release = Queue.new
       listener = Thread.new do
         conn = server.accept
         conn.gets
-        sleep 0.1
+        release.pop(timeout: 2)
         conn.close
       end
 
       expect { fast.fetch("proj") }.to raise_error(described_class::Unavailable, /within 0.03s/)
+      release << true
       listener.join(2)
       server.close
     end

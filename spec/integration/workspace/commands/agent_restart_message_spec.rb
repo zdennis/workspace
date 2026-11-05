@@ -321,6 +321,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     run_agent do
       expect(send_restart).to include("ok" => true, "status" => "started")
       expect(context_reader).to have_received(:read).with(hash_including(pane_id: "%18", kind: "codex"))
+      expect(restart.calls.pop(timeout: 2)).not_to be_nil
       expect(restart.built_with[:pane_kind].call("%18")).to eq("codex")
     end
   end
