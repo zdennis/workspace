@@ -183,6 +183,10 @@ By default a JIRA ref gives the branch `PROJ-123`, an issue `issue-42`, and the 
 - A worktree already made for the ticket is reused, not duplicated: the one on the slugged branch, else on the plain branch (`PROJ-123`, or an existing `proj-123`), else on any branch that starts `proj-123-`, whatever its case (`proj-123-fix-login` from before branches kept the key's case; an earlier `--slug` run under an older title, or when the ticket cannot be read now). A `start` without `--slug` after a slugged one looks only for the plain branch, so pass `--slug` each time.
 - The ticket's title has control characters and runs of whitespace replaced by single spaces before it is used.
 
+### Branch names from `go`
+
+`start` takes the branch you give it or the ref's own (`PROJ-123`, `pr-1234`, `issue-42`). Naming a branch from a description of the work is `go`'s job; see [How a new branch is named](README.go.md#how-a-new-branch-is-named) and the `go.branch_namer.*` keys.
+
 ### Tasks
 
 `start` records a task for the new workspace: its title (`--title`, optional), the input it started from (`ref`), its branch and worktree path. The record is one JSON file, `<id>.json`, under `~/.local/state/workspace/.tasks/` (`$XDG_STATE_HOME/workspace/.tasks/`), mode 0600, written under a lock so concurrent `start`s never clobber each other. It lives there rather than in the worktree because removing a worktree deletes its untracked files.
