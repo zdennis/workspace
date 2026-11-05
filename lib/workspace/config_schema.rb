@@ -551,6 +551,13 @@ module Workspace
         doc: "`true` or `false`: whether `start` runs [`spine init`](README.spine.md#spine-init) with the resolved `spine.template` once the worktree exists, so the new agent is sent the `spine` pack. `start --spine[=NAME]` and `--no-spine` override it for one start"),
       Key.new(name: "plan.stall_seconds", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["300", "10m"], default: 300, parser: POSITIVE_DURATION,
         doc: "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)"),
+      # go.* is read while a workspace is being created, so a worktree config does not exist yet: global and project layers only.
+      Key.new(name: "go.branch_namer.enabled", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :boolean, settable: true, default: true, parser: BOOLEAN,
+        doc: "Whether `workspace go` asks a headless agent to name the branch for free text (default `true`); `false` skips the call and uses the slug of the text"),
+      Key.new(name: "go.branch_namer.timeout", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :duration, settable: true, examples: ["30s", "1m"], default: 30, parser: POSITIVE_DURATION,
+        doc: "How long the headless branch namer may run before it is stopped and the slug of the text is used (default `30s`)"),
+      Key.new(name: "go.branch_namer.command", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :command, sensitive: true, settable: true, examples: ["my-namer --short"], parser: COMMAND,
+        doc: "Command that names the branch instead of the default agent's headless call (unset: the default agent is used). It is split into arguments with no shell, the description is appended as one last argument, stdin stays closed, and its stdout is the name"),
       Key.new(name: "agent.kind", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, settable: true, default: "claude", choices: AgentProvider.all.map(&:key), parser: AGENT_KIND,
         doc: "Which coding agent a new workspace's main agent pane runs: #{AgentProvider.all.map { |p| "`#{p.key}`" }.join(", ")} (default `claude`)"),
       Key.new(name: "agent.recovery.enabled", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: true, restart: true, parser: BOOLEAN,

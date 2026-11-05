@@ -31,6 +31,14 @@ RSpec.describe Workspace::ConfigResolver do
     expect(resolution.hits.map(&:layer)).to eq(%w[worktree project])
   end
 
+  it "lets a project value of go.branch_namer.timeout win over the global one and ignores a worktree file" do
+    write("api", "go:\n  branch_namer:\n    timeout: 10s\n")
+    write("api.worktree-x", "go:\n  branch_namer:\n    timeout: 99s\n")
+    resolution = resolver.view(workspace: "api.worktree-x").resolve("go.branch_namer.timeout")
+    expect(resolution.winner.layer).to eq("project")
+    expect(resolution.winner.value).to eq("10s")
+  end
+
   it "reads notes.dir from a worktree's own file and a main checkout's project file" do
     write("api", "notes:\n  dir: /p\n")
     write("api.worktree-x", "notes:\n  dir: /w\n")
