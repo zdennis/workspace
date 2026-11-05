@@ -186,7 +186,16 @@ module Workspace
       named = step["require"].to_a.map { |each| each.keys.first }
       entry["require"].each do |name, result|
         problems << "#{where}: require #{name.to_s[0, 60].inspect}: the step has no such proof (proofs: #{named.uniq.join(", ").then { |list| list.empty? ? "none" : list }})" unless named.include?(name)
-        problems << "#{where}: require #{name.to_s[0, 60]} must be one of #{PROOFS.join(", ")}" unless PROOFS.include?(result)
+        if name == "exec" && result.is_a?(Array)
+          count = named.count("exec")
+          if count != result.size
+            problems << "#{where}: require exec lists #{result.size} #{(result.size == 1) ? "answer" : "answers"}, but the step has #{count} exec #{(count == 1) ? "entry" : "entries"} (one pass or fail per exec entry)"
+          elsif !result.all? { |each| PROOFS.include?(each) }
+            problems << "#{where}: require exec must list only #{PROOFS.join(", ")}"
+          end
+        else
+          problems << "#{where}: require #{name.to_s[0, 60]} must be one of #{PROOFS.join(", ")}" unless PROOFS.include?(result)
+        end
       end
     end
     private_class_method :check_require

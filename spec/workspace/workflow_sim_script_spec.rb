@@ -154,4 +154,32 @@ RSpec.describe Workspace::WorkflowSimScript do
       expect(e.details["problems"].first).to include("\e")
     }
   end
+  describe "require exec" do
+    let(:exec_definition) do
+      {"id" => "d", "inputs" => {}, "steps" => [{"id" => "t", "require" => [{"exec" => ["a"]}, {"exec" => ["b"]}]}]}
+    end
+
+    def exec_problems(value)
+      described_class.parse("steps:\n  t: [{require: {exec: #{value}}}]\n", definition: exec_definition, source: "s.yml")
+      raise "no error"
+    rescue Workspace::Error => e
+      e.details["problems"]
+    end
+
+    it "refuses an answer that is not pass or fail" do
+      expect(exec_problems("[pass, bogus]")).to match([a_string_matching(/require exec must list only pass, fail/)])
+    end
+
+    it "refuses a list whose length differs from the exec count" do
+      expect(exec_problems("[pass]")).to match([a_string_matching(/require exec lists 1 answer, but the step has 2 exec entries \(one pass or fail per exec entry\)/)])
+    end
+
+    it "refuses an exec list on a step with no exec entries" do
+      expect(problems("steps:\n  build: [{require: {exec: [pass]}}]\n")).to include(a_string_matching(/require exec lists 1 answer, but the step has 0 exec entries/))
+    end
+
+    it "gives a list under a non-exec proof the existing message" do
+      expect(problems("steps:\n  build: [{require: {commits: [pass]}}]\n")).to match([a_string_matching(/require commits must be one of pass, fail/)])
+    end
+  end
 end
