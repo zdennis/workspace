@@ -753,9 +753,22 @@ module Workspace
       project_config.available_projects.find { |name| (root = project_config.project_root_for(name)) && CheckoutMove.real_path(File.expand_path(root)) == real }
     end
     go_task = Commands::GoTask.new(engine: workflow_engine, plan_task: plan_task_command, access: plan_access, output: output)
+    namer_value = lambda do |key|
+      lambda do |workspace|
+        view = workspace ? config_resolver.view(workspace: workspace, upto: "project") : config_resolver.view(workspace: "global", upto: "global")
+        winner = view.resolve(key).winner
+        winner ? ConfigSchema.parse(key, winner.value) : ConfigSchema.default(key)
+      rescue ArgumentError, ConfigParseError
+        ConfigSchema.default(key)
+      end
+    end
+    branch_name_picker = BranchNamePicker.new(
+      commands: agent_commands, enabled: namer_value.call("go.branch_namer.enabled"),
+      timeout: namer_value.call("go.branch_namer.timeout"), command: namer_value.call("go.branch_namer.command")
+    )
     go_command = Commands::Go.new(
       workflow_start: workflow_start_command, workflow: workflow_command, workflow_defaults: workflow_defaults, catalog: workflow_catalog,
-      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, protected_branch: protected_branch, output: output
+      start_ref: start_ref, git: git, project_detector: project_detector, project_config: project_config, go_task: go_task, ticket_source: ticket_source, protected_branch: protected_branch, branch_name_picker: branch_name_picker, output: output
     )
     held_locks = HeldLocks.new(lock_namespace: lock_namespace, lock_holder: lock_holder, bound_run: bound_run, env: env)
     promote_command = Commands::Promote.new(

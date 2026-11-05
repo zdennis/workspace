@@ -356,6 +356,49 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     expect(ticket_source).not_to have_received(:fetch)
   end
 
+  describe "a derived branch from the caller" do
+    it "names the branch instead of the prompt's slug" do
+      row = command.call(id: "flow", prompt: "Fix the login bug!", derived_branch: "login-fix", dry_run: true)
+
+      expect(row).to include("branch" => "login-fix", "path" => "/src/app/.worktrees/login-fix", "would_create" => true)
+      expect(row["inputs"]["task"]).to eq("Fix the login bug!")
+    end
+
+    it "loses to an explicit branch" do
+      row = command.call(id: "flow", prompt: "Fix the login bug!", branch: "explicit", derived_branch: "login-fix", dry_run: true)
+
+      expect(row).to include("branch" => "explicit", "path" => "/src/app/.worktrees/explicit")
+    end
+
+    it "still refuses a branch or worktree that exists with branch_exists" do
+      branches << "login-fix"
+      expect { command.call(id: "flow", prompt: "Fix it", derived_branch: "login-fix", dry_run: true) }.to raise_error(Workspace::Error) do |e|
+        expect(e.code).to eq("branch_exists")
+        expect(e.details).to include("branch" => "login-fix")
+      end
+
+      branches.clear
+      worktrees << "/src/app/.worktrees/login-fix"
+      expect { command.call(id: "flow", prompt: "Fix it", derived_branch: "login-fix") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("branch_exists") }
+    end
+
+    it "does not touch an explicit --branch, which is reused" do
+      branches << "mine"
+      worktrees << "/src/app/.worktrees/mine"
+
+      row = command.call(id: "flow", prompt: "x", branch: "mine", dry_run: true)
+
+      expect(row).to include("branch" => "mine", "would_create" => false)
+    end
+
+    it "checks the agent kind on its own for go" do
+      allow(agent_commands).to receive(:kind).and_return("codex")
+
+      expect { command.check_agent_kind!(nil, project_workspace: "app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_needs_claude") }
+      expect { command.check_agent_kind!("claude", project_workspace: "app") }.not_to raise_error
+    end
+  end
+
   it "asks for --branch when the prompt has no letters or digits" do
     expect { command.call(id: "flow", prompt: "!!!") }.to raise_error(Workspace::UsageError, /--branch/)
   end
