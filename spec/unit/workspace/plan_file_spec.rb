@@ -701,21 +701,31 @@ RSpec.describe Workspace::PlanFile do
     let(:phased) { head + "### One\n- [ ] T1 First\n- [~] T2 Second <!-- owner: %4 -->\n### Two\n- [ ] T3 Third\n## Task details\nText\n" }
 
     describe "#revision" do
-      it "is the first 8 hex digits of the SHA-256 of the whole file, and changes with any byte" do
+      it "is the SHA-256 of the whole file, and changes with any byte" do
         write(phased)
         revision = described_class.read(@path).revision
 
-        expect(revision).to eq(Digest::SHA256.hexdigest(phased)[0, 8])
+        expect(revision).to eq(Digest::SHA256.hexdigest(phased))
         expect(described_class.revision_of(phased)).to eq(revision)
         write(phased.sub("First", "Firsd"))
         expect(described_class.read(@path).revision).not_to eq(revision)
+      end
+
+      it "differs between two plans whose SHA-256 share their first 8 hex digits" do
+        # These two inputs digest to the same first 8 hex digits (45560c60), so the old
+        # 8-character revision would have called them the same plan.
+        a = "collision-55045"
+        b = "collision-70885"
+
+        expect(Digest::SHA256.hexdigest(a)[0, 8]).to eq(Digest::SHA256.hexdigest(b)[0, 8])
+        expect(described_class.revision_of(a)).not_to eq(described_class.revision_of(b))
       end
 
       it "covers the whole file when it is longer than the read limit" do
         text = phased + ("x" * 100 + "\n") * ((described_class::MAX_BYTES / 101) + 50)
         write(text)
 
-        expect(described_class.read(@path).revision).to eq(Digest::SHA256.hexdigest(text)[0, 8])
+        expect(described_class.read(@path).revision).to eq(Digest::SHA256.hexdigest(text))
       end
     end
 

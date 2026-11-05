@@ -101,7 +101,7 @@ States are `todo`, `in_progress`, `done`, `skipped` and `blocked`. A title or re
 
 ### Refusing a stale edit
 
-`plan status --json` gives each plan a `revision`: the first 8 hex digits of the SHA-256 of the file's bytes. Pass it back as `--if-revision=REV` and a verb whose file has since changed (any byte, even one that keeps the size) writes nothing and fails with `stale_revision`, with `details.revision` the current one. The check and the write happen on the same read, so an edit that lands in between is caught too. Every verb's result carries the new `revision`; use it for the next edit.
+`plan status --json` gives each plan a `revision`: the SHA-256 of the file's bytes, all 64 hex digits. Pass it back as `--if-revision=REV` and a verb whose file has since changed (any byte, even one that keeps the size) writes nothing and fails with `stale_revision`, with `details.revision` the current one. Earlier releases kept only the first 8 hex digits; a revision copied from one is refused as `stale_revision` — take the current one from `details.revision` and retry. The check and the write happen on the same read, so an edit that lands in between is caught too. Every verb's result carries the new `revision`; use it for the next edit.
 
 ### Result
 
@@ -225,7 +225,7 @@ With `--json` the document is the `plan status --json` one with a top-level `gro
 | `state` | See above |
 | `owner_pane`, `pane_state` | The frontmatter's pane, and its state (`working`, `idle`, `waiting`, ...) from the agent daemon; null when unknown |
 | `updated_at`, `signature` | The file's modification time (UTC, to the second) and `mtime_ns:size`. The signature changes when the file does, so a reader can skip a re-read when it is the same |
-| `revision` | The first 8 hex digits of the SHA-256 of the file's bytes (null without a file). Pass it as `--if-revision` to a [task verb](#task-verbs) to refuse an edit made on an old view |
+| `revision` | The SHA-256 of the file's bytes, all 64 hex digits (null without a file). Pass it as `--if-revision` to a [task verb](#task-verbs) to refuse an edit made on an old view |
 | `counts`, `percent`, `current` | See above; `current` is null when nothing is left |
 | `tasks` | Every counted task: `id`, `title`, `state` (`todo`, `in_progress`, `done`, `skipped`, `blocked`), `reason`, `phase`, `line`, `owner` (the pane id in its owner comment, or null) and `owner_state` (that pane's state from the agent daemon, null when unknown or without an owner). The daemon is asked when the plan or any task has an owner |
 | `open_asks` | Open `workspace ask` questions in the workspace |
