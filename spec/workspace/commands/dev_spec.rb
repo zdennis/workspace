@@ -234,8 +234,8 @@ RSpec.describe Workspace::Commands::Dev do
       let(:events) { [] }
       let(:hook_runner) do
         double("hook_runner").tap do |h|
-          allow(h).to receive(:run) { |_project, event, env:|
-            events << [event, env]
+          allow(h).to receive(:run) { |project, event, env:|
+            events << [event, env, project]
             true
           }
         end
@@ -260,6 +260,8 @@ RSpec.describe Workspace::Commands::Dev do
         expect(events.map { |each| each.is_a?(Symbol) ? each : each.first }).to eq(["pre_dev_up", :new_window, "post_dev_up"])
         expect(events[0][1]).to include("WORKSPACE_WORKTREE" => login, "WORKSPACE_BRANCH" => "feat/login")
         expect(events[2][1]).to include("WORKSPACE_WORKTREE" => login, "WORKSPACE_BRANCH" => "feat/login")
+        expect(events[0][2]).to eq("app")
+        expect(events[2][2]).to eq("app")
         expect(observing.windows.size).to eq(1)
       end
 
@@ -337,7 +339,7 @@ RSpec.describe Workspace::Commands::Dev do
         expect(events.map(&:first)).to eq(["pre_dev_up"])
       end
 
-      it "leaves up unchanged when a hook fails or raises: advisory, exit code unaffected" do
+      it "leaves up unchanged when a hook runner reports failure: advisory, exit code unaffected" do
         advisory = double("hook_runner")
         allow(advisory).to receive(:run).and_return(false)
 
@@ -345,7 +347,7 @@ RSpec.describe Workspace::Commands::Dev do
         expect(output.string).to include("Dev environment running for")
       end
 
-      it "fires pre_dev_up but not post_dev_up when up is refused because no command is configured" do
+      it "fires neither hook when up is refused because no command is configured" do
         dev_settings.delete("up")
 
         expect { dev(hook_runner: hook_runner).up(working_dir: login) }.to raise_error(Workspace::Error, /No dev command configured/)
