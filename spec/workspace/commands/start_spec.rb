@@ -2639,4 +2639,157 @@ RSpec.describe Workspace::Commands::Start do
       expect(JSON.parse(output.string)).not_to include("plan")
     end
   end
+
+  describe "start.copy_files" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    let(:worktree_path) { File.join(tmpdir, ".worktrees", "feature") }
+    let(:project_name) { File.basename(tmpdir) }
+    let(:project_data) { {} }
+    let(:settings) do
+      CLITestHelpers::FakeProjectSettings.new.tap do |settings|
+        allow(settings).to receive(:load) { |name| (name == project_name) ? project_data : {} }
+      end
+    end
+
+    subject(:command) do
+      described_class.new(git: git, project_config: project_config, project_settings: settings,
+        launch_command: launch_command, event_log: event_log,
+        start_file_copies: Workspace::StartFileCopies.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)),
+        output: output, error_output: error_output, input: input)
+    end
+
+    before do
+      FileUtils.mkdir_p(worktree_path)
+      allow(git).to receive(:root).and_return(tmpdir)
+      allow(git).to receive(:parse_start_input).and_return({type: :branch, value: "feature"})
+      allow(git).to receive(:sanitize_for_filesystem).with("feature").and_return("feature")
+      allow(git).to receive(:worktree_exists?).and_return(false)
+      allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+      allow(git).to receive(:branch_exists?).with("feature").and_return(true)
+      allow(git).to receive(:create_worktree)
+      allow(project_config).to receive(:settle_worktree_name).and_return("app.worktree-feature")
+      allow(project_config).to receive(:create_worktree).and_return("app.worktree-feature")
+      allow(launch_command).to receive(:call)
+    end
+
+    it "copies the listed files from the main checkout into a new worktree, mode kept, and records them in the event" do
+      File.write(File.join(tmpdir, ".env"), "SECRET=1")
+      File.chmod(0o600, File.join(tmpdir, ".env"))
+      define_project_data("start" => {"copy_files" => ".env"})
+
+      command.call("feature", yes: true)
+
+      expect(File.read(File.join(worktree_path, ".env"))).to eq("SECRET=1")
+      expect(File.stat(File.join(worktree_path, ".env")).mode & 0o7777).to eq(0o600)
+      expect(output.string).to include("Copied .env from the main checkout")
+      expect(event_log.events.fetch(0)["data"]).to include("copied" => [".env"])
+    end
+
+    it "leaves an edited file in a reused worktree untouched and reports it skipped" do
+      File.write(File.join(tmpdir, ".env"), "NEW")
+      File.write(File.join(worktree_path, ".env"), "BRANCH LOCAL EDIT")
+      allow(git).to receive(:worktree_exists?).with(worktree_path).and_return(true)
+      define_project_data("start" => {"copy_files" => ".env"})
+
+      command.call("feature", yes: true)
+
+      expect(File.read(File.join(worktree_path, ".env"))).to eq("BRANCH LOCAL EDIT")
+      expect(output.string).to include("Skipped .env: already in the worktree")
+      data = event_log.events.fetch(0)["data"]
+      expect(data).to include("copied" => [], "skipped" => [".env"])
+    end
+
+    it "warns for a source missing from the main checkout but the start succeeds" do
+      define_project_data("start" => {"copy_files" => "missing.env"})
+
+      command.call("feature", yes: true)
+
+      expect(error_output.string).to include("Warning: missing.env is missing from the main checkout")
+      expect(launch_command).to have_received(:call)
+    end
+
+    it "carries a copy problem in the --json payload's warnings, not on stderr" do
+      define_project_data("start" => {"copy_files" => "missing.env"})
+
+      command.call("feature", yes: true, json: true)
+
+      payload = JSON.parse(output.string)
+      expect(payload["warnings"]).to contain_exactly(/missing\.env is missing from the main checkout/)
+      expect(payload["warnings"].join).not_to start_with("Warning:")
+      expect(error_output.string).to eq("")
+    end
+
+    it "copies into an adopted worktree found at a non-standard location" do
+      elsewhere = File.join(tmpdir, "elsewhere")
+      FileUtils.mkdir_p(elsewhere)
+      File.write(File.join(tmpdir, ".env"), "SECRET=1")
+      allow(git).to receive(:find_worktree_by_branch).with("feature", repo: tmpdir).and_return(elsewhere)
+      define_project_data("start" => {"copy_files" => ".env"})
+
+      command.call("feature", yes: true)
+
+      expect(File.read(File.join(elsewhere, ".env"))).to eq("SECRET=1")
+      expect(output.string).to include("Adopting existing worktree at: #{elsewhere}")
+    end
+
+    it "carries copy_files in the --json payload" do
+      File.write(File.join(tmpdir, ".env"), "SECRET=1")
+      define_project_data("start" => {"copy_files" => ".env"})
+
+      command.call("feature", yes: true, json: true)
+
+      expect(JSON.parse(output.string)["copy_files"]).to eq("copied" => [".env"], "skipped" => [])
+    end
+
+    it "carries copy_files in the --json payload with --no-launch, and a re-run tops up without touching what is there" do
+      File.write(File.join(tmpdir, ".env"), "SECRET=1")
+      define_project_data("start" => {"copy_files" => ".env"})
+
+      command.call("feature", yes: true, json: true, no_launch: true)
+      expect(JSON.parse(output.string)["copy_files"]).to eq("copied" => [".env"], "skipped" => [])
+
+      output.truncate(0)
+      output.rewind
+      File.write(File.join(worktree_path, ".env"), "EDITED LOCALLY")
+      command.call("feature", yes: true, json: true, no_launch: true)
+      expect(JSON.parse(output.string)["copy_files"]).to eq("copied" => [], "skipped" => [".env"])
+      expect(File.read(File.join(worktree_path, ".env"))).to eq("EDITED LOCALLY")
+    end
+
+    it "changes nothing anywhere when the key is unset" do
+      command.call("feature", yes: true, json: true)
+
+      expect(JSON.parse(output.string)).not_to have_key("copy_files")
+      expect(event_log.events.fetch(0)["data"]).not_to include("copied", "skipped")
+      expect(File.exist?(File.join(worktree_path, ".env"))).to be(false)
+    end
+
+    it "copies from the main checkout when start runs from inside a linked worktree" do
+      main = File.join(tmpdir, "main")
+      cwd_worktree = File.join(tmpdir, "main", ".worktrees", "existing")
+      FileUtils.mkdir_p([main, cwd_worktree, File.join(main, ".worktrees", "feature")])
+      File.write(File.join(main, ".env"), "FROM MAIN")
+      File.write(File.join(cwd_worktree, ".env"), "FROM CWD")
+      allow(git).to receive(:root).and_return(cwd_worktree)
+      allow(git).to receive(:worktree_exists?).and_return(false)
+      ref = double("ref", pr: nil, branch: "feature", kind: "branch")
+      start_ref = double("start_ref")
+      allow(start_ref).to receive(:project) { |root| Struct.new(:root, :name, :from_worktree).new(main, "main", true) }
+      allow(start_ref).to receive(:call).and_return(ref)
+      from_worktree = described_class.new(git: git, project_config: project_config, project_settings: settings,
+        launch_command: launch_command, event_log: event_log, start_ref: start_ref,
+        start_file_copies: Workspace::StartFileCopies.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)),
+        output: output, error_output: error_output, input: input)
+      settings_for_main = settings
+      allow(settings_for_main).to receive(:load) { |name| (name == "main") ? {"start" => {"copy_files" => ".env"}} : {} }
+
+      from_worktree.call("feature", yes: true)
+
+      expect(File.read(File.join(main, ".worktrees", "feature", ".env"))).to eq("FROM MAIN")
+    end
+
+    def define_project_data(data)
+      allow(settings).to receive(:load) { |name| (name == project_name) ? data : {} }
+    end
+  end
 end

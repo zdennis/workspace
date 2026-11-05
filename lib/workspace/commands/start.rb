@@ -31,6 +31,8 @@ module Workspace
       # @param library_installer [Workspace::LibraryInstaller, nil] copies `agents:` and `skills:` into the worktree
       # @param notes_setup [Workspace::NotesSetup, nil] fixes the worktree's notes directory (its own `notes.dir`,
       #   the directory, its exclude line); nil sets nothing up
+      # @param start_file_copies [Workspace::StartFileCopies, nil] copies the project's `start.copy_files` from the
+      #   main checkout into the worktree, never overwriting; nil copies nothing
       # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs sent with the first
       #   prompt (the automatic `notes` pack, and `packs:`); nil sends none
       # @param start_ref [Workspace::StartRef, nil] reads the input and finds the project; nil builds one from +git+ and +lineage+
@@ -45,7 +47,7 @@ module Workspace
       # @param excluder [Workspace::BookkeepingExclude, nil] lists the `.workspace-project` marker in `info/exclude`; nil lists nothing
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, hooks_config: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, agent_commands: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, excluder: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, start_file_copies: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, agent_commands: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, excluder: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -60,6 +62,7 @@ module Workspace
         @library = library
         @library_installer = library_installer
         @notes_setup = notes_setup
+        @start_file_copies = start_file_copies
         @instruction_composer = instruction_composer
         @main_agent = main_agent
         @agent_commands = agent_commands
@@ -241,7 +244,7 @@ module Workspace
         if @git.worktree_exists?(worktree_path)
           note_base_ignored(branch_name, quiet: quiet) if base && !pr
           return finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name,
-            base: nil, created: promoted, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, already_exists: !promoted, promoted: promoted)
+            base: nil, created: promoted, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, already_exists: !promoted, promoted: promoted, root: root)
         end
 
         if pr
@@ -259,7 +262,7 @@ module Workspace
         existing_path = @git.find_worktree_by_branch(branch_name, repo: root)
         if existing_path
           return finish_worktree(project_name, File.basename(existing_path), existing_path, branch_name,
-            base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, adopted: true)
+            base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, adopted: true, root: root)
         end
 
         # gh would otherwise reuse or reset a stale pr-<n> branch (left by a
@@ -291,13 +294,14 @@ module Workspace
         ensure_gitignore(root, quiet: quiet)
 
         finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name,
-          base: result[:base_branch], created: true, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet)
+          base: result[:base_branch], created: true, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, root: root)
       end
 
       # Shared tail of every branch: config generation, hook seeding/installation,
-      # marker, launch, and (when quiet) the JSON payload.
+      # copy of the project's `start.copy_files`, marker, launch, and (when quiet)
+      # the JSON payload.
       def finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name, base:, created:,
-        prompt:, prompt_timeout:, headless:, quiet:, already_exists: false, adopted: false, promoted: false)
+        prompt:, prompt_timeout:, headless:, quiet:, already_exists: false, adopted: false, promoted: false, root: nil)
         log(quiet, "Worktree already exists at: #{worktree_path}") if already_exists
         log(quiet, "Adopting existing worktree at: #{worktree_path}") if adopted
 
@@ -309,20 +313,21 @@ module Workspace
         @effective_kind = effective_kind(config_name)
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
+        copy_files = copy_start_files(root, project_name, worktree_path, quiet: quiet)
         notes_dir = setup_notes(config_name, quiet: quiet)
         install_agent_hooks(worktree_path, config_name, quiet: quiet)
         copied = copy_library_entries(worktree_path, project_name, quiet: quiet)
         write_project_marker(worktree_path, config_name)
         setup_plan(config_name, quiet: quiet)
         setup_spine(config_name, worktree_path, quiet: quiet)
-        record_started(config_name, project_name, branch_name, created: created, task: task, promoted: promoted)
+        record_started(config_name, project_name, branch_name, created: created, task: task, promoted: promoted, copy_files: copy_files)
         agent_kind = report_agent_kind(config_name, quiet: quiet)
         if @no_launch
           log(quiet, "Not launching #{config_name}; start it with `workspace launch #{config_name}`.")
           @project_settings.ensure_exists(config_name)
           return unless quiet
           return {exit_code: 0, json: start_json(project_name, config_name, worktree_path, branch_name, base, created, headless,
-            notes_dir, task, copied, agent_kind, launched: false)}
+            notes_dir, task, copied, agent_kind, copy_files: copy_files, launched: false)}
         end
         log(quiet, "Launching #{config_name}...")
         first_prompt = drafting? ? [PlanDispatch::DRAFT_PROMPT, ("The goal: #{prompt}" if prompt)].compact.join("\n\n") : prompt
@@ -338,7 +343,7 @@ module Workspace
         exit_code = result ? result[:exit_code] : 0
         started = !(result && result[:start_failures] && result[:start_failures][config_name])
         json = start_json(project_name, config_name, worktree_path, branch_name, base, created, headless,
-          notes_dir, task, copied, agent_kind, launched: started)
+          notes_dir, task, copied, agent_kind, copy_files: copy_files, launched: started)
         if @plays.any?
           rows = @plays.map { |play| play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) }
           json["play"] = rows.first
@@ -363,7 +368,7 @@ module Workspace
         {exit_code: exit_code, json: json}
       end
 
-      def start_json(project_name, config_name, worktree_path, branch_name, base, created, headless, notes_dir, task, copied, agent_kind, launched:)
+      def start_json(project_name, config_name, worktree_path, branch_name, base, created, headless, notes_dir, task, copied, agent_kind, launched:, copy_files: nil)
         json = {
           "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
           "project" => project_name,
@@ -382,6 +387,9 @@ module Workspace
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
         json["recipe"] = @recipe.slice("ref", "scope") if @recipe
         %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
+        if copy_files && (copy_files["copied"].any? || copy_files["skipped"].any?)
+          json["copy_files"] = {"copied" => copy_files["copied"], "skipped" => copy_files["skipped"]}
+        end
         if @no_launch
           json["packs"] = []
           json["warnings"] = @warnings if @warnings&.any?
@@ -574,12 +582,17 @@ module Workspace
         !(result[:prompt_failures] || {}).key?(config_name) && !(result[:start_failures] || {}).key?(config_name)
       end
 
-      # Branch, parent project and task id only: no path, title or prompt.
-      # EventLog#record never raises.
-      def record_started(config_name, project_name, branch_name, created:, task:, promoted: false)
+      # Branch, parent project, task id, and the `start.copy_files` outcome: no
+      # path, title or prompt (the copied and skipped entries are
+      # checkout-relative file names). EventLog#record never raises.
+      def record_started(config_name, project_name, branch_name, created:, task:, promoted: false, copy_files: nil)
         data = {"workspace" => config_name, "parent" => project_name, "branch" => branch_name, "created" => created}
         data["promoted"] = true if promoted
         data["task"] = task["id"] if task
+        if copy_files && (copy_files["copied"].any? || copy_files["skipped"].any?)
+          data["copied"] = copy_files["copied"]
+          data["skipped"] = copy_files["skipped"]
+        end
         @event_log&.record(type: "worktree_started", project: config_name, data: data)
       end
 
@@ -725,6 +738,23 @@ module Workspace
         end
 
         @git.prompt_base_branch || :cancelled
+      end
+
+      # Copies the project's `start.copy_files` from the main checkout into the
+      # worktree: once at setup, never overwriting, so branch-local edits survive
+      # and a re-run of `start` tops up missing files. Runs for reused, adopted
+      # and promoted worktrees too — safety comes from never-overwrite. A problem
+      # is a warning (stderr, or `warnings` under --json), never a failed start.
+      #
+      # @return [Hash] the {StartFileCopies} result, or nil when nothing was wired
+      def copy_start_files(root, project_name, worktree_path, quiet:)
+        return unless @start_file_copies && root
+
+        result = @start_file_copies.call(project_name: project_name, source_root: root, worktree_root: worktree_path)
+        result["warnings"].each { |message| quiet ? @warnings << message : @error_output.puts("Warning: #{message}") }
+        result["copied"].each { |rel| log(quiet, "Copied #{rel} from the main checkout") }
+        result["skipped"].each { |rel| log(quiet, "Skipped #{rel}: already in the worktree") }
+        result
       end
 
       # Fixes the workspace's notes directory. A problem is a warning (stderr, or
