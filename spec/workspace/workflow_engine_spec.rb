@@ -3042,6 +3042,65 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(engine.tick("wr_1")["state"]).to eq("completed")
     end
 
+    context "with exec proofs" do
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            build:
+              prompt: Build it.
+              require:
+                - exec: "bin/check -- {{changed.files}}"
+                  timeout: 30s
+                - exec: bin/other
+        YAML
+      end
+
+      before do
+        allow(guard).to receive(:changed_paths).and_return(["a.rb".b])
+        allow(commands_config).to receive(:test_files).and_return([])
+      end
+
+      it "runs each with no shell outside the lock, and records only its own fields on the attempt" do
+        start(flow, inputs: {})
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["state"]).to eq("completed")
+        expect(check_calls.map { |call| call[:argv] }).to eq([["bin/check", "--", "a.rb"], ["bin/other"]])
+        expect(check_calls.map { |call| call[:state_during] }).to eq(%w[checking checking])
+        expect(check_calls.first).to include(cwd: worktree, timeout: 30, env: hash_including("WORKSPACE_RUN_ID" => "wr_1",
+          "WORKSPACE_CHANGED_FILES" => %r{/changed-files\z}))
+        expect(check_calls.first[:env]["WORKSPACE_CHANGED_FILES"]).not_to start_with(worktree)
+        expect(attempt["proofs"].map(&:keys).map(&:sort)).to all(eq(%w[ended_at exit_code index log program proof started_at timed_out timeout token]))
+        expect(attempt["proofs"].map { |proof| proof.values_at("index", "program", "timeout") }).to eq([[0, "bin/check", 30], [1, "bin/other", 300]])
+        expect(attempt["proofs"].map { |proof| proof["log"] }).to match([%r{steps/build\.1\.require-exec-0\.\h{8}\.log\z}, %r{steps/build\.1\.require-exec-1\.\h{8}\.log\z}])
+      end
+
+      it "fails the step with require_exec and the program" do
+        start(flow, inputs: {})
+        check_results << {exit_code: 2, timed_out: false}
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]).to include("code" => "failed_check")
+        expect(run["reason"]["details"]).to include("code" => "require_exec", "code_source" => "engine", "cause" => "require", "require" => "exec",
+          "program" => "bin/check", "exit_code" => 2, "log" => %r{build\.1\.require-exec-0\.\h{8}\.log\z})
+        expect(check_calls.size).to eq(1)
+      end
+
+      it "runs a lost exec proof again on a tick only after its own timeout, 60 seconds and the time its git reads may take" do
+        start(flow, inputs: {})
+        store.update("wr_1") do |run|
+          run["state"] = "running"
+          run["steps"]["build"]["state"] = "checking"
+          run["steps"]["build"]["attempts"].last["proofs"] = [{"proof" => "exec", "index" => 0, "token" => "old", "program" => "bin/check", "timeout" => 30, "started_at" => "2026-10-04T12:00:00Z"}]
+        end
+        now[0] += 90 + Workspace::WorkflowRequire::EXEC_SETUP_SECONDS
+        expect(engine.tick("wr_1")).to be_nil
+        now[0] += 1
+        expect(engine.tick("wr_1")["state"]).to eq("completed")
+        expect(check_calls.map { |call| call[:argv] }).to eq([["bin/check", "--", "a.rb"], ["bin/other"]])
+      end
+    end
+
     it "fails an attempt stored with no remote reading as unproven, running no remote read" do
       start(flow, inputs: {})
       store.update("wr_1") { |run| run["steps"]["build"]["attempts"].last.delete("remote") }

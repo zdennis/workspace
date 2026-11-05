@@ -308,7 +308,7 @@ module Workspace
       attempt = state["attempts"].last
       # A `require:` proof outside the run's lock has its own start and limit; a run stored without `proofs` has neither.
       proof = Array(attempt&.dig("proofs")).find { |each| !each.key?("ended_at") }
-      return now - Time.iso8601(proof["started_at"]) > proof["timeout"] + 60 if proof
+      return now - Time.iso8601(proof["started_at"]) > WorkflowRequire.lost_after(proof) if proof
       started = attempt&.dig("check", "started_at")
       step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
       timeout = step.dig("status", "timeout") || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
@@ -1930,8 +1930,9 @@ module Workspace
 
     # A proof takes the step to `checking` like a `status:` check, so a resume, a cancel, a tick and {#wanted?}
     # treat it as one. Its record stays open (no `ended_at`) until it is applied, or a next {#evaluate} starts over.
+    # A proof's {WorkflowRequire::FACTS_KEY} (what an `exec` proof read of the run under the lock) goes to {WorkflowRequire#run_outside} only.
     def start_proof(run, step, state, attempt, pending)
-      (attempt["proofs"] ||= []) << pending.merge("started_at" => now_iso)
+      (attempt["proofs"] ||= []) << pending.except(WorkflowRequire::FACTS_KEY).merge("started_at" => now_iso)
       state["state"] = "checking"
       run["state"] = "running"
       run["reason"] = nil
@@ -2166,7 +2167,7 @@ module Workspace
     def require_failure(unmet)
       {"cause" => "require", "require" => unmet["proof"], "detail" => unmet["detail"], "unproven" => unmet["unproven"],
        "required" => unmet["required"], "found" => unmet["found"], "base" => unmet["base"], "paths" => unmet["paths"],
-       "reason" => unmet["reason"], "error" => unmet["error"], "exit_code" => unmet["exit_code"], "log" => unmet["log"],
+       "reason" => unmet["reason"], "error" => unmet["error"], "exit_code" => unmet["exit_code"], "log" => unmet["log"], "program" => unmet["program"],
        "before" => unmet["before"], "after" => unmet["after"]}
         .compact.merge(code_for(unmet["code"], nil))
     end

@@ -308,6 +308,13 @@ module Workspace
     end
 
     # @param worktree [String] a checkout
+    # @return [String, nil] the checked-out branch's short name, "" on a detached HEAD, nil when git can't say
+    def branch(worktree)
+      name, ok = own_branch(worktree)
+      ok ? name.to_s : nil
+    end
+
+    # @param worktree [String] a checkout
     # @return [Boolean] whether a rebase, merge, cherry-pick, revert or bisect is under way; true when git can't say
     def operation_in_progress?(worktree)
       names = Workspace::Git::OPERATION_FILES.keys + REBASE_DIRS

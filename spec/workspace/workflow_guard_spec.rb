@@ -1094,6 +1094,15 @@ RSpec.describe Workspace::WorkflowGuard do
     end
   end
 
+  describe "#branch" do
+    it "names the checked-out branch, empty on a detached HEAD, nil where git can't say" do
+      expect(guard.branch(repo)).to eq(git("symbolic-ref", "--short", "HEAD").strip)
+      git("checkout", "-q", "--detach")
+      expect(guard.branch(repo)).to eq("")
+      expect(guard.branch(File.join(repo, "gone"))).to be_nil
+    end
+  end
+
   describe "#changed_paths" do
     let(:sha) { git("rev-parse", "HEAD").strip }
 
