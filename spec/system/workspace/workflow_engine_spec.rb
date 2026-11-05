@@ -3768,6 +3768,30 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["steps"]["diagnose"]["attempts"].last).to include("outcome" => "failed")
     end
 
+    it "stops instead of looping when on_fail's except lists guard, and counts no loop" do
+      excepted = definition(<<~YAML)
+        steps:
+          plan:
+            prompt: Plan.
+            guard: unchanged
+          tally:
+            prompt: Tally.
+            guard: unchanged
+            on_fail: {goto: plan, max: 2, except: [guard]}
+      YAML
+      start(excepted, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+      commit_in_worktree
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run).to include("state" => "waiting", "current" => "tally", "loops" => {})
+      expect(run["reason"]["code"]).to eq("failed_check")
+      expect(run["reason"]["details"]).to include("cause" => "guard", "code" => "head_moved")
+      expect(run["steps"]["tally"]["attempts"].size).to eq(1)
+      expect(run["steps"]["plan"]["attempts"].size).to eq(1)
+    end
+
     describe "a changed repository config" do
       let(:inbox) { Workspace::InboxStore.new(path: File.join(worktree, "..", "inbox-#{File.basename(worktree)}.json")) }
       subject(:engine) { engine_with(inbox_for: ->(_workspace) { inbox }) }

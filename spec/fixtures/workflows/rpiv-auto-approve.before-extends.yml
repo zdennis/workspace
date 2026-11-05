@@ -186,7 +186,7 @@ steps:
       goto: plan
       max: 9
       context: fresh
-      except: [stale_plan_revision]
+      except: [stale_plan_revision, guard, check_error]
     timeout: 30m
 
   implement:

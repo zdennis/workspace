@@ -70,7 +70,7 @@ RSpec.describe "the shipped workflow presets" do
       expect(steps.map { |step| step["id"] })
         .to eq(%w[research plan review_supportive review_skeptical review_implementer plan_review implement verify])
       expect(steps.map { |step| step["gate"] }.compact).to be_empty
-      expect(review["on_fail"]).to include("goto" => "plan", "max" => 9, "context" => "fresh", "except" => %w[stale_plan_revision])
+      expect(review["on_fail"]).to include("goto" => "plan", "max" => 9, "context" => "fresh", "except" => %w[stale_plan_revision guard check_error])
       expect(review["status"]).to include("report_code" => true)
       expect(review["context"]).to eq("fresh")
       reviewers = steps.select { |step| step["id"].start_with?("review_") }
