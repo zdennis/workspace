@@ -69,9 +69,11 @@ module Workspace
     # @param on_reap [#call, nil] called as `on_reap.call(name, holder)` once per dead holder a
     #   pass removed (+holder+ is the summary the audit log keeps), after the store is unlocked;
     #   an error it raises is only logged
+    # @param renamer [#call] moves the finished temp file over `locks.json`, given the temp path and the data path
     def initialize(dir:, liveness:, logger: Workspace::Logger.new, clock: -> { Time.now.to_i }, idle_grace: DEFAULT_IDLE_GRACE,
-      audit_log: nil, terminator: nil, on_reap: nil)
+      audit_log: nil, terminator: nil, on_reap: nil, renamer: File.method(:rename))
       @on_reap = on_reap
+      @renamer = renamer
       @dir = dir
       @liveness = liveness
       @logger = logger
@@ -901,7 +903,7 @@ module Workspace
         f.flush
         f.fsync
       end
-      File.rename(tmp, @data_path)
+      @renamer.call(tmp, @data_path)
     end
 
     def now_iso
