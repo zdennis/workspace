@@ -20,15 +20,9 @@ RSpec.describe Workspace::Commands::Repair do
     end
 
     it "rebuilds state from live workspace windows" do
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:iterm_windows) do
-        {100 => "workspace-proj1 [tmux]", 200 => "workspace-proj2 [tmux]", 300 => "Scooter"}
-      end
+      wm = ConfiguredWindowManager.new(iterm_windows: {100 => "workspace-proj1 [tmux]", 200 => "workspace-proj2 [tmux]", 300 => "Scooter"})
 
-      fake_iterm = CLITestHelpers::FakeITerm.new
-      fake_iterm.define_singleton_method(:session_map) do
-        {"uid-a" => "100", "uid-b" => "200"}
-      end
+      fake_iterm = ConfiguredITerm.new(session_map: {"uid-a" => "100", "uid-b" => "200"})
 
       cmd = described_class.new(state: state, iterm: fake_iterm, window_manager: wm, output: output)
       rows = cmd.call
@@ -46,11 +40,9 @@ RSpec.describe Workspace::Commands::Repair do
     it "preserves existing state entries for non-workspace windows" do
       state["other-proj"] = {"unique_id" => "uid-x", "iterm_window_id" => 999}
 
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:iterm_windows) { {100 => "workspace-proj1"} }
+      wm = ConfiguredWindowManager.new(iterm_windows: {100 => "workspace-proj1"})
 
-      fake_iterm = CLITestHelpers::FakeITerm.new
-      fake_iterm.define_singleton_method(:session_map) { {} }
+      fake_iterm = ConfiguredITerm.new
 
       cmd = described_class.new(state: state, iterm: fake_iterm, window_manager: wm, output: output)
       cmd.call
