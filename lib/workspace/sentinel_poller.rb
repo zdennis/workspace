@@ -54,9 +54,10 @@ module Workspace
     # @param clock [#call] returns the current Time
     # @param poll_interval [Numeric] seconds to wait between captures
     # @param logger [Workspace::Logger] debug logger
+    # @param full_scan_every [Integer] polls between reads of the whole history
     # @param error_output [IO] stream for reporting an unexpected poller death
     def initialize(tmux:, session_name:, pane:, token: nil, deadline: nil,
-      clock: -> { Time.now }, poll_interval: 2,
+      clock: -> { Time.now }, poll_interval: 2, full_scan_every: FULL_SCAN_EVERY,
       logger: Workspace::Logger.new, error_output: $stderr)
       @tmux = tmux
       @session_name = session_name
@@ -66,6 +67,7 @@ module Workspace
       @deadline = deadline
       @clock = clock
       @poll_interval = poll_interval
+      @full_scan_every = full_scan_every
       @logger = logger
       @error_output = error_output
       @running = false
@@ -89,7 +91,7 @@ module Workspace
         while @running
           # The first pass reads the whole history, to find a sentinel
           # printed while no one was watching.
-          full = (polls % FULL_SCAN_EVERY).zero?
+          full = (polls % @full_scan_every).zero?
           summary = scan(full: full)
           timed_out = @deadline && @clock.call >= @deadline
           summary ||= scan(full: true) if timed_out && !full

@@ -163,12 +163,12 @@ RSpec.describe Workspace::SentinelPoller do
 
     # Runs one poller to its end; the clock reaches the deadline on its
     # +expire_on+th read.
-    def watch(tmux, token: "ab12", expire_on: 100)
+    def watch(tmux, token: "ab12", expire_on: 100, **options)
       clock_reads = 0
       poller = described_class.new(
         tmux: tmux, session_name: "myapp", pane: 0, token: token, deadline: deadline,
         clock: -> { ((clock_reads += 1) >= expire_on) ? deadline : deadline - 1 },
-        poll_interval: 0.001, error_output: error_output
+        poll_interval: 0.001, error_output: error_output, **options
       )
       result = Queue.new
       thread = poller.start(on_timeout: -> { result << :timed_out }) { |summary| result << summary }
@@ -186,10 +186,9 @@ RSpec.describe Workspace::SentinelPoller do
     end
 
     it "finds a sentinel that scrolled out of the recent window on its periodic full read" do
-      stub_const("#{described_class}::FULL_SCAN_EVERY", 3)
       tmux = tmux_class.new { |kind, n| (kind == :full && n > 1) ? "WORKSPACE_DONE:ab12 scrolled away\n" : "later\n" }
 
-      expect(watch(tmux)).to eq("scrolled away")
+      expect(watch(tmux, full_scan_every: 3)).to eq("scrolled away")
       expect(tmux.calls).to eq([:full, recent, recent, :full])
     end
 
