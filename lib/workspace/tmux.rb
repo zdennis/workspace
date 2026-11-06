@@ -26,7 +26,8 @@ module Workspace
     #   give tmux before stopping it and raising
     def initialize(config:, logger: Workspace::Logger.new,
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) },
-      start_timeout: DEFAULT_START_TIMEOUT, command_timeout: DEFAULT_COMMAND_TIMEOUT)
+      start_timeout: DEFAULT_START_TIMEOUT, command_timeout: DEFAULT_COMMAND_TIMEOUT, spawner: Process.method(:spawn))
+      @spawner = spawner
       @config = config
       @logger = logger
       @clock = clock
@@ -944,7 +945,7 @@ module Workspace
     # @return [String, nil] nil once it exited 0, or why it didn't
     def run_tmuxinator(*command)
       reader, writer = IO.pipe
-      pid = Process.spawn(*command, in: File::NULL, out: File::NULL, err: writer, pgroup: true)
+      pid = @spawner.call(*command, in: File::NULL, out: File::NULL, err: writer, pgroup: true)
       writer.close
       stderr = Thread.new { reader.read }
       waiter = Process.detach(pid)

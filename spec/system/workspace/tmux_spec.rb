@@ -254,10 +254,12 @@ RSpec.describe Workspace::Tmux do
       end
     end
 
+    let(:real_paste) { false }
+
     before do
       allow(tmux).to receive(:system).and_return(true)
       allow(tmux).to receive(:tmux_load_buffer).and_return(true)
-      allow(tmux).to receive(:tmux_paste_buffer).and_return([true, nil])
+      allow(tmux).to receive(:tmux_paste_buffer).and_return([true, nil]) unless real_paste
     end
 
     it "pastes the full text as one bracketed paste and presses Enter once" do
@@ -460,19 +462,22 @@ RSpec.describe Workspace::Tmux do
       expect(result.message).to eq("tmux could not paste into =app.worktree-x:0.1: can't find session: app.worktree-x")
     end
 
-    it "keeps tmux's own paste-buffer error as the reason a paste failed" do
-      status = instance_double(Process::Status, success?: false)
-      allow(Open3).to receive(:capture3)
-        .with("tmux", "paste-buffer", "-p", "-b", anything, "-t", "=s:0.1")
-        .and_return(["", "can't find pane: 0.1\n", status])
+    context "with tmux's own paste-buffer" do
+      let(:real_paste) { true }
 
-      screens("$ ")
-      allow(tmux).to receive(:tmux_paste_buffer).and_call_original
+      it "keeps tmux's own paste-buffer error as the reason a paste failed" do
+        status = instance_double(Process::Status, success?: false)
+        allow(Open3).to receive(:capture3)
+          .with("tmux", "paste-buffer", "-p", "-b", anything, "-t", "=s:0.1")
+          .and_return(["", "can't find pane: 0.1\n", status])
 
-      result = tmux.deliver("s", "0.1", "text")
+        screens("$ ")
 
-      expect(result.status).to eq(:failed)
-      expect(result.message).to end_with(": can't find pane: 0.1")
+        result = tmux.deliver("s", "0.1", "text")
+
+        expect(result.status).to eq(:failed)
+        expect(result.message).to end_with(": can't find pane: 0.1")
+      end
     end
 
     it "reports :failed when Enter can't be pressed" do
@@ -1154,7 +1159,20 @@ RSpec.describe Workspace::Tmux do
   end
 
   describe "#start_headless" do
-    let(:tmux) { described_class.new(config: config) }
+    let(:spawn_script) { ["exit 0"] }
+    let(:start_timeout) { described_class::DEFAULT_START_TIMEOUT }
+    let(:seen) { {} }
+    let(:tmux) do
+      script = spawn_script
+      record = seen
+      spawner = lambda do |*args, **opts|
+        record[:args] = args
+        record[:opts] = opts
+        record[:content] = File.read(args[3])
+        Process.spawn("sh", "-c", script.first, **opts)
+      end
+      described_class.new(config: config, spawner: spawner, start_timeout: start_timeout)
+    end
     let(:source) { File.join(tmpdir, "workspace.proj.yml") }
 
     before do
@@ -1165,13 +1183,7 @@ RSpec.describe Workspace::Tmux do
     # Runs +script+ with sh in place of tmuxinator, keeping the spawn options,
     # and records tmuxinator's arguments and the config it was given.
     def fake_tmuxinator(script = "exit 0")
-      seen = {}
-      allow(Process).to receive(:spawn).and_wrap_original do |original, *args, **opts|
-        seen[:args] = args
-        seen[:opts] = opts
-        seen[:content] = File.read(args[3])
-        original.call("sh", "-c", script, **opts)
-      end
+      spawn_script[0] = script
       seen
     end
 
@@ -1227,16 +1239,19 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.start_headless("proj")).to match(/could not run tmuxinator/)
     end
 
-    it "stops a tmuxinator that outlives start_timeout and reports the timeout" do
-      tmux = described_class.new(config: config, start_timeout: 0.2)
-      pid_file = File.join(tmpdir, "tmuxinator.pid")
-      fake_tmuxinator("echo $$ > '#{pid_file}'; exec sleep 30")
+    context "with a short start_timeout" do
+      let(:start_timeout) { 0.2 }
 
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      expect(tmux.start_headless("proj")).to eq("tmuxinator timed out after 0.2s")
-      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 3
-      pid = File.read(pid_file).to_i
-      expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
+      it "stops a tmuxinator that outlives start_timeout and reports the timeout" do
+        pid_file = File.join(tmpdir, "tmuxinator.pid")
+        fake_tmuxinator("echo $$ > '#{pid_file}'; exec sleep 30")
+
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        expect(tmux.start_headless("proj")).to eq("tmuxinator timed out after 0.2s")
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 3
+        pid = File.read(pid_file).to_i
+        expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
+      end
     end
   end
 
