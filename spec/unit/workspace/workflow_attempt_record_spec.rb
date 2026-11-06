@@ -106,9 +106,10 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
 
     it "still hashes an output whose copy failed" do
       put("plan.md", "o")
-      allow_any_instance_of(File).to receive(:write).and_raise(Errno::ENOSPC)
+      full_disk = ->(path, flags, mode, &block) { File.open(path, flags, mode) { |io| block.call(Struct.new(:io) { def write(*) = raise(Errno::ENOSPC) }.new(io)) } }
+      failing = Workspace::WorkflowEvidence.new(dir: File.join(@dir, "ev"), opener: full_disk)
       attempt = {"n" => 1}
-      record.finish(run: run, step: step, attempt: attempt)
+      described_class.new(guard: guard, evidence: failing).finish(run: run, step: step, attempt: attempt)
 
       expect(attempt["evidence"].last["problem"]).to eq("copy_failed")
       expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => Digest::SHA256.hexdigest("o"), "bytes" => 1}])

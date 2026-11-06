@@ -180,10 +180,15 @@ RSpec.describe Workspace::WorkflowEvidence do
     expect(entries.last["sha256"]).to eq(sha("b"))
   end
 
+  # An opener whose file takes no bytes: the disk is full.
+  def full_disk_opener
+    ->(path, flags, mode, &block) { File.open(path, flags, mode) { |io| block.call(Struct.new(:io) { def write(*) = raise(Errno::ENOSPC) }.new(io)) } }
+  end
+
   it "reports a failed write as copy_failed, not missing" do
     put("report.md", "x")
-    allow_any_instance_of(File).to receive(:write).and_raise(Errno::ENOSPC)
-    entry = evidence.copy(run: run, step: step, attempt: {"n" => 1}).last
+    full = described_class.new(dir: evidence_dir, opener: full_disk_opener)
+    entry = full.copy(run: run, step: step, attempt: {"n" => 1}).last
     expect(entry).to include("problem" => "copy_failed", "sha256" => nil)
     expect(Dir.children(copies)).to eq([])
   end

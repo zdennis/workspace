@@ -43,9 +43,11 @@ module Workspace
 
     # @param dir [String] the evidence directory ({Config#workflow_evidence_dir})
     # @param clock [#call] returns the current Time
-    def initialize(dir:, clock: -> { Time.now })
+    # @param opener [#call] opens a copy's temporary file like `File.open` (path, flags, mode, block)
+    def initialize(dir:, clock: -> { Time.now }, opener: File.method(:open))
       @dir = dir
       @clock = clock
+      @opener = opener
     end
 
     # Copies the attempt's prompt file as it was written, before it is delivered. The attempt's `prompt_sha256`
@@ -165,7 +167,7 @@ module Workspace
         false
       end
       begin
-        File.open(temp, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600) do |io|
+        @opener.call(temp, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600) do |io|
           sink = Sink.new(io)
           content = WorkflowProduced.digest(source, max_bytes: limit, sink: sink, check: check)
           failure = sink.error
