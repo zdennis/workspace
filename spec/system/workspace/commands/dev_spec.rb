@@ -508,8 +508,9 @@ RSpec.describe Workspace::Commands::Dev do
       end
 
       it "reports kept, and leaves the lock, when the environment could not be stopped" do
-        command = dev
-        allow(command).to receive(:down).and_return(exit_code: 1)
+        stubborn = Workspace::ProcessGroupTerminator.new(poll_interval: 0.05)
+        allow(stubborn).to receive(:stop_holder).and_return(:kept)
+        command = dev(terminator: stubborn)
 
         expect(command.release_for_session(session_id: "sess-1", working_dir: login)).to eq(exit_code: 1, outcome: "kept")
         expect(alive?(@wrapper)).to be(true)
