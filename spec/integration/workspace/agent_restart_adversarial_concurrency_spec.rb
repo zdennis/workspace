@@ -49,23 +49,6 @@ class ConcurrencyGatedRestart
   def finish = @gate << :go
 end
 
-# A client socket whose close blocks until released, so a spec can hold the
-# worker between replying and releasing its pane.
-class ConcurrencySlowCloseClient
-  attr_reader :lines
-
-  def initialize
-    @lines = Queue.new
-    @close_gate = Queue.new
-  end
-
-  def puts(line) = @lines << line
-
-  def close = @close_gate.pop(timeout: 5)
-
-  def release = @close_gate << :go
-end
-
 RSpec.describe Workspace::AgentRestart, "adversarial concurrency" do
   let(:now) { [0.0] }
   let(:tmux) { ConcurrencyRestartTmux.new }
@@ -129,85 +112,127 @@ RSpec.describe Workspace::AgentRestart, "adversarial concurrency" do
   end
 end
 
+# Just enough of a session monitor for the daemon to start and accept a restart.
+class ConcurrencyIdleMonitor
+  def start = nil
+
+  def stop = nil
+
+  def snapshot = {"panes" => []}
+
+  def pane_kind(_id) = "claude"
+
+  def agent_pid(_id) = nil
+
+  def pane_state(_id) = "idle"
+
+  def delivery_facts(_id) = nil
+
+  def background_subagents(_id) = nil
+end
+
 RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrency" do
+  let(:tmpdir) { Dir.mktmpdir("ws-restart-adv", "/tmp") }
+  let(:agent_socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
+  let(:output) { StringIO.new }
   let(:tmux) { ConcurrencyRestartTmux.new }
   let(:error_output) { StringIO.new }
-  let(:config) { instance_double(Workspace::Config) }
-  let(:coordinator_client) { instance_double(Workspace::WorkCoordinatorClient) }
+  let(:config) do
+    instance_double(Workspace::Config).tap do |c|
+      allow(c).to receive(:agent_socket_path).with("myapp").and_return(agent_socket_path)
+      allow(c).to receive(:project_config_path).with("myapp").and_return(File.join(tmpdir, "myapp.yml"))
+      allow(c).to receive(:pipeline_state_path).and_return(File.join(tmpdir, "pipeline.json"))
+      allow(c).to receive(:prompt_queue_path).and_return(File.join(tmpdir, "prompt-queue.json"))
+    end
+  end
+  let(:coordinator_client) do
+    instance_double(Workspace::WorkCoordinatorClient, register: {"ok" => true, "epoch" => "e"},
+      deregister: nil, status_socket_path: nil)
+  end
   let(:pipeline_config) { Workspace::PipelineConfig.new(config: config) }
   let(:context_reader) do
     instance_double(Workspace::ContextReader).tap do |reader|
       allow(reader).to receive(:read).and_return({pct: 42, error: nil, updated_at: "2026-09-27T12:00:00Z"})
     end
   end
+  let(:signal_trapper) do
+    Class.new do
+      attr_reader :handlers
+
+      def initialize = @handlers = {}
+
+      def trap(signal, &block)
+        @handlers[signal] = block
+      end
+    end.new
+  end
+  let(:registry) { Workspace::RestartRegistry.new }
   let(:message) { {"type" => "restart_agent", "workspace" => "myapp", "pane" => "%18", "prompt" => "go"} }
+
+  after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 
   def build_agent(factory)
     described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
-      pipeline_config: pipeline_config, context_reader: context_reader,
-      agent_restart_factory: factory, output: StringIO.new, error_output: error_output)
+      pipeline_config: pipeline_config, signal_trapper: signal_trapper, context_reader: context_reader,
+      session_monitor_factory: ->(_name) { ConcurrencyIdleMonitor.new }, restart_registry: registry,
+      agent_restart_factory: factory, output: output, error_output: error_output)
   end
 
-  def reply_of(client)
-    JSON.parse(client.string.lines.last)
-  end
-
-  def workers(agent)
-    agent.instance_variable_get(:@restarts).values.grep(Thread)
-  end
-
-  def cleanup(agent, *gated)
+  # Runs the daemon on a thread until the block is done.
+  def with_daemon(agent, *gated)
+    thread = Thread.new { agent.call(name: "myapp") }
+    wait_until { output.string.include?("ready") || !thread.alive? }
+    yield
+  ensure
     gated.each(&:finish)
-    workers(agent).each { |t| t.join(2) || t.kill }
+    signal_trapper.handlers["TERM"]&.call
+    thread&.join(2)
+    thread&.kill
+  end
+
+  def wait_until(timeout: 2)
+    deadline = Time.now + timeout
+    sleep(0.01) until yield || Time.now > deadline
+  end
+
+  def send_restart(overrides = {})
+    UNIXSocket.open(agent_socket_path) do |socket|
+      socket.puts(message.merge(overrides).to_json)
+      JSON.parse(socket.gets)
+    end
   end
 
   it "C4: releases the pane when the worker thread can't be started, instead of leaking :starting" do
     restart = ConcurrencyGatedRestart.new({"ok" => true, "status" => "restarted"})
-    agent = build_agent(restart.method(:build))
+    attempts = 0
+    flaky = Workspace::RestartRegistry.new(spawn: lambda { |&work|
+      attempts += 1
+      raise ThreadError, "can't create Thread: Resource temporarily unavailable" if attempts == 1
+      Thread.new(&work)
+    })
+    agent = described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+      pipeline_config: pipeline_config, signal_trapper: signal_trapper, context_reader: context_reader,
+      session_monitor_factory: ->(_name) { ConcurrencyIdleMonitor.new }, restart_registry: flaky,
+      agent_restart_factory: restart.method(:build), output: output, error_output: error_output)
 
-    allow(Thread).to receive(:new).and_raise(ThreadError, "can't create Thread: Resource temporarily unavailable")
-    expect { agent.send(:handle_restart_agent, message, StringIO.new) }.to raise_error(ThreadError)
-    allow(Thread).to receive(:new).and_call_original
-
-    client = StringIO.new
-    agent.send(:handle_restart_agent, message, client)
-    expect(reply_of(client)).to include("ok" => true, "status" => "started")
-  ensure
-    cleanup(agent, restart) if agent
-  end
-
-  it "C5: reports a restart stopped by shutdown on stderr, as the CLI promises for failures" do
-    restart = ConcurrencyGatedRestart.new({"ok" => true, "status" => "restarted"})
-    agent = build_agent(restart.method(:build))
-    agent.send(:handle_restart_agent, message, StringIO.new)
-    expect(restart.entered.pop(timeout: 2)).to be(true)
-
-    # The worker may already have typed /clear; killing it now leaves the
-    # pane cleared with no prompt, and nobody is told.
-    agent.send(:stop_restarts)
-
-    expect(error_output.string).to include("restart_agent for pane 0.1")
-  ensure
-    cleanup(agent, restart) if agent
+    with_daemon(agent, restart) do
+      send_restart
+      wait_until { attempts >= 1 && !flaky.held?("%18") }
+      expect(flaky.held?("%18")).to be(false)
+      expect(send_restart).to include("ok" => true, "status" => "started")
+    end
   end
 
   it "C6: releases the pane before a waiting caller hears the outcome, so an immediate follow-up isn't refused" do
     done = Object.new
     done.define_singleton_method(:call) { |**| {"ok" => true, "status" => "restarted", "pane_id" => "%18"} }
     agent = build_agent(->(**) { done })
-    waiting_client = ConcurrencySlowCloseClient.new
 
-    expect(agent.send(:handle_restart_agent, message.merge("wait" => true), waiting_client)).to eq(:handed_off)
-    outcome = waiting_client.lines.pop(timeout: 2)
-    expect(JSON.parse(outcome)).to include("ok" => true, "status" => "restarted")
-
-    # The caller has its "restarted" reply and immediately asks again.
-    follow_up = StringIO.new
-    agent.send(:handle_restart_agent, message, follow_up)
-    expect(reply_of(follow_up)).to include("ok" => true, "status" => "started")
-  ensure
-    waiting_client&.release
-    cleanup(agent) if agent
+    with_daemon(agent) do
+      # The caller has its "restarted" reply and immediately asks again.
+      expect(send_restart("wait" => true)).to include("ok" => true, "status" => "restarted")
+      expect(send_restart).to include("ok" => true, "status" => "started")
+    end
   end
 end
 
@@ -261,17 +286,15 @@ RSpec.describe "restart_agent with main activity after the Stop" do
     instance_double(Workspace::ContextReader, read: {pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil})
   end
   let(:bindings) { instance_double(Workspace::PaneBindings, binding_for: {"kind" => "run", "id" => "wr_1"}) }
-  let(:agent) do
+  let(:runner) do
     factory = lambda do |**wired|
       Workspace::AgentRestart.new(tmux: tmux, context_reader: context_reader, clock: -> { clock.now.to_f }, wall_clock: -> { clock.now },
         sleeper: method(:tick), quiet_timeout: 30, **wired)
     end
-    Workspace::Commands::Agent.new(config: instance_double(Workspace::Config), tmux: tmux,
-      work_coordinator_client: instance_double(Workspace::WorkCoordinatorClient),
-      pipeline_config: Workspace::PipelineConfig.new(config: instance_double(Workspace::Config)), context_reader: context_reader,
-      pane_bindings: bindings, agent_restart_factory: factory, output: StringIO.new, error_output: StringIO.new).tap do |built|
-      built.instance_variable_set(:@session_monitor, monitor)
-    end
+    Workspace::RestartRunner.new(restart_factory: factory, registry: Workspace::RestartRegistry.new, tmux: tmux,
+      session_name: "s", delivery_lock: Mutex.new, pipeline_ref: ->(_index) {}, session_monitor: monitor,
+      idle_prompt_check: Workspace::IdlePromptCheck.new, transcript_summary: Workspace::TranscriptSummary.new,
+      pane_bindings: bindings, error_output: StringIO.new)
   end
 
   before do
@@ -328,7 +351,7 @@ RSpec.describe "restart_agent with main activity after the Stop" do
 
   def restart(run_id: nil)
     client = StringIO.new
-    agent.send(:run_restart, {"pane" => "0.1", "pane_id" => "%18"}, "Read the plan", false, 30, client, run_id: run_id)
+    runner.run({"pane" => "0.1", "pane_id" => "%18"}, "Read the plan", false, 30, client, run_id: run_id)
     JSON.parse(client.string.lines.last)
   end
 

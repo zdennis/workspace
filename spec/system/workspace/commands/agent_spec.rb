@@ -115,9 +115,12 @@ RSpec.describe Workspace::Commands::Agent do
     -> { "tok-#{count += 1}" }
   end
 
+  let(:restart_registry) { Workspace::RestartRegistry.new }
+
   subject(:agent) do
     described_class.new(
       config: config,
+      restart_registry: restart_registry,
       tmux: tmux,
       work_coordinator_client: client,
       pipeline_config: pipeline_config,
@@ -2152,7 +2155,7 @@ RSpec.describe Workspace::Commands::Agent do
 
       subject(:agent) do
         described_class.new(
-          config: config, tmux: tmux, work_coordinator_client: client,
+          config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
           sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
@@ -2234,7 +2237,7 @@ RSpec.describe Workspace::Commands::Agent do
         end
       end
 
-      it "registers the claiming thread, so stop_restarts kills an attempt worker" do
+      it "registers the claiming thread, so shutting down kills an attempt worker" do
         run_agent do
           claim = built.first[:claim_restart]
           token = nil
@@ -2248,16 +2251,17 @@ RSpec.describe Workspace::Commands::Agent do
           expect(built.first[:restarting].call("%5")).to be(true)
           expect(claim.call("%5")).to be_nil
 
-          agent.send(:stop_restarts)
+          signal_trapper.handlers["TERM"].call
+          worker.join(2)
 
           expect(worker.alive?).to be(false)
         end
       end
 
-      it "refuses a claim once the daemon is shutting down, so no attempt escapes stop_restarts" do
+      it "refuses a claim once the daemon is shutting down, so no attempt escapes the shutdown sweep" do
         run_agent do
           claim = built.first[:claim_restart]
-          agent.instance_variable_set(:@shutting_down, true)
+          signal_trapper.handlers["TERM"].call
 
           expect(Thread.new { claim.call("%5") }.value).to be_nil
           expect(built.first[:restarting].call("%5")).to be(false)
@@ -2276,30 +2280,31 @@ RSpec.describe Workspace::Commands::Agent do
       end
 
       describe "the claim's real path" do
-        let(:restarts) { agent.instance_variable_get(:@restarts) }
-
         def in_thread(&block) = Thread.new(&block).value
 
         it "refuses a free pane while shutting down, and writes nothing" do
           run_agent do
             claim = built.first[:claim_restart]
-            agent.instance_variable_set(:@shutting_down, true)
+            signal_trapper.handlers["TERM"].call
 
             expect(in_thread { claim.call("%5") }).to be_nil
-            expect(restarts).not_to have_key("%5")
+            expect(restart_registry.held?("%5")).to be(false)
           end
         end
 
         it "refuses a pane another claim holds, and leaves that claim alone" do
           run_agent do
             claim = built.first[:claim_restart]
-            restarts["%5"] = :starting
+            restart_registry.claim_pending("%5")
             expect(in_thread { claim.call("%5") }).to be_nil
-            expect(restarts["%5"]).to eq(:starting)
+            expect(restart_registry.held?("%5")).to be(true)
 
-            held = agent.send(:claim_restart_for_queue, "%6")
+            held = restart_registry.claim_for_queue("%6")
             expect(in_thread { claim.call("%6") }).to be_nil
-            expect(restarts["%6"]).to equal(held)
+            restart_registry.release("%6", Object.new)
+            expect(restart_registry.held?("%6")).to be(true)
+            restart_registry.release("%6", held)
+            expect(restart_registry.held?("%6")).to be(false)
           end
         end
 
@@ -2309,15 +2314,15 @@ RSpec.describe Workspace::Commands::Agent do
             first = Thread.new { claim.call("%5") }.tap(&:join)
             old = first.value
             release.call("%5", old)
-            expect(restarts).not_to have_key("%5")
+            expect(restart_registry.held?("%5")).to be(false)
 
             newer = in_thread { claim.call("%5") }
             release.call("%5", old)
-            expect(restarts["%5"]).to equal(newer)
+            expect(restart_registry.held?("%5")).to be(true)
             expect(newer).not_to equal(old)
 
             release.call("%5", newer)
-            expect(restarts).not_to have_key("%5")
+            expect(restart_registry.held?("%5")).to be(false)
           end
         end
       end
@@ -2490,7 +2495,7 @@ RSpec.describe Workspace::Commands::Agent do
 
       subject(:agent) do
         described_class.new(
-          config: config, tmux: tmux, work_coordinator_client: client,
+          config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
           sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
@@ -2519,7 +2524,7 @@ RSpec.describe Workspace::Commands::Agent do
         run_agent do
           expect(built.first).to include(workspace: "myapp", session_monitor: monitor)
           expect(built.first[:delivery_lock]).to be_a(Mutex)
-          agent.instance_variable_get(:@restarts)["%5"] = :starting
+          restart_registry.claim_pending("%5")
           expect(built.first[:restarting].call("%5")).to be(true)
           expect(watcher.stopped).to be_falsey
         end
@@ -2683,7 +2688,7 @@ RSpec.describe Workspace::Commands::Agent do
 
       subject(:agent) do
         described_class.new(
-          config: config, tmux: tmux, work_coordinator_client: client,
+          config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
           sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
@@ -2709,7 +2714,7 @@ RSpec.describe Workspace::Commands::Agent do
           expect(built.first).to include(workspace: "myapp", session_monitor: monitor, hook_event_log: nil)
           expect(built.first[:delivery_lock]).to be_a(Mutex)
           expect(built.first[:restarting].call("%5")).to be(false)
-          agent.instance_variable_get(:@restarts)["%5"] = :starting
+          restart_registry.claim_pending("%5")
           expect(built.first[:restarting].call("%5")).to be(true)
         end
       end
@@ -2768,7 +2773,7 @@ RSpec.describe Workspace::Commands::Agent do
 
       subject(:agent) do
         described_class.new(
-          config: config, tmux: tmux, work_coordinator_client: client,
+          config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
           sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
@@ -2793,14 +2798,13 @@ RSpec.describe Workspace::Commands::Agent do
           expect(built.first).to include(workspace: "myapp", session_monitor: monitor)
           expect(built.first[:delivery_lock]).to be_a(Mutex)
           expect(built.first[:restarting].call("%5")).to be(false)
-          agent.instance_variable_get(:@restarts)["%5"] = :starting
+          restart_registry.claim_pending("%5")
           expect(built.first[:restarting].call("%5")).to be(true)
         end
       end
 
       it "gives the desk a restart claim that refuses a held pane and releases only its own claim" do
         run_agent do
-          restarts = agent.instance_variable_get(:@restarts)
           claim, release = built.first.values_at(:claim_restart, :release_restart)
 
           token = claim.call("%5")
@@ -2808,9 +2812,9 @@ RSpec.describe Workspace::Commands::Agent do
           expect(built.first[:restarting].call("%5")).to be(true)
           expect(claim.call("%5")).to be_nil
           release.call("%5", Object.new)
-          expect(restarts.key?("%5")).to be(true)
+          expect(restart_registry.held?("%5")).to be(true)
           release.call("%5", token)
-          expect(restarts.key?("%5")).to be(false)
+          expect(restart_registry.held?("%5")).to be(false)
         end
       end
 

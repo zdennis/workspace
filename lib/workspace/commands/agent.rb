@@ -129,6 +129,7 @@ module Workspace
         agent_status_desk_factory: nil,
         prompt_queue_desk_factory: nil,
         agent_recovery_desk_factory: nil,
+        restart_registry: RestartRegistry.new,
         handoff_watcher_factory: nil,
         name_migration: nil,
         plan_progress_watcher_factory: nil,
@@ -172,7 +173,7 @@ module Workspace
         @agent_recovery_desk = nil
         @handoff_watcher_factory = handoff_watcher_factory || method(:build_handoff_watcher)
         # Restart workers by pane id, so one pane is restarted once at a time.
-        @restarts = {}
+        @restarts = restart_registry
         # When the main agent's current turn began, by pane id, for the workflow nudger.
         @turn_starts = {}
         @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: @error_output) }
@@ -252,7 +253,7 @@ module Workspace
         @spine_watcher = @spine_watcher_factory&.call(name)
         @spine_watcher.owner_report = @spine_owner_report if @spine_watcher.respond_to?(:owner_report=)
         @spine_watcher&.start
-        restarting = ->(pane_id) { @state_lock.synchronize { @restarts.key?(pane_id) } }
+        restarting = ->(pane_id) { @restarts.held?(pane_id) }
         recovering = ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false }
         @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock,
@@ -261,8 +262,8 @@ module Workspace
         # until its text is typed, so restart_agent and status requests keep out.
         @prompt_queue_desk = @prompt_queue_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, delivery_lock: @delivery_lock, restarting: restarting,
-          claim_restart: ->(pane_id) { claim_restart_for_queue(pane_id) },
-          release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) },
+          claim_restart: ->(pane_id) { @restarts.claim_for_queue(pane_id) },
+          release_restart: ->(pane_id, token) { @restarts.release(pane_id, token) },
           recovering: recovering)
         @agent_recovery_desk = build_agent_recovery_desk(name, restarting)
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
@@ -282,12 +283,13 @@ module Workspace
         true
       ensure
         @shutting_down = true
+        @restarts.shut_down!
         @shutdown_signal << :stop
         @session_monitor&.stop
         @plan_progress_watcher&.stop
         @spine_watcher&.stop
         @handoff_watcher&.stop
-        stop_restarts
+        @restarts.stop_all
         watcher&.join(1)
         watcher&.kill
         shutdown(name, socket_path) if @server
@@ -631,17 +633,15 @@ module Workspace
           timeout = started.delete("confirm_timeout")
           wait = message["wait"] == true
           reply_to(client, started) unless wait
-          @state_lock.synchronize do
-            @restarts[pane_id] = Thread.new do
-              run_restart(started, message["prompt"], message["force"] == true,
-                timeout, wait ? client : nil, run_id: message["run_id"])
-            end
+          @restarts.start_worker(pane_id) do
+            restart_runner.run(started, message["prompt"], message["force"] == true,
+              timeout, wait ? client : nil, run_id: message["run_id"])
           end
           spawned = true
         ensure
           # A pane left claimed with no worker would refuse every later
           # restart on it until the daemon restarts.
-          @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id] == :starting } unless spawned
+          @restarts.abandon_pending(pane_id) unless spawned
         end
         wait ? :handed_off : nil
       end
@@ -714,10 +714,7 @@ module Workspace
             "nothing was typed", target).merge("reason" => reading[:error], "fix" => ContextReasons.fix_hint(kind))]
         end
 
-        claimed = @state_lock.synchronize do
-          next false if @restarts.key?(pane_id)
-          @restarts[pane_id] = :starting
-        end
+        claimed = @restarts.claim_pending(pane_id)
         return [nil, restart_error("restart_in_progress", "a restart is already running on pane #{target}", target)] unless claimed
 
         started = {"ok" => true, "status" => "started", "pane" => target, "pane_id" => pane_id,
@@ -778,87 +775,12 @@ module Workspace
         end
       end
 
-      # Runs one restart on its worker thread and reports how it ended: on
-      # the caller's connection when it waited, and on the daemon's stderr
-      # when it failed, since a caller that didn't wait has nowhere else to
-      # hear about it.
-      #
-      # A worker killed by {#stop_restarts} says so on stderr and to a
-      # waiting caller, including whether /clear was already typed, since
-      # that leaves the pane cleared with no prompt.
-      def run_restart(started, prompt, force, timeout, client, run_id: nil)
-        pane_id = started["pane_id"]
-        restart = nil
-        finished = false
-        result = begin
-          restart = @agent_restart_factory.call(
-            session_name: @tmux_session,
-            delivery_lock: @delivery_lock,
-            pipeline_ref: method(:pipeline_ref_on),
-            pane_state: ->(id) { @session_monitor&.restart_state(id) },
-            agent_pid: ->(id) { @session_monitor&.agent_pid(id) },
-            pane_kind: ->(id) { @session_monitor&.pane_kind(id) },
-            delivery_facts: ->(id) { @session_monitor&.delivery_facts(id) },
-            turn_over: method(:main_turn_missing),
-            screen_ready: ->(id) { @idle_prompt_check.refusal(@session_monitor&.typing_facts(id), @tmux.capture_screen_styled(id)) },
-            subagents_running: ->(id) { @session_monitor&.background_subagents(id) },
-            run_bound: method(:pane_bound_to_run?)
-          )
-          restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout, run_id: run_id, waiting: !client.nil?)
-        rescue => e
-          {"ok" => false, "error" => "internal_error", "message" => e.message}
-        end
-        finished = true
-        result = {"pane" => started["pane"]}.merge(result)
-        @error_output.puts "workspace agent: restart_agent for pane #{started["pane"]}: #{result["message"]}" unless result["ok"]
-        # Released before the caller hears the outcome, so a follow-up sent
-        # the moment it does isn't refused as already running.
-        release_restart(pane_id)
-        reply_to(client, result)
-      ensure
-        report_stopped(started, restart, client) unless finished
-        begin
-          client&.close
-        rescue IOError, SystemCallError
-          nil
-        end
-        release_restart(pane_id)
-      end
-
-      # What keeps a pane's main turn from being proven over, by name: the monitor's
-      # evidence, then what the transcript holds after the Stop. nil once proven.
-      def main_turn_missing(pane_id)
-        evidence = @session_monitor&.main_turn_evidence(pane_id)
-        return "no_monitor" unless evidence
-        return evidence[:missing] if evidence[:missing]
-
-        found = @transcript_summary.main_activity_after?(evidence[:transcript_path], evidence[:since])
-        found && "transcript_activity:#{found}"
-      end
-
-      def pane_bound_to_run?(pane_id, run_id)
-        entry = @pane_bindings&.binding_for(pane_id)
-        !entry.nil? && entry["kind"] == "run" && entry["id"] == run_id
-      end
-
-      def release_restart(pane_id)
-        @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id].equal?(Thread.current) }
-      end
-
-      def report_stopped(started, restart, client)
-        typed = (restart.respond_to?(:cleared?) && restart.cleared?) ?
-          "/clear was typed but the prompt may not have been" : "nothing was typed"
-        message = "stopped by shutdown; #{typed}"
-        @error_output.puts "workspace agent: restart_agent for pane #{started["pane"]}: #{message}"
-        reply_to(client, restart_error("agent_stopped", message, started["pane"]).merge("pane_id" => started["pane_id"]))
-      end
-
-      # Stops restart workers on shutdown; one mid-wait would otherwise keep
-      # typing into a pane after its daemon has gone.
-      def stop_restarts
-        workers = @state_lock.synchronize { @restarts.values.grep(Thread) }
-        workers.each(&:kill)
-        workers.each { |worker| worker.join(1) }
+      def restart_runner
+        RestartRunner.new(restart_factory: @agent_restart_factory, registry: @restarts, tmux: @tmux,
+          session_name: @tmux_session, delivery_lock: @delivery_lock, pipeline_ref: method(:pipeline_ref_on),
+          session_monitor: @session_monitor, idle_prompt_check: @idle_prompt_check,
+          transcript_summary: @transcript_summary, pane_bindings: @pane_bindings,
+          error_output: @error_output, logger: @logger)
       end
 
       def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
@@ -1358,7 +1280,7 @@ module Workspace
 
       # Asks the injected factory for the recovery desk. Its claim runs on the
       # attempt's own thread, so the thread goes into @restarts as the token
-      # and {#stop_restarts} can kill an attempt; the claim is refused while
+      # and {RestartRegistry#stop_all} can kill an attempt; the claim is refused while
       # any claim holds the pane, and a release matches by identity.
       #
       # @return [Workspace::AgentRecoveryDesk, nil] nil with no factory, with recovery off, or for another agent
@@ -1368,8 +1290,8 @@ module Workspace
         @agent_recovery_desk_factory.call(workspace: workspace, session_name: @tmux_session,
           session_monitor: @session_monitor, delivery_lock: @delivery_lock, event_log: @event_log,
           restarting: restarting,
-          claim_restart: ->(pane_id) { claim_restart_for_recovery(pane_id) },
-          release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) },
+          claim_restart: ->(pane_id) { @restarts.claim_for_recovery(pane_id) },
+          release_restart: ->(pane_id, token) { @restarts.release(pane_id, token) },
           rebind_queue: ->(pane_id, agent_pid) { PromptQueueStore.new(path: queue_path).rebind_agent(pane_id, agent_pid: agent_pid) })
       end
 
@@ -1381,36 +1303,6 @@ module Workspace
         rescue => e
           @logger.debug { "agent: #{desk.class.name.split("::").last} scan failed (#{e.class}: #{e.message})" }
         end
-      end
-
-      # Claims a pane in @restarts for a queued prompt's clear, refusing
-      # (never waiting) when a restart already holds it.
-      #
-      # @return [Object, nil] the claim's token, for releasing it; nil when the pane is held
-      def claim_restart_for_queue(pane_id)
-        @state_lock.synchronize do
-          next nil if @restarts.key?(pane_id)
-          @restarts[pane_id] = Object.new
-        end
-      end
-
-      # Claims a pane in @restarts for a recovery attempt, on the attempt's own
-      # thread. The token is that thread, so {#stop_restarts} kills it, and a claim
-      # made after shutdown began is refused: that sweep would never see it.
-      #
-      # @return [Thread, nil] the claim's token, for releasing it; nil when the
-      #   pane is held or the daemon is shutting down
-      def claim_restart_for_recovery(pane_id)
-        @state_lock.synchronize do
-          next nil if @shutting_down || @restarts.key?(pane_id)
-          @restarts[pane_id] = Thread.current
-        end
-      end
-
-      # Releases a claim {#claim_restart_for_queue} or
-      # {#claim_restart_for_recovery} made, and only that one.
-      def release_restart_for_queue(pane_id, token)
-        @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id].equal?(token) }
       end
 
       # Watches for the agent's socket file going missing — macOS sweeps old
@@ -1668,6 +1560,7 @@ module Workspace
         %w[TERM INT].each do |signal|
           @signal_trapper.trap(signal) do
             @shutting_down = true
+            @restarts.shut_down!
             @server.close
           end
         end

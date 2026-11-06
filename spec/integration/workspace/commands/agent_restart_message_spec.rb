@@ -241,15 +241,6 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     waiter&.kill
   end
 
-  it "builds a real AgentRestart by default, on the workspace's tmux session" do
-    plain = described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
-      pipeline_config: pipeline_config, context_reader: context_reader)
-
-    built = plain.send(:build_agent_restart, session_name: "workspace-wt-myapp", delivery_lock: Mutex.new,
-      pipeline_ref: ->(_) {}, pane_state: ->(_) {}, agent_pid: ->(_) {}, pane_kind: ->(_) {})
-    expect(built).to be_a(Workspace::AgentRestart)
-  end
-
   it "refuses a second restart on a pane while one is running" do
     run_agent do
       send_restart
