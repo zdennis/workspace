@@ -18,9 +18,13 @@ module Workspace
       # @param stop_command [Workspace::Commands::Stop] pre-built stop command for session teardown
       # @param event_log [Workspace::EventLog, nil] records `worktree_finished` (outcome `pruned`) for each removed project
       # @param tmux [Workspace::Tmux, nil] reads a project's session name before its config is removed; nil uses the config name
+      # @param gh_usable [#call, nil] answers whether `gh` is authenticated; nil asks `gh auth status`
+      # @param pr_lookup [#call, nil] called with a branch and a worktree path, answers `{number:, url:, state:}` or nil; nil asks `gh pr view`
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, output: $stdout, input: $stdin)
+      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, gh_usable: nil, pr_lookup: nil, output: $stdout, input: $stdin)
+        @gh_usable = gh_usable || method(:gh_usable?)
+        @pr_lookup = pr_lookup || method(:pr_status)
         @tmux = tmux
         @state = state
         @project_config = project_config
@@ -192,7 +196,7 @@ module Workspace
           end
 
           unless gh_checked
-            gh_available = gh_usable?
+            gh_available = @gh_usable.call
             gh_checked = true
             unless gh_available
               @output.puts ""
@@ -205,7 +209,7 @@ module Workspace
             next
           end
 
-          pr = pr_status(branch, root)
+          pr = @pr_lookup.call(branch, root)
           if pr.nil?
             @output.puts "skipped (no PR found for #{branch})"
             next
