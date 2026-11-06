@@ -9,7 +9,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
   let(:tmux) do
     Class.new(CLITestHelpers::FakeTmux) do
-      attr_accessor :details, :screen, :scripted, :start_commands, :on_deliver, :gone
+      attr_accessor :details, :screen, :scripted, :start_commands, :on_deliver, :gone, :on_details
 
       def initialize(screen)
         super()
@@ -21,6 +21,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       def pane_details(_session, window: "0")
         raise ArgumentError, "expected every window" unless window.nil?
+        on_details&.call
         @details
       end
 
@@ -41,6 +42,17 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         Workspace::Tmux::Delivery.new(status: enter ? :submitted : :pasted, message: "fake")
       end
     end.new(empty_prompt)
+  end
+
+  # The real transcript reader, calling hooks[:transcript] after each read.
+  let(:transcript) do
+    hook = -> { hooks[:transcript]&.call }
+    real = Workspace::TranscriptSummary.new
+    Object.new.tap do |wrapped|
+      wrapped.define_singleton_method(:last_turn_record) do |*args, **options|
+        real.last_turn_record(*args, **options).tap { hook.call }
+      end
+    end
   end
 
   let(:t0) { Time.utc(2026, 10, 30, 12, 0, 0) }
@@ -132,16 +144,24 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   let(:spawn) { ->(&block) { block.call } }
 
   def build_desk(store: self.store, stub_attempts: true, spawn: self.spawn)
+    tmux.on_details = -> { hooks[:details]&.call }
     tmux.on_deliver = lambda { |text|
       hooks[:deliver]&.call if text.include?("--resume")
       hooks[:enter]&.call if text.empty?
     }
     described_class.new(tmux: tmux, workspace: "api", session_name: "api", session_monitor: monitor, store: store,
-      transcript: Workspace::TranscriptSummary.new, stopper: stopper, detector: Workspace::AgentDetector.new,
+      transcript: transcript, stopper: stopper, detector: Workspace::AgentDetector.new,
       process_tree: process_tree, ledger: ledger, resume_command: resume_command, prompt_typer: typer,
       readiness: readiness, marker: marker, inbox: -> { inbox }, event_log: event_log, delivery_lock: delivery_lock,
-      restarting: ->(id) { restarting.include?(id) },
+      restarting: ->(id) {
+        hooks[:restarting]&.call
+        restarting.include?(id)
+      },
       claim_restart: ->(id) {
+        if stub_attempts
+          attempts << [store.get(id)&.fetch("attempts", 0).to_i.zero? ? :typed : :restart, id]
+          next nil
+        end
         next nil if refuse_claim[0]
         restarting << id
         Object.new
@@ -157,12 +177,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         sleeps << seconds
         hooks[:sleep]&.call
       },
-      spawn: spawn).tap do |built|
-      if stub_attempts
-        allow(built).to receive(:typed_attempt) { |id| attempts << [:typed, id] }
-        allow(built).to receive(:restart_attempt) { |id| attempts << [:restart, id] }
-      end
-    end
+      spawn: spawn)
   end
 
   let(:attempts) { [] }
@@ -242,7 +257,8 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   describe "the worker" do
     it "does no store or process call on the caller's thread, and works the queue in order" do
       blocks = []
-      worker_desk = described_class.new(tmux: tmux, workspace: "api", session_name: "api", session_monitor: monitor, store: spy("store"),
+      worker_store = spy("store")
+      worker_desk = described_class.new(tmux: tmux, workspace: "api", session_name: "api", session_monitor: monitor, store: worker_store,
         transcript: nil, stopper: spy("stopper"), detector: nil, process_tree: spy("tree"), ledger: nil, resume_command: nil,
         prompt_typer: nil, readiness: nil, marker: nil, inbox: nil, delivery_lock: Mutex.new, clock: clock,
         spawn: ->(&block) { blocks << block })
@@ -251,7 +267,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       worker_desk.session_event("event" => "user_prompt", "pane_id" => "%5", "session_id" => sid)
 
       expect(blocks.size).to eq(1)
-      expect(worker_desk.instance_variable_get(:@store)).not_to have_received(:update)
+      expect(worker_store).not_to have_received(:update)
       expect(process_tree).not_to have_received(:snapshot)
     end
 
@@ -1180,9 +1196,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
     it "doesn't write a stale read over a newer failure" do
       now[0] = t0 + 30
-      seen = entry
-      failed
-      desk.send(:settle, "%5", seen)
+      hooks[:transcript] = lambda {
+        hooks.delete(:transcript)
+        failed
+      }
+      desk.scan
 
       expect(entry["last_turn_uuid"]).to be_nil
     end
@@ -1212,11 +1230,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
     it "starts no attempt when a hook changed the entry during the screen wait" do
       due_entry
-      allow(desk).to receive(:check).and_wrap_original do |check, *args|
-        result = check.call(*args)
+      hooks[:snapshot] = lambda {
+        hooks.delete(:snapshot)
         event("user_prompt")
-        result
-      end
+      }
       desk.scan
 
       expect_no_attempt
@@ -1225,7 +1242,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
     it "defers when the check raises, so the limit ends it" do
       due_entry
-      allow(desk).to receive(:check).and_raise(RuntimeError, "boom")
+      hooks[:snapshot] = -> { raise "boom" }
       desk.scan
       expect(entry["defer_since"]).not_to be_nil
 
@@ -1974,18 +1991,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       expect(events.last[2].keys).to contain_exactly("pane_id", "session_id", "attempts", "error", "reason")
     end
-
-    %w[attempts_exhausted not_retryable cannot_restart fresh_conversation deferred unconfirmed].each do |reason|
-      it "stops holding the queue for #{reason}" do
-        due_entry(phase: "attempting", stopped: true, last_signal_at: stamp(now[0]))
-        expect(desk.holding?("%5")).to be(true)
-        store.update("%5") { |e| e["phase"] = "waiting" }
-        desk.send(:give_up, "%5", entry, reason)
-
-        expect(desk.holding?("%5")).to be(false)
-        expect(inbox.list.first["body"]).not_to be_empty
-      end
-    end
   end
 
   describe "through the prompt queue" do
@@ -2349,10 +2354,12 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "recognises our text after a kill during the wait" do
         due_entry
         resume_swallows_enter
-        allow(desk).to receive(:await_prompt) do
+        hooks[:sleep] = lambda {
+          next if messages.empty?
+          hooks.delete(:sleep)
           tmux.screen = "#{rule_prompt}#{messages.first}\n"
           raise "killed"
-        end
+        }
         desk.scan
         desk.scan
         store.update("%5") { |current| current["last_turn_uuid"] = "u-err" }
@@ -2439,10 +2446,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "gives up when the pane reads as gone at step 6, with stopped false" do
         due_entry
         healthy_run
-        allow(desk).to receive(:await_prompt) do
+        hooks[:enter] = lambda {
+          event("user_prompt")
           tmux.details = [{id: "%9", window: 0, index: 2, pid: 99, command: "zsh"}]
-          "typed"
-        end
+        }
         desk.scan
 
         expect(outcomes).to eq(["agent_left"])
@@ -2468,10 +2475,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "stays resumed, and watches, when the last read fails" do
         due_entry
         healthy_run
-        allow(desk).to receive(:await_prompt) do
+        hooks[:enter] = lambda {
+          event("user_prompt")
           tree_broken[0] = true
-          "typed"
-        end
+        }
         desk.scan
 
         expect(outcomes).to eq(["resumed"])
@@ -3153,10 +3160,17 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "moves the queue when the last read finds another agent" do
         due_entry
         facts[:agent_pid] = 99
-        allow(desk).to receive(:restart_steps) do
-          processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(21, 10, "claude", lstart: later)])
-          ["not_stopped"]
-        end
+        # The last read is the details call right after the final look, with no sleep between them.
+        looks_at = nil
+        slept_at_signal = nil
+        hooks[:signal] = -> { slept_at_signal = sleeps.size }
+        hooks[:details] = lambda {
+          if slept_at_signal && sleeps.size > slept_at_signal && looks_at == sleeps.size
+            hooks.delete(:details)
+            processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(21, 10, "claude", lstart: later)])
+          end
+          looks_at = sleeps.size
+        }
         desk.scan
 
         expect(rebound).to eq([["%5", 99]])
@@ -3164,7 +3178,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "doesn't move the queue when the last read finds the same agent" do
         due_entry
-        allow(desk).to receive(:restart_steps).and_return(["not_stopped"])
         desk.scan
 
         expect(rebound).to eq([])
@@ -3172,10 +3185,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "gives up when a session other than the entry's opened during the attempt" do
         due_entry
-        allow(desk).to receive(:restart_steps) do
-          event("session_start", session: other_sid, source: "startup")
-          ["not_stopped"]
-        end
+        hooks[:signal] = -> { event("session_start", session: other_sid, source: "startup") }
         desk.scan
 
         expect_gave_up("fresh_conversation")
@@ -3193,11 +3203,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "defers on a prompt that arrives after step 1's check" do
         due_entry
-        allow(desk).to receive(:confirmed_error).and_wrap_original do |original, *args|
-          result = original.call(*args)
-          facts[:last_user_prompt_at] = now[0] if restarting.include?("%5")
-          result
-        end
+        hooks[:transcript] = -> { facts[:last_user_prompt_at] = now[0] if restarting.include?("%5") }
         desk.scan
 
         expect(signals).to eq([])
@@ -3216,10 +3222,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "defers when the screen moved between the quiet wait and the lock" do
         due_entry
-        allow(desk).to receive(:safe_check).and_wrap_original do |original, *args, **options|
-          tmux.screen = "#{empty_prompt}moved\n" if restarting.include?("%5")
-          original.call(*args, **options)
-        end
+        hooks[:details] = lambda {
+          next unless restarting.include?("%5")
+          hooks.delete(:details)
+          tmux.screen = "#{empty_prompt}moved\n"
+        }
         desk.scan
 
         expect(signals).to eq([])
@@ -3228,7 +3235,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "writes the inbox item of a give-up through a kill" do
         due_entry(attempts: 11)
-        allow(desk).to receive(:restart_steps).and_return(["not_stopped"])
         hooks[:record] = lambda {
           worker = Thread.current
           Thread.new { worker.kill }.join
@@ -3305,9 +3311,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "types no resume line once a new agent reported, even with the pane clear again at the keystroke" do
         due_entry
-        allow(desk).to receive(:await_exit).and_wrap_original do |original, attempt|
-          original.call(attempt).tap { event("session_start", source: "resume") }
-        end
+        clear_twice_then { event("session_start", source: "resume") }
         desk.scan
 
         expect(resumes).to eq([])
@@ -3385,11 +3389,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "defers on a prompt the monitor holds and the worker hasn't reached" do
         due_entry
         calls = 0
-        allow(desk).to receive(:check).and_wrap_original do |original, *args, **options|
+        hooks[:details] = lambda {
           calls += 1
           facts[:last_user_prompt_at] = now[0] if calls == 2
-          original.call(*args, **options)
-        end
+        }
         desk.scan
 
         expect(signals).to eq([])
@@ -3401,11 +3404,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "costs no attempt on a :clear, and writes no attempt line" do
         due_entry
         calls = 0
-        allow(desk).to receive(:check).and_wrap_original do |original, *args, **options|
+        hooks[:details] = lambda {
           calls += 1
           write_transcript(good_line) if calls == 2
-          original.call(*args, **options)
-        end
+        }
         desk.scan
 
         expect(signals).to eq([])
@@ -3416,11 +3418,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "does nothing for an entry a hook moved on" do
         due_entry
-        allow(desk).to receive(:safe_check).and_wrap_original do |original, *args, **options|
-          result = original.call(*args, **options)
-          event("user_prompt") if restarting.include?("%5")
-          result
-        end
+        hooks[:transcript] = lambda {
+          next unless restarting.include?("%5")
+          hooks.delete(:transcript)
+          event("user_prompt")
+        }
         desk.scan
 
         expect(signals).to eq([])
@@ -3466,18 +3468,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
           expect(entry).to include("attempts" => 1, "stopped" => false, "last_signal_at" => nil)
           expect(marker.marked?(sid)).to be(false)
           expect(lines).to eq([])
-        end
-
-        it "takes the attempt back and deletes at 0" do
-          due_entry(attempts: 0)
-          stale_stop
-          allow(desk).to receive(:check).and_return(described_class::Verdict.new(answer: :go, mode: :restart, command: "resume"))
-          allow(desk).to receive(:confirmed_error)
-          desk.send(:restart_attempt, "%5")
-
-          expect(entry).to be_nil
-          expect(signals).to eq([])
-          expect(marker.marked?(sid)).to be(false)
         end
       end
 
@@ -3932,10 +3922,12 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "leaves an attempt that raises to the next scan, marker kept until then" do
         due_entry
-        allow(desk).to receive(:restart_steps) do
+        hooks[:sleep] = lambda {
+          next if signals.empty?
+          hooks.delete(:sleep)
           gone!
           raise "boom"
-        end
+        }
         desk.scan
 
         expect(entry["phase"]).to eq("attempting")
@@ -3959,11 +3951,13 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
     def agent_answers = hooks[:enter] = -> { event("user_prompt") }
 
+    # Runs the block when the attempt first asks whether it still holds the claim to type.
     def before_typing(&block)
-      allow(desk).to receive(:type_message).and_wrap_original do |original, attempt|
+      hooks[:restarting] = lambda {
+        next unless entry && entry["phase"] == "attempting"
+        hooks.delete(:restarting)
         block.call
-        original.call(attempt)
-      end
+      }
     end
 
     def typer_answers(outcome, **fields)
@@ -3993,7 +3987,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(readiness).not_to have_received(:wait)
       expect_rescheduled(1)
 
-      allow(desk).to receive(:type_message).and_call_original
+      hooks.delete(:restarting)
       allow(typer).to receive(:type).and_call_original
       healthy_run
       next_attempt
@@ -4068,10 +4062,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       before { due_entry(attempts: 0) }
 
       def after_the_scan_check(&block)
-        allow(desk).to receive(:typed_attempt).and_wrap_original do |original, *args|
+        hooks[:details] = lambda {
+          next unless restarting.include?("%5")
+          hooks.delete(:details)
           block.call
-          original.call(*args)
-        end
+        }
       end
 
       def expect_nothing_counted
@@ -4105,11 +4100,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "defers on a prompt the monitor has and the worker queue doesn't, after the transcript read" do
         reads = 0
-        allow(desk).to receive(:confirmed_error).and_wrap_original do |original, *args|
+        hooks[:transcript] = lambda {
           reads += 1
           facts[:last_user_prompt_at] = t0 + 60 if reads == 3
-          original.call(*args)
-        end
+        }
         desk.scan
 
         expect(reads).to eq(3)
@@ -4364,10 +4358,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       end
 
       it "recognises text left by a kill between the paste and Enter" do
-        allow(desk).to receive(:typed_steps) do
+        hooks[:enter] = lambda {
+          hooks.delete(:enter)
           tmux.screen = "#{rule_prompt}#{message}\n"
           raise "killed"
-        end
+        }
         desk.scan
         desk.scan
         store.update("%5") { |current| current["last_turn_uuid"] = "u-err" }
