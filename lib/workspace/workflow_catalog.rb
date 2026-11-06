@@ -28,8 +28,10 @@ module Workspace
     end
 
     # @param config [Workspace::Config] names the directories
-    def initialize(config:)
+    # @param globber [#call] lists the paths matching a glob pattern, as +Dir.glob+ does
+    def initialize(config:, globber: Dir.method(:glob))
       @config = config
+      @globber = globber
     end
 
     # @param id [String] the workflow's id
@@ -242,7 +244,7 @@ module Workspace
     end
 
     def ids(project = nil)
-      dirs(project).values.flat_map { |dir| Dir.glob(File.join(dir, "*.yml")).map { |path| File.basename(path, ".yml") } }.uniq.sort
+      dirs(project).values.flat_map { |dir| @globber.call(File.join(dir, "*.yml")).map { |path| File.basename(path, ".yml") } }.uniq.sort
     end
 
     def raise_unknown(id, project = nil)

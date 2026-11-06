@@ -27,7 +27,9 @@ module Workspace
     # @param id_generator [#call] returns a candidate run id
     # @param evidence [#remove, nil] given the id of an archived run that is pruned, removes its evidence
     # @param archive_limit [Integer] how many archived runs are kept
-    def initialize(dir:, archive_dir:, clock: -> { Time.now }, id_generator: nil, evidence: nil, archive_limit: ARCHIVE_LIMIT)
+    # @param globber [#call] lists the paths matching a glob pattern, as +Dir.glob+ does
+    def initialize(dir:, archive_dir:, clock: -> { Time.now }, id_generator: nil, evidence: nil, archive_limit: ARCHIVE_LIMIT, globber: Dir.method(:glob))
+      @globber = globber
       @archive_limit = archive_limit
       @evidence = evidence
       @dir = dir
@@ -89,7 +91,7 @@ module Workspace
     def unreadable(archived: false)
       # A run that finished between the listing and the read is gone, not unreadable.
       dirs = archived ? [@dir, @archive_dir] : [@dir]
-      dirs.flat_map { |dir| Dir.glob(File.join(dir, "*.json")) }.reject { |path| read(path) }.select { |path| File.exist?(path) }.sort
+      dirs.flat_map { |dir| @globber.call(File.join(dir, "*.json")) }.reject { |path| read(path) }.select { |path| File.exist?(path) }.sort
     end
 
     # Changes one run: yields it under the run's lock, then stores what the
@@ -248,7 +250,7 @@ module Workspace
     end
 
     def runs_in(dir)
-      Dir.glob(File.join(dir, "*.json")).filter_map { |path| read(path) }
+      @globber.call(File.join(dir, "*.json")).filter_map { |path| read(path) }
     end
 
     def write(run)

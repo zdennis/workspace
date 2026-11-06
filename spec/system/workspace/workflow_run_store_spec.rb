@@ -267,8 +267,9 @@ RSpec.describe Workspace::WorkflowRunStore do
 
     it "does not count a run that finished between the listing and the read" do
       gone = File.join(runs_dir, "wr_9.json")
-      allow(Dir).to receive(:glob).and_call_original
-      allow(Dir).to receive(:glob).with(File.join(runs_dir, "*.json")).and_return([gone, File.join(runs_dir, "wr_1.json")])
+      pattern = File.join(runs_dir, "*.json")
+      racing = ->(glob) { (glob == pattern) ? [gone, File.join(runs_dir, "wr_1.json")] : Dir.glob(glob) }
+      store = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, globber: racing)
 
       expect(store.unreadable).to eq([File.join(runs_dir, "wr_1.json")])
     end
@@ -484,8 +485,7 @@ RSpec.describe Workspace::WorkflowRunStore do
   it "removes a pruned run's evidence before its archive file, so a crash leaves it prunable" do
     seen = []
     archive = archive_dir
-    evidence = Object.new
-    evidence.define_singleton_method(:remove) { |id| seen << File.exist?(File.join(archive, "#{id}.json")) }
+    evidence = Struct.new(:seen, :archive) { def remove(id) = seen << File.exist?(File.join(archive, "#{id}.json")) }.new(seen, archive)
     pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence, archive_limit: 0)
     pruning.create({"state" => "running"}.merge(whole))
     pruning.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
