@@ -43,11 +43,13 @@ module Workspace
     # @param scope [String] how this scope is named in errors (`workspace:api`)
     # @param clock [#call] returns the current Time
     # @param error_output [IO] where a read that skips an unreadable file warns
-    def initialize(path:, scope: nil, clock: -> { Time.now }, error_output: $stderr)
+    # @param live_limit [Integer] the most open or snoozed items the scope holds
+    def initialize(path:, scope: nil, clock: -> { Time.now }, error_output: $stderr, live_limit: LIVE_LIMIT)
       @path = path
       @scope = scope || File.basename(path, ".json")
       @clock = clock
       @error_output = error_output
+      @live_limit = live_limit
       @lockfile_path = "#{path}.lock"
       @warned = false
     end
@@ -210,10 +212,10 @@ module Workspace
     private_constant :UPSERT_FIELDS
 
     def ensure_room(data)
-      return if records_in(data).count { |r| %w[open snoozed].include?(r["state"]) } < LIVE_LIMIT
+      return if records_in(data).count { |r| %w[open snoozed].include?(r["state"]) } < @live_limit
       raise Workspace::Error.new(
-        "Inbox is full: #{@scope} holds #{LIVE_LIMIT} open or snoozed items. Mark some done or dismissed first.",
-        code: "inbox_full", details: {"scope" => @scope, "limit" => LIVE_LIMIT}
+        "Inbox is full: #{@scope} holds #{@live_limit} open or snoozed items. Mark some done or dismissed first.",
+        code: "inbox_full", details: {"scope" => @scope, "limit" => @live_limit}
       )
     end
 
