@@ -109,16 +109,18 @@ RSpec.describe "session alerts: concurrency and signals (adversarial)" do
 
     it "SC3: one notify that raises (e.g. ThreadError) does not lose the other panes' alerts for good" do
       calls = []
-      raised = false
-      flaky = Object.new
-      flaky.define_singleton_method(:notify) do |alert|
-        unless raised
-          raised = true
-          raise ThreadError, "can't create Thread: Resource temporarily unavailable"
+      flaky = Class.new do
+        def initialize(calls) = @calls = calls
+
+        def notify(alert)
+          unless @raised
+            @raised = true
+            raise ThreadError, "can't create Thread: Resource temporarily unavailable"
+          end
+          @calls << alert["WORKSPACE_ALERT_PANE_ID"]
+          :started
         end
-        calls << alert["WORKSPACE_ALERT_PANE_ID"]
-        :started
-      end
+      end.new(calls)
       monitor = build_monitor(flaky)
       monitor.scan
       monitor.record("event" => "notification", "pane_id" => "%2")

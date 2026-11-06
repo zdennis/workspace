@@ -20,12 +20,9 @@ RSpec.describe "workspace ask concurrency and liveness (adversarial)" do
     script = <<~RUBY
       require "workspace"
       dir = ARGV[0]
-      config = Object.new
-      config.define_singleton_method(:ask_state_path) { |_name| File.join(dir, "asks.json") }
-      detector = Object.new
-      detector.define_singleton_method(:detect) { |_cwd| "proj" }
-      alerts = Object.new
-      alerts.define_singleton_method(:for_workspace) { |_name| {notify: "touch notified"} }
+      config = Struct.new(:dir) { def ask_state_path(_name) = File.join(dir, "asks.json") }.new(dir)
+      detector = Class.new { def detect(_cwd) = "proj" }.new
+      alerts = Class.new { def for_workspace(_name) = {notify: "touch notified"} }.new
       Dir.chdir(dir)
       Workspace::Commands::Ask.new(config: config, project_detector: detector, alert_config: alerts, env: {},
         output: File.open(File::NULL, "w")).call(question: "pg or sqlite?", default: "sqlite", working_dir: dir)

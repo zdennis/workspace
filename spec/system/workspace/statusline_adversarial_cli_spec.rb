@@ -69,12 +69,12 @@ RSpec.describe "statusline adversarial: CLI/UX" do
     reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings)
 
     result = reader.read(pane_id: "%1", agent_pid: nil)
+    from_new_session = reader.read(pane_id: "%1", agent_pid: nil, current_session_id: "new-session-xyz")
 
-    # The reader has no `current_session_id` parameter at all, so it can
-    # never compare the stored reading's session_id against the pane's
-    # actual current session and flag a mismatch -- it just hands back the
-    # stale reading as if it were fresh.
-    expect(reader.method(:read).parameters.map(&:last)).to include(:current_session_id)
+    # Told the pane's current session, the reader compares it with the stored
+    # reading's session_id and refuses to hand back the stale one as fresh.
+    expect(from_new_session[:pct]).to be_nil
+    expect(from_new_session[:error]).to eq(Workspace::ContextReasons::STALE_SESSION)
     expect(result[:pct]).to eq(88)
   end
 

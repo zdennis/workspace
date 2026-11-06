@@ -51,12 +51,16 @@ RSpec.describe "EventLog adversarial concurrency" do
     # The other process appends in the background: compact holds the log's
     # lock here, so an append that waits for it can't finish until compact
     # returns. The pause gives the append time to land if nothing stops it.
-    hook_logger = Object.new
     pid = nil
     spec = self
-    hook_logger.define_singleton_method(:debug) do |&block|
-      message = block.call
-      if message.start_with?("event_log: compacting") && pid.nil?
+    hook_logger = Class.new do
+      def initialize(&on_compacting) = @on_compacting = on_compacting
+
+      def debug(&block)
+        @on_compacting.call if block.call.start_with?("event_log: compacting")
+      end
+    end.new do
+      if pid.nil?
         pid = spec.spawn_append("launched", "proj2", marker)
         Timeout.timeout(30) { sleep 0.01 until File.exist?(marker) }
         sleep 0.5
