@@ -3784,7 +3784,7 @@ RSpec.describe Workspace::WorkflowEngine do
         flaky = Class.new(SimpleDelegator) do
           define_method(:config_change) do |*args, **kwargs|
             # The first reading carries a code the warning text does not know, so building the warning fails.
-            (reads += 1) == 1 ? {"code" => "unknown_code", "reading" => "r"} : super(*args, **kwargs)
+            ((reads += 1) == 1) ? {"code" => "unknown_code", "reading" => "r"} : super(*args, **kwargs)
           end
         end.new(guard)
         flaky_engine = engine_with(guard: flaky, inbox_for: ->(_workspace) { inbox })
