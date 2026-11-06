@@ -460,13 +460,19 @@ RSpec.describe Workspace::Tmux do
       expect(result.message).to eq("tmux could not paste into =app.worktree-x:0.1: can't find session: app.worktree-x")
     end
 
-    it "runs paste-buffer as a bracketed paste and returns tmux's stderr" do
+    it "keeps tmux's own paste-buffer error as the reason a paste failed" do
       status = instance_double(Process::Status, success?: false)
       allow(Open3).to receive(:capture3)
-        .with("tmux", "paste-buffer", "-p", "-b", "buf-1", "-t", "=s:0.1")
+        .with("tmux", "paste-buffer", "-p", "-b", anything, "-t", "=s:0.1")
         .and_return(["", "can't find pane: 0.1\n", status])
 
-      expect(described_class.new(config: config).tmux_paste_buffer("buf-1", "=s:0.1")).to eq([false, "can't find pane: 0.1"])
+      screens("$ ")
+      allow(tmux).to receive(:tmux_paste_buffer).and_call_original
+
+      result = tmux.deliver("s", "0.1", "text")
+
+      expect(result.status).to eq(:failed)
+      expect(result.message).to end_with(": can't find pane: 0.1")
     end
 
     it "reports :failed when Enter can't be pressed" do
