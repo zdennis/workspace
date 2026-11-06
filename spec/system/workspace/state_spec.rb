@@ -15,9 +15,9 @@ RSpec.describe Workspace::State do
 
   after { FileUtils.remove_entry(tmpdir) }
 
-  def new_state
+  def new_state(**options)
     event_log = Workspace::EventLog.new(config: config)
-    described_class.new(config: config, event_log: event_log)
+    described_class.new(config: config, event_log: event_log, **options)
   end
 
   describe "#load" do
@@ -244,8 +244,7 @@ RSpec.describe Workspace::State do
     end
 
     it "saves without the lock once another holder keeps it past the wait" do
-      stub_const("Workspace::State::LOCK_WAIT", 0.05)
-      state = new_state.load
+      state = new_state(lock_wait: 0.05).load
       state["proj1"] = {"unique_id" => "uid1"}
 
       File.open("#{state_file}.lock", File::RDWR | File::CREAT) do |held|

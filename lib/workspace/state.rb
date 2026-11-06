@@ -12,10 +12,12 @@ module Workspace
     # @param config [Workspace::Config] configuration providing state_file path
     # @param event_log [Workspace::EventLog] append-only event log
     # @param logger [Workspace::Logger] debug logger
-    def initialize(config:, event_log:, logger: Workspace::Logger.new)
+    # @param lock_wait [Numeric] seconds a save waits for the state file's lock
+    def initialize(config:, event_log:, logger: Workspace::Logger.new, lock_wait: LOCK_WAIT)
       @config = config
       @event_log = event_log
       @logger = logger
+      @lock_wait = lock_wait
       @data = {}
     end
 
@@ -158,7 +160,7 @@ module Workspace
     end
 
     def acquire(lock)
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + LOCK_WAIT
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @lock_wait
       until lock.flock(File::LOCK_EX | File::LOCK_NB)
         return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
         sleep 0.01

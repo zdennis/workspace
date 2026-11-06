@@ -62,8 +62,8 @@ RSpec.describe "headless launch: concurrency and liveness (adversarial)" do
 
   after { FileUtils.rm_rf(tmpdir) }
 
-  def new_state
-    Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
+  def new_state(**options)
+    Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config), **options)
   end
 
   def new_launch(tmux:, sleeper: ->(_seconds) {})
@@ -153,9 +153,8 @@ RSpec.describe "headless launch: concurrency and liveness (adversarial)" do
 
   it "HC5: two launches saving state at the same moment both succeed" do
     # The second save runs inside the first's lock, so it always waits this out.
-    stub_const("Workspace::State::LOCK_WAIT", 0.05)
-    first = new_state.load
-    second = new_state.load
+    first = new_state(lock_wait: 0.05).load
+    second = new_state(lock_wait: 0.05).load
     first["proj-a"] = {"headless" => true}
     second["proj-b"] = {"headless" => true}
 
