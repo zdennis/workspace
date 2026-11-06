@@ -17,7 +17,7 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
   let(:now) { [1_000_000] }
   let(:monotonic) do
     times = now
-    Object.new.tap { |clock| clock.define_singleton_method(:now) { times[0].to_f } }
+    BlockClock.new { times[0].to_f }
   end
   let(:holder_identity) { FakeLockIdentity.new(pid: 100, pane: "%1", worktree: "app.worktree-a") }
   let(:waiter_identity) { FakeLockIdentity.new(pid: 200, pane: "%2", worktree: "app.worktree-b") }

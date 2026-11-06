@@ -95,11 +95,7 @@ RSpec.describe "PR2 adversarial findings" do
           lock_namespace = Struct.new(:dir) { def resolve(cwd:) = {dir: dir} }.new(lock_dir)
           liveness = Workspace::LockHolder.new
           runner_calls = []
-          fake_runner = Object.new
-          fake_runner.define_singleton_method(:call) { |**kw|
-            runner_calls << kw
-            0
-          }
+          fake_runner = Struct.new(:calls) { def call(**kw) = calls << kw && 0 }.new(runner_calls)
 
           dev = Workspace::Commands::Dev.new(
             lock_namespace: lock_namespace, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,

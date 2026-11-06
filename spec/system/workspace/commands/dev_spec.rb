@@ -201,8 +201,7 @@ RSpec.describe Workspace::Commands::Dev do
       real = Workspace::Commands::Lock::MonotonicClock
       frozen = real.now
       queued_at = nil
-      clock = Object.new
-      clock.define_singleton_method(:now) do
+      clock = BlockClock.new do
         queued_at ||= real.now if queued.call
         queued_at ? frozen + (real.now - queued_at) : frozen
       end
@@ -481,7 +480,7 @@ RSpec.describe Workspace::Commands::Dev do
       let(:recorded) { [] }
       let(:dev_events) do
         events = recorded
-        log = Object.new.tap { |l| l.define_singleton_method(:record) { |type:, project:, data: {}| events << [type, data["reason"]] } }
+        log = BlockEventLog.new { |type:, data:, **| events << [type, data["reason"]] }
         Workspace::DevEvents.new(event_log: log, lineage: Workspace::WorkspaceLineage.new)
       end
 
@@ -1611,9 +1610,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     let(:recorded) { [] }
     let(:event_log) do
       events = recorded
-      Object.new.tap do |log|
-        log.define_singleton_method(:record) { |type:, project:, data: {}| events << [project, type, data] }
-      end
+      BlockEventLog.new { |type:, project:, data:| events << [project, type, data] }
     end
 
     it "records the wait's start and the acquire, with how long it waited" do
@@ -1906,7 +1903,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     let(:recorded) { [] }
     let(:dev_events) do
       events = recorded
-      log = Object.new.tap { |l| l.define_singleton_method(:record) { |type:, project:, data: {}| events << [type, data["reason"]] } }
+      log = BlockEventLog.new { |type:, data:, **| events << [type, data["reason"]] }
       Workspace::DevEvents.new(event_log: log, lineage: lineage)
     end
 
@@ -2829,7 +2826,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     let(:recorded) { [] }
     let(:event_log) do
       events = recorded
-      Object.new.tap { |log| log.define_singleton_method(:record) { |type:, project:, data: {}| events << [project, type, data] } }
+      BlockEventLog.new { |type:, project:, data:| events << [project, type, data] }
     end
     let(:dev_events) { Workspace::DevEvents.new(event_log: event_log, lineage: lineage) }
 

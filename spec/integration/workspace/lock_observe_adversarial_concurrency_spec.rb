@@ -27,8 +27,8 @@ RSpec.describe "Lock observability (adversarial concurrency)" do
   end
 
   it "OC1: an acquire whose locks.json commit fails leaves no acquire event in locks.jsonl" do
-    allow(File).to receive(:rename).and_call_original
-    allow(File).to receive(:rename).with(/locks\.json\.\d+\.tmp\z/, anything).and_raise(Errno::ENOSPC)
+    # A directory where the store writes its temp file: the locks.json rewrite can't be made.
+    Dir.mkdir(File.join(store_dir, "locks.json.#{Process.pid}.tmp"))
 
     expect { acquire(100, "%1") }.to raise_error(Workspace::Error)
 
@@ -42,22 +42,21 @@ RSpec.describe "Lock observability (adversarial concurrency)" do
       seed.append(event: "old", name: "edit", data: {"n" => 0}) while !File.exist?(audit_path) || File.size(audit_path) < rotate_bytes - 50
     end
     old_count = events.size
-    first = Workspace::LockAuditLog.new(dir: store_dir, rotate_bytes: rotate_bytes)
     second = Workspace::LockAuditLog.new(dir: store_dir, rotate_bytes: rotate_bytes)
 
     # Two `record_deny` calls hold only a shared flock, so both can check the
-    # size before either rotates: interleave `first`'s whole append between
-    # `second`'s size check and its rename.
-    interleaved = false
-    allow(File).to receive(:size).and_wrap_original do |original, *args|
-      size = original.call(*args)
-      unless interleaved
-        interleaved = true
-        first.append(event: "deny", name: "edit", data: {"from" => "first"})
-      end
-      size
+    # size before either rotates: `second` has seen the log near the threshold
+    # and waits for the rotation lock while the other appender rotates the log
+    # and writes its own line.
+    appending = nil
+    File.open("#{audit_path}.lock", File::RDWR | File::CREAT, 0o600) do |rotation_lock|
+      rotation_lock.flock(File::LOCK_EX)
+      appending = Thread.new { second.append(event: "deny", name: "edit", data: {"from" => "second"}) }
+      Timeout.timeout(5) { Thread.pass until appending.status == "sleep" }
+      File.rename(audit_path, "#{audit_path}.1")
+      File.write(audit_path, JSON.generate("event" => "deny", "lock" => "edit", "from" => "first") + "\n")
     end
-    second.append(event: "deny", name: "edit", data: {"from" => "second"})
+    appending.join(5)
 
     all = events("#{audit_path}.1") + events
     expect(all.count { |e| e["event"] == "old" }).to eq(old_count)
