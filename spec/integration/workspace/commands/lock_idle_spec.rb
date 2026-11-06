@@ -13,7 +13,7 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
   # One timeline for both clocks, advanced by the sleeper, so --max-wait expires.
   let(:monotonic) do
     times = now
-    Object.new.tap { |clock| clock.define_singleton_method(:now) { times[0].to_f } }
+    BlockClock.new { times[0].to_f }
   end
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
@@ -81,9 +81,9 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
     now[0] += 299
     reads = [0]
     wall = now
-    deadline_clock = Object.new
-    deadline_clock.define_singleton_method(:now) do
+    deadline_clock = BlockClock.new do
       reads[0] += 1
+      raise "the deadline was never reached" if reads[0] > 50
       next 0.0 if reads[0] == 1
       wall[0] = 1_000_300
       10.0

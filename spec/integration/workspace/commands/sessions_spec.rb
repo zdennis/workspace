@@ -274,19 +274,13 @@ RSpec.describe Workspace::Commands::Sessions do
 
     it "loads the lock store exactly once per render, not once per pane" do
       acquire(pid: 100, pane: "%1")
-      call_count = 0
-      dir = lock_dir
-      counting_namespace = Object.new
-      counting_namespace.define_singleton_method(:resolve) do |cwd:|
-        call_count += 1
-        {key: "ns", display: "app", dir: dir}
-      end
+      counting_namespace = CountingLockNamespace.new(dir: lock_dir)
       command = described_class.new(config: config, lock_namespace: counting_namespace, lock_holder: lock_holder,
         project_config: project_config, output: output, error_output: error_output)
 
       with_daemon { command.call(name: "proj") }
 
-      expect(call_count).to eq(1)
+      expect(counting_namespace.resolves).to eq(1)
     end
 
     it "leaves every pane blank when the lock is free" do
