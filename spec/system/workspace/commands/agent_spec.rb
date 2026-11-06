@@ -52,7 +52,7 @@ RSpec.describe Workspace::Commands::Agent do
   let(:wc_socket_path) { File.join(tmpdir, "work-coordinator.sock") }
   let(:wc_status_socket_path) { File.join(tmpdir, "work-coordinator-status.sock") }
   let(:agent_socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
-  let(:output) { StringIO.new }
+  let(:output) { ReadyAnnouncingOutput.new }
   let(:error_output) { StringIO.new }
   let(:coordinator) do
     FakeWorkCoordinator.new(socket_path: wc_socket_path, status_socket_path: wc_status_socket_path)
@@ -116,6 +116,8 @@ RSpec.describe Workspace::Commands::Agent do
   end
 
   let(:restart_registry) { Workspace::RestartRegistry.new }
+  let(:socket_poll_interval) { described_class::SOCKET_POLL_INTERVAL }
+  let(:workflow_tick_passes) { described_class::WORKFLOW_TICK_PASSES }
 
   subject(:agent) do
     described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
@@ -132,6 +134,8 @@ RSpec.describe Workspace::Commands::Agent do
       token_generator: token_generator,
       clock: -> { now },
       retry_backoff: 0,
+      socket_poll_interval: socket_poll_interval,
+      workflow_tick_passes: workflow_tick_passes,
       output: output,
       error_output: error_output)
   end
@@ -143,8 +147,12 @@ RSpec.describe Workspace::Commands::Agent do
 
   # Runs the agent in a thread, waits for readiness, yields, then shuts it down.
   def run_agent
-    thread = Thread.new { agent.call(name: "myapp") }
-    wait_until { output.string.include?("ready") || !thread.alive? }
+    thread = Thread.new do
+      agent.call(name: "myapp")
+    ensure
+      output.announce
+    end
+    output.wait_ready
     yield thread
   ensure
     signal_trapper.handlers["TERM"]&.call
@@ -1358,8 +1366,12 @@ RSpec.describe Workspace::Commands::Agent do
         signal_trapper: signal_trapper,
         sentinel_poller_factory: sentinel_poller_factory,
         retry_backoff: 0, output: output, error_output: error_output)
-      thread = Thread.new { unwired.call(name: "myapp") }
-      wait_until { output.string.include?("ready") || !thread.alive? }
+      thread = Thread.new do
+        unwired.call(name: "myapp")
+      ensure
+        output.announce
+      end
+      output.wait_ready
 
       begin
         UNIXSocket.open(agent_socket_path) do |s|
@@ -1381,7 +1393,7 @@ RSpec.describe Workspace::Commands::Agent do
   describe "losing its socket while it is running" do
     # macOS sweeps old /tmp entries and a second agent start unlinks the path,
     # so the file can vanish under a perfectly healthy listener.
-    before { stub_const("#{described_class}::SOCKET_POLL_INTERVAL", 0.02) }
+    let(:socket_poll_interval) { 0.02 }
 
     it "rebinds the socket so callers can reach it again" do
       coordinator.start
@@ -1524,8 +1536,7 @@ RSpec.describe Workspace::Commands::Agent do
     let(:agentd_config) { instance_double(Workspace::AgentdConfig, poll_interval_for: 3600) }
     let(:ticks) { Queue.new }
     let(:lock_reaper) do
-      queue = ticks
-      Object.new.tap { |reaper| reaper.define_singleton_method(:tick) { |_cwds| queue << true and 0 } }
+      QueueTickingLockReaper.new(ticks)
     end
 
     it "starts the monitor it is given, built from alert, scan and lock reaper settings" do
@@ -1537,8 +1548,12 @@ RSpec.describe Workspace::Commands::Agent do
         pipeline_state: pipeline_state, signal_trapper: signal_trapper, session_monitor_factory: builder,
         output: output, error_output: error_output
       )
-      thread = Thread.new { configured.call(name: "myapp") }
-      wait_until { output.string.include?("ready") || !thread.alive? }
+      thread = Thread.new do
+        configured.call(name: "myapp")
+      ensure
+        output.announce
+      end
+      output.wait_ready
       wait_until { !ticks.empty? }
 
       expect(alert_config).to have_received(:for_workspace).with("myapp")
@@ -1739,15 +1754,10 @@ RSpec.describe Workspace::Commands::Agent do
     let(:recorded) { [] }
     let(:event_log) do
       events = recorded
-      Object.new.tap do |log|
-        log.define_singleton_method(:record) { |type:, project:, data: {}| events << {type: type, project: project, data: data} }
-      end
+      BlockEventLog.new { |type:, project:, data:| events << {type: type, project: project, data: data} }
     end
     let(:quiet_monitor) do
-      Object.new.tap do |monitor|
-        monitor.define_singleton_method(:start) {}
-        monitor.define_singleton_method(:stop) {}
-      end
+      QuietSessionMonitor.new
     end
 
     subject(:agent) do
@@ -1829,15 +1839,10 @@ RSpec.describe Workspace::Commands::Agent do
     let(:recorded) { [] }
     let(:event_log) do
       events = recorded
-      Object.new.tap do |log|
-        log.define_singleton_method(:record) { |type:, project:, data: {}| events << {type: type, project: project, data: data} }
-      end
+      BlockEventLog.new { |type:, project:, data:| events << {type: type, project: project, data: data} }
     end
     let(:quiet_monitor) do
-      Object.new.tap do |monitor|
-        monitor.define_singleton_method(:start) {}
-        monitor.define_singleton_method(:stop) {}
-      end
+      QuietSessionMonitor.new
     end
 
     subject(:agent) do
@@ -1883,12 +1888,7 @@ RSpec.describe Workspace::Commands::Agent do
   describe "waking workflow runs" do
     let(:recorded_events) { [] }
     let(:monitor) do
-      events = recorded_events
-      Object.new.tap do |monitor|
-        monitor.define_singleton_method(:start) {}
-        monitor.define_singleton_method(:stop) {}
-        monitor.define_singleton_method(:record) { |message| events << message["event"] }
-      end
+      QuietSessionMonitor.new(events: recorded_events)
     end
     let(:nudger) do
       Class.new do
@@ -1912,7 +1912,8 @@ RSpec.describe Workspace::Commands::Agent do
         epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
         sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
         clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
-        workflow_nudger: nudger, output: output, error_output: error_output
+        workflow_nudger: nudger, socket_poll_interval: socket_poll_interval, workflow_tick_passes: workflow_tick_passes,
+        output: output, error_output: error_output
       )
     end
 
@@ -1996,14 +1997,7 @@ RSpec.describe Workspace::Commands::Agent do
       let(:built) { [] }
       let(:queue_built) { [] }
       let(:monitor) do
-        events = recorded_events
-        Object.new.tap do |monitor|
-          monitor.define_singleton_method(:start) {}
-          monitor.define_singleton_method(:stop) {}
-          monitor.define_singleton_method(:record) { |message| events << message["event"] }
-          monitor.define_singleton_method(:on_scan=) { |callable| @on_scan = callable }
-          monitor.define_singleton_method(:scan_now) { @on_scan.call }
-        end
+        QuietSessionMonitor.new(events: recorded_events)
       end
       let(:recovery_desk) do
         events = desk_events
@@ -2075,8 +2069,12 @@ RSpec.describe Workspace::Commands::Agent do
           prompt_queue_desk_factory: ->(**args) { queue << args && queue_desk },
           agent_recovery_desk_factory: ->(**) {}, output: output, error_output: error_output
         )
-        thread = Thread.new { no_desk.call(name: "myapp") }
-        wait_until { output.string.include?("ready") || !thread.alive? }
+        thread = Thread.new do
+          no_desk.call(name: "myapp")
+        ensure
+          output.announce
+        end
+        output.wait_ready
 
         expect(queue.first[:recovering].call("%5")).to be(false)
         expect(send_event("stop")).to eq("ok" => true)
@@ -2208,7 +2206,6 @@ RSpec.describe Workspace::Commands::Agent do
 
       it "rebinds the queue through the prompt queue store" do
         store = instance_double(Workspace::PromptQueueStore, rebind_agent: nil)
-        allow(Workspace::PromptQueueStore).to receive(:new).and_call_original
         allow(Workspace::PromptQueueStore).to receive(:new).with(path: config.prompt_queue_path("myapp")).and_return(store)
 
         run_agent do
@@ -2491,10 +2488,13 @@ RSpec.describe Workspace::Commands::Agent do
 
       context "with a real session monitor and watcher" do
         let(:real_monitor) do
-          Workspace::SessionMonitor.new(tmux: tmux, process_tree: nil, session_name: "workspace-myapp").tap do |m|
-            m.define_singleton_method(:start) {}
-            m.define_singleton_method(:stop) {}
-          end
+          Class.new(Workspace::SessionMonitor) do
+            def start
+            end
+
+            def stop
+            end
+          end.new(tmux: tmux, process_tree: nil, session_name: "workspace-myapp")
         end
 
         subject(:agent) do
@@ -2737,14 +2737,31 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
-    it "has the nudger look at the workspace's runs on a timer" do
-      stub_const("#{described_class}::SOCKET_POLL_INTERVAL", 0.02)
-      stub_const("#{described_class}::WORKFLOW_TICK_PASSES", 2)
+    context "with a fast poll" do
+      let(:socket_poll_interval) { 0.02 }
+      let(:workflow_tick_passes) { 2 }
 
-      run_agent do
-        wait_until { nudger.ticks.size >= 2 }
+      it "has the nudger look at the workspace's runs on a timer" do
+        run_agent do
+          wait_until { nudger.ticks.size >= 2 }
 
-        expect(nudger.ticks.uniq).to eq(["myapp"])
+          expect(nudger.ticks.uniq).to eq(["myapp"])
+        end
+      end
+
+      context "with a tick only every 1000 passes" do
+        let(:workflow_tick_passes) { 1000 }
+
+        it "does not tick the nudger on the passes before that" do
+          run_agent do
+            5.times do
+              File.unlink(agent_socket_path)
+              wait_until { File.socket?(agent_socket_path) }
+            end
+
+            expect(nudger.ticks).to be_empty
+          end
+        end
       end
     end
 
@@ -2756,8 +2773,12 @@ RSpec.describe Workspace::Commands::Agent do
         clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
         output: output, error_output: error_output
       )
-      thread = Thread.new { plain.call(name: "myapp") }
-      wait_until { output.string.include?("ready") || !thread.alive? }
+      thread = Thread.new do
+        plain.call(name: "myapp")
+      ensure
+        output.announce
+      end
+      output.wait_ready
 
       expect(send_event("stop")).to eq("ok" => true)
     ensure
@@ -2774,8 +2795,8 @@ RSpec.describe Workspace::Commands::Agent do
         {id: "%12", window: 0, index: 2, pid: 300, command: "zsh", title: "c"}]
     end
     let(:labels) { Workspace::AgentLabels.new(process_tree: instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([]))) }
+    let(:settings) { instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {}) }
     let(:configured) do
-      settings = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
       Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
     end
 
@@ -2799,10 +2820,8 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     it "asks AgentCommands for the detector of the current workspace and finds the claude-dev pane" do
-      allow(configured).to receive(:detector).and_call_original
-
       expect(pane_for_command(build_agent(configured))).to eq("0.0")
-      expect(configured).to have_received(:detector).with("myapp")
+      expect(settings).to have_received(:load).with("myapp").at_least(:once)
     end
 
     it "falls back to pane 1 without AgentCommands" do

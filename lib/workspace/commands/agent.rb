@@ -92,6 +92,8 @@ module Workspace
       #   {Workspace::RestartRunner} once, when the first restart needs it; nil builds the real one
       # @param current_name [String, nil] the workspace served before {#call} starts, so {#handle}
       #   works without it; +call+ sets it from its +name+
+      # @param socket_poll_interval [Numeric] seconds between the socket watcher's passes
+      # @param workflow_tick_passes [Integer] the watcher ticks the workflow nudger every this many passes
       def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, session_monitor_factory:, agent_labels: nil, agent_commands: nil, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
@@ -118,7 +120,11 @@ module Workspace
         plan_progress_watcher_factory: nil,
         spine_watcher_factory: nil,
         spine_owner_report_factory: nil,
+        socket_poll_interval: SOCKET_POLL_INTERVAL,
+        workflow_tick_passes: WORKFLOW_TICK_PASSES,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
+        @socket_poll_interval = socket_poll_interval
+        @workflow_tick_passes = workflow_tick_passes
         @name_migration = name_migration
         @config = config
         @tmux = tmux
@@ -1345,11 +1351,11 @@ module Workspace
           loop do
             # Woken by shutdown rather than slept through, so a terminating
             # agent does not wait out a whole poll interval to exit.
-            @shutdown_signal.pop(timeout: SOCKET_POLL_INTERVAL)
+            @shutdown_signal.pop(timeout: @socket_poll_interval)
             break if @shutting_down
 
             passes += 1
-            @workflow_nudger&.tick(@current_name) if (passes % WORKFLOW_TICK_PASSES).zero?
+            @workflow_nudger&.tick(@current_name) if (passes % @workflow_tick_passes).zero?
 
             unless File.socket?(socket_path)
               @logger.debug { "agent socket at #{socket_path} has disappeared; rebinding" }
