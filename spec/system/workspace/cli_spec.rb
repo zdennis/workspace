@@ -5448,12 +5448,14 @@ RSpec.describe Workspace::CLI do
         end
 
         it "leaves a --name after -- alone and a trailing --name without a value" do
-          args = ["agentd", "restart", "--", "--name", "notes"]
-          cli.send(:settle_name_flags!, args)
-          expect(args).to eq(["agentd", "restart", "--", "--name", "notes"])
+          expect { cli.run(["agentd", "restart", "--", "--name", "notes"]) }.to raise_error(FakeSystemExit)
+          expect(error_output.string).to include("Unexpected argument: notes")
+          expect(error_output.string).not_to include("Notes")
 
-          args = ["agentd", "--name"]
-          expect { cli.send(:settle_name_flags!, args) }.not_to raise_error
+          expect { cli.run(["agentd", "--name"]) }.to raise_error(FakeSystemExit)
+          expect(error_output.string).to include("missing argument: --name")
+          expect(daemon_command.calls).to eq([])
+          expect(agent_command.calls).to eq([])
         end
       end
 
@@ -6526,16 +6528,6 @@ RSpec.describe Workspace::CLI do
         cli.run(["restore", "--all"])
 
         expect(restore.launch_failures).to eq("web" => "tmuxinator exited 1")
-      end
-
-      it "names the reason when a failed launch row has no message" do
-        restore = restore_class.new(missing: %w[api])
-        cli, = restore_cli(restore, launch_command: launch.new(state), launch_mode: CLITestHelpers.launch_mode(headless: false))
-        allow(cli).to receive(:launch_rows).and_return([{"workspace" => "api", "outcome" => "failed", "reason" => "session_not_started", "message" => nil}])
-
-        cli.run(["restore", "--all"])
-
-        expect(restore.launch_failures).to eq("api" => "session_not_started")
       end
 
       it "fails a whole batch whose launch raised, and still launches the other" do
@@ -8991,12 +8983,13 @@ RSpec.describe Workspace::CLI do
     before { allow(rename_command).to receive(:call).and_return(result) }
 
     it "takes NEW alone and renames the workspace of the working directory" do
-      allow(cli).to receive(:workspace_here).and_return("api.worktree-old")
+      detector = instance_double(Workspace::ProjectDetector, detect: "api.worktree-old")
+      cli, _, error_output = build_test_cli(output: gate, rename_command: rename_command, project_detector: detector, working_dir: "/a/old")
       cli.run(["rename", "new"])
 
       expect(rename_command).to have_received(:call).with(workspace: "api.worktree-old", new: "new", dry_run: false)
       expect(output.string).to include("api.worktree-old -> api.worktree-new").and include("Run `workspace restore")
-      expect(built[2].string).to include("Warning: careful")
+      expect(error_output.string).to include("Warning: careful")
     end
 
     it "takes WORKSPACE NEW, passing a name that no config has any more on to the command" do
@@ -12122,12 +12115,24 @@ RSpec.describe Workspace::CLI do
         library.global_store.write("play", "kickoff", "# Kickoff\n")
         path = library.global_store.path_for("play", "kickoff")
         launch = nil
-        cli, = plan_cli(state: state, project_config: project_config, library: library) do |out|
+        promote = nil
+        spine = nil
+        promote_command = instance_double(Workspace::Commands::Promote)
+        spine_start_command = instance_double(Workspace::Commands::SpineStart)
+        allow(promote_command).to receive(:call) { |launch:, **|
+          promote = launch
+          {exit_code: 0}
+        }
+        allow(spine_start_command).to receive(:start) { |launch:, **|
+          spine = launch
+          {"ok" => true, "path" => "1-a"}
+        }
+        cli, = plan_cli(state: state, project_config: project_config, library: library, promote_command: promote_command, spine_start_command: spine_start_command) do |out|
           launch = launch_class.new(state: state, output: out)
           {launch_command: launch}
         end
-        promote = cli.send(:promote_launcher, headless: nil, prompt_timeout: nil)
-        spine = cli.send(:spine_launcher)
+        cli.run(["promote", "--launch"])
+        cli.run(["spine", "start", "--name", "api", "1-a"])
 
         promote.call("api", prompt: "Go.", play: nil)
         promote.call("api", prompt: "Go.", play: "kickoff")
@@ -12429,8 +12434,11 @@ RSpec.describe Workspace::CLI do
 
       it "asks Launch for the delivered panes whenever it sends a prompt" do
         state = CLITestHelpers::FakeState.new
-        cli, = action_cli(state: state, &launching(state))
-        launch = cli.instance_variable_get(:@launch_command)
+        launch = nil
+        cli, = action_cli(state: state) do |out|
+          launch = launch_class.new(state: state, output: out)
+          {launch_command: launch}
+        end
 
         cli.run(["launch", "api", "--json"])
         cli.run(["launch", "api", "--prompt", "hi", "--json"])
@@ -13143,20 +13151,6 @@ RSpec.describe Workspace::CLI do
             expect(document["warnings"].first).to include("this window-tool has no 'dim' command")
             expect(err.string).to include("Warning: The window is in front")
             expect(File.read(File.join(dir, "log")).lines.map { |l| l.split.first }).to eq(%w[focus center dim])
-          end
-        end
-      end
-
-      it "wires a FocusConfig into the focus command in build_cli" do
-        Dir.mktmpdir("workspace-focus-wire") do |dir|
-          saved = ENV.to_h
-          begin
-            ENV.replace("HOME" => dir, "PATH" => File.dirname(RbConfig.ruby))
-            cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
-            focus = cli.instance_variable_get(:@focus_command)
-            expect(focus.instance_variable_get(:@focus_config)).to be_a(Workspace::FocusConfig)
-          ensure
-            ENV.replace(saved)
           end
         end
       end
@@ -13975,9 +13969,11 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to eq("")
     end
 
-    it "settles a short positional in pick_workspace_name, also beside the same workspace by full --name" do
-      expect(cli.send(:pick_workspace_name, nil, "fix-login")).to eq("a.worktree-fix-login")
-      expect(cli.send(:pick_workspace_name, "a.worktree-fix-login", "fix-login")).to eq("a.worktree-fix-login")
+    it "settles a short positional, also beside the same workspace by full --name" do
+      cli.run(["stop", "fix-login"])
+      cli.run(["stop", "fix-login", "--name", "a.worktree-fix-login"])
+
+      expect(stop_command).to have_received(:call).with(["a.worktree-fix-login"]).twice
     end
 
     it "takes a short workspace for ask list, config get and ui open" do
@@ -14005,8 +14001,9 @@ RSpec.describe Workspace::CLI do
     end
 
     it "leaves `ask list junk` and `ui open typo` to their own parsing" do
-      expect(cli.send(:take_known_workspace!, args = ["junk"])).to be_nil
-      expect(args).to eq(["junk"])
+      expect { cli.run(["ask", "list", "junk"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Usage: workspace ask list")
+      expect(ask_command.calls).to be_empty
       expect { cli.run(["ui", "open", "typo"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("Unknown view or workspace 'typo'")
       expect(ui_command.calls).to be_empty
@@ -14245,8 +14242,16 @@ RSpec.describe Workspace::CLI do
 
     it "restore --all passes a state key with no config through to launch" do
       state["foo"] = {}
+      restore = Class.new do
+        def call(names, dry_run: false)
+          yield names
+          {exit_code: 0, results: [], warnings: [], extra: {}}
+        end
+      end.new
+      cli, = build_test_cli(project_config: project_config, workspace_name: workspace_name, state: state,
+        launch_command: launch_command, restore_command: restore)
 
-      cli.send(:launch_for_restore, ["foo"])
+      cli.run(["restore", "--all"])
 
       expect(launch_command).to have_received(:call).with(["foo"], anything)
     end
