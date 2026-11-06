@@ -22,10 +22,12 @@ RSpec.describe Workspace::Commands::Handoff do
 
   subject(:command) do
     described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, notes: notes, binder: binder, library: library, output: output, error_output: error_output, env: env)
+      restart_agent_command: restart_agent_command, notes: notes, binder: binder, library: library, output: output, error_output: error_output, env: env,
+      followup_reply_wait: followup_reply_wait)
   end
 
   let(:env) { {} }
+  let(:followup_reply_wait) { described_class::FOLLOWUP_REPLY_WAIT }
 
   let(:defaults) { {threshold: 11, check_prompt: nil, resume_prompt: nil} }
 
@@ -583,7 +585,7 @@ RSpec.describe Workspace::Commands::Handoff do
       end
 
       describe "when the daemon does not take the request" do
-        before { stub_const("#{described_class}::FOLLOWUP_REPLY_WAIT", 0.2) }
+        let(:followup_reply_wait) { 0.2 }
 
         let(:outcomes) do
           {
