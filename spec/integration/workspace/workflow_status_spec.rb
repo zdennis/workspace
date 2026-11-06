@@ -18,7 +18,11 @@ RSpec.describe Workspace::WorkflowStatus do
   let(:snapshot) { {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]} }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:asks) { [] }
-  let(:ask_store) { instance_double(Workspace::AskStore) }
+  let(:ask_store) do
+    instance_double(Workspace::AskStore).tap do |store|
+      allow(store).to receive(:list).with(open_only: true) { asks }
+    end
+  end
   let(:notes_dir) { File.join(@dir, "notes") }
   let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir}) }
   let(:snapshot_timeout) { described_class::SNAPSHOT_TIMEOUT }
@@ -31,7 +35,6 @@ RSpec.describe Workspace::WorkflowStatus do
 
   before do
     allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { snapshot }
-    allow(ask_store).to receive(:list).with(open_only: true) { asks }
   end
 
   def create(state: "running", step_state: "running", reason: nil, workspace: "app", pane: "%5", bound: true, timeout: nil, **rest)
@@ -138,8 +141,6 @@ RSpec.describe Workspace::WorkflowStatus do
   describe "with the workspace's real question store, read by a process with no UTF-8 locale" do
     let(:ask_path) { File.join(@dir, "asks.json") }
     let(:ask_store) { Workspace::AskStore.new(path: ask_path, error_output: StringIO.new) }
-
-    before { allow(ask_store).to receive(:list).and_call_original }
 
     it "shows the run, and a question from its pane, though the store holds non-ASCII text" do
       create

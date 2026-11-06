@@ -704,13 +704,14 @@ RSpec.describe Workspace::Commands::Library do
     end
 
     it "uninstalls a bare name found only on disk at user level, and skips the comparison under --force" do
-      allow(installer).to receive(:user_path) { |kind, name| (kind == "agent") ? "/h/agents/#{name}.md" : "/h/skills/#{name}" }
-      allow(File).to receive(:exist?).and_call_original
-      allow(File).to receive(:exist?).with("/h/agents/gone.md").and_return(true)
+      home = File.join(@dir, "home")
+      FileUtils.mkdir_p(File.join(home, "agents"))
+      File.write(File.join(home, "agents", "gone.md"), "x")
+      allow(installer).to receive(:user_path) { |kind, name| (kind == "agent") ? "#{home}/agents/#{name}.md" : "#{home}/skills/#{name}" }
       expect(installer).to receive(:uninstall_user).with("agent", "gone", dry_run: false, entry: nil, force: false)
-        .and_return({"result" => "removed", "path" => "/h/agents/gone.md"})
+        .and_return({"result" => "removed", "path" => "#{home}/agents/gone.md"})
       expect(installer).to receive(:uninstall_user).with("skill", "tests", dry_run: false, entry: nil, force: true)
-        .and_return({"result" => "absent", "path" => "/h/skills/tests"})
+        .and_return({"result" => "absent", "path" => "#{home}/skills/tests"})
 
       expect(command.uninstall("gone", user: true, cwd: cwd).result).to eq("removed")
       expect(command.uninstall("skill/tests", user: true, force: true, cwd: cwd).result).to eq("absent")
