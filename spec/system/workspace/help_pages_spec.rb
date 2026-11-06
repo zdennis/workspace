@@ -135,30 +135,32 @@ RSpec.describe Workspace::HelpPages do
       end
     end
 
-    parsers = {
-      "plan" => :plan_parser, "daemon" => :daemon_parser, "workflow" => :workflow_parser, "library" => :library_parser,
-      "spine" => :spine_parser, "binding" => :binding_parser, "step" => :step_parser, "review" => :review_parser,
-      "pr" => :pr_parser, "ticket" => :ticket_parser, "goal" => :goal_parser, "notes" => :notes_parser,
-      "instructions" => :instructions_parser, "ui" => :ui_parser, "skills" => :skills_parser, "event-log" => :event_log_show_parser,
-      # `projects list` parses inline, so it has no factory to check.
-      "projects" => {"show" => :projects_show_parser, "members" => :projects_members_parser,
-                     "stop" => :projects_stop_parser, "kill" => :projects_kill_parser}
+    # Run each verb with each flag its page lists. Parsing comes first, so an unaccepted flag is reported on
+    # stderr as an option error; once parsing succeeds the untouchable collaborators stop the command.
+    option_errors = /invalid option|missing argument|invalid argument|ambiguous option|needless argument/
+    checked = {
+      "plan" => nil, "daemon" => nil, "workflow" => nil, "library" => nil, "spine" => nil, "binding" => nil,
+      "step" => nil, "review" => nil, "pr" => nil, "ticket" => nil, "goal" => nil, "notes" => nil,
+      "instructions" => nil, "ui" => nil, "skills" => nil, "event-log" => ["show"],
+      "projects" => %w[show members stop kill]
     }
-    parsers.each do |command, factory|
+    checked.each do |command, only|
       it "list only flags the #{command} parser accepts" do
-        with_cli do |cli, *|
-          pages.fetch(command).each do |key, page|
-            parser_factory = ((command == "spine" && key == "init") ? :spine_init_parser : factory)
-            parser_factory = factory[key] if factory.is_a?(Hash)
-            next unless parser_factory
-            page[:options].each do |label, _|
-              word = label.split(", ").first
-              flag = word.split.first.sub("[no-]", "")
-              takes_value = word.include?(" ") && !word.include?("[")
-              options = Hash.new { |hash, k| hash[k] = [] }
-              value = label.include?("TYPE:ID") ? "shell:1" : "1"
-              argv = takes_value ? [flag, value] : [flag]
-              expect { cli.send(parser_factory, options).parse(argv) }.not_to raise_error, "#{command} #{key} #{label}"
+        pages.fetch(command).each do |key, page|
+          next if only && !only.include?(key)
+          page[:options].each do |label, _|
+            word = label.split(", ").first
+            flag = word.split.first.sub("[no-]", "")
+            takes_value = word.include?(" ") && !word.include?("[")
+            value = label.include?("TYPE:ID") ? "shell:1" : "1"
+            argv = command.split + key.split + (takes_value ? [flag, value] : [flag])
+            with_untouchable_cli(untouchable) do |cli, _out, err, _home|
+              begin
+                cli.run(argv)
+              rescue SystemExit, StandardError
+                nil
+              end
+              expect(err.string).not_to match(option_errors), argv.join(" ")
             end
           end
         end

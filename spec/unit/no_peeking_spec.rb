@@ -13,8 +13,8 @@ RSpec.describe "specs that peek inside objects" do
       /any_instance_of/,
       /class_eval/,
       /\.allocate\b/,
-      /\.send\(:/,
-      /__send__\(:/
+      /\.send\(/,
+      /__send__\(/
     ]
   end
 
