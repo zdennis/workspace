@@ -4,7 +4,7 @@ module Workspace
   # Checks the inputs given to a workflow against its definition: no unknown names, every
   # required one present, every set value matching its `pattern:`. Pure: definition and
   # inputs in, the full set of input values (or a refusal) out.
-  class WorkflowInputs
+  module WorkflowInputs
     INPUT_VALUE_LIMIT = 4096
 
     # @param data [Hash] the definition as a hash (`WorkflowDefinition#to_h`)
@@ -13,11 +13,6 @@ module Workspace
     # @raise [UsageError] for an input the workflow does not declare
     # @raise [Workspace::Error] `input_required` or `invalid_input`
     def self.check(data, inputs)
-      new.check(data, inputs)
-    end
-
-    # (see .check)
-    def check(data, inputs)
       inputs = (inputs || {}).transform_keys(&:to_s)
       unknown = inputs.keys - data["inputs"].keys
       if unknown.any?
@@ -34,10 +29,8 @@ module Workspace
       data["inputs"].keys.to_h { |name| [name, inputs[name].to_s] }
     end
 
-    private
-
     # Only a truly empty value is unset and passes; whitespace is checked like any other. A value too long, or one the pattern takes too long to judge, is a mismatch. The value is never echoed.
-    def check_patterns(data, inputs)
+    def self.check_patterns(data, inputs)
       data["inputs"].each do |name, spec|
         pattern = spec["pattern"]
         value = inputs[name].to_s
@@ -49,12 +42,14 @@ module Workspace
     end
 
     # Ruby 3.2 and later bound the match by time; older Rubies rely on the length cap alone.
-    def matches?(pattern, value)
+    def self.matches?(pattern, value)
       source = "\\A(?:#{pattern})\\z"
       regexp = Regexp.respond_to?(:timeout) ? Regexp.new(source, timeout: 1) : Regexp.new(source)
       regexp.match?(value)
     rescue RegexpError
       false
     end
+
+    private_class_method :check_patterns, :matches?
   end
 end
