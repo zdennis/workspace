@@ -1955,6 +1955,83 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["reason"]["details"]).to include("loops" => {"verify->build" => 1}, "attempts" => 4, "max_attempts" => 3)
     end
 
+    it "fails a step with no on_fail whose check exits non-zero, and waits for a person" do
+      plain = definition("steps:\n  a:\n    prompt: P\n    status: bin/check\n")
+      start(plain, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+
+      run = engine.turn_ended("wr_1")
+
+      expect(run).to include("state" => "waiting", "current" => "a")
+      expect(run["reason"]["details"]).to include("cause" => "check", "exit_code" => 1, "code" => "check_failed", "code_source" => "engine")
+    end
+
+    describe "a failed check's report_code" do
+      def tally_def(on_fail_text, status_body)
+        definition(<<~YAML)
+          steps:
+            plan:
+              prompt: Plan.
+            tally:
+              prompt: Tally.
+              status:
+          #{status_body}
+          #{on_fail_text}
+        YAML
+      end
+
+      def with_log(name, text)
+        path = File.join(worktree, ".workflow", "wr_1", "steps", name)
+        File.write(path, text)
+        check_results << {exit_code: 1, timed_out: false}
+        engine.turn_ended("wr_1")
+      end
+
+      it "takes the failure code from the log's last line when the step's status sets report_code, and loops on it" do
+        start(tally_def("    on_fail: {goto: plan, max: 2}", "      report_code: true\n      run: bin/check\n"), inputs: {})
+        engine.turn_ended("wr_1")
+
+        run = with_log("tally.1.check.log", "the plan moved under the review\ncode: stale_plan_revision\n")
+
+        expect(run["steps"]["tally"]["attempts"].last).to include("code" => "stale_plan_revision")
+        expect(run).to include("state" => "running", "current" => "plan", "loops" => {"tally->plan" => 1})
+      end
+
+      it "ignores the log's last line when the step's status sets no report_code" do
+        start(tally_def("    on_fail: {goto: plan, max: 2}", "      run: bin/check\n"), inputs: {})
+        engine.turn_ended("wr_1")
+
+        run = with_log("tally.1.check.log", "code: stale_plan_revision\n")
+
+        expect(run["steps"]["tally"]["attempts"].last).to include("code" => "check_failed")
+      end
+
+      it "ignores a line that names a code the engine hands out itself, or no code at all" do
+        start(tally_def("    on_fail: {goto: plan, max: 2}", "      report_code: true\n      run: bin/check\n"), inputs: {})
+        engine.turn_ended("wr_1")
+
+        reserved = with_log("tally.1.check.log", "code: check_error\n")
+
+        expect(reserved["steps"]["tally"]["attempts"].last).to include("code" => "check_failed")
+        engine.turn_ended("wr_1")
+
+        absent = with_log("tally.1.check.log", "the check found nothing to name\n")
+
+        expect(absent["steps"]["tally"]["attempts"].last).to include("code" => "check_failed")
+      end
+
+      it "stops instead of looping when the reported code is in on_fail's except, and counts no loop" do
+        start(tally_def("    on_fail: {goto: plan, max: 2, except: [stale_plan_revision]}", "      report_code: true\n      run: bin/check\n"), inputs: {})
+        engine.turn_ended("wr_1")
+
+        run = with_log("tally.1.check.log", "code: stale_plan_revision\n")
+
+        expect(run).to include("state" => "waiting", "current" => "tally", "loops" => {})
+        expect(run["reason"]).to include("code" => "failed_check")
+        expect(run["reason"]["details"]).to include("code" => "stale_plan_revision", "code_source" => "check")
+      end
+    end
+
     it "fails a step its agent reported failed, without running the check" do
       to_verify
       engine.report("wr_1", status: "fail", summary: "two specs still red")
@@ -3689,6 +3766,30 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["reason"]["details"]).to include("cause" => "guard", "guard" => "head_moved", "code" => "head_moved", "code_source" => "engine", "paths" => [],
         "base_sha" => run["base_sha"])
       expect(run["steps"]["diagnose"]["attempts"].last).to include("outcome" => "failed")
+    end
+
+    it "stops instead of looping when on_fail's except lists guard, and counts no loop" do
+      excepted = definition(<<~YAML)
+        steps:
+          plan:
+            prompt: Plan.
+            guard: unchanged
+          tally:
+            prompt: Tally.
+            guard: unchanged
+            on_fail: {goto: plan, max: 2, except: [guard]}
+      YAML
+      start(excepted, inputs: {})
+      engine.turn_ended("wr_1", pane: "%5")
+      commit_in_worktree
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run).to include("state" => "waiting", "current" => "tally", "loops" => {})
+      expect(run["reason"]["code"]).to eq("failed_check")
+      expect(run["reason"]["details"]).to include("cause" => "guard", "code" => "head_moved")
+      expect(run["steps"]["tally"]["attempts"].size).to eq(1)
+      expect(run["steps"]["plan"]["attempts"].size).to eq(1)
     end
 
     describe "a changed repository config" do

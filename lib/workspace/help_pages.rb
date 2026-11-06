@@ -158,7 +158,7 @@ module Workspace
           ["workspace plan task add --title \"Write the docs\" --phase Docs", "add it under the ### Docs heading"],
           ["workspace plan task add --title \"Add the index\" --id T7 --after T3", "give it the id T7 and put it after task T3"],
           ["workspace plan task add --title \"Wait for CI\" --state blocked --reason \"CI is down\"", "add a blocked task; blocked and skipped need --reason"],
-          ["workspace plan task add --title \"Write the docs\" --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
+          ["workspace plan task add --title \"Write the docs\" --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
         ]
       },
       "task set-state" => {
@@ -175,7 +175,7 @@ module Workspace
           ["workspace plan task set-state --task T3 --state done", "mark task T3 done in the plan of this workspace"],
           ["workspace plan task set-state --task T3 --state in_progress", "mark it in progress"],
           ["workspace plan task set-state --task T3 --state blocked --reason \"needs the dev database\"", "block it; blocked and skipped need --reason"],
-          ["workspace plan task set-state --task T3 --state done --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
+          ["workspace plan task set-state --task T3 --state done --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
         ]
       },
       "task set-title" => {
@@ -190,7 +190,7 @@ module Workspace
         examples: [
           ["workspace plan task set-title --task T3 --title \"Write the token store docs\"", "change the title of task T3; its id, state and place stay"],
           ["workspace plan task set-title --name api.worktree-x --task T3 --title \"Write the docs\"", "the same in the plan of one workspace by name"],
-          ["workspace plan task set-title --task T3 --title \"Write the docs\" --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
+          ["workspace plan task set-title --task T3 --title \"Write the docs\" --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
         ]
       },
       "task move" => {
@@ -208,7 +208,7 @@ module Workspace
           ["workspace plan task move --task T5 --after T1", "move task T5 to just after task T1"],
           ["workspace plan task move --task T5 --before T2", "move task T5 to just before task T2"],
           ["workspace plan task move --task T5 --phase Docs", "move task T5 to the end of the ### Docs phase"],
-          ["workspace plan task move --task T5 --after T1 --if-revision 9f8e7d6c --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
+          ["workspace plan task move --task T5 --after T1 --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json", "refuse with stale_revision unless the plan is still at that revision (from plan status --json)"]
         ]
       }
     }.freeze

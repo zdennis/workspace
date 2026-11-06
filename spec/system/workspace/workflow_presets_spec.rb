@@ -54,10 +54,12 @@ RSpec.describe "the shipped workflow presets" do
       end
     end
 
-    it "guards research and plan (and plan_review in rpiv-auto-approve) as unchanged, and nothing else" do
+    it "guards research and plan (and the reviewer steps and plan_review in rpiv-auto-approve) as unchanged, and nothing else" do
       %w[rpiv rpiv-auto-approve].each do |id|
         guards = catalog.find(id).to_h["steps"].to_h { |step| [step["id"], step["guard"]] }
-        expect(guards.select { |_, guard| guard }).to eq({"research" => "unchanged", "plan" => "unchanged"}.merge((id == "rpiv-auto-approve") ? {"plan_review" => "unchanged"} : {})), id
+        expect(guards.select { |_, guard| guard }).to eq({"research" => "unchanged", "plan" => "unchanged"}.merge((id == "rpiv-auto-approve") ? {
+          "review_supportive" => "unchanged", "review_skeptical" => "unchanged", "review_implementer" => "unchanged", "plan_review" => "unchanged"
+        } : {})), id
       end
     end
 

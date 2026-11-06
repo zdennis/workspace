@@ -148,7 +148,7 @@ module Workspace
         mtime = stat.mtime
         signature = signature_for(stat)
         parse(bytes.force_encoding(Encoding::UTF_8).scrub, truncated: truncated, signature: signature,
-          updated_at: mtime.utc.iso8601, revision: digest.hexdigest[0, 8])
+          updated_at: mtime.utc.iso8601, revision: digest.hexdigest)
       end
     rescue Errno::ENOENT, Errno::ENOTDIR
       nil
@@ -207,13 +207,14 @@ module Workspace
     # Longest title or reason a task verb writes.
     MAX_TEXT = 500
 
-    # The revision of a file's bytes: the first 8 hex digits of their SHA-256, the way spine files are
-    # revised. It changes with any byte, so an edit that keeps the size and the modification time still
-    # shows.
+    # The revision of a file's bytes: their full SHA-256 hexdigest (64 hex digits). Spine files keep
+    # their own 8-hex revision scheme, computed in `spine_file.rb`; plan revisions are not truncated,
+    # so two different plans cannot share one. It changes with any byte, so an edit that keeps the
+    # size and the modification time still shows.
     #
     # @param bytes [String]
     # @return [String]
-    def self.revision_of(bytes) = Digest::SHA256.hexdigest(bytes.b)[0, 8]
+    def self.revision_of(bytes) = Digest::SHA256.hexdigest(bytes.b)
 
     # @param id [String]
     # @return [Boolean] whether +id+ may be a task id

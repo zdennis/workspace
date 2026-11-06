@@ -330,6 +330,18 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(two).to eq(one)
   end
 
+  it "reads status report_code as opt-in, and leaves it out when unset or false" do
+    set = parse("steps:\n  a:\n    prompt: P\n    status:\n      report_code: true\n      run: bin/check\n").steps.first["status"]
+    unset = parse("steps:\n  a:\n    prompt: P\n    status: bin/check\n").steps.first["status"]
+    false_ = parse("steps:\n  a:\n    prompt: P\n    status:\n      report_code: false\n      run: bin/check\n").steps.first
+
+    expect(set).to eq("run" => "bin/check", "timeout" => 1200, "report_code" => true)
+    expect(unset).not_to have_key("report_code")
+    expect(false_["status"]).not_to have_key("report_code")
+    expect(problems("steps:\n  a:\n    prompt: P\n    status:\n      report_code: sure\n      run: bin/check\n"))
+      .to eq(["step a: status report_code must be true or false, got \"sure\""])
+  end
+
   it "defaults on_fail to one loop and the step's own context" do
     step = parse("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a}\n").steps.last
 
@@ -367,6 +379,25 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(described_class.log_tail("log_tail" => 0)).to be_nil
       expect(described_class.log_tail("log_tail" => 9999)).to be_nil
       expect(described_class.log_tail("log_tail" => 40)).to eq(40)
+    end
+  end
+
+  describe "on_fail except" do
+    def on_fail(text) = parse("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: #{text}\n").steps.last["on_fail"]
+
+    it "stores a list of codes or causes, and leaves it out when unset" do
+      expect(on_fail("{goto: a, except: [stale_plan_revision, guard]}")).to eq("goto" => "a", "max" => 1, "context" => nil, "except" => %w[stale_plan_revision guard])
+      expect(on_fail("{goto: a}")).not_to have_key("except")
+    end
+
+    it "collects a problem for a name over its cap, too many entries, or a non-list" do
+      long = "x" * 61
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, except: [#{long}]}\n").first)
+        .to include("on_fail except \"#{long}\" is longer than 60 characters")
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, except: [#{Array.new(9, "c").join(", ")}]}\n").first)
+        .to include("on_fail except takes at most 8 codes or causes, got 9")
+      expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: {goto: a, except: guard}\n").first)
+        .to include("on_fail except must be a list of names, got \"guard\"")
     end
   end
 
