@@ -24,8 +24,7 @@ RSpec.describe Workspace do
 
     it "sends the process exit to the exit_handler it is given" do
       exits = []
-      handler = Object.new
-      handler.define_singleton_method(:exit) { |code = 0| exits << code }
+      handler = Struct.new(:exits) { def exit(code = 0) = exits << code }.new(exits)
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {}, exit_handler: handler)
       cli.run(["bogus"])
       expect(exits).to include(1)

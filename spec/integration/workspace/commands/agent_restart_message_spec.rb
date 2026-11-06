@@ -92,8 +92,8 @@ end
 RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   let(:tmpdir) { Dir.mktmpdir("ws-restart", "/tmp") }
   let(:agent_socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
-  let(:output) { StringIO.new }
-  let(:error_output) { StringIO.new }
+  let(:output) { ReadyAnnouncingOutput.new }
+  let(:error_output) { ReadyAnnouncingOutput.new }
   let(:tmux) { RestartMessageTmux.new }
   let(:monitor) { RestartMessageMonitor.new }
   let(:config) do
@@ -132,15 +132,18 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
       session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
-      agent_restart_factory: restart.method(:build), output: output, error_output: error_output)
+      agent_restart_factory: ->(**kwargs) { restart.build(**kwargs) }, output: output, error_output: error_output)
   end
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 
   def run_agent
-    thread = Thread.new { agent.call(name: "myapp") }
-    deadline = Time.now + 2
-    sleep(0.01) until output.string.include?("ready") || !thread.alive? || Time.now > deadline
+    thread = Thread.new do
+      agent.call(name: "myapp")
+    ensure
+      output.announce
+    end
+    output.wait_ready
     yield
   ensure
     restart.finish
@@ -278,16 +281,14 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     agent_with_failure = described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
       session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
-      agent_restart_factory: failing.method(:build), output: output, error_output: error_output)
+      agent_restart_factory: ->(**kwargs) { failing.build(**kwargs) }, output: output, error_output: error_output)
     thread = Thread.new { agent_with_failure.call(name: "myapp") }
-    deadline = Time.now + 2
-    sleep(0.01) until output.string.include?("ready") || Time.now > deadline
+    output.wait_ready
 
     send_restart
     failing.calls.pop(timeout: 2)
     failing.finish
-    deadline = Time.now + 2
-    sleep(0.01) until error_output.string.include?("usage did not drop") || Time.now > deadline
+    error_output.wait_for_text("usage did not drop")
 
     expect(error_output.string).to include("restart_agent for pane 0.1: usage did not drop")
   ensure
@@ -299,8 +300,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
 
   it "stops a restart still running when the daemon shuts down, telling a waiting caller and stderr" do
     thread = Thread.new { agent.call(name: "myapp") }
-    deadline = Time.now + 2
-    sleep(0.01) until output.string.include?("ready") || Time.now > deadline
+    output.wait_ready
     waiter = Thread.new do
       UNIXSocket.open(agent_socket_path) do |socket|
         socket.puts({"type" => "restart_agent", "workspace" => "myapp", "pane" => "%18",

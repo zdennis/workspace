@@ -2,9 +2,9 @@ require "spec_helper"
 
 RSpec.describe Workspace::SessionMonitorBuilder do
   let(:tmux) do
-    CLITestHelpers::FakeTmux.new.tap do |fake|
-      fake.define_singleton_method(:session_name_for) { |name| "workspace-wt-#{name}" }
-    end
+    Class.new(CLITestHelpers::FakeTmux) do
+      def session_name_for(name) = "workspace-wt-#{name}"
+    end.new
   end
   let(:scan_slots) { instance_double(Workspace::ScanSlotLimiter) }
   let(:error_output) { StringIO.new }
