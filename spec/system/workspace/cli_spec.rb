@@ -477,8 +477,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         state["app"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
 
-        project_config = CLITestHelpers::FakeProjectConfig.new
-        project_config.define_singleton_method(:project_root_for) { |_name| app_dir }
+        project_config = CLITestHelpers::FakeProjectConfig.new(Hash.new(app_dir))
 
         cli, _, error_output = build_test_cli(state: state, project_config: project_config, working_dir: app_extra_dir)
         expect { cli.run(["current"]) }.to raise_error(FakeSystemExit) { |e|
@@ -12718,8 +12717,7 @@ RSpec.describe Workspace::CLI do
 
         it "looks a directory argument's play up from that directory" do
           launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
-          allow(project_config).to receive(:resolve_project_arg).with("/work/new").and_return(["new", "/work/new"])
-          allow(project_config).to receive(:project_root_for).and_call_original
+          project_config.resolutions["/work/new"] = ["new", "/work/new"]
           library.project_store("new").write("play", "kickoff", "# New\n")
           cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library)
 
@@ -12729,7 +12727,7 @@ RSpec.describe Workspace::CLI do
             prompts: {"new" => "Read \"#{library.project_store("new").path_for("play", "kickoff")}\" and follow it."},
             bindings: {"new" => {"kind" => "play", "id" => "play/kickoff", "instructions" => library.project_store("new").path_for("play", "kickoff"), "plays" => [{"id" => "play/kickoff", "instructions" => library.project_store("new").path_for("play", "kickoff")}]}},
             report_panes: true)
-          expect(project_config).not_to have_received(:project_root_for)
+          expect(project_config.root_lookups).to be_empty
         end
 
         it "sends several plays as one line each and reports them in every row" do
@@ -12752,28 +12750,26 @@ RSpec.describe Workspace::CLI do
 
         it "fails an unknown play among several with nothing launched or created" do
           launch_command = double("launch", call: {exit_code: 0})
-          allow(project_config).to receive(:create).and_call_original
           cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library)
 
           status = exit_status { cli.run(["launch", "api", "--play", "kickoff,nope", "--json"]) }
 
           expect(status).to eq(1)
           expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_library_entry")
+          expect(project_config.created).to be_empty
           expect(launch_command).not_to have_received(:call)
         end
 
         it "fails an unknown play with nothing launched or created" do
           launch_command = double("launch", call: {exit_code: 0})
-          allow(project_config).to receive(:resolve_project_arg).and_call_original
-          allow(project_config).to receive(:resolve_project_arg).with("/work/new").and_return(["new", "/work/new"])
-          allow(project_config).to receive(:create).and_call_original
+          project_config.resolutions["/work/new"] = ["new", "/work/new"]
           cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library)
 
           status = exit_status { cli.run(["launch", "api", "/work/new", "--play", "nope", "--json"]) }
 
           expect(status).to eq(1)
           expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_library_entry")
-          expect(project_config).not_to have_received(:create)
+          expect(project_config.created).to be_empty
           expect(launch_command).not_to have_received(:call)
         end
       end
