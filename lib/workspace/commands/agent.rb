@@ -38,7 +38,8 @@ module Workspace
       # @param sentinel_poller_factory [#call] builds a poller for a session/pane/token
       # @param token_generator [#call] returns a fresh completion token for one stage dispatch
       # @param clock [#call] returns the current Time, for stage deadlines
-      # @param session_monitor_factory [#call] builds the session monitor for a workspace name
+      # @param session_monitor_factory [#call, nil] builds the session monitor for a workspace name; nil
+      #   builds one through {Workspace::SessionMonitorBuilder} from the settings below
       # @param lock_reaper [Workspace::LockReaper, nil] reaps stale lock holds from the session monitor's scan thread
       # @param alert_config [Workspace::AlertConfig, nil] reads the workspace's
       #   notify command and idle alert threshold; nil sends no alerts
@@ -156,7 +157,7 @@ module Workspace
         @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
         @token_generator = token_generator
         @clock = clock
-        @session_monitor_factory = session_monitor_factory || method(:build_session_monitor)
+        @session_monitor_factory = session_monitor_factory
         @session_monitor = nil
         @lock_reaper = lock_reaper
         @alert_config = alert_config
@@ -252,7 +253,7 @@ module Workspace
         install_signal_handlers
 
         @hook_event_log = @hook_event_log_factory&.call(name)
-        @session_monitor = @session_monitor_factory.call(name)
+        @session_monitor = (@session_monitor_factory || session_monitor_builder).call(name)
         @session_monitor.start
         @plan_progress_watcher = @plan_progress_watcher_factory&.call(name)
         @plan_progress_watcher&.start
@@ -1328,32 +1329,12 @@ module Workspace
       # The listening fd survives that, so the agent looks healthy while no
       # caller can reach it; rebinding and re-registering is what actually
       # restores it.
-      def build_session_monitor(name)
-        # Alert and scan settings are read once, here, so a change takes
-        # effect the next time the daemon starts.
-        alerts = @alert_config&.for_workspace(name) || {}
-        notifier = alerts[:notify] && @notifier_factory.call(alerts[:notify])
-        SessionMonitor.new(
-          tmux: @tmux,
-          process_tree: ProcessTree.new(logger: @logger, timeout: @ps_timeout),
-          session_name: @tmux.session_name_for(name),
-          detector: @agent_commands&.detector(name) || AgentDetector.new,
-          poll_interval: @agentd_config&.poll_interval_for(name) || SessionMonitor::DEFAULT_POLL_INTERVAL,
-          logger: @logger,
-          error_output: @error_output,
-          lock_reaper: @lock_reaper,
-          notifier: notifier,
-          idle_alert_after: alerts[:idle_after],
-          event_log: @event_log,
-          project: name,
-          context_reader: @context_reader,
-          label_reader: @label_reader,
-          task_reader: @task_store && ->(workspace) { @task_store.active_for(workspace) },
-          scan_slots: @scan_slots || ScanSlotLimiter.new(
-            dir: File.join(@config.state_dir, "scan-slots"),
-            logger: @logger
-          )
-        )
+      def session_monitor_builder
+        SessionMonitorBuilder.new(tmux: @tmux, config: @config, logger: @logger, error_output: @error_output,
+          agent_commands: @agent_commands, alert_config: @alert_config, agentd_config: @agentd_config,
+          lock_reaper: @lock_reaper, notifier_factory: @notifier_factory, ps_timeout: @ps_timeout,
+          event_log: @event_log, context_reader: @context_reader, label_reader: @label_reader,
+          task_store: @task_store, scan_slots: @scan_slots)
       end
 
       # The main agent's turn ended: a workflow run bound to the pane decides

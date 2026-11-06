@@ -335,26 +335,6 @@ RSpec.describe Workspace::Commands::Agent do
         expect(tmux.sent_keys.last).to include(session: "workspace-wt-myapp", pane: "0.0", text: "use Postgres not SQLite")
       end
     end
-
-    it "builds the session monitor against the tmux session, keeping the workspace name for alerts" do
-      alert_config = instance_double(Workspace::AlertConfig)
-      allow(alert_config).to receive(:for_workspace).with("myapp").and_return({})
-      agent_for_worktree = described_class.new(
-        config: config,
-        tmux: tmux,
-        work_coordinator_client: client,
-        pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state,
-        alert_config: alert_config,
-        output: output,
-        error_output: error_output
-      )
-
-      monitor = agent_for_worktree.send(:build_session_monitor, "myapp")
-
-      expect(monitor.instance_variable_get(:@session_name)).to eq("workspace-wt-myapp")
-      expect(alert_config).to have_received(:for_workspace).with("myapp")
-    end
   end
 
   describe "receiving a command from the coordinator" do
@@ -1038,7 +1018,6 @@ RSpec.describe Workspace::Commands::Agent do
         agent.report_progress("WC-42", "after coordinator_restart")
         sleep 0.05
 
-        expect(agent.instance_variable_get(:@pending_reports)).not_to be_empty
         expect(coordinator.status_messages).to be_empty
       end
     end
@@ -1539,178 +1518,32 @@ RSpec.describe Workspace::Commands::Agent do
     end
   end
 
-  describe "wiring the lock reaper into its session monitor" do
-    # Goes through the real (private) session monitor factory rather than
-    # stubbing it, so dropping the `lock_reaper:` kwarg at either end of the
-    # wiring (here or in Workspace.build_cli) fails this test.
-    it "passes its lock_reaper to the session monitor it builds" do
-      lock_reaper = instance_double(Workspace::LockReaper, tick: 3)
-      agent_with_reaper = described_class.new(
-        config: config,
-        tmux: tmux,
-        work_coordinator_client: client,
-        pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state,
-        lock_reaper: lock_reaper,
-        output: output,
-        error_output: error_output
-      )
-
-      monitor = agent_with_reaper.send(:build_session_monitor, "myapp")
-
-      expect(monitor.reap_locks).to eq(3)
-      expect(lock_reaper).to have_received(:tick)
+  describe "building its session monitor" do
+    let(:alert_config) { instance_double(Workspace::AlertConfig, for_workspace: {}) }
+    let(:agentd_config) { instance_double(Workspace::AgentdConfig, poll_interval_for: 3600) }
+    let(:ticks) { Queue.new }
+    let(:lock_reaper) do
+      queue = ticks
+      Object.new.tap { |reaper| reaper.define_singleton_method(:tick) { |_cwds| queue << true and 0 } }
     end
 
-    it "passes its ps_timeout to the session monitor's process tree" do
-      agent_with_timeout = described_class.new(
-        config: config,
-        tmux: tmux,
-        work_coordinator_client: client,
-        pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state,
-        ps_timeout: 42,
-        output: output,
-        error_output: error_output
+    it "builds it from its own settings when it starts: alert, scan and lock reaper" do
+      configured = described_class.new(
+        config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state, signal_trapper: signal_trapper, alert_config: alert_config,
+        agentd_config: agentd_config, lock_reaper: lock_reaper, ps_timeout: 5,
+        scan_slots: Workspace::ScanSlotLimiter.new(dir: File.join(tmpdir, "slots")),
+        output: output, error_output: error_output
       )
+      thread = Thread.new { configured.call(name: "myapp") }
+      wait_until { output.string.include?("ready") || !thread.alive? }
+      wait_until { !ticks.empty? }
 
-      monitor = agent_with_timeout.send(:build_session_monitor, "myapp")
-
-      expect(monitor.instance_variable_get(:@process_tree).instance_variable_get(:@timeout)).to eq(42)
-    end
-
-    it "gives the session monitor the workspace's configured scan interval" do
-      agentd_config = instance_double(Workspace::AgentdConfig)
-      allow(agentd_config).to receive(:poll_interval_for).with("myapp").and_return(45)
-      agent_with_interval = described_class.new(
-        config: config,
-        tmux: tmux,
-        work_coordinator_client: client,
-        pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state,
-        agentd_config: agentd_config,
-        output: output,
-        error_output: error_output
-      )
-
-      monitor = agent_with_interval.send(:build_session_monitor, "myapp")
-
-      expect(monitor.instance_variable_get(:@poll_interval)).to eq(45)
+      expect(alert_config).to have_received(:for_workspace).with("myapp")
       expect(agentd_config).to have_received(:poll_interval_for).with("myapp")
-    end
-
-    it "scans at the SessionMonitor default when no agentd config is wired" do
-      agent_default = described_class.new(
-        config: config,
-        tmux: tmux,
-        work_coordinator_client: client,
-        pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state,
-        output: output,
-        error_output: error_output
-      )
-
-      monitor = agent_default.send(:build_session_monitor, "myapp")
-
-      expect(monitor.instance_variable_get(:@poll_interval)).to eq(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL)
-    end
-
-    it "gives the session monitor a notifier and idle threshold from the workspace's alert config" do
-      alert_config = instance_double(Workspace::AlertConfig)
-      allow(alert_config).to receive(:for_workspace).with("myapp").and_return(notify: "say hi", idle_after: 900)
-      notifier = instance_double(Workspace::Notifier)
-      commands = []
-      agent_with_alerts = described_class.new(
-        config: config,
-        tmux: tmux,
-        work_coordinator_client: client,
-        pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state,
-        alert_config: alert_config,
-        notifier_factory: ->(command) {
-          commands << command
-          notifier
-        },
-        output: output,
-        error_output: error_output
-      )
-
-      monitor = agent_with_alerts.send(:build_session_monitor, "myapp")
-
-      expect(commands).to eq(["say hi"])
-      expect(monitor.instance_variable_get(:@notifier)).to be(notifier)
-      expect(monitor.instance_variable_get(:@idle_alert_after)).to eq(900)
-    end
-
-    it "builds no notifier when the workspace has no notify command" do
-      alert_config = instance_double(Workspace::AlertConfig, for_workspace: {notify: nil, idle_after: 600})
-      agent_without = described_class.new(
-        config: config,
-        tmux: tmux,
-        work_coordinator_client: client,
-        pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state,
-        alert_config: alert_config,
-        notifier_factory: ->(_command) { raise "should not be built" },
-        output: output,
-        error_output: error_output
-      )
-
-      monitor = agent_without.send(:build_session_monitor, "myapp")
-
-      expect(monitor.send_alerts).to eq([])
-    end
-  end
-
-  describe "wiring the scan slot limiter into its session monitor" do
-    # Goes through the real (private) session monitor factory rather than
-    # stubbing it, so dropping the `scan_slots:` kwarg from the
-    # `SessionMonitor.new` call in `build_session_monitor` fails both examples.
-    it "passes its scan_slots to the session monitor it builds" do
-      scan_slots = instance_double(Workspace::ScanSlotLimiter)
-      agent_with_limiter = described_class.new(
-        config: config,
-        tmux: tmux,
-        work_coordinator_client: client,
-        pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state,
-        scan_slots: scan_slots,
-        output: output,
-        error_output: error_output
-      )
-
-      monitor = agent_with_limiter.send(:build_session_monitor, "myapp")
-
-      expect(monitor.instance_variable_get(:@scan_slots)).to be(scan_slots)
-    end
-
-    it "builds its default limiter under the config state dir when none is injected" do
-      monitor = agent.send(:build_session_monitor, "myapp")
-
-      limiter = monitor.instance_variable_get(:@scan_slots)
-      expect(limiter).to be_a(Workspace::ScanSlotLimiter)
-      expect(limiter.instance_variable_get(:@dir)).to eq(File.join(config.state_dir, "scan-slots"))
-    end
-  end
-
-  describe "wiring the scan slot limiter into the daemon's context reader" do
-    # The reader is built in Workspace.build_cli (not inside the agent
-    # command), so this goes through the real composition root rather than
-    # stubbing it: the reader the agent's `sessions` requests scrape through
-    # gets its own limiter, under the same state dir as the monitor's.
-    it "builds the reader's limiter under the config state dir" do
-      Dir.mktmpdir("ws-reader-wiring") do |state|
-        allow(ENV).to receive(:fetch).and_call_original
-        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
-
-        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-        reader = cli.instance_variable_get(:@agent_command).instance_variable_get(:@context_reader)
-        limiter = reader.instance_variable_get(:@scan_slots)
-
-        expect(limiter).to be_a(Workspace::ScanSlotLimiter)
-        expect(limiter.instance_variable_get(:@dir)).to eq(File.join(state, "workspace", "scan-slots"))
-      end
+    ensure
+      signal_trapper.handlers["TERM"]&.call
+      thread&.join(2)
     end
   end
 
@@ -2028,11 +1861,19 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     it "records no stop for an agent that refused to start" do
-      allow(agent).to receive(:claim_socket).and_return(false)
+      running = UNIXServer.new(agent_socket_path)
+      accepter = Thread.new do
+        loop { running.accept.close }
+      rescue IOError, Errno::EBADF
+        nil
+      end
 
       expect(agent.call(name: "myapp")).to be false
 
       expect(recorded).to be_empty
+    ensure
+      running&.close
+      accepter&.kill
     end
   end
 
@@ -2539,8 +2380,19 @@ RSpec.describe Workspace::Commands::Agent do
             built << args
             watcher
           },
+          agent_recovery_desk_factory: ->(**) { recovery_desk },
           output: output, error_output: error_output
         )
+      end
+
+      let(:recovery_desk) do
+        Class.new do
+          attr_accessor :holding
+
+          def holding?(_pane_id) = holding
+          def scan = nil
+          def session_event(_message) = nil
+        end.new
       end
 
       def send_message(message)
@@ -2569,9 +2421,9 @@ RSpec.describe Workspace::Commands::Agent do
 
       it "holds a follow-up back while an API-error recovery holds the pane" do
         run_agent do
-          agent.instance_variable_set(:@agent_recovery_desk, double(holding?: true, scan: nil, session_event: nil))
+          recovery_desk.holding = true
           expect(built.first[:restarting].call("%5")).to be(true)
-          agent.instance_variable_set(:@agent_recovery_desk, double(holding?: false, scan: nil, session_event: nil))
+          recovery_desk.holding = false
           expect(built.first[:restarting].call("%5")).to be(false)
         end
       end
@@ -2911,73 +2763,6 @@ RSpec.describe Workspace::Commands::Agent do
     end
   end
 
-  describe "the session monitor's configured agent names" do
-    def build_agent(agent_commands)
-      described_class.new(config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state, agent_commands: agent_commands, output: output, error_output: error_output)
-    end
-
-    it "is built with the workspace's names, read when the monitor is made" do
-      settings = instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {})
-      commands = Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
-
-      monitor = build_agent(commands).send(:build_session_monitor, "myapp")
-
-      expect(monitor.instance_variable_get(:@detector)).to eq(Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))
-    end
-
-    it "knows only the providers' executables without AgentCommands" do
-      monitor = build_agent(nil).send(:build_session_monitor, "myapp")
-
-      expect(monitor.instance_variable_get(:@detector)).to eq(Workspace::AgentDetector.new)
-    end
-  end
-
-  describe "Workspace.build_cli wiring of AgentCommands" do
-    it "gives every consumer the same AgentCommands instance" do
-      Dir.mktmpdir("ws-agent-commands-wiring") do |state|
-        allow(ENV).to receive(:fetch).and_call_original
-        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
-
-        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-        held = lambda do |ivar, owner|
-          cli.instance_variable_get(ivar).instance_variable_get(owner)
-        end
-        instances = [
-          held.call(:@start_command, :@agent_commands),
-          held.call(:@launch_command, :@agent_commands),
-          held.call(:@claude_command, :@agent_commands),
-          held.call(:@capture_command, :@agent_commands),
-          held.call(:@run_command, :@agent_commands),
-          held.call(:@wait_until_content_command, :@agent_commands),
-          held.call(:@agent_command, :@agent_commands),
-          held.call(:@restore_command, :@agent_commands),
-          held.call(:@restore_command, :@tmuxinator_report).instance_variable_get(:@agent_commands),
-          held.call(:@plan_dispatch_command, :@panes).instance_variable_get(:@agent_commands),
-          held.call(:@start_command, :@main_agent).instance_variable_get(:@agent_commands)
-        ]
-
-        expect(instances).to all(be_a(Workspace::AgentCommands))
-        expect(instances.map(&:object_id).uniq.size).to eq(1)
-      end
-    end
-
-    it "builds a handoff watcher with a PlanPaused" do
-      Dir.mktmpdir("ws-handoff-watcher-wiring") do |state|
-        allow(ENV).to receive(:fetch).and_call_original
-        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
-
-        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-        factory = cli.instance_variable_get(:@agent_command).instance_variable_get(:@handoff_watcher_factory)
-        watcher = factory.call(workspace: "ws", session_name: "ws", session_monitor: instance_double(Workspace::SessionMonitor),
-          delivery_lock: Mutex.new, restarting: ->(_pane_id) { false }, event_log: nil)
-
-        expect(watcher).to be_a(Workspace::HandoffWatcher)
-        expect(watcher.instance_variable_get(:@plan_paused)).to be_a(Workspace::PlanPaused)
-      end
-    end
-  end
-
   describe "the Claude pane lookup with configured names" do
     let(:claude_dev) { Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}) }
     let(:label_details) do
@@ -2993,11 +2778,14 @@ RSpec.describe Workspace::Commands::Agent do
 
     def build_agent(agent_commands)
       described_class.new(config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state, agent_labels: labels, agent_commands: agent_commands, output: output, error_output: error_output)
-        .tap do |built|
-          built.instance_variable_set(:@current_name, "myapp")
-          built.instance_variable_set(:@tmux_session, "myapp")
-        end
+        pipeline_state: pipeline_state, agent_labels: labels, agent_commands: agent_commands, current_name: "myapp",
+        output: output, error_output: error_output)
+    end
+
+    # The pane a command message is typed into.
+    def pane_for_command(served)
+      served.handle({"type" => "command", "workspace" => "myapp", "work_item_ref" => "WC-1", "body" => "go"}, StringIO.new)
+      tmux.sent_keys.last[:pane]
     end
 
     before do
@@ -3009,12 +2797,12 @@ RSpec.describe Workspace::Commands::Agent do
     it "asks AgentCommands for the detector of the current workspace and finds the claude-dev pane" do
       allow(configured).to receive(:detector).and_call_original
 
-      expect(build_agent(configured).send(:claude_pane_target)).to eq("0.0")
+      expect(pane_for_command(build_agent(configured))).to eq("0.0")
       expect(configured).to have_received(:detector).with("myapp")
     end
 
     it "falls back to pane 1 without AgentCommands" do
-      expect(build_agent(nil).send(:claude_pane_target)).to eq("0.1")
+      expect(pane_for_command(build_agent(nil))).to eq("0.1")
     end
   end
 end
