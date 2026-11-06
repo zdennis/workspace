@@ -240,8 +240,10 @@ module Workspace
     # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
     # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
     # @param clock [#call] returns the current Time
+    # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-      env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now })
+      env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
+      @prompt_writer = prompt_writer
       @store = store
       @resources = resources
       @composer = composer
@@ -1841,7 +1843,7 @@ module Workspace
       @excludes.add(run["worktree"], "/.workflow/")
       path = prompt_path(run, step, attempt["n"])
       composed = compose(run, step, attempt["context"], binding: step_binding(run, step, attempt["n"], path))
-      File.write(path, composed["text"], encoding: Encoding::UTF_8)
+      @prompt_writer.call(path, composed["text"], encoding: Encoding::UTF_8)
       [path, composed]
     end
 
