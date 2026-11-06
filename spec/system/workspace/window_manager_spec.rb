@@ -138,7 +138,7 @@ RSpec.describe Workspace::WindowManager do
       end
 
       it "returns early when the step exits 0 at once" do
-        stub_const("Workspace::WindowManager::DETACHED_WAIT", 30)
+        manager = described_class.new(config: config, detached_wait: 30)
         install("exit 0")
 
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -154,7 +154,7 @@ RSpec.describe Workspace::WindowManager do
       end
 
       it "returns valid UTF-8 from a detached step that wrote bad bytes" do
-        stub_const("Workspace::WindowManager::DETACHED_WAIT", 30)
+        manager = described_class.new(config: config, detached_wait: 30)
         install(%(printf 'bad \\377 Unknown command\\n' >&2\nexit 1))
 
         failure = manager.run_focus_steps(42, [["dim"]])
@@ -165,7 +165,7 @@ RSpec.describe Workspace::WindowManager do
       end
 
       it "reports the exit 1 unknown-command form" do
-        stub_const("Workspace::WindowManager::DETACHED_WAIT", 30)
+        manager = described_class.new(config: config, detached_wait: 30)
         install(%(echo "Unknown command: dim" >&2\nexit 1))
 
         failure = manager.run_focus_steps(42, [["dim"]])
@@ -176,7 +176,7 @@ RSpec.describe Workspace::WindowManager do
       end
 
       it "reports the exit 2 unknown-command form" do
-        stub_const("Workspace::WindowManager::DETACHED_WAIT", 30)
+        manager = described_class.new(config: config, detached_wait: 30)
         install(%(echo "Unknown command 'dim'" >&2\nexit 2))
 
         failure = manager.run_focus_steps(42, [["dim"]])
@@ -186,7 +186,7 @@ RSpec.describe Workspace::WindowManager do
       end
 
       it "reports a failure with nothing on stderr" do
-        stub_const("Workspace::WindowManager::DETACHED_WAIT", 30)
+        manager = described_class.new(config: config, detached_wait: 30)
         install("exit 4")
 
         failure = manager.run_focus_steps(42, [["dim"]])

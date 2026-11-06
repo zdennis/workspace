@@ -17,10 +17,12 @@ module Workspace
     # @param config [Workspace::Config] configuration for window_tool path
     # @param logger [Workspace::Logger] debug logger
     # @param osascript [#call] runs an AppleScript with a time limit
-    def initialize(config:, logger: Workspace::Logger.new, osascript: OsascriptRunner.new)
+    # @param detached_wait [Numeric] seconds a detached step is watched before it counts as started
+    def initialize(config:, logger: Workspace::Logger.new, osascript: OsascriptRunner.new, detached_wait: DETACHED_WAIT)
       @config = config
       @logger = logger
       @osascript = osascript
+      @detached_wait = detached_wait
     end
 
     # @param window_id [String, Integer] iTerm window ID
@@ -296,7 +298,7 @@ module Workspace
     end
 
     def wait_briefly(pid)
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + DETACHED_WAIT
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @detached_wait
       loop do
         reaped = Process.wait2(pid, Process::WNOHANG)
         return reaped[1] if reaped
