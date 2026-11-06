@@ -15,12 +15,15 @@ RSpec.describe Workspace::AgentRecoveryDeskFactory do
   let(:built) { [] }
   let(:desk_class) do
     record = built
-    Class.new do
-      define_singleton_method(:new) do |**kwargs|
-        record << kwargs
+    recording_desk_class = Class.new do
+      def initialize(record) = @record = record
+
+      def new(**kwargs)
+        @record << kwargs
         :desk
       end
     end
+    recording_desk_class.new(record)
   end
   let(:session_monitor) { instance_double(Workspace::SessionMonitor) }
   let(:claim) { ->(_pane_id) {} }

@@ -11,9 +11,7 @@ RSpec.describe Workspace::RestartRunner do
   let(:restart) do
     results = calls
     result = outcome
-    Object.new.tap do |r|
-      r.define_singleton_method(:call) { |**kwargs| results << kwargs and result }
-    end
+    ScriptedCall.new { |**kwargs| results << kwargs and result }
   end
 
   def runner(factory: ->(**) { restart })
@@ -61,8 +59,7 @@ RSpec.describe Workspace::RestartRunner do
   end
 
   it "answers internal_error when the restart raises" do
-    boom = Object.new
-    boom.define_singleton_method(:call) { |**| raise "tmux wedged" }
+    boom = ScriptedCall.new { |**| raise "tmux wedged" }
 
     runner(factory: ->(**) { boom }).run(started, "go", false, 5, client)
 
@@ -76,12 +73,10 @@ RSpec.describe Workspace::RestartRunner do
 
   it "tells the caller and stderr when the worker is killed, naming whether /clear was typed" do
     entered = Queue.new
-    gated = Object.new
-    gated.define_singleton_method(:call) do |**|
+    gated = Class.new(ScriptedCall) { def cleared? = true }.new do |**|
       entered << true
       sleep
     end
-    gated.define_singleton_method(:cleared?) { true }
     registry.release("%18")
     registry.claim_pending("%18")
     workers << registry.start_worker("%18") { runner(factory: ->(**) { gated }).run(started, "go", false, 5, client) }
