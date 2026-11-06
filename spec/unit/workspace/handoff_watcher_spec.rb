@@ -90,8 +90,11 @@ RSpec.describe Workspace::HandoffWatcher do
   # Each sleep the watcher's thread starts, so a spec can wait for the thread to reach one.
   let(:sleeping) { Queue.new }
 
+  let(:tick_seconds) { described_class::TICK }
+  let(:poll_every) { described_class::POLL_EVERY }
+
   let(:watcher) do
-    described_class.new(tmux: tmux, session_name: "ws", workspace: "ws", session_monitor: monitor, typer: typer,
+    described_class.new(tick: tick_seconds, poll_every: poll_every, tmux: tmux, session_name: "ws", workspace: "ws", session_monitor: monitor, typer: typer,
       delivery_lock: delivery_lock, restarting: ->(id) { restarting.include?(id) }, plan_paused: -> { paused.first },
       event_log: event_log, clock: -> { now.first }, sleeper: ->(seconds) { sleeping.push(seconds) && sleep(seconds) })
   end
@@ -979,26 +982,30 @@ RSpec.describe Workspace::HandoffWatcher do
       expect(elapsed { watcher.stop }).to be < 1
     end
 
-    it "polls on its ticks and survives a poll that raises" do
-      stub_const("#{described_class}::TICK", 0.001)
-      stub_const("#{described_class}::POLL_EVERY", 0.002)
-      polled = Queue.new
-      arm
-      allow(monitor).to receive(:followup_facts) do
-        polled << true
-        raise Workspace::Error, "boom"
+    context "with a fast tick" do
+      let(:tick_seconds) { 0.001 }
+      let(:poll_every) { 0.002 }
+
+      it "polls on its ticks and survives a poll that raises" do
+        polled = Queue.new
+        arm
+        allow(monitor).to receive(:followup_facts) do
+          polled << true
+          raise Workspace::Error, "boom"
+        end
+        watcher.start
+        Timeout.timeout(5) { 2.times { polled.pop } }
+        watcher.stop
+        expect(sleeping.pop).to eq(0.001)
       end
-      watcher.start
-      Timeout.timeout(5) { 2.times { polled.pop } }
-      watcher.stop
     end
 
     context "with a real Mutex as the delivery lock" do
       let(:delivery_lock) { Mutex.new }
+      let(:tick_seconds) { 0.001 }
+      let(:poll_every) { 0.001 }
 
       it "types a follow-up from the thread, which a re-entrant take would stop" do
-        stub_const("#{described_class}::TICK", 0.001)
-        stub_const("#{described_class}::POLL_EVERY", 0.001)
         arm
         now[0] += 30
         watcher.start
@@ -1008,30 +1015,33 @@ RSpec.describe Workspace::HandoffWatcher do
       end
     end
 
-    it "lets a started typing finish and types nothing further" do
-      stub_const("#{described_class}::TICK", 0.001)
-      stub_const("#{described_class}::POLL_EVERY", 0.001)
-      panes["%6"] = facts.merge(pane_pid: 200)
-      arm
-      arm(pane_id: "%6")
-      pasting = Queue.new
-      release = Queue.new
-      tmux.on_paste = lambda do
-        pasting << true
-        release.pop
-      end
-      now[0] += 30
+    context "with a fast tick" do
+      let(:tick_seconds) { 0.001 }
+      let(:poll_every) { 0.001 }
 
-      watcher.start
-      Timeout.timeout(5) do
-        pasting.pop
-        stopper = Thread.new { watcher.stop }
-        Thread.pass until stopper.stop?
-        release << true
-        stopper.join
-      end
+      it "lets a started typing finish and types nothing further" do
+        panes["%6"] = facts.merge(pane_pid: 200)
+        arm
+        arm(pane_id: "%6")
+        pasting = Queue.new
+        release = Queue.new
+        tmux.on_paste = lambda do
+          pasting << true
+          release.pop
+        end
+        now[0] += 30
 
-      expect(tmux.delivered).to eq([["ws", "0.1", text, false], ["ws", "0.1", "", true]])
+        watcher.start
+        Timeout.timeout(5) do
+          pasting.pop
+          stopper = Thread.new { watcher.stop }
+          Thread.pass until stopper.stop?
+          release << true
+          stopper.join
+        end
+
+        expect(tmux.delivered).to eq([["ws", "0.1", text, false], ["ws", "0.1", "", true]])
+      end
     end
   end
 end

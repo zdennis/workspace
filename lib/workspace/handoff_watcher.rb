@@ -67,9 +67,11 @@ module Workspace
     # @param clock [#call] returns the current Time
     # @param sleeper [#call] sleeps the given seconds between the thread's ticks
     # @param logger [Workspace::Logger] debug logger
+    # @param tick [Numeric] seconds between the thread's ticks
+    # @param poll_every [Numeric] seconds between polls
     def initialize(tmux:, session_name:, workspace:, session_monitor:, typer:, delivery_lock:,
       restarting: ->(_pane_id) { false }, plan_paused: -> { false }, event_log: nil, clock: -> { Time.now },
-      sleeper: ->(seconds) { sleep(seconds) }, logger: Workspace::Logger.new)
+      sleeper: ->(seconds) { sleep(seconds) }, logger: Workspace::Logger.new, tick: TICK, poll_every: POLL_EVERY)
       @tmux = tmux
       @session_name = session_name
       @workspace = workspace
@@ -82,6 +84,8 @@ module Workspace
       @clock = clock
       @sleeper = sleeper
       @logger = logger
+      @tick = tick
+      @poll_every = poll_every
       @mutex = Mutex.new
       @watches = {}
       @thread = nil
@@ -96,9 +100,9 @@ module Workspace
       @thread = Thread.new do
         ticks = 0
         until @stopping
-          @sleeper.call(TICK)
+          @sleeper.call(@tick)
           ticks += 1
-          next if ticks * TICK < POLL_EVERY
+          next if ticks * @tick < @poll_every
           ticks = 0
           begin
             poll
