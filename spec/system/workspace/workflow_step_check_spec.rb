@@ -110,10 +110,10 @@ RSpec.describe Workspace::WorkflowStepCheck do
       notes = made("workspace-check-notes-mine", 2 * 86_400)
       foreign = made("workspace-check-20200101-2-def456", 2 * 86_400)
       stat = instance_double(File::Stat, directory?: true, uid: Process.uid + 1, mtime: now - 2 * 86_400)
-      allow(File).to receive(:lstat).and_call_original
-      allow(File).to receive(:lstat).with(foreign).and_return(stat)
+      lstat = ->(path) { (path == foreign) ? stat : File.lstat(path) }
+      step_check = described_class.new(engine: engine, checker: Workspace::WorkflowCheck.new, tmp_root: tmp_root, lstat: lstat)
 
-      check(artifacts: File.join(holding, "artifacts"))
+      step_check.call(definition: :definition, step: "s", worktree: checkout, artifacts: File.join(holding, "artifacts"))
 
       expect([holding, notes, foreign].map { |path| File.exist?(path) }).to eq([true, true, true])
     end
