@@ -200,12 +200,16 @@ module Workspace
     # @param clock [#now] time source
     # @param sleeper [#call] sleeps the given seconds
     # @param spawn [#call] runs the given block on its own thread
+    # @param restart_steps [#call, nil] given a restart attempt, runs steps 2 to 5 and answers
+    #   `[outcome, agent]`; nil runs the desk's own
+    # @param typed_steps [#call, nil] the same for a typed attempt (a restart attempt always runs its own typing step)
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, workspace:, session_name:, session_monitor:, store:, transcript:, stopper:, detector:,
       process_tree:, ledger:, resume_command:, prompt_typer:, readiness:, marker:, inbox:, delivery_lock:, event_log: nil,
       restarting: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
       release_restart: ->(_pane_id, _token) {}, rebind_queue: ->(_pane_id, _agent_pid) {}, clock: Time,
-      sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) }, logger: Workspace::Logger.new)
+      sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) }, restart_steps: nil, typed_steps: nil,
+      logger: Workspace::Logger.new)
       @tmux = tmux
       @workspace = workspace
       @session_name = session_name
@@ -230,6 +234,8 @@ module Workspace
       @clock = clock
       @sleeper = sleeper
       @spawn = spawn
+      @restart_steps = restart_steps
+      @typed_steps = typed_steps
       @logger = logger
       @queue = []
       @queue_guard = Mutex.new
@@ -721,12 +727,12 @@ module Workspace
 
     # The attempt for `attempts` 0: the message typed at the live prompt.
     def typed_attempt(pane_id)
-      @spawn.call { run_claimed(pane_id, method(:begin_typed), method(:typed_steps)) }
+      @spawn.call { run_claimed(pane_id, method(:begin_typed), @typed_steps || method(:typed_steps)) }
     end
 
     # The attempt for `attempts` above 0: stop, resume, wait, type.
     def restart_attempt(pane_id)
-      @spawn.call { run_claimed(pane_id, method(:begin_restart), method(:restart_steps)) }
+      @spawn.call { run_claimed(pane_id, method(:begin_restart), @restart_steps || method(:restart_steps)) }
     end
 
     # Runs one attempt inside a claim on the pane. An attempt that raises or is

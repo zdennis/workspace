@@ -143,7 +143,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   let(:rebound) { [] }
   let(:spawn) { ->(&block) { block.call } }
 
-  def build_desk(store: self.store, stub_attempts: true, spawn: self.spawn)
+  def build_desk(store: self.store, stub_attempts: true, spawn: self.spawn, **steps)
     tmux.on_details = -> { hooks[:details]&.call }
     tmux.on_deliver = lambda { |text|
       hooks[:deliver]&.call if text.include?("--resume")
@@ -177,7 +177,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         sleeps << seconds
         hooks[:sleep]&.call
       },
-      spawn: spawn)
+      spawn: spawn, **steps)
   end
 
   let(:attempts) { [] }
@@ -3775,11 +3775,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       agent = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
 
       def run_to(outcome, agent: nil, &hook)
-        allow(desk).to receive(:restart_steps) do
+        build_desk(stub_attempts: false, restart_steps: lambda { |_attempt|
           hook&.call
           [outcome, agent]
-        end
-        desk.scan
+        }).scan
       end
 
       (failing + %w[resumed typed resumed_elsewhere person_resumed fresh_agent]).each do |outcome|
@@ -4221,11 +4220,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       agent = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
 
       def run_to(outcome, agent: nil, &hook)
-        allow(desk).to receive(:typed_steps) do
+        build_desk(stub_attempts: false, typed_steps: lambda { |_attempt|
           hook.call
           [outcome, agent]
-        end
-        desk.scan
+        }).scan
       end
 
       before { due_entry(attempts: 0) }
