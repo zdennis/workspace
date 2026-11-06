@@ -13,7 +13,8 @@ RSpec.describe Workspace::WorkflowRunStore do
   let(:archive_dir) { File.join(@dir, ".workflows", "archive") }
   let(:now) { [Time.utc(2026, 10, 4, 12, 0, 0)] }
   let(:ids) { %w[wr_1 wr_2 wr_3] }
-  subject(:store) { described_class.new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
+  let(:archive_limit) { described_class::ARCHIVE_LIMIT }
+  subject(:store) { described_class.new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }, archive_limit: archive_limit) }
 
   # The least a run file holds to be read as a run: a current step among its steps and in its definition.
   let(:whole) do
@@ -452,21 +453,23 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(store.record_event("wr_1", "run_started")).to be_nil
   end
 
-  it "keeps the newest finished runs and removes the rest" do
-    stub_const("#{described_class}::ARCHIVE_LIMIT", 2)
-    3.times do |n|
-      create
-      store.record_event("wr_#{n + 1}", "run_started")
-      store.update("wr_#{n + 1}") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:0#{n}Z") }
-    end
+  context "with an archive limit of 2" do
+    let(:archive_limit) { 2 }
 
-    expect(Dir.children(archive_dir).sort).to eq(%w[wr_2.events.jsonl wr_2.json wr_3.events.jsonl wr_3.json])
+    it "keeps the newest finished runs and removes the rest" do
+      3.times do |n|
+        create
+        store.record_event("wr_#{n + 1}", "run_started")
+        store.update("wr_#{n + 1}") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:0#{n}Z") }
+      end
+
+      expect(Dir.children(archive_dir).sort).to eq(%w[wr_2.events.jsonl wr_2.json wr_3.events.jsonl wr_3.json])
+    end
   end
 
   it "removes the evidence of a run it prunes and of no other" do
-    stub_const("#{described_class}::ARCHIVE_LIMIT", 1)
     evidence = Workspace::WorkflowEvidence.new(dir: File.join(@dir, "ev"))
-    pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence)
+    pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence, archive_limit: 1)
     3.times do |n|
       pruning.create({"state" => "running"}.merge(whole))
       FileUtils.mkdir_p(File.join(@dir, "ev", "wr_#{n + 1}"))
@@ -479,12 +482,11 @@ RSpec.describe Workspace::WorkflowRunStore do
   end
 
   it "removes a pruned run's evidence before its archive file, so a crash leaves it prunable" do
-    stub_const("#{described_class}::ARCHIVE_LIMIT", 0)
     seen = []
     archive = archive_dir
     evidence = Object.new
     evidence.define_singleton_method(:remove) { |id| seen << File.exist?(File.join(archive, "#{id}.json")) }
-    pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence)
+    pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence, archive_limit: 0)
     pruning.create({"state" => "running"}.merge(whole))
     pruning.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
 

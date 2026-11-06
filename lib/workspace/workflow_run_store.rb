@@ -26,7 +26,9 @@ module Workspace
     # @param clock [#call] returns the current Time
     # @param id_generator [#call] returns a candidate run id
     # @param evidence [#remove, nil] given the id of an archived run that is pruned, removes its evidence
-    def initialize(dir:, archive_dir:, clock: -> { Time.now }, id_generator: nil, evidence: nil)
+    # @param archive_limit [Integer] how many archived runs are kept
+    def initialize(dir:, archive_dir:, clock: -> { Time.now }, id_generator: nil, evidence: nil, archive_limit: ARCHIVE_LIMIT)
+      @archive_limit = archive_limit
       @evidence = evidence
       @dir = dir
       @archive_dir = archive_dir
@@ -272,7 +274,7 @@ module Workspace
       File.rename(events, File.join(@archive_dir, File.basename(events))) if File.exist?(events)
       File.rename(File.join(@dir, "#{run["id"]}.json"), File.join(@archive_dir, "#{run["id"]}.json"))
       FileUtils.rm_f(lock_path)
-      archived.drop(ARCHIVE_LIMIT).each do |old|
+      archived.drop(@archive_limit).each do |old|
         # Evidence first: a crash between the two leaves a run that is still pruned next time.
         @evidence&.remove(old["id"])
         FileUtils.rm_f([File.join(@archive_dir, "#{old["id"]}.json"), File.join(@archive_dir, "#{old["id"]}.events.jsonl")])
