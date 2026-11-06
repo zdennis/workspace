@@ -51,7 +51,7 @@ RSpec.describe Workspace::HookEventLog do
   end
 
   it "forgets the oldest open starts past its limit" do
-    stub_const("#{described_class}::MAX_OPEN_TOOLS", 2)
+    log = described_class.new(dir: dir, workspace: "Proj", boot_id: "BOOT1", clock: clock, monotonic: monotonic, max_open_tools: 2)
     %w[a b c].each { |id| log.record(event("tool_start", tool_use_id: id)) }
     log.record(event("tool_use", tool_use_id: "a"))
     log.record(event("tool_use", tool_use_id: "c"))

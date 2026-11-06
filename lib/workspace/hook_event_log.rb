@@ -64,15 +64,17 @@ module Workspace
     # @param clock [#now] time source
     # @param monotonic [#call] seconds on a monotonic clock, for durations
     # @param rotate_threshold [Integer] size in bytes past which an append rotates
+    # @param max_open_tools [Integer] tool starts remembered for a finish's duration
     # @param logger [Workspace::Logger] debug logger
     def initialize(dir:, workspace:, boot_id:, clock: Time, monotonic: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
-      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, logger: Workspace::Logger.new)
+      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, max_open_tools: MAX_OPEN_TOOLS, logger: Workspace::Logger.new)
       @dir = dir
       @workspace = workspace
       @boot_id = boot_id
       @clock = clock
       @monotonic = monotonic
       @rotate_threshold = rotate_threshold
+      @max_open_tools = max_open_tools
       @logger = logger
       # A name that would leave the directory writes nothing.
       @path = (File.basename(workspace) == workspace && !workspace.start_with?(".")) ? self.class.path_for(dir, workspace) : nil
@@ -159,7 +161,7 @@ module Workspace
     def note_start(event)
       id = event["tool_use_id"]
       return unless id.is_a?(String)
-      @open_tools.delete(@open_tools.keys.first) while @open_tools.size >= MAX_OPEN_TOOLS
+      @open_tools.delete(@open_tools.keys.first) while @open_tools.size >= @max_open_tools
       @open_tools[[event["pane_id"], id]] = @monotonic.call
     end
 
