@@ -809,17 +809,20 @@ RSpec.describe Workspace::WorkflowStatus do
         expect(actions.find { |each| each["action"] == "workflow approve" }["needs"]).to eq([])
       end
 
-      # The row replaces a stored reason for a step that reads running, so these read the actions of the stored run.
-      def actions_of(reason, step_state)
+      # A stored reason on a step that reads running shows through status while the agent's pane is bound and not hidden.
+      def actions_of(reason, step_state, bound: true)
         run = spent_run(3, reason)
+        panes.bind(workspace: "app", pane: "%5", run_id: run["id"]) if bound
         store.update(run["id"]) { |stored| stored["steps"]["plan"]["state"] = step_state }
-        status.send(:actions, store.find(run["id"]), reason, "%5").select { |each| each["action"] == "workflow resume" }
+        status.run(run["id"])["runs"].first.dig("current", "reason", "actions").select { |each| each["action"] == "workflow resume" }
       end
 
       it "leaves a plain resume unmarked for a running step, which it would only look at, but marks --from" do
         delivery = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "delivery", "step" => "plan"}}
 
         expect(actions_of(delivery, "running")).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan", needs: extra)])
+        # An incomplete turn shows only once the pane has stopped working.
+        allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0).and_return({"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "idle"}]})
         expect(actions_of({"code" => "turn_ended_incomplete", "since" => "t", "details" => {}}, "running")).to eq([action("workflow resume", "wr_2")])
       end
 
@@ -831,7 +834,7 @@ RSpec.describe Workspace::WorkflowStatus do
       end
 
       it "keeps a gone pane's resume marked over a running step, since it needs --pane" do
-        expect(actions_of({"code" => "pane_gone", "since" => "t", "details" => {}}, "running")).to eq([action("workflow resume", "wr_1", needs: extra)])
+        expect(actions_of({"code" => "pane_gone", "since" => "t", "details" => {}}, "running", bound: false)).to eq([action("workflow resume", "wr_1", needs: extra)])
       end
 
       it "takes the minimum from the overrun and from a stored extra_attempts" do

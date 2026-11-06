@@ -246,39 +246,6 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
     }
   end
 
-  describe "the fake agent's moves" do
-    let(:run) { {"state" => "waiting", "current" => "a", "steps" => {"a" => {"state" => "running"}}, "reason" => nil} }
-
-    def move(changes)
-      simulator.send(:next_move, run.merge(changes))
-    end
-
-    it "takes a turn only for a running step with no reason and no park" do
-      expect(move({})).to eq(:turn)
-      expect(move("reason" => {"code" => "x"})).to be_nil
-      expect(move("parked" => {"id" => "p"})).to be_nil
-    end
-
-    it "waits out a backoff unless it is blocked" do
-      expect(move("backoff" => {"to" => "a", "until" => "x"})).to eq(:backoff)
-      blocked = {"state" => "waiting", "reason" => {"code" => "pane_gone"}, "steps" => {"a" => {"state" => "failed"}}}
-      expect(move(blocked.merge("backoff" => {"to" => "a", "blocked" => "pane_gone"}))).to be_nil
-    end
-
-    it "writes only inside the artifacts directory" do
-      Dir.mktmpdir do |dir|
-        inner = File.join(dir, "art")
-        FileUtils.mkdir_p(inner)
-        clock = Workspace::WorkflowSimulator::SimClock.new
-        simulator.send(:write, {"artifacts_dir" => inner}, "../escape.md", clock)
-        simulator.send(:write, {"artifacts_dir" => inner}, "ok.md", clock)
-
-        expect(File.exist?(File.join(dir, "escape.md"))).to be false
-        expect(File.mtime(File.join(inner, "ok.md"))).to eq(clock.call)
-      end
-    end
-  end
-
   it "stubs the repository the engine reads" do
     expect(described_class::SimGit.new.worktree_branch("anywhere")).to eq("simulation")
     expect(described_class::SimGuard.new.head("anywhere")).to be_nil

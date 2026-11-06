@@ -2908,22 +2908,23 @@ RSpec.describe Workspace::Commands::Workflow do
       Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes, pane_of: "%5", alive?: true, daemon_running?: true),
         snapshot_client: instance_double(Workspace::AgentSnapshotClient, fetch: {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]}),
         ask_store_for: ->(_workspace) { instance_double(Workspace::AskStore, list: []) },
-        gate_note: instance_double(Workspace::WorkflowGateNote, find: nil), clock: -> { now })
+        gate_note: instance_double(Workspace::WorkflowGateNote, find: gate_file), clock: -> { now })
     end
+    let(:gate_file) { nil }
     subject(:command) do
       described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new(clock: -> { now }),
         tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output)
     end
     let(:scope) { Workspace::StatusScope::Scope.new(kind: :needs_me) }
 
-    def create(workspace: "app", reason: nil, state: "waiting", gate: nil)
+    def create(workspace: "app", reason: nil, state: "waiting", gate: nil, **rest)
       store.create({
         "workflow" => "flow", "title" => "Flow", "workspace" => workspace, "project" => "app", "worktree" => @dir, "task" => "t",
         "inputs" => {}, "state" => state, "created_at" => "2026-10-04T11:00:00Z", "started_at" => "2026-10-04T11:00:00Z", "ended_at" => nil,
         "current" => "plan", "pane" => "%5", "loops" => {}, "reason" => reason, "artifacts_dir" => "#{@dir}/wr",
         "definition" => {"steps" => [{"id" => "plan", "title" => "Plan", "timeout" => nil}]},
         "steps" => {"plan" => {"state" => "passed", "gate" => gate, "attempts" => [{"n" => 1, "started_at" => "2026-10-04T11:00:00Z"}]}}
-      })
+      }.merge(rest))
     end
 
     def failed(code, since) = {"code" => "failed_check", "since" => since, "details" => {"step" => "plan", "code" => code, "attempt" => 1}}
@@ -3004,23 +3005,32 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "words the wait in seconds, minutes, hours and days" do
-      {45 => "45s", 125 => "2m", 3700 => "1h 1m", 90_000 => "1d 1h"}.each do |seconds, text|
-        expect(command.send(:wait_text, seconds)).to eq(text)
+      {"2026-10-04T12:59:15Z" => "45s", "2026-10-04T12:57:55Z" => "2m", "2026-10-04T11:58:20Z" => "1h 1m", "2026-10-03T12:00:00Z" => "1d 1h"}.each do |since, text|
+        output.truncate(0)
+        output.rewind
+        ids.replace(%w[wr_1])
+        create(reason: failed("a", since))
+        command.status(scope: scope)
+        expect(lines.last).to match(/\Awr_1 +app +plan +#{text} +failed_check/)
+        FileUtils.rm_rf(File.join(@dir, "runs"))
       end
-      expect(command.send(:wait_text, nil)).to eq("-")
     end
 
     it "writes a value the caller supplies as an upper-case placeholder" do
-      held = {"action" => "workflow resume", "args" => ["wr_1"], "needs" => [{"name" => "pane", "flag" => "--pane"}]}
-      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 60, "code" => "retry_backoff", "kind" => nil, "detail" => nil,
-             "gate_file" => nil, "next_action" => held}
-      expect(command.send(:needs_me_cells, row).last).to eq("workflow resume wr_1 --pane PANE")
+      create(reason: {"code" => "retry_backoff", "since" => "2026-10-04T12:59:00Z", "details" => {"step" => "plan"}}, backoff: {"blocked" => "pane_gone", "to" => "plan"})
+      command.status(scope: scope)
+      expect(lines.last).to match(/\Awr_1 +app +plan +1m +retry_backoff +workflow resume wr_1 --pane PANE\z/)
     end
 
-    it "shows a gate's note in WHY" do
-      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 60, "code" => "waiting_you", "kind" => "gate", "detail" => nil,
-             "gate_file" => {"name" => "plan.md"}, "next_action" => nil}
-      expect(command.send(:needs_me_cells, row)[4..]).to eq(["gate (plan.md)", "-"])
+    context "with a gate whose note was found" do
+      let(:gate_file) { {"name" => "plan.md"} }
+
+      it "shows a gate's note in WHY" do
+        create(reason: {"code" => "waiting_you", "since" => "2026-10-04T12:59:00Z", "details" => {"kind" => "gate", "step" => "plan"}},
+          gate: {"state" => "waiting"})
+        command.status(scope: scope)
+        expect(lines.last).to match(/\Awr_1 +app +plan +1m +gate \(plan\.md\) +workflow approve wr_1 --step plan --attempt 1\z/)
+      end
     end
 
     it "does not claim nothing is waiting when a run file could not be read, and exits 3" do
@@ -3046,9 +3056,9 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "prints - for a lock wait that offers only cancel" do
-      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 4000, "code" => "waiting_lock", "kind" => nil, "detail" => nil,
-             "gate_file" => nil, "next_action" => nil}
-      expect(command.send(:needs_me_cells, row).last).to eq("-")
+      create(reason: {"code" => "waiting_lock", "since" => "2026-10-04T12:00:00Z", "details" => {"resource" => nil, "holder" => {}, "position" => 1, "total" => 1}})
+      command.status(scope: scope)
+      expect(lines.last).to match(/\Awr_1 +app +plan +1h 0m +waiting_lock +-\z/)
     end
 
     it "says status partial in the JSON of an incomplete list" do

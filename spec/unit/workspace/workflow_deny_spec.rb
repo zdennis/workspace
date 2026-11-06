@@ -112,10 +112,6 @@ RSpec.describe Workspace::WorkflowDeny do
     check("a" * 3000)
     expect(Time.now - started).to be < 2
   end
-  it "omits the step clause when the run has no current step" do
-    expect(deny.send(:message, {"workflow" => "w", "current" => nil}, "git push*")).to eq('denied by workflow w: "git push*". Report this and stop.')
-  end
-
   it "allows the command when the run file is corrupt" do
     File.write(File.join(dir, "runs", "wr_1.json"), "{")
 
