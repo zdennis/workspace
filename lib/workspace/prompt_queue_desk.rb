@@ -70,6 +70,8 @@ module Workspace
     # @param release_restart [#call] given a pane id and a token, releases that claim
     # @param event_log [Workspace::EventLog, nil] where `prompt_queued` and `prompt_dequeued` go
     # @param typer [Workspace::PromptTyper, nil] nil builds one from +tmux+ and +session_monitor+
+    # @param pane_lock [#call, nil] given a pane id, answers the Mutex that serialises that pane's
+    #   deliveries; nil keeps one Mutex per pane in this desk
     # @param providers [Array<Workspace::AgentProvider>] the known agents
     # @param clock [#now] time source; the session monitor's, so their times compare
     # @param sleeper [#call] sleeps the given seconds
@@ -78,7 +80,7 @@ module Workspace
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, session_name:, workspace:, session_monitor:, store:, delivery_lock:,
       restarting: ->(_pane_id) { false }, recovering: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
-      release_restart: ->(_pane_id, _token) {}, event_log: nil, typer: nil, providers: AgentProvider.all,
+      release_restart: ->(_pane_id, _token) {}, event_log: nil, typer: nil, pane_lock: nil, providers: AgentProvider.all,
       clock: Time, sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) },
       daemon_pid: Process.pid, logger: Workspace::Logger.new)
       @tmux = tmux
@@ -99,8 +101,7 @@ module Workspace
       @spawn = spawn
       @daemon_pid = daemon_pid
       @logger = logger
-      @pane_locks = {}
-      @pane_locks_guard = Mutex.new
+      @pane_lock = pane_lock || own_pane_locks
     end
 
     # Handles a "prompt_send" message. Runs on a worker thread: when the
@@ -216,7 +217,7 @@ module Workspace
     # @return [void]
     def scan
       @store.pane_ids.each do |pane_id|
-        next if pane_lock(pane_id).locked?
+        next if @pane_lock.call(pane_id).locked?
         facts = @session_monitor.delivery_facts(pane_id)
         next if facts && facts[:kind] != "shell" && !facts[:fresh_since]
         @spawn.call { deliver_next(pane_id, wait: false) }
@@ -235,7 +236,7 @@ module Workspace
     #   none was claimed
     def deliver_next(pane_id, wait: true)
       return nil if @recovering.call(pane_id)
-      lock = pane_lock(pane_id)
+      lock = @pane_lock.call(pane_id)
       return nil unless wait || lock.try_lock
       begin
         lock.lock if wait
@@ -684,11 +685,13 @@ module Workspace
     end
 
     def with_pane(pane_id, &block)
-      pane_lock(pane_id).synchronize(&block)
+      @pane_lock.call(pane_id).synchronize(&block)
     end
 
-    def pane_lock(pane_id)
-      @pane_locks_guard.synchronize { @pane_locks[pane_id] ||= Mutex.new }
+    def own_pane_locks
+      locks = {}
+      guard = Mutex.new
+      ->(pane_id) { guard.synchronize { locks[pane_id] ||= Mutex.new } }
     end
 
     def error(code, message, extra = {})

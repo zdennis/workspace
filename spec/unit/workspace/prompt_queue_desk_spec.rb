@@ -85,13 +85,15 @@ RSpec.describe Workspace::PromptQueueDesk do
   let(:recovering) { [] }
   let(:refuse_claim) { [false] }
   let(:on_sleep) { [] }
+  let(:typer) { Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor) }
+  let(:pane_locks) { Hash.new { |locks, id| locks[id] = Mutex.new } }
 
   subject(:desk) do
     described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
       delivery_lock: Mutex.new, restarting: ->(id) { restarting.include?(id) }, recovering: ->(id) { recovering.include?(id) },
       claim_restart: ->(id) { (restarting.include?(id) || refuse_claim[0]) ? nil : (restarting << id) && :claim },
       release_restart: ->(id, token) { restarting.delete(id) if token == :claim },
-      event_log: event_log, clock: clock,
+      event_log: event_log, typer: typer, pane_lock: ->(id) { pane_locks[id] }, clock: clock,
       sleeper: ->(seconds) {
         on_sleep.shift&.call
         now[0] += seconds
@@ -204,7 +206,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       stop_hook
       tmux.screen = "────────\n❯ \n"
       typing_refusal = Workspace::PromptTyper::Result.new(outcome: :refused, code: "not_ready", reason: "dialog_open", message: "a dialog is open")
-      allow_any_instance_of(Workspace::PromptTyper).to receive(:type).and_return(typing_refusal)
+      allow(typer).to receive(:type).and_return(typing_refusal)
       turn_ends!(t0 + 60)
       desk.deliver_next("%5")
       turn_ends!(t0 + 90)
@@ -498,7 +500,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
     it "skips a pane whose delivery is still running" do
       turn_ends!(t0 + 30)
-      lock = desk.send(:pane_lock, "%5")
+      lock = pane_locks["%5"]
       lock.lock
       desk.scan
       lock.unlock

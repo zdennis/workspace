@@ -93,10 +93,7 @@ RSpec.describe Workspace::PromptTyper do
 
     it "is called after the last check and before Enter" do
       order = []
-      allow(typer).to receive(:check).and_wrap_original do |original, *args, **opts|
-        order << :check
-        original.call(*args, **opts)
-      end
+      allow(monitor).to receive(:typing_facts) { order << :check && facts }
       allow(tmux).to receive(:deliver).and_wrap_original do |original, *args, **opts|
         order << (opts[:enter] ? :enter : :paste)
         original.call(*args, **opts)
