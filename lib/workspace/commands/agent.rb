@@ -120,10 +120,9 @@ module Workspace
         spine_owner_report_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @name_migration = name_migration
-        @current_name = current_name
-        @tmux_session = current_name && tmux.session_name_for(current_name)
         @config = config
         @tmux = tmux
+        serve_workspace(current_name) if current_name
         @agent_labels = agent_labels
         @agent_commands = agent_commands
         @work_coordinator_client = work_coordinator_client
@@ -199,8 +198,7 @@ module Workspace
       # @return [Boolean] false when the agent refused to start, true after a clean shutdown
       def call(name:, wc_socket: nil, force: false)
         name = migrate_name(name)
-        @current_name = name
-        @tmux_session = @tmux.session_name_for(name)
+        serve_workspace(name)
         socket_path = @config.agent_socket_path(name)
 
         # Read once up front so a bad stage timeout stops the agent here, with
@@ -766,6 +764,12 @@ module Workspace
         end
       end
 
+      # The one place the workspace this daemon serves, and its tmux session, are set.
+      def serve_workspace(name)
+        @current_name = name
+        @tmux_session = @tmux.session_name_for(name)
+      end
+
       def restart_runner
         @restart_runner ||= @restart_runner_factory.call(@session_monitor)
       end
@@ -1280,10 +1284,11 @@ module Workspace
           recovering: recovering, event_log: @event_log, logger: @logger)
       end
 
-      # Asks the injected factory for the recovery desk. Its claim runs on the
-      # attempt's own thread, so the thread goes into @restarts as the token
-      # and {RestartRegistry#stop_all} can kill an attempt; the claim is refused while
-      # any claim holds the pane, and a release matches by identity.
+      # Asks the injected factory for the recovery desk. The desk claims a pane
+      # through {RestartRegistry#claim_for_recovery} on the attempt's own thread,
+      # so {RestartRegistry#stop_all} can kill an attempt; the claim is refused
+      # while any claim holds the pane or the daemon is shutting down, and a
+      # release matches by the token the claim returned.
       #
       # @return [Workspace::AgentRecoveryDesk, nil] nil with no factory, with recovery off, or for another agent
       def build_agent_recovery_desk(workspace, restarting)
@@ -1307,11 +1312,6 @@ module Workspace
         end
       end
 
-      # Watches for the agent's socket file going missing — macOS sweeps old
-      # /tmp entries, and another agent start for this workspace unlinks it.
-      # The listening fd survives that, so the agent looks healthy while no
-      # caller can reach it; rebinding and re-registering is what actually
-      # restores it.
       # The main agent's turn ended: a workflow run bound to the pane decides
       # its step now. The run is told when that turn began (the prompt that
       # started it), so a turn already under way when the step's line was
@@ -1334,6 +1334,11 @@ module Workspace
         Thread.new { @spine_owner_report.turn_ended(pane_id) }
       end
 
+      # Watches for the agent's socket file going missing — macOS sweeps old
+      # /tmp entries, and another agent start for this workspace unlinks it.
+      # The listening fd survives that, so the agent looks healthy while no
+      # caller can reach it; rebinding and re-registering is what actually
+      # restores it.
       def start_socket_watcher(socket_path, needs_registration: false)
         Thread.new do
           passes = 0
