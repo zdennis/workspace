@@ -13,7 +13,12 @@ module Workspace
     # @param event_log [Workspace::EventLog] append-only event log
     # @param logger [Workspace::Logger] debug logger
     # @param lock_wait [Numeric] seconds a save waits for the state file's lock
-    def initialize(config:, event_log:, logger: Workspace::Logger.new, lock_wait: LOCK_WAIT)
+    # @param writer [#call] writes a file, given the path and the text, as +File.write+ does
+    # @param renamer [#call] renames a file, given the old and new path
+    def initialize(config:, event_log:, logger: Workspace::Logger.new, lock_wait: LOCK_WAIT,
+      writer: File.method(:write), renamer: File.method(:rename))
+      @writer = writer
+      @renamer = renamer
       @config = config
       @event_log = event_log
       @logger = logger
@@ -176,8 +181,8 @@ module Workspace
       @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
       backup_state_file
       tmp = "#{@config.state_file}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
-      File.write(tmp, JSON.pretty_generate(@data))
-      File.rename(tmp, @config.state_file)
+      @writer.call(tmp, JSON.pretty_generate(@data))
+      @renamer.call(tmp, @config.state_file)
     rescue
       File.delete(tmp) if tmp && File.exist?(tmp)
       raise
