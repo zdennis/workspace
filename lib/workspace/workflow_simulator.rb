@@ -32,7 +32,9 @@ module Workspace
 
     # @param engine_factory [#call] given the engine's collaborators as keywords, returns a {WorkflowEngine}
     # @param tmpdir [#call] as `Dir.mktmpdir`: given a prefix, yields a directory and removes it after
-    def initialize(engine_factory:, tmpdir: Dir.method(:mktmpdir))
+    # @param max_actions [Integer] the most actions played before the run is capped
+    def initialize(engine_factory:, tmpdir: Dir.method(:mktmpdir), max_actions: MAX_ACTIONS)
+      @max_actions = max_actions
       @engine_factory = engine_factory
       @tmpdir = tmpdir
     end
@@ -81,7 +83,7 @@ module Workspace
       loop do
         run = store.find(id)
         return [actions, false] if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-        return [actions, true] if actions >= MAX_ACTIONS
+        return [actions, true] if actions >= @max_actions
         move = next_move(run)
         return [actions, false] unless move
         actions += 1
@@ -158,7 +160,7 @@ module Workspace
       else "stopped"
       end
       stopped = (outcome == "stopped") ? {"step" => run["current"], "attempt" => run["steps"][run["current"]]["attempts"].last&.fetch("n", nil), "reason" => run.dig("reason", "code")} : nil
-      {"workflow" => data["id"], "inputs" => run["inputs"], "outcome" => outcome, "stopped" => stopped, "capped" => capped, "max_actions" => MAX_ACTIONS, "actions" => actions,
+      {"workflow" => data["id"], "inputs" => run["inputs"], "outcome" => outcome, "stopped" => stopped, "capped" => capped, "max_actions" => @max_actions, "actions" => actions,
        "run" => {"state" => run["state"], "current" => run["current"], "reason" => run.dig("reason", "code"), "loops" => run["loops"]},
        "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run["steps"][step["id"]]["state"], "attempts" => run["steps"][step["id"]]["attempts"].map { |each| each.slice("n", "outcome", "code") }} },
        "budget" => WorkflowBudget.reading(run),
