@@ -15,6 +15,8 @@ class RestartMessageTmux < CLITestHelpers::FakeTmux
 
   def session_name_for(_config) = "workspace-wt-myapp"
 
+  def capture_screen(_target) = "❯ "
+
   def pane_details(_session, window: "0")
     window.nil? ? @details : @details.select { |d| d[:window] == window.to_i }
   end
@@ -34,6 +36,8 @@ class RestartMessageMonitor
   def pane_kind(id) = @kinds[id]
   def agent_pid(id) = @pids[id]
   def pane_state(_id) = "idle"
+  def restart_state(_id) = nil
+  def main_turn_evidence(_id) = {missing: "pane_unknown"}
   def delivery_facts(_id) = @facts
   def background_subagents(id) = @background&.fetch(id, nil)
 
@@ -148,6 +152,32 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
       expect(restart.calls.pop(timeout: 2)).to eq(pane_id: "%18", prompt: "Read HANDOFF.md", force: false,
         confirm_timeout: Workspace::AgentRestart::CONFIRM_TIMEOUT, run_id: nil, waiting: false)
       expect(restart.built_with).to include(session_name: "workspace-wt-myapp")
+    end
+  end
+
+  context "with the default restart factory" do
+    let(:context_reader) do
+      instance_double(Workspace::ContextReader).tap do |reader|
+        # The message-time check reads a usable value; the restart's own read then finds none.
+        allow(reader).to receive(:read).and_return({pct: 42, error: nil, updated_at: nil}, {pct: nil, error: "no_reading", updated_at: nil})
+      end
+    end
+
+    subject(:agent) do
+      described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
+        session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
+        output: output, error_output: error_output)
+    end
+
+    it "runs a real AgentRestart over the daemon's tmux and context reader" do
+      run_agent do
+        reply = send_restart("wait" => true, "timeout" => 5)
+
+        expect(reply).to include("ok" => false, "error" => "context_unknown", "pane" => "0.1")
+        expect(reply["message"]).to include("can't read context usage for pane %18 (no_reading)")
+        expect(tmux.sent_keys).to be_empty
+      end
     end
   end
 

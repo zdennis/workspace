@@ -29,6 +29,16 @@ module Workspace
     # answers with something true rather than an error.
     SCRAPE_CACHE_TTL = 30
 
+    # The reader the agent daemon serves `sessions` requests with: its own scan
+    # slot limiter over the slot files under +state_dir+, shared with the
+    # monitors of every daemon on the machine.
+    #
+    # @param state_dir [String] the config state directory
+    # @return [Workspace::ContextReader]
+    def self.for_daemon(state_dir:, logger: Workspace::Logger.new, **rest)
+      new(logger: logger, scan_slots: Workspace::ScanSlotLimiter.new(dir: File.join(state_dir, "scan-slots"), logger: logger), **rest)
+    end
+
     # @param context_store [Workspace::ContextStore]
     # @param project_settings [Workspace::ProjectSettings] reads the global config
     # @param tmux [Workspace::Tmux, nil] required for scrape mode

@@ -309,6 +309,25 @@ RSpec.describe Workspace::ContextReader do
         end
       end
 
+      describe ".for_daemon" do
+        it "takes its scan slots from the config state dir, so a slot held there makes a read busy" do
+          state_dir = Dir.mktmpdir("ws-state")
+          daemon_reader = described_class.for_daemon(state_dir: state_dir, context_store: context_store,
+            project_settings: project_settings, tmux: tmux, lock_holder: lock_holder)
+          allow(tmux).to receive(:capture_screen).and_return("37% ctx")
+          holder = HeldScanSlot.take(dir: File.join(state_dir, "scan-slots"), limit: 1)
+          expect(holder).to be_held
+
+          begin
+            expect(daemon_reader.read(pane_id: "%1")[:error]).to eq(Workspace::ContextReasons::SCAN_BUSY)
+            expect(tmux).not_to have_received(:capture_screen)
+          ensure
+            holder.release
+            FileUtils.remove_entry(state_dir)
+          end
+        end
+      end
+
       it "refreshes the cache on a later successful scrape, so the window counts from it" do
         allow(scan_slots).to receive(:with_scan_slot).and_yield
         allow(tmux).to receive(:capture_screen).with("%1").and_return("37% ctx")

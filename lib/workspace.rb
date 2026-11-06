@@ -823,8 +823,8 @@ module Workspace
     # cached reading instead of skipping. The limiter's slot is re-entrant per
     # directory, so the reader's scrape inside a monitor's scan — a separate
     # instance over the same slot files — runs under the slot the scan holds.
-    context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger,
-      lock_holder: lock_holder, scan_slots: ScanSlotLimiter.new(dir: File.join(config.state_dir, "scan-slots"), logger: logger))
+    context_reader = ContextReader.for_daemon(state_dir: config.state_dir, context_store: context_store, project_settings: project_settings,
+      tmux: tmux, logger: logger, lock_holder: lock_holder)
     statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(logger: logger),
       project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
       lock_holder: lock_holder)
