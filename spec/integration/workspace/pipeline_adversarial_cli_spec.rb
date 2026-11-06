@@ -199,14 +199,13 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
       token_generator: -> { "tok-1" },
       clock: -> { now },
       retry_backoff: 0,
+      current_name: "myapp",
       output: StringIO.new,
       error_output: error_output
     )
 
-    # Drive the private dispatch path the same way the socket server would,
-    # without opening a real socket or thread.
-    agent.instance_variable_set(:@current_name, "myapp")
-    agent.send(:handle_command,
+    # Hand the message over as the socket server would, without a real socket or thread.
+    agent.handle("type" => "command", "workspace" => "myapp",
       "work_item_ref" => "WC-42", "dispatch_id" => "d-1", "body" => "go")
 
     pollers.first.fire_timeout

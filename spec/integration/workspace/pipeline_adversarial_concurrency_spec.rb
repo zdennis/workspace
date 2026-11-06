@@ -2,6 +2,17 @@ require "spec_helper"
 require "tmpdir"
 require "json"
 
+# Just enough of a session monitor for the daemon to start.
+class IdleSessionMonitor
+  def start = nil
+
+  def stop = nil
+
+  def snapshot = {"panes" => []}
+
+  def record(_message) = nil
+end
+
 RSpec.describe "Pipeline reliability adversarial concurrency" do
   # Hands callbacks to the spec instead of polling, so a spec decides when a
   # stage finishes and from which thread.
@@ -56,15 +67,19 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
     end
   end
 
-  let(:tmpdir) { Dir.mktmpdir("ws-pipeline-conc") }
+  # Under /tmp so the daemon socket path stays inside the 104-byte limit.
+  let(:tmpdir) { Dir.mktmpdir("ws-pc", "/tmp") }
   let(:project_config_path) { File.join(tmpdir, "myapp.yml") }
   let(:state_path) { File.join(tmpdir, "state", "pipeline.json") }
   let(:tmux) { CLITestHelpers::FakeTmux.new }
   let(:error_output) { StringIO.new }
+  let(:output) { StringIO.new }
   let(:config) do
     instance_double(Workspace::Config).tap do |c|
       allow(c).to receive(:project_config_path).with("myapp").and_return(project_config_path)
       allow(c).to receive(:handoff_dir).and_return(File.join(tmpdir, "handoffs"))
+      allow(c).to receive(:agent_socket_path).with("myapp").and_return(File.join(tmpdir, "workspace-myapp.sock"))
+      allow(c).to receive(:prompt_queue_path).and_return(File.join(tmpdir, "prompt-queue.json"))
     end
   end
   let(:pipeline_config) { Workspace::PipelineConfig.new(config: config) }
@@ -85,14 +100,14 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
     File.write(project_config_path, {"pipeline" => {"panes" => panes}}.to_yaml)
   end
 
-  def build_agent(client:, pipeline_state:, factory: fake_factory)
+  def build_agent(client:, pipeline_state:, factory: fake_factory, **extra)
     Workspace::Commands::Agent.new(
       config: config, tmux: tmux, work_coordinator_client: client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state,
       signal_trapper: Object.new, sentinel_poller_factory: factory,
       token_generator: token_generator, clock: -> { Time.utc(2026, 9, 27, 12) },
-      retry_backoff: 0, error_output: error_output, output: StringIO.new
-    ).tap { |a| a.instance_variable_set(:@current_name, "myapp") }
+      retry_backoff: 0, current_name: "myapp", error_output: error_output, output: output, **extra
+    )
   end
 
   def command(ref, dispatch_id)
@@ -109,7 +124,7 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
     client = status_client_class.new
     state = Workspace::PipelineState.new(pipeline_config: pipeline_config)
     agent = build_agent(client: client, pipeline_state: state)
-    agent.send(:handle_command, command("WC-1", "d-1"))
+    agent.handle(command("WC-1", "d-1"))
 
     write_pipeline([{"role" => "research"}, {"role" => "implement", "timeout" => "soon-ish"}])
     in_thread { pollers.first.on_complete.call("research done") }
@@ -130,7 +145,7 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
     end
     state = Workspace::PipelineState.new(pipeline_config: pipeline_config)
     agent = build_agent(client: client, pipeline_state: state)
-    agent.send(:handle_command, command("WC-2", "d-1"))
+    agent.handle(command("WC-2", "d-1"))
 
     in_thread { pollers.first.on_complete.call("researched") }
     unless client.reports.any? { |r| r["type"] == "task_complete" }
@@ -152,8 +167,8 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
     end
     state = Workspace::PipelineState.new(pipeline_config: pipeline_config)
     agent = build_agent(client: client, pipeline_state: state)
-    agent.send(:handle_command, command("WC-3", "d-1"))
-    agent.send(:handle_command, command("WC-3", "d-2"))
+    agent.handle(command("WC-3", "d-1"))
+    agent.handle(command("WC-3", "d-2"))
 
     entry = state.current("WC-3")
     expect(entry).to include(dispatch_id: "d-2", pane_index: 0, sentinel_token: "tok-2")
@@ -219,14 +234,28 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
       end
     end
 
-    agent = build_agent(client: status_client_class.new, pipeline_state: state, factory: factory)
+    # The daemon's startup recovers the in-flight items before it serves.
+    trapper = Class.new do
+      attr_reader :handlers
+
+      def initialize = @handlers = {}
+
+      def trap(signal, &block) = @handlers[signal] = block
+    end.new
+    agent = build_agent(client: instance_double(Workspace::WorkCoordinatorClient, register: {"ok" => true}, deregister: nil,
+      status_socket_path: nil, report_status: {"ok" => true}),
+      pipeline_state: state, factory: factory, signal_trapper: trapper,
+      session_monitor_factory: ->(_name) { IdleSessionMonitor.new })
+    daemon = Thread.new { agent.call(name: "myapp") }
     begin
-      agent.send(:recover_in_flight)
-    rescue SystemCallError
-      nil
+      wait_until = Time.now + 2
+      Thread.pass until output.string.include?("ready") || !daemon.alive? || Time.now > wait_until
     ensure
       wait_until = Time.now + 1
       Thread.pass until real.size >= 2 || Time.now > wait_until
+      trapper.handlers["TERM"]&.call
+      daemon.join(2)
+      daemon.kill
       real.each(&:stop)
       real.each { |p| p.poll_thread&.join(1) }
     end
