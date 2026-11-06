@@ -4,7 +4,7 @@ RSpec.describe Workspace::PaneDispatch do
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send) }
   let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }
-  let(:library) { Workspace::Library.allocate }
+  let(:library) { Workspace::Library.new(config: instance_double(Workspace::Config), lineage: instance_double(Workspace::WorkspaceLineage), project_config: instance_double(Workspace::ProjectConfig)) }
   let(:runner) { instance_double(Workspace::Commands::Run, call: "%23") }
   let(:main_agent) { instance_double(Workspace::MainAgent, spawn_command: "claude") }
   let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.2", pane_id: "%23", label: "Claude Code") }

@@ -37,7 +37,7 @@ RSpec.describe Workspace::Commands::SpineStart do
   let(:sessions) { ["api"] }
   let(:tmux) { instance_double(Workspace::Tmux, custom_socket_option: nil, session_name_for: "api", close_pane: true, capture_screen: "") }
   let(:library) do
-    Workspace::Library.allocate.tap do |lib|
+    Workspace::Library.new(config: instance_double(Workspace::Config), lineage: instance_double(Workspace::WorkspaceLineage), project_config: instance_double(Workspace::ProjectConfig)).tap do |lib|
       allow(lib).to receive(:play) { |ref, cwd:| {"ref" => "play/#{ref.sub(%r{\Aplay/}, "")}", "path" => "/lib/#{ref}.md"} }
       allow(lib).to receive(:pack) { |ref, cwd:| [{"ref" => "play/#{ref}", "path" => "/builtin/#{ref}.md"}, "body"] }
     end
