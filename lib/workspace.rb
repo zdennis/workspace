@@ -447,8 +447,11 @@ module Workspace
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
   # @param exit_handler [#exit] receives the process exit (Kernel in production; specs pass a recorder)
+  # @param tmux [Workspace::Tmux, nil] the tmux adapter every collaborator shares; nil builds the real one
+  # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
+  # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: Kernel)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: Kernel, tmux: nil, task_store: nil, skill_source: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -459,9 +462,10 @@ module Workspace
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
     osascript = OsascriptRunner.new
+    skill_source ||= SkillSource.new(workspace_dir: config.workspace_dir)
     iterm = ITerm.new(config: config, output: output, logger: logger, osascript: osascript)
     window_manager = WindowManager.new(config: config, logger: logger, osascript: osascript)
-    tmux = Tmux.new(config: config, logger: logger)
+    tmux ||= Tmux.new(config: config, logger: logger)
     git = Git.new(output: output, input: input, logger: logger)
     agent_commands = AgentCommands.new(config_resolver: config_resolver)
     project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands)
@@ -490,7 +494,7 @@ module Workspace
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, event_log: event_log, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
-    task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
+    task_store ||= TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
     library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
@@ -515,7 +519,7 @@ module Workspace
     start_ref = StartRef.new(git: git, lineage: lineage)
     ticket_source = TicketSource.new
     skills_home = env["HOME"].to_s.empty? ? Dir.home : env["HOME"]
-    skills_command = Commands::Skills.new(harnesses: SkillHarnesses.new(home: skills_home, env: env), source: SkillSource.new(workspace_dir: config.workspace_dir),
+    skills_command = Commands::Skills.new(harnesses: SkillHarnesses.new(home: skills_home, env: env), source: skill_source,
       links: SkillLinks.new(state_dir: config.state_dir), state: SkillsState.new(dir: config.state_dir), input: input, output: output, error_output: error_output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: ticket_source, output: output, error_output: error_output)
     agent_snapshot_client = AgentSnapshotClient.new(config: config)
@@ -678,7 +682,7 @@ module Workspace
       rescue SystemCallError, Timeout::Error => e
         [e.message, nil]
       end,
-      source: SkillSource.new(workspace_dir: config.workspace_dir), ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
+      source: skill_source, ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
     workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
     workflow_needs_me = WorkflowNeedsMe.new

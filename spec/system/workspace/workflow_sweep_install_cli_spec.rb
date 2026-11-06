@@ -25,13 +25,10 @@ RSpec.describe "workspace workflow sweep --install through build_cli" do
       (args.first == "print") ? ["Could not find service", 1] : ["", 0]
     end
   end
+  # The specs may run from a linked worktree, which the real source refuses.
+  let(:skill_source) { instance_double(Workspace::SkillSource, executable: File.join(ENV.fetch("HOME"), "bin", "workspace")) }
   let(:cli) do
-    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}, launchctl: launchctl, exit_handler: FakeExitHandler)
-  end
-
-  before do
-    # The specs may run from a linked worktree, which the real source refuses.
-    allow_any_instance_of(Workspace::SkillSource).to receive(:executable).and_return(File.join(ENV.fetch("HOME"), "bin", "workspace")) # standard:disable RSpec/AnyInstance
+    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}, launchctl: launchctl, exit_handler: FakeExitHandler, skill_source: skill_source)
   end
 
   def document
