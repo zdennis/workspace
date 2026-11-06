@@ -33,7 +33,7 @@ RSpec.describe Workspace::Commands::Projects do
   end
 
   let(:catalog) do
-    Workspace::ProjectCatalog.new(project_config: fake_config, git: catalog_git)
+    Interceptable.subclass(Workspace::ProjectCatalog, :members).new(project_config: fake_config, git: catalog_git)
   end
 
   let(:catalog_git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
@@ -1458,7 +1458,7 @@ RSpec.describe Workspace::Commands::Projects do
       end
 
       it "reports unconfigured worktrees as unknown and the counts as incomplete when listing times out" do
-        allow(catalog).to receive(:members).and_wrap_original do |original, *args, **kwargs|
+        catalog.on(:members) do |original, *args, **kwargs|
           sleep 5 if kwargs[:include_unconfigured]
           original.call(*args, **kwargs)
         end
@@ -1585,7 +1585,7 @@ RSpec.describe Workspace::Commands::Projects do
         def group_path(slug) = File.join(groups_dir, "#{slug}.yml")
       end.new(File.join(@root, "groups"))
     end
-    let(:group_store) { Workspace::ProjectGroups.new(config: group_config, git: Workspace::Git.new(output: StringIO.new, input: StringIO.new)) }
+    let(:group_store) { Interceptable.subclass(Workspace::ProjectGroups, :groups_by_project_id).new(config: group_config, git: Workspace::Git.new(output: StringIO.new, input: StringIO.new)) }
 
     subject(:command) do
       described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, error_output: error_output, home: @root, groups: group_store)
@@ -1628,9 +1628,9 @@ RSpec.describe Workspace::Commands::Projects do
     end
 
     it "reads the groups once per list call" do
-      expect(group_store).to receive(:groups_by_project_id).once.and_call_original
-
       command.list(json: true)
+
+      expect(group_store.calls_to(:groups_by_project_id).size).to eq(1)
     end
 
     it "leaves the members document alone" do
@@ -1639,16 +1639,19 @@ RSpec.describe Workspace::Commands::Projects do
       expect(payload["project"].keys).to eq(%w[name id path vcs])
     end
 
-    %i[show members].each do |verb|
+    {
+      show: ->(command, **options) { command.show(**options) },
+      members: ->(command, **options) { command.members(**options) }
+    }.each do |verb, call_verb|
       it "refuses a group id in #{verb} with group_not_supported, pointing at projects group show" do
-        expect(command.public_send(verb, name: "group:billing", json: true)).to eq(exit_code: 1)
+        expect(call_verb.call(command, name: "group:billing", json: true)).to eq(exit_code: 1)
 
         expect(payload).to include("ok" => false, "code" => "group_not_supported", "details" => {"id" => "group:billing"})
         expect(payload["error"]).to include("projects group show group:billing")
       end
 
       it "raises group_not_supported from #{verb} without --json" do
-        expect { command.public_send(verb, name: "group:billing") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("group_not_supported") }
+        expect { call_verb.call(command, name: "group:billing") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("group_not_supported") }
       end
     end
 

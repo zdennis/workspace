@@ -48,8 +48,7 @@ RSpec.describe "workspace rename, end to end" do
     out.rewind
     err.truncate(0)
     err.rewind
-    handler = Object.new
-    handler.define_singleton_method(:exit) { |code = 0| raise SystemExit.new(code) }
+    handler = Class.new { def exit(code = 0) = raise(SystemExit.new(code)) }.new
     Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}, exit_handler: handler, tmux: stopped_tmux)
   end
 

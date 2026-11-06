@@ -4,7 +4,7 @@ require "timeout"
 RSpec.describe Workspace::Git do
   let(:output) { StringIO.new }
   let(:input) { StringIO.new }
-  subject(:git) { described_class.new(output: output, input: input) }
+  subject(:git) { Interceptable.subclass(described_class, :capture_git).new(output: output, input: input) }
 
   describe "#parse_start_input" do
     it "parses a JIRA URL" do
@@ -604,8 +604,9 @@ RSpec.describe Workspace::Git do
 
       it "still creates the worktree when the marker cannot be set" do
         failed = instance_double(Process::Status, success?: false)
-        allow(git).to receive(:capture_git).and_call_original
-        allow(git).to receive(:capture_git).with("-C", anything, "config", "branch.brand-new.workspace-created", "true").and_return(["", "boom", failed])
+        git.on(:capture_git) do |original, *args|
+          (args.length == 5 && args[2..] == ["config", "branch.brand-new.workspace-created", "true"]) ? ["", "boom", failed] : original.call(*args)
+        end
 
         path = create("brand-new", base: "main")
 
@@ -669,8 +670,10 @@ RSpec.describe Workspace::Git do
       end
 
       it "returns nil when git can't be started" do
-        allow(git).to receive(:capture_git).and_call_original
-        allow(git).to receive(:capture_git).with("-C", @repo_dir, "rev-list", any_args).and_raise(Errno::E2BIG)
+        git.on(:capture_git) do |original, *args|
+          raise Errno::E2BIG if args.first(3) == ["-C", @repo_dir, "rev-list"]
+          original.call(*args)
+        end
 
         expect(git.unpushed_commit_count(@repo_dir)).to be_nil
       end
@@ -700,8 +703,9 @@ RSpec.describe Workspace::Git do
       end
 
       it "returns :unknown when git cannot answer for an existing directory" do
-        allow(git).to receive(:capture_git).and_call_original
-        allow(git).to receive(:capture_git).with("-C", @repo_dir, "status", any_args).and_return(["", "", instance_double(Process::Status, success?: false)])
+        git.on(:capture_git) do |original, *args|
+          (args.first(3) == ["-C", @repo_dir, "status"]) ? ["", "", instance_double(Process::Status, success?: false)] : original.call(*args)
+        end
 
         expect(git.unsaved_work(@repo_dir)).to eq(:unknown)
       end
@@ -829,8 +833,9 @@ RSpec.describe Workspace::Git do
         end
 
         it "is nil when rev-list fails" do
-          allow(git).to receive(:capture_git).and_call_original
-          allow(git).to receive(:capture_git).with("-C", @repo_dir, "rev-list", "--count", anything).and_return(["", "boom", instance_double(Process::Status, success?: false)])
+          git.on(:capture_git) do |original, *args|
+            (args.length == 5 && args.first(4) == ["-C", @repo_dir, "rev-list", "--count"]) ? ["", "boom", instance_double(Process::Status, success?: false)] : original.call(*args)
+          end
 
           expect(git.branch_vs_base(@repo_dir, "feature")).to be_nil
         end

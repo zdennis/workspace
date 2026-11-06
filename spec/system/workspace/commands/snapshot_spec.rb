@@ -27,20 +27,27 @@ RSpec.describe Workspace::Commands::Snapshot do
   let(:facts) do
     git_table = git_by_path
     asks_fact = ->(name) { fact_open_asks.fetch(name, 0) }
+    hooks = facts_hooks
     Class.new do
       define_method(:for_project) do |project, **|
-        members = project.members.map do |m|
-          {"workspace" => m.workspace, "path" => m.path, "kind" => m.kind, "configured" => true, "exists" => true, "running" => false,
-           "headless" => false, "open_asks" => asks_fact.call(m.workspace), "pipeline" => {"entries" => 2}, "agents" => nil}
+        hooks[:before].call
+        result = begin
+          members = project.members.map do |m|
+            {"workspace" => m.workspace, "path" => m.path, "kind" => m.kind, "configured" => true, "exists" => true, "running" => false,
+             "headless" => false, "open_asks" => asks_fact.call(m.workspace), "pipeline" => {"entries" => 2}, "agents" => nil}
+          end
+          {members: members, locks: {"edit" => {"holder" => {"workspace" => "app", "path" => "/src/app", "pid" => 9, "stale" => false}, "queue" => []}},
+           dev: {"running" => true, "ready" => true, "holder_workspace" => "app"}, errors: {}}
         end
-        {members: members, locks: {"edit" => {"holder" => {"workspace" => "app", "path" => "/src/app", "pid" => 9, "stale" => false}, "queue" => []}},
-         dev: {"running" => true, "ready" => true, "holder_workspace" => "app"}, errors: {}}
+        hooks[:after].call(result)
       end
       define_method(:git_facts) { |_project, members, deadline:| members.map { |m| git_table[m.path] } }
       define_method(:git_deadline) { 0.0 }
     end.new
   end
   let(:fact_open_asks) { {} }
+  # An example sets :before (runs first) or :after (changes the answer) to shape what the facts report.
+  let(:facts_hooks) { {before: -> {}, after: ->(result) { result }} }
   let(:git_by_path) do
     {
       "/src/app" => {"available" => true, "branch" => "main", "changed_files" => 0, "ahead" => 0, "upstream" => "origin/main", "unpushed_commits" => 0, "unsaved" => "no"},
@@ -146,9 +153,11 @@ RSpec.describe Workspace::Commands::Snapshot do
     end.new
   end
   let(:task_records) { {} }
+  let(:task_reads) { [] }
   let(:task_store) do
     records = task_records
-    Class.new { define_method(:latest_by_workspace) { records } }.new
+    reads = task_reads
+    Class.new { define_method(:latest_by_workspace) { (reads << :read) && records } }.new
   end
   let(:groups) { nil }
   let(:stall_seconds) { 300 }
@@ -638,10 +647,9 @@ RSpec.describe Workspace::Commands::Snapshot do
     end
 
     it "reads the task store once for all stopped members" do
-      allow(task_store).to receive(:latest_by_workspace).and_call_original
       snapshot.call
 
-      expect(task_store).to have_received(:latest_by_workspace).once
+      expect(task_reads.size).to eq(1)
     end
 
     it "reports a null task when none was recorded" do
@@ -699,9 +707,7 @@ RSpec.describe Workspace::Commands::Snapshot do
 
   describe "sources that cannot answer" do
     it "reports an unreadable lock store as null locks with a warning" do
-      allow(facts).to receive(:for_project).and_wrap_original do |original, project, **kw|
-        original.call(project, **kw).merge(locks: nil, errors: {"locks" => "lock store unreadable"})
-      end
+      facts_hooks[:after] = ->(result) { result.merge(locks: nil, errors: {"locks" => "lock store unreadable"}) }
       snapshot.call
 
       expect(parsed["projects"].first["locks"]).to be_nil
@@ -733,9 +739,12 @@ RSpec.describe Workspace::Commands::Snapshot do
     end
 
     it "is null with a warning when the log cannot be read" do
-      allow(File).to receive(:stat).and_call_original
-      allow(File).to receive(:stat).with(event_log).and_raise(Errno::EACCES)
-      snapshot.call
+      File.chmod(0o000, tmpdir)
+      begin
+        snapshot.call
+      ensure
+        File.chmod(0o700, tmpdir)
+      end
 
       expect(parsed["cursor"]).to be_nil
       expect(parsed["warnings"]).to include(a_hash_including("code" => "cursor_unavailable"))
@@ -743,10 +752,7 @@ RSpec.describe Workspace::Commands::Snapshot do
 
     it "is taken before the sources are read" do
       File.write(event_log, "a\n")
-      allow(facts).to receive(:for_project).and_wrap_original do |original, project, **kw|
-        File.open(event_log, "a") { |f| f.puts "appended while reading" }
-        original.call(project, **kw)
-      end
+      facts_hooks[:before] = -> { File.open(event_log, "a") { |f| f.puts "appended while reading" } }
       snapshot.call
 
       expect(parsed["cursor"]).to end_with(":2")

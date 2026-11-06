@@ -1118,9 +1118,13 @@ RSpec.describe Workspace::Commands::Config do
       command, project_settings = build_command(error_output: error_output)
       path = project_path(project_settings)
 
-      expect(File).to receive(:rename).with(/\A#{Regexp.escape(path)}\.tmp\d+\z/, path).and_call_original
       command.set("dev.up", "bin/dev", cwd: project_dir)
+      inode = File.stat(path).ino
 
+      command.set("dev.up", "bin/other", cwd: project_dir)
+
+      expect(File.stat(path).ino).not_to eq(inode)
+      expect(File.read(path)).to include("bin/other")
       expect(Dir.glob("#{path}.tmp*")).to be_empty
     end
 
@@ -1470,8 +1474,7 @@ RSpec.describe Workspace::Commands::Config do
 
       it "returns the write's outcome and logs the real layer" do
         events = []
-        event_log = Object.new
-        event_log.define_singleton_method(:record) { |**args| events << args }
+        event_log = Struct.new(:events) { def record(**args) = events << args }.new(events)
         logged = described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
           event_log: event_log, project_config: project_config, output: output, error_output: error_output)
 

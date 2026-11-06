@@ -5,7 +5,7 @@ RSpec.describe Workspace::Commands::Rebase do
   include RebaseRepos
 
   let(:output) { StringIO.new }
-  let(:runner) { Workspace::TimedProcess.method(:run) }
+  let(:runner) { ->(*args, **kw) { Workspace::TimedProcess.run(*args, **kw) } }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: runner) }
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:project_detector) { instance_double(Workspace::ProjectDetector, detect: "api.worktree-x") }
@@ -543,10 +543,11 @@ RSpec.describe Workspace::Commands::Rebase do
     end
 
     it "raises when the default checkout's state cannot be read" do
-      allow(git).to receive(:dirty_tracked_files).and_call_original
-      allow(git).to receive(:dirty_tracked_files).with(repo).and_return(nil)
+      blind = Interceptable.subclass(Workspace::Git, :dirty_tracked_files).new(output: StringIO.new, input: StringIO.new, runner: runner)
+      blind.on(:dirty_tracked_files) { |original, path| (path == repo) ? nil : original.call(path) }
+      cmd = described_class.new(git: blind, checkout: checkout, output: output)
 
-      expect { command.call(onto: "update", working_dir: wt) }.to raise_error(Workspace::Error, /could not read the state of #{Regexp.escape(repo)}/)
+      expect { cmd.call(onto: "update", working_dir: wt) }.to raise_error(Workspace::Error, /could not read the state of #{Regexp.escape(repo)}/)
     end
 
     it "prints the reason without --json" do

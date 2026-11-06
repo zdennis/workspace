@@ -51,8 +51,7 @@ RSpec.describe Workspace::Commands::Daemon do
   let(:process_table) { {4242 => {pid: 4242, args: agentd_args}, 5000 => {pid: 5000, args: "/usr/bin/vim"}} }
   let(:process_tree) do
     table = process_table
-    snapshot = Object.new
-    snapshot.define_singleton_method(:find) { |pid| table[pid] }
+    snapshot = Struct.new(:table) { def find(pid) = table[pid] }.new(table)
     double("process_tree", snapshot: snapshot)
   end
   let(:now) { [0.0] }

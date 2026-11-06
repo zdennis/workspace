@@ -13,7 +13,7 @@ RSpec.describe Workspace::Commands::Ticket do
 
   let(:repo) { File.join(@dir, "api") }
   let(:output) { StringIO.new }
-  let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
+  let(:git) { Interceptable.subclass(Workspace::Git, :branch_names, :local_branch_names).new(output: StringIO.new, input: StringIO.new) }
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:fetched) { {"title" => "Fix it", "body" => "Details", "url" => "https://acme.atlassian.net/browse/PROJ-123"} }
   let(:source) { instance_double(Workspace::TicketSource, fetch: fetched) }
@@ -229,14 +229,12 @@ RSpec.describe Workspace::Commands::Ticket do
 
     it "finds the worktree of an old uppercase slug branch, listing the branches once for all rows" do
       sh("worktree", "add", "-q", "-b", "PROJ-123-old-title", File.join(repo, ".worktrees", "PROJ-123-old-title"))
-      allow(git).to receive(:branch_names).and_call_original
-      allow(git).to receive(:local_branch_names).and_call_original
 
       in_repo { command.list(json: true) }
 
       expect(document["tickets"].first["workspace"]).to eq("api.worktree-PROJ-123-old-title")
-      expect(git).to have_received(:branch_names).once
-      expect(git).to have_received(:local_branch_names).once
+      expect(git.calls_to(:branch_names).size).to eq(1)
+      expect(git.calls_to(:local_branch_names).size).to eq(1)
     end
 
     it "prints text rows on stdout and warnings on stderr" do

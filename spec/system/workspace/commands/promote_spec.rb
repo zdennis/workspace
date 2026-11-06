@@ -5,7 +5,8 @@ require "json"
 class FakePromoteStart
   attr_reader :calls, :log
 
-  def initialize(log: [], warnings: [], error: nil)
+  def initialize(log: [], warnings: [], error: nil, without_notes_dir: false)
+    @without_notes_dir = without_notes_dir
     @calls = []
     @log = log
     @warnings = warnings
@@ -22,6 +23,7 @@ class FakePromoteStart
     json = {"schema_version" => 1, "ok" => true, "project" => "api", "workspace" => "api.worktree-#{branch}", "path" => path,
             "branch" => branch, "base" => nil, "created" => true, "headless" => options[:headless], "launched" => false,
             "agent_kind" => "claude", "notes_dir" => notes, "task" => {"id" => "t-1", "title" => options[:title]}, "packs" => []}
+    json.delete("notes_dir") if @without_notes_dir
     json["warnings"] = @warnings if @warnings.any?
     {exit_code: 0, json: json}
   end
@@ -103,11 +105,8 @@ RSpec.describe Workspace::Commands::Promote do
     end
 
     def git_with(**overrides)
-      Workspace::Git.new(output: StringIO.new, input: StringIO.new).tap do |double|
-        overrides.each do |name, fn|
-          original = double.method(name)
-          double.define_singleton_method(name) { |*args, **kw| fn.call(original, *args, **kw) }
-        end
+      Interceptable.subclass(Workspace::Git, *overrides.keys).new(output: StringIO.new, input: StringIO.new).tap do |git|
+        overrides.each { |name, fn| git.on(name) { |original, *args, **kw| fn.call(original, *args, **kw) } }
       end
     end
 
@@ -358,8 +357,7 @@ RSpec.describe Workspace::Commands::Promote do
     end
 
     it "warns that the plan and spine stay behind when the new workspace has no notes directory" do
-      start = FakePromoteStart.new(log: log)
-      allow(start).to receive(:payload).and_wrap_original { |original, *args, **kw| original.call(*args, **kw).tap { |r| r[:json].delete("notes_dir") } }
+      start = FakePromoteStart.new(log: log, without_notes_dir: true)
       command = build(checkout_move: checkout_move, notes: notes, project_config: project_config, notes_carry: notes_carry, start: start)
 
       doc = command.call(working_dir: root, branch: "fix-login", json: true)[:json]
