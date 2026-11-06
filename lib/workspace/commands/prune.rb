@@ -1,5 +1,3 @@
-require_relative "../gh_pull_requests"
-
 module Workspace
   module Commands
     # Removes worktree-backed workspace projects whose associated GitHub PR is

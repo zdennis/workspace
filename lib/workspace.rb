@@ -252,11 +252,13 @@ require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/prompt_queue_store"
+require_relative "workspace/pane_locks"
 require_relative "workspace/prompt_queue_desk"
 require_relative "workspace/agent_recovery_store"
 require_relative "workspace/restart_registry"
 require_relative "workspace/restart_runner"
 require_relative "workspace/session_monitor_builder"
+require_relative "workspace/agent_recovery_steps"
 require_relative "workspace/agent_recovery_desk"
 require_relative "workspace/agent_recovery_desk_factory"
 require_relative "workspace/inbox_store"
@@ -380,6 +382,7 @@ require_relative "workspace/commands/resize"
 require_relative "workspace/commands/layout"
 require_relative "workspace/commands/repair"
 require_relative "workspace/commands/cleanup"
+require_relative "workspace/gh_pull_requests"
 require_relative "workspace/commands/prune"
 require_relative "workspace/commands/remove"
 require_relative "workspace/commands/lookup"
@@ -451,26 +454,28 @@ module Workspace
   # @param env [Hash] environment; `WORKSPACE_NO_INPUT` makes every prompt fail instead of waiting
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
-  # @param exit_handler [#exit] receives the process exit (Kernel in production; specs pass a recorder)
+  # @param exit_handler [#exit, nil] receives the process exit; nil uses Kernel (specs pass a recorder)
   # @param tmux [Workspace::Tmux, nil] the tmux adapter every collaborator shares; nil builds the real one
   # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
   # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: Kernel, tmux: nil, task_store: nil, skill_source: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
     logger ||= Logger.new(output: error_output, enabled: ENV.key?("WORKSPACE_DEBUG"))
+    exit_handler ||= Kernel
     config = Config.new
+    skill_source ||= SkillSource.new(workspace_dir: config.workspace_dir)
+    tmux ||= Tmux.new(config: config, logger: logger)
+    task_store ||= TaskStore.new(dir: config.task_dir, error_output: error_output)
     project_settings = ProjectSettings.new(config: config)
     config_resolver = ConfigResolver.new(project_settings: project_settings)
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
     osascript = OsascriptRunner.new
-    skill_source ||= SkillSource.new(workspace_dir: config.workspace_dir)
     iterm = ITerm.new(config: config, output: output, logger: logger, osascript: osascript)
     window_manager = WindowManager.new(config: config, logger: logger, osascript: osascript)
-    tmux ||= Tmux.new(config: config, logger: logger)
     git = Git.new(output: output, input: input, logger: logger)
     agent_commands = AgentCommands.new(config_resolver: config_resolver)
     project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands)
@@ -499,7 +504,6 @@ module Workspace
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, event_log: event_log, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
-    task_store ||= TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
     library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
@@ -536,7 +540,7 @@ module Workspace
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, agent_commands: agent_commands, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
-    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, output: output, input: input)
+    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new, output: output, input: input)
     remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
@@ -848,7 +852,8 @@ module Workspace
     # Nil with recovery off or for a workspace whose agent isn't Claude Code, so the daemon builds no desk.
     agent_recovery_desk_factory = AgentRecoveryDeskFactory.new(tmux: tmux, config: config, recovery_config: agent_recovery_config,
       agent_commands: agent_commands, process_tree: process_tree, ledger: session_ledger, resume_command: agent_resume_command,
-      readiness: agent_readiness, marker: recovery_stop_marker, logger: logger, error_output: error_output)
+      readiness: agent_readiness, marker: recovery_stop_marker, logger: logger, error_output: error_output,
+      transcript: TranscriptSummary.new, stopper: AgentStopper.new(process_tree: process_tree))
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,

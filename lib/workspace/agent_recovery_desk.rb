@@ -1,5 +1,3 @@
-require_relative "agent_recovery_steps"
-
 module Workspace
   # The agent daemon's side of recovering a Claude Code agent whose turn ended
   # on an API error. It keeps one {AgentRecoveryStore} entry per pane, schedules

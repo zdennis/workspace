@@ -1,5 +1,3 @@
-require_relative "pane_locks"
-
 module Workspace
   # The agent daemon's side of `agent-run send --when-idle` and
   # `--clear-first`: it queues a prompt for a coding-agent pane in the
