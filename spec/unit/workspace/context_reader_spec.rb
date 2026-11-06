@@ -284,15 +284,13 @@ RSpec.describe Workspace::ContextReader do
       it "scrapes and caches inside a scan already holding a slot, as the daemon's monitor does" do
         slot_dir = Dir.mktmpdir("ws-scan-slots")
         begin
-          # Separate limiter instances over one slot directory, as the daemon
-          # wires the monitor's limiter apart from the reader's.
-          monitor_slots = Workspace::ScanSlotLimiter.new(dir: slot_dir, limit: 1)
-          reader_slots = Workspace::ScanSlotLimiter.new(dir: slot_dir, limit: 1)
+          # One limiter shared by the monitor's scan and the reader, as the daemon wires it.
+          shared_slots = Workspace::ScanSlotLimiter.new(dir: slot_dir, limit: 1)
           in_scan = described_class.new(context_store: context_store, project_settings: project_settings,
-            tmux: tmux, lock_holder: lock_holder, scan_slots: reader_slots, clock: -> { now[0] })
+            tmux: tmux, lock_holder: lock_holder, scan_slots: shared_slots, clock: -> { now[0] })
           allow(tmux).to receive(:capture_screen).with("%1").and_return("37% ctx")
 
-          first = monitor_slots.with_scan_slot { in_scan.read(pane_id: "%1") }
+          first = shared_slots.with_scan_slot { in_scan.read(pane_id: "%1") }
           expect(first).to include(pct: 37, error: nil)
 
           # The scan populated the reader's cache, so a later busy read of
@@ -306,25 +304,6 @@ RSpec.describe Workspace::ContextReader do
           end
         ensure
           FileUtils.remove_entry(slot_dir)
-        end
-      end
-
-      describe ".for_daemon" do
-        it "takes its scan slots from the config state dir, so a slot held there makes a read busy" do
-          state_dir = Dir.mktmpdir("ws-state")
-          daemon_reader = described_class.for_daemon(state_dir: state_dir, context_store: context_store,
-            project_settings: project_settings, tmux: tmux, lock_holder: lock_holder)
-          allow(tmux).to receive(:capture_screen).and_return("37% ctx")
-          holder = HeldScanSlot.take(dir: File.join(state_dir, "scan-slots"), limit: 1)
-          expect(holder).to be_held
-
-          begin
-            expect(daemon_reader.read(pane_id: "%1")[:error]).to eq(Workspace::ContextReasons::SCAN_BUSY)
-            expect(tmux).not_to have_received(:capture_screen)
-          ensure
-            holder.release
-            FileUtils.remove_entry(state_dir)
-          end
         end
       end
 

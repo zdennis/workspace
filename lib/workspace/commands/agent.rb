@@ -38,17 +38,7 @@ module Workspace
       # @param sentinel_poller_factory [#call] builds a poller for a session/pane/token
       # @param token_generator [#call] returns a fresh completion token for one stage dispatch
       # @param clock [#call] returns the current Time, for stage deadlines
-      # @param session_monitor_factory [#call, nil] builds the session monitor for a workspace name; nil
-      #   builds one through {Workspace::SessionMonitorBuilder} from the settings below
-      # @param lock_reaper [Workspace::LockReaper, nil] reaps stale lock holds from the session monitor's scan thread
-      # @param alert_config [Workspace::AlertConfig, nil] reads the workspace's
-      #   notify command and idle alert threshold; nil sends no alerts
-      # @param agentd_config [Workspace::AgentdConfig, nil] reads the workspace's
-      #   session-monitor scan interval; nil scans at
-      #   {SessionMonitor::DEFAULT_POLL_INTERVAL}
-      # @param notifier_factory [#call] builds a {Workspace::Notifier} for a command
-      # @param ps_timeout [Numeric] seconds to wait for `ps` before killing it, for
-      #   the session monitor's {Workspace::ProcessTree}
+      # @param session_monitor_factory [#call] builds the session monitor for a workspace name
       # @param retry_backoff [Float] seconds to wait between status report retries
       # @param event_log [Workspace::EventLog, nil] records dispatches, stage
       #   completions and failures, and (through the session monitor) each agent
@@ -94,40 +84,24 @@ module Workspace
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
-      # @param label_reader [Workspace::TranscriptLabel, nil] reads each pane's
-      #   transcript title for `sessions --json`; nil leaves transcripts unread
       # @param agent_commands [Workspace::AgentCommands, nil] the program names that count as an agent, read
       #   once when the session monitor starts; nil knows only the providers' executables
-      # @param task_store [Workspace::TaskStore, nil] the workspace's task, for `sessions --json`'s
-      #   `task` and first `display_label` source; nil reports no task
       # @param restart_registry [Workspace::RestartRegistry] the panes being restarted; one is
       #   built by default
       # @param restart_runner_factory [#call, nil] given the session monitor, builds the
       #   {Workspace::RestartRunner} once, when the first restart needs it; nil builds the real one
       # @param current_name [String, nil] the workspace served before {#call} starts, so {#handle}
       #   works without it; +call+ sets it from its +name+
-      # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
-      #   monitors scan at once, machine-wide; nil builds one from config
-      #   when the session monitor starts
-      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, agent_labels: nil, agent_commands: nil, pipeline_state: nil,
+      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, session_monitor_factory:, agent_labels: nil, agent_commands: nil, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
         token_generator: -> { SecureRandom.hex(4) },
         clock: -> { Time.now },
-        session_monitor_factory: nil,
-        lock_reaper: nil,
-        alert_config: nil,
-        agentd_config: nil,
-        notifier_factory: nil,
-        ps_timeout: Workspace::ProcessTree::DEFAULT_TIMEOUT,
         retry_backoff: 0.5,
         event_log: nil,
         context_reader: nil,
-        label_reader: nil,
-        task_store: nil,
         workflow_nudger: nil,
-        scan_slots: nil,
         agent_restart_factory: nil,
         transcript_summary: TranscriptSummary.new,
         idle_prompt_check: IdlePromptCheck.new,
@@ -162,14 +136,8 @@ module Workspace
         @clock = clock
         @session_monitor_factory = session_monitor_factory
         @session_monitor = nil
-        @lock_reaper = lock_reaper
-        @alert_config = alert_config
-        @agentd_config = agentd_config
         @context_reader = context_reader
-        @label_reader = label_reader
-        @task_store = task_store
         @workflow_nudger = workflow_nudger
-        @scan_slots = scan_slots
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         @transcript_summary = transcript_summary
         @idle_prompt_check = idle_prompt_check
@@ -189,8 +157,6 @@ module Workspace
         @restart_runner = nil
         # When the main agent's current turn began, by pane id, for the workflow nudger.
         @turn_starts = {}
-        @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: @error_output) }
-        @ps_timeout = ps_timeout
         @retry_backoff = retry_backoff
         @event_log = event_log
         @pollers = {}
@@ -258,7 +224,7 @@ module Workspace
         install_signal_handlers
 
         @hook_event_log = @hook_event_log_factory&.call(name)
-        @session_monitor = (@session_monitor_factory || session_monitor_builder).call(name)
+        @session_monitor = @session_monitor_factory.call(name)
         # Built here, before any worker thread can ask for it.
         @restart_runner = @restart_runner_factory.call(@session_monitor)
         @session_monitor.start
@@ -1346,14 +1312,6 @@ module Workspace
       # The listening fd survives that, so the agent looks healthy while no
       # caller can reach it; rebinding and re-registering is what actually
       # restores it.
-      def session_monitor_builder
-        SessionMonitorBuilder.new(tmux: @tmux, config: @config, logger: @logger, error_output: @error_output,
-          agent_commands: @agent_commands, alert_config: @alert_config, agentd_config: @agentd_config,
-          lock_reaper: @lock_reaper, notifier_factory: @notifier_factory, ps_timeout: @ps_timeout,
-          event_log: @event_log, context_reader: @context_reader, label_reader: @label_reader,
-          task_store: @task_store, scan_slots: @scan_slots)
-      end
-
       # The main agent's turn ended: a workflow run bound to the pane decides
       # its step now. The run is told when that turn began (the prompt that
       # started it), so a turn already under way when the step's line was

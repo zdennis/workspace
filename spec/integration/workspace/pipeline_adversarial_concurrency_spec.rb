@@ -101,13 +101,13 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
   end
 
   def build_agent(client:, pipeline_state:, factory: fake_factory, **extra)
-    Workspace::Commands::Agent.new(
+    Workspace::Commands::Agent.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+
       config: config, tmux: tmux, work_coordinator_client: client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state,
       signal_trapper: Object.new, sentinel_poller_factory: factory,
       token_generator: token_generator, clock: -> { Time.utc(2026, 9, 27, 12) },
-      retry_backoff: 0, current_name: "myapp", error_output: error_output, output: output, **extra
-    )
+      retry_backoff: 0, current_name: "myapp", error_output: error_output, output: output, **extra)
   end
 
   def command(ref, dispatch_id)

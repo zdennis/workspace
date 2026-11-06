@@ -6,7 +6,7 @@ RSpec.describe Workspace::SessionMonitorBuilder do
       fake.define_singleton_method(:session_name_for) { |name| "workspace-wt-#{name}" }
     end
   end
-  let(:config) { instance_double(Workspace::Config, state_dir: "/state") }
+  let(:scan_slots) { instance_double(Workspace::ScanSlotLimiter) }
   let(:error_output) { StringIO.new }
   let(:captured) { [] }
   let(:spy_factory) { ->(**kwargs) { captured << kwargs and :monitor } }
@@ -14,8 +14,8 @@ RSpec.describe Workspace::SessionMonitorBuilder do
   let(:options) { {} }
 
   def builder(**overrides)
-    described_class.new(tmux: tmux, config: config, logger: Workspace::Logger.new, error_output: error_output,
-      notifier_factory: notifier_factory, ps_timeout: 10, monitor_factory: spy_factory,
+    described_class.new(tmux: tmux, logger: Workspace::Logger.new, error_output: error_output,
+      notifier_factory: notifier_factory, ps_timeout: 10, scan_slots: scan_slots, monitor_factory: spy_factory,
       **options, **overrides)
   end
 
@@ -25,8 +25,8 @@ RSpec.describe Workspace::SessionMonitorBuilder do
   end
 
   it "builds a real SessionMonitor by default" do
-    monitor = described_class.new(tmux: tmux, config: config, logger: Workspace::Logger.new, error_output: error_output,
-      notifier_factory: notifier_factory, ps_timeout: 10, scan_slots: instance_double(Workspace::ScanSlotLimiter)).call("myapp")
+    monitor = described_class.new(tmux: tmux, logger: Workspace::Logger.new, error_output: error_output,
+      notifier_factory: notifier_factory, ps_timeout: 10, scan_slots: scan_slots).call("myapp")
 
     expect(monitor).to be_a(Workspace::SessionMonitor)
   end
@@ -37,9 +37,9 @@ RSpec.describe Workspace::SessionMonitorBuilder do
 
   it "passes its lock_reaper to the monitor" do
     lock_reaper = instance_double(Workspace::LockReaper, tick: 3)
-    monitor = described_class.new(tmux: tmux, config: config, logger: Workspace::Logger.new, error_output: error_output,
+    monitor = described_class.new(tmux: tmux, logger: Workspace::Logger.new, error_output: error_output,
       notifier_factory: notifier_factory, ps_timeout: 10, lock_reaper: lock_reaper,
-      scan_slots: instance_double(Workspace::ScanSlotLimiter)).call("myapp")
+      scan_slots: scan_slots).call("myapp")
 
     expect(monitor.reap_locks).to eq(3)
     expect(lock_reaper).to have_received(:tick)
@@ -90,20 +90,13 @@ RSpec.describe Workspace::SessionMonitorBuilder do
   end
 
   it "passes its scan_slots to the monitor" do
-    scan_slots = instance_double(Workspace::ScanSlotLimiter)
-
-    expect(built(scan_slots: scan_slots)).to include(scan_slots: scan_slots)
+    expect(built).to include(scan_slots: scan_slots)
   end
 
-  it "builds its default limiter under the config state dir when none is injected" do
-    limiters = []
-    factory = lambda do |**kwargs|
-      limiters << kwargs
-      :limiter
-    end
+  it "builds a Notifier that reports to its error output when no notifier_factory is given" do
+    alert_config = instance_double(Workspace::AlertConfig, for_workspace: {notify: "say hi", idle_after: 600})
 
-    expect(built(scan_slots_factory: factory)).to include(scan_slots: :limiter)
-    expect(limiters.last).to include(dir: File.join("/state", "scan-slots"))
+    expect(built(alert_config: alert_config, notifier_factory: nil)[:notifier]).to be_a(Workspace::Notifier)
   end
 
   describe "the configured agent names" do

@@ -818,13 +818,13 @@ module Workspace
       resume_command: agent_resume_command, output: output, error_output: error_output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
-    # The reader takes its own limiter, separate from the monitor's: it serves
-    # `sessions` requests rather than polls, and its busy reads fall back to a
-    # cached reading instead of skipping. The limiter's slot is re-entrant per
-    # directory, so the reader's scrape inside a monitor's scan — a separate
-    # instance over the same slot files — runs under the slot the scan holds.
-    context_reader = ContextReader.for_daemon(state_dir: config.state_dir, context_store: context_store, project_settings: project_settings,
-      tmux: tmux, logger: logger, lock_holder: lock_holder)
+    # One limiter for the reader and the monitors: it bounds how many scans and
+    # scrapes run at once, machine-wide, over the slot files under the state
+    # directory. A reader's scrape inside a monitor's scan runs under the slot
+    # the scan holds, since the slot is re-entrant per thread and directory.
+    scan_slots = ScanSlotLimiter.new(dir: File.join(config.state_dir, "scan-slots"), logger: logger)
+    context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings,
+      tmux: tmux, logger: logger, lock_holder: lock_holder, scan_slots: scan_slots)
     statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(logger: logger),
       project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
       lock_holder: lock_holder)
@@ -855,6 +855,15 @@ module Workspace
       status_socket_path: config.work_coordinator_status_socket,
       logger: logger
     )
+    # Its own LockHolder: the reaper runs on the monitor thread, and a
+    # LockHolder's snapshot scope is per-instance, not per-thread.
+    lock_reaper = LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness),
+      terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output,
+      on_reap: dev_events.method(:reaped))
+    session_monitor_builder = SessionMonitorBuilder.new(tmux: tmux, logger: logger, error_output: error_output,
+      agent_commands: agent_commands, alert_config: alert_config, agentd_config: agentd_config,
+      lock_reaper: lock_reaper, ps_timeout: ps_timeout, event_log: event_log, context_reader: context_reader,
+      label_reader: TranscriptLabel.new, task_store: task_store, scan_slots: scan_slots)
     agent_command = Commands::Agent.new(
       config: config,
       tmux: tmux,
@@ -862,18 +871,9 @@ module Workspace
       agent_commands: agent_commands,
       work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
-      # Its own LockHolder: the reaper runs on the monitor thread, and a
-      # LockHolder's snapshot scope is per-instance, not per-thread.
-      lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness),
-        terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output,
-        on_reap: dev_events.method(:reaped)),
-      alert_config: alert_config,
-      agentd_config: agentd_config,
-      ps_timeout: ps_timeout,
+      session_monitor_factory: session_monitor_builder,
       event_log: event_log,
       context_reader: context_reader,
-      label_reader: TranscriptLabel.new,
-      task_store: task_store,
       workflow_nudger: workflow_nudger,
       name_migration: name_migration,
       agent_recovery_desk_factory: agent_recovery_desk_factory,

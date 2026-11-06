@@ -32,12 +32,22 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
     Workspace::Tmux::Delivery.new(status: status, message: message)
   end
 
-  # Gives a bare tmux object the lookups the agent makes for the Claude pane.
-  def claude_pane_at_0_1(tmux)
-    tmux.define_singleton_method(:session_name_for) { |name| name } unless tmux.respond_to?(:session_name_for)
-    tmux.define_singleton_method(:panes) { |*_args, **_opts| [0, 1] }
-    tmux.define_singleton_method(:find_pane_by_title) { |*_args, **_opts| 1 }
-    tmux
+  # A tmux stand-in with the lookups the agent makes for the Claude pane;
+  # +deliver+ runs the given block.
+  def fake_tmux(&deliver)
+    Class.new do
+      def initialize(deliver) = @deliver = deliver
+
+      def deliver(*args, **opts) = @deliver.call(*args, **opts)
+
+      def capture_pane(*, **) = "stage one output"
+
+      def session_name_for(name) = name
+
+      def panes(*, **) = [0, 1]
+
+      def find_pane_by_title(*, **) = 1
+    end.new(deliver)
   end
 
   def command(ref, body)
@@ -64,7 +74,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
       config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config,
       pipeline_state: pipeline_state,
-      signal_trapper: double("signals"),
+      signal_trapper: double("signals"), session_monitor_factory: ->(_name) {},
       sentinel_poller_factory: ->(**) { poller_class.new.tap { |p| pollers << p } },
       token_generator: -> { "tok-#{count += 1}" },
       clock: -> { Time.utc(2026, 9, 27) },
@@ -75,14 +85,13 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
   it "DC1: a slow deliver holds @state_lock, so an unrelated fail_pipeline stalls behind it" do
     entered = Queue.new
     gate = Queue.new
-    slow_tmux = Object.new
     ok = delivery(:submitted)
-    slow_tmux.define_singleton_method(:deliver) do |*_args, **_opts|
+    slow_tmux = fake_tmux do |*_args, **_opts|
       entered << true
       gate.pop
       ok
     end
-    agent = build_agent(tmux: claude_pane_at_0_1(slow_tmux), stages: nil)
+    agent = build_agent(tmux: slow_tmux, stages: nil)
 
     sender = Thread.new { agent.handle(command("WC-1", "hi"), StringIO.new) }
     other = nil
@@ -101,17 +110,14 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
   it "DC1: a work item failed while its hand-off is being typed stays failed" do
     entered = Queue.new
     gate = Queue.new
-    tmux = Object.new
     ok = delivery(:submitted)
-    tmux.define_singleton_method(:deliver) do |_s, _p, text, **|
+    tmux = fake_tmux do |_s, _p, text, **|
       if text.start_with?("You are the review stage")
         entered << true
         gate.pop
       end
       ok
     end
-    tmux.define_singleton_method(:capture_pane) { |*, **| "stage one output" }
-    tmux.define_singleton_method(:session_name_for) { |name| name }
     pollers = []
     stages = [{pane_index: 1, role: "impl", timeout: nil}, {pane_index: 2, role: "review", timeout: nil}]
     agent = build_agent(tmux: tmux, stages: stages, pollers: pollers)
@@ -150,10 +156,14 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
   it "DC3: two separate processes use the same tmux paste buffer name, so concurrent sends can swap text" do
     script = <<~RUBY
       require "workspace"
-      tmux = Workspace::Tmux.new(config: nil)
-      tmux.define_singleton_method(:capture_screen) { |_| nil }
-      tmux.define_singleton_method(:system) { |*| true }
-      tmux.define_singleton_method(:tmux_load_buffer) { |buf, _| puts(buf) || false }
+      class BufferNamePrinter < Workspace::Tmux
+        def capture_screen(_) = nil
+
+        def system(*) = true
+
+        def tmux_load_buffer(buf, _) = puts(buf) || false
+      end
+      tmux = BufferNamePrinter.new(config: nil)
       tmux.deliver("myapp", "0.1", "hi")
     RUBY
     lib = File.join(PROJECT_ROOT, "lib")
@@ -183,9 +193,11 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
     # prompt delivery with nothing else to start.
     allow(tmux).to receive_messages(session_name_for: "proj", sessions: ["proj"], custom_socket_option: nil,
       start_server: nil, rename_window: nil)
-    state = {}
-    state.define_singleton_method(:load) { nil }
-    state.define_singleton_method(:save) { nil }
+    state = Class.new(Hash) do
+      def load = nil
+
+      def save = nil
+    end.new
     project_config = instance_double(Workspace::ProjectConfig, exists?: true)
     config = instance_double(Workspace::Config, state_dir: tmpdir)
     agent_ensurer = double("ensurer", call: double(ok?: true))
@@ -201,13 +213,10 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
   end
 
   it "DC5: a queued steer acknowledged ok is dropped without telling the coordinator when it fails to land" do
-    tmux = Object.new
-    tmux.define_singleton_method(:deliver) do |_s, _p, text, **|
+    tmux = fake_tmux do |_s, _p, text, **|
       status = (text == "steer me") ? :not_landed : :submitted
       Workspace::Tmux::Delivery.new(status: status, message: "fake")
     end
-    tmux.define_singleton_method(:capture_pane) { |*, **| "stage one output" }
-    tmux.define_singleton_method(:session_name_for) { |name| name }
     pollers = []
     stages = [{pane_index: 1, role: "impl", timeout: nil}, {pane_index: 2, role: "review", timeout: nil}]
     agent = build_agent(tmux: tmux, stages: stages, pollers: pollers)

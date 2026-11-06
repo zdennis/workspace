@@ -6,36 +6,36 @@ module Workspace
   # when {#call} runs, so a change takes effect the next time the daemon starts.
   class SessionMonitorBuilder
     # @param tmux [Workspace::Tmux]
-    # @param config [Workspace::Config] gives the state directory for the default scan slot limiter
     # @param logger [#debug]
     # @param error_output [IO]
     # @param agent_commands [Workspace::AgentCommands, nil] names the agent programs per workspace; nil knows only the providers' own
     # @param alert_config [Workspace::AlertConfig, nil]
     # @param agentd_config [Workspace::AgentdConfig, nil]
     # @param lock_reaper [Workspace::LockReaper, nil]
-    # @param notifier_factory [#call] given a notify command, returns the notifier
+    # @param notifier_factory [#call, nil] given a notify command, returns the notifier; nil builds a
+    #   {Workspace::Notifier} that reports to +error_output+
     # @param ps_timeout [Numeric] limit for the process snapshot
     # @param event_log [Workspace::EventLog, nil]
     # @param context_reader [Workspace::ContextReader, nil]
     # @param label_reader [#call, nil]
     # @param task_store [Workspace::TaskStore, nil]
-    # @param scan_slots [Workspace::ScanSlotLimiter, nil] nil builds one under the config's state directory
+    # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many monitors scan at once, machine-wide;
+    #   nil is tolerated and scans run ungated
     # @param monitor_factory [#call] receives the monitor's keyword arguments (default +SessionMonitor.new+)
     # @param process_tree_factory [#call] receives +logger:+ and +timeout:+ (default +ProcessTree.new+)
-    # @param scan_slots_factory [#call] receives +dir:+ and +logger:+ for the default limiter (default +ScanSlotLimiter.new+)
-    def initialize(tmux:, config:, logger:, error_output:, notifier_factory:, ps_timeout:, agent_commands: nil,
+    def initialize(tmux:, logger:, error_output:, scan_slots:, notifier_factory: nil,
+      ps_timeout: ProcessTree::DEFAULT_TIMEOUT, agent_commands: nil,
       alert_config: nil, agentd_config: nil, lock_reaper: nil, event_log: nil, context_reader: nil,
-      label_reader: nil, task_store: nil, scan_slots: nil, monitor_factory: SessionMonitor.method(:new),
-      process_tree_factory: ProcessTree.method(:new), scan_slots_factory: ScanSlotLimiter.method(:new))
+      label_reader: nil, task_store: nil, monitor_factory: SessionMonitor.method(:new),
+      process_tree_factory: ProcessTree.method(:new))
       @tmux = tmux
-      @config = config
       @logger = logger
       @error_output = error_output
       @agent_commands = agent_commands
       @alert_config = alert_config
       @agentd_config = agentd_config
       @lock_reaper = lock_reaper
-      @notifier_factory = notifier_factory
+      @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: error_output) }
       @ps_timeout = ps_timeout
       @event_log = event_log
       @context_reader = context_reader
@@ -44,7 +44,6 @@ module Workspace
       @scan_slots = scan_slots
       @monitor_factory = monitor_factory
       @process_tree_factory = process_tree_factory
-      @scan_slots_factory = scan_slots_factory
     end
 
     # @param name [String] the workspace name
@@ -68,10 +67,7 @@ module Workspace
         context_reader: @context_reader,
         label_reader: @label_reader,
         task_reader: @task_store && ->(workspace) { @task_store.active_for(workspace) },
-        scan_slots: @scan_slots || @scan_slots_factory.call(
-          dir: File.join(@config.state_dir, "scan-slots"),
-          logger: @logger
-        )
+        scan_slots: @scan_slots
       )
     end
   end

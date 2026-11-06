@@ -192,6 +192,56 @@ RSpec.describe Workspace do
       expect(out.string).not_to match(/mixed-case-workspaces|capitals/)
       expect(JSON.parse(out.string)).to include("ok")
     end
+
+    describe "the agent daemon's scan slots" do
+      let(:slot_dir) { File.join(config.state_dir, "scan-slots") }
+      let(:ws) { "slotws" }
+
+      def snapshot
+        UNIXSocket.open(config.agent_socket_path(ws)) do |socket|
+          socket.puts({"type" => "sessions", "workspace" => ws}.to_json)
+          JSON.parse(socket.gets)
+        end
+      end
+
+      def wait_for(timeout: 15)
+        deadline = Time.now + timeout
+        sleep 0.1 until yield || Time.now > deadline
+      end
+
+      around do |example|
+        previous = Signal.trap("TERM", "DEFAULT")
+        example.run
+      ensure
+        Signal.trap("TERM", previous)
+      end
+
+      it "scans only when a slot under <state>/scan-slots is free" do
+        git_repo
+        start_session(ws)
+        FileUtils.mkdir_p(File.dirname(config.config_path_for(ws)))
+        File.write(config.config_path_for(ws), "name: #{ws}\nroot: #{repo}\nwindows:\n  - main:\n      panes:\n        - claude\n")
+        FileUtils.mkdir_p(File.join(home, "config", "workspace", "projects"))
+        File.write(File.join(home, "config", "workspace", "projects", "#{ws}.yml"), "agentd:\n  poll_interval: 1\n")
+        holder = HeldScanSlot.take(dir: slot_dir, limit: 1)
+        expect(holder).to be_held
+
+        daemon = Thread.new { run_cli("agentd", ws) }
+        begin
+          wait_for { File.socket?(config.agent_socket_path(ws)) }
+          sleep 2.5
+          expect(snapshot["panes"]).to be_empty
+
+          holder.release
+          wait_for { snapshot["panes"].any? }
+          expect(snapshot["panes"]).not_to be_empty
+        ensure
+          holder.release unless holder.nil? || !holder.held?
+          Process.kill("TERM", Process.pid) if daemon.alive?
+          daemon.join(5)
+        end
+      end
+    end
   end
 
   describe "the bin/workspace executable" do

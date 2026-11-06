@@ -118,7 +118,8 @@ RSpec.describe Workspace::Commands::Agent do
   let(:restart_registry) { Workspace::RestartRegistry.new }
 
   subject(:agent) do
-    described_class.new(
+    described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+
       config: config,
       restart_registry: restart_registry,
       tmux: tmux,
@@ -132,8 +133,7 @@ RSpec.describe Workspace::Commands::Agent do
       clock: -> { now },
       retry_backoff: 0,
       output: output,
-      error_output: error_output
-    )
+      error_output: error_output)
   end
 
   after do
@@ -1350,14 +1350,14 @@ RSpec.describe Workspace::Commands::Agent do
       coordinator.start
       write_pipeline_config
 
-      unwired = described_class.new(
+      unwired = described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+
         config: config, tmux: tmux, work_coordinator_client: client,
         pipeline_config: pipeline_config,
         epoch_generator: -> { "wa-TESTEPOCH" },
         signal_trapper: signal_trapper,
         sentinel_poller_factory: sentinel_poller_factory,
-        retry_backoff: 0, output: output, error_output: error_output
-      )
+        retry_backoff: 0, output: output, error_output: error_output)
       thread = Thread.new { unwired.call(name: "myapp") }
       wait_until { output.string.include?("ready") || !thread.alive? }
 
@@ -1436,7 +1436,8 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     subject(:agent) do
-      described_class.new(config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
+      described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+        config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
         pipeline_state: pipeline_state, signal_trapper: signal_trapper, name_migration: name_migration, output: output, error_output: error_output)
     end
 
@@ -1527,12 +1528,13 @@ RSpec.describe Workspace::Commands::Agent do
       Object.new.tap { |reaper| reaper.define_singleton_method(:tick) { |_cwds| queue << true and 0 } }
     end
 
-    it "builds it from its own settings when it starts: alert, scan and lock reaper" do
+    it "starts the monitor it is given, built from alert, scan and lock reaper settings" do
+      builder = Workspace::SessionMonitorBuilder.new(tmux: tmux, logger: Workspace::Logger.new, error_output: error_output,
+        alert_config: alert_config, agentd_config: agentd_config, lock_reaper: lock_reaper, ps_timeout: 5,
+        scan_slots: Workspace::ScanSlotLimiter.new(dir: File.join(tmpdir, "slots")))
       configured = described_class.new(
         config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
-        pipeline_state: pipeline_state, signal_trapper: signal_trapper, alert_config: alert_config,
-        agentd_config: agentd_config, lock_reaper: lock_reaper, ps_timeout: 5,
-        scan_slots: Workspace::ScanSlotLimiter.new(dir: File.join(tmpdir, "slots")),
+        pipeline_state: pipeline_state, signal_trapper: signal_trapper, session_monitor_factory: builder,
         output: output, error_output: error_output
       )
       thread = Thread.new { configured.call(name: "myapp") }
@@ -1550,7 +1552,8 @@ RSpec.describe Workspace::Commands::Agent do
   describe "#handle, before the daemon has started" do
     let(:coordinator_client) { instance_double(Workspace::WorkCoordinatorClient, report_status: {"ok" => true}) }
     let(:served) do
-      described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+      described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+        config: config, tmux: tmux, work_coordinator_client: coordinator_client,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state, current_name: "myapp",
         token_generator: token_generator, clock: -> { now }, retry_backoff: 0,
         output: output, error_output: error_output)
@@ -2777,7 +2780,8 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     def build_agent(agent_commands)
-      described_class.new(config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
+      described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+        config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
         pipeline_state: pipeline_state, agent_labels: labels, agent_commands: agent_commands, current_name: "myapp",
         output: output, error_output: error_output)
     end

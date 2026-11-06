@@ -154,13 +154,18 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
   it "PU2 | low | stage-timeout failure message reports an absolute ISO deadline instead of the configured timeout duration | lib/workspace/commands/agent.rb:423 | interpolate the stage's configured timeout (e.g. \"30m\") into the failure message" do
     tmux = CLITestHelpers::FakeTmux.new
     pollers = []
-    sentinel_poller_factory = lambda do |session_name:, pane:, token:, deadline:|
-      poller = Object.new
-      poller.define_singleton_method(:start) do |on_error: nil, on_timeout: nil, &block|
-        poller.define_singleton_method(:fire_timeout) { on_timeout.call }
-        poller
+    poller_class = Class.new do
+      def start(on_error: nil, on_timeout: nil, &block)
+        @on_timeout = on_timeout
+        self
       end
-      poller.define_singleton_method(:stop) {}
+
+      def fire_timeout = @on_timeout.call
+
+      def stop = nil
+    end
+    sentinel_poller_factory = lambda do |session_name:, pane:, token:, deadline:|
+      poller = poller_class.new
       pollers << poller
       poller
     end
@@ -185,7 +190,8 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
     error_output = StringIO.new
     now = Time.utc(2026, 9, 27, 12, 0, 0)
 
-    agent = Workspace::Commands::Agent.new(
+    agent = Workspace::Commands::Agent.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+
       config: config_double,
       tmux: tmux,
       work_coordinator_client: instance_double(Workspace::WorkCoordinatorClient, report_status: {}),
@@ -201,8 +207,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
       retry_backoff: 0,
       current_name: "myapp",
       output: StringIO.new,
-      error_output: error_output
-    )
+      error_output: error_output)
 
     # Hand the message over as the socket server would, without a real socket or thread.
     agent.handle("type" => "command", "workspace" => "myapp",
