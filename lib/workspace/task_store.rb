@@ -26,12 +26,14 @@ module Workspace
     # @param dir [String] the directory holding `<id>.json` files and `archive/`
     # @param clock [#call] returns the current Time
     # @param error_output [IO] where a skipped unreadable file is reported
-    def initialize(dir:, clock: -> { Time.now }, error_output: $stderr)
+    # @param archive_limit [Integer] archived tasks kept
+    def initialize(dir:, clock: -> { Time.now }, error_output: $stderr, archive_limit: ARCHIVE_LIMIT)
       @dir = dir
       @archive_dir = File.join(dir, "archive")
       @lockfile_path = File.join(dir, ".lock")
       @clock = clock
       @error_output = error_output
+      @archive_limit = archive_limit
       @warned = {}
     end
 
@@ -167,7 +169,7 @@ module Workspace
     end
 
     def prune_archive
-      stale = archived.drop(ARCHIVE_LIMIT)
+      stale = archived.drop(@archive_limit)
       stale.each { |r| FileUtils.rm_f(File.join(@archive_dir, "#{r["id"]}.json")) }
     end
 
