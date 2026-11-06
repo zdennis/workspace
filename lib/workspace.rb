@@ -446,8 +446,9 @@ module Workspace
   # @param env [Hash] environment; `WORKSPACE_NO_INPUT` makes every prompt fail instead of waiting
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
+  # @param exit_handler [#exit] receives the process exit (Kernel in production; specs pass a recorder)
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: Kernel)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -1010,6 +1011,7 @@ module Workspace
       ensure_agent_command: ensure_agent_command,
       name_migration: name_migration,
       handoff_command: handoff_command,
+      exit_handler: exit_handler,
       logger: logger,
       output: output,
       error_output: error_output,

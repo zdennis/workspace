@@ -49,7 +49,7 @@ RSpec.describe "workspace workflow attempts through build_cli" do
     let(:art) { File.join(ENV.fetch("HOME"), "art") }
     let(:out) { StringIO.new }
     let(:cli) do
-      Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {}).tap { |each| each.instance_variable_set(:@exit_handler, FakeExitHandler) }
+      Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {}, exit_handler: FakeExitHandler)
     end
 
     before do

@@ -44,11 +44,9 @@ RSpec.describe "workspace rename, end to end" do
     out.rewind
     err.truncate(0)
     err.rewind
-    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}).tap do |built|
-      handler = Object.new
-      handler.define_singleton_method(:exit) { |code = 0| raise SystemExit.new(code) }
-      built.instance_variable_set(:@exit_handler, handler)
-    end
+    handler = Object.new
+    handler.define_singleton_method(:exit) { |code = 0| raise SystemExit.new(code) }
+    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}, exit_handler: handler)
   end
 
   # Runs the CLI; returns the exit status (0 when it does not exit).

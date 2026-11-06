@@ -26,7 +26,7 @@ RSpec.describe "workspace workflow sweep --install through build_cli" do
     end
   end
   let(:cli) do
-    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}, launchctl: launchctl).tap { |each| each.instance_variable_set(:@exit_handler, FakeExitHandler) }
+    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}, launchctl: launchctl, exit_handler: FakeExitHandler)
   end
 
   before do

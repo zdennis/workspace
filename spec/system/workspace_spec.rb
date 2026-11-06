@@ -22,6 +22,15 @@ RSpec.describe Workspace do
       expect(output.string).to match(/Usage: workspace/)
     end
 
+    it "sends the process exit to the exit_handler it is given" do
+      exits = []
+      handler = Object.new
+      handler.define_singleton_method(:exit) { |code = 0| exits << code }
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {}, exit_handler: handler)
+      cli.run(["bogus"])
+      expect(exits).to include(1)
+    end
+
     it "accepts a logger parameter" do
       logger = Workspace::Logger.new(enabled: true)
       cli = Workspace.build_cli(
