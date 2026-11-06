@@ -356,7 +356,7 @@ RSpec.describe Workspace::EventLog do
   describe "locking" do
     let(:lock_file) { "#{event_log_file}.lock" }
 
-    before { stub_const("Workspace::EventLog::LOCK_WAIT", 0.05) }
+    subject(:event_log) { described_class.new(config: config, error_output: output, lock_wait: 0.05) }
 
     def holding_lock
       File.open(lock_file, File::RDWR | File::CREAT, 0o600) do |lock|

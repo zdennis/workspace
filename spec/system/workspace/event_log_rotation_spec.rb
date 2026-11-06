@@ -128,17 +128,20 @@ RSpec.describe Workspace::EventLog, "rotation" do
   end
 
   it "skips rotation when another process holds the log's lock, and still appends" do
-    stub_const("Workspace::EventLog::ROTATE_LOCK_WAIT", 0.05)
+    event_log = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep, rotate_lock_wait: 0.05)
     fill(event_log, count: 5)
     holder = File.open("#{event_log_file}.lock", File::RDWR | File::CREAT, 0o600)
     holder.flock(File::LOCK_SH)
 
     begin
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       fill(event_log, count: 15)
+      waited = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
     ensure
       holder.close
     end
 
+    expect(waited).to be < 3
     expect(File.exist?("#{event_log_file}.1")).to be(false)
     expect(lines_of(event_log_file).size).to eq(20)
   end
