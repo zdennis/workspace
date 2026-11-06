@@ -1714,6 +1714,41 @@ RSpec.describe Workspace::Commands::Agent do
     end
   end
 
+  describe "#handle, before the daemon has started" do
+    let(:coordinator_client) { instance_double(Workspace::WorkCoordinatorClient, report_status: {"ok" => true}) }
+    let(:served) do
+      described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state, current_name: "myapp",
+        token_generator: token_generator, clock: -> { now }, retry_backoff: 0,
+        output: output, error_output: error_output)
+    end
+    let(:reply) { StringIO.new }
+
+    def replied = JSON.parse(reply.string.lines.last)
+
+    it "delivers a command message to the Claude pane and answers on the client" do
+      served.handle({"type" => "command", "workspace" => "myapp", "work_item_ref" => "WC-1",
+                     "dispatch_id" => "d-1", "body" => "do it"}, reply)
+
+      expect(replied).to include("ok" => true)
+      expect(tmux.sent_keys.map { |k| [k[:session], k[:pane]] }).to eq([["myapp", "0.1"]])
+      expect(tmux.sent_keys.first[:text]).to include("do it")
+    end
+
+    it "drops a message addressed to another workspace" do
+      served.handle({"type" => "command", "workspace" => "other", "work_item_ref" => "WC-1", "body" => "do it"}, reply)
+
+      expect(replied).to eq("ok" => false, "error" => "wrong_workspace")
+      expect(tmux.sent_keys).to be_empty
+    end
+
+    it "refuses a restart_agent message with no prompt on the same path" do
+      served.handle({"type" => "restart_agent", "workspace" => "myapp", "pane" => "%18"}, reply)
+
+      expect(replied).to include("ok" => false, "error" => "missing_prompt")
+    end
+  end
+
   describe "when text can't be delivered to a pane" do
     def send_message(message)
       UNIXSocket.open(agent_socket_path) do |s|

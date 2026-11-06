@@ -99,6 +99,10 @@ module Workspace
       #   once when the session monitor starts; nil knows only the providers' executables
       # @param task_store [Workspace::TaskStore, nil] the workspace's task, for `sessions --json`'s
       #   `task` and first `display_label` source; nil reports no task
+      # @param restart_registry [Workspace::RestartRegistry] the panes being restarted; one is
+      #   built by default
+      # @param current_name [String, nil] the workspace served before {#call} starts, so {#handle}
+      #   works without it; +call+ sets it from its +name+
       # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
       #   monitors scan at once, machine-wide; nil builds one from config
       #   when the session monitor starts
@@ -130,6 +134,7 @@ module Workspace
         prompt_queue_desk_factory: nil,
         agent_recovery_desk_factory: nil,
         restart_registry: RestartRegistry.new,
+        current_name: nil,
         handoff_watcher_factory: nil,
         name_migration: nil,
         plan_progress_watcher_factory: nil,
@@ -137,6 +142,8 @@ module Workspace
         spine_owner_report_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @name_migration = name_migration
+        @current_name = current_name
+        @tmux_session = current_name && tmux.session_name_for(current_name)
         @config = config
         @tmux = tmux
         @agent_labels = agent_labels
@@ -328,6 +335,17 @@ module Workspace
           # from under the accept — in which case we go round on the new one.
           break if @shutting_down
         end
+      end
+
+      # Routes one parsed socket message as the accept loop does, answering on
+      # +client+ with one JSON line. A message for another workspace is dropped
+      # with a +wrong_workspace+ reply.
+      #
+      # @param message [Hash] the parsed message, with its +"type"+ and +"workspace"+
+      # @param client [#puts, #close, nil] the connection to answer on
+      # @return [Symbol, nil] +:handed_off+ when a worker thread now owns +client+
+      def handle(message, client = nil)
+        dispatch(message, client)
       end
 
       # Reports something noteworthy that happened while a stage is running.
