@@ -13,6 +13,11 @@ module Workspace
   # The caller serialises writers (`spine set` holds a per-workspace lock); this class also checks
   # that the file did not change between its read and the rename, and starts over once if it did.
   class SpineWriter
+    # @param opener [#call] opens the temporary file a rewrite goes through, like `File.open` (path, flags, mode, block)
+    def initialize(opener: File.method(:open))
+      @opener = opener
+    end
+
     # What one {#write} did.
     #
     # @!attribute changed [Boolean] whether the file was written
@@ -388,7 +393,7 @@ module Workspace
     def replace_unless_changed(path, relative, bytes, info)
       temp = File.join(File.dirname(path), ".#{File.basename(path)}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp")
       flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW
-      File.open(temp, flags, info.mode & 0o777) do |io|
+      @opener.call(temp, flags, info.mode & 0o777) do |io|
         io.binmode
         io.write(bytes)
         io.chmod(info.mode & 0o7777)

@@ -10,7 +10,14 @@ RSpec.describe Workspace::SpineWriter do
     end
   end
 
-  subject(:writer) { described_class.new }
+  subject(:writer) { described_class.new(opener: opener) }
+
+  let(:after_temp) { -> {} }
+  let(:opener) do
+    lambda do |path, flags, mode, &block|
+      File.open(path, flags, mode, &block).tap { after_temp.call }
+    end
+  end
 
   let(:updated) { "2026-10-17T22:01:00Z" }
 
@@ -267,19 +274,22 @@ RSpec.describe Workspace::SpineWriter do
       expect(reason_of(File.join(@dir, "40-verify.md"))).to eq("missing")
     end
 
-    it "starts over once when the file changes under it, then refuses" do
-      path = stage("---\nstatus: blocked\n---\n")
-      calls = 0
-      allow(writer).to receive(:replace_unless_changed).and_wrap_original do |original, *args|
-        calls += 1
-        File.binwrite(path, "---\nstatus: blocked\n---\nedited #{calls}\n")
-        original.call(*args)
+    context "when the file changes under it" do
+      let(:path) { stage("---\nstatus: blocked\n---\n") }
+      let(:calls) { [] }
+      let(:after_temp) do
+        lambda do
+          calls << 1
+          File.binwrite(path, "---\nstatus: blocked\n---\nedited #{calls.size}\n")
+        end
       end
 
-      expect(reason_of(path)).to eq("changed_while_writing")
-      expect(calls).to eq(2)
-      expect(File.read(path)).to end_with("edited 2\n")
-      expect(Dir.children(@dir)).to eq(["40-verify.md"])
+      it "starts over once, then refuses" do
+        expect(reason_of(path)).to eq("changed_while_writing")
+        expect(calls.size).to eq(2)
+        expect(File.read(path)).to end_with("edited 2\n")
+        expect(Dir.children(@dir)).to eq(["40-verify.md"])
+      end
     end
   end
 end
