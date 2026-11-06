@@ -1246,6 +1246,9 @@ module Workspace
         "waiting_message" => wait&.dig(:message),
         "waiting_tool" => wait&.dig(:tool),
         "waiting_input" => wait&.dig(:input),
+        "waits" => pane[:waits].map { |agent_id, w|
+          {"agent_id" => agent_id, "tool" => w[:tool], "input" => w[:input], "since" => w[:since]&.utc&.iso8601}
+        },
         "stop_reason" => pane[:done]&.dig(:stop_reason),
         "turn_failed" => !pane[:turn_failed].nil?,
         "session_id" => pane[:session_id],

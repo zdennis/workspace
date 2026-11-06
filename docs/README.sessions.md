@@ -88,6 +88,7 @@ During a Claude Code permission wait, each `--json` pane (and each [`snapshot`](
 Limits:
 
 - Both fields are `null`, not absent, on every pane, and always on a pane that isn't Claude Code or isn't waiting.
+- `sessions --json` panes also list every open wait as `waits` (`agent_id`, `tool`, `input`, `since`; the main agent is `null`), where `waiting_tool` and `waiting_input` speak for the oldest one. `input` is as sensitive as `waiting_input`. `snapshot` panes leave `waits` out.
 - `waiting_input` is `null` for a tool the summary has no rule for, MCP tools included. `waiting_tool` is still set.
 - Both are `null` while several requests are pending, or none is. A `Notification` doesn't say whose dialog it is, so the daemon names a tool only when one request is pending. The wait is then filed under the main agent, and it can end while one of those dialogs is still open.
 - A lost main request can leave a sub-agent's only request labelling a main dialog. So can one the daemon dropped: a main tool of the same name finishing beside the dialog clears it.
