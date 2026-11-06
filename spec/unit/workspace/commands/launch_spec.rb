@@ -297,7 +297,7 @@ RSpec.describe Workspace::Commands::Launch do
         described_class.new(
           state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
           project_config: project_config, window_layout: window_layout, config: config,
-          pipeline_config: pipeline_config, agent_readiness: agent_readiness, prompt_timeout: 60,
+          pipeline_config: pipeline_config, agent_readiness: agent_readiness, prompt_timeout: 60, sleeper: ->(_seconds) {},
           output: output, error_output: error_output
         )
       end
@@ -319,7 +319,6 @@ RSpec.describe Workspace::Commands::Launch do
         allow(window_manager).to receive(:iterm_windows).and_return({1 => "workspace-tmux-proj1", 2 => "workspace-tmux-proj2"})
         allow(window_layout).to receive(:arrange)
         allow(config).to receive(:agent_running?).and_return(true)
-        allow(command).to receive(:sleep)
         allow(agent_readiness).to receive(:wait).and_return(ready)
         allow(tmux).to receive(:deliver).and_return(delivery(:submitted))
         allow(tmux).to receive(:shows_text?).and_return(false)
@@ -631,6 +630,38 @@ RSpec.describe Workspace::Commands::Launch do
 
         expect(result).to include(exit_code: 0, bound_panes: {})
       end
+
+      context "with configured agent names" do
+        let(:plain_settings) { instance_double(Workspace::ProjectSettings, load_global: {}, load: {}) }
+        let(:configured_settings) { instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {}) }
+
+        def launch_with(agent_commands)
+          described_class.new(
+            state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+            project_config: project_config, window_layout: window_layout, config: config,
+            pipeline_config: pipeline_config, agent_readiness: agent_readiness, agent_commands: agent_commands,
+            prompt_timeout: 60, sleeper: ->(_seconds) {}, output: output, error_output: error_output
+          ).call(["proj1"], prompts: {"proj1" => "go"})
+        end
+
+        def commands_for(settings)
+          Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+        end
+
+        it "passes the project's configured names to the readiness wait" do
+          launch_with(commands_for(configured_settings))
+
+          expect(agent_readiness).to have_received(:wait)
+            .with("tmux-proj1", deadline: 60.0, detector: Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))
+        end
+
+        it "passes nothing extra when no names are configured or no AgentCommands is wired" do
+          launch_with(commands_for(plain_settings))
+          launch_with(nil)
+
+          expect(agent_readiness).to have_received(:wait).with("tmux-proj1", deadline: 60.0).twice
+        end
+      end
     end
   end
 end
@@ -774,42 +805,6 @@ RSpec.describe Workspace::Commands::Launch, "window position restore" do
 
     expect(window_layout).to have_received(:arrange)
     expect(result[:positions]).to eq("proj1" => "arranged")
-  end
-
-  describe "configured agent names in the readiness checks" do
-    let(:agent_readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 60.0, wait: Workspace::AgentReadiness::Result.new(ready: true, pane: "0.1", label: "Claude Code")) }
-    let(:settings) { instance_double(Workspace::ProjectSettings, load_global: {"agent" => {"commands" => {"claude" => "claude-dev"}}}, load: {}) }
-    let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)) }
-    let(:tmux) { CLITestHelpers::FakeTmux.new }
-
-    def build(agent_commands:)
-      described_class.new(state: CLITestHelpers::FakeState.new, iterm: instance_double(Workspace::ITerm), window_manager: instance_double(Workspace::WindowManager),
-        tmux: tmux, project_config: instance_double(Workspace::ProjectConfig), window_layout: instance_double(Workspace::WindowLayout),
-        config: instance_double(Workspace::Config), pipeline_config: instance_double(Workspace::PipelineConfig),
-        agent_ensurer: instance_double(Workspace::Commands::EnsureAgent), agent_readiness: agent_readiness, agent_commands: agent_commands,
-        prompt_timeout: 60, output: StringIO.new, error_output: StringIO.new)
-    end
-
-    before do
-      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
-      allow(tmux).to receive(:shows_text?).and_return(false)
-    end
-
-    it "passes the project's configured names to the readiness wait" do
-      build(agent_commands: agent_commands).tap { |c| c.instance_variable_set(:@optional, {}) && c.instance_variable_set(:@delivered_panes, {}) && c.instance_variable_set(:@bindings, {}) }.send(:send_prompts, {"proj" => "proj"}, {"proj" => "go"}, 60)
-
-      expect(agent_readiness).to have_received(:wait)
-        .with("proj", deadline: 60.0, detector: Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}))
-    end
-
-    it "passes nothing extra when no names are configured or no AgentCommands is wired" do
-      plain = instance_double(Workspace::ProjectSettings, load_global: {}, load: {})
-      unconfigured = Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: plain))
-      build(agent_commands: unconfigured).tap { |c| c.instance_variable_set(:@optional, {}) && c.instance_variable_set(:@delivered_panes, {}) && c.instance_variable_set(:@bindings, {}) }.send(:send_prompts, {"proj" => "proj"}, {"proj" => "go"}, 60)
-      build(agent_commands: nil).tap { |c| c.instance_variable_set(:@optional, {}) && c.instance_variable_set(:@delivered_panes, {}) && c.instance_variable_set(:@bindings, {}) }.send(:send_prompts, {"proj" => "proj"}, {"proj" => "go"}, 60)
-
-      expect(agent_readiness).to have_received(:wait).with("proj", deadline: 60.0).twice
-    end
   end
 end
 
