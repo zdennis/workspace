@@ -65,10 +65,7 @@ RSpec.describe Workspace::AgentRestart, "adversarial concurrency" do
   end
 
   it "C1: re-checks the pipeline before typing /clear, so a stage started during the quiet wait isn't wiped" do
-    reader = Object.new
-    reader.define_singleton_method(:read) do |pane_id:, **|
-      {pct: 50, error: nil, updated_at: "2026-09-27T12:00:00Z"}
-    end
+    reader = BlockContextReader.new { |_pane_id| {pct: 50, error: nil, updated_at: "2026-09-27T12:00:00Z"} }
     # A pipeline stage was dispatched onto pane 0.1 while the restart waited
     # for the pane to go quiet (the daemon only checked at message time).
     restart = build_restart(context_reader: reader, pipeline_ref: ->(index) { (index == 1) ? "WC-7" : nil })
@@ -81,8 +78,7 @@ RSpec.describe Workspace::AgentRestart, "adversarial concurrency" do
 
   it "C2: never counts a lower reading recorded in the same second but before /clear as confirming it" do
     readings = [{pct: 50, error: nil, updated_at: "2026-09-27T12:00:05Z"}]
-    reader = Object.new
-    reader.define_singleton_method(:read) { |pane_id:, **| readings.last }
+    reader = BlockContextReader.new { |_pane_id| readings.last }
     # Just before /clear is typed (same wall-clock second), the statusline
     # records a lower reading for the *old* conversation (e.g. a compaction
     # finishing). The /clear itself never takes effect.
@@ -99,10 +95,7 @@ RSpec.describe Workspace::AgentRestart, "adversarial concurrency" do
   end
 
   it "C3: doesn't type /clear while the session monitor reports the agent working on a still screen" do
-    reader = Object.new
-    reader.define_singleton_method(:read) do |pane_id:, **|
-      {pct: 50, error: nil, updated_at: "2026-09-27T12:00:00Z"}
-    end
+    reader = BlockContextReader.new { |_pane_id| {pct: 50, error: nil, updated_at: "2026-09-27T12:00:00Z"} }
     restart = build_restart(context_reader: reader, pane_state: ->(_id) { "working" })
 
     result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md", confirm_timeout: 2)
@@ -134,7 +127,7 @@ end
 RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrency" do
   let(:tmpdir) { Dir.mktmpdir("ws-restart-adv", "/tmp") }
   let(:agent_socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
-  let(:output) { StringIO.new }
+  let(:output) { ReadyAnnouncingOutput.new }
   let(:tmux) { ConcurrencyRestartTmux.new }
   let(:error_output) { StringIO.new }
   let(:config) do
@@ -180,19 +173,18 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrenc
 
   # Runs the daemon on a thread until the block is done.
   def with_daemon(agent, *gated)
-    thread = Thread.new { agent.call(name: "myapp") }
-    wait_until { output.string.include?("ready") || !thread.alive? }
+    thread = Thread.new do
+      agent.call(name: "myapp")
+    ensure
+      output.announce
+    end
+    output.wait_ready
     yield
   ensure
     gated.each(&:finish)
     signal_trapper.handlers["TERM"]&.call
     thread&.join(2)
     thread&.kill
-  end
-
-  def wait_until(timeout: 2)
-    deadline = Time.now + timeout
-    sleep(0.01) until yield || Time.now > deadline
   end
 
   def send_restart(overrides = {})
@@ -205,7 +197,18 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrenc
   it "C4: releases the pane when the worker thread can't be started, instead of leaking :starting" do
     restart = ConcurrencyGatedRestart.new({"ok" => true, "status" => "restarted"})
     attempts = 0
-    flaky = Workspace::RestartRegistry.new(spawn: lambda { |&work|
+    abandoned = Queue.new
+    announcing = Class.new(Workspace::RestartRegistry) do
+      def initialize(abandoned:, spawn:)
+        super(spawn: spawn)
+        @abandoned = abandoned
+      end
+
+      def abandon_pending(pane_id)
+        super.tap { @abandoned << pane_id }
+      end
+    end
+    flaky = announcing.new(abandoned: abandoned, spawn: lambda { |&work|
       attempts += 1
       raise ThreadError, "can't create Thread: Resource temporarily unavailable" if attempts == 1
       Thread.new(&work)
@@ -213,19 +216,20 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrenc
     agent = described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, signal_trapper: signal_trapper, context_reader: context_reader,
       session_monitor_factory: ->(_name) { ConcurrencyIdleMonitor.new }, restart_registry: flaky,
-      agent_restart_factory: restart.method(:build), output: output, error_output: error_output)
+      agent_restart_factory: ->(**kwargs) { restart.build(**kwargs) }, output: output, error_output: error_output)
 
     with_daemon(agent, restart) do
       send_restart
-      wait_until { attempts >= 1 && !flaky.held?("%18") }
+      # The reply goes out before the worker is spawned; wait for the failed spawn to be given up.
+      expect(abandoned.pop(timeout: 5)).to eq("%18")
+      expect(attempts).to eq(1)
       expect(flaky.held?("%18")).to be(false)
       expect(send_restart).to include("ok" => true, "status" => "started")
     end
   end
 
   it "C6: releases the pane before a waiting caller hears the outcome, so an immediate follow-up isn't refused" do
-    done = Object.new
-    done.define_singleton_method(:call) { |**| {"ok" => true, "status" => "restarted", "pane_id" => "%18"} }
+    done = ScriptedCall.new { |**| {"ok" => true, "status" => "restarted", "pane_id" => "%18"} }
     agent = build_agent(->(**) { done })
 
     with_daemon(agent) do
@@ -273,7 +277,7 @@ end
 RSpec.describe "restart_agent with main activity after the Stop" do
   let(:clock) { Struct.new(:now).new(Time.utc(2026, 10, 31, 12, 0, 0)) }
   let(:ticks) { [] }
-  let(:tmux) { MovingScreenTmux.new(method(:answer_delivery)) }
+  let(:tmux) { MovingScreenTmux.new(->(text) { answer_delivery(text) }) }
   let(:dir) { Dir.mktmpdir("moving-screen") }
   let(:transcript) { File.join(dir, "main.jsonl") }
   let(:snapshot) { Object.new }
@@ -289,7 +293,7 @@ RSpec.describe "restart_agent with main activity after the Stop" do
   let(:runner) do
     factory = lambda do |**wired|
       Workspace::AgentRestart.new(tmux: tmux, context_reader: context_reader, clock: -> { clock.now.to_f }, wall_clock: -> { clock.now },
-        sleeper: method(:tick), quiet_timeout: 30, **wired)
+        sleeper: ->(seconds) { tick(seconds) }, quiet_timeout: 30, **wired)
     end
     Workspace::RestartRunner.new(restart_factory: factory, registry: Workspace::RestartRegistry.new, tmux: tmux,
       session_name: "s", delivery_lock: Mutex.new, pipeline_ref: ->(_index) {}, monitor: monitor,
