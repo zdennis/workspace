@@ -21,7 +21,9 @@ module Workspace
 
     EMPTY = {title: nil, last_prompt: nil}.freeze
 
-    def initialize
+    # @param max_cached [Integer] transcripts remembered at once, {MAX_CACHED} by default
+    def initialize(max_cached: MAX_CACHED)
+      @max_cached = max_cached
       @cache = {}
     end
 
@@ -40,7 +42,7 @@ module Workspace
       return cached[:value] if cached && cached[:key] == key
 
       value = scan(path, stat.size)
-      @cache.clear if @cache.size >= MAX_CACHED
+      @cache.clear if @cache.size >= @max_cached
       @cache[path] = {key: key, value: value}
       value
     rescue SystemCallError, IOError

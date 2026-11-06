@@ -62,11 +62,18 @@ RSpec.describe Workspace::TranscriptLabel do
     expect(reader.read(path)[:title]).to be_nil
   end
 
-  it "keeps the cache bounded" do
-    paths = Array.new(described_class::MAX_CACHED + 5) { |i| File.join(dir, "s#{i}.jsonl").tap { |p| File.write(p, JSON.generate(ai_title("T#{i}")) + "\n") } }
+  it "keeps the cache bounded: past the cap the oldest readings are read from disk again" do
+    small = described_class.new(max_cached: 3)
+    paths = Array.new(4) { |i| File.join(dir, "s#{i}.jsonl").tap { |p| File.write(p, JSON.generate(ai_title("T#{i}")) + "\n") } }
 
-    expect(paths.map { |p| reader.read(p)[:title] }).to eq(paths.each_index.map { |i| "T#{i}" })
-    expect(reader.instance_variable_get(:@cache).size).to be <= described_class::MAX_CACHED
+    expect(paths.map { |p| small.read(p)[:title] }).to eq(%w[T0 T1 T2 T3])
+    allow(File).to receive(:open).and_call_original
+
+    small.read(paths.last)
+    expect(File).not_to have_received(:open)
+
+    expect(small.read(paths.first)[:title]).to eq("T0")
+    expect(File).to have_received(:open).with(paths.first, "rb")
   end
 
   it "rereads when the file changes and not otherwise" do

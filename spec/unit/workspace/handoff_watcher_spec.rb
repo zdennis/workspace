@@ -87,10 +87,13 @@ RSpec.describe Workspace::HandoffWatcher do
     end
   end
   let(:typer) { Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor) }
+  # Each sleep the watcher's thread starts, so a spec can wait for the thread to reach one.
+  let(:sleeping) { Queue.new }
+
   let(:watcher) do
     described_class.new(tmux: tmux, session_name: "ws", workspace: "ws", session_monitor: monitor, typer: typer,
       delivery_lock: delivery_lock, restarting: ->(id) { restarting.include?(id) }, plan_paused: -> { paused.first },
-      event_log: event_log, clock: -> { now.first })
+      event_log: event_log, clock: -> { now.first }, sleeper: ->(seconds) { sleeping.push(seconds) && sleep(seconds) })
   end
 
   def arm(pane_id: "%5", sent_at: now.first, interval: 30, max: 3, text: self.text, sent_text: self.sent_text)
@@ -962,8 +965,7 @@ RSpec.describe Workspace::HandoffWatcher do
     # A stop before the thread reaches its sleep would prove nothing.
     def start_and_settle
       watcher.start
-      thread = watcher.instance_variable_get(:@thread)
-      Thread.pass until thread.stop?
+      Timeout.timeout(5) { sleeping.pop }
     end
 
     it "stops within 1s with no watches" do

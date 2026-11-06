@@ -65,10 +65,11 @@ module Workspace
     # @param plan_paused [#call] whether the workspace's plan is paused
     # @param event_log [Workspace::EventLog, nil] gets the watch's events
     # @param clock [#call] returns the current Time
+    # @param sleeper [#call] sleeps the given seconds between the thread's ticks
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, session_name:, workspace:, session_monitor:, typer:, delivery_lock:,
       restarting: ->(_pane_id) { false }, plan_paused: -> { false }, event_log: nil, clock: -> { Time.now },
-      logger: Workspace::Logger.new)
+      sleeper: ->(seconds) { sleep(seconds) }, logger: Workspace::Logger.new)
       @tmux = tmux
       @session_name = session_name
       @workspace = workspace
@@ -79,6 +80,7 @@ module Workspace
       @plan_paused = plan_paused
       @event_log = event_log
       @clock = clock
+      @sleeper = sleeper
       @logger = logger
       @mutex = Mutex.new
       @watches = {}
@@ -94,7 +96,7 @@ module Workspace
       @thread = Thread.new do
         ticks = 0
         until @stopping
-          sleep TICK
+          @sleeper.call(TICK)
           ticks += 1
           next if ticks * TICK < POLL_EVERY
           ticks = 0
