@@ -46,11 +46,13 @@ module Workspace
     # @param lifecycle_rotated [Integer] how many rotated copies it keeps (`.1` .. `.N`)
     # @param hook_dir [String] the directory holding every daemon's hook event file
     # @param clock [#now] time source, for the time of gap lines
-    def initialize(lifecycle_path:, hook_dir:, lifecycle_rotated: EventLog::KEEP_ROTATED, clock: Time)
+    # @param max_read [Integer] most bytes one read takes from a source
+    def initialize(lifecycle_path:, hook_dir:, lifecycle_rotated: EventLog::KEEP_ROTATED, clock: Time, max_read: Source::MAX_READ)
       @lifecycle_path = lifecycle_path
       @lifecycle_rotated = lifecycle_rotated
       @hook_dir = hook_dir
       @clock = clock
+      @max_read = max_read
       @sources = {}
     end
 
@@ -65,7 +67,7 @@ module Workspace
     def open(cursor: nil, at: :end)
       parts = cursor ? decode(cursor) : nil
       gaps = []
-      add_source("lifecycle", Source.new(kind: :lifecycle, workspace: nil, path: @lifecycle_path, rotated: @lifecycle_rotated))
+      add_source("lifecycle", Source.new(kind: :lifecycle, workspace: nil, path: @lifecycle_path, rotated: @lifecycle_rotated, max_read: @max_read))
       hook_names.each { |name| add_source("hook:#{name}", hook_source(name)) }
 
       @sources.each do |key, source|
@@ -131,7 +133,7 @@ module Workspace
     end
 
     def hook_source(name)
-      Source.new(kind: :hook, workspace: name, path: HookEventLog.path_for(@hook_dir, name), rotated: 1)
+      Source.new(kind: :hook, workspace: name, path: HookEventLog.path_for(@hook_dir, name), rotated: 1, max_read: @max_read)
     end
 
     def hook_names
@@ -184,7 +186,8 @@ module Workspace
 
       attr_reader :kind, :workspace
 
-      def initialize(kind:, workspace:, path:, rotated:)
+      def initialize(kind:, workspace:, path:, rotated:, max_read: MAX_READ)
+        @max_read = max_read
         @kind = kind
         @workspace = workspace
         @path = path
@@ -264,7 +267,7 @@ module Workspace
       def read_lines
         out = []
         @more = false
-        budget = MAX_READ
+        budget = @max_read
         loop do
           open_next if @io.nil?
           break unless @io
@@ -278,7 +281,7 @@ module Workspace
           step = advance_past_eof
           # The file was rotated or replaced: a line may have reached the old
           # file after the last read, so it is read once more before moving on.
-          out.concat(read_available(MAX_READ)) if step == :replaced
+          out.concat(read_available(@max_read)) if step == :replaced
           if @hit_limit
             # Still more in the old file: leave the move to the new one for the next read.
             @queue.clear
@@ -343,7 +346,7 @@ module Workspace
         end
       end
 
-      def read_available(limit = MAX_READ)
+      def read_available(limit = @max_read)
         @io.seek(@offset)
         chunk = @io.read(limit) || ""
         @hit_limit = chunk.bytesize >= limit
