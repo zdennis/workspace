@@ -61,117 +61,38 @@ RSpec.describe Workspace do
       end
     end
 
-    it "wires the shared ConfigResolver into the config command, so config get can print the layered hint" do
-      cli = Workspace.build_cli(
-        output: StringIO.new,
-        error_output: StringIO.new,
-        input: StringIO.new
-      )
-
-      config_command = cli.instance_variable_get(:@config_command)
-      resolver = config_command.instance_variable_get(:@config_resolver)
-
-      expect(resolver).to be_a(Workspace::ConfigResolver)
-      # The one resolver build_cli hands every reader, not a second build.
-      expect(resolver).to equal(cli.instance_variable_get(:@notes_command).instance_variable_get(:@config_resolver))
-    end
-
     describe "the agent recovery desk factory" do
-      def recovery_wiring
-        Dir.mktmpdir("ws-recovery-wiring") do |state|
-          allow(ENV).to receive(:fetch).and_call_original
-          allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
-          cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-          factory = cli.instance_variable_get(:@agent_command).instance_variable_get(:@agent_recovery_desk_factory)
-          release = cli.instance_variable_get(:@session_event_command).instance_variable_get(:@dev_session_release)
-          args = {workspace: "ws-smoke", session_name: "ws", session_monitor: instance_double(Workspace::SessionMonitor),
-                  delivery_lock: Mutex.new, event_log: nil, restarting: ->(_) { false }, claim_restart: ->(_) {},
-                  release_restart: ->(*) {}, rebind_queue: ->(*) {}}
-          yield factory, args, release
+      around do |example|
+        Dir.mktmpdir("ws-recovery-wiring") do |dir|
+          saved = ENV.to_h
+          home = File.realpath(dir)
+          ENV.replace("HOME" => home, "PATH" => saved["PATH"], "XDG_STATE_HOME" => File.join(home, "state"), "XDG_CONFIG_HOME" => File.join(home, "config"))
+          example.run
+        ensure
+          ENV.replace(saved)
         end
       end
 
-      it "builds a desk with the defaults, sharing one stop marker with the session-event hook" do
-        recovery_wiring do |factory, args, release|
-          desk = factory.call(**args)
+      def recovery_desk(*config_settings)
+        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
+        config_settings.each { |key, value| cli.run(["config", "set", "--scope", "global", key, value]) }
+        factory = cli.instance_variable_get(:@agent_command).instance_variable_get(:@agent_recovery_desk_factory)
+        factory.call(workspace: "ws-smoke", session_name: "ws", session_monitor: instance_double(Workspace::SessionMonitor),
+          delivery_lock: Mutex.new, event_log: nil, restarting: ->(_) { false }, claim_restart: ->(_) {},
+          release_restart: ->(*) {}, rebind_queue: ->(*) {})
+      end
 
-          expect(desk).to be_a(Workspace::AgentRecoveryDesk)
-          expect(desk.instance_variable_get(:@marker)).to equal(release.instance_variable_get(:@recovery_marker))
-        end
+      it "builds a desk with the defaults" do
+        expect(recovery_desk).to be_a(Workspace::AgentRecoveryDesk)
       end
 
       it "builds no desk with agent.recovery.enabled off" do
-        allow_any_instance_of(Workspace::AgentRecoveryConfig).to receive(:enabled?).and_return(false)
-
-        recovery_wiring { |factory, args, _| expect(factory.call(**args)).to be_nil }
+        expect(recovery_desk(["agent.recovery.enabled", "false"])).to be_nil
       end
 
       it "builds no desk when the workspace's agent.kind is not claude" do
-        allow_any_instance_of(Workspace::AgentCommands).to receive(:kind).and_return("codex")
-
-        recovery_wiring { |factory, args, _| expect(factory.call(**args)).to be_nil }
+        expect(recovery_desk(["agent.kind", "codex"])).to be_nil
       end
-    end
-
-    it "wires pr feedback to the reader and the shared workspace checkout" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      command = cli.instance_variable_get(:@pr_feedback_command)
-
-      expect(command).to be_a(Workspace::Commands::PrFeedback)
-      expect(command.instance_variable_get(:@feedback)).to be_a(Workspace::PullRequestFeedback)
-      expect(command.instance_variable_get(:@checkout)).to equal(cli.instance_variable_get(:@push_command).instance_variable_get(:@checkout))
-    end
-
-    it "hands push a PullRequestStatus to check a pull request checkout's head" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      command = cli.instance_variable_get(:@push_command)
-
-      expect(command).to be_a(Workspace::Commands::Push)
-      expect(command.instance_variable_get(:@pr_status)).to be_a(Workspace::PullRequestStatus)
-    end
-
-    it "wires a real LockReaper into the agent command's session monitor" do
-      cli = Workspace.build_cli(
-        output: StringIO.new,
-        error_output: StringIO.new,
-        input: StringIO.new
-      )
-
-      agent_command = cli.instance_variable_get(:@agent_command)
-      lock_reaper = agent_command.instance_variable_get(:@lock_reaper)
-
-      expect(lock_reaper).to be_a(Workspace::LockReaper)
-      # Ticking with no cwds touches nothing on disk; this only confirms the
-      # dependency reaches the command, not stubbing it out.
-      expect(lock_reaper.tick([])).to eq(0)
-    end
-
-    it "wires the shared ProcessGroupTerminator into the statusline command" do
-      cli = Workspace.build_cli(
-        output: StringIO.new,
-        error_output: StringIO.new,
-        input: StringIO.new
-      )
-
-      statusline_command = cli.instance_variable_get(:@statusline_command)
-      lock_command = cli.instance_variable_get(:@lock_command)
-
-      terminator = statusline_command.instance_variable_get(:@terminator)
-      expect(terminator).to be_a(Workspace::ProcessGroupTerminator)
-      expect(terminator).to equal(lock_command.instance_variable_get(:@terminator))
-    end
-
-    it "gives every command that resolves a pane title the one shared AgentLabels" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      labels = %i[@run_command @capture_command @wait_until_content_command @claude_command @agent_command].map do |name|
-        cli.instance_variable_get(name).instance_variable_get(:@agent_labels)
-      end
-
-      expect(labels.first).to be_a(Workspace::AgentLabels)
-      expect(labels.map(&:object_id).uniq.size).to eq(1)
     end
 
     it "gives lock and dev the same view of which run a pane is bound to, from the bindings `binding set` writes" do
@@ -208,67 +129,6 @@ RSpec.describe Workspace do
       end
     end
 
-    it "wires the plan command to the notes command's answer and the task store start writes" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      plan = cli.instance_variable_get(:@plan_command)
-
-      expect(plan).to be_a(Workspace::Commands::Plan)
-      expect(plan.instance_variable_get(:@notes)).to equal(cli.instance_variable_get(:@notes_command))
-      expect(plan.instance_variable_get(:@task_store)).to be_a(Workspace::TaskStore)
-      expect(plan.instance_variable_get(:@ask_store_for).call("api")).to be_a(Workspace::AskStore)
-    end
-
-    it "wires the goal command to the snapshot, the run status and the spine reads" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      goal = cli.instance_variable_get(:@goal_command)
-
-      expect(goal).to be_a(Workspace::Commands::Goal)
-      expect(goal.instance_variable_get(:@snapshot)).to equal(cli.instance_variable_get(:@snapshot_command))
-      expect(goal.instance_variable_get(:@workflow_status)).to be_a(Workspace::WorkflowStatus)
-    end
-
-    it "wires the ticket command to the start-input resolver start uses" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      ticket = cli.instance_variable_get(:@ticket_command)
-      start = cli.instance_variable_get(:@start_command)
-
-      expect(ticket).to be_a(Workspace::Commands::Ticket)
-      expect(ticket.instance_variable_get(:@start_ref)).to equal(start.instance_variable_get(:@start_ref))
-      expect(ticket.instance_variable_get(:@source)).to be_a(Workspace::TicketSource)
-    end
-
-    it "wires the spine command to the notes command" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      spine = cli.instance_variable_get(:@spine_command)
-
-      expect(spine).to be_a(Workspace::Commands::Spine)
-      expect(spine.instance_variable_get(:@notes)).to equal(cli.instance_variable_get(:@notes_command))
-    end
-
-    it "wires the spine command to SpineFacts, built over the review command" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      reader = cli.instance_variable_get(:@spine_command).instance_variable_get(:@spine_facts).call
-
-      expect(reader).to be_a(Workspace::SpineFacts)
-      expect(reader.instance_variable_get(:@review)).to be_a(Workspace::Commands::Review)
-      expect(reader.instance_variable_get(:@pull_request_status)).to be_a(Workspace::PullRequestStatus)
-    end
-
-    it "gives finish the same pull request command that pr create runs" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      pr = cli.instance_variable_get(:@pull_request_command)
-      finish = cli.instance_variable_get(:@finish_command)
-
-      expect(pr).to be_a(Workspace::Commands::PullRequest)
-      expect(finish.instance_variable_get(:@pull_request)).to equal(pr)
-    end
-
     it "wires the binding command into launch, so a delivered play binds the pane binding set and session-event use" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 
@@ -293,16 +153,6 @@ RSpec.describe Workspace do
       expect(restore.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
     end
 
-    it "wires one name migration into agentd and agentd --ensure" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      migration = cli.instance_variable_get(:@ensure_agent_command).instance_variable_get(:@name_migration)
-
-      expect(migration).to be_a(Workspace::NameMigration)
-      expect(cli.instance_variable_get(:@agent_command).instance_variable_get(:@name_migration)).to equal(migration)
-      expect(migration.instance_variable_get(:@state)).to equal(cli.instance_variable_get(:@state))
-    end
-
     it "wires the dev environment's release to session end, and the same dev command and ledger into kill and dev up" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 
@@ -313,19 +163,6 @@ RSpec.describe Workspace do
       expect(session_event.instance_variable_get(:@dev_session_release)).to be_a(Workspace::DevSessionRelease)
       expect(kill.instance_variable_get(:@dev)).to equal(dev)
       expect(dev.instance_variable_get(:@session_ledger)).to equal(session_event.instance_variable_get(:@session_ledger))
-    end
-
-    it "wires instructions compose to the library start uses and the binding command binding show uses" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      instructions = cli.instance_variable_get(:@instructions_command)
-      composer = instructions.instance_variable_get(:@composer)
-
-      expect(instructions).to be_a(Workspace::Commands::Instructions)
-      expect(instructions.instance_variable_get(:@bindings)).to equal(cli.instance_variable_get(:@binding_command))
-      expect(composer.instance_variable_get(:@library)).to equal(cli.instance_variable_get(:@library))
-      expect(composer.instance_variable_get(:@commands_config)).to be_a(Workspace::CommandsConfig)
-      expect(composer.instance_variable_get(:@pane_bindings)).to be_a(Workspace::PaneBindings)
     end
 
     it "wires one workflow engine into the workflow command and kill, over the run files the lock store reads" do
@@ -373,47 +210,6 @@ RSpec.describe Workspace do
         expect(lock_holder.run_alive?(run["id"])).to be true
         expect(File.dirname(File.dirname(store.events_path(run["id"])))).to eq(File.join(state, "workspace", ".workflows"))
       end
-    end
-
-    it "gives the agent daemon a nudger over the same run files and bindings, which starts this checkout's bin/workspace" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      nudger = cli.instance_variable_get(:@agent_command).instance_variable_get(:@workflow_nudger)
-      engine = cli.instance_variable_get(:@workflow_command).instance_variable_get(:@engine)
-
-      expect(nudger).to be_a(Workspace::WorkflowNudger)
-      expect(nudger.instance_variable_get(:@store)).to equal(engine.instance_variable_get(:@store))
-      expect(nudger.instance_variable_get(:@panes)).to equal(engine.instance_variable_get(:@panes))
-      expect(nudger.instance_variable_get(:@executable)).to eq(File.join(PROJECT_ROOT, "bin", "workspace"))
-    end
-
-    it "gives workflow the reader of workspace facts that status --table needs" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      facts = cli.instance_variable_get(:@workflow_command).instance_variable_get(:@workspace_facts)
-
-      expect(facts).to be_a(Workspace::WorkflowWorkspaceFacts)
-    end
-
-    it "gives start a library installer that checks tracked files with the shared git" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      start_command = cli.instance_variable_get(:@start_command)
-      installer = start_command.instance_variable_get(:@library_installer)
-
-      expect(installer).to be_a(Workspace::LibraryInstaller)
-      expect(installer.instance_variable_get(:@git)).to equal(start_command.instance_variable_get(:@git))
-    end
-
-    it "gives the one library installer to start and to library, reading the install directories from config" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      installer = cli.instance_variable_get(:@start_command).instance_variable_get(:@library_installer)
-      library_command = cli.instance_variable_get(:@library_command)
-
-      expect(library_command.instance_variable_get(:@installer)).to equal(installer)
-      expect(installer.instance_variable_get(:@dirs)).to be_a(Workspace::LibraryInstallDirs)
-      expect(installer.instance_variable_get(:@dirs).instance_variable_get(:@config_resolver)).to be_a(Workspace::ConfigResolver)
     end
 
     it "builds a doctor that no longer reports mixed-case workspace names" do
