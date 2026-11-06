@@ -1,5 +1,4 @@
-require "open3"
-require "json"
+require_relative "../gh_pull_requests"
 
 module Workspace
   module Commands
@@ -18,13 +17,11 @@ module Workspace
       # @param stop_command [Workspace::Commands::Stop] pre-built stop command for session teardown
       # @param event_log [Workspace::EventLog, nil] records `worktree_finished` (outcome `pruned`) for each removed project
       # @param tmux [Workspace::Tmux, nil] reads a project's session name before its config is removed; nil uses the config name
-      # @param gh_usable [#call, nil] answers whether `gh` is authenticated; nil asks `gh auth status`
-      # @param pr_lookup [#call, nil] called with a branch and a worktree path, answers `{number:, url:, state:}` or nil; nil asks `gh pr view`
+      # @param pull_requests [#usable?, #status_for] answers whether `gh` is authenticated and the `{number:, url:, state:}` (or nil) of a branch's pull request
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, gh_usable: nil, pr_lookup: nil, output: $stdout, input: $stdin)
-        @gh_usable = gh_usable || method(:gh_usable?)
-        @pr_lookup = pr_lookup || method(:pr_status)
+      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, pull_requests: GhPullRequests.new, output: $stdout, input: $stdin)
+        @pull_requests = pull_requests
         @tmux = tmux
         @state = state
         @project_config = project_config
@@ -196,7 +193,7 @@ module Workspace
           end
 
           unless gh_checked
-            gh_available = @gh_usable.call
+            gh_available = @pull_requests.usable?
             gh_checked = true
             unless gh_available
               @output.puts ""
@@ -209,7 +206,7 @@ module Workspace
             next
           end
 
-          pr = @pr_lookup.call(branch, root)
+          pr = @pull_requests.status_for(branch, root)
           if pr.nil?
             @output.puts "skipped (no PR found for #{branch})"
             next
@@ -232,48 +229,6 @@ module Workspace
 
         @output.puts ""
         candidates
-      end
-
-      # Checks whether the `gh` CLI is authenticated and available.
-      #
-      # @return [Boolean] true if `gh auth status` succeeds
-      def gh_usable?
-        _, _, status = Open3.capture3("gh", "auth", "status")
-        status.success?
-      end
-
-      # Parses a GitHub remote URL and returns the owner/repo slug.
-      #
-      # @param remote_url [String] SSH or HTTPS GitHub remote URL
-      # @return [String, nil] the "owner/repo" slug, or nil if not parseable
-      def github_repo_slug(remote_url)
-        m = remote_url.match(%r{github\.com[:/](.+?)(?:\.git)?\z})
-        m ? m[1] : nil
-      end
-
-      # Looks up the PR for a branch in a given repo directory.
-      #
-      # @param branch [String] the branch name
-      # @param repo_path [String] path to the worktree directory
-      # @return [Hash, nil] hash with :number, :url, :state keys, or nil on failure
-      def pr_status(branch, repo_path)
-        remote_url, _, status = Open3.capture3("git", "-C", repo_path, "remote", "get-url", "origin")
-        return nil unless status.success?
-
-        slug = github_repo_slug(remote_url.strip)
-        return nil unless slug
-
-        stdout, _, gh_status = Open3.capture3(
-          "gh", "pr", "view", branch,
-          "--repo", slug,
-          "--json", "number,url,state"
-        )
-        return nil unless gh_status.success?
-
-        data = JSON.parse(stdout)
-        {number: data["number"], url: data["url"], state: data["state"]}
-      rescue JSON::ParserError
-        nil
       end
 
       # Prints a candidate list showing what will be pruned.

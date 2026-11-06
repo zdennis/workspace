@@ -1,6 +1,14 @@
 require "tmpdir"
 
 RSpec.describe Workspace::Commands::Prune do
+  let(:fake_pull_requests_class) do
+    Struct.new(:usable_answer, :table) do
+      def usable? = usable_answer.call
+
+      def status_for(branch, root) = table.fetch([branch, root])
+    end
+  end
+
   let(:tmpdir) { Dir.mktmpdir }
   let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
   let(:state_file) { File.join(tmpdir, "state.json") }
@@ -28,8 +36,7 @@ RSpec.describe Workspace::Commands::Prune do
       git: git,
       stop_command: stop_command,
       event_log: state.event_log,
-      gh_usable: -> { gh_usable },
-      pr_lookup: ->(branch, root) { pr_table.fetch([branch, root]) },
+      pull_requests: fake_pull_requests_class.new(-> { gh_usable }, pr_table),
       output: output,
       input: input
     )
@@ -676,8 +683,9 @@ RSpec.describe Workspace::Commands::Prune do
       tmux = double("tmux", socket_arguments: ["-L", "mysock"])
       allow(tmux).to receive(:session_name_for).with("wt-clean").and_return("proj-wt-clean")
       pruner = described_class.new(state: state, project_config: project_config, project_settings: project_settings,
-        git: git, stop_command: stop_command, event_log: state.event_log, tmux: tmux, gh_usable: -> { true },
-        pr_lookup: ->(branch, root) { pr_table.fetch([branch, root]) }, output: output, input: input)
+        git: git, stop_command: stop_command, event_log: state.event_log, tmux: tmux,
+        pull_requests: fake_pull_requests_class.new(-> { true }, pr_table),
+        output: output, input: input)
       state["wt-clean"] = {"unique_id" => "x"}
       expect(stop_command).to receive(:call).with(["wt-clean"], session_names: {"wt-clean" => "proj-wt-clean"}, socket_arguments: {"wt-clean" => ["-L", "mysock"]})
 

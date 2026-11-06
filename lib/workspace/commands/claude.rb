@@ -15,7 +15,7 @@ module Workspace
       # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
       # @param agent_commands [Workspace::AgentCommands, nil] gives the command that starts Claude Code for
       #   a project; nil types {REACTIVATE_COMMAND}
-      # @param sleeper [#call] sleeps the given seconds between the Ctrl-C presses
+      # @param sleeper [#call] sleeps the given seconds between the Ctrl-C presses; injectable so specs don't wait
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, tmux:, agent_labels: nil, agent_commands: nil, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, error_output: $stderr)
