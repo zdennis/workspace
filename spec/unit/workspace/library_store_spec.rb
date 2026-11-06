@@ -134,10 +134,9 @@ RSpec.describe Workspace::LibraryStore do
 
     it "keeps the old directory when the new one can't be renamed into place" do
       store.copy_tree("skill", "tests", skill_source)
-      allow(File).to receive(:rename).and_call_original
-      allow(File).to receive(:rename).with(/tests\.tmp-/, store.path_for("skill", "tests")).and_raise(Errno::EACCES)
+      failing = described_class.new(dir: File.join(@dir, "global"), scope: "global", renamer: ->(_from, _to) { raise Errno::EACCES })
 
-      expect { store.write("skill", "tests", "# New\n") }.to raise_error(Errno::EACCES)
+      expect { failing.write("skill", "tests", "# New\n") }.to raise_error(Errno::EACCES)
       expect(store.read("skill", "tests")).to eq("---\ndescription: Writes tests\n---\n# Tests\n")
       expect(Dir.children(File.join(@dir, "global/skill"))).to eq(["tests"])
     end

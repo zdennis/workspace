@@ -28,8 +28,10 @@ module Workspace
     # @param dir [String] the scope's directory
     # @param scope [String] "global" or "project"
     # @param project [String, nil] the project name for a project scope
-    def initialize(dir:, scope:, project: nil)
+    # @param renamer [#call] moves a finished temp entry into place, given the temp path and the entry path
+    def initialize(dir:, scope:, project: nil, renamer: File.method(:rename))
       @dir = dir
+      @renamer = renamer
       @scope = scope
       @project = project
     end
@@ -176,7 +178,7 @@ module Workspace
         File.rename(path, old)
       end
       begin
-        File.rename(tmp, path)
+        @renamer.call(tmp, path)
       rescue SystemCallError
         File.rename(old, path) if old
         old = nil
