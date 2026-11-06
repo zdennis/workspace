@@ -297,11 +297,12 @@ RSpec.describe Workspace::ContextReader do
 
           # The scan populated the reader's cache, so a later busy read of
           # the pane serves the reading the scan scraped.
-          holder = reader_slots.send(:take_slot)
+          holder = HeldScanSlot.take(dir: slot_dir, limit: 1)
+          expect(holder).to be_held
           begin
             expect(in_scan.read(pane_id: "%1")).to eq(first)
           ensure
-            holder&.close
+            holder.release
           end
         ensure
           FileUtils.remove_entry(slot_dir)

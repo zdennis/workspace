@@ -13,14 +13,12 @@ RSpec.describe Workspace::ScanSlotLimiter do
   end
 
   # Holds one slot for the duration of the block, as another monitor's scan
-  # would, without depending on threads: flock is taken per open fd, so a
-  # second file handle on the same slot file does not take it over.
+  # would. Each hold runs in its own thread, so it takes its own slot.
   def holding_slot
-    described_class.new(dir: dir, limit: 4, logger: logger).send(:take_slot).tap do |slot|
-      yield slot
-    ensure
-      slot&.close
-    end
+    slot = HeldScanSlot.take(dir: dir, limit: 4, logger: logger)
+    yield slot
+  ensure
+    slot&.release
   end
 
   it "defaults to one concurrent scan" do
@@ -40,7 +38,7 @@ RSpec.describe Workspace::ScanSlotLimiter do
 
   it "returns nil when every slot is held" do
     holding_slot do |slot|
-      expect(slot).not_to be_nil
+      expect(slot).to be_held
 
       expect(limiter(limit: 1).with_scan_slot { :scanned }).to be_nil
     end
@@ -146,14 +144,14 @@ RSpec.describe Workspace::ScanSlotLimiter do
   end
 
   it "skips a scan when all configured slots are held" do
-    first = described_class.new(dir: dir, limit: 2, logger: logger).send(:take_slot)
-    second = described_class.new(dir: dir, limit: 2, logger: logger).send(:take_slot)
+    first = HeldScanSlot.take(dir: dir, limit: 2, logger: logger)
+    second = HeldScanSlot.take(dir: dir, limit: 2, logger: logger)
 
-    expect(first).not_to be_nil
-    expect(second).not_to be_nil
+    expect(first).to be_held
+    expect(second).to be_held
     expect(limiter(limit: 2).with_scan_slot { :scanned }).to be_nil
   ensure
-    first&.close
-    second&.close
+    first&.release
+    second&.release
   end
 end
