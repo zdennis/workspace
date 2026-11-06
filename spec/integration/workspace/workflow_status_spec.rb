@@ -21,9 +21,12 @@ RSpec.describe Workspace::WorkflowStatus do
   let(:ask_store) { instance_double(Workspace::AskStore) }
   let(:notes_dir) { File.join(@dir, "notes") }
   let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir}) }
+  let(:snapshot_timeout) { described_class::SNAPSHOT_TIMEOUT }
+  let(:list_grace) { described_class::LIST_GRACE }
   subject(:status) do
     described_class.new(store: store, panes: panes, snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store },
-      gate_note: Workspace::WorkflowGateNote.new(notes: notes), clock: -> { now.first })
+      gate_note: Workspace::WorkflowGateNote.new(notes: notes), clock: -> { now.first },
+      snapshot_timeout: snapshot_timeout, list_grace: list_grace)
   end
 
   before do
@@ -1185,16 +1188,23 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(result["runs"].size).to eq(3)
   end
 
-  it "reads a daemon that does not answer by the shared deadline as no answer, with a warning" do
-    stub_const("Workspace::WorkflowStatus::SNAPSHOT_TIMEOUT", 0.05)
-    stub_const("Workspace::WorkflowStatus::LIST_GRACE", 0.05)
-    allow(snapshot_client).to receive(:fetch) { |*, **| sleep 30 }
-    create
+  context "with a short snapshot timeout and grace" do
+    let(:snapshot_timeout) { 0.05 }
+    let(:list_grace) { 0.05 }
 
-    result = status.runs
+    it "reads a daemon that does not answer by the shared deadline as no answer, with a warning" do
+      allow(snapshot_client).to receive(:fetch) { |*, **| sleep 30 }
+      create
 
-    expect(result["warnings"].join).to include("did not answer")
-    expect(result["runs"].size).to eq(1)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result = status.runs
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      expect(result["warnings"].join).to include("did not answer")
+      expect(result["runs"].size).to eq(1)
+      expect(snapshot_client).to have_received(:fetch).with("app", timeout: 0.05)
+      expect(elapsed).to be < 0.5
+    end
   end
 
   it "asks a workspace's daemon once for a whole list" do

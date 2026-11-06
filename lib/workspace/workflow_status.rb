@@ -51,7 +51,11 @@ module Workspace
     # @param ask_store_for [#call] returns the {Workspace::AskStore} of a workspace
     # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param clock [#call] returns the current Time
-    def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now })
+    # @param snapshot_timeout [Numeric] seconds one daemon read may take
+    # @param list_grace [Numeric] seconds a list's reads share past the timeout
+    def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now }, snapshot_timeout: SNAPSHOT_TIMEOUT, list_grace: LIST_GRACE)
+      @snapshot_timeout = snapshot_timeout
+      @list_grace = list_grace
       @store = store
       @gate_note = gate_note
       @panes = panes
@@ -144,10 +148,10 @@ module Workspace
         run["workspace"] if run["parked"] || %w[running checking].include?(run.dig("steps", run["current"], "state"))
       end.uniq
       clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
-      deadline = clock.call + SNAPSHOT_TIMEOUT + LIST_GRACE
+      deadline = clock.call + @snapshot_timeout + @list_grace
       threads = names.to_h do |name|
         thread = Thread.new do
-          [:ok, @snapshot_client.fetch(name, timeout: SNAPSHOT_TIMEOUT)]
+          [:ok, @snapshot_client.fetch(name, timeout: @snapshot_timeout)]
         rescue Workspace::Error => e
           [:error, e]
         rescue
@@ -374,7 +378,7 @@ module Workspace
     # The daemon's snapshot of a workspace; while a list is built, the one read ahead (an error raised again).
     def snapshot_for(workspace)
       cached = @snapshots && @snapshots[workspace]
-      return @snapshot_client.fetch(workspace, timeout: SNAPSHOT_TIMEOUT) unless cached
+      return @snapshot_client.fetch(workspace, timeout: @snapshot_timeout) unless cached
       raise cached.last if cached.first == :error
       cached.last
     end
