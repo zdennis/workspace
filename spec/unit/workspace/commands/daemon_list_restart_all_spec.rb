@@ -42,8 +42,7 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
   let(:project_config) { instance_double(Workspace::ProjectConfig, available_projects: workspaces, exists?: true) }
   let(:process_tree) do
     rows = table
-    snapshot = Object.new
-    snapshot.define_singleton_method(:find) { |pid| rows[pid] }
+    snapshot = Struct.new(:rows) { def find(pid) = rows[pid] }.new(rows)
     double("process_tree", snapshot: snapshot)
   end
   let(:ensure_agent) do

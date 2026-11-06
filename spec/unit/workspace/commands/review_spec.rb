@@ -14,12 +14,20 @@ RSpec.describe Workspace::Commands::Review do
   let(:members) { [member("app", kind: "main"), member("app.worktree-fix"), member("app.worktree-new")] }
   let(:project) { Workspace::ProjectCatalog::Project.new(name: "app", id: "/src/app/.git", path: "/src/app", vcs: "git", members: members) }
 
+  let(:catalog_lookups) { [] }
   let(:catalog) do
     proj = project
+    lookups = catalog_lookups
     Class.new do
       define_method(:all) { [proj] }
-      define_method(:find) { |token| (token == "app" || proj.members.any? { |m| m.workspace == token }) ? proj : raise(Workspace::Error.new("Unknown workspace '#{token}'", code: "unknown_workspace")) }
-      define_method(:for_cwd) { |_cwd| proj }
+      define_method(:find) { |token|
+        lookups << [:find, token]
+        (token == "app" || proj.members.any? { |m| m.workspace == token }) ? proj : raise(Workspace::Error.new("Unknown workspace '#{token}'", code: "unknown_workspace"))
+      }
+      define_method(:for_cwd) { |cwd|
+        lookups << [:for_cwd, cwd]
+        proj
+      }
     end.new
   end
 
@@ -782,11 +790,11 @@ RSpec.describe Workspace::Commands::Review do
     end
 
     it "resolves the project from a name or from the working directory" do
-      expect(catalog).to receive(:find).with("app.worktree-fix").and_call_original
       review.list(project: "app.worktree-fix", json: true)
+      expect(catalog_lookups).to eq([[:find, "app.worktree-fix"]])
 
-      expect(catalog).to receive(:for_cwd).with("/somewhere").and_call_original
       review.list(cwd: "/somewhere", json: true)
+      expect(catalog_lookups.last).to eq([:for_cwd, "/somewhere"])
     end
 
     it "reports an unknown project as a JSON error" do

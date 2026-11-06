@@ -17,7 +17,7 @@ RSpec.describe Workspace::Commands::Prune do
     allow(config).to receive(:state_file).and_return(state_file)
     allow(config).to receive(:event_log_file).and_return(event_log_file)
     event_log = Workspace::EventLog.new(config: config)
-    Workspace::State.new(config: config, event_log: event_log)
+    CountingState.new(config: config, event_log: event_log)
   end
   let(:output) { StringIO.new }
   let(:input) { StringIO.new }
@@ -554,9 +554,9 @@ RSpec.describe Workspace::Commands::Prune do
       it "skips a candidate whose removal git refuses, with git's reason, still saves state, and raises" do
         allow(git).to receive(:remove_worktree).with(project_root, force: false)
           .and_raise(Workspace::Error, "Error removing worktree: cannot remove a locked working tree")
-        expect(state).to receive(:save).and_call_original
 
         expect { command.call }.to raise_error(Workspace::Error, /1 project\(s\) were skipped/)
+        expect(state.save_count).to eq(1)
         expect(output.string).to include("Skipped wt-unsaved: Error removing worktree: cannot remove a locked working tree")
         expect(output.string).to include("Skipped 1: wt-unsaved.")
       end
@@ -661,13 +661,13 @@ RSpec.describe Workspace::Commands::Prune do
     end
 
     it "saves state after removing" do
-      expect(state).to receive(:save).once.and_call_original
       command.call_structured
+      expect(state.save_count).to eq(1)
     end
 
     it "does not save state on a dry run" do
-      expect(state).not_to receive(:save)
       command.call_structured(dry_run: true)
+      expect(state.save_count).to eq(0)
     end
 
     it "stops a live session and drops the state entry of a removed candidate" do

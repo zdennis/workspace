@@ -1,7 +1,8 @@
 RSpec.describe Workspace::LaunchMode do
   def mode(platform: "arm64-darwin23", env: {}, osascript: true, global: {})
-    settings = CLITestHelpers::FakeProjectSettings.new
-    settings.define_singleton_method(:load_global) { global }
+    settings = Class.new(CLITestHelpers::FakeProjectSettings) {
+      define_method(:load_global) { global }
+    }.new
     described_class.new(project_settings: settings, platform: platform, env: env,
       which: ->(exe) { exe == "osascript" && osascript })
   end

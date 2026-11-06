@@ -63,14 +63,14 @@ RSpec.describe Workspace::NotePath do
     end
 
     it "refuses a name that is too long for the filesystem" do
-      allow(File).to receive(:realpath).and_call_original
-      allow(File).to receive(:realpath).with(File.join(@dir, "findings.md")).and_raise(Errno::ENAMETOOLONG)
-      expect { described_class.resolve("findings.md", @dir) }.to raise_error(described_class::Refused, /too long/)
+      # Relies on macOS PATH_MAX (1024); the CLI is macOS-only.
+      long = Array.new(4) { "a" * 250 }.join("/") + ".md"
+      expect { described_class.resolve(long, @dir) }.to raise_error(described_class::Refused, /too long/)
     end
 
     it "refuses on any other system error" do
-      allow(File).to receive(:realpath).and_call_original
-      allow(File).to receive(:realpath).with(File.join(@dir, "findings.md")).and_raise(Errno::EIO)
+      # @dir is already a real path, so every other lookup answers itself.
+      allow(File).to receive(:realpath) { |path| (path == File.join(@dir, "findings.md")) ? raise(Errno::EIO) : path }
       expect { described_class.resolve("findings.md", @dir) }.to raise_error(described_class::Refused, /EIO/)
     end
 

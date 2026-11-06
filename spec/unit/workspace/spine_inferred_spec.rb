@@ -60,20 +60,35 @@ RSpec.describe Workspace::SpineInferred do
 
   def missing_plan = {"exists" => false, "counts" => counts(total: 0, todo: 0, left: 0), "state" => "empty", "owner_pane" => nil}
 
-  [
-    ["no plan file", -> { missing_plan }, {"research" => "not_started", "plan" => "not_started", "implement" => "not_started"}],
-    ["an empty plan is being drafted", -> { empty_plan }, {"research" => "skipped", "plan" => "in_progress", "implement" => "not_started"}],
-    ["tasks never started wait for approval", -> { plan_of(state: "idle", counts: counts) },
-      {"research" => "skipped", "plan" => "in_progress", "implement" => "not_started"}],
-    ["work under way", -> { plan_of }, {"research" => "skipped", "plan" => "completed", "implement" => "in_progress"}],
-    ["a blocked task", -> { plan_of(state: "blocked", counts: counts(done: 3, blocked: 1, todo: 0, left: 1)) },
-      {"plan" => "completed", "implement" => "blocked"}],
-    ["every task done", -> { plan_of(state: "done", counts: counts(done: 3, skipped: 1, todo: 0, left: 0)) },
-      {"plan" => "completed", "implement" => "completed"}]
-  ].each do |name, plan, expected|
-    it "from the plan: #{name}" do
-      expect(statuses(input(plan: instance_exec(&plan)))).to include(expected)
-    end
+  def expect_plan_statuses(plan, expected)
+    expect(statuses(input(plan: plan))).to include(expected)
+  end
+
+  it "from the plan: no plan file" do
+    expect_plan_statuses(missing_plan, {"research" => "not_started", "plan" => "not_started", "implement" => "not_started"})
+  end
+
+  it "from the plan: an empty plan is being drafted" do
+    expect_plan_statuses(empty_plan, {"research" => "skipped", "plan" => "in_progress", "implement" => "not_started"})
+  end
+
+  it "from the plan: tasks never started wait for approval" do
+    expect_plan_statuses(plan_of(state: "idle", counts: counts),
+      {"research" => "skipped", "plan" => "in_progress", "implement" => "not_started"})
+  end
+
+  it "from the plan: work under way" do
+    expect_plan_statuses(plan_of, {"research" => "skipped", "plan" => "completed", "implement" => "in_progress"})
+  end
+
+  it "from the plan: a blocked task" do
+    expect_plan_statuses(plan_of(state: "blocked", counts: counts(done: 3, blocked: 1, todo: 0, left: 1)),
+      {"plan" => "completed", "implement" => "blocked"})
+  end
+
+  it "from the plan: every task done" do
+    expect_plan_statuses(plan_of(state: "done", counts: counts(done: 3, skipped: 1, todo: 0, left: 0)),
+      {"plan" => "completed", "implement" => "completed"})
   end
 
   it "gives Implement the plan's owner pane, so its owner state shows" do

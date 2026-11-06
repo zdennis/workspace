@@ -910,8 +910,7 @@ RSpec.describe Workspace::Commands::Kill do
         end
 
         it "ignores missing_ok while the checkout exists" do
-          allow(File).to receive(:directory?).and_call_original
-          allow(File).to receive(:directory?).with("/path/to/worktree").and_return(true)
+          allow(File).to receive(:directory?) { |path| path == "/path/to/worktree" }
           allow(git).to receive(:remove_worktree)
           allow(stop_command).to receive(:call).and_return([])
           allow(project_config).to receive(:remove)
@@ -1109,7 +1108,8 @@ RSpec.describe Workspace::Commands::Kill do
   end
 
   describe "recording worktree_finished" do
-    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    let(:order) { [] }
+    let(:event_log) { OrderRecordingEventLog.new(order: order) }
     let(:name) { "myproject.worktree-PROJ-123" }
 
     subject(:command) do
@@ -1134,17 +1134,12 @@ RSpec.describe Workspace::Commands::Kill do
     end
 
     it "records the event only after the worktree, config and settings are removed, and before the session stops" do
-      order = []
       allow(git).to receive(:remove_worktree) { order << :worktree }
       allow(project_config).to receive(:remove) { order << :config }
       allow(project_settings).to receive(:remove) { order << :settings }
       allow(stop_command).to receive(:call) {
         order << :stop
         []
-      }
-      allow(event_log).to receive(:record).and_wrap_original { |m, **kw|
-        order << :event
-        m.call(**kw)
       }
 
       command.call(name, confirm: false)

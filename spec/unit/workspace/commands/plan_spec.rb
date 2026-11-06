@@ -580,10 +580,11 @@ RSpec.describe Workspace::Commands::Plan do
     end
 
     it "fails with plan_exists when a plan appears between the check and the write" do
-      FileUtils.mkdir_p(notes_dirs["api"])
-      File.write(plan_path, "theirs\n")
-      allow(File).to receive(:exist?).and_call_original
-      allow(File).to receive(:exist?).with(plan_path).and_return(false)
+      allow(notes).to receive(:info).with(name: "api", create: true) do
+        FileUtils.mkdir_p(notes_dirs["api"])
+        File.write(plan_path, "theirs\n")
+        {"workspace" => "api", "dir" => notes_dirs["api"], "source" => "default", "exists" => true}
+      end
 
       expect { command.init(name: "api") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("plan_exists") }
 

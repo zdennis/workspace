@@ -125,12 +125,6 @@ RSpec.describe Workspace::Commands::Launch do
 
       it "builds a real EnsureAgent when none is given, and calls it for the project" do
         allow(config).to receive(:agent_running?).with("proj1").and_return(true)
-        real = nil
-        allow(Workspace::Commands::EnsureAgent).to receive(:new).and_wrap_original do |original, **kwargs|
-          real = original.call(**kwargs)
-          allow(real).to receive(:call).and_call_original
-          real
-        end
         default_command = described_class.new(
           state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
           project_config: project_config, window_layout: window_layout, config: config,
@@ -139,7 +133,7 @@ RSpec.describe Workspace::Commands::Launch do
 
         default_command.call(["proj1"])
 
-        expect(real).to have_received(:call).with(name: "proj1")
+        expect(config).to have_received(:agent_running?).with("proj1")
         expect(Process).not_to have_received(:spawn)
         expect(error_output.string).not_to include("Could not start session monitor")
       end

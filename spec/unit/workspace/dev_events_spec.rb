@@ -5,7 +5,7 @@ RSpec.describe Workspace::DevEvents do
   let(:recorded) { [] }
   let(:event_log) do
     events = recorded
-    Object.new.tap { |log| log.define_singleton_method(:record) { |type:, project:, data: {}| events << [type, project, data] } }
+    Struct.new(:events) { def record(type:, project:, data: {}) = events << [type, project, data] }.new(events)
   end
   let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
   let(:tmpdir) { Dir.mktmpdir("ws-dev-events") }

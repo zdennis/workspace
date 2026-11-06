@@ -4,7 +4,7 @@ require "tmpdir"
 RSpec.describe Workspace::ConfigResolver do
   let(:dir) { Dir.mktmpdir }
   let(:config) { instance_double(Workspace::Config, workspace_config_dir: dir) }
-  let(:settings) { Workspace::ProjectSettings.new(config: config) }
+  let(:settings) { CountingProjectSettings.new(config: config) }
   subject(:resolver) { described_class.new(project_settings: settings) }
 
   after { FileUtils.rm_rf(dir) }
@@ -85,10 +85,9 @@ RSpec.describe Workspace::ConfigResolver do
 
   it "loads each layer file once per view" do
     write("api", "dev:\n  up: ./start\n  ready: ok\n")
-    allow(settings).to receive(:load).and_call_original
     view = resolver.view(workspace: "api")
     view.raw("dev.up")
     view.raw("dev.ready")
-    expect(settings).to have_received(:load).once
+    expect(settings.load_calls).to eq(1)
   end
 end

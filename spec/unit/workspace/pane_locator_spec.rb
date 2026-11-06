@@ -1,6 +1,6 @@
 RSpec.describe Workspace::PaneLocator do
   let(:tmux) do
-    CLITestHelpers::FakeTmuxServer.new(
+    SessionCountingTmuxServer.new(
       "api" => [{id: "%3", window: 0, index: 0}, {id: "%19", window: 1, index: 2}],
       "web" => [{id: "%7", window: 0, index: 0}]
     )
@@ -65,10 +65,8 @@ RSpec.describe Workspace::PaneLocator do
   end
 
   it "checks the form before it touches tmux" do
-    allow(tmux).to receive(:sessions).and_call_original
-
     error_for("bottom")
 
-    expect(tmux).not_to have_received(:sessions)
+    expect(tmux.sessions_calls).to eq(0)
   end
 end
