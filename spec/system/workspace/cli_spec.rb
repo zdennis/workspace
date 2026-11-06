@@ -2,6 +2,19 @@ require "stringio"
 require "tmpdir"
 
 RSpec.describe Workspace::CLI do
+  # Sets the named keys on the real ENV (nil deletes) until the example ends; nothing else is touched.
+  def stub_env(vars)
+    @saved_env ||= {}
+    vars.each do |key, value|
+      @saved_env[key] = ENV[key] unless @saved_env.key?(key)
+      value.nil? ? ENV.delete(key) : ENV[key] = value
+    end
+  end
+
+  after do
+    (@saved_env || {}).each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
+
   def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
     config = overrides[:config] || Workspace::Config.new
     logger = overrides[:logger] || Workspace::Logger.new(output: error_output)
@@ -254,9 +267,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 when a Workspace::Error is raised" do
       doctor = CLITestHelpers::FakeDoctor.new
-      doctor.define_singleton_method(:run) do |headless: nil, fix: false|
-        raise Workspace::Error, "something broke"
-      end
+      doctor.run_error = Workspace::Error.new("something broke")
 
       cli, _, error_output = build_test_cli(doctor: doctor)
       expect { cli.run(["doctor"]) }.to raise_error(FakeSystemExit) { |e|
@@ -336,7 +347,6 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 when project does not exist" do
       pc = CLITestHelpers::FakeProjectConfig.new
-      pc.define_singleton_method(:project_root_for) { |name| nil }
       cli, _, error_output = build_test_cli(project_config: pc)
       expect { cli.run(["dir", "unknown-project"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
@@ -416,8 +426,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         state["my-project"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
 
-        project_config = CLITestHelpers::FakeProjectConfig.new
-        project_config.define_singleton_method(:project_root_for) { |_name| dir }
+        project_config = CLITestHelpers::FakeProjectConfig.new(Hash.new(dir))
 
         cli, output, _ = build_test_cli(state: state, project_config: project_config, working_dir: dir)
         cli.run(["current"])
@@ -433,8 +442,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         state["my-project"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
 
-        project_config = CLITestHelpers::FakeProjectConfig.new
-        project_config.define_singleton_method(:project_root_for) { |_name| dir }
+        project_config = CLITestHelpers::FakeProjectConfig.new(Hash.new(dir))
 
         cli, output, _ = build_test_cli(state: state, project_config: project_config, working_dir: subdir)
         cli.run(["current"])
@@ -451,9 +459,7 @@ RSpec.describe Workspace::CLI do
         state["monorepo"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
         state["auth-service"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
 
-        project_config = CLITestHelpers::FakeProjectConfig.new
-        roots = {"monorepo" => dir, "auth-service" => subdir}
-        project_config.define_singleton_method(:project_root_for) { |name| roots[name] }
+        project_config = CLITestHelpers::FakeProjectConfig.new({"monorepo" => dir, "auth-service" => subdir})
 
         cli, output, _ = build_test_cli(state: state, project_config: project_config, working_dir: subdir)
         cli.run(["current"])
@@ -502,15 +508,10 @@ RSpec.describe Workspace::CLI do
 
     it "does not load state or check windows" do
       wm = CLITestHelpers::FakeWindowManager.new
-      called = false
-      wm.define_singleton_method(:live_window_ids) do
-        called = true
-        Set.new
-      end
 
       cli, output, _ = build_test_cli(window_manager: wm)
       cli.run(["list", "--all"])
-      expect(called).to be false
+      expect(wm.live_window_ids_calls).to eq(0)
       expect(output.string).to include("project-a")
     end
 
@@ -641,8 +642,7 @@ RSpec.describe Workspace::CLI do
       state["proj1"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
       state["proj2"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
 
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200]) }
+      wm = CLITestHelpers::FakeWindowManager.new(live_window_ids: Set.new([100, 200]))
 
       cli, output, _ = build_test_cli(state: state, window_manager: wm)
       cli.run(["status", "--json"])
@@ -657,8 +657,7 @@ RSpec.describe Workspace::CLI do
     it "wraps the state in the envelope under status with --json-envelope" do
       state = CLITestHelpers::FakeState.new
       state["proj1"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100]) }
+      wm = CLITestHelpers::FakeWindowManager.new(live_window_ids: Set.new([100]))
 
       cli, output, _ = build_test_cli(state: state, window_manager: wm)
       cli.run(["status", "--json-envelope"])
@@ -782,7 +781,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "keeps url and directory with --show-urls --json" do
-      git = Object.new.tap { |g| g.define_singleton_method(:remote_url) { |_| "git@h:o/r.git" } }
+      git = ScriptedRemoteGit.new("git@h:o/r.git")
       pc = CLITestHelpers::FakeProjectConfig.new({"up" => "/tmp/up"})
       cli, output, _ = build_test_cli(state: state, liveness: liveness, git: git, project_config: pc)
       cli.run(["list", "--liveness", "--show-urls", "--json"])
@@ -791,7 +790,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "shows the alive marker after the url column" do
-      git = Object.new.tap { |g| g.define_singleton_method(:remote_url) { |_| "u" } }
+      git = ScriptedRemoteGit.new("u")
       pc = CLITestHelpers::FakeProjectConfig.new({"up" => "/tmp/up"})
       cli, output, _ = build_test_cli(state: state, liveness: liveness, git: git, project_config: pc)
       cli.run(["list", "--liveness", "--show-urls"])
@@ -836,8 +835,7 @@ RSpec.describe Workspace::CLI do
       state["proj-b"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
       state["proj-a"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
 
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200]) }
+      wm = CLITestHelpers::FakeWindowManager.new(live_window_ids: Set.new([100, 200]))
 
       cli, output, _ = build_test_cli(state: state, window_manager: wm)
       cli.run(["list", "--json"])
@@ -960,12 +958,10 @@ RSpec.describe Workspace::CLI do
   describe "#run with doctor" do
     it "delegates to the doctor collaborator" do
       doctor = CLITestHelpers::FakeDoctor.new
-      called = false
-      doctor.define_singleton_method(:run) { |headless: nil, fix: false| called = true }
 
       cli, _, _ = build_test_cli(doctor: doctor)
       cli.run(["doctor"])
-      expect(called).to be true
+      expect(doctor.run_count).to eq(1)
     end
   end
 
@@ -2812,9 +2808,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "shows project config with --name" do
-      project_settings = CLITestHelpers::FakeProjectSettings.new
-      project_settings.define_singleton_method(:load) { |_name| {"hooks" => {"post_launch" => "echo hi"}} }
-      project_settings.define_singleton_method(:project_config_path) { |name| "/tmp/workspace/projects/#{name}.yml" }
+      project_settings = CLITestHelpers::FakeProjectSettings.new(loader: ->(_name) { {"hooks" => {"post_launch" => "echo hi"}} })
 
       cli, output, _ = build_test_cli(project_settings: project_settings)
       cli.run(["config", "--name", "myproject"])
@@ -2824,9 +2818,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "shows global config with --global" do
-      project_settings = CLITestHelpers::FakeProjectSettings.new
-      project_settings.define_singleton_method(:load_global) { {"layouts" => {"equal" => "even-vertical"}} }
-      project_settings.define_singleton_method(:global_config_path) { "/tmp/workspace/config.yml" }
+      project_settings = CLITestHelpers::FakeProjectSettings.new(global: {"layouts" => {"equal" => "even-vertical"}})
 
       cli, output, _ = build_test_cli(project_settings: project_settings)
       cli.run(["config", "--global"])
@@ -2870,8 +2862,7 @@ RSpec.describe Workspace::CLI do
 
     it "reads a key with --global as --scope global" do
       shown = []
-      report = Object.new
-      report.define_singleton_method(:show) { |name, **opts| shown << [name, opts] and {"keys" => [{"key" => "dev.up", "effective" => "x"}]} }
+      report = ScriptedConfigReport.new { |name, **opts| shown << [name, opts] and {"keys" => [{"key" => "dev.up", "effective" => "x"}]} }
       cli, output, _ = build_test_cli(config_report: report)
       cli.run(["config", "dev.up", "--global", "--name", "api"])
       expect(shown).to eq([["api", {key: "dev.up", scope: "global"}]])
@@ -3373,8 +3364,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "shows a workspace literally named show through --name" do
-      project_settings = CLITestHelpers::FakeProjectSettings.new
-      project_settings.define_singleton_method(:load) { |name| {"dev" => {"up" => name}} }
+      project_settings = CLITestHelpers::FakeProjectSettings.new(loader: ->(name) { {"dev" => {"up" => name}} })
       cli, output, _ = build_test_cli(project_settings: project_settings)
 
       cli.run(["config", "--name", "show"])
@@ -3648,7 +3638,7 @@ RSpec.describe Workspace::CLI do
 
       it "prints a noop row when unset finds nothing to remove" do
         config_command = CLITestHelpers::FakeConfigCommand.new
-        config_command.define_singleton_method(:unset) do |key, **|
+        config_command.handlers[:unset] = lambda do |key, **|
           Workspace::Commands::Config::Result.new(key: key, workspace: "api", layer: "project", scope: "project", path: "/cfg/api.yml", comments_preserved: true, backup: nil, affects: [], changed: false)
         end
         cli, raw = json_cli(config_command: config_command)
@@ -3659,8 +3649,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "prints the set row with scope, layer, file and the effective value after the write" do
-        report = Object.new
-        report.define_singleton_method(:show) { |name, key: nil| {"keys" => [{"key" => key, "effective" => 90}]} }
+        report = ScriptedConfigReport.new { |name, key: nil| {"keys" => [{"key" => key, "effective" => 90}]} }
         cli, raw = json_cli(config_command: CLITestHelpers::FakeConfigCommand.new, config_report: report)
 
         cli.run(["config", "set", "--scope", "project", "--name", "api", "dev.ready_timeout", "90s", "--json"])
@@ -3669,8 +3658,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "gives a null effective when the report fails" do
-        report = Object.new
-        report.define_singleton_method(:show) { |*, **| raise Workspace::Error.new("Unknown workspace 'api'", code: "unknown_workspace") }
+        report = ScriptedConfigReport.new { |*, **| raise Workspace::Error.new("Unknown workspace 'api'", code: "unknown_workspace") }
         cli, raw = json_cli(config_command: CLITestHelpers::FakeConfigCommand.new, config_report: report)
 
         cli.run(["config", "set", "--name", "api", "dev.up", "x", "--json"])
@@ -3727,7 +3715,7 @@ RSpec.describe Workspace::CLI do
         it "runs $VISUAL ahead of $EDITOR as an argv array, so no shell sees the path" do
           launched = []
           path = "/cfg/my project; rm -rf $HOME.yml"
-          config_command.define_singleton_method(:edit) { |**| Workspace::Commands::Config::EditResult.new(workspace: "api", layer: "project", scope: "project", path: path, created: false) }
+          config_command.handlers[:edit] = ->(**) { Workspace::Commands::Config::EditResult.new(workspace: "api", layer: "project", scope: "project", path: path, created: false) }
           cli, = build_test_cli(config_command: config_command, env: {"VISUAL" => "code --wait", "EDITOR" => "vi"}, editor_launcher: ->(argv) { launched << argv })
 
           cli.run(["config", "edit"])
@@ -3833,7 +3821,7 @@ RSpec.describe Workspace::CLI do
 
       it "prints scope_not_allowed as an error envelope with its details" do
         config_command = CLITestHelpers::FakeConfigCommand.new
-        config_command.define_singleton_method(:set) do |*, **|
+        config_command.handlers[:set] = lambda do |*, **|
           raise Workspace::Error.new("dev.stop_timeout can't be set in the workspace scope.", code: "scope_not_allowed", details: {"key" => "dev.stop_timeout", "scope" => "workspace", "allowed" => ["project"]})
         end
         cli, raw = json_cli(config_command: config_command)
@@ -3887,8 +3875,7 @@ RSpec.describe Workspace::CLI do
 
       it "show --scope forwards the scope to the report" do
         calls = []
-        report = Object.new
-        report.define_singleton_method(:show) { |name, **opts| calls << [name, opts] and {"ok" => true, "keys" => []} }
+        report = ScriptedConfigReport.new { |name, **opts| calls << [name, opts] and {"ok" => true, "keys" => []} }
         cli, _ = json_cli(config_report: report)
 
         cli.run(["config", "show", "--scope", "worktree", "--name", "api.worktree-fix", "--json"])
@@ -3898,8 +3885,7 @@ RSpec.describe Workspace::CLI do
 
       it "show --global and --scope global agree, and --global with another scope is refused" do
         calls = []
-        report = Object.new
-        report.define_singleton_method(:show) { |name, **opts| calls << opts and {"ok" => true, "keys" => []} }
+        report = ScriptedConfigReport.new { |name, **opts| calls << opts and {"ok" => true, "keys" => []} }
         cli, = json_cli(config_report: report)
         cli.run(["config", "show", "--global", "--name", "api", "--json"])
         cli.run(["config", "show", "--scope", "global", "--name", "api", "--json"])
@@ -3910,8 +3896,7 @@ RSpec.describe Workspace::CLI do
 
       it "show --scope project prints the project's file even from a worktree name (text mode)" do
         loaded = []
-        settings = CLITestHelpers::FakeProjectSettings.new
-        settings.define_singleton_method(:load) { |name| loaded << name and {"dev" => {"up" => "from-#{name}"}} }
+        settings = CLITestHelpers::FakeProjectSettings.new(loader: ->(name) { loaded << name and {"dev" => {"up" => "from-#{name}"}} })
         cli, output, = build_test_cli(project_settings: settings)
 
         cli.run(["config", "show", "--scope", "project", "--name", "api.worktree-fix"])
@@ -3922,10 +3907,8 @@ RSpec.describe Workspace::CLI do
       end
 
       it "show --scope workspace prints the workspace's own file (text mode)" do
-        settings = CLITestHelpers::FakeProjectSettings.new
-        settings.define_singleton_method(:load) { |name| {"dev" => {"up" => "from-#{name}"}} }
-        report = Object.new
-        report.define_singleton_method(:show) { |*, **| {"ok" => true, "keys" => []} }
+        settings = CLITestHelpers::FakeProjectSettings.new(loader: ->(name) { {"dev" => {"up" => "from-#{name}"}} })
+        report = ScriptedConfigReport.new { |*, **| {"ok" => true, "keys" => []} }
         cli, output, = build_test_cli(project_settings: settings, config_report: report)
 
         cli.run(["config", "show", "--scope", "workspace", "--name", "api.worktree-fix"])
@@ -3934,8 +3917,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "show --scope workspace --name of an unknown workspace fails with unknown_workspace" do
-        report = Object.new
-        report.define_singleton_method(:show) { |name, **| raise Workspace::Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name}) }
+        report = ScriptedConfigReport.new { |name, **| raise Workspace::Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name}) }
         cli, = build_test_cli(config_report: report)
 
         expect { cli.run(["config", "show", "--scope", "workspace", "--name", "nosuch"]) }.to raise_error(FakeSystemExit)
@@ -3944,7 +3926,7 @@ RSpec.describe Workspace::CLI do
 
     it "surfaces a Workspace::UsageError from config_command as exit 1" do
       config_command = CLITestHelpers::FakeConfigCommand.new
-      config_command.define_singleton_method(:set) { |*| raise Workspace::UsageError, "Unknown config key 'dev.bogus'." }
+      config_command.handlers[:set] = ->(*, **) { raise Workspace::UsageError, "Unknown config key 'dev.bogus'." }
       cli, _, error_output = build_test_cli(config_command: config_command)
 
       expect { cli.run(["config", "set", "dev.bogus", "x"]) }.to raise_error(FakeSystemExit) { |e|
@@ -3988,12 +3970,22 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    # Runs the block with HOME set to a fresh directory, with or without an empty Alfred workflows directory in it.
+    def with_empty_home(alfred_workflows: false)
+      saved = ENV["HOME"]
+      Dir.mktmpdir do |home|
+        FileUtils.mkdir_p(File.join(home, "Library/Application Support/Alfred/Alfred.alfredpreferences/workflows")) if alfred_workflows
+        ENV["HOME"] = home
+        yield
+      ensure
+        ENV["HOME"] = saved
+      end
+    end
+
     describe "info" do
       it "reports Alfred not installed when workflows dir missing" do
         cli, output, _ = build_test_cli
-        allow(File).to receive(:directory?).and_call_original
-        allow(File).to receive(:directory?).with(include("Alfred.alfredpreferences/workflows")).and_return(false)
-        cli.run(["alfred", "info"])
+        with_empty_home { cli.run(["alfred", "info"]) }
         expect(output.string).to include("Alfred is not installed")
       end
     end
@@ -4001,9 +3993,7 @@ RSpec.describe Workspace::CLI do
     describe "uninstall" do
       it "reports not installed when workflow not found" do
         cli, output, _ = build_test_cli
-        allow(Dir).to receive(:glob).and_call_original
-        allow(Dir).to receive(:glob).with(include("Alfred.alfredpreferences/workflows")).and_return([])
-        cli.run(["alfred", "uninstall"])
+        with_empty_home(alfred_workflows: true) { cli.run(["alfred", "uninstall"]) }
         expect(output.string).to include("not installed")
       end
     end
@@ -4969,7 +4959,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "rejects --queue with --force through the usual usage error path" do
-        dev_command.define_singleton_method(:up) { |**| raise Workspace::UsageError, "--queue returns at once" }
+        dev_command.up_error = Workspace::UsageError.new("--queue returns at once")
         cli, _, error_output = build_test_cli(dev_command: dev_command, **in_workspace)
 
         expect { cli.run(["dev", "up", "--queue", "--force"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
@@ -6596,7 +6586,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "defaults show and clear to $TMUX_PANE and takes --pane" do
-      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      stub_env("TMUX_PANE" => "%9")
       cli.run(["binding", "show"])
       cli.run(["binding", "clear", "--pane", "%5"])
 
@@ -6627,7 +6617,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "defaults set to $TMUX_PANE, the pane the command runs in" do
-      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      stub_env("TMUX_PANE" => "%9")
       cli.run(["binding", "set", "app", "--kind", "run", "--id", "wr_1"])
       cli.run(["binding", "set", "app", "--pane", "0.1", "--kind", "run", "--id", "wr_1"])
 
@@ -6694,7 +6684,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "rejects a set without a pane, kind or id as a usage error" do
-      stub_const("ENV", ENV.to_h.except("TMUX_PANE"))
+      stub_env("TMUX_PANE" => nil)
       {
         ["binding", "set", "app", "--kind", "run", "--id", "x"] => /--pane/,
         ["binding", "set", "app", "--pane", "%5"] => /--kind and --id/,
@@ -6722,7 +6712,7 @@ RSpec.describe Workspace::CLI do
     let(:output) { built[1] }
     let(:error_output) { built[2] }
 
-    before { stub_const("ENV", ENV.to_h.except("TMUX_PANE")) }
+    before { stub_env("TMUX_PANE" => nil) }
 
     it "hands workflow check the --name workspace's checkout" do
       cli.run(["workflow", "check", "rpiv", "verify", "--name", "api", "--artifacts", "fixture"])
@@ -6786,12 +6776,8 @@ RSpec.describe Workspace::CLI do
         raw = StringIO.new
         gate = Workspace::OutputGate.new(raw)
         err = StringIO.new
-        routing = CLITestHelpers::FakeWorkflowStartCommand.new
+        routing = AnnouncingWorkflowStartCommand.new(gate, "Routing PROJ-1 (jira) to rpiv, this project's default for jira.")
         routing.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would.", "routed" => {"ref" => "PROJ-1", "kind" => "jira", "workflow" => "rpiv", "source" => "default", "scope" => "project", "key" => "workflows.by_ref.jira"}}
-        routing.define_singleton_method(:call) do |**kw|
-          gate.puts "Routing PROJ-1 (jira) to rpiv, this project's default for jira."
-          super(**kw)
-        end
         json_cli, = build_test_cli(workflow_command: workflow_command, workflow_start_command: routing, project_config: project_config, project_detector: detector, working_dir: "/some/dir", output: gate, error_output: err)
 
         json_cli.run(["workflow", "start", "--ref", "PROJ-1", "--dry-run", "--json"])
@@ -7309,7 +7295,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "tells the command which pane a resume was run from, and exits 0 for one that changed nothing" do
-      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%5"))
+      stub_env("TMUX_PANE" => "%5")
       workflow_command.row = workflow_command.row.merge("outcome" => "unchanged", "message" => "Nothing was done: an agent is working on step plan.")
 
       cli.run(["workflow", "resume", "wr_1", "--json"])
@@ -7320,7 +7306,7 @@ RSpec.describe Workspace::CLI do
 
     it "approves a gate, telling the command which pane it was run from" do
       cli.run(["workflow", "approve", "wr_1", "--note", "Go."])
-      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%5"))
+      stub_env("TMUX_PANE" => "%5")
       cli.run(["workflow", "approve", "wr_1"])
 
       expect(workflow_command.calls.map(&:last)).to eq([{run: "wr_1", note: "Go.", step: nil, attempt: nil, note_sha256: nil, caller_pane: nil},
@@ -7329,7 +7315,7 @@ RSpec.describe Workspace::CLI do
 
     it "passes the step, attempt and note hash a client saw to approve and reject, in either form and with the run after --" do
       sha = "0123456789abcdef" * 4
-      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%5"))
+      stub_env("TMUX_PANE" => "%5")
       cli.run(["workflow", "approve", "--step=triage", "--attempt=2", "--note-sha256=#{sha}", "--json", "--", "wr_1"])
       cli.run(["workflow", "reject", "wr_1", "--step", "triage", "--attempt", "2", "--note", "Redo F3.", "--to", "triage"])
       cli.run(["workflow", "approve", "wr_1", "--step", "triage"])
@@ -7548,7 +7534,7 @@ RSpec.describe Workspace::CLI do
     end
 
     let(:runs_dir) { File.join(@dir, "runs") }
-    let(:store) { Workspace::WorkflowRunStore.new(dir: runs_dir, archive_dir: File.join(@dir, "archive")) }
+    let(:store) { PinnedFindStore.new(Workspace::WorkflowRunStore.new(dir: runs_dir, archive_dir: File.join(@dir, "archive"))) }
     let(:panes) { FakeWorkflowPanes.new }
     let(:git) { instance_double(Workspace::Git, worktree_branch: "main", common_dir_from_files: nil) }
     let(:engine) do
@@ -7594,8 +7580,7 @@ RSpec.describe Workspace::CLI do
       end
 
       before do
-        allow(ENV).to receive(:[]).and_call_original
-        allow(ENV).to receive(:[]).with("TMUX_PANE").and_return("%5")
+        stub_env("TMUX_PANE" => "%5")
       end
 
       it "parks from the run's own pane, keeps the note off the screen, and dispatches once the turn is over" do
@@ -7610,7 +7595,7 @@ RSpec.describe Workspace::CLI do
         expect(panes.kicks.size).to eq(kicks_before)
         expect(store.events(run["id"])["events"].count { |entry| entry["type"] == "step_dispatched" }).to eq(1)
 
-        allow(ENV).to receive(:[]).with("TMUX_PANE").and_return(nil)
+        stub_env("TMUX_PANE" => nil)
         panes.turn_over << "%5"
         nudger.turn_ended("app", "%5")
 
@@ -7649,8 +7634,7 @@ RSpec.describe Workspace::CLI do
       end
 
       before do
-        allow(ENV).to receive(:[]).and_call_original
-        allow(ENV).to receive(:[]).with("TMUX_PANE").and_return(nil)
+        stub_env("TMUX_PANE" => nil)
       end
 
       it "is created and parked with nothing typed, then dispatched by ticks once the turn is over" do
@@ -7757,8 +7741,7 @@ RSpec.describe Workspace::CLI do
       let(:run) { engine.start(definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5") }
 
       before do
-        allow(ENV).to receive(:[]).and_call_original
-        allow(ENV).to receive(:[]).with("TMUX_PANE").and_return(nil)
+        stub_env("TMUX_PANE" => nil)
         # The agent's own resume of its step, parked from inside the turn.
         engine.park(run["id"], from: "a", note: "Again.")
       end
@@ -7780,9 +7763,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "dispatches once when two processes both saw the proof" do
-        seen = store.find(run["id"])
-        allow(store).to receive(:find).and_call_original
-        allow(store).to receive(:find).with(run["id"]).and_return(seen)
+        store.pin_find(run["id"])
         panes.turn_over << "%5"
 
         2.times { nudger.turn_ended("app", "%5") }
@@ -7826,7 +7807,7 @@ RSpec.describe Workspace::CLI do
     let(:output) { built[1] }
     let(:error_output) { built[2] }
 
-    before { stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%5")) }
+    before { stub_env("TMUX_PANE" => "%5") }
 
     it "records the agent's report from the pane it runs in: pass by default, or fail with a summary" do
       workflow_command.row = {"workspace" => "app", "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => "wr_1", "step" => "plan",
@@ -7871,7 +7852,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "passes no pane outside tmux, for the command to refuse" do
-      stub_const("ENV", ENV.to_h.except("TMUX_PANE"))
+      stub_env("TMUX_PANE" => nil)
       workflow_command.error = Workspace::Error.new("This pane is not bound to a workflow run (not inside tmux).", code: "not_bound")
 
       expect { cli.run(["step", "done", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
@@ -7908,7 +7889,7 @@ RSpec.describe Workspace::CLI do
     let(:output) { built[1] }
     let(:error_output) { built[2] }
 
-    before { stub_const("ENV", ENV.to_h.except("TMUX_PANE")) }
+    before { stub_env("TMUX_PANE" => nil) }
 
     it "composes the default packs for the current directory, with no pane outside tmux" do
       cli.run(["instructions", "compose"])
@@ -7927,7 +7908,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "defaults the pane to $TMUX_PANE and takes --pane" do
-      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      stub_env("TMUX_PANE" => "%9")
       cli.run(["instructions", "compose"])
       cli.run(["instructions", "compose", "--pane", "%5"])
 
@@ -7935,7 +7916,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "composes for a named workspace from its root, without the caller's pane unless --pane names one" do
-      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      stub_env("TMUX_PANE" => "%9")
       cli.run(["instructions", "compose", "--name", "api"])
       cli.run(["instructions", "compose", "--name", "api", "--pane", "%5"])
 
@@ -8886,7 +8867,7 @@ RSpec.describe Workspace::CLI do
     let(:error_output) { built[2] }
 
     it "passes the argument and every flag to go, with the pane from $TMUX_PANE" do
-      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      stub_env("TMUX_PANE" => "%9")
 
       cli.run(["go", "try the thing", "--workflow", "investigate", "--input", "task=x", "--input", "spec=y", "--dry-run"])
 
@@ -8920,7 +8901,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "passes no argument for bare go" do
-      stub_const("ENV", ENV.to_h.except("TMUX_PANE"))
+      stub_env("TMUX_PANE" => nil)
 
       cli.run(["go"])
 
@@ -11584,10 +11565,7 @@ RSpec.describe Workspace::CLI do
       state["proj1"] = {"unique_id" => "uid1"}
       state["proj2"] = {"headless" => true}
 
-      calls = []
-      launch_command = Object.new
-      launch_command.define_singleton_method(:call) do |projects, **opts|
-        calls << [projects, opts]
+      launch_command = ScriptedLaunchCommand.new do |_projects, **opts|
         opts[:headless] ? {exit_code: 0, prompt_failures: {}} : {exit_code: 1, prompt_failures: {"proj1" => "window never appeared"}}
       end
 
@@ -11597,7 +11575,7 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
 
-      expect(calls).to eq([
+      expect(launch_command.calls).to eq([
         [["proj1"], {reattach: false, prompts: {}}],
         [["proj2"], {reattach: false, prompts: {}, headless: true}]
       ])
@@ -12568,9 +12546,7 @@ RSpec.describe Workspace::CLI do
 
           it "refuses --no-packs with --pack, and an unknown pack before anything is created" do
             launch_command = double("launch", call: {exit_code: 0})
-            allow(project_config).to receive(:resolve_project_arg).and_call_original
-            allow(project_config).to receive(:resolve_project_arg).with("/work/new").and_return(["new", "/work/new"])
-            allow(project_config).to receive(:create).and_call_original
+            project_config.resolutions["/work/new"] = ["new", "/work/new"]
             cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
 
             expect(exit_status { cli.run(["launch", "api", "--no-packs", "--pack", "review", "--json"]) }).to eq(1)
@@ -12579,7 +12555,7 @@ RSpec.describe Workspace::CLI do
             cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
             expect(exit_status { cli.run(["launch", "api", "/work/new", "--pack", "nope", "--json"]) }).to eq(1)
             expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_library_entry")
-            expect(project_config).not_to have_received(:create)
+            expect(project_config.created).to be_empty
             expect(launch_command).not_to have_received(:call)
           end
 
