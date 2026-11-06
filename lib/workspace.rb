@@ -258,6 +258,7 @@ require_relative "workspace/restart_registry"
 require_relative "workspace/restart_runner"
 require_relative "workspace/session_monitor_builder"
 require_relative "workspace/agent_recovery_desk"
+require_relative "workspace/agent_recovery_desk_factory"
 require_relative "workspace/inbox_store"
 require_relative "workspace/inbox_derived"
 require_relative "workspace/inbox_acks"
@@ -845,19 +846,9 @@ module Workspace
       output: output, error_output: error_output, notes: notes_command)
 
     # Nil with recovery off or for a workspace whose agent isn't Claude Code, so the daemon builds no desk.
-    agent_recovery_desk_factory = lambda do |**given|
-      workspace = given.fetch(:workspace)
-      next nil unless agent_recovery_config.enabled?(workspace) && agent_commands.kind(workspace) == "claude"
-      session_monitor = given.fetch(:session_monitor)
-      AgentRecoveryDesk.new(tmux: tmux, workspace: workspace, session_name: given.fetch(:session_name), session_monitor: session_monitor,
-        store: AgentRecoveryStore.new(path: config.agent_recovery_path(workspace)), transcript: TranscriptSummary.new,
-        stopper: AgentStopper.new(process_tree: process_tree), detector: agent_commands.detector(workspace),
-        process_tree: process_tree, ledger: session_ledger, resume_command: agent_resume_command,
-        prompt_typer: PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger),
-        readiness: agent_readiness, marker: recovery_stop_marker,
-        inbox: -> { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) },
-        logger: logger, **given.slice(:delivery_lock, :event_log, :restarting, :claim_restart, :release_restart, :rebind_queue))
-    end
+    agent_recovery_desk_factory = AgentRecoveryDeskFactory.new(tmux: tmux, config: config, recovery_config: agent_recovery_config,
+      agent_commands: agent_commands, process_tree: process_tree, ledger: session_ledger, resume_command: agent_resume_command,
+      readiness: agent_readiness, marker: recovery_stop_marker, logger: logger, error_output: error_output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
