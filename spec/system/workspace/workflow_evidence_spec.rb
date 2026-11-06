@@ -178,11 +178,11 @@ RSpec.describe Workspace::WorkflowEvidence do
     put("a.md", "a")
     put("b.md", "b")
     calls = 0
-    allow(Workspace::WorkflowProduced).to receive(:digest).and_wrap_original do |original, *args, **kwargs|
+    flaky = described_class.new(dir: evidence_dir, opener: lambda { |path, flags, mode, &block|
       raise ArgumentError, "boom" if (calls += 1) == 1
-      original.call(*args, **kwargs)
-    end
-    entries = evidence.copy(run: run, step: {"id" => "s", "produces" => ["a.md", "b.md"]}, attempt: {"n" => 1})
+      File.open(path, flags, mode, &block)
+    })
+    entries = flaky.copy(run: run, step: {"id" => "s", "produces" => ["a.md", "b.md"]}, attempt: {"n" => 1})
 
     expect(entries.map { |e| e["problem"] }).to eq(["copy_failed", nil])
     expect(entries.last["sha256"]).to eq(sha("b"))
@@ -209,12 +209,12 @@ RSpec.describe Workspace::WorkflowEvidence do
     put("sub/a.md", "mine")
     FileUtils.mkdir_p(File.join(@dir, "elsewhere"))
     File.write(File.join(@dir, "elsewhere", "a.md"), "key")
-    allow(Workspace::WorkflowProduced).to receive(:digest).and_wrap_original do |original, *args, **kwargs|
+    swapping = described_class.new(dir: evidence_dir, opener: lambda { |path, flags, mode, &block|
       File.rename(File.join(art, "sub"), File.join(art, "sub.old"))
       File.symlink(File.join(@dir, "elsewhere"), File.join(art, "sub"))
-      original.call(*args, **kwargs)
-    end
-    entry = evidence.copy(run: run, step: {"id" => "s", "produces" => ["sub/a.md"]}, attempt: {"n" => 1}).last
+      File.open(path, flags, mode, &block)
+    })
+    entry = swapping.copy(run: run, step: {"id" => "s", "produces" => ["sub/a.md"]}, attempt: {"n" => 1}).last
 
     expect(entry).to include("problem" => "outside_artifacts", "sha256" => nil)
     expect(Dir.glob(File.join(copies, "*"), File::FNM_DOTMATCH).map { |p| File.basename(p) } - %w[. ..]).to eq([])

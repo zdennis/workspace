@@ -19,7 +19,7 @@ RSpec.describe Workspace::WorkflowSweep do
   let(:store) { Workspace::WorkflowRunStore.new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
   let(:liveness) { RunFileLiveness.new(runs_dir) }
   let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
-  let(:resources) { Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: liveness, wall_clock: -> { now.first.to_i }) }
+  let(:resources) { Interceptable.subclass(Workspace::RunResources, :acquire).new(lock_namespace: lock_namespace, lock_holder: liveness, wall_clock: -> { now.first.to_i }) }
   let(:panes) { FakeWorkflowPanes.new }
   let(:composer) { FakeStepComposer.new }
   let(:commands_config) { instance_double(Workspace::CommandsConfig, for_project: {test: "true", lint: nil}) }
@@ -969,7 +969,7 @@ RSpec.describe Workspace::WorkflowSweep do
       before do
         engine.cancel("wr_1")
         ids.replace(%w[wr_2])
-        allow(resources).to receive(:acquire).and_wrap_original do |original, **args|
+        resources.on(:acquire) do |original, **args|
           next original.call(**args) unless lock_busy.first
           {status: :ok, released: [], acquired: [], handed_over: [], waiting: {name: "test-db", position: 1, total: 1, holder: {}}}
         end

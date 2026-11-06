@@ -23,7 +23,7 @@ RSpec.describe Workspace::Commands::SpineStart do
     end
   end
   let(:spine) do
-    Workspace::Commands::Spine.new(notes: notes, writer: Workspace::SpineWriter.new, event_log: event_log, lock_dir: File.join(@root, "state"),
+    Interceptable.subclass(Workspace::Commands::Spine, :write_one).new(notes: notes, writer: Workspace::SpineWriter.new, event_log: event_log, lock_dir: File.join(@root, "state"),
       clock: -> { Time.utc(2026, 10, 18, 9, 0, 0) }, output: StringIO.new)
   end
   let(:pane_rows) { [{"pane_id" => "%20", "kind" => "shell", "state" => "idle"}, {"pane_id" => "%21", "kind" => "claude", "state" => "idle"}] }
@@ -363,7 +363,7 @@ RSpec.describe Workspace::Commands::SpineStart do
   end
 
   it "re-checks under the write lock: a stage completed since it was read is refused" do
-    allow(spine).to receive(:write_one).and_wrap_original do |original, **args, &block|
+    spine.on(:write_one) do |original, **args, &block|
       write("40-verify.md", "---\nstatus: completed\n---\n")
       original.call(**args, &block)
     end

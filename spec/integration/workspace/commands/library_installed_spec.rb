@@ -138,11 +138,14 @@ RSpec.describe Workspace::Commands::Library, "#installed" do
   it "reports a copy of an unreadable entry as modified" do
     add_entry("skill", "pdf-tools")
     skill(File.join(app, ".claude/skills"), "pdf-tools")
-    allow(library).to receive(:entries).and_wrap_original do |m, *args, **kw|
-      m.call(*args, **kw).map { |e| e.merge("readable" => false) }
-    end
+    body = File.join(library.entries(library.stores(cwd: app)).find { |e| e["ref"] == "skill/pdf-tools" }["path"], "SKILL.md")
+    File.chmod(0o000, body)
 
-    command.installed(cwd: app, json: true)
+    begin
+      command.installed(cwd: app, json: true)
+    ensure
+      File.chmod(0o644, body)
+    end
 
     expect(json["copies"].first).to include("entry" => "global", "modified" => true)
   end

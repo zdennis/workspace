@@ -10,7 +10,7 @@ RSpec.describe Workspace::Commands::Restore do
   let(:tmux_class) do
     Class.new do
       attr_reader :delivered, :layouts, :split_count, :last_error, :windows
-      attr_accessor :rows, :delivery_status, :sessions_error, :server_pid, :pane_base
+      attr_accessor :rows, :delivery_status, :sessions_error, :server_pid, :pane_base, :before_pane_details, :before_deliver
 
       def initialize
         @windows = {}
@@ -43,6 +43,15 @@ RSpec.describe Workspace::Commands::Restore do
       end
 
       def pane_details(session, window: "0")
+        # The hook reads pane_details itself, so it must not fire again for that inner call.
+        if before_pane_details && !@in_pane_details_hook
+          @in_pane_details_hook = true
+          begin
+            before_pane_details.call
+          ensure
+            @in_pane_details_hook = false
+          end
+        end
         windows = @windows.fetch(session, {})
         windows = windows.slice(window.to_i) unless window.nil?
         windows.sort.flat_map do |index, panes|
@@ -78,6 +87,7 @@ RSpec.describe Workspace::Commands::Restore do
       end
 
       def deliver(session, pane, text, enter: true)
+        before_deliver&.call
         @delivered << [session, pane, text]
         Workspace::Tmux::Delivery.new(status: delivery_status, message: "delivery #{delivery_status}")
       end
@@ -721,10 +731,7 @@ RSpec.describe Workspace::Commands::Restore do
 
     it "stops waiting as soon as the panes are there" do
       started("api:0.4", sid(1))
-      allow(tmux).to receive(:pane_details).and_wrap_original do |original, *args, **options|
-        tmux.add_pane("api", "zsh") if original.call("api", window: nil).size < 4
-        original.call(*args, **options)
-      end
+      tmux.before_pane_details = -> { tmux.add_pane("api", "zsh") if tmux.pane_details("api", window: nil).size < 4 }
 
       result = restore.call(["api"]) do
         tmux.add_session("api", %w[zsh])
@@ -873,10 +880,7 @@ RSpec.describe Workspace::Commands::Restore do
       started("api:0.4", sid(1), pane_id: "%7")
       running_session
       bound_when_typed = nil
-      allow(tmux).to receive(:deliver).and_wrap_original do |original, *args, **options|
-        bound_when_typed = bindings.binding_for("%4")
-        original.call(*args, **options)
-      end
+      tmux.before_deliver = -> { bound_when_typed = bindings.binding_for("%4") }
 
       result = call
 
@@ -1135,13 +1139,12 @@ RSpec.describe Workspace::Commands::Restore do
     it "is started for a running session that has none, before anything is typed" do
       running_session
       started("api:0.2", sid(1))
-      allow(tmux).to receive(:deliver).and_wrap_original do |original, *args, **options|
-        expect(ensured).to eq(["api"])
-        original.call(*args, **options)
-      end
+      ensured_when_typed = nil
+      tmux.before_deliver = -> { ensured_when_typed = ensured.dup }
 
       call
 
+      expect(ensured_when_typed).to eq(["api"])
       expect(ensured).to eq(["api"])
       expect(tmux.delivered.size).to eq(1)
     end

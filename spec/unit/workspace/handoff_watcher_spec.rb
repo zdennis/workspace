@@ -4,6 +4,20 @@ require "tmpdir"
 require "socket"
 
 RSpec.describe Workspace::HandoffWatcher do
+  # A delivery lock that runs what is scheduled for the wait on it, in place of a real wait.
+  let(:scheduled_lock_class) do
+    Class.new do
+      def initialize(waits)
+        @waits = waits
+      end
+
+      def synchronize
+        @waits.shift&.call
+        yield
+      end
+    end
+  end
+
   let(:empty_prompt) { "────────\n❯ \n" }
   let(:text) { "Are you handing off? Run workspace handoff new once the state is saved." }
   let(:sent_text) { "Your context is nearly full.\n\nSave your state, then run workspace handoff new." }
@@ -78,13 +92,7 @@ RSpec.describe Workspace::HandoffWatcher do
 
   # Runs what is scheduled for the wait on the lock, in place of a real wait.
   let(:delivery_lock) do
-    wait = lock_wait
-    Object.new.tap do |lock|
-      lock.define_singleton_method(:synchronize) do |&block|
-        wait.shift&.call
-        block.call
-      end
-    end
+    scheduled_lock_class.new(lock_wait)
   end
   let(:typer) { Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor) }
   # Each sleep the watcher's thread starts, so a spec can wait for the thread to reach one.

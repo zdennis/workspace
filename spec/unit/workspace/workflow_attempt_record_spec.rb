@@ -23,7 +23,9 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
   before { FileUtils.mkdir_p(run["artifacts_dir"]) }
 
   def put(name, text)
-    File.write(File.join(run["artifacts_dir"], name), text)
+    path = File.join(run["artifacts_dir"], name)
+    File.write(path, text)
+    path
   end
 
   describe "#start" do
@@ -122,10 +124,16 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
     end
 
     it "reads each output once" do
-      put("plan.md", "o")
-      allow(Workspace::WorkflowProduced).to receive(:digest).and_call_original
-      record.finish(run: run, step: step, attempt: {"n" => 1})
-      expect(Workspace::WorkflowProduced).to have_received(:digest).once
+      source = put("plan.md", "o")
+      rewriting = lambda do |path, flags, mode, &block|
+        File.open(path, flags, mode, &block)
+        File.write(source, "changed after the copy")
+      end
+      once = described_class.new(guard: guard, evidence: Workspace::WorkflowEvidence.new(dir: File.join(@dir, "ev"), opener: rewriting))
+      attempt = {"n" => 1}
+      once.finish(run: run, step: step, attempt: attempt)
+
+      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => Digest::SHA256.hexdigest("o"), "bytes" => 1}])
     end
 
     it "hashes the outputs itself when it has no evidence collaborator" do
