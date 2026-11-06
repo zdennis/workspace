@@ -44,8 +44,12 @@ module Workspace
     # @param dir [String] the evidence directory ({Config#workflow_evidence_dir})
     # @param clock [#call] returns the current Time
     # @param opener [#call] opens a copy's temporary file like `File.open` (path, flags, mode, block)
-    def initialize(dir:, clock: -> { Time.now }, opener: File.method(:open))
+    # @param max_bytes [Integer] the largest file copied
+    # @param budget [Integer] the most bytes copied for one attempt
+    def initialize(dir:, clock: -> { Time.now }, opener: File.method(:open), max_bytes: MAX_BYTES, budget: BUDGET)
       @dir = dir
+      @max_bytes = max_bytes
+      @budget = budget
       @clock = clock
       @opener = opener
     end
@@ -121,7 +125,7 @@ module Workspace
       path, problem = placement(run["artifacts_dir"].to_s, source)
       return record.merge("problem" => problem) if problem
       FileUtils.mkdir_p(directory, mode: 0o700)
-      store(record, directory, name, path, run["artifacts_dir"].to_s, [MAX_BYTES, BUDGET - used].min)
+      store(record, directory, name, path, run["artifacts_dir"].to_s, [@max_bytes, @budget - used].min)
     rescue
       record.merge("problem" => "copy_failed")
     end
@@ -181,7 +185,7 @@ module Workspace
         elsif content.too_large
           record["bytes"] = content.bytes
           record["too_large"] = true
-          record["budget"] = true if content.bytes <= MAX_BYTES
+          record["budget"] = true if content.bytes <= @max_bytes
         else
           File.rename(temp, target)
           record["sha256"] = content.sha256

@@ -13,7 +13,9 @@ RSpec.describe Workspace::WorkflowEvidence do
   let(:evidence_dir) { File.join(@dir, "evidence") }
   let(:art) { File.join(@dir, "art") }
   let(:now) { [Time.now] }
-  subject(:evidence) { described_class.new(dir: evidence_dir, clock: -> { now.first }) }
+  let(:max_bytes) { described_class::MAX_BYTES }
+  let(:budget) { described_class::BUDGET }
+  subject(:evidence) { described_class.new(dir: evidence_dir, clock: -> { now.first }, max_bytes: max_bytes, budget: budget) }
   let(:run) { {"id" => "wr_1", "artifacts_dir" => art} }
   let(:step) { {"id" => "report", "produces" => ["report.md"]} }
   let(:attempt) { {"n" => 1, "check" => {"log" => "x"}} }
@@ -132,26 +134,32 @@ RSpec.describe Workspace::WorkflowEvidence do
     expect(File.read(File.join(copies, two.first["name"]))).to eq("second")
   end
 
-  it "records a file over the limit with its size and no copy" do
-    stub_const("#{described_class}::MAX_BYTES", 2)
-    put("report.md", "abcd")
-    entry = evidence.copy(run: run, step: step, attempt: {"n" => 1}).last
-    expect(entry).to include("sha256" => nil, "bytes" => 4, "too_large" => true)
-    expect(entry).not_to have_key("budget")
-    expect(Dir.children(copies)).to eq([])
+  context "with a 2 byte limit" do
+    let(:max_bytes) { 2 }
+
+    it "records a file over the limit with its size and no copy" do
+      put("report.md", "abcd")
+      entry = evidence.copy(run: run, step: step, attempt: {"n" => 1}).last
+      expect(entry).to include("sha256" => nil, "bytes" => 4, "too_large" => true)
+      expect(entry).not_to have_key("budget")
+      expect(Dir.children(copies)).to eq([])
+    end
   end
 
-  it "stops copying past the budget for one attempt, the prompt counted" do
-    stub_const("#{described_class}::BUDGET", 15)
-    path = put("steps/s.1.prompt.md", "12345")
-    prompt = evidence.prompt(run: run, step_id: "s", attempt: {"n" => 1, "prompt_file" => path})
-    put("a.md", "12345678")
-    put("b.md", "12345678")
-    entries = evidence.copy(run: run, step: {"id" => "s", "produces" => ["a.md", "b.md"]}, attempt: {"n" => 1, "evidence" => prompt})
+  context "with a 15 byte budget" do
+    let(:budget) { 15 }
 
-    expect(entries[0]).to include("sha256" => sha("12345678"))
-    expect(entries[1]).to include("sha256" => nil, "bytes" => 8, "too_large" => true, "budget" => true)
-    expect(Dir.children(copies)).not_to include(entries[1]["name"])
+    it "stops copying past the budget for one attempt, the prompt counted" do
+      path = put("steps/s.1.prompt.md", "12345")
+      prompt = evidence.prompt(run: run, step_id: "s", attempt: {"n" => 1, "prompt_file" => path})
+      put("a.md", "12345678")
+      put("b.md", "12345678")
+      entries = evidence.copy(run: run, step: {"id" => "s", "produces" => ["a.md", "b.md"]}, attempt: {"n" => 1, "evidence" => prompt})
+
+      expect(entries[0]).to include("sha256" => sha("12345678"))
+      expect(entries[1]).to include("sha256" => nil, "bytes" => 8, "too_large" => true, "budget" => true)
+      expect(Dir.children(copies)).not_to include(entries[1]["name"])
+    end
   end
 
   it "copies nothing for a run id that is not a plain id" do
