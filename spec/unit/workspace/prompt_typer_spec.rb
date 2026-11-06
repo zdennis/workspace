@@ -3,7 +3,7 @@ require "spec_helper"
 RSpec.describe Workspace::PromptTyper do
   let(:empty_prompt) { "────────\n❯ \n" }
 
-  let(:tmux) do
+  let(:fake_tmux_class) do
     Class.new do
       attr_accessor :screens, :statuses
       attr_reader :delivered
@@ -23,8 +23,10 @@ RSpec.describe Workspace::PromptTyper do
         status = @statuses.shift || (enter ? :submitted : :pasted)
         Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
       end
-    end.new(empty_prompt)
+    end
   end
+
+  let(:tmux) { Interceptable.subclass(fake_tmux_class, :deliver).new(empty_prompt) }
 
   let(:facts) { {kind: "claude", state: "idle", open_tools: []} }
   let(:monitor) { double("monitor").tap { |m| allow(m).to receive(:typing_facts) { facts } } }
@@ -94,7 +96,7 @@ RSpec.describe Workspace::PromptTyper do
     it "is called after the last check and before Enter" do
       order = []
       allow(monitor).to receive(:typing_facts) { order << :check && facts }
-      allow(tmux).to receive(:deliver).and_wrap_original do |original, *args, **opts|
+      tmux.on(:deliver) do |original, *args, **opts|
         order << (opts[:enter] ? :enter : :paste)
         original.call(*args, **opts)
       end

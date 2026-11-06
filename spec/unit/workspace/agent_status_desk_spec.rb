@@ -47,7 +47,7 @@ RSpec.describe Workspace::AgentStatusDesk do
   let(:events_dir) { Dir.mktmpdir }
   let(:hook_log) { Workspace::HookEventLog.new(dir: events_dir, workspace: "api", boot_id: "BOOT") }
   let(:now) { [Time.utc(2026, 10, 17, 22, 0, 0)] }
-  let(:requests) { Workspace::AgentStatusRequests.new(clock: -> { now[0] }, id_generator: -> { "sr-abc" }) }
+  let(:requests) { Interceptable.subclass(Workspace::AgentStatusRequests, :open).new(clock: -> { now[0] }, id_generator: -> { "sr-abc" }) }
 
   subject(:desk) do
     described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor,
@@ -180,7 +180,7 @@ RSpec.describe Workspace::AgentStatusDesk do
     end
 
     it "types nothing when the pane was replaced while the request opened" do
-      allow(requests).to receive(:open).and_wrap_original do |original, **args|
+      requests.on(:open) do |original, **args|
         result = original.call(**args)
         tmux.details = [{id: "%5", window: 0, index: 1, pid: 999}]
         result

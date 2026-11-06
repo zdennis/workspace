@@ -7,7 +7,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   let(:started) { "Mon Oct 26 10:00:00 2026" }
   let(:empty_prompt) { "────────\n❯ \n" }
 
-  let(:tmux) { RecoveryDeskFakeTmux.new(empty_prompt) }
+  let(:tmux) { Interceptable.subclass(RecoveryDeskFakeTmux, :deliver, :send_key).new(empty_prompt) }
 
   # The real transcript reader, calling hooks[:transcript] after each read.
   let(:transcript) { RecordingTranscript.new(Workspace::TranscriptSummary.new) { hooks[:transcript]&.call } }
@@ -55,7 +55,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   let(:signals) { [] }
   let(:group_ids) { [10, 10] }
   let(:stopper) do
-    Workspace::AgentStopper.new(process_tree: process_tree,
+    Interceptable.subclass(Workspace::AgentStopper, :pane_clear?, :session_held?, :stop, :foreground?).new(process_tree: process_tree,
       signaller: ->(signal, pid) {
         signals << [signal, pid]
         hooks[:signal]&.call
@@ -77,10 +77,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   end
 
   let(:dir) { Dir.mktmpdir }
-  let(:store) { Workspace::AgentRecoveryStore.new(path: File.join(dir, "agent-recovery.json"), clock: clock) }
+  let(:store) { Interceptable.subclass(Workspace::AgentRecoveryStore, :update).new(path: File.join(dir, "agent-recovery.json"), clock: clock) }
   let(:ledger) { Workspace::SessionLedger.new(path: File.join(dir, "ledger.jsonl"), clock: -> { now[0] }, logger: Workspace::Logger.new) }
-  let(:inbox) { Workspace::InboxStore.new(path: File.join(dir, "inbox.json"), clock: -> { now[0] }) }
-  let(:marker) { Workspace::RecoveryStopMarker.new(state_dir: dir, clock: clock) }
+  let(:inbox) { Interceptable.subclass(Workspace::InboxStore, :upsert).new(path: File.join(dir, "inbox.json"), clock: -> { now[0] }) }
+  let(:marker) { Interceptable.subclass(Workspace::RecoveryStopMarker, :mark).new(state_dir: dir, clock: clock) }
   let(:transcript_path) { File.join(dir, "session.jsonl") }
   let(:report) do
     double("tmuxinator_report", show: {"windows" => [{"panes" => [{"kind" => "claude", "flags" => []}]}]})
@@ -661,7 +661,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       due_entry(stopped: true, phase: "watching", agent_pid: 19)
       inside = [false]
       in_update = []
-      allow(store).to receive(:update).and_wrap_original do |update, *args, &block|
+      store.on(:update) do |update, *args, &block|
         inside[0] = true
         update.call(*args, &block).tap { inside[0] = false }
       end
@@ -1487,39 +1487,61 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(signals).to eq([])
     end
 
-    {
-      "a wait" => -> { typing[:state] = "waiting" },
-      "a question tool" => -> { typing[:open_tools] = ["AskUserQuestion"] },
-      "a draft in the input line" => -> { tmux.screen = "────────\n❯ half a thought\n" },
-      "a dialog in place of the prompt" => -> { tmux.screen = "Allow this tool?\n" },
-      "Retrying in on screen" => -> { tmux.screen = "Retrying in 5s · attempt 2\n❯ \n" },
-      "esc to interrupt on screen" => -> { tmux.screen = "esc to interrupt\n❯ \n" },
-      "a prompt newer than the failure" => -> { facts[:last_user_prompt_at] = t0 + 10 },
-      "a pane not scanned yet" => -> { allow(monitor).to receive(:delivery_facts).and_return(nil) },
-      "sub-agents that can't be read" => -> { subagents[0] = nil },
-      "a sub-agent recently heard" => -> {
+    def break_so_it_defers(name)
+      case name
+      when "a wait" then typing[:state] = "waiting"
+      when "a question tool" then typing[:open_tools] = ["AskUserQuestion"]
+      when "a draft in the input line" then tmux.screen = "────────\n❯ half a thought\n"
+      when "a dialog in place of the prompt" then tmux.screen = "Allow this tool?\n"
+      when "Retrying in on screen" then tmux.screen = "Retrying in 5s · attempt 2\n❯ \n"
+      when "esc to interrupt on screen" then tmux.screen = "esc to interrupt\n❯ \n"
+      when "a prompt newer than the failure" then facts[:last_user_prompt_at] = t0 + 10
+      when "a pane not scanned yet" then allow(monitor).to receive(:delivery_facts).and_return(nil)
+      when "sub-agents that can't be read" then subagents[0] = nil
+      when "a sub-agent recently heard"
         subagents[0] = 1
         store.update("%5") { |e| e["last_subagent_at"] = stamp(now[0] - 300) }
-      },
-      "stopped true" => -> { store.update("%5") { |e| e["stopped"] = true } },
-      "no cwd yet" => -> {
+      when "stopped true" then store.update("%5") { |e| e["stopped"] = true }
+      when "no cwd yet"
         store.update("%5") { |e| e["cwd"] = nil }
         start_session(sid, cwd: nil)
-      },
-      "no stored flags and args ps can't give" => lambda {
+      when "no stored flags and args ps can't give"
         store.update("%5") { |e| e["agent_flags"] = nil }
         processes.find { |process| process[:pid] == 20 }[:args] = "(claude)"
-      },
-      "the ledger with no open session" => -> { ledger.record("event" => "session_end", "session_id" => sid) },
-      "a transcript that can't be read" => -> { File.delete(transcript_path) },
-      "pane start commands that can't be read" => -> { tmux.start_commands = [] },
-      "a process table that can't be read" => -> { tree_broken[0] = true },
-      "a tmux that lists nothing" => -> { tmux.details = [] },
-      "a pane tmux no longer has" => -> { tmux.details = [{id: "%9", window: 0, index: 2, pid: 99, command: "zsh"}] }
-    }.each do |name, breaks|
+      when "the ledger with no open session" then ledger.record("event" => "session_end", "session_id" => sid)
+      when "a transcript that can't be read" then File.delete(transcript_path)
+      when "pane start commands that can't be read" then tmux.start_commands = []
+      when "a process table that can't be read" then tree_broken[0] = true
+      when "a tmux that lists nothing" then tmux.details = []
+      when "a pane tmux no longer has" then tmux.details = [{id: "%9", window: 0, index: 2, pid: 99, command: "zsh"}]
+      else raise ArgumentError, name
+      end
+    end
+
+    [
+      "a wait",
+      "a question tool",
+      "a draft in the input line",
+      "a dialog in place of the prompt",
+      "Retrying in on screen",
+      "esc to interrupt on screen",
+      "a prompt newer than the failure",
+      "a pane not scanned yet",
+      "sub-agents that can't be read",
+      "a sub-agent recently heard",
+      "stopped true",
+      "no cwd yet",
+      "no stored flags and args ps can't give",
+      "the ledger with no open session",
+      "a transcript that can't be read",
+      "pane start commands that can't be read",
+      "a process table that can't be read",
+      "a tmux that lists nothing",
+      "a pane tmux no longer has"
+    ].each do |name|
       it "defers, and starts no attempt, on #{name}" do
         due_entry
-        instance_exec(&breaks)
+        break_so_it_defers(name)
 
         expect(answer).to eq(:defer)
         desk.scan
@@ -1745,16 +1767,27 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     end
 
     describe ":clear" do
-      {
-        "a last record that isn't the stored error" => -> { write_transcript(error_line, good_line) },
-        "another error record" => -> { write_transcript(error_line("u-later")) },
-        "a changed pid" => -> { processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(21, 10, "claude")]) },
-        "a changed start time" => -> { processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(20, 10, "claude", lstart: "Thu")]) },
-        "the ledger naming another session" => -> { start_session(other_sid) }
-      }.each do |name, breaks|
+      def break_so_it_is_cleared(name)
+        case name
+        when "a last record that isn't the stored error" then write_transcript(error_line, good_line)
+        when "another error record" then write_transcript(error_line("u-later"))
+        when "a changed pid" then processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(21, 10, "claude")])
+        when "a changed start time" then processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(20, 10, "claude", lstart: "Thu")])
+        when "the ledger naming another session" then start_session(other_sid)
+        else raise ArgumentError, name
+        end
+      end
+
+      [
+        "a last record that isn't the stored error",
+        "another error record",
+        "a changed pid",
+        "a changed start time",
+        "the ledger naming another session"
+      ].each do |name|
         it "deletes on #{name} with attempts 0" do
           due_entry(attempts: 0)
-          instance_exec(&breaks)
+          break_so_it_is_cleared(name)
           desk.scan
 
           expect(entry).to be_nil
@@ -1764,7 +1797,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
         it "gives up unconfirmed on #{name} with attempts above 0, and a later stop resolves it" do
           due_entry(attempts: 2)
-          instance_exec(&breaks)
+          break_so_it_is_cleared(name)
           desk.scan
 
           expect_gave_up("unconfirmed")
@@ -1912,7 +1945,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     end
 
     it "resolves the item when a Stop came between the record and the item" do
-      allow(inbox).to receive(:upsert).and_wrap_original do |upsert, *args, **opts|
+      inbox.on(:upsert) do |upsert, *args, **opts|
         store.delete("%5")
         upsert.call(*args, **opts)
       end
@@ -1922,7 +1955,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     end
 
     it "resolves the item when another session took the entry meanwhile" do
-      allow(inbox).to receive(:upsert).and_wrap_original do |upsert, *args, **opts|
+      inbox.on(:upsert) do |upsert, *args, **opts|
         store.update("%5") { |e| e["session_id"] = other_sid }
         upsert.call(*args, **opts)
       end
@@ -2050,7 +2083,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
     def clear_twice_then(&block)
       reads = 0
-      allow(stopper).to receive(:pane_clear?).and_wrap_original do |original, **args|
+      stopper.on(:pane_clear?) do |original, **args|
         reads += 1
         block.call if reads == 2
         original.call(**args)
@@ -3044,16 +3077,16 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         order = []
         looks = 0
         hooks[:snapshot] = -> { order << :snapshot if looks >= 2 }
-        allow(stopper).to receive(:session_held?).and_wrap_original do |original, **args|
+        stopper.on(:session_held?) do |original, **args|
           order << :held if looks >= 2
           original.call(**args)
         end
-        allow(stopper).to receive(:pane_clear?).and_wrap_original do |original, **args|
+        stopper.on(:pane_clear?) do |original, **args|
           looks += 1
           order << :look if looks > 2
           original.call(**args)
         end
-        allow(tmux).to receive(:send_key).and_wrap_original do |original, *args|
+        tmux.on(:send_key) do |original, *args|
           order << :key
           original.call(*args)
         end
@@ -3080,7 +3113,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         due_entry
         hooks[:signal] = -> { agent_exits }
         reads = 0
-        allow(stopper).to receive(:pane_clear?).and_wrap_original do |original, **args|
+        stopper.on(:pane_clear?) do |original, **args|
           answer = original.call(**args)
           reads += 1
           answer
@@ -3401,7 +3434,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       describe ":stale, a pid reused after step 1's read" do
         def stale_stop
-          allow(marker).to receive(:mark).and_wrap_original do |original, *args|
+          marker.on(:mark) do |original, *args|
             processes.find { |process| process[:pid] == 20 }[:lstart] = later
             original.call(*args)
           end
@@ -3422,7 +3455,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       describe "a stop that can't read the process table, after stopped was written" do
         before do
-          allow(marker).to receive(:mark).and_wrap_original do |original, *args|
+          marker.on(:mark) do |original, *args|
             tree_broken[0] = true
             original.call(*args)
           end
@@ -3456,7 +3489,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
         it "still honours a stop that arrived after stopped was written" do
           due_entry
-          allow(stopper).to receive(:stop).and_wrap_original do |original, **args|
+          stopper.on(:stop) do |original, **args|
             event("stop")
             original.call(**args)
           end
@@ -3605,7 +3638,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       end
 
       it "never presses Enter when the shell takes the terminal after the paste" do
-        allow(tmux).to receive(:deliver).and_wrap_original do |original, session, pane, text, enter: true|
+        tmux.on(:deliver) do |original, session, pane, text, enter: true|
           original.call(session, pane, text, enter: enter).tap { group_ids.replace([21, 10]) unless enter }
         end
         desk.scan
@@ -3618,7 +3651,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "reads the groups on every try" do
         reads = []
         allow(typer).to receive(:type).and_return(Workspace::PromptTyper::Result.new(outcome: :refused, reason: "unknown"))
-        allow(stopper).to receive(:foreground?).and_wrap_original do |original, **args|
+        stopper.on(:foreground?) do |original, **args|
           reads << args[:pid]
           original.call(**args)
         end
@@ -4369,7 +4402,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       describe "the shell taking the terminal after the paste" do
         before do
           flipped = false
-          allow(tmux).to receive(:deliver).and_wrap_original do |original, session, pane, text, enter: true|
+          tmux.on(:deliver) do |original, session, pane, text, enter: true|
             original.call(session, pane, text, enter: enter).tap do
               next if enter || flipped
               flipped = true
@@ -4418,7 +4451,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       describe "a failed Enter" do
         before do
-          allow(tmux).to receive(:deliver).and_wrap_original do |original, session, pane, text, enter: true|
+          tmux.on(:deliver) do |original, session, pane, text, enter: true|
             next Workspace::Tmux::Delivery.new(status: :failed, message: "no") if text.empty?
             original.call(session, pane, text, enter: enter)
           end

@@ -6,7 +6,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
   # One tmux for the desk and the typer: a paste shows in the input line and
   # Enter empties it again, unless screens are scripted.
-  let(:tmux) do
+  let(:fake_tmux_class) do
     Class.new do
       attr_accessor :details, :server_pid, :screen, :scripted, :statuses
       attr_reader :delivered
@@ -49,8 +49,10 @@ RSpec.describe Workspace::PromptQueueDesk do
         status = @statuses.shift || (enter ? :submitted : :pasted)
         Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
       end
-    end.new(empty_prompt)
+    end
   end
+
+  let(:tmux) { Interceptable.subclass(fake_tmux_class, :deliver, :send_key).new(empty_prompt) }
 
   let(:t0) { Time.utc(2026, 10, 19, 12, 0, 0) }
   let(:now) { [t0] }
@@ -527,7 +529,7 @@ RSpec.describe Workspace::PromptQueueDesk do
     text = "step\n" * 40
     send_prompt(text)
     turn_ends!(t0 + 30)
-    allow(tmux).to receive(:deliver).and_wrap_original do |original, session, target, body, enter: true|
+    tmux.on(:deliver) do |original, session, target, body, enter: true|
       result = original.call(session, target, body, enter: enter)
       tmux.screen = "────────\n❯ [Pasted text #1 +40 lines]\n────────\n" unless enter
       result
@@ -1105,8 +1107,8 @@ RSpec.describe Workspace::PromptQueueDesk do
       held = []
       locked_desk = described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
         delivery_lock: lock, clock: clock, sleeper: ->(seconds) { now[0] += seconds }, spawn: ->(&block) { block.call })
-      allow(tmux).to receive(:send_key).and_wrap_original { |m, *a| held << lock.owned? && m.call(*a) }
-      allow(tmux).to receive(:deliver).and_wrap_original { |m, *a, **kw| held << lock.owned? && m.call(*a, **kw) }
+      tmux.on(:send_key) { |m, *a| held << lock.owned? && m.call(*a) }
+      tmux.on(:deliver) { |m, *a, **kw| held << lock.owned? && m.call(*a, **kw) }
 
       locked_desk.interrupt_send("pane_id" => "%5", "text" => "go")
 
