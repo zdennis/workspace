@@ -10,8 +10,10 @@ module Workspace
   class LibraryInstaller
     # @param git [Workspace::Git] answers whether a path is tracked, and where the common dir is
     # @param dirs [Workspace::LibraryInstallDirs] where each kind goes
-    def initialize(git:, dirs: LibraryInstallDirs.new)
+    # @param renamer [#call] moves a finished temp copy into place, given the temp path and the destination
+    def initialize(git:, dirs: LibraryInstallDirs.new, renamer: File.method(:rename))
       @git = git
+      @renamer = renamer
       @dirs = dirs
     end
 
@@ -270,7 +272,7 @@ module Workspace
         File.rename(dest, old)
       end
       begin
-        File.rename(tmp, dest)
+        @renamer.call(tmp, dest)
       rescue SystemCallError
         File.rename(old, dest) if old
         old = nil

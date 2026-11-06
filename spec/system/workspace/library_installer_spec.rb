@@ -182,10 +182,9 @@ RSpec.describe Workspace::LibraryInstaller do
   it "puts back what was at the destination when the copy can't be moved into place" do
     dest = File.join(worktree, ".claude", "agents", "reviewer.md")
     File.write(dest, "untracked old\n")
-    allow(File).to receive(:rename).and_call_original
-    allow(File).to receive(:rename).with(/reviewer\.md\.tmp-/, dest).and_raise(Errno::EACCES)
+    refusing = described_class.new(git: git, renamer: ->(*) { raise Errno::EACCES })
 
-    expect { installer.copy(entry("agent", "reviewer"), worktree: worktree) }.to raise_error(Errno::EACCES)
+    expect { refusing.copy(entry("agent", "reviewer"), worktree: worktree) }.to raise_error(Errno::EACCES)
     expect(File.read(dest)).to eq("untracked old\n")
     expect(Dir.children(File.dirname(dest)).sort).to eq(["reviewer.md", "tracked.md"])
   end
