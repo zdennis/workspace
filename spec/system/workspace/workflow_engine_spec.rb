@@ -645,8 +645,9 @@ RSpec.describe Workspace::WorkflowEngine do
       it "does not refuse a target path that does not exist, or none" do
         start
 
-        expect(engine.send(:check_checkout, File.join(@dir, "nowhere"))).to be_nil
-        expect(engine.send(:check_checkout, nil)).to be_nil
+        [File.join(@dir, "nowhere"), nil].each do |tree|
+          expect(engine.preflight(definition: three_steps, workspace: "app.worktree-x", worktree: worktree, tree: tree, inputs: {"task" => "X-1"})).to include("step" => "plan")
+        end
       end
 
       it "is not raised by resume, which is the run itself" do
@@ -3250,7 +3251,14 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(stop_when.call).to be true
 
       start(pane: "%6")
-      second = engine_with.send(:finish_check, "wr_2", {"step" => "verify", "attempt" => 1, "command" => "true", "timeout" => 5, "log" => "x", "cwd" => worktree})
+      # A check that never reported back is run again by a tick once past its limit: the public way into finishing a check.
+      store.update("wr_2") do |run|
+        run["current"] = "verify"
+        run["steps"]["verify"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:00:00Z", "check" => {"started_at" => "2026-10-04T12:00:00Z"}}]}
+      end
+      now[0] += 400
+      check_results << {exit_code: 1, timed_out: false}
+      second = engine.tick("wr_2")
       expect(second).to include("id" => "wr_2")
       wanted = stop_whens.last
       expect(wanted.call).to be true # wr_2 is on plan, not checking verify
@@ -3692,10 +3700,11 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     describe "a changed repository config" do
-      let(:inbox) { Workspace::InboxStore.new(path: File.join(worktree, "..", "inbox-#{File.basename(worktree)}.json")) }
+      let(:inbox_path) { File.join(worktree, "..", "inbox-#{File.basename(worktree)}.json") }
+      let(:inbox) { Workspace::InboxStore.new(path: inbox_path) }
       subject(:engine) { engine_with(inbox_for: ->(_workspace) { inbox }) }
 
-      after { FileUtils.rm_f([inbox.instance_variable_get(:@path), "#{inbox.instance_variable_get(:@path)}.lock"]) }
+      after { FileUtils.rm_f([inbox_path, "#{inbox_path}.lock"]) }
 
       def set_config(key, value)
         system("git", "-C", worktree, "config", key, value, exception: true)
@@ -3758,16 +3767,36 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(run).not_to have_key("guard_config_seen")
       end
 
-      it "tries again at the next guarded step when the warning could not be recorded" do
+      it "goes on when the inbox cannot be written, the warning still on the attempt" do
+        failing = engine_with(inbox_for: ->(_workspace) { raise "inbox is gone" })
         start(guarded, inputs: {})
         set_config("alias.x", "status")
-        allow(engine).to receive(:config_warning).and_raise(RuntimeError)
-        run = to_second_step
+        artifact("note.md")
+
+        run = failing.turn_ended("wr_1", pane: "%5")
+
+        expect(run["current"]).to eq("fix")
+        expect(run["steps"]["diagnose"]["attempts"].last).to include("outcome" => "passed", "warnings" => [include("code" => "config_changed")])
+      end
+
+      it "tries again at the next guarded step when the warning could not be recorded" do
+        reads = 0
+        flaky = Class.new(SimpleDelegator) do
+          define_method(:config_change) do |*args, **kwargs|
+            # The first reading carries a code the warning text does not know, so building the warning fails.
+            (reads += 1) == 1 ? {"code" => "unknown_code", "reading" => "r"} : super(*args, **kwargs)
+          end
+        end.new(guard)
+        flaky_engine = engine_with(guard: flaky, inbox_for: ->(_workspace) { inbox })
+        start(guarded, inputs: {})
+        set_config("alias.x", "status")
+        artifact("note.md")
+
+        run = flaky_engine.turn_ended("wr_1", pane: "%5")
         expect(run["current"]).to eq("fix")
         expect(run).not_to have_key("guard_config_seen")
-        allow(engine).to receive(:config_warning).and_call_original
 
-        run = engine.turn_ended("wr_1", pane: "%5")
+        run = flaky_engine.turn_ended("wr_1", pane: "%5")
 
         expect(run["steps"]["fix"]["attempts"].last["warnings"].size).to eq(1)
       end

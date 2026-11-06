@@ -61,16 +61,16 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, router: router, output: output)
   end
 
+  def build_engine(store: instance_double(Workspace::WorkflowRunStore, active: []), commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
+    Workspace::WorkflowEngine.new(
+      store: store, resources: instance_double(Workspace::RunResources), composer: instance_double(Workspace::InstructionComposer, compose: {"packs" => []}),
+      panes: nil, checker: instance_double(Workspace::WorkflowCheck), commands_config: commands_config, lineage: lineage, git: git,
+      guard: Workspace::WorkflowGuard.new, excludes: excludes, gate_note: instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil)
+    )
+  end
+
   def real_engine(active: [])
-    Workspace::WorkflowEngine.allocate.tap do |real|
-      real.instance_variable_set(:@guard, Workspace::WorkflowGuard.new)
-      real.instance_variable_set(:@lineage, lineage)
-      real.instance_variable_set(:@panes, nil)
-      real.instance_variable_set(:@store, instance_double(Workspace::WorkflowRunStore, active: active))
-      real.instance_variable_set(:@gate_note, instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil))
-      real.instance_variable_set(:@commands_config, instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
-      allow(real).to receive(:compose).and_return({"packs" => []})
-    end
+    build_engine(store: instance_double(Workspace::WorkflowRunStore, active: active))
   end
 
   before do
@@ -1067,11 +1067,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     config = instance_double(Workspace::ConfigResolver)
     view = ->(workspace) { double(raw: ->(_) {}).tap { |v| allow(v).to receive(:raw) { |key| (workspace == "app" && key == "commands.test") ? "bundle exec rspec" : nil } } }
     allow(config).to receive(:view) { |workspace:| view.call(workspace) }
-    real = Workspace::WorkflowEngine.allocate
-    real.instance_variable_set(:@commands_config, Workspace::CommandsConfig.new(config_resolver: config))
-    real.instance_variable_set(:@lineage, lineage)
-    real.instance_variable_set(:@panes, nil)
-    allow(real).to receive(:compose).and_return({"packs" => []})
+    real = build_engine(commands_config: Workspace::CommandsConfig.new(config_resolver: config))
     checking = Workspace::WorkflowDefinition.parse(<<~YAML, id: "flow", source: "global", path: "/defs/flow.yml")
       inputs:
         task: {required: true}
@@ -1333,7 +1329,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     it "keeps the cancel command of a checkout_has_run raised after the workspace was made" do
       holder = {"id" => "wr_9", "worktree" => Dir.tmpdir, "current" => "plan", "state" => "running"}
       refusal = begin
-        real_engine(active: [holder]).send(:check_checkout, Dir.tmpdir)
+        real_engine(active: [holder]).preflight(definition: definition, workspace: "app", worktree: Dir.tmpdir, inputs: {"task" => "x"})
       rescue Workspace::Error => e
         e
       end
