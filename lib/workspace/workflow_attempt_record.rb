@@ -37,7 +37,11 @@ module Workspace
     #   its panes under (the workspace's, and its tmux session's)
     # @param server_for [#call] given a pane id, the pid of its tmux server, or nil
     # @param evidence [Workspace::WorkflowEvidence, nil] copies the attempt's files aside; nil keeps none
-    def initialize(guard:, ledger: nil, clock: -> { Time.now }, session_names: ->(workspace) { [workspace] }, server_for: ->(_pane) {}, evidence: nil)
+    # @param max_hash_bytes [Integer] the largest `produces` file hashed
+    # @param max_transcript_bytes [Integer] how much of a transcript's tail is read
+    def initialize(guard:, ledger: nil, clock: -> { Time.now }, session_names: ->(workspace) { [workspace] }, server_for: ->(_pane) {}, evidence: nil, max_hash_bytes: MAX_HASH_BYTES, max_transcript_bytes: MAX_TRANSCRIPT_BYTES)
+      @max_hash_bytes = max_hash_bytes
+      @max_transcript_bytes = max_transcript_bytes
       @evidence = evidence
       @guard = guard
       @ledger = ledger
@@ -300,7 +304,7 @@ module Workspace
     def tail_lines(path)
       File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW) do |file|
         return [[], false] unless file.stat.file?
-        start = [file.size - MAX_TRANSCRIPT_BYTES, 0].max
+        start = [file.size - @max_transcript_bytes, 0].max
         file.seek(start)
         lines = file.read.to_s.force_encoding(Encoding::UTF_8).scrub.split("\n")
         lines.shift if start > 0
@@ -337,7 +341,7 @@ module Workspace
     end
 
     def output(file, path)
-      content = WorkflowProduced.digest(path, max_bytes: MAX_HASH_BYTES)
+      content = WorkflowProduced.digest(path, max_bytes: @max_hash_bytes)
       return {"file" => file, "sha256" => nil, "bytes" => nil} unless content
       record = {"file" => file, "sha256" => content.sha256, "bytes" => content.bytes}
       record["too_large"] = true if content.too_large

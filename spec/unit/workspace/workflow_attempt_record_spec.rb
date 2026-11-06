@@ -11,7 +11,9 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
   end
 
   let(:guard) { instance_double(Workspace::WorkflowGuard, head: "a" * 40) }
-  subject(:record) { described_class.new(guard: guard) }
+  let(:max_hash_bytes) { described_class::MAX_HASH_BYTES }
+  let(:max_transcript_bytes) { described_class::MAX_TRANSCRIPT_BYTES }
+  subject(:record) { described_class.new(guard: guard, max_hash_bytes: max_hash_bytes) }
   let(:run) do
     {"worktree" => @dir, "artifacts_dir" => File.join(@dir, "art"), "definition_sha256" => "d" * 64, "current" => "plan",
      "definition" => {"steps" => [{"id" => "plan", "produces" => ["plan.md"]}]}, "steps" => {"plan" => {"attempts" => [{"n" => 1}]}}}
@@ -48,7 +50,8 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
   end
 
   describe "evidence" do
-    let(:evidence) { Workspace::WorkflowEvidence.new(dir: File.join(@dir, "ev")) }
+    let(:evidence_budget) { Workspace::WorkflowEvidence::BUDGET }
+    let(:evidence) { Workspace::WorkflowEvidence.new(dir: File.join(@dir, "ev"), budget: evidence_budget) }
     subject(:record) { described_class.new(guard: guard, evidence: evidence) }
     let(:run) { super().merge("id" => "wr_1") }
     let(:prompt) { File.join(run["artifacts_dir"], "steps", "plan.1.prompt.md") }
@@ -83,14 +86,17 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => attempt["evidence"].last["sha256"], "bytes" => 1}])
     end
 
-    it "still hashes an output that the budget kept from the copy" do
-      stub_const("Workspace::WorkflowEvidence::BUDGET", 0)
-      put("plan.md", "o")
-      attempt = {"n" => 1}
-      record.finish(run: run, step: step, attempt: attempt)
+    context "with no copy budget" do
+      let(:evidence_budget) { 0 }
 
-      expect(attempt["evidence"].last).to include("sha256" => nil, "budget" => true)
-      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => Digest::SHA256.hexdigest("o"), "bytes" => 1}])
+      it "still hashes an output that the budget kept from the copy" do
+        put("plan.md", "o")
+        attempt = {"n" => 1}
+        record.finish(run: run, step: step, attempt: attempt)
+
+        expect(attempt["evidence"].last).to include("sha256" => nil, "budget" => true)
+        expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => Digest::SHA256.hexdigest("o"), "bytes" => 1}])
+      end
     end
 
     it "records a nil hash for an output evidence refused as outside the artifacts directory" do
@@ -174,22 +180,28 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(attempt["outputs"].map { |each| each["file"] }).to eq(%w[gone.md link.md dir.md])
     end
 
-    it "does not read a file past the cap, and says so" do
-      stub_const("#{described_class}::MAX_HASH_BYTES", 4)
-      put("plan.md", "12345")
-      attempt = {}
-      record.finish(run: run, step: step, attempt: attempt)
+    context "with a cap of 4 bytes" do
+      let(:max_hash_bytes) { 4 }
 
-      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => 5, "too_large" => true}])
+      it "does not read a file past the cap, and says so" do
+        put("plan.md", "12345")
+        attempt = {}
+        record.finish(run: run, step: step, attempt: attempt)
+
+        expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => 5, "too_large" => true}])
+      end
     end
 
-    it "hashes a file exactly at the cap" do
-      stub_const("#{described_class}::MAX_HASH_BYTES", 5)
-      put("plan.md", "12345")
-      attempt = {}
-      record.finish(run: run, step: step, attempt: attempt)
+    context "with a cap of 5 bytes" do
+      let(:max_hash_bytes) { 5 }
 
-      expect(attempt["outputs"].first).to include("sha256" => Digest::SHA256.hexdigest("12345"), "bytes" => 5)
+      it "hashes a file exactly at the cap" do
+        put("plan.md", "12345")
+        attempt = {}
+        record.finish(run: run, step: step, attempt: attempt)
+
+        expect(attempt["outputs"].first).to include("sha256" => Digest::SHA256.hexdigest("12345"), "bytes" => 5)
+      end
     end
 
     it "names the cap as 16 MiB" do
@@ -336,7 +348,8 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
     let(:server) { [nil] }
     subject(:record) do
       described_class.new(guard: guard, ledger: ledger, clock: -> { Time.utc(2026, 10, 4, 12, 10, 0) },
-        session_names: ->(workspace) { [workspace, "tmux-#{workspace}"] }, server_for: ->(_pane) { server.first })
+        session_names: ->(workspace) { [workspace, "tmux-#{workspace}"] }, server_for: ->(_pane) { server.first },
+        max_transcript_bytes: max_transcript_bytes)
     end
     let(:attempt) { {"n" => 2, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z"} }
 
@@ -424,41 +437,42 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(third["usage"]).to eq("input_tokens" => 0, "output_tokens" => 4)
     end
 
-    it "reaches only back to the first line of a session that began inside the attempt (U4)" do
-      stub_const("Workspace::WorkflowAttemptRecord::MAX_TRANSCRIPT_BYTES", 400)
-      File.write(ledger_path, "")
-      start_line("s1", "2026-10-04T12:01:00Z", "source" => "startup")
-      filler = Array.new(6) { |n| assistant("2026-10-04T11:0#{n}:00Z", "old#{n}", 1, 1) }
-      write_transcript(*filler, assistant("2026-10-04T12:01:00Z", "m1", 10, 1), assistant("2026-10-04T12:02:00Z", "m2", 20, 7))
-      record.finish(run: run, step: step, attempt: attempt)
-      expect(attempt["usage"]).to eq("input_tokens" => 30, "output_tokens" => 8)
+    context "with a short transcript read" do
+      let(:max_transcript_bytes) { 400 }
 
-      File.write(ledger_path, "")
-      start_line("s1", "2026-10-04T10:00:00Z", "source" => "startup")
-      second = attempt.except("usage")
-      record.finish(run: run, step: step, attempt: second)
-      expect(second["usage"]).to be_nil
-    end
+      it "reaches only back to the first line of a session that began inside the attempt (U4)" do
+        File.write(ledger_path, "")
+        start_line("s1", "2026-10-04T12:01:00Z", "source" => "startup")
+        filler = Array.new(6) { |n| assistant("2026-10-04T11:0#{n}:00Z", "old#{n}", 1, 1) }
+        write_transcript(*filler, assistant("2026-10-04T12:01:00Z", "m1", 10, 1), assistant("2026-10-04T12:02:00Z", "m2", 20, 7))
+        record.finish(run: run, step: step, attempt: attempt)
+        expect(attempt["usage"]).to eq("input_tokens" => 30, "output_tokens" => 8)
 
-    it "reaches back to the attempt's start, not the session's, for a resume or compact, which keep the old file (round 2, 3)" do
-      stub_const("Workspace::WorkflowAttemptRecord::MAX_TRANSCRIPT_BYTES", 400)
-      File.write(ledger_path, "")
-      start_line("s1", "2026-10-04T12:01:00Z", "source" => "resume")
-      filler = Array.new(6) { |n| assistant("2026-10-04T11:0#{n}:00Z", "old#{n}", 1, 1) }
-      write_transcript(*filler, assistant("2026-10-04T12:00:30Z", "m0", 5, 5), assistant("2026-10-04T12:02:00Z", "m2", 20, 7))
-      record.finish(run: run, step: step, attempt: attempt)
+        File.write(ledger_path, "")
+        start_line("s1", "2026-10-04T10:00:00Z", "source" => "startup")
+        second = attempt.except("usage")
+        record.finish(run: run, step: step, attempt: second)
+        expect(second["usage"]).to be_nil
+      end
 
-      expect(attempt["usage"]).to be_nil
-    end
+      it "reaches back to the attempt's start, not the session's, for a resume or compact, which keep the old file (round 2, 3)" do
+        File.write(ledger_path, "")
+        start_line("s1", "2026-10-04T12:01:00Z", "source" => "resume")
+        filler = Array.new(6) { |n| assistant("2026-10-04T11:0#{n}:00Z", "old#{n}", 1, 1) }
+        write_transcript(*filler, assistant("2026-10-04T12:00:30Z", "m0", 5, 5), assistant("2026-10-04T12:02:00Z", "m2", 20, 7))
+        record.finish(run: run, step: step, attempt: attempt)
 
-    it "reads a startup session that began a few seconds before the attempt from a long file, counting nothing before the attempt (round 3, 3)" do
-      stub_const("Workspace::WorkflowAttemptRecord::MAX_TRANSCRIPT_BYTES", 400)
-      filler = Array.new(6) { |n| assistant("2026-10-04T11:0#{n}:00Z", "old#{n}", 1, 1) }
-      write_transcript(*filler, assistant("2026-10-03T11:59:57Z", "pre", 900, 90), assistant("2026-10-04T11:59:57Z", "pre2", 900, 90), assistant("2026-10-04T12:02:00Z", "m2", 20, 7))
-      File.write(ledger_path, "")
-      start_line("s1", "2026-10-04T11:59:57Z", "source" => "startup")
-      record.finish(run: run, step: step, attempt: attempt)
-      expect(attempt["usage"]).to eq("input_tokens" => 20, "output_tokens" => 7)
+        expect(attempt["usage"]).to be_nil
+      end
+
+      it "reads a startup session that began a few seconds before the attempt from a long file, counting nothing before the attempt (round 3, 3)" do
+        filler = Array.new(6) { |n| assistant("2026-10-04T11:0#{n}:00Z", "old#{n}", 1, 1) }
+        write_transcript(*filler, assistant("2026-10-03T11:59:57Z", "pre", 900, 90), assistant("2026-10-04T11:59:57Z", "pre2", 900, 90), assistant("2026-10-04T12:02:00Z", "m2", 20, 7))
+        File.write(ledger_path, "")
+        start_line("s1", "2026-10-04T11:59:57Z", "source" => "startup")
+        record.finish(run: run, step: step, attempt: attempt)
+        expect(attempt["usage"]).to eq("input_tokens" => 20, "output_tokens" => 7)
+      end
     end
 
     it "is nil when the last line of a message has a usage that is not a hash (round 2, 1)" do

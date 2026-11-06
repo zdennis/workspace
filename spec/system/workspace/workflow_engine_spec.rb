@@ -1141,13 +1141,16 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => nil}])
     end
 
-    it "records a file past the size cap by its size alone" do
-      stub_const("Workspace::WorkflowAttemptRecord::MAX_HASH_BYTES", 3)
-      start(ledger_flow, inputs: {})
-      artifact("plan.md")
-      engine.turn_ended("wr_1", pane: "%5")
+    context "with a hash cap of 3 bytes" do
+      subject(:engine) { engine_with(attempt_record: Workspace::WorkflowAttemptRecord.new(guard: guard, clock: -> { now.first }, max_hash_bytes: 3)) }
 
-      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => 5, "too_large" => true}])
+      it "records a file past the size cap by its size alone" do
+        start(ledger_flow, inputs: {})
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => 5, "too_large" => true}])
+      end
     end
 
     it "records no outputs for a step with no produces" do
