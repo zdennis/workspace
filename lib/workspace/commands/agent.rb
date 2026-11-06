@@ -102,6 +102,8 @@ module Workspace
       #   `task` and first `display_label` source; nil reports no task
       # @param restart_registry [Workspace::RestartRegistry] the panes being restarted; one is
       #   built by default
+      # @param restart_runner_factory [#call, nil] given the session monitor, builds the
+      #   {Workspace::RestartRunner} once, when the first restart needs it; nil builds the real one
       # @param current_name [String, nil] the workspace served before {#call} starts, so {#handle}
       #   works without it; +call+ sets it from its +name+
       # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
@@ -135,6 +137,7 @@ module Workspace
         prompt_queue_desk_factory: nil,
         agent_recovery_desk_factory: nil,
         restart_registry: RestartRegistry.new,
+        restart_runner_factory: nil,
         current_name: nil,
         handoff_watcher_factory: nil,
         name_migration: nil,
@@ -182,6 +185,8 @@ module Workspace
         @handoff_watcher_factory = handoff_watcher_factory || method(:build_handoff_watcher)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = restart_registry
+        @restart_runner_factory = restart_runner_factory || method(:build_restart_runner)
+        @restart_runner = nil
         # When the main agent's current turn began, by pane id, for the workflow nudger.
         @turn_starts = {}
         @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: @error_output) }
@@ -254,6 +259,8 @@ module Workspace
 
         @hook_event_log = @hook_event_log_factory&.call(name)
         @session_monitor = (@session_monitor_factory || session_monitor_builder).call(name)
+        # Built here, before any worker thread can ask for it.
+        @restart_runner = @restart_runner_factory.call(@session_monitor)
         @session_monitor.start
         @plan_progress_watcher = @plan_progress_watcher_factory&.call(name)
         @plan_progress_watcher&.start
@@ -290,8 +297,7 @@ module Workspace
 
         true
       ensure
-        @shutting_down = true
-        @restarts.shut_down!
+        begin_shutdown
         @shutdown_signal << :stop
         @session_monitor&.stop
         @plan_progress_watcher&.stop
@@ -795,9 +801,20 @@ module Workspace
       end
 
       def restart_runner
+        @restart_runner ||= @restart_runner_factory.call(@session_monitor)
+      end
+
+      # Stops new recovery claims and marks the daemon as going down; takes no lock,
+      # so the signal handler may call it.
+      def begin_shutdown
+        @shutting_down = true
+        @restarts.shut_down!
+      end
+
+      def build_restart_runner(session_monitor)
         RestartRunner.new(restart_factory: @agent_restart_factory, registry: @restarts, tmux: @tmux,
           session_name: @tmux_session, delivery_lock: @delivery_lock, pipeline_ref: method(:pipeline_ref_on),
-          session_monitor: @session_monitor, idle_prompt_check: @idle_prompt_check,
+          monitor: session_monitor, idle_prompt_check: @idle_prompt_check,
           transcript_summary: @transcript_summary, pane_bindings: @pane_bindings,
           error_output: @error_output, logger: @logger)
       end
@@ -1558,8 +1575,7 @@ module Workspace
       def install_signal_handlers
         %w[TERM INT].each do |signal|
           @signal_trapper.trap(signal) do
-            @shutting_down = true
-            @restarts.shut_down!
+            begin_shutdown
             @server.close
           end
         end

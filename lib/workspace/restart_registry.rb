@@ -35,6 +35,8 @@ module Workspace
     #
     # @return [Thread]
     def start_worker(pane_id, &work)
+      # The spawn runs under the registry lock, so a worker that releases its claim
+      # at once blocks in {#release} until this assignment has recorded it.
       @lock.synchronize { @claims[pane_id] = @spawn.call(&work) }
     end
 
@@ -70,7 +72,8 @@ module Workspace
       @lock.synchronize { @claims.delete(pane_id) if @claims[pane_id].equal?(token) }
     end
 
-    # Makes later recovery claims refuse. Takes no lock, so a signal handler may call it.
+    # Makes later recovery claims refuse. Takes no lock, so a signal handler may call it;
+    # {#claim_for_recovery} reads the flag under the lock.
     def shut_down!
       @shutting_down = true
     end

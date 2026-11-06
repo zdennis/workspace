@@ -18,14 +18,21 @@ RSpec.describe Workspace::RestartRunner do
 
   def runner(factory: ->(**) { restart })
     described_class.new(restart_factory: factory, registry: registry, tmux: nil, session_name: "workspace-myapp",
-      delivery_lock: Mutex.new, pipeline_ref: ->(_index) {}, session_monitor: nil,
+      delivery_lock: Mutex.new, pipeline_ref: ->(_index) {}, monitor: nil,
       idle_prompt_check: Workspace::IdlePromptCheck.new, transcript_summary: Workspace::TranscriptSummary.new,
       pane_bindings: nil, error_output: error_output)
   end
 
   def last_reply = JSON.parse(client.string.lines.last)
 
+  let(:workers) { [] }
+
   before { registry.claim_pending("%18") }
+
+  after do
+    workers.each(&:kill)
+    workers.each { |worker| worker.join(2) }
+  end
 
   it "runs the restart for the pane and answers a waiting caller with the pane and outcome" do
     runner.run(started, "go", true, 7, client, run_id: "wr_1")
@@ -37,7 +44,8 @@ RSpec.describe Workspace::RestartRunner do
   it "frees the pane's claim for the worker thread that ran it" do
     registry.release("%18")
     registry.claim_pending("%18")
-    registry.start_worker("%18") { runner.run(started, "go", false, 5, nil) }.join
+    workers << registry.start_worker("%18") { runner.run(started, "go", false, 5, nil) }
+    workers.last.join
 
     expect(registry.held?("%18")).to be(false)
   end
@@ -76,7 +84,7 @@ RSpec.describe Workspace::RestartRunner do
     gated.define_singleton_method(:cleared?) { true }
     registry.release("%18")
     registry.claim_pending("%18")
-    registry.start_worker("%18") { runner(factory: ->(**) { gated }).run(started, "go", false, 5, client) }
+    workers << registry.start_worker("%18") { runner(factory: ->(**) { gated }).run(started, "go", false, 5, client) }
     entered.pop(timeout: 2)
 
     registry.stop_all

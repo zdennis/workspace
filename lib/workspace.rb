@@ -877,6 +877,7 @@ module Workspace
       workflow_nudger: workflow_nudger,
       name_migration: name_migration,
       agent_recovery_desk_factory: agent_recovery_desk_factory,
+      restart_registry: RestartRegistry.new,
       transcript_summary: TranscriptSummary.new,
       idle_prompt_check: IdlePromptCheck.new,
       pane_bindings: pane_bindings,

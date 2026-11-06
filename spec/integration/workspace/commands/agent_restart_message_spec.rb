@@ -76,6 +76,19 @@ end
 
 # The daemon's side of a restart_agent message: resolving the explicit pane,
 # the checks made before replying, and handing the work to a worker thread.
+# A restart runner that records the restart and frees the pane's claim.
+class RecordingRunner
+  def initialize(registry, runs)
+    @registry = registry
+    @runs = runs
+  end
+
+  def run(started, prompt, *_rest, **_opts)
+    @runs << [started["pane_id"], prompt]
+    @registry.release(started["pane_id"])
+  end
+end
+
 RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   let(:tmpdir) { Dir.mktmpdir("ws-restart", "/tmp") }
   let(:agent_socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
@@ -177,6 +190,43 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
         expect(reply).to include("ok" => false, "error" => "context_unknown", "pane" => "0.1")
         expect(reply["message"]).to include("can't read context usage for pane %18 (no_reading)")
         expect(tmux.sent_keys).to be_empty
+      end
+    end
+  end
+
+  context "with a restart runner factory" do
+    let(:registry) { Workspace::RestartRegistry.new }
+    let(:runs) { Queue.new }
+    let(:built_with) { [] }
+    let(:runner_factory) do
+      lambda do |session_monitor|
+        built_with << session_monitor
+        RecordingRunner.new(registry, runs)
+      end
+    end
+
+    subject(:agent) do
+      described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
+        session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
+        restart_registry: registry, restart_runner_factory: runner_factory,
+        output: output, error_output: error_output)
+    end
+
+    it "builds the runner over the session monitor as soon as the daemon starts, before any restart" do
+      run_agent do
+        expect(built_with).to eq([monitor])
+      end
+    end
+
+    it "reuses that runner for every restart" do
+      run_agent do
+        send_restart
+        expect(runs.pop(timeout: 2)).to eq(["%18", "Read HANDOFF.md"])
+        send_restart("prompt" => "again")
+        expect(runs.pop(timeout: 2)).to eq(["%18", "again"])
+
+        expect(built_with).to eq([monitor])
       end
     end
   end

@@ -17,13 +17,13 @@ module Workspace
     # @param session_name [String] the tmux session the pane is in
     # @param delivery_lock [Mutex]
     # @param pipeline_ref [#call] pane index to the work item running on it, or nil
-    # @param session_monitor [Workspace::SessionMonitor, nil]
+    # @param monitor [Workspace::SessionMonitor, nil] the pane facts the restart reads; nil reads none
     # @param idle_prompt_check [Workspace::IdlePromptCheck]
     # @param transcript_summary [Workspace::TranscriptSummary]
     # @param pane_bindings [Workspace::PaneBindings, nil]
     # @param error_output [IO]
     # @param logger [#debug]
-    def initialize(restart_factory:, registry:, tmux:, session_name:, delivery_lock:, pipeline_ref:, session_monitor:,
+    def initialize(restart_factory:, registry:, tmux:, session_name:, delivery_lock:, pipeline_ref:, monitor:,
       idle_prompt_check:, transcript_summary:, pane_bindings:, error_output:, logger: Workspace::Logger.new)
       @restart_factory = restart_factory
       @registry = registry
@@ -31,7 +31,7 @@ module Workspace
       @session_name = session_name
       @delivery_lock = delivery_lock
       @pipeline_ref = pipeline_ref
-      @session_monitor = session_monitor
+      @monitor = monitor
       @idle_prompt_check = idle_prompt_check
       @transcript_summary = transcript_summary
       @pane_bindings = pane_bindings
@@ -55,13 +55,13 @@ module Workspace
           session_name: @session_name,
           delivery_lock: @delivery_lock,
           pipeline_ref: @pipeline_ref,
-          pane_state: ->(id) { @session_monitor&.restart_state(id) },
-          agent_pid: ->(id) { @session_monitor&.agent_pid(id) },
-          pane_kind: ->(id) { @session_monitor&.pane_kind(id) },
-          delivery_facts: ->(id) { @session_monitor&.delivery_facts(id) },
+          pane_state: ->(id) { @monitor&.restart_state(id) },
+          agent_pid: ->(id) { @monitor&.agent_pid(id) },
+          pane_kind: ->(id) { @monitor&.pane_kind(id) },
+          delivery_facts: ->(id) { @monitor&.delivery_facts(id) },
           turn_over: method(:main_turn_missing),
-          screen_ready: ->(id) { @idle_prompt_check.refusal(@session_monitor&.typing_facts(id), @tmux.capture_screen_styled(id)) },
-          subagents_running: ->(id) { @session_monitor&.background_subagents(id) },
+          screen_ready: ->(id) { @idle_prompt_check.refusal(@monitor&.typing_facts(id), @tmux.capture_screen_styled(id)) },
+          subagents_running: ->(id) { @monitor&.background_subagents(id) },
           run_bound: method(:pane_bound_to_run?)
         )
         restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout, run_id: run_id, waiting: !client.nil?)
@@ -90,7 +90,7 @@ module Workspace
     # What keeps a pane's main turn from being proven over, by name: the monitor's
     # evidence, then what the transcript holds after the Stop. nil once proven.
     def main_turn_missing(pane_id)
-      evidence = @session_monitor&.main_turn_evidence(pane_id)
+      evidence = @monitor&.main_turn_evidence(pane_id)
       return "no_monitor" unless evidence
       return evidence[:missing] if evidence[:missing]
 

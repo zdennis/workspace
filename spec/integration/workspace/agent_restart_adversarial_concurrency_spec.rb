@@ -292,7 +292,7 @@ RSpec.describe "restart_agent with main activity after the Stop" do
         sleeper: method(:tick), quiet_timeout: 30, **wired)
     end
     Workspace::RestartRunner.new(restart_factory: factory, registry: Workspace::RestartRegistry.new, tmux: tmux,
-      session_name: "s", delivery_lock: Mutex.new, pipeline_ref: ->(_index) {}, session_monitor: monitor,
+      session_name: "s", delivery_lock: Mutex.new, pipeline_ref: ->(_index) {}, monitor: monitor,
       idle_prompt_check: Workspace::IdlePromptCheck.new, transcript_summary: Workspace::TranscriptSummary.new,
       pane_bindings: bindings, error_output: StringIO.new)
   end
