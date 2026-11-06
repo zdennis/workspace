@@ -1,3 +1,5 @@
+require_relative "agent_recovery_steps"
+
 module Workspace
   # The agent daemon's side of recovering a Claude Code agent whose turn ended
   # on an API error. It keeps one {AgentRecoveryStore} entry per pane, schedules
@@ -200,15 +202,14 @@ module Workspace
     # @param clock [#now] time source
     # @param sleeper [#call] sleeps the given seconds
     # @param spawn [#call] runs the given block on its own thread
-    # @param restart_steps [#call, nil] given a restart attempt, runs steps 2 to 5 and answers
-    #   `[outcome, agent]`; nil runs the desk's own
-    # @param typed_steps [#call, nil] the same for a typed attempt (a restart attempt always runs its own typing step)
+    # @param steps [Workspace::AgentRecoverySteps] picks the runner of steps 2 to 5 for each kind of attempt
+    # @param max_attempts [Integer] attempts after which the desk gives up
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, workspace:, session_name:, session_monitor:, store:, transcript:, stopper:, detector:,
       process_tree:, ledger:, resume_command:, prompt_typer:, readiness:, marker:, inbox:, delivery_lock:, event_log: nil,
       restarting: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
       release_restart: ->(_pane_id, _token) {}, rebind_queue: ->(_pane_id, _agent_pid) {}, clock: Time,
-      sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) }, restart_steps: nil, typed_steps: nil,
+      sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) }, steps: AgentRecoverySteps.new, max_attempts: AgentRecoveryStore::MAX_ATTEMPTS,
       logger: Workspace::Logger.new)
       @tmux = tmux
       @workspace = workspace
@@ -234,8 +235,8 @@ module Workspace
       @clock = clock
       @sleeper = sleeper
       @spawn = spawn
-      @restart_steps = restart_steps
-      @typed_steps = typed_steps
+      @steps = steps
+      @max_attempts = max_attempts
       @logger = logger
       @queue = []
       @queue_guard = Mutex.new
@@ -727,12 +728,12 @@ module Workspace
 
     # The attempt for `attempts` 0: the message typed at the live prompt.
     def typed_attempt(pane_id)
-      @spawn.call { run_claimed(pane_id, method(:begin_typed), @typed_steps || method(:typed_steps)) }
+      @spawn.call { run_claimed(pane_id, method(:begin_typed), @steps.typed_runner(method(:typed_steps))) }
     end
 
     # The attempt for `attempts` above 0: stop, resume, wait, type.
     def restart_attempt(pane_id)
-      @spawn.call { run_claimed(pane_id, method(:begin_restart), @restart_steps || method(:restart_steps)) }
+      @spawn.call { run_claimed(pane_id, method(:begin_restart), @steps.restart_runner(method(:restart_steps))) }
     end
 
     # Runs one attempt inside a claim on the pane. An attempt that raises or is
@@ -1373,7 +1374,7 @@ module Workspace
 
     # @return [Boolean] whether this gave up, the attempts being used up
     def schedule_next(entry)
-      if entry["attempts"].to_i >= AgentRecoveryStore::MAX_ATTEMPTS
+      if entry["attempts"].to_i >= @max_attempts
         give_up_in(entry, "attempts_exhausted")
         return true
       end

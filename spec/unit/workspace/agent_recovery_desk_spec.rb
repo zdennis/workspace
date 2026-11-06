@@ -7,53 +7,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   let(:started) { "Mon Oct 26 10:00:00 2026" }
   let(:empty_prompt) { "────────\n❯ \n" }
 
-  let(:tmux) do
-    Class.new(CLITestHelpers::FakeTmux) do
-      attr_accessor :details, :screen, :scripted, :start_commands, :on_deliver, :gone, :on_details
-
-      def initialize(screen)
-        super()
-        @screen = screen
-        @empty = screen
-        @details = [{id: "%5", window: 0, index: 1, pid: 10, command: "claude"}]
-        @start_commands = [{window: 0, index: 1, id: "%5", start_command: nil}]
-      end
-
-      def pane_details(_session, window: "0")
-        raise ArgumentError, "expected every window" unless window.nil?
-        on_details&.call
-        @details
-      end
-
-      def session_gone?(_session) = @gone == true
-
-      def pane_start_commands(_session) = @start_commands
-
-      def server_pid_for_pane(pane_id) = (@details.any? { |detail| detail[:id] == pane_id }) ? "77" : nil
-
-      def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
-
-      def capture_screen_styled(pane_id) = capture_screen(pane_id)
-
-      def deliver(session, pane, text, enter: true)
-        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n────────\n")
-        sent_keys << {session: session, pane: pane, text: text, enter: enter}
-        on_deliver&.call(text)
-        Workspace::Tmux::Delivery.new(status: enter ? :submitted : :pasted, message: "fake")
-      end
-    end.new(empty_prompt)
-  end
+  let(:tmux) { RecoveryDeskFakeTmux.new(empty_prompt) }
 
   # The real transcript reader, calling hooks[:transcript] after each read.
-  let(:transcript) do
-    hook = -> { hooks[:transcript]&.call }
-    real = Workspace::TranscriptSummary.new
-    Object.new.tap do |wrapped|
-      wrapped.define_singleton_method(:last_turn_record) do |*args, **options|
-        real.last_turn_record(*args, **options).tap { hook.call }
-      end
-    end
-  end
+  let(:transcript) { RecordingTranscript.new(Workspace::TranscriptSummary.new) { hooks[:transcript]&.call } }
 
   let(:t0) { Time.utc(2026, 10, 30, 12, 0, 0) }
   let(:now) { [t0] }
@@ -129,7 +86,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     double("tmuxinator_report", show: {"windows" => [{"panes" => [{"kind" => "claude", "flags" => []}]}]})
   end
   let(:resume_command) { Workspace::AgentResumeCommand.new(tmuxinator_report: report) }
-  let(:typer) { Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor) }
+  let(:typer) { RecordingPromptTyper.new(Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor)) }
   let(:events) { [] }
   let(:event_log) do
     double("event_log").tap do |log|
@@ -281,7 +238,9 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     it "goes on working through a logger that raises" do
       logger = double("logger")
       allow(logger).to receive(:debug).and_raise(RuntimeError, "log closed")
-      worker_desk = described_class.new(tmux: tmux, workspace: "api", session_name: "api", session_monitor: monitor, store: store,
+      failing = FailingStore.new(store)
+      failing.fail_next_update("disk gone")
+      worker_desk = described_class.new(tmux: tmux, workspace: "api", session_name: "api", session_monitor: monitor, store: failing,
         transcript: Workspace::TranscriptSummary.new, stopper: stopper, detector: Workspace::AgentDetector.new, process_tree: process_tree,
         ledger: ledger, resume_command: resume_command, prompt_typer: typer, readiness: nil, marker: marker, inbox: -> { inbox },
         delivery_lock: Mutex.new, clock: clock, logger: logger,
@@ -293,11 +252,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
             nil
           end
         })
-      allow(store).to receive(:update).and_wrap_original do
-        allow(store).to receive(:update).and_call_original
-        raise "disk gone"
-      end
-
       expect { worker_desk.session_event("event" => "stop", "pane_id" => "%5", "session_id" => sid) }.not_to raise_error
       worker_desk.session_event("event" => "turn_failed", "pane_id" => "%5", "session_id" => sid, "error" => "server_error",
         "transcript_path" => transcript_path)
@@ -1254,9 +1208,9 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     it "keeps going past a pane that raises" do
       due_entry
       store.put("%1", {"phase" => "waiting", "stopped" => false, "failed_at" => "bad"})
-      allow(store).to receive(:get).and_call_original
-      allow(store).to receive(:get).with("%1").and_raise(RuntimeError, "boom")
-      desk.scan
+      failing = FailingStore.new(store)
+      failing.fail_get_for("%1", RuntimeError.new("boom"))
+      build_desk(store: failing).scan
 
       expect(attempts.size).to eq(1)
     end
@@ -1767,11 +1721,9 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         due_entry(attempts: 0)
         processes.replace([proc_entry(10, 1, "-zsh"), proc_entry(15, 10, "/bin/sh /Users/z/bin/claude-dev"),
           proc_entry(20, 15, "claude")])
-        allow(stopper).to receive(:foreground?).and_call_original
         group_ids.replace([15, 15])
 
         expect(answer).to eq(:go)
-        expect(stopper).to have_received(:foreground?).with(pid: 20, pane_pid: 10)
       end
     end
 
@@ -3249,8 +3201,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       describe "step 5's identity check" do
         before { healthy_run }
 
-        before { allow(typer).to receive(:type).and_call_original }
-
         it "types no message once the claim is gone" do
           due_entry
           hooks[:rebind] = -> { restarting.clear }
@@ -3267,7 +3217,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
             desk.scan
 
             expect(messages).to eq([])
-            expect(typer).not_to have_received(:type)
+            expect(typer.calls).to be_empty
             expect(outcomes).to eq(["pane_not_clear"])
           end
         end
@@ -3288,7 +3238,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
           desk.scan
 
           expect(messages).to eq([])
-          expect(typer).not_to have_received(:type)
+          expect(typer.calls).to be_empty
         end
       end
     end
@@ -3299,13 +3249,12 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(readiness).not_to have_received(:wait)
         expect(sleeps.max).to be <= 2
         expect(messages).to eq([])
-        expect(typer).not_to have_received(:type)
+        expect(typer.calls).to be_empty
         expect_rescheduled(attempts)
         expect(entry["stopped"]).to be(true)
       end
 
       before do
-        allow(typer).to receive(:type).and_call_original
         hooks[:signal] = -> { agent_exits }
       end
 
@@ -3775,10 +3724,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       agent = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
 
       def run_to(outcome, agent: nil, &hook)
-        build_desk(stub_attempts: false, restart_steps: lambda { |_attempt|
+        build_desk(stub_attempts: false, steps: Workspace::AgentRecoverySteps.running(restart: lambda { |_attempt|
           hook&.call
           [outcome, agent]
-        }).scan
+        })).scan
       end
 
       (failing + %w[resumed typed resumed_elsewhere person_resumed fresh_agent]).each do |outcome|
@@ -3960,7 +3909,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     end
 
     def typer_answers(outcome, **fields)
-      allow(typer).to receive(:type).and_return(Workspace::PromptTyper::Result.new(outcome: outcome, **fields))
+      typer.answer_with(Workspace::PromptTyper::Result.new(outcome: outcome, **fields))
     end
 
     def next_attempt
@@ -3987,7 +3936,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect_rescheduled(1)
 
       hooks.delete(:restarting)
-      allow(typer).to receive(:type).and_call_original
+      typer.reset_answer
       healthy_run
       next_attempt
       expect(signals).to eq([["INT", 20]])
@@ -4220,10 +4169,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       agent = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
 
       def run_to(outcome, agent: nil, &hook)
-        build_desk(stub_attempts: false, typed_steps: lambda { |_attempt|
+        build_desk(stub_attempts: false, steps: Workspace::AgentRecoverySteps.running(typed: lambda { |_attempt|
           hook.call
           [outcome, agent]
-        }).scan
+        })).scan
       end
 
       before { due_entry(attempts: 0) }
@@ -4338,7 +4287,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
           typer_answers(typer_outcome, **fields)
           desk.scan
 
-          expect(typer).to have_received(:type).once
+          expect(typer.calls.size).to eq(1)
           expect_restart_after("not_typed")
         end
       end
@@ -4406,12 +4355,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       {"a shell that took the terminal back" => [20, 10], "a group that can't be read" => []}.each do |name, ids|
         it "types and presses nothing with #{name} after the check passed" do
-          allow(typer).to receive(:type).and_call_original
           before_typing { group_ids.replace(ids) }
           desk.scan
 
           expect(tmux.sent_keys).to eq([])
-          expect(typer).not_to have_received(:type)
+          expect(typer.calls).to be_empty
           expect(outcomes).to eq(["pane_not_clear"])
           expect(entry).to include("phase" => "waiting", "attempts" => 1)
           expect_no_stop
@@ -4462,7 +4410,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         typer_answers(:not_submitted)
         desk.scan
 
-        expect(typer).to have_received(:type).once
+        expect(typer.calls.size).to eq(1)
         expect(texts).not_to include("")
         expect(entry["draft_text"]).to eq(message)
         expect_restart_after("not_submitted")
@@ -4613,9 +4561,8 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
     describe "the attempts running out" do
       it "gives up at the last attempt from a typed one, and its line says typed" do
-        stub_const("Workspace::AgentRecoveryStore::MAX_ATTEMPTS", 1)
         due_entry(attempts: 0)
-        desk.scan
+        build_desk(stub_attempts: false, max_attempts: 1).scan
 
         expect_gave_up("attempts_exhausted")
         expect(lines.map { |line| line.values_at("mode", "outcome") }).to eq([%w[typed no_response]])

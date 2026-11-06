@@ -71,6 +71,21 @@ RSpec.describe Workspace::AgentRecoveryDeskFactory do
     expect(config).to have_received(:inbox_path).with("workspace", "myapp")
   end
 
+  it "hands the desk the transcript reader and stopper it was given" do
+    transcript = Object.new
+    stopper = Object.new
+    factory(transcript: transcript, stopper: stopper).call(**given)
+
+    expect(built.last).to include(transcript: transcript, stopper: stopper)
+  end
+
+  it "reads transcripts with a TranscriptSummary and stops agents with an AgentStopper by default" do
+    factory.call(**given)
+
+    expect(built.last[:transcript]).to be_a(Workspace::TranscriptSummary)
+    expect(built.last[:stopper]).to be_a(Workspace::AgentStopper)
+  end
+
   it "builds the real AgentRecoveryDesk by default" do
     real = described_class.new(tmux: instance_double(Workspace::Tmux), config: config, recovery_config: recovery_config,
       agent_commands: agent_commands, process_tree: instance_double(Workspace::ProcessTree),

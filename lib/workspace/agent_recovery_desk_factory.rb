@@ -18,9 +18,12 @@ module Workspace
     # @param marker [Workspace::RecoveryStopMarker]
     # @param logger [#debug]
     # @param error_output [IO]
+    # @param transcript [#last_turn_record] reads transcripts, shared by every desk built (default {Workspace::TranscriptSummary})
+    # @param stopper [Workspace::AgentStopper] default one over +process_tree+; shared by every desk built (it holds no per-pane state)
     # @param desk_class [#new] builds the desk (default {Workspace::AgentRecoveryDesk})
     def initialize(tmux:, config:, recovery_config:, agent_commands:, process_tree:, ledger:, resume_command:,
-      readiness:, marker:, logger:, error_output:, desk_class: AgentRecoveryDesk)
+      readiness:, marker:, logger:, error_output:, transcript: TranscriptSummary.new, stopper: AgentStopper.new(process_tree: process_tree),
+      desk_class: AgentRecoveryDesk)
       @tmux = tmux
       @config = config
       @recovery_config = recovery_config
@@ -32,6 +35,8 @@ module Workspace
       @marker = marker
       @logger = logger
       @error_output = error_output
+      @transcript = transcript
+      @stopper = stopper
       @desk_class = desk_class
     end
 
@@ -42,8 +47,8 @@ module Workspace
       return nil unless @recovery_config.enabled?(workspace) && @agent_commands.kind(workspace) == "claude"
       session_monitor = given.fetch(:session_monitor)
       @desk_class.new(tmux: @tmux, workspace: workspace, session_name: given.fetch(:session_name), session_monitor: session_monitor,
-        store: AgentRecoveryStore.new(path: @config.agent_recovery_path(workspace)), transcript: TranscriptSummary.new,
-        stopper: AgentStopper.new(process_tree: @process_tree), detector: @agent_commands.detector(workspace),
+        store: AgentRecoveryStore.new(path: @config.agent_recovery_path(workspace)), transcript: @transcript,
+        stopper: @stopper, detector: @agent_commands.detector(workspace),
         process_tree: @process_tree, ledger: @ledger, resume_command: @resume_command,
         prompt_typer: PromptTyper.new(tmux: @tmux, session_monitor: session_monitor, logger: @logger),
         readiness: @readiness, marker: @marker,
