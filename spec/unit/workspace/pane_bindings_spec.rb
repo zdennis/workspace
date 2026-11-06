@@ -400,11 +400,18 @@ RSpec.describe Workspace::PaneBindings do
   end
 
   describe "#rename_workspace" do
+    # A parked binding as the file holds it, written the way a session that ended with its pane gone leaves it.
+    def park(key, binding)
+      FileUtils.mkdir_p(File.dirname(path))
+      all = File.exist?(path) ? JSON.parse(File.read(path)) : {}
+      File.write(path, JSON.generate(all.merge(key => binding)))
+    end
+
     it "rekeys a parked binding to the new slot and rewrites session only when it matches" do
       store.bind("%1", "kind" => "run", "id" => "wr_1", "workspace" => "old", "session" => "keep", "pane_slot" => "old:0.1")
       store.bind("%2", "kind" => "run", "id" => "wr_2", "workspace" => "old", "session" => "old", "pane_slot" => "elsewhere:0.1")
       store.bind("%3", "kind" => "run", "id" => "wr_3", "workspace" => "old", "session" => "old")
-      store.send(:update) { |all| all["slot:old:0.4"] = {"kind" => "run", "id" => "wr_4", "workspace" => "old", "session" => "old", "pane_slot" => "old:0.4"} }
+      park("slot:old:0.4", {"kind" => "run", "id" => "wr_4", "workspace" => "old", "session" => "old", "pane_slot" => "old:0.4"})
 
       store.rename_workspace(from: "old", to: "new")
 
@@ -417,7 +424,7 @@ RSpec.describe Workspace::PaneBindings do
     end
 
     it "finds a rekeyed parked binding when restore moves it" do
-      store.send(:update) { |all| all["slot:old:0.4"] = {"kind" => "run", "id" => "wr_4", "workspace" => "old", "session" => "old", "pane_slot" => "old:0.4"} }
+      park("slot:old:0.4", {"kind" => "run", "id" => "wr_4", "workspace" => "old", "session" => "old", "pane_slot" => "old:0.4"})
       store.rename_workspace(from: "old", to: "new")
 
       moved = store.move([{from: "%9", to: "%5", session: "new", from_slot: "new:0.4", to_slot: "new:0.4"}])

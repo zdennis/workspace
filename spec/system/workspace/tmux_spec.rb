@@ -466,7 +466,7 @@ RSpec.describe Workspace::Tmux do
         .with("tmux", "paste-buffer", "-p", "-b", "buf-1", "-t", "=s:0.1")
         .and_return(["", "can't find pane: 0.1\n", status])
 
-      expect(described_class.new(config: config).send(:tmux_paste_buffer, "buf-1", "=s:0.1")).to eq([false, "can't find pane: 0.1"])
+      expect(described_class.new(config: config).tmux_paste_buffer("buf-1", "=s:0.1")).to eq([false, "can't find pane: 0.1"])
     end
 
     it "reports :failed when Enter can't be pressed" do

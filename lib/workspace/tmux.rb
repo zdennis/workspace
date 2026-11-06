@@ -324,6 +324,20 @@ module Workspace
       status.success? ? stdout : nil
     end
 
+    # Pastes a named buffer into a pane as a bracketed paste. tmux's own
+    # error is kept: "can't find session: X" names the cause, where a bare
+    # "could not paste" made a wrong session name look like a busy pane.
+    #
+    # @param buf [String] buffer name
+    # @param target [String] tmux target
+    # @return [Array(Boolean, String)] whether tmux pasted, and its error
+    #   text (nil when it printed none)
+    def tmux_paste_buffer(buf, target)
+      _, stderr, status = Open3.capture3("tmux", "paste-buffer", "-p", "-b", buf, "-t", target)
+      reason = stderr.strip
+      [status.success?, reason.empty? ? nil : reason]
+    end
+
     private
 
     # Names a session, or a window or pane of it, as a tmux target that only
@@ -415,21 +429,6 @@ module Workspace
         return screen if current.nil? || current == screen
         screen = current
       end
-    end
-
-    # Pastes a named buffer into a pane as a bracketed paste. tmux's own
-    # error is kept: "can't find session: X" names the cause, where a bare
-    # "could not paste" made a wrong session name look like a busy pane.
-    # Extracted for testability.
-    #
-    # @param buf [String] buffer name
-    # @param target [String] tmux target
-    # @return [Array(Boolean, String)] whether tmux pasted, and its error
-    #   text (nil when it printed none)
-    def tmux_paste_buffer(buf, target)
-      _, stderr, status = Open3.capture3("tmux", "paste-buffer", "-p", "-b", buf, "-t", target)
-      reason = stderr.strip
-      [status.success?, reason.empty? ? nil : reason]
     end
 
     # Loads text into a named tmux buffer via stdin.

@@ -9,7 +9,7 @@ RSpec.describe Workspace::Commands::Restore do
   # layout with fewer panes than the window is refused.
   let(:tmux_class) do
     Class.new do
-      attr_reader :delivered, :layouts, :split_count, :last_error
+      attr_reader :delivered, :layouts, :split_count, :last_error, :windows
       attr_accessor :rows, :delivery_status, :sessions_error, :server_pid, :pane_base
 
       def initialize
@@ -1011,7 +1011,7 @@ RSpec.describe Workspace::Commands::Restore do
   describe "a session that never restarted, after a sibling pane closed" do
     # Agents X (%4) and Y (%5) ran at 0.4 and 0.5, both bound. The pane at
     # 0.3 was closed, so they are at 0.3 and 0.4 now, and no hook has fired.
-    let(:panes) { tmux.instance_variable_get(:@windows)["api"][0] }
+    let(:panes) { tmux.windows["api"][0] }
 
     before do
       running_session("api", %w[zsh 2.1.289 zsh ruby 2.1.289 2.1.289])
@@ -1287,15 +1287,13 @@ RSpec.describe Workspace::Commands::Restore do
   describe "sessions carried by a rename" do
     it "resumes a stopped session under the new name" do
       write_config("fresh")
-      started("api:0.2", sid(7), pane_id: "%7", transcript_path: nil)
-      ended("api:0.2", sid(7), "other")
+      started("api:0.4", sid(7), pane_id: "%7", transcript_path: nil)
+      ended("api:0.4", sid(7), "other")
       ledger.carry(from: "api", to: "fresh", cwd: cwd)
 
-      slot = restore.send(:slots_for, "fresh", "fresh").first
-      plan = {workspace: "fresh", session: "fresh", launch: true, config: nil, slots: [slot]}
+      result = restore.call(["fresh"], dry_run: true)
 
-      expect(restore.send(:precheck, plan, slot)).to be_nil
-      expect(slot).to include("session_id" => sid(7), "cwd" => cwd, "end_reason" => "other")
+      expect(rows(result)).to match([include("outcome" => "would_restore", "session_id" => sid(7), "cwd" => cwd)])
     end
   end
 end

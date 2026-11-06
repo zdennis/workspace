@@ -69,11 +69,11 @@ RSpec.describe "Lock observability (adversarial concurrency)" do
     acquire(200, "%2", wait: true)
     liveness.kill(100)
     namespace = instance_double(Workspace::LockNamespace, resolve: {key: "ns", display: "app", dir: store_dir})
-    sessions = Workspace::Commands::Sessions.new(config: instance_double(Workspace::Config),
+    sessions = Workspace::Commands::Sessions.new(config: instance_double(Workspace::Config, ask_state_path: File.join(store_dir, "asks.json"), prompt_queue_path: File.join(store_dir, "prompt-queue.json")),
       lock_namespace: namespace, lock_holder: liveness, output: StringIO.new, error_output: StringIO.new)
     panes = [{"pane_id" => "%1"}, {"pane_id" => "%2"}]
 
-    sessions.send(:apply_lock_column, "proj", panes)
+    sessions.annotate("proj", {"workspace" => "proj", "panes" => panes})
 
     expect(panes[0]["lock"]).not_to eq("edit ✓")
   end

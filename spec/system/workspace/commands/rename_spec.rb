@@ -63,13 +63,22 @@ RSpec.describe Workspace::Commands::Rename do
   end
 
   # A fresh set of the objects a process reads through, as a re-run gets (ProjectConfig caches roots).
-  def command
+  def fresh_world
     project_config = Workspace::ProjectConfig.new(config: config, git: git, output: StringIO.new)
     resolver = Workspace::ConfigResolver.new(project_settings: Workspace::ProjectSettings.new(config: config))
     notes = Workspace::Commands::Notes.new(notes_dir: Workspace::NotesDir.new(git: git), project_config: project_config, config_resolver: resolver,
       git_exclude: git_exclude, output: StringIO.new)
-    plan = Workspace::RenamePlan.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
+    [project_config, notes]
+  end
+
+  def plan_over(project_config, notes)
+    Workspace::RenamePlan.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
       notes_dir: Workspace::NotesDir.new(git: git, home: home), workflow_engine: engine, journal: journal.method(:read), transcripts: ->(_path) { false })
+  end
+
+  def command
+    project_config, notes = fresh_world
+    plan = plan_over(project_config, notes)
     name_migration = Workspace::NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
       project_catalog_factory: -> { [] })
     described_class.new(plan: plan, journal: journal, git: git, config: config, project_config: project_config, project_settings: project_settings,
@@ -551,7 +560,7 @@ RSpec.describe Workspace::Commands::Rename do
     end
 
     it "finishes from the journal when the process died after the journal was written" do
-      plan = command.instance_variable_get(:@plan).call(workspace: old, new: "feat/b")
+      plan = plan_over(*fresh_world).call(workspace: old, new: "feat/b")
       journal.write(plan)
 
       expect(rename["resume"]).to be(true)
@@ -786,21 +795,18 @@ RSpec.describe Workspace::Commands::Rename do
   end
 
   describe "notes.dir after the move" do
-    let(:notes_move) { Workspace::RenamePlan::NotesMove.new(action: "move", from: notes_a, to: notes_b) }
-    let(:plan) { instance_double(Workspace::RenamePlan::Plan, notes: notes_move, workspace: old, new_workspace: new) }
-
     [
       ["notes is not a Hash", "oops"],
       ["notes.dir is not a String", {"dir" => 5}],
       ["notes.dir names neither end", {"dir" => "/somewhere/else"}]
     ].each do |label, notes|
       it "leaves the settings alone when #{label}" do
+        FileUtils.mkdir_p(notes_a)
         project_settings.save(old, {"notes" => notes})
-        expect(project_settings).not_to receive(:save)
 
-        command.send(:write_notes_dir, plan)
+        rename
 
-        expect(project_settings.load(old)["notes"]).to eq(notes)
+        expect(project_settings.load(new)["notes"]).to eq(notes)
       end
     end
 
@@ -818,8 +824,10 @@ RSpec.describe Workspace::Commands::Rename do
     it "moves a dangling symlink as the notes directory" do
       FileUtils.rm_rf(notes_a)
       File.symlink(File.join(home, "nowhere"), notes_a)
+      project_settings.save(old, {"notes" => {"dir" => notes_a}})
 
-      command.send(:move_notes, plan)
+      # Setting up the notes directory afterwards cannot make a directory of the link, so the rename stops there, resumable.
+      expect { rename }.to raise_error(Workspace::Error, /stopped at notes_exclude/)
 
       expect(File.symlink?(notes_a)).to be(false)
       expect(File.symlink?(notes_b)).to be(true)
