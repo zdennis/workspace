@@ -1,6 +1,7 @@
 require "spec_helper"
 require "stringio"
 require "tmpdir"
+require "fileutils"
 
 RSpec.describe Workspace::Commands::Snapshot do
   let(:tmpdir) { Dir.mktmpdir }
@@ -560,13 +561,35 @@ RSpec.describe Workspace::Commands::Snapshot do
   end
 
   describe "Workspace.build_cli snapshot wiring" do
-    it "gives the snapshot command the plan reader, state and config" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
-      snapshot = cli.instance_variable_get(:@snapshot_command)
+    it "reports a workspace's plan from the notes directory under the real wiring" do
+      Dir.mktmpdir("workspace-snapshot-wiring") do |home|
+        saved = ENV.to_h
+        begin
+          ENV.replace("HOME" => home, "PATH" => ENV["PATH"])
+          project = File.join(home, "proj")
+          FileUtils.mkdir_p(File.join(project, "tmp", "workspace-notes"))
+          system("git", "init", "-q", project, out: File::NULL, err: File::NULL)
+          File.write(File.join(project, "tmp", "workspace-notes", "IMPLEMENTATION_PLAN.md"), "---\nstatus: active\n---\n# Plan\n\n## Tasks\n- [ ] T1 One\n")
+          run = lambda do |*args|
+            out = StringIO.new
+            begin
+              Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {}).run(args)
+            rescue SystemExit
+              nil
+            end
+            out.string
+          end
+          run.call("init")
+          run.call("add", project)
 
-      expect(snapshot.instance_variable_get(:@plan)).to be_a(Workspace::Commands::Plan)
-      expect(snapshot.instance_variable_get(:@plan_state)).to be_a(Workspace::PlanState)
-      expect(snapshot.instance_variable_get(:@plan_config)).to be_a(Workspace::PlanConfig)
+          member = JSON.parse(run.call("snapshot", "--json")).dig("projects", 0, "members", 0)
+
+          expect(member["workspace"]).to eq("proj")
+          expect(member["plan"]).to include("state" => "stopped", "status" => "active").and include("counts" => a_hash_including("total" => 1))
+        ensure
+          ENV.replace(saved)
+        end
+      end
     end
   end
 
