@@ -594,7 +594,7 @@ RSpec.describe Workspace::Commands::Projects do
         end
 
         it "fails with a clear error when the listing times out" do
-          stub_const("Workspace::ProjectFacts::DEFAULT_GIT_TIMEOUT", 0.1)
+          command = described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, error_output: error_output, home: @root, git_timeout: 0.1)
 
           expect { command.members(name: "app", all: true) }.to raise_error(Workspace::Error, /Timed out listing the worktrees of project 'app'/)
           expect(command.members(name: "app", all: true, json: true)).to eq(exit_code: 1)
