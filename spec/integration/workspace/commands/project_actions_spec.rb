@@ -41,24 +41,32 @@ RSpec.describe Workspace::Commands::ProjectActions do
   let(:tmux) do
     live = live_sessions
     own = own_session
+    lookups = pane_lookups
     Class.new do
       define_method(:sessions) { |strict: false| live.dup }
       define_method(:session_name_for) { |workspace| workspace.tr(".", "-") }
-      define_method(:session_name_for_pane) { |_pane| own }
+      define_method(:session_name_for_pane) { |pane|
+        lookups << pane
+        own
+      }
     end.new
   end
 
   # Records each call with a snapshot of the output at that moment. Like the
   # real Stop it returns the workspaces that were active, and kills their
   # sessions unless they're +stubborn+.
+  let(:pane_lookups) { [] }
+  let(:before_stop) { ->(_projects) {} }
   let(:stop_command) do
     out = output
+    before = before_stop
     log = events
     live = live_sessions
     hard = stubborn
     error = stop_error
     Class.new do
       define_method(:call) do |projects = [], quiet: false|
+        before.call(projects)
         raise error if error
         log << {stop: projects, quiet: quiet, output_so_far: out.string.dup}
         projects.each do |p|
@@ -278,17 +286,17 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(result).to eq({exit_code: 0})
       end
 
-      it "has written the whole JSON result before the last stop, with own listed last as stopped" do
-        events_before = nil
-        allow(stop_command).to receive(:call).and_wrap_original do |original, *args, **kwargs|
-          events_before = JSON.parse(output.string) if args.first == ["app"] && !output.string.empty?
-          original.call(*args, **kwargs)
+      context "with the output read before the last stop" do
+        let(:events_before_list) { [] }
+        let(:before_stop) { ->(projects) { events_before_list << JSON.parse(output.string) if projects == ["app"] && !output.string.empty? } }
+
+        it "has written the whole JSON result before the last stop, with own listed last as stopped" do
+          run_json(name: "app")
+
+          events_before = events_before_list.last
+          expect(events_before["results"].map { |r| r["workspace"] }).to eq(%w[app.worktree-login app.worktree-old app])
+          expect(events_before["results"].last).to include("workspace" => "app", "outcome" => "stopped")
         end
-
-        run_json(name: "app")
-
-        expect(events_before["results"].map { |r| r["workspace"] }).to eq(%w[app.worktree-login app.worktree-old app])
-        expect(events_before["results"].last).to include("workspace" => "app", "outcome" => "stopped")
       end
 
       it "does not run post_stop for the caller's own workspace" do
@@ -314,32 +322,36 @@ RSpec.describe Workspace::Commands::ProjectActions do
       end
 
       it "looks up its own session once per call" do
-        expect(tmux).to receive(:session_name_for_pane).once.and_call_original
         command.stop(name: "app")
+
+        expect(pane_lookups.size).to eq(1)
       end
 
-      it "prints only the result JSON, and reports a failing last stop on stderr" do
-        allow(stop_command).to receive(:call).and_wrap_original do |original, *args, **kwargs|
-          raise Workspace::Error, "late boom" if args.first == ["app"]
-          original.call(*args, **kwargs)
+      context "when the last stop fails" do
+        let(:before_stop) { ->(projects) { raise Workspace::Error, "late boom" if projects == ["app"] } }
+
+        it "prints only the result JSON, and reports a failing last stop on stderr" do
+          result = command.stop(name: "app", json: true)
+
+          expect(result).to eq({exit_code: 1})
+          expect(JSON.parse(output.string)).to include("status" => "ok")
+          expect(error_output.string).to include("late boom")
         end
-
-        result = command.stop(name: "app", json: true)
-
-        expect(result).to eq({exit_code: 1})
-        expect(JSON.parse(output.string)).to include("status" => "ok")
-        expect(error_output.string).to include("late boom")
       end
 
-      it "flushes the output before stopping its own session" do
-        flushed = []
-        allow(output).to receive(:flush) { flushed << output.string.dup }
-        allow(stop_command).to receive(:call).and_wrap_original do |original, *args, **kwargs|
-          expect(flushed.last).to include("Stopped") if args.first == ["app"]
-          original.call(*args, **kwargs)
-        end
+      context "with the flushes recorded" do
+        let(:flushed) { [] }
+        let(:flushed_before_own) { [] }
+        let(:before_stop) { ->(projects) { flushed_before_own << flushed.last if projects == ["app"] } }
 
-        command.stop(name: "app")
+        it "flushes the output before stopping its own session" do
+          allow(output).to receive(:flush) { flushed << output.string.dup }
+
+          command.stop(name: "app")
+
+          expect(flushed_before_own.size).to eq(1)
+          expect(flushed_before_own.first).to include("Stopped")
+        end
       end
     end
 
@@ -527,17 +539,20 @@ RSpec.describe Workspace::Commands::ProjectActions do
     let(:kill_calls) { [] }
     let(:kill_errors) { {} }
     let(:late_errors) { {} }
+    let(:after_kill_block) { ->(_project) {} }
     let(:kill_command) do
       out = output
       log = kill_calls
       errors = kill_errors
       late = late_errors
+      after_block = after_kill_block
       Class.new do
         define_method(:call) do |project, force: false, confirm: true, quiet: false, missing_ok: false, warn_inactive: true, &block|
           log << {project: project, force: force, confirm: confirm, quiet: quiet, missing_ok: missing_ok, warn_inactive: warn_inactive,
                   output_so_far: out.string.dup}
           raise errors[project] if errors[project]
           block&.call(project)
+          after_block.call(project)
           raise late[project] if late[project]
           project
         end
@@ -1120,19 +1135,12 @@ RSpec.describe Workspace::Commands::ProjectActions do
 
       before { add_wip }
 
-      it "kills its own worktree last, quietly, with the JSON written from inside its Kill block" do
-        written_in_block = nil
-        allow(json_hook_runner).to receive(:run).and_wrap_original do |original, project, event, **kw|
-          original.call(project, event, **kw)
-        end
-        allow(kill_command).to receive(:call).and_wrap_original do |original, project, **kw, &block|
-          original.call(project, **kw) do |p|
-            block.call(p)
-            written_in_block = output.string.dup if project == "app.worktree-login"
-          end
-        end
+      let(:written) { [] }
+      let(:after_kill_block) { ->(project) { written << output.string.dup if project == "app.worktree-login" } }
 
+      it "kills its own worktree last, quietly, with the JSON written from inside its Kill block" do
         result, payload = kill_json(force: true)
+        written_in_block = written.last
 
         expect(result).to eq({exit_code: 0})
         expect(kill_calls.map { |c| c[:project] }).to eq(%w[app.worktree-old app.worktree-wip app.worktree-login])
@@ -1144,17 +1152,9 @@ RSpec.describe Workspace::Commands::ProjectActions do
       end
 
       it "writes the text summary from inside its Kill block, after the others ran" do
-        written_in_block = nil
-        allow(kill_command).to receive(:call).and_wrap_original do |original, project, **kw, &block|
-          original.call(project, **kw) do |p|
-            block.call(p)
-            written_in_block = output.string.dup if project == "app.worktree-login"
-          end
-        end
-
         command.kill(name: "app", yes: true, force: true)
 
-        expect(written_in_block).to eq("Removed 3 worktree(s) of project 'app'.\nKept the main checkout app.\n")
+        expect(written.last).to eq("Removed 3 worktree(s) of project 'app'.\nKept the main checkout app.\n")
         expect(kill_calls.last[:quiet]).to be(true)
       end
 
