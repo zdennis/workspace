@@ -96,7 +96,7 @@ module Workspace
     # @return [Boolean]
     def in_project?(run, project)
       project.members.filter_map(&:workspace).include?(run["workspace"]) || run["project"] == project.name ||
-        WorkspaceLineage.split_worktree_name(run["workspace"])&.first == project.name
+        WorkspaceName.split(run["workspace"])&.first == project.name
     end
 
     # @param id [String] a run id

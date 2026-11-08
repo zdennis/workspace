@@ -6392,7 +6392,7 @@ module Workspace
       else
         project = config_workspace(name, page)
         config_report.show(project, scope: scope) if scope == "workspace"
-        project = WorkspaceLineage.split_worktree_name(project)&.first || project if scope == "project"
+        project = WorkspaceName.project_of(project) if scope == "project"
         data = @project_settings.load(project)
         path = @project_settings.project_config_path(project)
         @output.puts "# #{path}"

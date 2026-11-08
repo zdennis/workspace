@@ -33,7 +33,6 @@ RSpec.describe Workspace::Commands::Ticket do
     FileUtils.mkdir_p(repo)
     sh("init", "-q")
     sh("commit", "-q", "--allow-empty", "-m", "init")
-    allow(project_config).to receive(:worktree_config_name) { |project, dir| "#{project}.worktree-#{dir}" }
     allow(project_config).to receive(:existing_name).and_return(nil)
     allow(project_config).to receive(:project_root_for).and_return(nil)
   end
@@ -72,7 +71,7 @@ RSpec.describe Workspace::Commands::Ticket do
 
       in_repo { command.show("PROJ-123", json: true) }
 
-      expect(document).to include("key" => "PROJ-123", "branch" => "PROJ-123", "workspace" => "api.worktree-PROJ-123")
+      expect(document).to include("key" => "PROJ-123", "branch" => "PROJ-123", "workspace" => "api.worktree-proj-123")
       expect(source).to have_received(:fetch).with(an_object_having_attributes(key: "PROJ-123"), chdir: repo)
     end
 
@@ -232,7 +231,7 @@ RSpec.describe Workspace::Commands::Ticket do
 
       in_repo { command.list(json: true) }
 
-      expect(document["tickets"].first["workspace"]).to eq("api.worktree-PROJ-123-old-title")
+      expect(document["tickets"].first["workspace"]).to eq("api.worktree-proj-123-old-title")
       expect(git.calls_to(:branch_names).size).to eq(1)
       expect(git.calls_to(:local_branch_names).size).to eq(1)
     end

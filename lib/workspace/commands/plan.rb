@@ -257,7 +257,7 @@ module Workspace
       def row_for(name, memo)
         info = @notes.info(name: name)
         file = PlanFile.path_in(info["dir"])
-        project = WorkspaceLineage.split_worktree_name(name)&.first || name
+        project = WorkspaceName.project_of(name)
         plan = PlanFile.read(file)
         return @plan_state.row(workspace: name, project: project, path: file, plan: plan) if plan.nil? || plan.tasks.empty?
 
@@ -273,7 +273,7 @@ module Workspace
       end
 
       def broken_row(name, error)
-        project = WorkspaceLineage.split_worktree_name(name)&.first || name
+        project = WorkspaceName.project_of(name)
         row = @plan_state.row(workspace: name, project: project, path: nil, plan: nil)
         row.merge("warnings" => [PlanFile.warning(error.code, nil, error.message.lines.first.to_s.strip)])
       end

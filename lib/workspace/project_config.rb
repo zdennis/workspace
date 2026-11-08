@@ -63,13 +63,6 @@ module Workspace
 
     # @param project_name [String] parent project name
     # @param worktree_name [String] worktree directory name
-    # @return [String] the config name {#create_worktree} gives that worktree (lowercase)
-    def worktree_config_name(project_name, worktree_name)
-      WorkspaceName.normalize("#{project_name}.worktree-#{@git.sanitize_for_filesystem(worktree_name)}")
-    end
-
-    # @param project_name [String] parent project name
-    # @param worktree_name [String] worktree directory name
     # @return [String] the tmux session name {#create_worktree} gives that worktree
     def worktree_session_name(project_name, worktree_name)
       "#{project_name}.wt-#{@git.sanitize_for_filesystem(worktree_name)}".tr(".", "-").downcase
@@ -194,10 +187,10 @@ module Workspace
     # @param project_name [String] parent project name
     # @param worktree_name [String] worktree directory name
     # @param worktree_path [String] full path to the worktree
-    # @return [String] the config name a worktree gets: {#worktree_config_name} settled by {#settle_new_name}
+    # @return [String] the config name a worktree gets: {WorkspaceName.join} of the project and the sanitized directory name, settled by {#settle_new_name}
     # @raise [Workspace::Error] code `workspace_name_case_conflict`
     def settle_worktree_name(project_name, worktree_name, worktree_path)
-      settle_new_name(worktree_config_name(project_name, worktree_name), worktree_path)
+      settle_new_name(WorkspaceName.join(project_name, @git.sanitize_for_filesystem(worktree_name)), worktree_path)
     end
 
     # @return [String, nil] the config name that matches +name+ ignoring case, the exact spelling first

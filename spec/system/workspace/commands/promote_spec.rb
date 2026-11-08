@@ -96,7 +96,6 @@ RSpec.describe Workspace::Commands::Promote do
         allow(pc).to receive(:existing_name).with("api").and_return("api")
         allow(pc).to receive(:project_root_for).with("api").and_return(repo)
         allow(pc).to receive(:project_root_for).with("nope").and_return(nil)
-        allow(pc).to receive(:worktree_config_name) { |project, dir| "#{project}.worktree-#{dir}" }
       end
     end
 
@@ -284,7 +283,7 @@ RSpec.describe Workspace::Commands::Promote do
     end
     let(:notes) { double("notes", info: {"dir" => main_notes}) }
     let(:project_config) do
-      double("project_config", existing_name: "api").tap { |pc| allow(pc).to receive(:worktree_config_name) { |p, d| "#{p}.worktree-#{d}" } }
+      double("project_config", existing_name: "api")
     end
     let(:notes_carry) { double("notes_carry") }
     let(:carried) { {"plan" => "none", "spine" => "none", "ship" => nil, "carried" => [], "warnings" => []} }

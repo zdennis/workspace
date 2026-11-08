@@ -294,7 +294,7 @@ module Workspace
         path = adopted if adopted
         exists ||= !adopted.nil?
         # A reused or adopted worktree can have an agent kind of its own; +here+ was checked by its real name above.
-        require_claude!(@agent_commands.kind(@project_config.worktree_config_name(project_workspace, File.basename(path)))) if exists && !agent_kind && !here
+        require_claude!(@agent_commands.kind(WorkspaceName.join(project_workspace, @git.sanitize_for_filesystem(File.basename(path))))) if exists && !agent_kind && !here
         # A local branch with no worktree is the one `start` would check out.
         if exists || @git.local_branch_exists?(name)
           refuse_foreign_branch!(definition, name, exists ? path : root, root, checked, allowed)

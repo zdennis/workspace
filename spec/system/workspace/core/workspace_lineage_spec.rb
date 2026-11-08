@@ -19,20 +19,6 @@ RSpec.describe Workspace::WorkspaceLineage do
     git("commit", "-q", "-m", "init", chdir: dir)
   end
 
-  describe ".split_worktree_name" do
-    it "splits a worktree config name on the separator" do
-      expect(described_class.split_worktree_name("app.worktree-login")).to eq(["app", "login"])
-    end
-
-    it "returns nil for a non-worktree config name" do
-      expect(described_class.split_worktree_name("app")).to be_nil
-    end
-
-    it "returns nil for nil" do
-      expect(described_class.split_worktree_name(nil)).to be_nil
-    end
-  end
-
   describe "#resolve" do
     it "resolves a non-worktree git repo to itself" do
       root = Dir.mktmpdir("ws-lineage-repo")

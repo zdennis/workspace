@@ -24,7 +24,7 @@ module Workspace
     # @return [String, nil]
     def self.project_of(workspace)
       return nil if workspace.nil? || workspace.to_s.empty?
-      WorkspaceLineage.split_worktree_name(workspace.to_s)&.first || workspace.to_s
+      WorkspaceName.project_of(workspace.to_s)
     end
 
     # @param config [Workspace::Config] names the directories

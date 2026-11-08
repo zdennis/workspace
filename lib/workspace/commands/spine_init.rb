@@ -59,7 +59,7 @@ module Workspace
         entry = find_template(chosen, root)
         notes_dir = @notes.info(name: name)["dir"]
         spine_dir = File.join(real(notes_dir), "spine")
-        main = WorkspaceLineage.split_worktree_name(name).nil?
+        main = !WorkspaceName.worktree?(name)
 
         outcome, files = plan(entry, spine_dir, main, dry_run)
         outcome = "exists" if outcome == "created" && !write(name, root, spine_dir, files)

@@ -62,7 +62,7 @@ module Workspace
       begin
         from = mixed_case_configs.find { |config| config.downcase == lowercase }
         migrate(from, renamed, warnings) if from
-        migrate_worktrees(lowercase, renamed, warnings) unless WorkspaceLineage.split_worktree_name(lowercase)
+        migrate_worktrees(lowercase, renamed, warnings) unless WorkspaceName.split(lowercase)
       rescue SystemCallError, IOError, Workspace::Error => e
         warnings << "#{name}: renaming to #{lowercase} did not finish (#{e.message})"
       end
@@ -149,7 +149,7 @@ module Workspace
 
     def migrate_worktrees(project, renamed, warnings)
       mixed_case_configs.each do |worktree|
-        split = WorkspaceLineage.split_worktree_name(worktree)
+        split = WorkspaceName.split(worktree)
         next unless split && split.first.downcase == project
 
         unless with_lock(worktree, wait: false) { migrate(worktree, renamed, warnings) || true }

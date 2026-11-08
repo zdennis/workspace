@@ -121,7 +121,7 @@ module Workspace
     end
 
     def scan(workspace)
-      split = WorkspaceLineage.split_worktree_name(workspace)
+      split = WorkspaceName.split(workspace)
       parent = split&.first
       files = []
       files << ConfigFile.read("worktree", @project_settings.project_config_path(workspace)) if parent
@@ -323,7 +323,7 @@ module Workspace
       return [scan.workspace] if layer == "worktree"
 
       root = scan.parent || scan.workspace
-      ([root] + all.select { |name| name.start_with?("#{root}#{WorkspaceLineage::WORKTREE_SEPARATOR}") }).uniq.sort
+      ([root] + all.select { |name| name.start_with?("#{root}#{WorkspaceName::SEPARATOR}") }).uniq.sort
     end
 
     def dig(data, parts)
@@ -436,7 +436,7 @@ module Workspace
 
     def worktrees?(scan)
       root = scan.parent || scan.workspace
-      @project_config.available_projects.any? { |name| name.start_with?("#{root}#{WorkspaceLineage::WORKTREE_SEPARATOR}") }
+      @project_config.available_projects.any? { |name| name.start_with?("#{root}#{WorkspaceName::SEPARATOR}") }
     end
 
     def unknown_problems(file, declared, scope)

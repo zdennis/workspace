@@ -158,7 +158,7 @@ module Workspace
         planned = @checkout_move.plan(root, branch, notes_dir: main_notes)
         moved = planned["moved"]
         project = project_name(root)
-        workspace = moved["branch"] && @project_config.worktree_config_name(project, File.basename(planned["path"]))
+        workspace = moved["branch"] && WorkspaceName.join(project, File.basename(planned["path"]))
         to = File.join(planned["path"] || File.join(root, ".worktrees", DRY_RUN_NOTES), DRY_RUN_NOTES)
         notes, carry_warnings = carry(main_notes, to, nil, carry_notes, dry_run: true)
         doc = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "dry_run" => true, "branch_required" => planned["branch_required"],

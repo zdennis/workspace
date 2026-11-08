@@ -161,7 +161,7 @@ module Workspace
         case layer
         when "global" then @project_settings.global_config_path
         when "worktree" then @project_settings.project_config_path(workspace)
-        when "project" then @project_settings.project_config_path(WorkspaceLineage.split_worktree_name(workspace)&.first || workspace)
+        when "project" then @project_settings.project_config_path(WorkspaceName.project_of(workspace))
         end
       end
 
@@ -267,7 +267,7 @@ module Workspace
         workspace, worktree = workspace_for(project, cwd, nil, scope)
         layer = (scope == "workspace" && worktree) ? "worktree" : "project"
         require_workspace_here!(cwd, workspace) unless project
-        name = (layer == "project") ? (WorkspaceLineage.split_worktree_name(workspace)&.first || workspace) : workspace
+        name = (layer == "project") ? WorkspaceName.project_of(workspace) : workspace
         check_workspace_known!(name) if scope == "workspace" || project
         Target.new(layer, name, @project_settings.project_config_path(name), workspace)
       end
@@ -317,7 +317,7 @@ module Workspace
         refuse_scope!(schema_key, layer, scope, action) if scope
         return Target.new(layer, nil, @project_settings.global_config_path, workspace) if layer == "global"
         require_workspace_here!(cwd, workspace) unless project
-        name = (layer == "project") ? (WorkspaceLineage.split_worktree_name(workspace)&.first || workspace) : workspace
+        name = (layer == "project") ? WorkspaceName.project_of(workspace) : workspace
         check_workspace_known!(name) if scope == "workspace" || project
         Target.new(layer, name, @project_settings.project_config_path(name), workspace)
       end
@@ -332,7 +332,7 @@ module Workspace
       # @return [Array(String, Boolean)] the workspace name and whether it is a worktree
       def workspace_for(project, cwd, schema_key, scope)
         if project
-          return [project, !WorkspaceLineage.split_worktree_name(project).nil?]
+          return [project, WorkspaceName.worktree?(project)]
         end
         lineage = @lineage.resolve(cwd: cwd)
         if lineage.is_worktree && !lineage.worktree && (scope == "workspace" || (scope.nil? && schema_key.resolve == :own_then_parent))
@@ -393,7 +393,7 @@ module Workspace
         if target.layer == "global"
           return (known | [target.workspace]).sort
         end
-        prefix = "#{target.name}#{WorkspaceLineage::WORKTREE_SEPARATOR}"
+        prefix = "#{target.name}#{WorkspaceName::SEPARATOR}"
         siblings = known.select { |name| name.start_with?(prefix) }
         siblings |= [target.workspace] if target.workspace.start_with?(prefix)
         ([target.name] + siblings).uniq.sort

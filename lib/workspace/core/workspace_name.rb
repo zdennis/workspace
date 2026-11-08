@@ -87,7 +87,7 @@ module Workspace
       return exact if exact
 
       hits = @project_config.available_projects.select do |existing|
-        suffix = WorkspaceLineage.split_worktree_name(existing)&.last
+        suffix = WorkspaceName.split(existing)&.last
         !suffix.nil? && self.class.same?(suffix, name)
       end
       return nil if hits.empty?

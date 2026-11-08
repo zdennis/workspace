@@ -140,8 +140,8 @@ module Workspace
       # first and children sorted, mirroring {Workspace::Commands::Tile}'s
       # `"#{project}."` prefix match.
       def members(root)
-        root = WorkspaceLineage.split_worktree_name(root)&.first || root
-        prefix = "#{root}#{WorkspaceLineage::WORKTREE_SEPARATOR}"
+        root = WorkspaceName.project_of(root)
+        prefix = "#{root}#{WorkspaceName::SEPARATOR}"
         children = @project_config ? @project_config.available_projects.select { |n| n.start_with?(prefix) }.sort : []
         [root, *children]
       end

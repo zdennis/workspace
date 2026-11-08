@@ -8,8 +8,8 @@ module Workspace
   # `parent` subcommand, so they can never disagree about parentage.
   #
   # Resolution order:
-  #   1. The `.workspace-project` marker, walking up from cwd, split on
-  #      `.worktree-` (written by Commands::Start via {#write_marker}) --
+  #   1. The `.workspace-project` marker, walking up from cwd, split by
+  #      {WorkspaceName.split} (written by Commands::Start via {#write_marker}) --
   #      unless git's own --git-dir/--git-common-dir comparison says cwd is
   #      definitely not a worktree, in which case the marker is stale and
   #      is ignored.
@@ -21,17 +21,6 @@ module Workspace
   #   3. {WorkspaceLineage.name_from_path} on cwd itself, for non-git projects.
   class WorkspaceLineage
     MARKER_FILE = ".workspace-project"
-    WORKTREE_SEPARATOR = ".worktree-"
-
-    # Splits a worktree config name into [parent_name, worktree_suffix], or
-    # returns nil if the name isn't a worktree config.
-    #
-    # @param config_name [String] a project or worktree config name
-    # @return [Array(String, String), nil]
-    def self.split_worktree_name(config_name)
-      return nil unless config_name&.include?(WORKTREE_SEPARATOR)
-      config_name.split(WORKTREE_SEPARATOR, 2)
-    end
 
     # Derives a project name from a directory path by taking the basename
     # and stripping leading dots. When the path is inside a .worktrees/
@@ -68,7 +57,7 @@ module Workspace
       is_worktree = worktree?(cwd, common_dir)
       marker_dir, marker = find_marker(cwd)
 
-      if marker && (split = self.class.split_worktree_name(marker)) && !stale_marker?(marker_dir)
+      if marker && (split = WorkspaceName.split(marker)) && !stale_marker?(marker_dir)
         name, worktree = split[0], marker
         is_worktree = true
       elsif common_dir

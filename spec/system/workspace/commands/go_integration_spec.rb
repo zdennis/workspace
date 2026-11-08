@@ -13,7 +13,7 @@ RSpec.describe Workspace::Commands::Go, "with a real WorkflowStart and Git" do
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
   let(:state) { instance_double(Workspace::State, load: nil, keys: active) }
   let(:active) { [] }
-  let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: nil, worktree_config_name: "app.worktree-x") }
+  let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: nil) }
   let(:definition) { Workspace::WorkflowDefinition.parse("inputs:\n  task:\nsteps:\n  plan:\n    prompt: Plan.\n", id: "rpiv", source: "global", path: "/defs/rpiv.yml") }
   let(:catalog) { instance_double(Workspace::WorkflowCatalog, find: definition, known?: false, known_ids: %w[rpiv pr-feedback]) }
   let(:workflow_defaults) { instance_double(Workspace::WorkflowDefaults, lookup: nil, id_for: nil) }

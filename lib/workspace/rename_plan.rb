@@ -183,7 +183,7 @@ module Workspace
 
     # @return [String] the project name
     def settle_kind(workspace, checkout)
-      parts = WorkspaceLineage.split_worktree_name(workspace)
+      parts = WorkspaceName.split(workspace)
       linked = @git.linked_worktree?(checkout)
       unless linked || parts
         raise refusal("rename_main_checkout", "'#{workspace}' is a main checkout. Only a linked worktree's workspace can be renamed.", "workspace" => workspace, "path" => checkout)

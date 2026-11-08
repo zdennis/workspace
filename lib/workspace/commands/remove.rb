@@ -119,7 +119,7 @@ module Workspace
       end
 
       def lineage_worktree?(name)
-        !WorkspaceLineage.split_worktree_name(name).nil?
+        WorkspaceName.worktree?(name)
       end
     end
   end

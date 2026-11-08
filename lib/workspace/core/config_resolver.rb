@@ -27,7 +27,7 @@ module Workspace
     # @raise [ArgumentError] if `upto` is anything else
     def view(workspace:, project: nil, upto: nil)
       ConfigLayering.check_upto(upto)
-      project ||= WorkspaceLineage.split_worktree_name(workspace)&.first || workspace
+      project ||= WorkspaceName.project_of(workspace)
       View.new(project_settings: @project_settings, workspace: workspace, project: project, upto: upto)
     end
 
