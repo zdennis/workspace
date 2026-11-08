@@ -76,7 +76,8 @@ module Workspace
     # @return [void]
     # @raise [Workspace::Error] if the event log can't be read
     def save
-      FileLock.new("#{@config.state_file}.lock", sleeper: method(:sleep)).hold(wait: @lock_wait) do |held|
+      FileLock.new("#{@config.state_file}.lock", sleeper: method(:sleep), make_dir: false,
+        on_unavailable: method(:log_lock_trouble)).hold(wait: @lock_wait) do |held|
         @logger.debug { "state: saving without the state file lock" } unless held
         write_state_file
       end
@@ -155,6 +156,11 @@ module Workspace
     end
 
     private
+
+    def log_lock_trouble(step, error)
+      what = (step == :open) ? "can't open the lock file" : "can't lock the state file"
+      @logger.debug { "state: #{what} (#{error.class}: #{error.message})" }
+    end
 
     def write_state_file
       @data = @event_log.reconstruct(strict: true)

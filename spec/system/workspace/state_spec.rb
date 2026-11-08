@@ -265,6 +265,42 @@ RSpec.describe Workspace::State do
       expect(JSON.parse(File.read(state_file)).keys).to eq(["proj1"])
     end
 
+    it "logs why it saves without the lock when the lock file can't be opened" do
+      FileUtils.touch("#{state_file}.lock")
+      FileUtils.chmod(0o000, "#{state_file}.lock")
+      out = StringIO.new
+      state = new_state(logger: Workspace::Logger.new(output: out, enabled: true)).load
+      state["proj1"] = {"unique_id" => "uid1"}
+
+      state.save
+
+      expect(out.string).to include("state: can't open the lock file (Errno::EACCES: ")
+      expect(out.string).to include("state: saving without the state file lock")
+    end
+
+    it "logs why it saves without the lock when the lock can't be taken" do
+      out = StringIO.new
+      state = new_state(logger: Workspace::Logger.new(output: out, enabled: true)).load
+      state["proj1"] = {"unique_id" => "uid1"}
+      allow_any_instance_of(Workspace::FileLock).to receive(:flock_mode).and_raise(Errno::ENOLCK)
+
+      state.save
+
+      expect(out.string).to include("state: can't lock the state file (Errno::ENOLCK: ")
+    end
+
+    it "does not make the state file's directory for the lock, and still reaches the write" do
+      missing = File.join(tmpdir, "gone", "state.json")
+      allow(config).to receive(:state_file).and_return(missing)
+      out = StringIO.new
+      state = new_state(logger: Workspace::Logger.new(output: out, enabled: true)).load
+      state["proj1"] = {"unique_id" => "uid1"}
+
+      expect { state.save }.to raise_error(Errno::ENOENT)
+      expect(File.exist?(File.dirname(missing))).to be(false)
+      expect(out.string).to include("state: can't open the lock file")
+    end
+
     it "writes each save through its own temp file and leaves none behind" do
       temp_files = []
       renamer = lambda do |from, to|

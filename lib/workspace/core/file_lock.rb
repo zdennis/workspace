@@ -9,16 +9,22 @@ module Workspace
     #   (every store but ContextStore, which passes nil for the umask default)
     # @param chmod_dir [Boolean] set `dir_mode` on the directory even when it exists (LockStore only)
     # @param open_readonly [Boolean] open the lock file read-only for a shared hold (LockStore only)
+    # @param make_dir [Boolean] make the lock file's directory; false leaves a missing one to fail the
+    #   open (State, which must still save without the lock)
+    # @param on_unavailable [#call, nil] `(step, error)` called with `:open` or `:lock` and the
+    #   SystemCallError when a `wait:` hold goes on without the lock (State logs both)
     # @param opener [#call] `(path, flags, perm) { |file| }`, the seam for opening the lock file
     # @param sleeper [#call] `(seconds)`, the seam State's wait polls through
     # @param clock [#call] monotonic seconds, the seam for the `wait:` deadline
     def initialize(path, dir_mode: 0o700, chmod_dir: false, open_readonly: false,
-      opener: File.method(:open), sleeper: Kernel.method(:sleep),
+      make_dir: true, on_unavailable: nil, opener: File.method(:open), sleeper: Kernel.method(:sleep),
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
       @path = path
       @dir_mode = dir_mode
       @chmod_dir = chmod_dir
       @open_readonly = open_readonly
+      @make_dir = make_dir
+      @on_unavailable = on_unavailable
       @opener = opener
       @sleeper = sleeper
       @clock = clock
@@ -36,7 +42,7 @@ module Workspace
     # @return [Object, nil] the block's result; nil when `nonblocking` and the lock is taken
     # @raise [SystemCallError] when the lock file or its directory can't be made (without `wait:`)
     def hold(shared: false, nonblocking: false, wait: nil, &block)
-      prepare_dir
+      prepare_dir if @make_dir
       return hold_waiting(shared, wait, &block) if wait
       open_lock(shared) do |file|
         return nil unless file.flock(flock_mode(shared, nonblocking))
@@ -65,7 +71,8 @@ module Workspace
     def hold_waiting(shared, seconds)
       file = begin
         open_lock(shared)
-      rescue SystemCallError
+      rescue SystemCallError => e
+        @on_unavailable&.call(:open, e)
         return yield(false)
       end
       begin
@@ -82,7 +89,8 @@ module Workspace
         @sleeper.call(0.01)
       end
       true
-    rescue SystemCallError
+    rescue SystemCallError => e
+      @on_unavailable&.call(:lock, e)
       false
     end
   end

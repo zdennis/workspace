@@ -117,6 +117,28 @@ RSpec.describe Workspace::FileLock do
         expect(described_class.new(path, opener: opener).hold(wait: 1) { |held| held }).to be(false)
       end
 
+      it "reports the open failure to on_unavailable:" do
+        opener = ->(*, &_) { raise Errno::EACCES }
+        seen = []
+        lock = described_class.new(path, opener: opener, on_unavailable: ->(step, error) { seen << [step, error.class] })
+        lock.hold(wait: 1) {}
+        expect(seen).to eq([[:open, Errno::EACCES]])
+      end
+
+      it "reports a failed flock to on_unavailable:" do
+        seen = []
+        file = instance_double(File, close: nil)
+        allow(file).to receive(:flock).and_raise(Errno::ENOLCK)
+        lock = described_class.new(path, opener: ->(*, &_) { file }, on_unavailable: ->(step, _) { seen << step })
+        expect(lock.hold(wait: 1) { |held| held }).to be(false)
+        expect(seen).to eq([:lock])
+      end
+
+      it "leaves a missing directory alone with make_dir: false" do
+        expect(described_class.new(path, make_dir: false).hold(wait: 1) { |held| held }).to be(false)
+        expect(File.exist?(File.dirname(path))).to be(false)
+      end
+
       it "does not catch a system error raised by the block" do
         expect { described_class.new(path).hold(wait: 1) { raise Errno::EACCES } }.to raise_error(Errno::EACCES)
       end
