@@ -4,6 +4,38 @@ module Workspace
   # and macOS file systems ignore case, so `notes` and `Notes` reach the same
   # files and socket. Callers use #resolve at an input, and .same? to compare.
   class WorkspaceName
+    # What joins a project name to a worktree suffix in a worktree workspace name.
+    SEPARATOR = ".worktree-"
+
+    # Splits a worktree workspace name at its first separator.
+    #
+    # @param name [String, nil] a project or worktree config name
+    # @return [Array(String, String), nil] [project, suffix], nil when the name has no separator
+    def self.split(name)
+      return nil unless name&.include?(SEPARATOR)
+      name.split(SEPARATOR, 2)
+    end
+
+    # @return [Boolean] whether the name has a separator
+    def self.worktree?(name)
+      !split(name).nil?
+    end
+
+    # @return [String, nil] the project part of a worktree name, else the name itself
+    def self.project_of(name)
+      split(name)&.first || name
+    end
+
+    # @return [String] the worktree workspace name for a project and suffix, in lowercase
+    def self.join(project, suffix)
+      normalize("#{project}#{SEPARATOR}#{suffix}")
+    end
+
+    # @return [Boolean] whether the name differs from its lowercase form
+    def self.mixed_case?(name)
+      name != normalize(name)
+    end
+
     # @param name [String, nil]
     # @return [String, nil] the name in lowercase
     def self.normalize(name)
