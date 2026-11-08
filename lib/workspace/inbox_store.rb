@@ -1,5 +1,4 @@
 require "json"
-require "fileutils"
 require "securerandom"
 require "time"
 
@@ -50,8 +49,10 @@ module Workspace
       @clock = clock
       @error_output = error_output
       @live_limit = live_limit
-      @lockfile_path = "#{path}.lock"
       @warned = false
+      access_error = ->(e) { Workspace::Error.new("Could not access inbox store at #{@path} (#{e.class}: errno #{e.errno})") }
+      @writer = LockedJsonFile.new(path, parse: ->(text) { parse_list(text, false) }, access_error: access_error)
+      @reader = LockedJsonFile.new(path, parse: ->(text) { parse_list(text, true) }, access_error: access_error)
     end
 
     # Appends a new open item. The store sets `id`, `state`, the timestamps
@@ -60,7 +61,7 @@ module Workspace
     # @param record [Hash] the writable fields (`type`, `scope`, `title`, ...)
     # @return [Hash] the stored record
     def add(record)
-      with_lock do |data|
+      modify do |data|
         ensure_room(data)
         build_item(record, data).tap { |item| data << item }
       end
@@ -84,7 +85,7 @@ module Workspace
     def upsert(record, reopen: false)
       key = record["dedupe_key"]
       raise ArgumentError, "upsert needs a dedupe_key" if key.nil?
-      with_lock do |data|
+      modify do |data|
         now = @clock.call
         existing = records_in(data).find { |r| r["dedupe_key"] == key }
         unless existing
@@ -114,7 +115,7 @@ module Workspace
     def list
       return [] unless File.exist?(@path)
       now = @clock.call
-      with_lock(readonly: true) { |data| records_in(data).map { |r| settle(r, now) } }
+      @reader.shared { |data| records_in(data).map { |r| settle(r, now) } }
     end
 
     # @param id [String]
@@ -131,7 +132,7 @@ module Workspace
     # @yieldparam record [Hash] the record to change in place
     # @return [Hash, nil] the changed record, or nil when there is no such id
     def update(id)
-      with_lock do |data|
+      modify do |data|
         record = records_in(data).find { |r| r["id"] == id }
         next nil unless record
         record.replace(settle(record, @clock.call))
@@ -176,7 +177,7 @@ module Workspace
     # @return [Integer] how many items were rewritten
     def rescope(key:, name:)
       return 0 unless File.exist?(@path)
-      with_lock do |data|
+      modify do |data|
         records_in(data).count do |record|
           next false unless record["scope"].is_a?(Hash)
           record["scope"] = record["scope"].merge("key" => key, "name" => name)
@@ -190,7 +191,7 @@ module Workspace
     def transition_where(to, by, snooze_until)
       raise ArgumentError, "unknown inbox state #{to.inspect}" unless STATES.include?(to)
       raise ArgumentError, "snoozing needs snooze_until" if to == "snoozed" && snooze_until.nil?
-      with_lock do |data|
+      modify do |data|
         now = @clock.call
         record = records_in(data).find { |r| yield r }
         next nil unless record
@@ -300,35 +301,26 @@ module Workspace
       nil
     end
 
-    # @param readonly [Boolean] shared lock, and never rewrites the file. A
-    #   write raises rather than replace a file it couldn't read, since that
-    #   would drop every item in it.
-    def with_lock(readonly: false)
-      FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
-      result = nil
+    # Settles every stored item and trims the resolved ones around the block,
+    # then reports each expiry once the lock is released.
+    def modify
       expired = []
-      File.open(@lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
-        f.flock(readonly ? File::LOCK_SH : File::LOCK_EX)
-        data = read_data(readonly: readonly)
-        expired = settle_stored(data) unless readonly
-        result = yield data
-        unless readonly
-          trim_resolved(data)
-          write_data(data)
-        end
+      result = @writer.exclusive do |data|
+        expired = settle_stored(data)
+        block_result = yield data
+        trim_resolved(data)
+        block_result
       end
       expired.each { |record| report_expired(record) }
       result
-    rescue SystemCallError => e
-      raise Workspace::Error, "Could not access inbox store at #{@path} (#{e.class}: errno #{e.errno})"
     end
 
-    def read_data(readonly:)
-      return [] unless File.exist?(@path)
-      # Written as UTF-8 JSON; read as that whatever the locale of the process.
-      content = File.read(@path, encoding: Encoding::UTF_8)
-      return [] if content.strip.empty?
-      parsed = JSON.parse(content)
+    # @param readonly [Boolean] a read warns and reads as empty. A write raises
+    #   rather than replace a file it couldn't read, since that would drop
+    #   every item in it.
+    def parse_list(text, readonly)
+      return [] if text.nil? || text.strip.empty?
+      parsed = JSON.parse(text)
       return parsed if parsed.is_a?(Array)
       unreadable("it is not a JSON list", readonly)
     rescue JSON::ParserError
@@ -361,16 +353,6 @@ module Workspace
         id = SecureRandom.hex(5)
         return id unless taken.include?(id)
       end
-    end
-
-    def write_data(data)
-      tmp = "#{@path}.#{Process.pid}.tmp"
-      File.open(tmp, "w", 0o600) do |f|
-        f.write(JSON.pretty_generate(data))
-        f.flush
-        f.fsync
-      end
-      File.rename(tmp, @path)
     end
 
     def now_iso
