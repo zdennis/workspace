@@ -14,7 +14,11 @@ module Workspace
     #   ContextStore (compact), SkillsState (adds a newline)
     # @param fsync [Boolean] false for PaneBindings and ContextStore
     # @param renamer [#call] `(from, to)` for the rename; LockStore
-    # @param tag [String, Integer, nil] temp name tag; AgentRecoveryStore and PromptQueueStore
+    # @param tag [String, Integer, #call, nil] temp name tag, or a callable read at each write;
+    #   AgentRecoveryStore and PromptQueueStore pass the writing thread's object id
+    # @param fingerprint [#call] `(data) -> Object` what `write: :if_changed` compares before and
+    #   after the block; default a deep copy of the data. AgentRecoveryStore and PromptQueueStore
+    #   pass `JSON.method(:generate)`, so a key reorder with equal values still writes
     # @param perm [Integer, nil] mode of the written file; nil for ContextStore
     # @param lock [FileLock, nil] replaces the lock built from `lock_path:`; LockStore, for
     #   `chmod_dir:` and `open_readonly:`
@@ -26,7 +30,8 @@ module Workspace
     #   an existing document fails, ahead of `access_error:`; InboxAcks, whose unreadable-file message differs
     def initialize(path, parse:, generate: JSON.method(:pretty_generate), fsync: true,
       renamer: File.method(:rename), tag: nil, perm: 0o600, lock: nil,
-      lock_path: "#{path}.lock", access_error: nil, read_error: nil)
+      lock_path: "#{path}.lock", access_error: nil, read_error: nil,
+      fingerprint: ->(data) { Marshal.load(Marshal.dump(data)) })
       @path = path
       @parse = parse
       @generate = generate
@@ -37,6 +42,7 @@ module Workspace
       @lock = lock || FileLock.new(lock_path)
       @access_error = access_error
       @read_error = read_error
+      @fingerprint = fingerprint
     end
 
     # Reads under a shared lock and never writes.
@@ -71,7 +77,7 @@ module Workspace
       guarded do
         @lock.hold(nonblocking: nonblocking) do
           data = read
-          before = Marshal.load(Marshal.dump(data)) if write == :if_changed
+          before = @fingerprint.call(data) if write == :if_changed
           result = block.call(data)
           store(data) unless skip_write?(write, before, data, result)
           after_write&.call
@@ -84,7 +90,7 @@ module Workspace
 
     def skip_write?(write, before, data, result)
       case write
-      when :if_changed then data == before
+      when :if_changed then @fingerprint.call(data) == before
       when :if_true then !result
       else false
       end
@@ -107,7 +113,8 @@ module Workspace
     end
 
     def store(data)
-      AtomicFile.write(@path, @generate.call(data), perm: @perm, fsync: @fsync, renamer: @renamer, tag: @tag)
+      AtomicFile.write(@path, @generate.call(data), perm: @perm, fsync: @fsync, renamer: @renamer,
+        tag: @tag.respond_to?(:call) ? @tag.call : @tag)
     end
   end
 end

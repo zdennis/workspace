@@ -47,6 +47,24 @@ RSpec.describe Workspace::LockedJsonFile do
       expect(JSON.parse(File.read(path))).to eq([1, 2])
     end
 
+    it "compares with fingerprint: when given, so a key reorder with equal values writes" do
+      File.write(path, '{"a":1,"b":2}')
+      generate = ->(data) { JSON.generate(data) }
+      hashes = described_class.new(path, parse: ->(text) { text ? JSON.parse(text) : {} }, fingerprint: generate)
+      hashes.exclusive(write: :if_changed) { |_| }
+      expect(File.read(path)).to eq('{"a":1,"b":2}')
+      hashes.exclusive(write: :if_changed) { |data| data.replace(data.slice("b", "a")) }
+      expect(JSON.parse(File.read(path)).keys).to eq(%w[b a])
+    end
+
+    it "reads a callable tag at each write for the temp name" do
+      names = []
+      renamer = ->(from, to) { names << File.basename(from) && File.rename(from, to) }
+      tagged = described_class.new(path, parse: parse, renamer: renamer, tag: -> { "t#{names.size}" })
+      2.times { tagged.exclusive { |data| data << 1 } }
+      expect(names).to eq(["#{File.basename(path)}.#{Process.pid}.t0.tmp", "#{File.basename(path)}.#{Process.pid}.t1.tmp"])
+    end
+
     it "writes with write: :if_true only when the block returns a true value" do
       file.exclusive(write: :if_true) { |data| (data << 1) && false }
       expect(File.exist?(path)).to be(false)

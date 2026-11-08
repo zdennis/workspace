@@ -1,5 +1,4 @@
 require "json"
-require "fileutils"
 
 module Workspace
   # `skills.json` in the state directory: the harnesses the person declined, so
@@ -10,6 +9,7 @@ module Workspace
     # @param dir [String] the workspace state directory
     def initialize(dir:)
       @path = File.join(dir, "skills.json")
+      @lock = FileLock.new("#{@path}.lock", dir_mode: nil)
     end
 
     # @return [String]
@@ -27,12 +27,9 @@ module Workspace
     # @param keys [Array<String>] harness keys to store as declined
     # @return [void]
     def declined=(keys)
-      FileUtils.mkdir_p(File.dirname(@path))
-      File.open("#{@path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
-        lock.flock(File::LOCK_EX)
-        tmp = "#{@path}.tmp-#{Process.pid}"
-        File.write(tmp, JSON.pretty_generate({"declined" => keys.uniq}) + "\n")
-        File.rename(tmp, @path)
+      @lock.hold do
+        AtomicFile.write(@path, JSON.pretty_generate({"declined" => keys.uniq}) + "\n",
+          perm: nil, fsync: false, temp_name: ->(path) { "#{path}.tmp-#{Process.pid}" })
       end
     end
   end
