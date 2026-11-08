@@ -48,7 +48,8 @@ RSpec.describe "statusline adversarial: CLI/UX" do
   it "U3: never returns the documented 'no pane id' context_error reason" do
     context_store = instance_double(Workspace::ContextStore, reading_for_pane: nil)
     project_settings = instance_double(Workspace::ProjectSettings, load_global: {})
-    reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings)
+    reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings,
+      lock_holder: Workspace::LockHolder.new)
 
     result = reader.read(pane_id: nil, agent_pid: nil)
 
@@ -66,7 +67,8 @@ RSpec.describe "statusline adversarial: CLI/UX" do
       reading_for_pane: {"pct" => 88, "recorded_at" => "2026-09-20T00:00:00Z", "session_id" => "old-session-abc"}
     )
     project_settings = instance_double(Workspace::ProjectSettings, load_global: {})
-    reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings)
+    reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings,
+      lock_holder: Workspace::LockHolder.new)
 
     result = reader.read(pane_id: "%1", agent_pid: nil)
     from_new_session = reader.read(pane_id: "%1", agent_pid: nil, current_session_id: "new-session-xyz")

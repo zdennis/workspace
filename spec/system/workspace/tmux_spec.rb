@@ -1498,6 +1498,27 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#pane_pid" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:ok) { instance_double(Process::Status, success?: true) }
+    let(:failed) { instance_double(Process::Status, success?: false) }
+
+    it "asks tmux for the pane's process id and answers it as an integer" do
+      allow(Open3).to receive(:capture3).and_return(["4200\n", "", ok])
+
+      expect(tmux.pane_pid("%12")).to eq(4200)
+      expect(Open3).to have_received(:capture3).with("tmux", "display-message", "-p", "-t", "%12", "\#{pane_pid}")
+    end
+
+    it "is nil when tmux fails or prints nothing" do
+      allow(Open3).to receive(:capture3).and_return(["", "can't find pane: %12", failed])
+      expect(tmux.pane_pid("%12")).to be_nil
+
+      allow(Open3).to receive(:capture3).and_return(["\n", "", ok])
+      expect(tmux.pane_pid("%12")).to be_nil
+    end
+  end
+
   describe "#server_pid_for_pane" do
     let(:tmux) { described_class.new(config: config) }
     let(:ok) { instance_double(Process::Status, success?: true) }

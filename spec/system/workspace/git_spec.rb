@@ -1005,6 +1005,19 @@ RSpec.describe Workspace::Git do
 
       expect(git.path_of(@repo, :git_dir)).to be_nil
       expect(git.current_branch_name(@repo)).to be_nil
+      expect(git.head_name(@repo)).to be_nil
+    end
+
+    it "answers head_name as the branch, HEAD when detached, and nil outside a repository or on an unborn branch" do
+      expect(git.head_name(@repo)).to eq("main")
+      expect(git.head_name(File.join(@repo, "wt"))).to eq("feature")
+      Open3.capture2e("git", "-C", @repo, "checkout", "-q", "--detach")
+      expect(git.head_name(@repo)).to eq("HEAD")
+      Dir.mktmpdir do |dir|
+        expect(git.head_name(dir)).to be_nil
+        Open3.capture2e("git", "-C", dir, "init", "-q", "-b", "main")
+        expect(git.head_name(dir)).to be_nil
+      end
     end
   end
 

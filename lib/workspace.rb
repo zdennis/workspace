@@ -588,7 +588,7 @@ module Workspace
     reap_interval = cwd_project_name ? lock_config.reap_interval_for(cwd_project_name) : LockReaper::DEFAULT_INTERVAL
     process_tree = ProcessTree.new(logger: logger, timeout: ps_timeout)
     run_liveness = RunLiveness.new(dir: config.workflow_runs_dir)
-    lock_holder = LockHolder.new(process_tree: process_tree, run_liveness: run_liveness)
+    lock_holder = LockHolder.new(process_tree: process_tree, run_liveness: run_liveness, tmux: tmux)
     sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       project_config: project_config, snapshot_client: agent_snapshot_client, output: output, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
@@ -619,6 +619,7 @@ module Workspace
       dev_runner: dev_runner,
       terminator: process_group_terminator,
       tmux: tmux,
+      git: git,
       executable: File.expand_path("../bin/workspace", __dir__),
       event_log: event_log,
       bound_run: bound_run,
@@ -866,7 +867,7 @@ module Workspace
     )
     # Its own LockHolder: the reaper runs on the monitor thread, and a
     # LockHolder's snapshot scope is per-instance, not per-thread.
-    lock_reaper = LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness),
+    lock_reaper = LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness, tmux: tmux),
       terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output,
       on_reap: dev_events.method(:reaped))
     session_monitor_builder = SessionMonitorBuilder.new(tmux: tmux, logger: logger, error_output: error_output,

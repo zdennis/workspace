@@ -94,7 +94,7 @@ RSpec.describe Workspace::ContextReader do
         snapshot = Workspace::ProcessTree::Snapshot.new([{pid: 999, ppid: 1, lstart: "Mon Sep 28 09:00:00 2026", command: "claude", args: "claude"}])
         allow(process_tree).to receive(:snapshot).and_return(snapshot)
         real_reader = described_class.new(context_store: context_store, project_settings: project_settings,
-          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}))
+          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}, tmux: tmux))
 
         result = real_reader.read(pane_id: "%1", agent_pid: 999)
         expect(result).to eq(pct: nil, error: Workspace::ContextReasons::PID_UNVERIFIED, updated_at: nil)
@@ -105,7 +105,7 @@ RSpec.describe Workspace::ContextReader do
         snapshot = Workspace::ProcessTree::Snapshot.new([{pid: 999, ppid: 1, lstart: started, command: "claude", args: "claude"}])
         allow(process_tree).to receive(:snapshot).and_return(snapshot)
         real_reader = described_class.new(context_store: context_store, project_settings: project_settings,
-          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}))
+          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}, tmux: tmux))
 
         expect(real_reader.read(pane_id: "%1", agent_pid: 999)[:pct]).to eq(10)
       end
@@ -115,7 +115,7 @@ RSpec.describe Workspace::ContextReader do
         allow(process_tree).to receive(:snapshot)
           .and_raise(Workspace::Error, "could not read the process table (ps timed out after 5s)")
         real_reader = described_class.new(context_store: context_store, project_settings: project_settings,
-          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}))
+          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}, tmux: tmux))
 
         result = real_reader.read(pane_id: "%1", agent_pid: 999)
         expect(result).to eq(pct: nil, error: Workspace::ContextReasons::PID_UNVERIFIED, updated_at: nil)

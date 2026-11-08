@@ -29,7 +29,8 @@ RSpec.describe Workspace::AgentRestart, "with the status-line store" do
   let(:store) { Workspace::ContextStore.new(path: File.join(dir, "context.json")) }
   let(:reader) do
     Workspace::ContextReader.new(context_store: store,
-      project_settings: instance_double(Workspace::ProjectSettings, load_global: {}))
+      project_settings: instance_double(Workspace::ProjectSettings, load_global: {}),
+      lock_holder: Workspace::LockHolder.new)
   end
   let(:cleared_at) { Time.utc(2026, 9, 27, 12, 0, 0.2r) }
   let(:wall) { [cleared_at] }

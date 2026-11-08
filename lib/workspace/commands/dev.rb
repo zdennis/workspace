@@ -47,6 +47,7 @@ module Workspace
       # @param dev_runner [Workspace::DevRunner] the wrapper behind `dev __run`
       # @param terminator [Workspace::ProcessGroupTerminator] stops a holder's process group
       # @param tmux [Workspace::Tmux] opens the devenv window
+      # @param git [Workspace::Git] names the checkout's root and branch
       # @param executable [String] path to `bin/workspace`, run in the devenv window
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for refusals and failures
@@ -70,7 +71,7 @@ module Workspace
       # @param wall_clock [#call] returns the current Time, for how long each waiter has waited
       # @param session_ledger [Workspace::SessionLedger, nil] names the coding-agent session running in the
       #   pane `up` is called from, recorded on the holder as `started_by`; nil records none
-      def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
+      def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, git:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
         poll: POLL_SECONDS,
         kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid }, event_log: nil, bound_run: nil,
@@ -88,6 +89,7 @@ module Workspace
         @dev_config = dev_config
         @dev_runner = dev_runner
         @terminator = terminator
+        @git = git
         @tmux = tmux
         @executable = executable
         @output = output
@@ -845,10 +847,10 @@ module Workspace
 
       def context(working_dir, tolerate_bad_config: false)
         lineage = @lineage.resolve(cwd: working_dir)
-        worktree = git(working_dir, "rev-parse", "--show-toplevel") || File.expand_path(working_dir)
+        worktree = @git.path_of(working_dir, :toplevel) || File.expand_path(working_dir)
         {
           worktree: worktree,
-          branch: git(worktree, "rev-parse", "--abbrev-ref", "HEAD"),
+          branch: @git.head_name(worktree),
           config_name: lineage.worktree || lineage.name,
           project: lineage.name,
           workspace: lineage.worktree,
@@ -872,13 +874,6 @@ module Workspace
       # A blank `dev.up` is as good as unset: there is nothing to run.
       def command?(ctx)
         !ctx[:settings][:up].to_s.strip.empty?
-      end
-
-      def git(dir, *args)
-        stdout, _, status = Open3.capture3("git", "-C", dir, *args)
-        status.success? ? stdout.strip : nil
-      rescue Errno::ENOENT
-        nil
       end
 
       def entry(store)

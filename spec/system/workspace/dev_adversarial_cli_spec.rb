@@ -99,7 +99,7 @@ RSpec.describe "PR2 adversarial findings" do
 
           dev = Workspace::Commands::Dev.new(
             lock_namespace: lock_namespace, lock_holder: liveness, lineage: LineageSupport.lineage,
-            dev_config: dev_config, dev_runner: fake_runner, terminator: nil, tmux: nil, executable: "unused"
+            dev_config: dev_config, dev_runner: fake_runner, terminator: nil, tmux: nil, git: Workspace::Git.new, executable: "unused"
           )
 
           # D-U3: `ctx[:settings][:up]` is the empty string, which is

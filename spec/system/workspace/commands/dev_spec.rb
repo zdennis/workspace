@@ -71,7 +71,7 @@ RSpec.describe Workspace::Commands::Dev do
     dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: LineageSupport.lineage,
       dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
       dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}.merge(ENV.to_h.slice("WORKSPACE_DEV_SESSION", "WORKSPACE_DEV_STARTED_BY_PANE")), poll: 0.05),
-      terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
+      terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, git: Workspace::Git.new, executable: "unused")
     dev.run(wait: wait, working_dir: Dir.pwd)[:exit_code]
   end
 
@@ -82,7 +82,7 @@ RSpec.describe Workspace::Commands::Dev do
   def dev(**opts)
     defaults = {lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
                 lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: nil,
-                terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
+                terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, git: Workspace::Git.new, executable: "/ws/bin/workspace",
                 output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05}
     described_class.new(**defaults, **opts)
   end
@@ -446,7 +446,7 @@ RSpec.describe Workspace::Commands::Dev do
         start_session("sess-1")
         no_pane = described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
           lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: nil,
-          terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
+          terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, git: Workspace::Git.new, executable: "/ws/bin/workspace",
           output: output, error_output: error_output, env: {}, poll: 0.05, session_ledger: ledger)
 
         no_pane.up(working_dir: login)
@@ -809,7 +809,7 @@ RSpec.describe Workspace::Commands::Dev do
 
       result = described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
         lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: runner,
-        terminator: nil, tmux: nil, executable: "unused", env: {}).run(wait: true, working_dir: login)
+        terminator: nil, tmux: nil, git: Workspace::Git.new, executable: "unused", env: {}).run(wait: true, working_dir: login)
 
       expect(result).to eq(exit_code: 3)
       expect(runner).to have_received(:call).with(store: an_instance_of(Workspace::LockStore), command: "exec sleep 30",
@@ -821,7 +821,7 @@ RSpec.describe Workspace::Commands::Dev do
       allow(runner).to receive(:call).and_return(0)
 
       described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
-        lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: runner, terminator: nil, tmux: nil,
+        lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: runner, terminator: nil, tmux: nil, git: Workspace::Git.new,
         executable: "unused", env: {"WORKSPACE_DEV_TAKEOVER" => "1"}).run(wait: true, working_dir: login)
 
       expect(runner).to have_received(:call).with(hash_including(wait: true, priority: true))
@@ -926,7 +926,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
 
   def dev(**opts)
     described_class.new(lock_namespace: lock_namespace, lock_holder: liveness, lineage: lineage, dev_config: dev_config,
-      dev_runner: nil, terminator: terminator, tmux: tmux, executable: "/ws/bin/workspace", output: output,
+      dev_runner: nil, terminator: terminator, tmux: tmux, git: Workspace::Git.new, executable: "/ws/bin/workspace", output: output,
       error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 1,
       clock: Struct.new(:now_ref) { def now = now_ref[0] }.new(now),
       sleeper: ->(seconds) {

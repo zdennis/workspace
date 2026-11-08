@@ -291,6 +291,15 @@ module Workspace
       pid.empty? ? nil : pid
     end
 
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @return [Integer, nil] the pid of the process the pane started, nil if tmux fails or says nothing
+    def pane_pid(pane_id)
+      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", pane_id, "\#{pane_pid}")
+      return nil unless status.success?
+      value = stdout.strip
+      value.empty? ? nil : value.to_i
+    end
+
     # Brings a pane to the front of its tmux session: selects its window, then
     # the pane. Targets the pane by id, which is unique across the tmux server,
     # so a renumbered index can't select a different pane.

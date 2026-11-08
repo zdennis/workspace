@@ -39,8 +39,8 @@ module Workspace
     #   scrapes run at once, machine-wide; nil scrapes ungated
     # @param clock [#call] returns the current time, which stamps scraped
     #   readings and clocks the scrape cache's freshness window
-    def initialize(context_store:, project_settings:, tmux: nil, logger: Workspace::Logger.new,
-      lock_holder: Workspace::LockHolder.new, scan_slots: nil,
+    def initialize(context_store:, project_settings:, lock_holder:, tmux: nil, logger: Workspace::Logger.new,
+      scan_slots: nil,
       clock: -> { Time.now.utc })
       @context_store = context_store
       @lock_holder = lock_holder

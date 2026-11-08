@@ -107,6 +107,16 @@ module Workspace
     end
 
     # @param dir [String] a directory in a checkout
+    # @return [String, nil] `git rev-parse --abbrev-ref HEAD`, stripped: the branch, `HEAD` when detached;
+    #   nil when git fails (an unborn branch, no repository) or is not installed
+    def head_name(dir)
+      stdout, _, status = capture_git("-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+      status.success? ? stdout.strip : nil
+    rescue Errno::ENOENT
+      nil
+    end
+
+    # @param dir [String] a directory in a checkout
     # @return [String, nil] the checked-out branch, nil when HEAD is detached or git fails
     def current_branch_name(dir)
       stdout, _, status = capture_git("-C", dir, "branch", "--show-current")
