@@ -11,9 +11,6 @@ module Workspace
     # never typed into. Pane bindings follow their slot to the pane that now
     # sits there.
     class Restore
-      # A pane showing one of these is at a prompt, so a command can be typed into it.
-      SHELLS = %w[zsh bash fish sh dash ksh tcsh csh].freeze
-
       # SessionEnd reasons that still leave a session to restore. `other` is
       # what a closed terminal, a killed tmux server and a shutdown record;
       # every named reason (`prompt_input_exit`, `logout`, `clear`, ...) is the
@@ -316,7 +313,7 @@ module Workspace
       def occupancy(plan, pane, tree)
         return unmatched("pane_unknown", "Could not tell what the pane is running.") unless tree
         return skip("agent_running", "A coding agent is already running in the pane.") if detector_for(plan).call(command: pane[:command], pid: pane[:pid], tree: tree)
-        return {action: :resume, placement: "existing"} if SHELLS.include?(File.basename(pane[:command].to_s).delete_prefix("-"))
+        return {action: :resume, placement: "existing"} if AgentProvider::SHELLS.include?(File.basename(pane[:command].to_s).delete_prefix("-"))
 
         unmatched("pane_busy", "The pane is running #{pane[:command]}.")
       end

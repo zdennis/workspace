@@ -33,6 +33,9 @@ module Workspace
     GATES = %w[plan checklist pushed pr ci merged review].freeze
 
     STAGE_FILE = /\A(\d{1,3})-([a-z0-9][a-z0-9-]{0,62})\.md\z/
+    # The stage file (and folder) a main checkout's spine leaves out: it has no branch to ship.
+    SHIP_STAGE = /\A\d{1,3}-ship(\.md)?\z/
+
     STAGE_DIR = /\A(\d{1,3})-([a-z0-9][a-z0-9-]{0,62})\z/
     private_constant :STAGE_FILE, :STAGE_DIR
 

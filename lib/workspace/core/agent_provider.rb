@@ -10,6 +10,14 @@ module Workspace
   # back to pane activity for it, so it appears in the registry (and in
   # `workspace init` output) with its hook install skipped.
   class AgentProvider
+    # A pane showing one of these is at a prompt, so a command can be typed into it.
+    SHELLS = %w[zsh bash fish sh dash ksh tcsh csh].freeze
+
+    # A pane whose output has not changed for this many seconds is reported idle. Agents
+    # spend most of a turn blocked on the network, so CPU is not a usable
+    # signal; changing output is.
+    DEFAULT_IDLE_AFTER = 30
+
     # Hook events workspace subscribes to, in the shape each agent's settings
     # file expects. The values are agent-specific; only the keys are ours.
     CLAUDE_EVENTS = {

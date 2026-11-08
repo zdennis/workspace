@@ -41,9 +41,6 @@ module Workspace
     # The state each box character stands for.
     BOX_STATES = {" " => "todo", "~" => "in_progress", "x" => "done", "X" => "done", "-" => "skipped", "!" => "blocked"}.freeze
 
-    # The states a task may be in, in the order the counts list them.
-    TASK_STATES = %w[done in_progress skipped blocked todo].freeze
-
     ID = /\A(?=.*\d)[A-Za-z0-9][A-Za-z0-9._-]*\z/
     private_constant :ID
 
@@ -63,7 +60,7 @@ module Workspace
     #
     # @!attribute id [String, nil] the first word when it looks like an id (it has a digit); nil otherwise
     # @!attribute title [String] the rest of the line, without a trailing ` -- reason`
-    # @!attribute state [String] one of {TASK_STATES}
+    # @!attribute state [String] one of {IdPatterns::TASK_STATES}
     # @!attribute reason [String, nil] the text after ` -- ` on a skipped or blocked task
     # @!attribute phase [String, nil] the nearest heading above that is not `Tasks`
     # @!attribute line [Integer] the 1-based line number in the file
@@ -227,7 +224,7 @@ module Workspace
     #
     # @param path [String] the plan's absolute path
     # @param id [String] the task's id (the first task with it when the id is repeated)
-    # @param state [String, nil] one of {TASK_STATES}; nil leaves the box as it is
+    # @param state [String, nil] one of {IdPatterns::TASK_STATES}; nil leaves the box as it is
     # @param owner [String, nil, KEEP] a pane id such as `%19` to set, nil to remove the comment, {KEEP} to leave it
     # @return [Boolean] whether the file changed
     # @raise [Errno::ENOENT] when there is no file
@@ -243,7 +240,7 @@ module Workspace
     #
     # @param path [String] the plan's absolute path
     # @param id [String] the task's id
-    # @param state [String, nil] one of {TASK_STATES}; nil leaves the box as it is
+    # @param state [String, nil] one of {IdPatterns::TASK_STATES}; nil leaves the box as it is
     # @param reason [String, nil, KEEP] the reason to write (only for a skipped or blocked task); {KEEP} leaves it as it is
     # @param owner [String, nil, KEEP] as {.set_task}
     # @param if_revision [String, nil] refuse unless the file's {.revision_of} is this
@@ -269,7 +266,7 @@ module Workspace
     # @param path [String] the plan's absolute path
     # @param id [String, nil] the new task's id; the next number after the highest one with the prefix of the plan's last task (`T9` after `T8`) when nil
     # @param title [String] one line, with no ` -- ` and no HTML comment
-    # @param state [String] one of {TASK_STATES}
+    # @param state [String] one of {IdPatterns::TASK_STATES}
     # @param reason [String, nil] needed for a skipped or blocked task, refused for the others
     # @param phase [String, nil] the `###` heading the task goes under
     # @param after [String, nil] the id of the task it goes after
@@ -682,7 +679,7 @@ module Workspace
     #   `left` (`todo + in_progress + blocked`)
     def counts
       @counts ||= begin
-        by_state = TASK_STATES.to_h { |state| [state, tasks.count { |task| task.state == state }] }
+        by_state = IdPatterns::TASK_STATES.to_h { |state| [state, tasks.count { |task| task.state == state }] }
         {"total" => tasks.size}.merge(by_state).merge("left" => by_state["todo"] + by_state["in_progress"] + by_state["blocked"])
       end
     end

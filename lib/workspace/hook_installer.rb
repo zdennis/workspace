@@ -10,6 +10,13 @@ module Workspace
   # is idempotent (a second run finds its own command already present and does
   # nothing), and always backs the file up first.
   class HookInstaller
+    # Hooks route agent events to this command, which the agent daemon reads.
+    HOOK_COMMAND = "workspace session-event".freeze
+
+    # The statusLine command Claude Code runs so `workspace statusline` can
+    # read and store `context_window.used_percentage` for the pane.
+    STATUSLINE_COMMAND = "workspace statusline".freeze
+
     # @param backup [Workspace::FileBackup] writes the pre-edit copy
     # @param excluder [Workspace::BookkeepingExclude, nil] lists a settings file workspace creates in the checkout's `info/exclude`
     # @param output [IO] stream for user-facing messages

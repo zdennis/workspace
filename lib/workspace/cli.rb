@@ -5477,8 +5477,8 @@ module Workspace
 
     def workflow_background_task(text)
       type, id = text.split(":", 2)
-      unless WorkflowEngine::BACKGROUND_TASK_TYPES.include?(type) && id.to_s.match?(WorkflowEngine::BACKGROUND_TASK_ID)
-        raise UsageError, "--background-task takes TYPE:ID with a type of #{WorkflowEngine::BACKGROUND_TASK_TYPES.join(", ")}, got #{text[0, 60].inspect}."
+      unless IdPatterns::BACKGROUND_TASK_TYPES.include?(type) && id.to_s.match?(IdPatterns::BACKGROUND_TASK_ID)
+        raise UsageError, "--background-task takes TYPE:ID with a type of #{IdPatterns::BACKGROUND_TASK_TYPES.join(", ")}, got #{text[0, 60].inspect}."
       end
       {"id" => id, "type" => type}
     end
@@ -8279,7 +8279,7 @@ module Workspace
         opts.separator ""
         opts.separator "Subcommands:"
         HelpPages.overview_verbs(HelpPages::PLAN).each { |line| opts.separator line }
-        opts.separator "Run `workspace plan VERB --help` for a verb's options. Task states: #{PlanFile::TASK_STATES.join(", ")}."
+        opts.separator "Run `workspace plan VERB --help` for a verb's options. Task states: #{IdPatterns::TASK_STATES.join(", ")}."
         opts.separator ""
         opts.separator "A verb that writes (init, start, pause, delete, task) changes the plan or the workspace for real."
         opts.separator ""
@@ -8294,7 +8294,7 @@ module Workspace
         opts.on("--yes", "delete: confirm the delete") { take_plan_flag(options, :yes, true) }
         opts.on("--task ID", "start: send only this task; task set-state, set-title and move: the task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
         opts.on("--id ID", "task add: the new task's id (default: the next number after the plan's last id)") { |v| take_plan_flag(options, :id, v) }
-        opts.on("--state STATE", "task add and set-state: #{PlanFile::TASK_STATES.join(", ")}") { |v| take_plan_flag(options, :state, v) }
+        opts.on("--state STATE", "task add and set-state: #{IdPatterns::TASK_STATES.join(", ")}") { |v| take_plan_flag(options, :state, v) }
         opts.on("--reason TEXT", "task add and set-state: why a task is blocked or skipped") { |v| take_plan_flag(options, :reason, v) }
         opts.on("--phase NAME", "task add: the ### heading to add under; task move: move to the end of this phase") { |v| take_plan_flag(options, :phase, v) }
         opts.on("--after ID", "task add and move: place the task after this task") { |v| take_plan_flag(options, :after, v) }
@@ -8419,8 +8419,8 @@ module Workspace
         raise UsageError, "plan task move needs --task." unless options[:task]
         raise UsageError, "Give exactly one of --after, --before and --phase." unless [options[:after], options[:before], options[:phase]].compact.size == 1
       end
-      if options[:state] && !PlanFile::TASK_STATES.include?(options[:state])
-        raise UsageError, "Unknown task state: #{options[:state]}. One of #{PlanFile::TASK_STATES.join(", ")}."
+      if options[:state] && !IdPatterns::TASK_STATES.include?(options[:state])
+        raise UsageError, "Unknown task state: #{options[:state]}. One of #{IdPatterns::TASK_STATES.join(", ")}."
       end
     end
 

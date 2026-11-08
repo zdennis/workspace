@@ -164,7 +164,7 @@ module Workspace
     # The input box must be empty with no busy row, which is also how a person
     # holds a release back with a draft. Then, with a main Stop to go by, the
     # transcript must show no main activity since it. With none, the pane must be
-    # idle with no hook event for {SessionMonitor::DEFAULT_IDLE_AFTER} seconds: an
+    # idle with no hook event for {AgentProvider::DEFAULT_IDLE_AFTER} seconds: an
     # Esc, a pane with no hooks, or a daemon restarted since the Stop.
     #
     # @param workspace [String]
@@ -359,7 +359,7 @@ module Workspace
 
       last_event = row["last_event_at"]
       row["activity_state"] == "idle" &&
-        (last_event.nil? || @clock.call - Time.iso8601(last_event) >= SessionMonitor::DEFAULT_IDLE_AFTER)
+        (last_event.nil? || @clock.call - Time.iso8601(last_event) >= AgentProvider::DEFAULT_IDLE_AFTER)
     end
 
     # The refusal still standing after {SCREEN_SETTLE} seconds, reading the

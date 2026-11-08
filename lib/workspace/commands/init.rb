@@ -10,13 +10,6 @@ module Workspace
         "workspace.project-worktree-template.yml"
       ].freeze
 
-      # Hooks route agent events to this command, which the agent daemon reads.
-      HOOK_COMMAND = "workspace session-event".freeze
-
-      # The statusLine command Claude Code runs so `workspace statusline` can
-      # read and store `context_window.used_percentage` for the pane.
-      STATUSLINE_COMMAND = "workspace statusline".freeze
-
       # @param config [Workspace::Config] configuration for path lookups
       # @param hook_installer [Workspace::HookInstaller] installs agent hooks
       # @param which [#call] returns true when an executable is on PATH
@@ -79,7 +72,7 @@ module Workspace
 
         @output.puts ""
         installable.each do |provider|
-          @output.puts "  Would add: #{@hook_installer.summary(provider, HOOK_COMMAND)}#{" to #{provider.label}" if installable.size > 1}"
+          @output.puts "  Would add: #{@hook_installer.summary(provider, HookInstaller::HOOK_COMMAND)}#{" to #{provider.label}" if installable.size > 1}"
         end
 
         return installable.each { |provider| install_hooks(provider, project_root, dry_run) } if hooks
@@ -87,7 +80,7 @@ module Workspace
         loop do
           case prompt_action(installable)
           when "v"
-            installable.each { |provider| @hook_installer.preview(provider, HOOK_COMMAND) }
+            installable.each { |provider| @hook_installer.preview(provider, HookInstaller::HOOK_COMMAND) }
           when "i"
             installable.each { |provider| install_hooks(provider, project_root, dry_run) }
             break
@@ -100,7 +93,7 @@ module Workspace
       # A user-level hook file (Codex's) is not the project's: one that can't
       # be read is reported and the rest of init goes on.
       def install_hooks(provider, project_root, dry_run)
-        @hook_installer.install(provider, project_root, HOOK_COMMAND, dry_run: dry_run)
+        @hook_installer.install(provider, project_root, HookInstaller::HOOK_COMMAND, dry_run: dry_run)
       rescue Workspace::Error => e
         raise unless provider.user_scoped?
 

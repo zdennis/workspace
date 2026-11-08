@@ -336,9 +336,9 @@ RSpec.describe Workspace::Commands::Start do
 
         it "neither reads nor warns about a malformed settings.local.json when the tracked file already holds the entries" do
           claude = Workspace::AgentProvider.find("claude")
-          hook_installer.install(claude, worktree_path, Workspace::Commands::Init::HOOK_COMMAND, quiet: true)
+          hook_installer.install(claude, worktree_path, Workspace::HookInstaller::HOOK_COMMAND, quiet: true)
           hook_installer.install_statusline(claude, worktree_path,
-            command: Workspace::Commands::Init::STATUSLINE_COMMAND, project_settings: project_settings, quiet: true)
+            command: Workspace::HookInstaller::STATUSLINE_COMMAND, project_settings: project_settings, quiet: true)
           FileUtils.mkdir_p(File.dirname(settings_path))
           File.write(settings_path, "{nope")
 

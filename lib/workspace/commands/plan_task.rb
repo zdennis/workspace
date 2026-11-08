@@ -24,7 +24,7 @@ module Workspace
       # @param name [String] the workspace
       # @param title [String] the task's title, one line
       # @param id [String, nil] the new id; the next number after the plan's last id prefix when nil (`T9` after `T8`)
-      # @param state [String] one of {PlanFile::TASK_STATES}
+      # @param state [String] one of {IdPatterns::TASK_STATES}
       # @param reason [String, nil] needed for `skipped` and `blocked`
       # @param phase [String, nil] the `###` heading it goes under
       # @param after [String, nil] the id of the task it goes after
@@ -45,7 +45,7 @@ module Workspace
       #
       # @param name [String] the workspace
       # @param id [String] the task's id
-      # @param state [String] one of {PlanFile::TASK_STATES}
+      # @param state [String] one of {IdPatterns::TASK_STATES}
       # @param reason [String, nil] the reason for `skipped` or `blocked`; refused for the other states
       # @param if_revision [String, nil] refuse unless the plan's revision is this
       # @return [Hash] the row: `outcome` `changed` or `unchanged`, plus `task`, `state`, `previous_state`, `line`, `phase`, `revision`, `counts`, `percent`

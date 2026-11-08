@@ -12,6 +12,19 @@ module Workspace
     # The only `schema_version` a definition may name.
     SCHEMA_VERSION = 1
 
+    # What `step done --code` accepts.
+    CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
+
+    # Why a report's code is refused for being one the engine sets itself; nil for any other. The one rule
+    # `step done --code` and `workflow simulate`'s `code:` share.
+    #
+    # @param code [String, nil]
+    # @return [String, nil] the sentence after "--code ", or nil when the code is allowed
+    def self.engine_code_refusal(code)
+      return nil unless code && Workspace::WorkflowEngine::ENGINE_CODES.include?(code)
+      "#{code} is a word the engine sets itself (#{Workspace::WorkflowEngine::ENGINE_CODES.join(", ")}); choose another."
+    end
+
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 

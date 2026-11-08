@@ -13,24 +13,11 @@ module Workspace
       # Bumped whenever a `--json` document's shape changes incompatibly.
       JSON_SCHEMA_VERSION = 1
 
-      # What `step done --code` accepts.
-      CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
-
       # Lines of a check's output `check` prints.
       CHECK_TAIL_LINES = 40
 
       # The workspace name `render` shows when the working directory is in no workspace.
       RENDER_WORKSPACE = "<workspace>".freeze
-
-      # Why a report's code is refused for being one the engine sets itself; nil for any other. The one rule
-      # `step done --code` and `workflow simulate`'s `code:` share.
-      #
-      # @param code [String, nil]
-      # @return [String, nil] the sentence after "--code ", or nil when the code is allowed
-      def self.engine_code_refusal(code)
-        return nil unless code && Workspace::WorkflowEngine::ENGINE_CODES.include?(code)
-        "#{code} is a word the engine sets itself (#{Workspace::WorkflowEngine::ENGINE_CODES.join(", ")}); choose another."
-      end
 
       # What `step done --status` accepts.
       REPORT_STATUSES = %w[pass fail].freeze
@@ -716,13 +703,13 @@ module Workspace
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
       # @param status [String] "pass" or "fail"
       # @param summary [String, nil]
-      # @param code [String, nil] a word for why, matching {CODE_PATTERN} (`usage` otherwise)
+      # @param code [String, nil] a word for why, matching {WorkflowDefinition::CODE_PATTERN} (`usage` otherwise)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `not_bound` outside a run's pane, `step_not_running`
       def step_done(pane:, status: "pass", summary: nil, code: nil)
         raise UsageError, "--status must be pass or fail, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
-        raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || CODE_PATTERN.match?(code)
-        if (refusal = self.class.engine_code_refusal(code))
+        raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || WorkflowDefinition::CODE_PATTERN.match?(code)
+        if (refusal = WorkflowDefinition.engine_code_refusal(code))
           raise UsageError, "--code #{refusal}"
         end
         run_id = bound_run!(pane)

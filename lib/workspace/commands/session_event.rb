@@ -493,8 +493,8 @@ module Workspace
         tasks.first(MAX_BACKGROUND_TASKS).filter_map do |task|
           next unless task.is_a?(Hash)
           type, id = task["type"], task["id"]
-          next unless type.is_a?(String) && WorkflowEngine::BACKGROUND_TASK_TYPES.include?(type)
-          next unless id.is_a?(String) && id.match?(WorkflowEngine::BACKGROUND_TASK_ID)
+          next unless type.is_a?(String) && IdPatterns::BACKGROUND_TASK_TYPES.include?(type)
+          next unless id.is_a?(String) && id.match?(IdPatterns::BACKGROUND_TASK_ID)
 
           {"id" => id, "type" => type}
         end

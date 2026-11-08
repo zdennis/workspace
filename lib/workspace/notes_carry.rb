@@ -197,7 +197,7 @@ module Workspace
         warn_item("ship_not_added", "The ship stage could not be added to the moved spine.", {}) if outcome == "skipped"
         outcome
       when "would_move"
-        shipped = Dir.children(File.join(from, "spine")).any? { |c| Commands::SpineInit::SHIP_STAGE.match?(c) }
+        shipped = Dir.children(File.join(from, "spine")).any? { |c| SpineTree::SHIP_STAGE.match?(c) }
         shipped ? "present" : "would_add"
       end
     rescue Workspace::Error, SystemCallError => e
