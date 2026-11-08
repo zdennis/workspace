@@ -282,7 +282,11 @@ RSpec.describe Workspace::State do
       out = StringIO.new
       state = new_state(logger: Workspace::Logger.new(output: out, enabled: true)).load
       state["proj1"] = {"unique_id" => "uid1"}
-      allow_any_instance_of(Workspace::FileLock).to receive(:flock_mode).and_raise(Errno::ENOLCK)
+      stuck = instance_double(File, close: nil)
+      allow(stuck).to receive(:flock).and_raise(Errno::ENOLCK)
+      allow(Workspace::FileLock).to receive(:new).and_wrap_original do |original, path, **options|
+        (path == "#{state_file}.lock") ? original.call(path, **options, opener: ->(*, &_) { stuck }) : original.call(path, **options)
+      end
 
       state.save
 
