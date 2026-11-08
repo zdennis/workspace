@@ -323,10 +323,7 @@ module Workspace
       dir = File.dirname(settings_path_for(provider, project_root))
       return yield unless File.directory?(dir)
 
-      File.open(dir) do |handle|
-        handle.flock(File::LOCK_EX)
-        yield
-      end
+      FileLock.new(dir, make_dir: false, opener: ->(path, _flags, _perm, &block) { File.open(path, &block) }).hold { yield }
     end
 
     # Written to a temp file beside the target and renamed over it, so the
@@ -336,12 +333,12 @@ module Workspace
     def write_settings(path, settings)
       target = File.exist?(path) ? File.realpath(path) : path
       FileUtils.mkdir_p(File.dirname(target))
-      temp = "#{target}.workspace-tmp-#{Process.pid}"
-      File.write(temp, JSON.pretty_generate(settings) + "\n")
-      File.chmod(File.stat(target).mode & 0o7777, temp) if File.exist?(target)
-      File.rename(temp, target)
-    ensure
-      FileUtils.rm_f(temp) if temp && File.exist?(temp)
+      AtomicFile.write(target, JSON.pretty_generate(settings) + "\n", fsync: false,
+        temp_name: ->(path) { "#{path}.workspace-tmp-#{Process.pid}" },
+        writer: ->(temp, content) {
+          File.write(temp, content)
+          File.chmod(File.stat(target).mode & 0o7777, temp) if File.exist?(target)
+        })
     end
 
     # Saves a status-line command workspace is about to displace, so it isn't

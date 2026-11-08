@@ -525,12 +525,7 @@ module Workspace
       # tmp-file-then-rename, which would leave a held flock pointing at a
       # deleted inode if it were locked directly.
       def with_config_lock(path)
-        FileUtils.mkdir_p(File.dirname(path))
-        lockfile_path = "#{path}.lock"
-        File.open(lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
-          f.flock(File::LOCK_EX)
-          yield
-        end
+        FileLock.new("#{path}.lock", dir_mode: nil).hold { yield }
       end
 
       # Longest doc text the one-line key list shows before cutting it.
@@ -633,9 +628,8 @@ module Workspace
 
       def write_text(path, text)
         FileUtils.mkdir_p(File.dirname(path))
-        tmp_path = "#{path}.tmp#{Process.pid}"
-        File.write(tmp_path, text)
-        File.rename(tmp_path, path)
+        AtomicFile.write(path, text, perm: nil, fsync: false,
+          temp_name: ->(target) { "#{target}.tmp#{Process.pid}" })
       end
     end
   end
