@@ -85,7 +85,7 @@ RSpec.describe "statusline adversarial: CLI/UX" do
   # reading, violating the documented "never estimates a percentage it
   # hasn't actually read" rule (docs/README.statusline.md:57).
   it "U5: does not render a non-numeric used_percentage as a fabricated 0%" do
-    renderer = Workspace::StatuslineRenderer.new
+    renderer = Workspace::StatuslineRenderer.new(git: Workspace::Git.new)
     payload = {"model" => {"display_name" => "Sonnet"}, "context_window" => {"used_percentage" => "N/A"}}
 
     line = renderer.render(payload, cwd: Dir.mktmpdir("ws-nogit"))
@@ -98,7 +98,7 @@ RSpec.describe "statusline adversarial: CLI/UX" do
   # "150% ctx" is never a valid context-window usage and should not be
   # printed as though it is.
   it "U5b: does not render an out-of-range used_percentage (150) verbatim" do
-    renderer = Workspace::StatuslineRenderer.new
+    renderer = Workspace::StatuslineRenderer.new(git: Workspace::Git.new)
     payload = {"model" => {"display_name" => "Sonnet"}, "context_window" => {"used_percentage" => 150}}
 
     line = renderer.render(payload, cwd: Dir.mktmpdir("ws-nogit"))

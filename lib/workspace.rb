@@ -833,7 +833,7 @@ module Workspace
     scan_slots = ScanSlotLimiter.new(dir: File.join(config.state_dir, "scan-slots"), logger: logger)
     context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings,
       tmux: tmux, logger: logger, lock_holder: lock_holder, scan_slots: scan_slots)
-    statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(logger: logger),
+    statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(git: git, logger: logger),
       project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
       lock_holder: lock_holder)
 

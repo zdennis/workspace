@@ -1,7 +1,7 @@
 require "tmpdir"
 
 RSpec.describe Workspace::StatuslineRenderer do
-  let(:renderer) { described_class.new }
+  let(:renderer) { described_class.new(git: Workspace::Git.new) }
 
   it "renders model, directory, context bar, cost, and duration" do
     payload = {

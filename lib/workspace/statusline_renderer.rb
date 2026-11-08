@@ -1,5 +1,3 @@
-require "open3"
-
 module Workspace
   # Builds Claude Code's status line: model, directory, git branch, a context
   # usage bar, session cost, and turn duration. Ports
@@ -16,8 +14,10 @@ module Workspace
     RESET = "\033[0m"
     private_constant :CYAN, :GREEN, :YELLOW, :RED, :RESET
 
+    # @param git [Workspace::Git] reads the checked-out branch
     # @param logger [Workspace::Logger] debug logger
-    def initialize(logger: Workspace::Logger.new)
+    def initialize(git:, logger: Workspace::Logger.new)
+      @git = git
       @logger = logger
     end
 
@@ -72,10 +72,7 @@ module Workspace
 
     def git_branch(dir)
       return nil unless Dir.exist?(dir)
-      stdout, _, status = Open3.capture3("git", "-C", dir, "branch", "--show-current")
-      return nil unless status.success?
-      branch = stdout.strip
-      branch.empty? ? nil : branch
+      @git.current_branch_name(dir)
     rescue SystemCallError, IOError
       nil
     end
