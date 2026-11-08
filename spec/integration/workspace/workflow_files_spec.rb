@@ -147,6 +147,18 @@ RSpec.describe Workspace::WorkflowFiles do
       expect(strays).to eq([])
     end
 
+    it "never deletes a file it did not create at the temp path" do
+      FileUtils.mkdir_p(global_dir)
+      File.write(target, old_text)
+      leftover = File.join(global_dir, ".flow.yml.fixed.tmp")
+      File.write(leftover, "not ours")
+      fixed = described_class.new(config: config, catalog: catalog, random_hex: -> { "fixed" })
+
+      expect { fixed.update("flow", text, if_sha256: old_sha) }.to raise_error(Errno::EEXIST)
+      expect(File.read(leftover)).to eq("not ours")
+      expect(File.binread(target)).to eq(old_text)
+    end
+
     it "checks under the lock: an update that waited on a rewrite fails stale_workflow and the rewrite stays" do
       other = "title: Other\nsteps:\n  plan:\n    prompt: Other.\n"
       File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|

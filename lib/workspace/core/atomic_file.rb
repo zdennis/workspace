@@ -13,23 +13,31 @@ module Workspace
     #   stores whose names differ (SkillsState, ContextStore, ProjectSettings)
     # @param encoding [Encoding, String, nil] file encoding (WorkflowRunStore: UTF-8)
     # @param writer [#call, nil] `(temp_path, content)` replaces the write of the temp
-    #   file, and `perm:`, `fsync:` and `encoding:` with it (State's `writer:`)
+    #   file, and `perm:`, `fsync:` and `encoding:` with it (State's `writer:`). A writer that
+    #   raises Errno::EEXIST did not create the temp file, so it is left where it is
+    #   (WorkflowFiles opens it exclusively)
     # @return [void]
     # @raise [SystemCallError] when a step fails; the old file is left and the temp file removed
     def self.write(path, content, perm: 0o600, fsync: true, renamer: File.method(:rename),
       tag: nil, temp_name: nil, encoding: nil, writer: nil)
       temp = temp_name ? temp_name.call(path) : default_temp(path, tag)
       done = false
+      foreign = false
       begin
         if writer
-          writer.call(temp, content)
+          begin
+            writer.call(temp, content)
+          rescue Errno::EEXIST
+            foreign = true
+            raise
+          end
         else
           write_temp(temp, content, perm, fsync, encoding)
         end
         renamer.call(temp, path)
         done = true
       ensure
-        File.delete(temp) if !done && File.exist?(temp)
+        File.delete(temp) if !done && !foreign && File.exist?(temp)
       end
     end
 

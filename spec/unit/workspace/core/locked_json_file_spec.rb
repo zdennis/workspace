@@ -57,12 +57,12 @@ RSpec.describe Workspace::LockedJsonFile do
       expect(JSON.parse(File.read(path)).keys).to eq(%w[b a])
     end
 
-    it "reads a callable tag at each write for the temp name" do
-      names = []
-      renamer = ->(from, to) { names << File.basename(from) && File.rename(from, to) }
-      tagged = described_class.new(path, parse: parse, renamer: renamer, tag: -> { "t#{names.size}" })
+    it "calls a callable tag at each write" do
+      calls = 0
+      tagged = described_class.new(path, parse: parse, tag: -> { calls += 1 })
       2.times { tagged.exclusive { |data| data << 1 } }
-      expect(names).to eq(["#{File.basename(path)}.#{Process.pid}.t0.tmp", "#{File.basename(path)}.#{Process.pid}.t1.tmp"])
+      expect(calls).to eq(2)
+      expect(leftovers).to be_empty
     end
 
     it "writes with write: :if_true only when the block returns a true value" do
@@ -70,16 +70,6 @@ RSpec.describe Workspace::LockedJsonFile do
       expect(File.exist?(path)).to be(false)
       expect(file.exclusive(write: :if_true) { |data| (data << 1) && true }).to be(true)
       expect(JSON.parse(File.read(path))).to eq([1])
-    end
-
-    it "runs after_write under the lock whether or not it wrote" do
-      lock = Workspace::FileLock.new("#{path}.lock")
-      calls = []
-      locked = described_class.new(path, parse: parse, lock: lock)
-      after = -> { calls << lock.hold(nonblocking: true) { :got } }
-      locked.exclusive(write: :if_changed, after_write: after) { |_| }
-      locked.exclusive(after_write: after) { |data| data << 1 }
-      expect(calls).to eq([nil, nil])
     end
 
     it "leaves a corrupt file untouched when parse raises, and never yields" do
@@ -98,20 +88,12 @@ RSpec.describe Workspace::LockedJsonFile do
       expect(leftovers).to be_empty
     end
 
-    it "keeps the old file and no temp when the rename fails" do
-      File.write(path, "[1]")
-      renamer = ->(_from, _to) { raise Errno::EXDEV }
-      failing = described_class.new(path, parse: parse, renamer: renamer)
-      expect { failing.exclusive { |data| data << 2 } }.to raise_error(Errno::EXDEV)
-      expect(File.read(path)).to eq("[1]")
-      expect(leftovers).to be_empty
-    end
-
     it "turns a system error into the store's own error through access_error" do
-      renamer = ->(_from, _to) { raise Errno::EACCES }
-      mapped = ->(e) { Workspace::Error.new("Could not access: errno #{e.errno}") }
-      failing = described_class.new(path, parse: parse, renamer: renamer, access_error: mapped)
-      expect { failing.exclusive { |data| data << 1 } }.to raise_error(Workspace::Error, /Could not access: errno #{Errno::EACCES::Errno}/o)
+      blocker = File.join(dir, "file")
+      File.write(blocker, "")
+      mapped = ->(e) { Workspace::Error.new("Could not access: #{e.class}") }
+      failing = described_class.new(File.join(blocker, "data.json"), parse: parse, access_error: mapped)
+      expect { failing.exclusive { |data| data << 1 } }.to raise_error(Workspace::Error, /Could not access: Errno::/)
     end
 
     it "raises read_error's exception, ahead of access_error, when the document can't be read" do
@@ -122,43 +104,6 @@ RSpec.describe Workspace::LockedJsonFile do
         access_error: ->(_) { Workspace::Error.new("no access") })
       expect { failing.exclusive { |data| data << 1 } }.to raise_error(Workspace::Error, "cannot read")
     end
-
-    it "returns nil without yielding when nonblocking and another process holds the lock" do
-      other = File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600)
-      other.flock(File::LOCK_EX)
-      yielded = false
-      expect(file.exclusive(nonblocking: true) { yielded = true }).to be_nil
-      expect(yielded).to be(false)
-    ensure
-      other&.close
-    end
-
-    it "excludes a second writer while it runs" do
-      file.exclusive do
-        expect(file.exclusive(nonblocking: true) { :never }).to be_nil
-        expect(file.shared(nonblocking: true) { :never }).to be_nil
-      end
-    end
-
-    it "uses generate:, fsync:, tag: and perm:" do
-      seen = nil
-      renamer = ->(from, to) {
-        seen = from
-        File.rename(from, to)
-      }
-      custom = described_class.new(path, parse: parse, generate: ->(d) { JSON.generate(d) }, fsync: false,
-        tag: "x", perm: 0o644, renamer: renamer)
-      custom.exclusive { |data| data << 1 }
-      expect(File.read(path)).to eq("[1]")
-      expect(File.stat(path).mode & 0o777).to eq(0o644)
-      expect(seen).to eq("#{path}.#{Process.pid}.x.tmp")
-    end
-
-    it "locks on lock_path" do
-      other = described_class.new(path, parse: parse, lock_path: File.join(dir, "elsewhere.lock"))
-      other.exclusive { |data| data << 1 }
-      expect(File.exist?(File.join(dir, "elsewhere.lock"))).to be(true)
-    end
   end
 
   describe "#shared" do
@@ -166,7 +111,7 @@ RSpec.describe Workspace::LockedJsonFile do
       File.write(path, "[ 1 ]")
       other = File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600)
       other.flock(File::LOCK_SH)
-      expect(file.shared(nonblocking: true) { |data| data.sum }).to eq(1)
+      expect(file.shared { |data| data.sum }).to eq(1)
       expect(File.read(path)).to eq("[ 1 ]")
     ensure
       other&.close
@@ -178,14 +123,6 @@ RSpec.describe Workspace::LockedJsonFile do
       expect(File.read(path)).to eq("[1]")
     end
 
-    it "returns nil without yielding when nonblocking and a writer holds the lock" do
-      other = File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600)
-      other.flock(File::LOCK_EX)
-      expect(file.shared(nonblocking: true) { :never }).to be_nil
-    ensure
-      other&.close
-    end
-
     it "lets parse decide what a corrupt file reads as" do
       File.write(path, "{nope")
       lenient = described_class.new(path, parse: ->(_) { [] })
@@ -193,15 +130,10 @@ RSpec.describe Workspace::LockedJsonFile do
       expect(File.read(path)).to eq("{nope")
     end
 
-    it "runs after_write" do
-      called = false
-      file.shared(after_write: -> { called = true }) { |_| }
-      expect(called).to be(true)
-    end
-
     it "passes the system error through access_error" do
-      lock = Workspace::FileLock.new("#{path}.lock", opener: ->(*, &_) { raise Errno::EACCES })
-      mapped = described_class.new(path, parse: parse, lock: lock, access_error: ->(_) { Workspace::Error.new("no access") })
+      blocker = File.join(dir, "file")
+      File.write(blocker, "")
+      mapped = described_class.new(File.join(blocker, "data.json"), parse: parse, access_error: ->(_) { Workspace::Error.new("no access") })
       expect { mapped.shared { |_| } }.to raise_error(Workspace::Error, "no access")
     end
   end

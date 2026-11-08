@@ -12,9 +12,11 @@ module Workspace
   class WorkflowFiles
     # @param config [Workspace::Config] names the directory
     # @param catalog [Workspace::WorkflowCatalog] checks an id and names its file
-    def initialize(config:, catalog:)
+    # @param random_hex [#call] `() -> String` the random part of a temp file's name
+    def initialize(config:, catalog:, random_hex: -> { SecureRandom.hex(8) })
       @config = config
       @catalog = catalog
+      @random_hex = random_hex
     end
 
     # The directory the files are written to; a relative `prompt_file:` in one is read from here.
@@ -168,7 +170,7 @@ module Workspace
     def write(id, target, text)
       # A new name each time, created exclusively: a link or leftover file there is never followed or reused.
       AtomicFile.write(target, text,
-        temp_name: ->(_) { File.join(dir, ".#{id}.yml.#{SecureRandom.hex(8)}.tmp") },
+        temp_name: ->(_) { File.join(dir, ".#{id}.yml.#{@random_hex.call}.tmp") },
         writer: ->(temp, content) {
           File.open(temp, File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o644) { |file| file.write(content) }
         })
