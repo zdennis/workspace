@@ -326,7 +326,7 @@ module Workspace
     private_constant :BOOLEAN
 
     SPINE_TEMPLATE = lambda do |value|
-      return value if value.is_a?(String) && value.match?(LibraryStore::NAME)
+      return value if value.is_a?(String) && value.match?(IdPatterns::LIBRARY_NAME)
       raise ArgumentError, "must be a spine template name: lowercase letters, digits and hyphens"
     end
     private_constant :SPINE_TEMPLATE
@@ -335,8 +335,8 @@ module Workspace
     WORKFLOW_REF_KINDS = %w[jira github_pr github_issue branch prompt].freeze
 
     WORKFLOW_ID = lambda do |value|
-      return value if value.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(value)
-      raise ArgumentError, "must be a workflow id: #{WorkflowDefinition::ID_RULE}"
+      return value if value.is_a?(String) && IdPatterns::WORKFLOW_ID.match?(value)
+      raise ArgumentError, "must be a workflow id: #{IdPatterns::WORKFLOW_ID_RULE}"
     end
     private_constant :WORKFLOW_ID
 

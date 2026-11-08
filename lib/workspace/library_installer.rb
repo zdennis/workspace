@@ -207,7 +207,7 @@ module Workspace
       children.filter_map do |child|
         next if kind == "agent" && !child.end_with?(".md")
         name = (kind == "agent") ? child.delete_suffix(".md") : child
-        next unless name.match?(LibraryStore::NAME) && yield(name)
+        next unless name.match?(IdPatterns::LIBRARY_NAME) && yield(name)
         path = File.join(dir, child)
         next unless (kind == "agent") ? (File.file?(path) || File.symlink?(path)) : (File.directory?(path) || File.symlink?(path))
         {"name" => name, "path" => path}

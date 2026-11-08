@@ -216,7 +216,7 @@ module Workspace
     # @return [Array<String>] pack names; empty when the entry has none or its value is not a list of names
     def packs_for(entry)
       packs = entry["packs"]
-      return [] unless packs.is_a?(Array) && packs.all? { |name| name.is_a?(String) && name.match?(LibraryStore::NAME) }
+      return [] unless packs.is_a?(Array) && packs.all? { |name| name.is_a?(String) && name.match?(IdPatterns::LIBRARY_NAME) }
       packs
     end
 
@@ -303,7 +303,7 @@ module Workspace
       value.map do |name|
         raise UsageError, "packs must be a list of pack names." unless name.is_a?(String)
         bare = name.sub(%r{\Aplay/}, "")
-        raise UsageError, "#{bare[0, 40].inspect} is not a pack name: lowercase letters, digits and hyphens." unless bare.match?(LibraryStore::NAME)
+        raise UsageError, "#{bare[0, 40].inspect} is not a pack name: lowercase letters, digits and hyphens." unless bare.match?(IdPatterns::LIBRARY_NAME)
         bare
       end.uniq
     end

@@ -1184,7 +1184,7 @@ module Workspace
 
       def file_id(path)
         name = File.basename(path, ".*")
-        WorkflowDefinition::ID_PATTERN.match?(name) ? name : FILE_ID
+        IdPatterns::WORKFLOW_ID.match?(name) ? name : FILE_ID
       end
 
       # A definition file in a directory a lookup reaches later than another file of its id is never the one a

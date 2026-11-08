@@ -12,12 +12,6 @@ module Workspace
     # The only `schema_version` a definition may name.
     SCHEMA_VERSION = 1
 
-    # Workflow and step ids: they become file names and binding fields.
-    ID_PATTERN = /\A[a-z0-9][a-z0-9_-]{0,39}\z/
-
-    # The rule {ID_PATTERN} checks, in words, for messages.
-    ID_RULE = "lowercase letters, digits, '-' and '_'"
-
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
@@ -368,7 +362,7 @@ module Workspace
       version = raw.fetch("schema_version", SCHEMA_VERSION)
       problem "schema_version must be #{SCHEMA_VERSION}, got #{version.inspect}" unless version == SCHEMA_VERSION
       problem "id must be #{id.inspect}, the name of its file, got #{raw["id"].inspect}" if raw.key?("id") && raw["id"] != id
-      problem "the workflow id #{id.inspect} must be #{ID_RULE}" unless ID_PATTERN.match?(id)
+      problem "the workflow id #{id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(id)
       inputs = inputs_from(raw["inputs"])
       max_attempts = raw.fetch("max_attempts", DEFAULT_MAX_ATTEMPTS)
       unless max_attempts.is_a?(Integer) && max_attempts >= 1
@@ -523,7 +517,7 @@ module Workspace
 
     def step_from(step_id, raw, earlier, inputs)
       where = "step #{step_id}"
-      problem "step id #{step_id.inspect} must be #{ID_RULE}" unless ID_PATTERN.match?(step_id)
+      problem "step id #{step_id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(step_id)
       unless raw.is_a?(Hash)
         problem "#{where} must be a mapping"
         raw = {}

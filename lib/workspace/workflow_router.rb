@@ -64,7 +64,7 @@ module Workspace
     end
 
     def default_route(configured, scope, key, kind, rows, force, workspace, registered)
-      reason = if !configured.is_a?(String) || !WorkflowDefinition::ID_PATTERN.match?(configured)
+      reason = if !configured.is_a?(String) || !IdPatterns::WORKFLOW_ID.match?(configured)
         "invalid_value"
       elsif (row = rows.find { |each| each["id"] == configured }).nil?
         "unknown_workflow"

@@ -408,7 +408,7 @@ module Workspace
     def spine_template_problems(file, scan, declared)
       return [] unless @library && declared.any? { |key| key.name == "spine.template" }
       name = dig(file.data, %w[spine template])
-      return [] unless name.is_a?(String) && name.match?(LibraryStore::NAME)
+      return [] unless name.is_a?(String) && name.match?(IdPatterns::LIBRARY_NAME)
       root = @project_config.project_root_for(scan.workspace)
       return [] unless root
       @library.spine_template(name, cwd: root)
@@ -427,7 +427,7 @@ module Workspace
       declared.filter_map do |key|
         next unless key.name == "workflows.default" || key.name.start_with?("workflows.by_ref.")
         id = dig(file.data, key.name.split("."))
-        next unless id.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(id)
+        next unless id.is_a?(String) && IdPatterns::WORKFLOW_ID.match?(id)
         next if @catalog.known?(id, project: project)
         located(file, "warning", "unknown_default_workflow", key.name,
           "#{key.name} names '#{id}', and no workflow has that id. List them with: workspace workflow show")
