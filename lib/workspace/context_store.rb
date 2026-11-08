@@ -65,13 +65,14 @@ module Workspace
         "model" => (model if model.is_a?(String))
       }
 
-      with_lock do
+      @lock.hold do
         data = read_data
         data["panes"] ||= {}
         data["by_pid"] ||= {}
         data["panes"][pane_id] = entry if pane_id
         data["by_pid"][pid.to_s] = entry if pid
-        write_data(data)
+        AtomicFile.write(@path, JSON.generate(data), perm: nil, fsync: false,
+          temp_name: ->(path) { "#{path}.tmp#{Process.pid}" })
       end
     rescue => e
       @logger.debug { "context_store: record failed (#{e.class}: #{e.message})" }
@@ -103,20 +104,11 @@ module Workspace
       value if value.is_a?(Numeric) && value >= 0
     end
 
-    def with_lock(&block)
-      @lock.hold(&block)
-    end
-
     def read_data
       return {} unless File.exist?(@path)
       JSON.parse(File.read(@path))
     rescue JSON::ParserError
       {}
-    end
-
-    def write_data(data)
-      AtomicFile.write(@path, JSON.generate(data), perm: nil, fsync: false,
-        temp_name: ->(path) { "#{path}.tmp#{Process.pid}" })
     end
   end
 end
