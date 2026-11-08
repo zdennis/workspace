@@ -30,7 +30,7 @@ module Workspace
     def initialize(dir:, clock: -> { Time.now }, error_output: $stderr, archive_limit: ARCHIVE_LIMIT)
       @dir = dir
       @archive_dir = File.join(dir, "archive")
-      @lockfile_path = File.join(dir, ".lock")
+      @lock = FileLock.new(File.join(dir, ".lock"))
       @clock = clock
       @error_output = error_output
       @archive_limit = archive_limit
@@ -48,12 +48,12 @@ module Workspace
     # @param path [String, nil] the worktree path
     # @return [Hash] the task record
     def start(workspace:, title: nil, ref: nil, branch: nil, path: nil)
-      with_lock do
+      serialized do
         existing = active_records.find { |r| r["workspace"] == workspace }
         if existing
           if title && existing["title"] != title
             existing["title"] = title
-            write_record(@dir, existing)
+            AtomicFile.write(task_path(@dir, existing), JSON.pretty_generate(existing))
           end
           next existing
         end
@@ -66,7 +66,7 @@ module Workspace
           "path" => path,
           "created_at" => now_iso
         }
-        write_record(@dir, record)
+        AtomicFile.write(task_path(@dir, record), JSON.pretty_generate(record))
         record
       end
     end
@@ -86,12 +86,12 @@ module Workspace
     def archive(workspace, outcome:)
       raise ArgumentError, "unknown outcome #{outcome.inspect}" unless OUTCOMES.include?(outcome)
 
-      with_lock do
+      serialized do
         record = active_records.find { |r| r["workspace"] == workspace }
         next nil unless record
         record = record.merge("outcome" => outcome, "archived_at" => now_iso)
         FileUtils.mkdir_p(@archive_dir, mode: 0o700)
-        write_record(@archive_dir, record)
+        AtomicFile.write(task_path(@archive_dir, record), JSON.pretty_generate(record))
         File.delete(File.join(@dir, "#{record["id"]}.json"))
         prune_archive
         record
@@ -107,11 +107,11 @@ module Workspace
     # @param path [String, nil]
     # @return [Hash, nil] the updated record, or nil when no live task has that id
     def update(id, workspace:, branch:, path:)
-      with_lock do
+      serialized do
         record = active_records.find { |r| r["id"] == id }
         next nil unless record
         record = record.merge("workspace" => workspace, "branch" => branch, "path" => path)
-        write_record(@dir, record)
+        AtomicFile.write(task_path(@dir, record), JSON.pretty_generate(record))
         record
       end
     end
@@ -180,25 +180,14 @@ module Workspace
       end
     end
 
-    def with_lock
-      FileUtils.mkdir_p(@dir, mode: 0o700)
-      File.open(@lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
-        f.flock(File::LOCK_EX)
-        yield
-      end
+    def serialized(&block)
+      @lock.hold(&block)
     rescue SystemCallError => e
       raise Workspace::Error, "Could not access task store at #{@dir} (#{e.class}: errno #{e.errno})"
     end
 
-    def write_record(dir, record)
-      path = File.join(dir, "#{record["id"]}.json")
-      tmp = "#{path}.#{Process.pid}.tmp"
-      File.open(tmp, "w", 0o600) do |f|
-        f.write(JSON.pretty_generate(record))
-        f.flush
-        f.fsync
-      end
-      File.rename(tmp, path)
+    def task_path(dir, record)
+      File.join(dir, "#{record["id"]}.json")
     end
 
     def now_iso
