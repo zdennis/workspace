@@ -166,7 +166,7 @@ What needs babysitting:
 - Only one dev environment per repo (`docs/README.dev.md:114`). Two agents that each need a running app take turns.
 - Edits made through shell commands (`sed`, `git apply`, code generators) bypass the `edit` lock (`lib/workspace/lock_enforcer.rb:15-16`).
 - A dev server started by another OS user cannot be stopped; the lock stays held until that user stops it (`docs/README.lock.md:164`). Waiters wait with no alert.
-- Enforcement only exists for agents with hooks, which today means Claude Code (`lib/workspace/agent_provider.rb:113-115`).
+- Enforcement only exists for agents with hooks, which today means Claude Code (`lib/workspace/core/agent_provider.rb:113-115`).
 
 ### 5. Watching many agents
 
@@ -186,7 +186,7 @@ What needs babysitting:
 
 - `idle` covers finished, waiting for an answer, and hung. You open the pane to tell which.
 - Nothing notifies you. `--watch` is a screen someone has to look at.
-- Sub-agent rows come from Claude Code hooks only; other agents show just the pane (`lib/workspace/agent_provider.rb:113-115`).
+- Sub-agent rows come from Claude Code hooks only; other agents show just the pane (`lib/workspace/core/agent_provider.rb:113-115`).
 - Session history is in the daemon's memory and disappears with the pane or a restart (`lib/workspace/session_monitor.rb:98-100`).
 
 ## Gap analysis
@@ -222,7 +222,7 @@ Locks serialize editing and the dev environment; anything outside those two stay
 
 - **[Improve] Shell edits bypass the edit lock.** Only Edit/Write/MultiEdit/NotebookEdit are checked (`lib/workspace/lock_enforcer.rb:15-17`). An agent running `sed -i` or a generator edits while another holds the lock. Fix: document it in `lock instructions`, and optionally check Bash commands that write into the worktree.
 - **[Missing] Per-worktree dev environments.** One `devenv` lock per repo (`docs/README.dev.md:114`) and no port or database allocation. Parallel agents that each need a running app wait in line. Fix: named dev services, or per-worktree `PORT`/`DATABASE_URL` offsets passed to `dev.up`.
-- **[Improve] Hooks only for Claude Code.** Codex, OpenCode and Pi have no hook support (`lib/workspace/agent_provider.rb:113-115`), so their edits are never checked and their idle turns never hand a lock on. Fix: add hook tables for agents that offer hooks.
+- **[Improve] Hooks only for Claude Code.** Codex, OpenCode and Pi have no hook support (`lib/workspace/core/agent_provider.rb:113-115`), so their edits are never checked and their idle turns never hand a lock on. Fix: add hook tables for agents that offer hooks.
 - **[Improve] One lock per agent per repo.** Holding `edit` while waiting for `devenv` exits 5 (`lib/workspace/lock_store.rb:87-89`). An agent that needs both must release and requeue. Fix: document the ordering in `lock instructions`, or allow a declared lock order.
 
 ### Observing: state is visible, stalls are not

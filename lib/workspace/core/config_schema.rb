@@ -1,5 +1,5 @@
 require "shellwords"
-require_relative "../agent_provider"
+require_relative "agent_provider"
 
 module Workspace
   # The one table of config keys: where each lives (project or global file),

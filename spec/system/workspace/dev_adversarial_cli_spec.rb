@@ -51,7 +51,7 @@ RSpec.describe "PR2 adversarial findings" do
         # `parent` for any repo using submodules.
         expect(info.name).to eq("subdir"),
           "expected the submodule's own directory name, got #{info.name.inspect} " \
-          "(lib/workspace/workspace_lineage.rb derives the name from File.dirname(git_common_dir), " \
+          "(lib/workspace/core/workspace_lineage.rb derives the name from File.dirname(git_common_dir), " \
           "which for a submodule is `<repo>/.git/modules`, not the submodule's worktree)"
       end
     end
@@ -79,7 +79,7 @@ RSpec.describe "PR2 adversarial findings" do
         expect(info.is_worktree).to eq(false),
           "expected is_worktree to follow git's own --git-dir/--git-common-dir comparison, " \
           "but the stale .workspace-project marker overrides it unconditionally " \
-          "(lib/workspace/workspace_lineage.rb#resolve)"
+          "(lib/workspace/core/workspace_lineage.rb#resolve)"
       end
     end
   end
