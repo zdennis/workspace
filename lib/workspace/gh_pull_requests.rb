@@ -7,7 +7,9 @@ module Workspace
   class GhPullRequests
     # @param runner [#call] called with a command's arguments, answers
     #   `[stdout, stderr, status]` as `Open3.capture3` does; specs inject a fake so nothing spawns
-    def initialize(runner: ->(*argv) { Open3.capture3(*argv) })
+    # @param git [#remote_url] reads a checkout's origin URL
+    def initialize(git:, runner: ->(*argv) { Open3.capture3(*argv) })
+      @git = git
       @runner = runner
     end
 
@@ -25,10 +27,10 @@ module Workspace
     # @param repo_path [String] path to the worktree directory
     # @return [Hash, nil] hash with :number, :url, :state keys, or nil on failure
     def status_for(branch, repo_path)
-      remote_url, _, status = @runner.call("git", "-C", repo_path, "remote", "get-url", "origin")
-      return nil unless status.success?
+      remote_url = @git.remote_url(repo_path)
+      return nil unless remote_url
 
-      slug = github_repo_slug(remote_url.strip)
+      slug = github_repo_slug(remote_url)
       return nil unless slug
 
       stdout, _, gh_status = @runner.call(

@@ -18,7 +18,7 @@ module Workspace
       # @param pull_requests [#usable?, #status_for] answers whether `gh` is authenticated and the `{number:, url:, state:}` (or nil) of a branch's pull request
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, pull_requests: GhPullRequests.new, output: $stdout, input: $stdin)
+      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, pull_requests: GhPullRequests.new(git: git), output: $stdout, input: $stdin)
         @pull_requests = pull_requests
         @tmux = tmux
         @state = state

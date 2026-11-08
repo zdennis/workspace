@@ -13,11 +13,15 @@ module Workspace
     # @param logger [Workspace::Logger] debug logger
     # @param runner [#call] `(argv, chdir:, timeout:)` (and `env:` for {#push}) returning `[stdout, stderr, success]`; runs the
     #   time-limited, prompt-free git calls of {#push}, {#fetch}, {#rebase} and the other write operations
-    def initialize(output: $stdout, input: $stdin, logger: Workspace::Logger.new, runner: TimedProcess.method(:run))
+    # @param gh_runner [#call] `(env, *argv, chdir:)` returning `[stdout, stderr, status]` as `Open3.capture3` does;
+    #   runs the `gh pr checkout` of {#checkout_pr_worktree}, with no time limit
+    def initialize(output: $stdout, input: $stdin, logger: Workspace::Logger.new, runner: TimedProcess.method(:run),
+      gh_runner: ->(env, *cmd, chdir:) { Open3.capture3(env, *cmd, chdir: chdir) })
       @output = output
       @input = input
       @logger = logger
       @runner = runner
+      @gh_runner = gh_runner
     end
 
     # Seconds `git push` may take.
@@ -569,7 +573,7 @@ module Workspace
       @logger.debug { "git: #{cmd.join(" ")} (in #{chdir})" }
       @output.puts "Running: #{cmd.join(" ")}" unless quiet
       begin
-        _, stderr, status = Open3.capture3({"GH_PROMPT_DISABLED" => "1"}, *cmd, chdir: chdir)
+        _, stderr, status = @gh_runner.call({"GH_PROMPT_DISABLED" => "1"}, *cmd, chdir: chdir)
       rescue Errno::ENOENT
         raise Workspace::Error, "`gh` is not installed, but is required to check out a PR. " \
           "Install it, or pass the branch name directly instead of the PR."

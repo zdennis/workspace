@@ -544,7 +544,7 @@ module Workspace
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, agent_commands: agent_commands, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
-    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new, output: output, input: input)
+    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), output: output, input: input)
     remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
