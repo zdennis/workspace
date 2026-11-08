@@ -15,8 +15,10 @@ module Workspace
     # @param lock_wait [Numeric] seconds a save waits for the state file's lock
     # @param writer [#call] writes a file, given the path and the text, as +File.write+ does
     # @param renamer [#call] renames a file, given the old and new path
+    # @param lock_opener [#call] opens the state file's lock file, given the path, flags, mode and a block, as +File.open+ does
     def initialize(config:, event_log:, logger: Workspace::Logger.new, lock_wait: LOCK_WAIT,
-      writer: File.method(:write), renamer: File.method(:rename))
+      writer: File.method(:write), renamer: File.method(:rename), lock_opener: File.method(:open))
+      @lock_opener = lock_opener
       @writer = writer
       @renamer = renamer
       @config = config
@@ -76,7 +78,7 @@ module Workspace
     # @return [void]
     # @raise [Workspace::Error] if the event log can't be read
     def save
-      FileLock.new("#{@config.state_file}.lock", sleeper: method(:sleep), make_dir: false,
+      FileLock.new("#{@config.state_file}.lock", sleeper: method(:sleep), make_dir: false, opener: @lock_opener,
         on_unavailable: method(:log_lock_trouble)).hold(wait: @lock_wait) do |held|
         @logger.debug { "state: saving without the state file lock" } unless held
         write_state_file

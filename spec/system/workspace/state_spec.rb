@@ -280,13 +280,10 @@ RSpec.describe Workspace::State do
 
     it "logs why it saves without the lock when the lock can't be taken" do
       out = StringIO.new
-      state = new_state(logger: Workspace::Logger.new(output: out, enabled: true)).load
-      state["proj1"] = {"unique_id" => "uid1"}
       stuck = instance_double(File, close: nil)
       allow(stuck).to receive(:flock).and_raise(Errno::ENOLCK)
-      allow(Workspace::FileLock).to receive(:new).and_wrap_original do |original, path, **options|
-        (path == "#{state_file}.lock") ? original.call(path, **options, opener: ->(*, &_) { stuck }) : original.call(path, **options)
-      end
+      state = new_state(logger: Workspace::Logger.new(output: out, enabled: true), lock_opener: ->(*, &_) { stuck }).load
+      state["proj1"] = {"unique_id" => "uid1"}
 
       state.save
 
