@@ -76,11 +76,10 @@ module Workspace
     # @return [void]
     # @raise [Workspace::Error] if the event log can't be read
     def save
-      lock = open_lock
-      @logger.debug { "state: saving without the state file lock" } unless lock && acquire(lock)
-      write_state_file
-    ensure
-      lock&.close
+      FileLock.new("#{@config.state_file}.lock", sleeper: method(:sleep)).hold(wait: @lock_wait) do |held|
+        @logger.debug { "state: saving without the state file lock" } unless held
+        write_state_file
+      end
     end
 
     # @param key [String]
@@ -157,35 +156,12 @@ module Workspace
 
     private
 
-    def open_lock
-      File.open("#{@config.state_file}.lock", File::RDWR | File::CREAT, 0o600)
-    rescue SystemCallError => e
-      @logger.debug { "state: can't open the lock file (#{e.class}: #{e.message})" }
-      nil
-    end
-
-    def acquire(lock)
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @lock_wait
-      until lock.flock(File::LOCK_EX | File::LOCK_NB)
-        return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-        sleep 0.01
-      end
-      true
-    rescue SystemCallError => e
-      @logger.debug { "state: can't lock the state file (#{e.class}: #{e.message})" }
-      false
-    end
-
     def write_state_file
       @data = @event_log.reconstruct(strict: true)
       @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
       backup_state_file
-      tmp = "#{@config.state_file}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
-      @writer.call(tmp, JSON.pretty_generate(@data))
-      @renamer.call(tmp, @config.state_file)
-    rescue
-      File.delete(tmp) if tmp && File.exist?(tmp)
-      raise
+      AtomicFile.write(@config.state_file, JSON.pretty_generate(@data), writer: @writer, renamer: @renamer,
+        temp_name: ->(path) { "#{path}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp" })
     end
 
     def backup_state_file

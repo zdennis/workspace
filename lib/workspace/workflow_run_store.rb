@@ -52,8 +52,7 @@ module Workspace
     # @raise [Workspace::Error] if the store can't be written
     def create(run, check = nil)
       FileUtils.mkdir_p(@dir, mode: 0o700)
-      File.open(File.join(File.dirname(@dir), ".create.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
-        lock.flock(File::LOCK_EX)
+      FileLock.new(File.join(File.dirname(@dir), ".create.lock")).hold do
         check&.call
         run = {"id" => unused_id}.merge(run)
         yield run if block_given?
@@ -104,20 +103,19 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run`, or `run_not_active` for a finished run
     def update(id, nonblocking: false)
       raise_unknown(id) unless valid_id?(id)
-      FileUtils.mkdir_p(@dir, mode: 0o700)
-      File.open(File.join(@dir, "#{id}.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
-        return nil unless lock.flock(nonblocking ? File::LOCK_EX | File::LOCK_NB : File::LOCK_EX)
+      lock_path = File.join(@dir, "#{id}.lock")
+      FileLock.new(lock_path).hold(nonblocking: nonblocking) do
         run = read(path_for(@dir, id))
         unless run
           finished = read(path_for(@archive_dir, id))
           # An unreadable run file keeps its lock file; anything else leaves none behind.
-          FileUtils.rm_f(lock.path) unless File.exist?(path_for(@dir, id))
+          FileUtils.rm_f(lock_path) unless File.exist?(path_for(@dir, id))
           raise finished ? not_active(finished) : raise_unknown(id)
         end
         if TERMINAL_STATES.include?(run["state"])
           # A finished run still here: the move to the archive failed, so it is tried again.
           begin
-            archive(run, lock.path)
+            archive(run, lock_path)
           rescue SystemCallError
             nil
           end
@@ -125,7 +123,7 @@ module Workspace
         end
         result = yield run
         write(run)
-        archive(run, lock.path) if TERMINAL_STATES.include?(run["state"])
+        archive(run, lock_path) if TERMINAL_STATES.include?(run["state"])
         result
       end
     rescue SystemCallError, JSON::GeneratorError, EncodingError => e
@@ -255,17 +253,7 @@ module Workspace
 
     def write(run)
       path = File.join(@dir, "#{run["id"]}.json")
-      temp = "#{path}.#{Process.pid}.tmp"
-      begin
-        File.open(temp, "w", 0o600, encoding: Encoding::UTF_8) do |file|
-          file.write(JSON.pretty_generate(run))
-          file.flush
-          file.fsync
-        end
-        File.rename(temp, path)
-      ensure
-        FileUtils.rm_f(temp)
-      end
+      AtomicFile.write(path, JSON.pretty_generate(run), encoding: Encoding::UTF_8)
     end
 
     # The state file moves last: until it does, the run still reads as going

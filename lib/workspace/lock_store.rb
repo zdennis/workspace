@@ -81,6 +81,7 @@ module Workspace
       @idle_grace = idle_grace
       @lockfile_path = File.join(dir, "locks.lock")
       @data_path = File.join(dir, "locks.json")
+      @file_lock = FileLock.new(@lockfile_path, dir_mode: 0o700, chmod_dir: true, open_readonly: true)
       @audit_log = audit_log || LockAuditLog.new(dir: dir, logger: logger)
       @terminator = terminator
     end
@@ -102,7 +103,7 @@ module Workspace
     #   the queue entry is marked "takeover", which {#clear} keeps
     # @return [Hash] :status is one of :acquired, :already_held, :held, :queued, :deadlock
     def acquire(name, identity:, waiter_pid:, waiter_started:, task: nil, wait: false, priority: false)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         entry = data[name] ||= empty_entry
         holder = entry["holder"]
@@ -157,7 +158,7 @@ module Workspace
     #   :acquired result from a takeover also carries :took_over (the
     #   displaced holder record)
     def poll(name, waiter_pid)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         entry = data[name]
         next {status: :cleared} unless entry
@@ -179,7 +180,7 @@ module Workspace
     # @param pid [Integer] the releasing agent's pid
     # @return [Boolean] whether a hold was actually released
     def release(name, pid)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         entry = data[name]
         next false unless entry
@@ -230,7 +231,7 @@ module Workspace
     def acquire_run(names, run:)
       names = names.uniq.sort
       run_id = run[:run_id]
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         unless run_alive?("run_id" => run_id)
           next {status: :not_alive, held: [], acquired: [], released: [], handed_over: [], took_over: {}, waiting: nil}
@@ -260,7 +261,7 @@ module Workspace
     # @param names [Array<String>, nil] only these locks; nil for every lock
     # @return [Array<String>] names of the locks the run held and released
     def release_run(run_id, names = nil)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         leave_run!(data, run_id, names || data.keys)
       end
@@ -277,7 +278,7 @@ module Workspace
     #   holds the lock instead, or nil); or :busy (with :delegate, another
     #   live process already recorded)
     def delegate(name, run_id:, identity:)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         holder = data.dig(name, "holder")
         next {status: :not_holder, holder: holder} unless same_run?(holder, run_id)
@@ -301,7 +302,7 @@ module Workspace
     # @return [Symbol] :ended (the run keeps the lock), :released (the
     #   process held the lock itself), or :absent
     def end_delegate(name, pid)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         entry = data[name]
         holder = entry && entry["holder"]
@@ -331,7 +332,7 @@ module Workspace
     # @param identity [Hash] the agent, from {LockHolder#current}
     # @return [Array<String>] names of locks actually released
     def release_all(identity)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         released = []
         data.each do |name, entry|
@@ -361,7 +362,7 @@ module Workspace
     #   audit event, so these reaps can be told apart from an op-time reap
     # @return [Integer] how many holders and waiters were reaped
     def reap(source: nil)
-      reaped = with_lock(nonblocking: true, write_unchanged: false) do |data|
+      reaped = transact(nonblocking: true, write_unchanged: false) do |data|
         reap!(data, source: source)
         @pending_events.count { |e| e[:event] == "reap" }
       end
@@ -375,7 +376,7 @@ module Workspace
     # @param name [String] lock name
     # @return [Hash, nil] the live holder record, or nil if the lock is free
     def current_holder(name)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         data[name]&.dig("holder")
       end
@@ -392,7 +393,7 @@ module Workspace
     # @param holder [Hash] the current holder record
     # @return [void]
     def record_deny(name, denier:, holder:)
-      with_lock(readonly: true) do |data|
+      transact(readonly: true) do |data|
         audit(:deny, name, agent: identity_summary(denier), holder: holder_summary(holder))
         data
       end
@@ -407,7 +408,7 @@ module Workspace
     # @param waiter_pid [Integer]
     # @return [Symbol] :released, :dequeued, or :absent
     def dequeue(name, waiter_pid)
-      with_lock do |data|
+      transact do |data|
         entry = data[name]
         next :absent unless entry && waiter_pid
         if entry["holder"] && entry["holder"]["waiter_pid"] == waiter_pid
@@ -429,7 +430,7 @@ module Workspace
     # @return [Hash] :status is :acquired or :dequeued; a takeover also
     #   carries :took_over, as from {#poll}
     def claim_or_dequeue(name, waiter_pid)
-      with_lock do |data|
+      transact do |data|
         reap!(data)
         entry = data[name]
         next {status: :dequeued} unless entry
@@ -485,7 +486,7 @@ module Workspace
     #   was kept; {holder:, clearing:, in_progress: true} when another live
     #   clear of that holder is under way; nil if the lock had no entry
     def clear(name, cleared_by: nil, keep_process_holder: false, clearer: nil)
-      with_lock(lenient: true) do |data|
+      transact(lenient: true) do |data|
         entry = data[name]
         next nil unless entry
         hand_over!(entry, name, cleared_by: cleared_by, evicted: true) if keep_process_holder && run?(entry["holder"]) && live_delegate(entry["holder"])
@@ -532,7 +533,7 @@ module Workspace
     #   here, or released on its own), or the record of whoever else held it
     #   by then
     def finish_clear(name, holder, cleared_by: nil, clearer: nil)
-      with_lock(lenient: true) do |data|
+      transact(lenient: true) do |data|
         entry = data[name]
         next nil unless entry
         entry["queue"].reject! { |w| waiter_marked_by?(w, clearer) }
@@ -575,7 +576,7 @@ module Workspace
     #   whoever holds it instead and already knows it (a hold that cannot be
     #   taken back)
     def keep_process_holder(name, holder, cleared_by: nil, clearer: nil)
-      with_lock(lenient: true) do |data|
+      transact(lenient: true) do |data|
         entry = data[name] ||= empty_entry
         entry["queue"].each { |w| drop_clearing_marker!(w, clearer) }
         current = entry["holder"]
@@ -615,7 +616,7 @@ module Workspace
     # @return [Hash, nil] the marker of another live clearer (nothing is
     #   marked then), or nil
     def mark_clearing(name, holder, clearer)
-      with_lock(lenient: true) do |data|
+      transact(lenient: true) do |data|
         current = data.dig(name, "holder")
         next nil unless same_process?(current, holder)
         marker = live_clearing_marker(current)
@@ -634,7 +635,7 @@ module Workspace
     # @return [void]
     def unmark_clearing(name, holder, clearer)
       return unless clearer
-      with_lock(lenient: true) do |data|
+      transact(lenient: true) do |data|
         current = data.dig(name, "holder")
         drop_clearing_marker!(current, clearer) if same_process?(current, holder)
         nil
@@ -656,7 +657,7 @@ module Workspace
     # @param run_id [String, nil] the run it was stopped under
     # @return [Boolean] whether the lock names that process, kept, now
     def keep_delegate(name, delegate, run_id: nil)
-      with_lock(lenient: true) do |data|
+      transact(lenient: true) do |data|
         holder = data.dig(name, "holder")
         next false unless holder
         record = run?(holder) ? holder["delegate"] : holder
@@ -679,7 +680,7 @@ module Workspace
     # @param idle [Boolean] true to set `idle_since`, false to clear it
     # @return [Array<String>] names of locks whose idle state changed
     def mark_idle(identity, idle:)
-      with_lock do |data|
+      transact do |data|
         data.filter_map do |name, entry|
           holder = entry["holder"]
           next unless LockHolder.same_agent?(holder, identity) && !never_idle?(holder)
@@ -722,7 +723,7 @@ module Workspace
     #   "idle_since" (epoch seconds), and "by" (the new holder's pane, task, worktree)
     def pop_displaced(identity, name: nil)
       return [] unless File.exist?(@data_path)
-      with_lock do |data|
+      transact do |data|
         data.each_with_object([]) do |(lock_name, entry), found|
           next if name && lock_name != name
           mine, others = (entry["displaced"] || []).partition { |r| r["pid"] == identity[:pid] && r["started"] == identity[:started] }
@@ -735,7 +736,7 @@ module Workspace
 
     # @return [Array<String>] every lock name with an entry in this namespace
     def names
-      with_lock { |data| data.keys }
+      transact { |data| data.keys }
     end
 
     # Read-only: never reaps or rewrites `locks.json`. A holder or waiter that
@@ -746,7 +747,7 @@ module Workspace
     # @return [Hash] name => {"holder" => ..., "queue" => [...]}, holder/queue
     #   entries carrying a `"stale"` flag
     def status(name = nil)
-      with_lock(readonly: true) do |data|
+      transact(readonly: true) do |data|
         annotated = data.transform_values { |entry| annotate_entry(entry) }
         name ? annotated.slice(name) : annotated
       end
@@ -786,15 +787,10 @@ module Workspace
     #   store flock, returns nil at once without yielding
     # @param write_unchanged [Boolean] when false, `locks.json` is rewritten
     #   only if the block changed the data it was given
-    def with_lock(lenient: false, readonly: false, nonblocking: false, write_unchanged: true)
-      FileUtils.mkdir_p(@dir, mode: 0o700)
-      File.chmod(0o700, @dir)
+    def transact(lenient: false, readonly: false, nonblocking: false, write_unchanged: true)
       result = nil
       reaped = []
-      lock_mode = readonly ? File::RDONLY : (File::RDWR | File::CREAT)
-      File.open(@lockfile_path, lock_mode | File::CREAT, 0o600) do |f|
-        flock_mode = readonly ? File::LOCK_SH : File::LOCK_EX
-        return nil unless f.flock(nonblocking ? flock_mode | File::LOCK_NB : flock_mode)
+      held = @file_lock.hold(shared: readonly, nonblocking: nonblocking) do
         @pending_events = []
         data = lenient ? read_data_lenient : read_data
         original = Marshal.load(Marshal.dump(data)) unless write_unchanged
@@ -803,7 +799,9 @@ module Workspace
         write_data(data) unless readonly || unchanged
         flush_audit_events
         reaped = reaped_holders
+        true
       end
+      return nil unless held
       notify_reaped(reaped)
       result
     rescue SystemCallError => e
@@ -897,13 +895,7 @@ module Workspace
     end
 
     def write_data(data)
-      tmp = "#{@data_path}.#{Process.pid}.tmp"
-      File.open(tmp, "w", 0o600) do |f|
-        f.write(JSON.pretty_generate(data))
-        f.flush
-        f.fsync
-      end
-      @renamer.call(tmp, @data_path)
+      AtomicFile.write(@data_path, JSON.pretty_generate(data), renamer: @renamer)
     end
 
     def now_iso
@@ -1017,7 +1009,7 @@ module Workspace
 
     # Buffers one audit event, unless +name+ is nil (a caller with no lock
     # name to attribute the event to, which should not happen in practice).
-    # Every caller runs inside {#with_lock} and is expected to pass already-
+    # Every caller runs inside {#transact} and is expected to pass already-
     # trimmed data (see {#holder_summary}/{#waiter_summary}/{#identity_summary}),
     # so this only drops nils.
     def audit(event, name, **data)
@@ -1025,7 +1017,7 @@ module Workspace
       @pending_events << {event: event.to_s, name: name, data: data.compact}
     end
 
-    # Appends the events buffered during a {#with_lock} block. Runs only once
+    # Appends the events buffered during a {#transact} block. Runs only once
     # `locks.json` is committed (or a read-only block has returned), so the
     # audit log never records a transition that a failed block or write
     # rolled back, and still under the store flock, so lines land in the same
