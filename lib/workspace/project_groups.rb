@@ -198,7 +198,7 @@ module Workspace
       AtomicFile.write(path, YAML.dump(data), fsync: false,
         temp_name: ->(target) { File.join(File.dirname(target), ".#{File.basename(target)}.#{SecureRandom.hex(8)}.tmp") },
         writer: ->(temp, content) {
-          File.write(temp, content)
+          File.open(temp, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(content) }
           File.chmod(0o644, temp)
         })
     end
