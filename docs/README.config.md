@@ -42,7 +42,7 @@ With no name, the current directory must be in a workspace: one that is running,
 
 `show`, `validate`, `set`, `get`, `unset`, `edit` and `keys` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a key. A workspace literally named one of them is shown with `--name`, or by reading its YAML file directly.
 
-<!-- The tables between GENERATED markers are rendered from lib/workspace/config_schema.rb; edit the schema and run script/generate-config-docs. -->
+<!-- The tables between GENERATED markers are rendered from lib/workspace/core/config_schema.rb; edit the schema and run script/generate-config-docs. -->
 
 Only an allowlisted set of keys can be written this way, so a typo doesn't silently create unused config:
 

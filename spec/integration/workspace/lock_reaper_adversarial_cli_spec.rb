@@ -58,7 +58,7 @@ RSpec.describe Workspace::LockReaper do
 
   # RU2: LockReaper#reap_dir rescues every error and only ever logs at
   # `debug`, which is a silent no-op unless `--debug` was passed (see
-  # lib/workspace/logger.rb:29 -- disabled Logger#debug does nothing at
+  # lib/workspace/core/logger.rb:29 -- disabled Logger#debug does nothing at
   # all). The daemon runs without `--debug` in normal operation, and
   # LockReaper takes no error_output/notifier of its own
   # (lib/workspace/lock_reaper.rb ctor), so a namespace that fails on every

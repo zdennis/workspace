@@ -14,7 +14,7 @@
 #   flags     each --flag against `--help` of the command path, then its parents,
 #             then global options; a span of flags alone (`--when-idle`) is read
 #             against every help text seen
-#   codes     each snake_case span against lib/workspace/error_codes.rb
+#   codes     each snake_case span against lib/workspace/core/error_codes.rb
 #
 # Safety: the only thing ever run is `bin/workspace <words> --help`, with HOME and
 # cwd in an empty temp directory and TMUX unset. Words come from the skill text and
@@ -136,7 +136,7 @@ end
 
 # ---- registry --------------------------------------------------------------
 
-REGISTRY = File.read(File.join(WORKTREE_ROOT, "lib/workspace/error_codes.rb"))
+REGISTRY = File.read(File.join(WORKTREE_ROOT, "lib/workspace/core/error_codes.rb"))
   .scan(/^\s+"([a-z0-9_]+)"\s*=>/).flatten.freeze
 raise "empty registry" if REGISTRY.empty?
 
