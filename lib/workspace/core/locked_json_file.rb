@@ -22,9 +22,11 @@ module Workspace
     # @param access_error [#call, nil] `(SystemCallError) -> Exception` the store's own error
     #   for a file or directory that can't be reached; every store but SkillsState and
     #   ContextStore, which have none (the error is raised as it came)
+    # @param read_error [#call, nil] `(SystemCallError) -> Exception` raised instead when reading
+    #   an existing document fails, ahead of `access_error:`; InboxAcks, whose unreadable-file message differs
     def initialize(path, parse:, generate: JSON.method(:pretty_generate), fsync: true,
       renamer: File.method(:rename), tag: nil, perm: 0o600, lock: nil,
-      lock_path: "#{path}.lock", access_error: nil)
+      lock_path: "#{path}.lock", access_error: nil, read_error: nil)
       @path = path
       @parse = parse
       @generate = generate
@@ -34,6 +36,7 @@ module Workspace
       @perm = perm
       @lock = lock || FileLock.new(lock_path)
       @access_error = access_error
+      @read_error = read_error
     end
 
     # Reads under a shared lock and never writes.
@@ -94,7 +97,12 @@ module Workspace
     end
 
     def read
-      text = File.exist?(@path) ? File.read(@path, encoding: Encoding::UTF_8) : nil
+      text = begin
+        File.exist?(@path) ? File.read(@path, encoding: Encoding::UTF_8) : nil
+      rescue SystemCallError => e
+        raise @read_error.call(e) if @read_error
+        raise
+      end
       @parse.call(text)
     end
 

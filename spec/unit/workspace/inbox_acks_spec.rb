@@ -192,6 +192,19 @@ RSpec.describe Workspace::InboxAcks do
       expect { acks.ack("a:1", "f1") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("inbox_store_unreadable") }
     end
 
+    it "names the errno in the can't-be-read message when an existing file can't be read" do
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "[]")
+      allow(File).to receive(:read).and_call_original
+      allow(File).to receive(:read).with(path, anything).and_raise(Errno::EACCES)
+
+      expect { acks.ack("a:1", "f1") }.to raise_error(Workspace::Error) { |e|
+        expect(e.message).to eq("Inbox acks #{path} can't be read (errno #{Errno::EACCES::Errno}); nothing was recorded and the file " \
+          "was left unchanged. Fix or move it aside and retry.")
+        expect(e.code).to eq("inbox_store_unreadable")
+      }
+    end
+
     it "refuses a write when the file is not a list" do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "{}")

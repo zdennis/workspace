@@ -20,7 +20,7 @@ module Workspace
     def initialize(path:, clock: -> { Time.now })
       @path = path
       @clock = clock
-      @file = LockedJsonFile.new(path, parse: method(:parse_entries), access_error: lambda { |e|
+      @file = LockedJsonFile.new(path, parse: method(:parse_entries), read_error: ->(e) { unreadable_error("errno #{e.errno}") }, access_error: lambda { |e|
         Workspace::Error.new("Could not access inbox acks at #{@path} (#{e.class}: errno #{e.errno})",
           code: "inbox_store_unreadable", details: {"scope" => "acks"})
       })
@@ -94,7 +94,11 @@ module Workspace
     end
 
     def unreadable(reason)
-      raise Workspace::Error.new(
+      raise unreadable_error(reason)
+    end
+
+    def unreadable_error(reason)
+      Workspace::Error.new(
         "Inbox acks #{@path} can't be read (#{reason}); nothing was recorded and the file " \
         "was left unchanged. Fix or move it aside and retry.",
         code: "inbox_store_unreadable", details: {"scope" => "acks"}

@@ -96,6 +96,15 @@ RSpec.describe Workspace::LockedJsonFile do
       expect { failing.exclusive { |data| data << 1 } }.to raise_error(Workspace::Error, /Could not access: errno #{Errno::EACCES::Errno}/o)
     end
 
+    it "raises read_error's exception, ahead of access_error, when the document can't be read" do
+      File.write(path, "[]")
+      allow(File).to receive(:read).and_call_original
+      allow(File).to receive(:read).with(path, anything).and_raise(Errno::EACCES)
+      failing = described_class.new(path, parse: parse, read_error: ->(_) { Workspace::Error.new("cannot read") },
+        access_error: ->(_) { Workspace::Error.new("no access") })
+      expect { failing.exclusive { |data| data << 1 } }.to raise_error(Workspace::Error, "cannot read")
+    end
+
     it "returns nil without yielding when nonblocking and another process holds the lock" do
       other = File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600)
       other.flock(File::LOCK_EX)
