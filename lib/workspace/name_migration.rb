@@ -60,7 +60,7 @@ module Workspace
       renamed = []
       warnings = []
       begin
-        from = mixed_case_configs.find { |config| config.downcase == lowercase }
+        from = mixed_case_configs.find { |config| WorkspaceName.normalize(config) == lowercase }
         migrate(from, renamed, warnings) if from
         migrate_worktrees(lowercase, renamed, warnings) unless WorkspaceName.split(lowercase)
       rescue SystemCallError, IOError, Workspace::Error => e
@@ -143,14 +143,14 @@ module Workspace
         next unless entry.start_with?("workspace.") && entry.end_with?(".yml")
 
         name = entry.delete_prefix("workspace.").delete_suffix(".yml")
-        name if name != name.downcase && !name.match?(/^project-.*template$/)
+        name if WorkspaceName.mixed_case?(name) && !name.match?(/^project-.*template$/)
       end
     end
 
     def migrate_worktrees(project, renamed, warnings)
       mixed_case_configs.each do |worktree|
         split = WorkspaceName.split(worktree)
-        next unless split && split.first.downcase == project
+        next unless split && WorkspaceName.normalize(split.first) == project
 
         unless with_lock(worktree, wait: false) { migrate(worktree, renamed, warnings) || true }
           warnings << "#{worktree}: its agent daemon is running or starting; it is renamed when that daemon next starts"
@@ -159,10 +159,10 @@ module Workspace
     end
 
     def migrate(old, renamed, warnings)
-      new = old.downcase
+      new = WorkspaceName.normalize(old)
       session = @tmux.session_name_for(old)
       outcome = WorkspaceStoreRename.new(config: @config, project_config: @project_config, tmux: @tmux, state: @state,
-        project_catalog_factory: @project_catalog_factory, old: old, new: new, session: session, new_session: session.downcase).call
+        project_catalog_factory: @project_catalog_factory, old: old, new: new, session: session, new_session: WorkspaceName.normalize(session)).call
       warnings.concat(outcome.warnings)
       renamed.concat(outcome.renamed)
       # Names only, never paths or messages, like every lifecycle event.

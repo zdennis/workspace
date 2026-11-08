@@ -87,9 +87,9 @@ module Workspace
       # Checks the name as given and in lowercase, as a mixed-case workspace is
       # renamed to lowercase by NameMigration and its session may carry either.
       def refuse_if_running!(name)
-        [name, name.downcase].uniq.each do |candidate|
+        [name, WorkspaceName.normalize(name)].uniq.each do |candidate|
           session = @tmux.session_name_for(candidate)
-          [session, session.downcase].uniq.each do |session_name|
+          [session, WorkspaceName.normalize(session)].uniq.each do |session_name|
             next unless @tmux.session_exists?(session_name, project: candidate)
             raise Workspace::Error.new("'#{name}' has a running tmux session (#{session_name}). Run 'workspace stop #{name}' first.",
               code: "session_running", details: {"name" => name, "session" => session_name})

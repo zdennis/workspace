@@ -341,8 +341,8 @@ module Workspace
 
     # Git keeps refs as files, so `a` and `a/b` can't both be branches.
     def ref_conflict?(existing, new)
-      a = existing.downcase
-      b = new.downcase
+      a = WorkspaceName.normalize(existing)
+      b = WorkspaceName.normalize(new)
       b.start_with?("#{a}/") || a.start_with?("#{b}/")
     end
 
