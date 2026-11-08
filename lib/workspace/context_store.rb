@@ -1,5 +1,4 @@
 require "json"
-require "fileutils"
 require "time"
 
 module Workspace
@@ -23,6 +22,7 @@ module Workspace
     # @param logger [Workspace::Logger] debug logger
     def initialize(path:, logger: Workspace::Logger.new)
       @path = path
+      @lock = FileLock.new("#{path}.lock", dir_mode: nil)
       @logger = logger
     end
 
@@ -103,16 +103,8 @@ module Workspace
       value if value.is_a?(Numeric) && value >= 0
     end
 
-    def with_lock
-      FileUtils.mkdir_p(File.dirname(@path))
-      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |f|
-        f.flock(File::LOCK_EX)
-        yield
-      end
-    end
-
-    def lock_path
-      "#{@path}.lock"
+    def with_lock(&block)
+      @lock.hold(&block)
     end
 
     def read_data
@@ -123,9 +115,8 @@ module Workspace
     end
 
     def write_data(data)
-      tmp_path = "#{@path}.tmp#{Process.pid}"
-      File.write(tmp_path, JSON.generate(data))
-      File.rename(tmp_path, @path)
+      AtomicFile.write(@path, JSON.generate(data), perm: nil, fsync: false,
+        temp_name: ->(path) { "#{path}.tmp#{Process.pid}" })
     end
   end
 end
