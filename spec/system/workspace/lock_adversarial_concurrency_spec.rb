@@ -22,7 +22,7 @@ RSpec.describe "Lock adversarial concurrency" do
 
   def lock_command(lock_holder:, clock: Time, sleeper: ->(_) {}, trap: ->(_s, _h) { "DEFAULT" }, pid_provider: -> { 2001 })
     namespace = double("LockNamespace", resolve: {key: "k", display: "app", dir: tmpdir})
-    Workspace::Commands::Lock.new(config: double("Config"), lock_namespace: namespace, lock_holder: lock_holder,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: double("Config"), lock_namespace: namespace, lock_holder: lock_holder,
       output: StringIO.new, error_output: StringIO.new, sleeper: sleeper, clock: clock,
       pid_provider: pid_provider, trap: trap)
   end
@@ -124,7 +124,7 @@ RSpec.describe "Lock adversarial concurrency" do
           end
         end.new
         ns = Struct.new(:dir) { def resolve(cwd:) = {key: "k", display: "a", dir: dir} }.new(dir)
-        lock = Workspace::Commands::Lock.new(config: nil, lock_namespace: ns, lock_holder: holder,
+        lock = Workspace::Commands::Lock.new(lineage: Workspace::WorkspaceLineage.new(rev_parse: ->(dir, what) { Workspace::Git.new.path_of(dir, what) }), config: nil, lock_namespace: ns, lock_holder: holder,
           output: StringIO.new, error_output: StringIO.new, sleeper: ->(_) { sleep 0.01 })
         $stdout.puts "READY"
         $stdout.flush

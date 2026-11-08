@@ -6,6 +6,8 @@ require "timeout"
 module Workspace
   # Git and worktree operations for the workspace CLI.
   class Git
+    REV_PARSE_FLAGS = {git_dir: "--git-dir", common_dir: "--git-common-dir", toplevel: "--show-toplevel"}.freeze
+
     # @param output [IO] output stream for user-facing messages
     # @param input [IO] input stream for interactive prompts
     # @param logger [Workspace::Logger] debug logger
@@ -92,6 +94,29 @@ module Workspace
     # The name of the repository's default branch as a local branch: what
     # `origin/HEAD` points at, else the first of `main` and `master` that exists.
     #
+    # What `git rev-parse` reports for a directory.
+    #
+    # @param dir [String] a directory in a checkout
+    # @param what [Symbol] :git_dir, :common_dir or :toplevel
+    # @return [String, nil] git's stripped answer, nil when git fails or is not installed
+    def path_of(dir, what)
+      stdout, _, status = capture_git("-C", dir, "rev-parse", REV_PARSE_FLAGS.fetch(what))
+      status.success? ? stdout.strip : nil
+    rescue Errno::ENOENT
+      nil
+    end
+
+    # @param dir [String] a directory in a checkout
+    # @return [String, nil] the checked-out branch, nil when HEAD is detached or git fails
+    def current_branch_name(dir)
+      stdout, _, status = capture_git("-C", dir, "branch", "--show-current")
+      return nil unless status.success?
+      name = stdout.strip
+      name.empty? ? nil : name
+    rescue Errno::ENOENT
+      nil
+    end
+
     # @param path [String] any checkout of the repository
     # @return [String, nil]
     def default_branch_name(path)

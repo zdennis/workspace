@@ -28,7 +28,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
 
       stop_command = Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
       launch_command = Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
-      start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: StringIO.new)
+      start_command = Workspace::Commands::Start.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: StringIO.new)
       kill_command = Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: StringIO.new)
       finish_command = Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: StringIO.new)
       focus_command = Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
@@ -45,15 +45,14 @@ RSpec.describe "workspace lock observability adversarial findings" do
 
       lock_namespace = instance_double(Workspace::LockNamespace,
         resolve: {key: "ns", display: "app", dir: tmpdir})
-      lock_command = Workspace::Commands::Lock.new(
+      lock_command = Workspace::Commands::Lock.new(lineage: LineageSupport.lineage,
         config: config,
         lock_namespace: lock_namespace,
         lock_holder: FakeLockIdentity.new(pid: 100),
         output: output,
-        error_output: error_output
-      )
+        error_output: error_output)
 
-      Workspace::CLI.new(
+      Workspace::CLI.new(lineage: LineageSupport.lineage,
         config: config, state: state, project_config: project_config, git: git,
         window_manager: window_manager, doctor: doctor, project_settings: project_settings,
         hook_runner: hook_runner, project_detector: project_detector,
@@ -73,8 +72,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
         statusline_command: CLITestHelpers::FakeStatuslineCommand.new,
         ask_command: CLITestHelpers::FakeAskCommand.new,
         logger: Workspace::Logger.new(output: error_output), output: output, error_output: error_output,
-        exit_handler: FakeExitHandler, input: StringIO.new, working_dir: Dir.tmpdir
-      )
+        exit_handler: FakeExitHandler, input: StringIO.new, working_dir: Dir.tmpdir)
     end
 
     it "OU1: `lock status --json` with an invalid lock name prints a plain-text UsageError instead of the documented JSON error object" do
@@ -124,7 +122,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
       state_home = Dir.mktmpdir("ws-sessions-xdg-state")
       allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state_home)
 
-      lock_namespace = Workspace::LockNamespace.new(config: Workspace::Config.new)
+      lock_namespace = Workspace::LockNamespace.new(lineage: LineageSupport.lineage, config: Workspace::Config.new)
       lock_holder = FakeLockIdentity.new(pid: 100)
 
       other_project_dir = Dir.mktmpdir("ws-sessions-other-project")

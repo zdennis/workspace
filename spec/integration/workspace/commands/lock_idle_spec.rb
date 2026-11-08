@@ -23,7 +23,7 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
   end
 
   def command_for(identity, lock_config: self.lock_config)
-    described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+    described_class.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, sleeper: ->(_) { now[0] += 5 },
       clock: monotonic, pid_provider: -> { identity.current[:pid] },
       trap: ->(signal, handler) {}, lock_config: lock_config, wall_clock: -> { now[0] })
@@ -54,7 +54,7 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
     command_for(holder_identity).acquire("edit")
     mark_holder_idle
     now[0] += 300
-    command = described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: waiter_identity,
+    command = described_class.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: waiter_identity,
       output: output, error_output: error_output, sleeper: ->(_) { now[0] += 5 }, clock: monotonic,
       pid_provider: -> { 200 }, trap: ->(signal, handler) {}, lock_config: lock_config, wall_clock: -> { now[0] })
 
@@ -65,7 +65,7 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
     command_for(holder_identity).acquire("edit", task: "PROJ-1")
     mark_holder_idle
     now[0] += 300
-    command = described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: waiter_identity,
+    command = described_class.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: waiter_identity,
       output: output, error_output: error_output, sleeper: ->(_) { now[0] += 5 }, clock: monotonic,
       pid_provider: -> { 200 }, trap: ->(signal, handler) { handler.call if signal == "INT" && handler.respond_to?(:call) },
       lock_config: lock_config, wall_clock: -> { now[0] })
@@ -88,7 +88,7 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
       wall[0] = 1_000_300
       10.0
     end
-    command = described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: waiter_identity,
+    command = described_class.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: waiter_identity,
       output: output, error_output: error_output, sleeper: ->(_) {}, clock: deadline_clock,
       pid_provider: -> { 200 }, trap: ->(signal, handler) {}, lock_config: lock_config, wall_clock: -> { now[0] })
 

@@ -965,6 +965,49 @@ RSpec.describe Workspace::Git do
     end
   end
 
+  describe "#path_of and #current_branch_name" do
+    around do |example|
+      Dir.mktmpdir("path-of") do |dir|
+        @repo = File.realpath(dir)
+        run = ->(*args) { Open3.capture2e("git", "-C", @repo, "-c", "user.name=t", "-c", "user.email=t@example.com", *args) }
+        run.call("init", "-q", "-b", "main")
+        run.call("commit", "-q", "--allow-empty", "-m", "init")
+        run.call("worktree", "add", "-q", "-b", "feature", File.join(@repo, "wt"))
+
+        example.run
+      end
+    end
+
+    it "answers git rev-parse for each kind, stripped" do
+      wt = File.join(@repo, "wt")
+
+      expect(git.path_of(@repo, :git_dir)).to eq(".git")
+      expect(git.path_of(@repo, :common_dir)).to eq(".git")
+      expect(git.path_of(@repo, :toplevel)).to eq(@repo)
+      expect(File.realpath(git.path_of(wt, :common_dir))).to eq(File.join(@repo, ".git"))
+      expect(git.path_of(wt, :git_dir)).to end_with(".git/worktrees/wt")
+    end
+
+    it "answers nil outside a repository" do
+      Dir.mktmpdir { |dir| expect(git.path_of(dir, :git_dir)).to be_nil }
+    end
+
+    it "answers the branch checked out, and nil on a detached HEAD or outside a repository" do
+      expect(git.current_branch_name(@repo)).to eq("main")
+      expect(git.current_branch_name(File.join(@repo, "wt"))).to eq("feature")
+      Open3.capture2e("git", "-C", @repo, "checkout", "-q", "--detach")
+      expect(git.current_branch_name(@repo)).to be_nil
+      Dir.mktmpdir { |dir| expect(git.current_branch_name(dir)).to be_nil }
+    end
+
+    it "answers nil when git is not installed" do
+      allow(Open3).to receive(:popen3).and_raise(Errno::ENOENT)
+
+      expect(git.path_of(@repo, :git_dir)).to be_nil
+      expect(git.current_branch_name(@repo)).to be_nil
+    end
+  end
+
   describe "#worktree_branches" do
     it "lists the branch of every worktree, the main one included, and none for a detached one" do
       Dir.mktmpdir("wt-branches") do |dir|

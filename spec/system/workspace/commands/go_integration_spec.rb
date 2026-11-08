@@ -68,7 +68,7 @@ RSpec.describe Workspace::Commands::Go, "with a real WorkflowStart and Git" do
   end
 
   def start_ref
-    Workspace::StartRef.new(git: git)
+    Workspace::StartRef.new(lineage: LineageSupport.lineage, git: git)
   end
 
   def go(from, **args)

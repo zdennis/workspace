@@ -31,7 +31,7 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
   end
 
   def command_for(identity)
-    described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+    described_class.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output,
       sleeper: ->(_) {
         now[0] += 5
@@ -201,7 +201,7 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
 
     it "keeps its output and exit code when the log can't be written" do
       broken = CLITestHelpers.unwritable_event_log(tmpdir)
-      command = described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: holder_identity,
+      command = described_class.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: holder_identity,
         output: output, error_output: error_output, pid_provider: -> { 100 }, event_log: broken,
         lock_config: instance_double(Workspace::LockConfig, idle_grace_for: 300), wall_clock: -> { now[0] })
       command.acquire("edit", working_dir: tmpdir)

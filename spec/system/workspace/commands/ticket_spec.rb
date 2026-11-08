@@ -17,7 +17,7 @@ RSpec.describe Workspace::Commands::Ticket do
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:fetched) { {"title" => "Fix it", "body" => "Details", "url" => "https://acme.atlassian.net/browse/PROJ-123"} }
   let(:source) { instance_double(Workspace::TicketSource, fetch: fetched) }
-  let(:start_ref) { Workspace::StartRef.new(git: git, lineage: Workspace::WorkspaceLineage.new) }
+  let(:start_ref) { Workspace::StartRef.new(git: git, lineage: LineageSupport.lineage) }
   subject(:command) { described_class.new(git: git, project_config: project_config, start_ref: start_ref, source: source, output: output) }
 
   def sh(*args, dir: repo)

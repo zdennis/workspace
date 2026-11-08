@@ -103,7 +103,7 @@ RSpec.describe Workspace::Commands::Config, "agent.commands check" do
   let(:out) { StringIO.new }
   let(:err) { StringIO.new }
   let(:command) do
-    described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: err),
+    described_class.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: err),
       agent_command_check: Workspace::AgentCommandCheck.new(which: ->(_) { false }), output: out, error_output: err)
   end
 

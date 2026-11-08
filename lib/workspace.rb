@@ -507,7 +507,7 @@ module Workspace
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, event_log: event_log, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
-    lineage = WorkspaceLineage.new
+    lineage = WorkspaceLineage.new(rev_parse: git.method(:path_of))
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
     library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
@@ -606,7 +606,7 @@ module Workspace
       lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
-    lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
+    lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, lineage: lineage,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
       bound_run: bound_run, output: output, error_output: error_output)
     dev_events = DevEvents.new(event_log: event_log, lineage: lineage)

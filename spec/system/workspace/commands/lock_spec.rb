@@ -27,7 +27,7 @@ RSpec.describe Workspace::Commands::Lock do
   end
 
   def command_for(identity)
-    described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: identity,
+    described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, sleeper: sleeper, clock: clock,
       pid_provider: -> { identity.current[:pid] },
       # Real Signal.trap is process-wide state; a no-op here keeps tests from
@@ -142,7 +142,7 @@ RSpec.describe Workspace::Commands::Lock do
       command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")
 
       waiter_identity = FakeLockIdentity.new(pid: 200)
-      command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: waiter_identity,
+      command = described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: waiter_identity,
         output: output, error_output: error_output, sleeper: sleeper, clock: clock,
         pid_provider: -> { waiter_identity.current[:pid] },
         trap: ->(signal, handler) {
@@ -195,7 +195,7 @@ RSpec.describe Workspace::Commands::Lock do
     before { store.acquire_run(%w[test-db], run: run) }
 
     def bound_command(run_id)
-      described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: agent, output: output, error_output: error_output,
+      described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: agent, output: output, error_output: error_output,
         sleeper: sleeper, clock: clock, pid_provider: -> { 100 }, trap: ->(*) {},
         bound_run: instance_double(Workspace::BoundRun, run_id: run_id))
     end
@@ -263,7 +263,7 @@ RSpec.describe Workspace::Commands::Lock do
       store.acquire_run(%w[devenv test-db], run: run)
       store.delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 700, started: "start-700", pgid: 700, worktree: "/src/app-a"})
       clearer = FakeLockIdentity.new(pid: 999)
-      command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: clearer, output: output,
+      command = described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: clearer, output: output,
         error_output: error_output, sleeper: sleeper, clock: Workspace::Commands::Lock::MonotonicClock, pid_provider: -> { 999 },
         trap: ->(*) {}, terminator: terminator)
 
@@ -284,7 +284,7 @@ RSpec.describe Workspace::Commands::Lock do
         :terminated
       end
       clearer = FakeLockIdentity.new(pid: 999)
-      command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: clearer, output: output,
+      command = described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: clearer, output: output,
         error_output: error_output, sleeper: sleeper, clock: Workspace::Commands::Lock::MonotonicClock, pid_provider: -> { 999 },
         trap: ->(*) {}, terminator: terminator)
 
@@ -349,7 +349,7 @@ RSpec.describe Workspace::Commands::Lock do
         waiter_pid: 4242, waiter_started: "start-4242")
       store.clear("devenv", cleared_by: "pid 999", keep_process_holder: true, clearer: {"pid" => Process.pid, "started" => own_start})
 
-      command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: liveness,
+      command = described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: liveness,
         output: output, error_output: error_output, trap: ->(*) {})
       command.status("devenv")
 
@@ -478,7 +478,7 @@ RSpec.describe Workspace::Commands::Lock do
       end
 
       def clear_command
-        described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: liveness, output: output,
+        described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: liveness, output: output,
           error_output: error_output, terminator: terminator, dev_config: dev_config, trap: ->(*) {})
       end
 
@@ -522,7 +522,7 @@ RSpec.describe Workspace::Commands::Lock do
       end
 
       def clear_command(dev_config: nil, pid: 999, output: self.output, error_output: self.error_output, event_log: nil)
-        described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: pid), output: output,
+        described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: pid), output: output,
           error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {}, pid_provider: -> { pid },
           sleeper: ->(seconds) { mono[0] += seconds }, dev_config: dev_config, event_log: event_log)
       end
@@ -717,7 +717,7 @@ RSpec.describe Workspace::Commands::Lock do
         allow(terminator).to receive(:stop_holder).and_return(:terminated)
 
         identity = FakeLockIdentity.new(pid: 999).tap { |i| i.kill(998) }
-        command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: identity, output: output,
+        command = described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: identity, output: output,
           error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {}, pid_provider: -> { 999 })
         result = command.clear("devenv")
 

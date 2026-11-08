@@ -21,7 +21,7 @@ RSpec.describe Workspace::Commands::Go do
   let(:definition) { Workspace::WorkflowDefinition.parse(yaml, id: "rpiv", source: "global", path: "/defs/rpiv.yml") }
   let(:project) { Workspace::StartRef::Project.new(root: project_root, name: "app", from_worktree: from_worktree) }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  let(:start_ref) { Workspace::StartRef.new(git: git) }
+  let(:start_ref) { Workspace::StartRef.new(lineage: LineageSupport.lineage, git: git) }
   let(:picked) { Workspace::BranchNamePicker::Result.new(reason: :disabled) }
   let(:picker) { instance_double(Workspace::BranchNamePicker) }
   let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: tied, check_agent!: nil, check_agent_kind!: nil, locate_project: {root: root, project: project, project_workspace: "app"}) }

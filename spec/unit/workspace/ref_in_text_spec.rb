@@ -152,7 +152,7 @@ RSpec.describe Workspace::RefInText do
 
   describe "agreement with StartRef" do
     let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-    let(:start_ref) { Workspace::StartRef.new(git: git, lineage: Workspace::WorkspaceLineage.new) }
+    let(:start_ref) { Workspace::StartRef.new(git: git, lineage: LineageSupport.lineage) }
 
     {
       "https://github.com/o/r/pull/12" => ["github_pr", "o/r#12", "pr-12"],

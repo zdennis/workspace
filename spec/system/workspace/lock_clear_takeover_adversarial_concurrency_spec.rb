@@ -48,7 +48,7 @@ RSpec.describe "lock clear devenv racing dev up --takeover" do
   end
 
   let(:lock_command) do
-    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: liveness,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: liveness,
       output: clear_output, error_output: clear_error_output, terminator: clear_terminator, clock: clock, sleeper: sleeper,
       pid_provider: -> { 999 }, trap: ->(*) {})
   end

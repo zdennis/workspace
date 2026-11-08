@@ -43,7 +43,7 @@ RSpec.describe "PR2 adversarial findings" do
         system("git", "-c", "protocol.file.allow=always", "-C", outer, "submodule", "add", "-q",
           "../sub", "subdir", out: File::NULL, err: File::NULL)
 
-        info = Workspace::WorkspaceLineage.new.resolve(cwd: File.join(outer, "subdir"))
+        info = LineageSupport.lineage.resolve(cwd: File.join(outer, "subdir"))
 
         # D-U1: name comes out as "modules" (the basename of .git/modules),
         # not "subdir" (the submodule's own directory) or "outer" (the
@@ -69,7 +69,7 @@ RSpec.describe "PR2 adversarial findings" do
         # is, by git's own account, a normal standalone checkout.
         File.write(File.join(repo, ".workspace-project"), "someparent.worktree-orphan")
 
-        info = Workspace::WorkspaceLineage.new.resolve(cwd: repo)
+        info = LineageSupport.lineage.resolve(cwd: repo)
 
         # D-U2: the marker is trusted unconditionally, even though
         # `worktree?` (comparing --git-dir with --git-common-dir) says this
@@ -98,7 +98,7 @@ RSpec.describe "PR2 adversarial findings" do
           fake_runner = Struct.new(:calls) { def call(**kw) = calls << kw && 0 }.new(runner_calls)
 
           dev = Workspace::Commands::Dev.new(
-            lock_namespace: lock_namespace, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
+            lock_namespace: lock_namespace, lock_holder: liveness, lineage: LineageSupport.lineage,
             dev_config: dev_config, dev_runner: fake_runner, terminator: nil, tmux: nil, executable: "unused"
           )
 
@@ -117,7 +117,7 @@ RSpec.describe "PR2 adversarial findings" do
   # --- D-U4: `config set/get/unset` silently swallow trailing arguments ---
   describe "CLI `workspace config set|get|unset` with trailing extra arguments (D-U4)" do
     def build_cli(project_settings:, output:, error_output:, working_dir:)
-      lineage = Workspace::WorkspaceLineage.new
+      lineage = LineageSupport.lineage
       file_backup = Workspace::FileBackup.new(output: output)
       config_command = Workspace::Commands::Config.new(
         project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output
@@ -127,7 +127,7 @@ RSpec.describe "PR2 adversarial findings" do
       no_workspaces = Object.new
       def no_workspaces.existing_name(_name) = nil
 
-      Workspace::CLI.new(
+      Workspace::CLI.new(lineage: LineageSupport.lineage,
         config: placeholder, state: placeholder, project_config: no_workspaces, git: placeholder,
         window_manager: placeholder, doctor: placeholder, project_settings: project_settings,
         hook_runner: placeholder, project_detector: placeholder, launch_command: placeholder,
@@ -142,8 +142,7 @@ RSpec.describe "PR2 adversarial findings" do
         config_command: config_command, statusline_command: CLITestHelpers::FakeStatuslineCommand.new,
         ask_command: CLITestHelpers::FakeAskCommand.new,
         exit_handler: exit_handler, output: output, error_output: error_output,
-        working_dir: working_dir
-      )
+        working_dir: working_dir)
     end
 
     it "rejects trailing args on `config set` instead of silently ignoring them" do

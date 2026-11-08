@@ -11,7 +11,7 @@ RSpec.describe "dev.startup_timeout / dev.ready_timeout adversarial probing" do
     dir = Dir.mktmpdir("ws-config")
     fake_path_config = Struct.new(:workspace_config_dir).new(dir)
     project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
-    lineage = Workspace::WorkspaceLineage.new
+    lineage = LineageSupport.lineage
     file_backup = Workspace::FileBackup.new(output: output)
     command = Workspace::Commands::Config.new(project_settings: project_settings, lineage: lineage,
       file_backup: file_backup, output: output)

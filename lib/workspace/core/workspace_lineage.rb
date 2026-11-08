@@ -1,5 +1,3 @@
-require "open3"
-
 module Workspace
   # Resolves a workspace's parent project: the main checkout a worktree
   # belongs to, or the workspace's own project when it is not a worktree.
@@ -38,6 +36,12 @@ module Workspace
       else
         File.basename(expanded).sub(/^\.+/, "")
       end
+    end
+
+    # @param rev_parse [#call] answers `rev_parse.call(dir, what)` with the stripped path git
+    #   reports for +dir+ (+what+ is :git_dir, :common_dir or :toplevel), nil when it cannot
+    def initialize(rev_parse:)
+      @rev_parse = rev_parse
     end
 
     # Result of {#resolve}.
@@ -87,7 +91,7 @@ module Workspace
 
     def worktree?(cwd, common_dir)
       return false unless common_dir
-      git_dir = git_rev_parse(cwd, "--git-dir")
+      git_dir = @rev_parse.call(cwd, :git_dir)
       return false unless git_dir
       File.realpath(absolute(git_dir, cwd)) != File.realpath(common_dir)
     rescue Errno::ENOENT
@@ -95,16 +99,8 @@ module Workspace
     end
 
     def git_common_dir(cwd)
-      path = git_rev_parse(cwd, "--git-common-dir")
+      path = @rev_parse.call(cwd, :common_dir)
       path ? absolute(path, cwd) : nil
-    end
-
-    def git_rev_parse(cwd, arg)
-      stdout, _, status = Open3.capture3("git", "-C", cwd, "rev-parse", arg)
-      return nil unless status.success?
-      stdout.strip
-    rescue Errno::ENOENT
-      nil
     end
 
     # A submodule's --git-common-dir lives under the superproject's
@@ -113,7 +109,7 @@ module Workspace
     def submodule_toplevel(cwd, common_dir)
       return nil unless common_dir.include?(File.join(".git", "modules") + File::SEPARATOR) ||
         common_dir.end_with?(File.join(".git", "modules"))
-      toplevel = git_rev_parse(cwd, "--show-toplevel")
+      toplevel = @rev_parse.call(cwd, :toplevel)
       toplevel ? absolute(toplevel, cwd) : nil
     end
 

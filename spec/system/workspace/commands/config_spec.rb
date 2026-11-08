@@ -8,7 +8,7 @@ RSpec.describe Workspace::Commands::Config do
     dir = Dir.mktmpdir("ws-config")
     fake_path_config = Struct.new(:workspace_config_dir).new(dir)
     project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
-    lineage = Workspace::WorkspaceLineage.new
+    lineage = LineageSupport.lineage
     file_backup = Workspace::FileBackup.new(output: output)
     config_resolver = with_resolver ? Workspace::ConfigResolver.new(project_settings: project_settings) : nil
     command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, config_resolver: config_resolver, output: output, error_output: error_output)
@@ -288,7 +288,7 @@ RSpec.describe Workspace::Commands::Config do
       error_output = StringIO.new
       dir = Dir.mktmpdir("ws-config")
       project_settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
-      command = described_class.new(project_settings: project_settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output), output: output, error_output: error_output)
+      command = described_class.new(project_settings: project_settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: output), output: output, error_output: error_output)
 
       expect(command.get("notes.dir", cwd: Dir.mktmpdir("ws-config-project"))).to eq(false)
       expect(output.string).to eq("")
@@ -301,7 +301,7 @@ RSpec.describe Workspace::Commands::Config do
       let(:dir) { Dir.mktmpdir("ws-config") }
       let(:project_settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
       let(:command) do
-        described_class.new(project_settings: project_settings, lineage: Workspace::WorkspaceLineage.new,
+        described_class.new(project_settings: project_settings, lineage: LineageSupport.lineage,
           file_backup: Workspace::FileBackup.new(output: output), output: output, error_output: error_output)
       end
       let(:root) { Dir.mktmpdir("ws-config-repo") }
@@ -634,7 +634,7 @@ RSpec.describe Workspace::Commands::Config do
       dir = Dir.mktmpdir("ws-config")
       fake_path_config = Struct.new(:workspace_config_dir).new(dir)
       project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
-      lineage = Workspace::WorkspaceLineage.new
+      lineage = LineageSupport.lineage
       file_backup = Workspace::FileBackup.new(output: output)
       command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
@@ -698,7 +698,7 @@ RSpec.describe Workspace::Commands::Config do
       dir = Dir.mktmpdir("ws-config")
       fake_path_config = Struct.new(:workspace_config_dir).new(dir)
       project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
-      lineage = Workspace::WorkspaceLineage.new
+      lineage = LineageSupport.lineage
       file_backup = Workspace::FileBackup.new(output: output)
       command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output, error_output: error_output)
       project_dir = Dir.mktmpdir("ws-config-project")
@@ -1148,7 +1148,7 @@ RSpec.describe Workspace::Commands::Config do
       dir = Dir.mktmpdir("ws-config-events")
       settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
       output = StringIO.new
-      described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new,
+      described_class.new(project_settings: settings, lineage: LineageSupport.lineage,
         file_backup: Workspace::FileBackup.new(output: output), event_log: log, output: output)
     end
 
@@ -1204,7 +1204,7 @@ RSpec.describe Workspace::Commands::Config do
     let(:dir) { Dir.mktmpdir("ws-config-scope") }
     let(:settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
     let(:command) do
-      described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+      described_class.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: output),
         project_config: project_config, output: output, error_output: error_output)
     end
 
@@ -1217,7 +1217,7 @@ RSpec.describe Workspace::Commands::Config do
     describe "with no name, outside any workspace" do
       let(:detector) { Struct.new(:found) { def detect(_cwd) = found }.new(nil) }
       let(:command) do
-        described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+        described_class.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: output),
           project_config: project_config, project_detector: detector, output: output, error_output: error_output)
       end
       let(:cwd) { Dir.mktmpdir("loose-dir") }
@@ -1475,7 +1475,7 @@ RSpec.describe Workspace::Commands::Config do
       it "returns the write's outcome and logs the real layer" do
         events = []
         event_log = Struct.new(:events) { def record(**args) = events << args }.new(events)
-        logged = described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+        logged = described_class.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: output),
           event_log: event_log, project_config: project_config, output: output, error_output: error_output)
 
         result = logged.set("dev.ready_timeout", "90s", project: "myapp.worktree-a", scope: "workspace")

@@ -8,7 +8,7 @@ RSpec.describe "PR3 adversarial findings" do
   def build_cli(output:, error_output:, lock_command: nil, statusline_command: nil)
     placeholder = Object.new
 
-    Workspace::CLI.new(
+    Workspace::CLI.new(lineage: LineageSupport.lineage,
       config: placeholder, state: placeholder, project_config: placeholder, git: placeholder,
       window_manager: placeholder, doctor: placeholder, project_settings: placeholder,
       hook_runner: placeholder, project_detector: placeholder, launch_command: placeholder,
@@ -21,8 +21,7 @@ RSpec.describe "PR3 adversarial findings" do
       lock_command: lock_command || placeholder, dev_command: placeholder, parent_command: placeholder,
       agent_command: placeholder, sessions_command: placeholder, session_event_command: placeholder,
       config_command: placeholder, statusline_command: statusline_command || placeholder, ask_command: placeholder, exit_handler: FakeExitHandler, output: output, error_output: error_output,
-      working_dir: Dir.pwd
-    )
+      working_dir: Dir.pwd)
   end
 
   # --- Regression guard for IU1: `--max-wait`/`--poll` used to only accept
@@ -63,10 +62,9 @@ RSpec.describe "PR3 adversarial findings" do
     it "does not embed unquoted shell metacharacters into the printed command block" do
       output = StringIO.new
       error_output = StringIO.new
-      lock_command = Workspace::Commands::Lock.new(
+      lock_command = Workspace::Commands::Lock.new(lineage: LineageSupport.lineage,
         config: Workspace::Config.new, lock_namespace: nil, lock_holder: nil,
-        output: output, error_output: error_output
-      )
+        output: output, error_output: error_output)
       cli = build_cli(output: output, error_output: error_output, lock_command: lock_command)
 
       malicious_name = 'edit"; touch /tmp/pwned; echo "'

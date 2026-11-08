@@ -32,7 +32,7 @@ RSpec.describe "Lock idle takeover: adversarial concurrency review" do
   end
 
   def command_for(identity, clock:, trap: ->(_signal, _handler) {})
-    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, sleeper: ->(_) { now[0] += 5 },
       clock: clock, pid_provider: -> { 200 }, trap: trap, lock_config: lock_config, wall_clock: -> { now[0] })
   end

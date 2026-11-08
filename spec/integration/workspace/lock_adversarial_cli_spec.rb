@@ -22,7 +22,7 @@ RSpec.describe "workspace lock adversarial findings" do
   end
 
   def command_for(identity, sleeper: self.sleeper)
-    Workspace::Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: identity,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, sleeper: sleeper, clock: clock,
       pid_provider: -> { identity.current[:pid] },
       trap: ->(signal, handler) {})
@@ -65,7 +65,7 @@ RSpec.describe "workspace lock adversarial findings" do
       holder_identity.kill(100)
 
       liveness = FakeLockLiveness.new(dead: [100])
-      status_cmd = Workspace::Commands::Lock.new(config: config, lock_namespace: lock_namespace,
+      status_cmd = Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace,
         lock_holder: liveness, output: output, error_output: error_output, sleeper: sleeper, clock: clock)
 
       status_cmd.status("edit")
@@ -93,7 +93,7 @@ RSpec.describe "workspace lock adversarial findings" do
       command_for(holder).acquire("edit")
 
       waiter = FakeLockIdentity.new(pid: 200)
-      waiting_cmd = Workspace::Commands::Lock.new(config: config, lock_namespace: lock_namespace,
+      waiting_cmd = Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace,
         lock_holder: waiter, output: output, error_output: error_output, sleeper: sleeper, clock: Time,
         pid_provider: -> { waiter.current[:pid] }, trap: ->(signal, handler) {})
 
@@ -106,8 +106,8 @@ RSpec.describe "workspace lock adversarial findings" do
 
   describe "namespace resolution when git is missing or fails" do
     it "U6: raises an uncaught Errno::ENOENT instead of falling back gracefully when git is not installed" do
-      real_namespace = Workspace::LockNamespace.new(config: config)
-      allow(Open3).to receive(:capture3).with("git", any_args).and_raise(Errno::ENOENT, "No such file or directory - git")
+      real_namespace = Workspace::LockNamespace.new(lineage: LineageSupport.lineage, config: config)
+      allow(Open3).to receive(:popen3).and_raise(Errno::ENOENT, "No such file or directory - git")
 
       expect {
         real_namespace.resolve(cwd: tmpdir)

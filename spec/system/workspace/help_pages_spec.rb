@@ -46,7 +46,7 @@ RSpec.describe Workspace::HelpPages do
       names = parameters.select { |kind, name| kind == :keyreq || name.match?(/_command\z|\Alibrary\z/) }.map(&:last)
       # Config only computes paths under the throwaway HOME; help text names them.
       collaborators = names.to_h { |name| [name, untouchable.new] }.merge(config: Workspace::Config.new).merge(overrides)
-      cli = Workspace::CLI.new(output: out, error_output: err, input: StringIO.new, env: {}, **collaborators)
+      cli = Workspace::CLI.new(lineage: LineageSupport.lineage, output: out, error_output: err, input: StringIO.new, env: {}, **collaborators)
       yield cli, out, err, home
     end
   end

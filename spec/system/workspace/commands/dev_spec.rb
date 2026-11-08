@@ -68,7 +68,7 @@ RSpec.describe Workspace::Commands::Dev do
       def load_global = {}
     }.new(settings)
     liveness = Workspace::LockHolder.new
-    dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
+    dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: LineageSupport.lineage,
       dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
       dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}.merge(ENV.to_h.slice("WORKSPACE_DEV_SESSION", "WORKSPACE_DEV_STARTED_BY_PANE")), poll: 0.05),
       terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
@@ -81,7 +81,7 @@ RSpec.describe Workspace::Commands::Dev do
 
   def dev(**opts)
     defaults = {lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
-                lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
+                lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: nil,
                 terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
                 output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05}
     described_class.new(**defaults, **opts)
@@ -445,7 +445,7 @@ RSpec.describe Workspace::Commands::Dev do
       it "records nothing without a session ledger or outside tmux" do
         start_session("sess-1")
         no_pane = described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
-          lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
+          lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: nil,
           terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
           output: output, error_output: error_output, env: {}, poll: 0.05, session_ledger: ledger)
 
@@ -481,7 +481,7 @@ RSpec.describe Workspace::Commands::Dev do
       let(:dev_events) do
         events = recorded
         log = BlockEventLog.new { |type:, data:, **| events << [type, data["reason"]] }
-        Workspace::DevEvents.new(event_log: log, lineage: Workspace::WorkspaceLineage.new)
+        Workspace::DevEvents.new(event_log: log, lineage: LineageSupport.lineage)
       end
 
       before do
@@ -808,7 +808,7 @@ RSpec.describe Workspace::Commands::Dev do
       allow(runner).to receive(:call).and_return(3)
 
       result = described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
-        lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: runner,
+        lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: runner,
         terminator: nil, tmux: nil, executable: "unused", env: {}).run(wait: true, working_dir: login)
 
       expect(result).to eq(exit_code: 3)
@@ -821,7 +821,7 @@ RSpec.describe Workspace::Commands::Dev do
       allow(runner).to receive(:call).and_return(0)
 
       described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
-        lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: runner, terminator: nil, tmux: nil,
+        lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: runner, terminator: nil, tmux: nil,
         executable: "unused", env: {"WORKSPACE_DEV_TAKEOVER" => "1"}).run(wait: true, working_dir: login)
 
       expect(runner).to have_received(:call).with(hash_including(wait: true, priority: true))

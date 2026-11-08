@@ -166,7 +166,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
         ns = Struct.new(:dir) { def resolve(cwd:) = {dir: dir} }.new(lock_dir)
         store = Struct.new(:data) { def load(_name) = data }.new(JSON.parse(settings))
         liveness = Workspace::LockHolder.new
-        dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
+        dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new(rev_parse: ->(dir, what) { Workspace::Git.new.path_of(dir, what) }),
           dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
           dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}, poll: 0.05),
           terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
@@ -194,7 +194,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
 
     def dev
       described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
-        lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
+        lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: nil,
         terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
         output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05)
     end

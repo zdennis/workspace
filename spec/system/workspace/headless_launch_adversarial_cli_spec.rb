@@ -163,7 +163,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       sleeper: ->(_) {}
     )
     stop_command = Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
-    start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
+    start_command = Workspace::Commands::Start.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
@@ -179,7 +179,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
     stop_command_for_prune = instance_double(Workspace::Commands::Stop)
     prune_command = Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command_for_prune, output: output, input: input)
 
-    cli = Workspace::CLI.new(
+    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,
@@ -227,8 +227,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       working_dir: Dir.tmpdir,
       clock: -> { Time.now },
       sleeper: ->(_) {},
-      launch_mode: CLITestHelpers.launch_mode(headless: false)
-    )
+      launch_mode: CLITestHelpers.launch_mode(headless: false))
     [cli, output, error_output, hook_runner]
   end
 end

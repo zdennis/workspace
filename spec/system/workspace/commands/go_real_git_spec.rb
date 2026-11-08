@@ -62,7 +62,7 @@ RSpec.describe Workspace::Commands::Go, "against a real repository" do
   def go(from, picked: Workspace::BranchNamePicker::Result.new(reason: :disabled), **args)
     allow(git).to receive(:root).and_return(from)
     command = described_class.new(workflow_start: workflow_start, workflow: workflow, workflow_defaults: workflow_defaults, catalog: catalog,
-      start_ref: Workspace::StartRef.new(git: git), git: git, project_detector: Workspace::ProjectDetector.new(state: state, project_config: project_config),
+      start_ref: Workspace::StartRef.new(lineage: LineageSupport.lineage, git: git), git: git, project_detector: Workspace::ProjectDetector.new(state: state, project_config: project_config),
       project_config: project_config, go_task: instance_double(Workspace::Commands::GoTask, run_for: nil), ticket_source: instance_double(Workspace::TicketSource),
       protected_branch: Workspace::ProtectedBranch.new(git: git), branch_name_picker: instance_double(Workspace::BranchNamePicker, call: picked), output: StringIO.new, working_dir: from)
     command.call(**args)

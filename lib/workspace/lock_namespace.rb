@@ -12,7 +12,7 @@ module Workspace
   class LockNamespace
     # @param config [Workspace::Config] path configuration
     # @param lineage [Workspace::WorkspaceLineage] parent resolver
-    def initialize(config:, lineage: WorkspaceLineage.new)
+    def initialize(config:, lineage:)
       @config = config
       @lineage = lineage
     end

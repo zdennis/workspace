@@ -113,7 +113,7 @@ RSpec.describe Workspace do
     end
 
     def lock_store
-      namespace = Workspace::LockNamespace.new(config: config).resolve(cwd: repo)
+      namespace = Workspace::LockNamespace.new(lineage: LineageSupport.lineage, config: config).resolve(cwd: repo)
       liveness = Workspace::LockHolder.new(run_liveness: Workspace::RunLiveness.new(dir: config.workflow_runs_dir))
       Workspace::LockStore.new(dir: namespace[:dir], liveness: liveness)
     end

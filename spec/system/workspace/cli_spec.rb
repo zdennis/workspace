@@ -37,7 +37,7 @@ RSpec.describe Workspace::CLI do
 
     stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, agent_ensurer: CLITestHelpers::FakeAgentEnsurer.new, output: output, error_output: error_output, sleeper: ->(_) {})
-    start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
+    start_command = overrides[:start_command] || Workspace::Commands::Start.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = overrides[:finish_command] || Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = overrides[:focus_command] || Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
@@ -3613,7 +3613,7 @@ RSpec.describe Workspace::CLI do
 
       it "prints unknown_config_key as an envelope for set and unset under --json" do
         %w[set unset].each do |verb|
-          command = Workspace::Commands::Config.new(project_settings: CLITestHelpers::FakeProjectSettings.new, lineage: Workspace::WorkspaceLineage.new,
+          command = Workspace::Commands::Config.new(project_settings: CLITestHelpers::FakeProjectSettings.new, lineage: LineageSupport.lineage,
             file_backup: Workspace::FileBackup.new(output: StringIO.new))
           cli, raw = json_cli(config_command: command)
 
@@ -3682,7 +3682,7 @@ RSpec.describe Workspace::CLI do
 
         it "prints the unknown_config_key error envelope on stdout and exits 1 under --json" do
           raw = StringIO.new
-          command = Workspace::Commands::Config.new(project_settings: CLITestHelpers::FakeProjectSettings.new, lineage: Workspace::WorkspaceLineage.new,
+          command = Workspace::Commands::Config.new(project_settings: CLITestHelpers::FakeProjectSettings.new, lineage: LineageSupport.lineage,
             file_backup: Workspace::FileBackup.new(output: StringIO.new))
           cli, = build_test_cli(output: Workspace::OutputGate.new(raw), config_command: command)
 
@@ -3837,7 +3837,7 @@ RSpec.describe Workspace::CLI do
         raw = StringIO.new
         gate = Workspace::OutputGate.new(raw)
         err = StringIO.new
-        command = Workspace::Commands::Config.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: err),
+        command = Workspace::Commands::Config.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: err),
           project_config: project_config, output: gate, error_output: err)
         report = Workspace::ConfigReport.new(project_settings: settings, project_config: project_config, notes_dir: Workspace::NotesDir.new(git: Workspace::Git.new))
         cli, = build_test_cli(output: gate, error_output: err, config_command: command, config_report: report)
@@ -3858,7 +3858,7 @@ RSpec.describe Workspace::CLI do
         raw = StringIO.new
         gate = Workspace::OutputGate.new(raw)
         err = StringIO.new
-        command = Workspace::Commands::Config.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: err),
+        command = Workspace::Commands::Config.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: err),
           agent_command_check: Workspace::AgentCommandCheck.new(which: ->(_) { false }), output: gate, error_output: err)
         cli, = build_test_cli(output: gate, error_output: err, config_command: command)
 
@@ -11766,7 +11766,7 @@ RSpec.describe Workspace::CLI do
       detector = Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config)
       raw = StringIO.new
       gate = Workspace::OutputGate.new(raw)
-      command = Workspace::Commands::Config.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: StringIO.new),
+      command = Workspace::Commands::Config.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: StringIO.new),
         project_config: project_config, project_detector: detector, output: gate, error_output: StringIO.new)
       cli, = build_test_cli(output: gate, project_config: project_config, project_detector: detector, config_command: command, working_dir: loose)
 
@@ -13623,7 +13623,7 @@ RSpec.describe Workspace::CLI do
         raw = StringIO.new
         gate = Workspace::OutputGate.new(raw)
         err = StringIO.new
-        config_command = Workspace::Commands::Config.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new,
+        config_command = Workspace::Commands::Config.new(project_settings: settings, lineage: LineageSupport.lineage,
           file_backup: Workspace::FileBackup.new(output: err), output: gate, error_output: err)
         cli, = build_test_cli(output: gate, error_output: err, config_command: config_command)
 

@@ -29,7 +29,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
 
     stop_command = Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
-    start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
+    start_command = Workspace::Commands::Start.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
@@ -56,7 +56,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
     parent_command = CLITestHelpers::FakeParentCommand.new
     agent_command = CLITestHelpers::FakeAgentCommand.new
 
-    cli = Workspace::CLI.new(
+    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,
@@ -101,8 +101,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
       exit_handler: overrides[:exit_handler] || FakeExitHandler,
       input: input,
       working_dir: working_dir,
-      clock: overrides[:clock] || -> { Time.now }
-    )
+      clock: overrides[:clock] || -> { Time.now })
     [cli, output, error_output]
   end
 

@@ -4,7 +4,7 @@ require "open3"
 
 RSpec.describe Workspace::StartRef do
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  subject(:resolver) { described_class.new(git: git, lineage: Workspace::WorkspaceLineage.new) }
+  subject(:resolver) { described_class.new(git: git, lineage: LineageSupport.lineage) }
 
   describe "#call" do
     it "reads a JIRA key" do

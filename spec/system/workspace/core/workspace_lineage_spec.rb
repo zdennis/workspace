@@ -3,7 +3,7 @@ require "tmpdir"
 require "fileutils"
 
 RSpec.describe Workspace::WorkspaceLineage do
-  subject(:lineage) { described_class.new }
+  subject(:lineage) { described_class.new(rev_parse: LineageSupport::REV_PARSE) }
 
   def git(*args, chdir:)
     system("git", *args, chdir: chdir, out: File::NULL, err: File::NULL)

@@ -16,7 +16,7 @@ RSpec.describe Workspace::LockNamespace do
 
   after { FileUtils.remove_entry(state_home) if File.directory?(state_home) }
 
-  subject(:namespace) { described_class.new(config: config) }
+  subject(:namespace) { described_class.new(config: config, lineage: LineageSupport.lineage) }
 
   def git(*args, chdir:)
     system("git", *args, chdir: chdir, out: File::NULL, err: File::NULL)

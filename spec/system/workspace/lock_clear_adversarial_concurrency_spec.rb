@@ -26,7 +26,7 @@ RSpec.describe "lock clear on a process holder, under concurrency" do
       member_states: ->(_pgid) { member_states }, member_owners: ->(_pgid) { ["root"] })
   end
   let(:command) do
-    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, terminator: terminator, clock: mono_clock, sleeper: advance,
       pid_provider: -> { 999 }, trap: ->(*) {})
   end
@@ -170,7 +170,7 @@ RSpec.describe "lock clear's clearing marker, under concurrency" do
       member_states: ->(_pgid) { group_running[0] ? ["S"] : [] }, member_owners: ->(_pgid) { [] })
   end
   let(:lock_command) do
-    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, terminator: terminator, clock: mono_clock, sleeper: advance,
       pid_provider: -> { 999 }, trap: ->(*) {})
   end
