@@ -645,7 +645,7 @@ module Workspace
     #   pane that can't be read, which the re-check then deals with
     def wait_until_quiet(pane_id)
       deadline = @clock.now + QUIET_TIMEOUT
-      pane = @panes.call(pane_id)
+      pane = @panes.for(pane_id)
       screen = nil
       quiet_since = nil
       loop do

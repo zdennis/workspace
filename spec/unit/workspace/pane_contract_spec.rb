@@ -31,6 +31,13 @@ RSpec.shared_examples "a pane factory" do
     expect(empty.call("%5")).to eq(:unlisted)
     expect(empty.call("five")).to eq(:unlisted)
   end
+
+  it "builds the pane of a pane id without listing, :gone for anything else" do
+    expect(empty.for("%5").id).to eq("%5")
+    expect(listing.for("%5").id).to eq("%5")
+    expect(listing.for("five")).to eq(:gone)
+    expect(listing.for(nil)).to eq(:gone)
+  end
 end
 
 RSpec.describe "Pane contract" do

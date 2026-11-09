@@ -35,7 +35,7 @@ module Workspace
       end
     end
 
-    # @param panes [Workspace::PaneFactory] looks the pane up for its screen reads and deliveries; a pane
+    # @param panes [Workspace::PaneFactory] builds the pane, with no tmux call, for its screen reads and deliveries; a pane
     #   it cannot give reads as a screen tmux could not capture
     # @param session_monitor [Workspace::SessionMonitor, nil] pane facts
     # @param safety [Workspace::TypingSafety] the typed-text test
@@ -54,7 +54,7 @@ module Workspace
     # @param exact [String, nil] text the whole input must equal; see {TypingSafety#check}
     # @return [Hash, nil] nil when the pane can take text, else the {TypingSafety#check} refusal
     def check(pane_id, pasted: nil, exact: nil)
-      check_pane(pane_id, @panes.call(pane_id), pasted: pasted, exact: exact)
+      check_pane(pane_id, @panes.for(pane_id), pasted: pasted, exact: exact)
     end
 
     # Checks, pastes, checks again, presses Enter.
@@ -70,7 +70,7 @@ module Workspace
     #   text left in the pane
     # @return [Result]
     def type(session_name:, target:, pane_id:, text:, before_paste: nil, before_enter: nil)
-      pane = @panes.call(pane_id)
+      pane = @panes.for(pane_id)
       refused = check_pane(pane_id, pane)
       return Result.new(outcome: :refused, code: refused[:code], reason: refused[:reason], message: refused[:message]) if refused
       return Result.new(outcome: :aborted) if before_paste && !before_paste.call

@@ -59,6 +59,13 @@ class FakePaneFactory
     @unlisted = unlisted
   end
 
+  # The listed pane with this id, else a pane of its own, as the real one builds without listing.
+  def for(pane_id, row: nil)
+    return :gone unless pane_id.is_a?(String) && pane_id.match?(/\A%\d+\z/)
+
+    @panes.find { |pane| pane.id == pane_id } || FakePane.new(id: pane_id, row: row)
+  end
+
   def call(pane_id)
     return :gone unless pane_id.is_a?(String)
     return :unlisted if @unlisted || @panes.empty?

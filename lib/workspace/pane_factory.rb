@@ -26,5 +26,17 @@ module Workspace
 
       Pane.new(tmux: @tmux, session_name: @session_name, id: pane_id, row: row)
     end
+
+    # Builds the pane of an id the caller already knows, with no tmux call: the desks use it where
+    # they read a screen or type, so those paths make the calls they made before panes existed.
+    #
+    # @param pane_id [Object]
+    # @param row [Hash, nil] the pane's row, when the caller has it
+    # @return [Pane, Symbol] the Pane, or +:gone+ for anything that is not a tmux pane id
+    def for(pane_id, row: nil)
+      return :gone unless pane_id.is_a?(String) && Pane::ID_FORMAT.match?(pane_id)
+
+      Pane.new(tmux: @tmux, session_name: @session_name, id: pane_id, row: row)
+    end
   end
 end
