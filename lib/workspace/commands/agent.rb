@@ -298,12 +298,12 @@ module Workspace
             handed_off = dispatch(JSON.parse(line), client) == :handed_off if line
           rescue JSON::ParserError => e
             @logger.debug { "malformed message dropped: #{e.message}" }
-            reply_to(client, "ok" => false, "error" => "malformed_message")
+            reply_to(client, AgentProtocol.error(AgentProtocol::MALFORMED_MESSAGE))
           rescue => e
             # One bad pane or a wedged tmux must cost us this connection, not
             # the agent and every pipeline running under it.
             @error_output.puts "workspace agent: dropped a message: #{e.message}"
-            reply_to(client, "ok" => false, "error" => "internal_error")
+            reply_to(client, AgentProtocol.error(AgentProtocol::INTERNAL_ERROR))
           ensure
             client.close unless handed_off
           end
@@ -411,7 +411,7 @@ module Workspace
       def dispatch(message, client = nil)
         @logger.debug { "received: #{JSON.pretty_generate(message)}" }
 
-        if message["type"] == "coordinator_restart"
+        if AgentProtocol.type_of(message) == AgentProtocol::COORDINATOR_RESTART
           @logger.debug { "coordinator_restart received, entering unavailable window" }
           @state_lock.synchronize { @coordinator_unavailable = true }
           return
@@ -420,17 +420,17 @@ module Workspace
         workspace = message["workspace"]
         if !WorkspaceName.same?(workspace, @current_name)
           @logger.debug { "dropped message for workspace '#{workspace}' (I am '#{@current_name}')" }
-          return reply_to(client, "ok" => false, "error" => "wrong_workspace")
+          return reply_to(client, AgentProtocol.error(AgentProtocol::WRONG_WORKSPACE))
         end
 
         # Every inbound connection ends in one JSON line, so a caller can always
         # read a reply and tell an answer apart from a dead agent.
-        case message["type"]
-        when "command"
+        case AgentProtocol.type_of(message)
+        when AgentProtocol::COMMAND
           reply_to(client, handle_command(message))
-        when "inject" then handle_inject(message, client)
-        when "restart_agent" then handle_restart_agent(message, client)
-        when "session_event"
+        when AgentProtocol::INJECT then handle_inject(message, client)
+        when AgentProtocol::RESTART_AGENT then handle_restart_agent(message, client)
+        when AgentProtocol::SESSION_EVENT
           # Before the monitor records it: a /clear moves the pane's session_id there, and a poll
           # in the gap would end the watch session_changed, not carried_out.
           notify_handoff_watcher(message)
@@ -440,19 +440,19 @@ module Workspace
           report_owner_finished(message) if @spine_owner_report && message["agent_id"].nil?
           @prompt_queue_desk&.session_event(message)
           @agent_recovery_desk&.session_event(message)
-          reply_to(client, "ok" => true)
-        when "handoff_watch" then reply_to(client, handle_handoff_watch(message))
-        when "status_request" then handle_status_request(message, client)
-        when "prompt_send" then handle_prompt_send(message, client)
-        when "prompt_interrupt_send" then handle_prompt_send(message, client, :interrupt_send)
-        when "status_post" then reply_to(client, @agent_status_desk.post(message))
-        when "sessions"
+          reply_to(client, AgentProtocol.ok)
+        when AgentProtocol::HANDOFF_WATCH then reply_to(client, handle_handoff_watch(message))
+        when AgentProtocol::STATUS_REQUEST then handle_status_request(message, client)
+        when AgentProtocol::PROMPT_SEND then handle_prompt_send(message, client)
+        when AgentProtocol::PROMPT_INTERRUPT_SEND then handle_prompt_send(message, client, :interrupt_send)
+        when AgentProtocol::STATUS_POST then reply_to(client, @agent_status_desk.post(message))
+        when AgentProtocol::SESSIONS
           reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
-        when "version"
-          reply_to(client, "ok" => true, "version" => Workspace::VERSION)
+        when AgentProtocol::VERSION_REQUEST
+          reply_to(client, AgentProtocol.ok(version: Workspace::VERSION))
         else
           @logger.debug { "unknown message type: #{message["type"]}" }
-          reply_to(client, "ok" => false, "error" => "unknown_type")
+          reply_to(client, AgentProtocol.error(AgentProtocol::UNKNOWN_TYPE))
         end
       end
 
@@ -471,22 +471,22 @@ module Workspace
             entry = @pipeline_state.current(ref)
             if entry.nil?
               @logger.debug { "steer for #{ref} dropped: no active pipeline" }
-              {"ok" => false, "error" => "no_active_pipeline"}
+              AgentProtocol.error("no_active_pipeline")
             elsif stale_token?(message, entry)
               # The sender aimed at a stage that has since finished; typing into
               # the pane now would reach the stage that replaced it.
               @logger.debug { "steer for #{ref} dropped: stage token no longer current" }
-              {"ok" => false, "error" => "stale_token"}
+              AgentProtocol.error("stale_token")
             elsif message["interrupt"]
               urgent = entry
               nil
             elsif (next_stage = next_stage_for(entry))
               (@queued_steers[ref] ||= []) << message["body"]
-              {"ok" => true, "queued_for_pane" => next_stage[:pane_index]}
+              AgentProtocol.ok(queued_for_pane: next_stage[:pane_index])
             else
               # Nothing comes after the last stage, so there is no later pane to
               # hold this for. Say so rather than queue it into a vanishing state.
-              {"ok" => false, "error" => "no_next_stage"}
+              AgentProtocol.error("no_next_stage")
             end
           end
           decided || urgent_steer_reply(ref, urgent, message["body"])
@@ -505,7 +505,7 @@ module Workspace
           reply = begin
             @agent_status_desk.request(message)
           rescue => e
-            {"ok" => false, "error" => "internal_error", "message" => e.message}
+            AgentProtocol.error(AgentProtocol::INTERNAL_ERROR, e.message)
           end
           reply_to(client, reply)
         ensure
@@ -539,25 +539,25 @@ module Workspace
           max.is_a?(Integer) && max > 0 &&
           [text, sent_text].all? { |t| t.is_a?(String) && !t.strip.empty? && t.length <= MAX_WATCH_TEXT }
         unless valid
-          return {"ok" => false, "error" => "usage",
-                  "message" => "handoff_watch needs a pane_id, an ISO 8601 sent_at, a positive interval and max, " \
-                               "and a text and sent_text of 1 to #{MAX_WATCH_TEXT} characters"}
+          return AgentProtocol.error("usage",
+            "handoff_watch needs a pane_id, an ISO 8601 sent_at, a positive interval and max, " \
+            "and a text and sent_text of 1 to #{MAX_WATCH_TEXT} characters")
         end
 
         detail = @tmux.pane_details(@tmux_session, window: nil).find { |d| d[:id] == pane_id }
         ref = (detail && detail[:window] == 0) ? pipeline_ref_on(detail[:index]) : nil
         if ref
-          return {"ok" => false, "error" => "pipeline_stage", "work_item_ref" => ref,
-                  "message" => "#{ref} has a pipeline stage running on pane #{pane_id}; it gets no handoff follow-ups"}
+          return AgentProtocol.error("pipeline_stage", nil, work_item_ref: ref,
+            message: "#{ref} has a pipeline stage running on pane #{pane_id}; it gets no handoff follow-ups")
         end
 
         # Started on the first arm, not at boot: its thread wakes every tick, and a stop waits for the tick.
         # Safe without a lock: this runs on the accept thread, so no two arms race to start it.
         @handoff_watcher.start
         result = @handoff_watcher.arm(pane_id: pane_id, sent_at: sent_at, interval: interval, max: max, text: text, sent_text: sent_text)
-        {"ok" => true, "watching" => result[:watching], "reason" => result[:reason]}
+        AgentProtocol.ok(watching: result[:watching], reason: result[:reason])
       rescue => e
-        {"ok" => false, "error" => "internal_error", "message" => e.message}
+        AgentProtocol.error(AgentProtocol::INTERNAL_ERROR, e.message)
       end
 
       # @return [Time, nil] the time +value+ spells as ISO 8601, nil when it is not a string or not a time
@@ -577,7 +577,7 @@ module Workspace
             @prompt_queue_desk.public_send(handler, message)
           rescue => e
             code = e.is_a?(Workspace::Error) ? e.code : "internal_error"
-            {"ok" => false, "error" => code, "message" => e.message}
+            AgentProtocol.error(code, e.message)
           end
           reply_to(client, reply)
         ensure
@@ -625,7 +625,8 @@ module Workspace
         pane_id = started["pane_id"]
         spawned = false
         begin
-          timeout = started.delete("confirm_timeout")
+          timeout = started["confirm_timeout"]
+          started = started.except("confirm_timeout")
           wait = message["wait"] == true
           reply_to(client, started) unless wait
           @restarts.start_worker(pane_id) do
@@ -712,19 +713,17 @@ module Workspace
         claimed = @restarts.claim_pending(pane_id)
         return [nil, restart_error("restart_in_progress", "a restart is already running on pane #{target}", target)] unless claimed
 
-        started = {"ok" => true, "status" => "started", "pane" => target, "pane_id" => pane_id,
-                   "context_pct" => reading[:pct], "confirm_timeout" => timeout}
+        started = AgentProtocol.ok(status: "started", pane: target, pane_id: pane_id,
+          context_pct: reading[:pct], confirm_timeout: timeout)
         if ref
-          started["warning"] = "#{ref} has a pipeline stage running on this pane; " \
-            "it will only finish if the new conversation prints its sentinel"
+          started = started.merge("warning" => "#{ref} has a pipeline stage running on this pane; " \
+            "it will only finish if the new conversation prints its sentinel")
         end
         [started, nil]
       end
 
       def restart_error(error, message, pane = nil)
-        reply = {"ok" => false, "error" => error, "message" => message}
-        reply["pane"] = pane if pane
-        reply
+        pane ? AgentProtocol.error(error, message, pane: pane) : AgentProtocol.error(error, message)
       end
 
       # @return [Numeric, nil] the confirm timeout, the default when absent,
@@ -804,13 +803,12 @@ module Workspace
 
       def urgent_steer_reply(ref, entry, body)
         delivery = deliver_urgent_steer(entry, body)
-        return {"ok" => true, "queued_for_pane" => entry[:pane_index]} if delivery.ok?
+        return AgentProtocol.ok(queued_for_pane: entry[:pane_index]) if delivery.ok?
 
         # "not_submitted" means the text is, or may be, in the pane: resending
         # could type it twice.
         @error_output.puts "workspace agent: steer for #{ref} to pane #{entry[:pane_index]}: #{delivery.message}"
-        {"ok" => false, "error" => (delivery.landed? ? "not_submitted" : "not_delivered"),
-         "message" => delivery.message}
+        AgentProtocol.error((delivery.landed? ? "not_submitted" : "not_delivered"), delivery.message)
       end
 
       # An inject may name the stage it was meant for by that stage's token.
@@ -906,7 +904,7 @@ module Workspace
           @error_output.puts "workspace agent: #{failure}"
           log_activity("dispatch_failed", "work_item_ref" => ref, "dispatch_id" => message["dispatch_id"], "message" => delivery.message)
           report(entry, "type" => "error", "message" => failure)
-          return {"ok" => false, "error" => "not_delivered", "message" => delivery.message}
+          return AgentProtocol.error("not_delivered", delivery.message)
         end
 
         log_activity("dispatched", "work_item_ref" => ref, "dispatch_id" => message["dispatch_id"],
@@ -919,7 +917,7 @@ module Workspace
           report(entry, "type" => "status_update", "message" => "Warning: #{delivery.message}")
         end
         arm_watch(ref, watch_pane, token, deadline, timeout) if watch_pane
-        {"ok" => true}
+        AgentProtocol.ok
       end
 
       # The coordinator ships a ready-rendered block telling Claude how to report

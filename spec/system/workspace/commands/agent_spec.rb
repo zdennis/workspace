@@ -1586,6 +1586,21 @@ RSpec.describe Workspace::Commands::Agent do
       expect(tmux.sent_keys.first[:text]).to include("do it")
     end
 
+    describe "reply bytes" do
+      def bytes_for(message) = StringIO.new.tap { |io| served.handle(message, io) }.string
+
+      it "writes each reply with its keys in the order the clients have always read" do
+        expect(bytes_for({"type" => "nonsense", "workspace" => "myapp"})).to eq(%({"ok":false,"error":"unknown_type"}\n))
+        expect(bytes_for({"type" => "command", "workspace" => "other"})).to eq(%({"ok":false,"error":"wrong_workspace"}\n))
+        expect(bytes_for({"type" => "version", "workspace" => "myapp"})).to eq(%({"ok":true,"version":"#{Workspace::VERSION}"}\n))
+        expect(bytes_for({"type" => "session_event", "workspace" => "myapp", "event" => "stop"})).to eq(%({"ok":true}\n))
+        expect(bytes_for({"type" => "restart_agent", "workspace" => "myapp", "pane" => "%18"}))
+          .to eq(%({"ok":false,"error":"missing_prompt","message":"restart_agent needs a non-empty \\"prompt\\""}\n))
+        expect(bytes_for({"type" => "inject", "workspace" => "myapp", "work_item_ref" => "WC-9", "body" => "x"}))
+          .to eq(%({"ok":false,"error":"no_active_pipeline"}\n))
+      end
+    end
+
     it "drops a message addressed to another workspace" do
       served.handle({"type" => "command", "workspace" => "other", "work_item_ref" => "WC-1", "body" => "do it"}, reply)
 
