@@ -8,7 +8,7 @@
   "stopped": null,
   "capped": false,
   "max_actions": 200,
-  "actions": 5,
+  "actions": 8,
   "run": {
     "state": "completed",
     "current": "verify",
@@ -28,6 +28,36 @@
     },
     {
       "id": "plan",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        }
+      ]
+    },
+    {
+      "id": "review_supportive",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        }
+      ]
+    },
+    {
+      "id": "review_skeptical",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        }
+      ]
+    },
+    {
+      "id": "review_implementer",
       "state": "passed",
       "attempts": [
         {
@@ -158,7 +188,7 @@
       "n": 11,
       "at": 2,
       "type": "step_dispatching",
-      "step": "plan_review",
+      "step": "review_supportive",
       "attempt": 1,
       "pane": "%sim"
     },
@@ -166,7 +196,7 @@
       "n": 12,
       "at": 2,
       "type": "step_dispatched",
-      "step": "plan_review",
+      "step": "review_supportive",
       "attempt": 1,
       "pane": "%sim",
       "delivered": true
@@ -176,6 +206,111 @@
       "at": 2,
       "type": "simulated_agent",
       "action": "turn",
+      "step": "review_supportive",
+      "attempt": 1,
+      "wrote": [
+        "approval-supportive.md"
+      ]
+    },
+    {
+      "n": 14,
+      "at": 3,
+      "type": "step_passed",
+      "step": "review_supportive",
+      "attempt": 1
+    },
+    {
+      "n": 15,
+      "at": 3,
+      "type": "step_dispatching",
+      "step": "review_skeptical",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 16,
+      "at": 3,
+      "type": "step_dispatched",
+      "step": "review_skeptical",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 17,
+      "at": 3,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "review_skeptical",
+      "attempt": 1,
+      "wrote": [
+        "approval-skeptical.md"
+      ]
+    },
+    {
+      "n": 18,
+      "at": 4,
+      "type": "step_passed",
+      "step": "review_skeptical",
+      "attempt": 1
+    },
+    {
+      "n": 19,
+      "at": 4,
+      "type": "step_dispatching",
+      "step": "review_implementer",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 20,
+      "at": 4,
+      "type": "step_dispatched",
+      "step": "review_implementer",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 21,
+      "at": 4,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "review_implementer",
+      "attempt": 1,
+      "wrote": [
+        "approval-implementer.md"
+      ]
+    },
+    {
+      "n": 22,
+      "at": 5,
+      "type": "step_passed",
+      "step": "review_implementer",
+      "attempt": 1
+    },
+    {
+      "n": 23,
+      "at": 5,
+      "type": "step_dispatching",
+      "step": "plan_review",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 24,
+      "at": 5,
+      "type": "step_dispatched",
+      "step": "plan_review",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 25,
+      "at": 5,
+      "type": "simulated_agent",
+      "action": "turn",
       "step": "plan_review",
       "attempt": 1,
       "wrote": [
@@ -183,31 +318,31 @@
       ]
     },
     {
-      "n": 14,
-      "at": 3,
+      "n": 26,
+      "at": 6,
       "type": "check_finished",
       "step": "plan_review",
       "attempt": 1,
       "exit_code": 0
     },
     {
-      "n": 15,
-      "at": 3,
+      "n": 27,
+      "at": 6,
       "type": "step_passed",
       "step": "plan_review",
       "attempt": 1
     },
     {
-      "n": 16,
-      "at": 3,
+      "n": 28,
+      "at": 6,
       "type": "step_dispatching",
       "step": "implement",
       "attempt": 1,
       "pane": "%sim"
     },
     {
-      "n": 17,
-      "at": 3,
+      "n": 29,
+      "at": 6,
       "type": "step_dispatched",
       "step": "implement",
       "attempt": 1,
@@ -215,8 +350,8 @@
       "delivered": true
     },
     {
-      "n": 18,
-      "at": 3,
+      "n": 30,
+      "at": 6,
       "type": "simulated_agent",
       "action": "turn",
       "step": "implement",
@@ -226,23 +361,23 @@
       ]
     },
     {
-      "n": 19,
-      "at": 4,
+      "n": 31,
+      "at": 7,
       "type": "step_passed",
       "step": "implement",
       "attempt": 1
     },
     {
-      "n": 20,
-      "at": 4,
+      "n": 32,
+      "at": 7,
       "type": "step_dispatching",
       "step": "verify",
       "attempt": 1,
       "pane": "%sim"
     },
     {
-      "n": 21,
-      "at": 4,
+      "n": 33,
+      "at": 7,
       "type": "step_dispatched",
       "step": "verify",
       "attempt": 1,
@@ -250,8 +385,8 @@
       "delivered": true
     },
     {
-      "n": 22,
-      "at": 4,
+      "n": 34,
+      "at": 7,
       "type": "simulated_agent",
       "action": "turn",
       "step": "verify",
@@ -261,23 +396,23 @@
       ]
     },
     {
-      "n": 23,
-      "at": 5,
+      "n": 35,
+      "at": 8,
       "type": "check_finished",
       "step": "verify",
       "attempt": 1,
       "exit_code": 0
     },
     {
-      "n": 24,
-      "at": 5,
+      "n": 36,
+      "at": 8,
       "type": "step_passed",
       "step": "verify",
       "attempt": 1
     },
     {
-      "n": 25,
-      "at": 5,
+      "n": 37,
+      "at": 8,
       "type": "run_completed"
     }
   ]
