@@ -2,7 +2,7 @@
 description: Cohesive commits, tests and lint first, no attribution, no push
 ---
 - Make each commit one cohesive change, with its tests. Unrelated changes go in their own commits.
-- Run the project's tests and lint before every commit, and commit only when both pass. The project's commands are listed below when it has set them with `workspace config set commands.test` and `commands.lint`; otherwise find them in the project's `CLAUDE.md` or README.
+- Run the tests for the files you changed plus the tests they obviously impact — their obvious neighbors and the tests the change obviously touches — not the whole suite (it runs on CI), and lint, before every commit, and commit only when both pass. The project's commands are listed below when it has set them with `workspace config set commands.test` and `commands.lint`; otherwise find them in the project's `CLAUDE.md` or README.
 - Write the message about why the change was made. The diff already shows what changed.
 - Add no attribution lines: no `Co-Authored-By`, no "Generated with".
 - Stage the paths you changed by name. Don't use `git add -A` or `git add .`.

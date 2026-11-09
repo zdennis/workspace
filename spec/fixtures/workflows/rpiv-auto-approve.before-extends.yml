@@ -211,8 +211,10 @@ steps:
     title: Verify
     include: [review]
     prompt: |
-      Verify the work against the workspace plan (`workspace plan path`). Run the full test suite and the
-      linter (the project's lint command, when it has one, must pass: the run checks it), then review the branch's diff against its base.
+      Verify the work against the workspace plan (`workspace plan path`). Run the tests for the
+      files the change touched, their obvious neighbors, and the tests the change obviously
+      impacts — not the whole suite (it runs on CI). Run the linter (the project's lint
+      command, when it has one, must pass: the run checks it), then review the branch's diff against its base.
       Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
       If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
       and end your turn.
