@@ -796,7 +796,7 @@ module Workspace
 
       def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
         delivery_facts: ->(_pane_id) {}, **proof)
-        AgentRestart.new(tmux: @tmux, context_reader: @context_reader, session_name: session_name,
+        AgentRestart.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), context_reader: @context_reader, session_name: session_name,
           delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid, pane_kind: pane_kind,
           delivery_facts: delivery_facts, logger: @logger, **proof)
       end

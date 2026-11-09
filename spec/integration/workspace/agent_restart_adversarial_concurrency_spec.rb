@@ -32,7 +32,7 @@ RSpec.describe Workspace::AgentRestart, "adversarial concurrency" do
   def build_restart(context_reader:, pipeline_ref: ->(_index) {}, pane_state: ->(_id) {},
     wall_clock: -> { Time.utc(2026, 9, 27, 12, 0, 30) })
     described_class.new(
-      tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-myapp",
+      panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "workspace-wt-myapp"), context_reader: context_reader, session_name: "workspace-wt-myapp",
       delivery_lock: Mutex.new, pipeline_ref: pipeline_ref, pane_state: pane_state,
       clock: -> { now[0] }, wall_clock: wall_clock,
       sleeper: ->(seconds) { now[0] += seconds },
@@ -268,7 +268,7 @@ RSpec.describe "restart_agent with main activity after the Stop" do
   let(:bindings) { instance_double(Workspace::PaneBindings, binding_for: {"kind" => "run", "id" => "wr_1"}) }
   let(:runner) do
     factory = lambda do |**wired|
-      Workspace::AgentRestart.new(tmux: tmux, context_reader: context_reader, clock: -> { clock.now.to_f }, wall_clock: -> { clock.now },
+      Workspace::AgentRestart.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "s"), context_reader: context_reader, clock: -> { clock.now.to_f }, wall_clock: -> { clock.now },
         sleeper: ->(seconds) { tick(seconds) }, quiet_timeout: 30, **wired)
     end
     Workspace::RestartRunner.new(restart_factory: factory, registry: Workspace::RestartRegistry.new, panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "s"),

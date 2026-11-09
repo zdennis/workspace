@@ -21,6 +21,7 @@ RSpec.describe Workspace::AgentRestart do
   let(:now) { [0.0] }
   let(:wall) { [Time.utc(2026, 9, 27, 12, 0, 0)] }
   let(:tmux) { FakeTmux.new(screens: ["❯ "], details: [{id: "%18", window: 0, index: 1}], strict_windows: true) }
+  let(:panes) { Workspace::PaneFactory.new(tmux: tmux, session_name: "workspace-wt-app") }
   let(:pipeline_refs) { {} }
   let(:pane_states) { {} }
   let(:readings) { [] }
@@ -29,7 +30,7 @@ RSpec.describe Workspace::AgentRestart do
 
   subject(:restart) do
     described_class.new(
-      tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+      panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
       delivery_lock: Mutex.new,
       pipeline_ref: ->(index) { pipeline_refs[index] },
       pane_state: ->(id) { pane_states[id] },
@@ -60,8 +61,8 @@ RSpec.describe Workspace::AgentRestart do
     expect(result).to include("ok" => true, "status" => "restarted", "pane_id" => "%18",
       "context_before" => 42, "context_after" => 3, "delivery" => "submitted")
     expect(tmux.delivered).to eq([
-      {session: "workspace-wt-app", target: "0.1", text: "/clear"},
-      {session: "workspace-wt-app", target: "0.1", text: "Read HANDOFF.md"}
+      {session: "workspace-wt-app", target: "%18", text: "/clear"},
+      {session: "workspace-wt-app", target: "%18", text: "Read HANDOFF.md"}
     ])
   end
 
@@ -76,7 +77,7 @@ RSpec.describe Workspace::AgentRestart do
       next {pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil} unless agent_pid == 4242
       ((scripted.size > 1) ? scripted.shift : scripted.first).call(clock_now[0])
     end
-    restart = described_class.new(tmux: tmux, context_reader: pid_reader, session_name: "workspace-wt-app",
+    restart = described_class.new(panes: panes, context_reader: pid_reader, session_name: "workspace-wt-app",
       delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, agent_pid: ->(id) { (id == "%18") ? 4242 : nil },
       clock: -> { now[0] }, wall_clock: -> { wall[0] },
       sleeper: ->(seconds) {
@@ -209,7 +210,7 @@ RSpec.describe Workspace::AgentRestart do
       frozen = wall[0]
 
       result = described_class.new(
-        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
         delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, pane_state: ->(_) {},
         clock: -> { now[0] }, wall_clock: -> { frozen },
         sleeper: ->(seconds) { now[0] += seconds },
@@ -299,7 +300,7 @@ RSpec.describe Workspace::AgentRestart do
 
     def proven(**overrides)
       counter = subagent_counter ? {subagents_running: subagent_counter} : {}
-      described_class.new(tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+      described_class.new(panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
         delivery_lock: Mutex.new, pipeline_ref: ->(_) {},
         pane_state: ->(id) { pane_states[id] }, pane_kind: ->(id) { kinds[id] }, delivery_facts: hook_facts,
         turn_over: ->(_id) { missing[0] }, screen_ready: ->(_id) { screen_refusals[0] },
@@ -854,7 +855,7 @@ RSpec.describe Workspace::AgentRestart do
 
     subject(:restart) do
       described_class.new(
-        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
         delivery_lock: Mutex.new, pipeline_ref: ->(_) {},
         pane_state: ->(id) { monitor.restart_state(id) },
         clock: -> { now[0] }, wall_clock: -> { wall[0] },
@@ -898,13 +899,13 @@ RSpec.describe Workspace::AgentRestart do
     expect(call).to include("ok" => false, "error" => "pane_gone")
   end
 
-  it "types into the pane's current window.index when the index moved" do
+  it "types into the pane by its id when its index moved" do
     readings.push(reading(42), reading(2))
     tmux.details = [{id: "%9", window: 0, index: 0}, {id: "%18", window: 0, index: 3}]
 
     call
 
-    expect(tmux.delivered.map { |d| d[:target] }.uniq).to eq(["0.3"])
+    expect(tmux.delivered.map { |d| d[:target] }.uniq).to eq(["%18"])
   end
 
   it "reports /clear that never reached the pane" do
@@ -993,7 +994,7 @@ RSpec.describe Workspace::AgentRestart do
     let(:kinds_by_pane) { {"%18" => "codex"} }
     subject(:restart) do
       described_class.new(
-        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
         delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, pane_kind: ->(id) { kinds_by_pane[id] },
         clock: -> { now[0] }, wall_clock: -> { wall[0] },
         sleeper: ->(seconds) {

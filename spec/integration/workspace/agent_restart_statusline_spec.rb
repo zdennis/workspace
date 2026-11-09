@@ -27,7 +27,7 @@ RSpec.describe Workspace::AgentRestart, "with the status-line store" do
 
   subject(:result) do
     described_class.new(
-      tmux: tmux, context_reader: reader, session_name: "workspace-wt-app",
+      panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "workspace-wt-app"), context_reader: reader, session_name: "workspace-wt-app",
       delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, pane_state: ->(_) {},
       clock: -> { now[0] }, wall_clock: -> { wall[0] },
       sleeper: ->(seconds) { now[0] += seconds },

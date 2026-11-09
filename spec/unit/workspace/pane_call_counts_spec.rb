@@ -176,4 +176,40 @@ RSpec.describe "tmux calls of the pane desks" do
       expect(tmux.calls).to eq([:capture_screen_styled])
     end
   end
+  describe Workspace::AgentRestart do
+    let(:now) { [0.0] }
+    let(:wall) { [Time.utc(2026, 9, 27, 12, 0, 0)] }
+    let(:context_reader) { instance_double(Workspace::ContextReader) }
+
+    def restart(**options)
+      described_class.new(panes: factory, context_reader: context_reader, session_name: "api", delivery_lock: Mutex.new,
+        pipeline_ref: ->(_index) {}, clock: -> { now[0] }, wall_clock: -> { wall[0] },
+        sleeper: ->(seconds) {
+          now[0] += seconds
+          wall[0] += seconds
+        },
+        quiet_timeout: 10, quiet_for: 1, poll_interval: 0.5, **options)
+    end
+
+    it "reads the plain screen with no pane list to find the pane gone" do
+      tmux.screens = [nil]
+
+      result = restart.call(pane_id: "%5", prompt: "go")
+
+      expect(result).to include("error" => "pane_gone")
+      expect(tmux.calls).to eq([:capture_screen])
+    end
+
+    it "waits on the screen, then lists the panes once for each of the clear and the prompt" do
+      tmux.screens = ["❯ "]
+      allow(context_reader).to receive(:read).and_return(
+        {pct: 42, error: nil, updated_at: wall[0].utc.iso8601, session_id: "old"},
+        {pct: nil, error: nil, updated_at: (wall[0] + 5).utc.iso8601, session_id: "new"}
+      )
+      result = restart(delivery_facts: ->(_id) { {hooks: true, last_user_prompt_at: wall[0] + 100} }).call(pane_id: "%5", prompt: "go", force: true)
+
+      expect(result).to include("ok" => true)
+      expect(tmux.call_runs).to eq([:capture_screen, :pane_details, :deliver, :pane_details, :deliver])
+    end
+  end
 end
