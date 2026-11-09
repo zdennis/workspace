@@ -260,6 +260,8 @@ module Workspace
         written = @files.add(id, text, dry_run: dry_run)
         note = if found&.first == "project"
           "; the project definition at #{found.last} hides it in #{project}"
+        elsif found&.first&.start_with?("source:")
+          "; the source definition at #{found.last} shadows it"
         elsif found&.first == "builtin"
           "; it shadows the preset of the same id"
         end
@@ -1179,7 +1181,8 @@ module Workspace
       def shadow_warnings(id, scope, project)
         return [] unless scope
         winner = @catalog.locate(id.to_s, project: project)
-        return [] if winner.nil? || winner.first == scope || WorkflowCatalog::SOURCES.index(winner.first) > WorkflowCatalog::SOURCES.index(scope)
+        order = @catalog.ordered_sources(project)
+        return [] if winner.nil? || winner.first == scope || order.index(winner.first) > order.index(scope)
         [{"code" => "shadowed", "message" => "A #{winner.first} definition of #{id} (#{winner.last}) is found first, so this file is not the one a run reads."}]
       end
 

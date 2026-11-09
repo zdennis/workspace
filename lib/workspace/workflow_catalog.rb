@@ -13,7 +13,9 @@ module Workspace
   # a branch or a fork run code on the developer's machine. Every reader takes the
   # `project:` it works for, or nil for the user directory and presets alone.
   class WorkflowCatalog
-    # Where a definition can come from, in the order they are searched.
+    # Where a definition can come from, in the order they are searched. Each
+    # `workflows.sources` entry is its own layer, "source:N" (N the 1-based position in
+    # the list), between "global" and "builtin"; see {#ordered_sources}.
     SOURCES = %w[project global builtin].freeze
 
     # The project a workspace's definitions come from: the parent project of a worktree
@@ -28,9 +30,11 @@ module Workspace
     end
 
     # @param config [Workspace::Config] names the directories
+    # @param sources [#call, nil] answers an Array with a directory per `workflows.sources` entry, in list order, nil for one not there; nil adds no source layer
     # @param globber [#call] lists the paths matching a glob pattern, as +Dir.glob+ does
-    def initialize(config:, globber: Dir.method(:glob))
+    def initialize(config:, sources: nil, globber: Dir.method(:glob))
       @config = config
+      @sources = sources
       @globber = globber
     end
 
@@ -49,7 +53,7 @@ module Workspace
     #
     # @param id [String]
     # @param project [String, nil]
-    # @return [Array(String, String), nil] "project", "global" or "builtin" and the path, or nil when no file has that id
+    # @return [Array(String, String), nil] "project", "global", "source:N" or "builtin" and the path, or nil when no file has that id
     #   (including an id that could not be a file name)
     def locate(id, project: nil)
       return nil unless IdPatterns::WORKFLOW_ID.match?(id)
@@ -124,6 +128,15 @@ module Workspace
     def scope_of(path, project: nil)
       dir = File.dirname(File.expand_path(path))
       dirs(project).find { |_, each| File.expand_path(each) == dir }&.first
+    end
+
+    # The names of the layers searched, first to last: "project" (when the project has a directory), "global",
+    # "source:1", "source:2", ... and "builtin".
+    #
+    # @param project [String, nil]
+    # @return [Array<String>]
+    def ordered_sources(project = nil)
+      dirs(project).keys
     end
 
     # Where a user's file of this id is (or would be) written.
@@ -240,7 +253,13 @@ module Workspace
     # under the config (see {Workspace::Config#project_workflows_dir}) has no directory.
     def dirs(project = nil)
       own = project && @config.project_workflows_dir(project)
-      (own ? {"project" => own} : {}).merge("global" => @config.workflows_dir, "builtin" => @config.builtin_workflows_dir)
+      (own ? {"project" => own} : {}).merge("global" => @config.workflows_dir).merge(source_dirs).merge("builtin" => @config.builtin_workflows_dir)
+    end
+
+    # "source:N" => directory, for each listed source whose directory exists, N counting the listed ones.
+    def source_dirs
+      return {} unless @sources
+      @sources.call.each_with_index.filter_map { |dir, index| ["source:#{index + 1}", dir] if dir }.to_h
     end
 
     def ids(project = nil)

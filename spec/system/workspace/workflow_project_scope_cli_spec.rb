@@ -168,6 +168,40 @@ RSpec.describe "workspace workflow project-scoped definitions through build_cli"
     expect(JSON.parse(out.string)["definition"]).to include("source" => "project", "project" => "app")
   end
 
+  describe "workflow sources" do
+    let(:source_dir) { File.join(@home, "my-sources") }
+
+    before do
+      FileUtils.mkdir_p(source_dir)
+      File.write(File.join(source_dir, "rpiv.yml"), yaml)
+      File.write(File.join(source_dir, "extra.yml"), yaml)
+      Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {}).run(["config", "set", "workflows.sources", "#{source_dir},#{File.join(@home, "missing-cache")}", "--scope", "global"])
+    end
+
+    it "lists a configured local source's definitions as source:1, hiding the preset" do
+      expect(listed.slice("rpiv", "extra")).to eq("rpiv" => ["source:1", nil], "extra" => ["source:1", nil])
+    end
+
+    it "warns that a preset's file is shadowed by a source definition of that id" do
+      preset = File.join(config.builtin_workflows_dir, "rpiv.yml")
+
+      run_cli("validate", preset, "--json")
+      warning = JSON.parse(out.string)["warnings"].find { |each| each["code"] == "shadowed" }
+
+      expect(warning["message"]).to include("A source:1 definition of rpiv (#{File.join(source_dir, "rpiv.yml")})")
+    end
+
+    it "warns for a source file hidden by a global definition of the id" do
+      path = File.join(config.workflows_dir, "extra.yml")
+      FileUtils.mkdir_p(config.workflows_dir)
+      File.write(path, yaml)
+
+      run_cli("validate", File.join(source_dir, "extra.yml"), "--json")
+
+      expect(JSON.parse(out.string)["warnings"].map { |each| each["code"] }).to include("shadowed")
+    end
+  end
+
   describe "which project a directory belongs to" do
     let(:team_path) { put_project("myapp", "team", yaml.sub("Team flow", "PROJTEAM")) }
 

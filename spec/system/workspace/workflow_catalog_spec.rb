@@ -467,4 +467,85 @@ RSpec.describe Workspace::WorkflowCatalog do
       end
     end
   end
+
+  describe "workflow sources" do
+    let(:src1) { File.join(@dir, "src1") }
+    let(:src2) { File.join(@dir, "src2") }
+    let(:slots) { [src1, src2] }
+    let(:with_sources) { described_class.new(config: config, sources: -> { slots }) }
+    let(:body) { "steps:\n  a:\n    prompt: P\n" }
+
+    it "finds a definition in a source directory and reports its source:N scope" do
+      write(src2, "extra", body)
+
+      expect(with_sources.locate("extra")).to eq(["source:2", File.join(src2, "extra.yml")])
+      expect(with_sources.find("extra").source).to eq("source:2")
+      expect(with_sources.list.find { |row| row["id"] == "extra" }["source"]).to eq("source:2")
+      expect(with_sources.scope_of(File.join(src2, "extra.yml"))).to eq("source:2")
+    end
+
+    it "orders project, global, sources, then builtin" do
+      project_dir = File.join(@dir, "projects", "app", "workflows")
+      [project_dir, global_dir, src1, src2].each { |dir| write(dir, "rpiv", body) }
+
+      expect(with_sources.ordered_sources("app")).to eq(%w[project global source:1 source:2 builtin])
+      expect(with_sources.locate("rpiv", project: "app").first).to eq("project")
+      FileUtils.rm(File.join(project_dir, "rpiv.yml"))
+      expect(with_sources.locate("rpiv", project: "app").first).to eq("global")
+      FileUtils.rm(File.join(global_dir, "rpiv.yml"))
+      expect(with_sources.locate("rpiv").first).to eq("source:1")
+      FileUtils.rm(File.join(src1, "rpiv.yml"))
+      expect(with_sources.locate("rpiv").first).to eq("source:2")
+      FileUtils.rm(File.join(src2, "rpiv.yml"))
+      expect(with_sources.locate("rpiv").first).to eq("builtin")
+    end
+
+    it "resolves the same id in list order" do
+      write(src1, "shared", "title: One\n" + body)
+      write(src2, "shared", "title: Two\n" + body)
+
+      expect(with_sources.find("shared").to_h["title"]).to eq("One")
+    end
+
+    it "skips a missing slot and keeps the numbers of the listed sources" do
+      write(src2, "extra", body)
+      catalog = described_class.new(config: config, sources: -> { [nil, src2] })
+
+      expect(catalog.ordered_sources).to eq(%w[global source:2 builtin])
+      expect(catalog.locate("extra").first).to eq("source:2")
+    end
+
+    it "adds no layer without a sources callable" do
+      expect(catalog.ordered_sources).to eq(%w[global builtin])
+    end
+
+    it "lets a source workflow extend a preset" do
+      write(src1, "child", "extends: rpiv\ntitle: Child\n")
+
+      expect(with_sources.find("child").to_h["steps"].map { |step| step["id"] }).to eq(["a"])
+    end
+
+    it "reaches the preset, not itself, for a source rpiv extending rpiv" do
+      write(src1, "rpiv", "extends: rpiv\ntitle: Mine\nsteps:\n  b:\n    prompt: Q\n")
+
+      data = with_sources.find("rpiv").to_h
+      expect([data["title"], data["steps"].map { |step| step["id"] }]).to eq(["Mine", %w[a b]])
+    end
+
+    it "lets a source rpiv reach a later source before the preset" do
+      write(src1, "rpiv", "extends: rpiv\nsteps:\n  b:\n    prompt: Q\n")
+      write(src2, "rpiv", "title: Later\nsteps:\n  c:\n    prompt: R\n")
+
+      expect(with_sources.find("rpiv").to_h["steps"].map { |step| step["id"] }).to eq(%w[c b])
+    end
+
+    it "resolves a sibling extend of a different id inside the source directory" do
+      write(src1, "base", "title: Base\n" + body)
+      write(src1, "derived", "extends: base\n")
+
+      data = with_sources.find("derived").to_h
+      expect(data["steps"].map { |step| step["id"] }).to eq(["a"])
+      expect(with_sources.parent("base", project: nil)["source"]).to eq("source:1")
+    end
+  end
 end

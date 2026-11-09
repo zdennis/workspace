@@ -315,6 +315,7 @@ require_relative "workspace/handoff_watcher"
 require_relative "workspace/hooks_config"
 require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
+require_relative "workspace/workflow_source_dirs"
 require_relative "workspace/focus_config"
 require_relative "workspace/workflow_defaults"
 require_relative "workspace/workflow_branch_inputs"
@@ -702,7 +703,8 @@ module Workspace
         [e.message, nil]
       end,
       source: skill_source, ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
-    workflow_catalog = WorkflowCatalog.new(config: config)
+    workflow_source_dirs = WorkflowSourceDirs.new(config_resolver: config_resolver, state_dir: config.state_dir)
+    workflow_catalog = WorkflowCatalog.new(config: config, sources: workflow_source_dirs)
     workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
     workflow_needs_me = WorkflowNeedsMe.new
     protected_branch = ProtectedBranch.new(git: git)
