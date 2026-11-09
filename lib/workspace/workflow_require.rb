@@ -20,7 +20,7 @@ module Workspace
   # Three more: `command` (the project's `commands.test` or `commands.lint` exits 0, run like a `status:` command
   # through {WorkflowCheck} in the checkout, 5 minutes at most), `inbox_item` (the workspace's own inbox holds an
   # item with the rendered dedupe key, in any state, updated since the attempt began) and `remote_unchanged` (the
-  # branch on its remote is as it was when the attempt began, `attempt["remote"]`, which the engine reads after
+  # branch on its remote is as it was when the attempt began, `attempt.remote`, which the engine reads after
   # {#remote_baseline?} says so, before the agent is typed to).
   #
   # `command` takes `optional: true` beside it: an unset command then passes, answered as `{"skipped" => record}` for the
@@ -106,9 +106,9 @@ module Workspace
       Array(step["require"]).any? { |entry| entry.key?("remote_unchanged") }
     end
 
-    # @param run [Hash{String=>Object}] a stored run
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @param step [Hash{String=>Object}] the step's definition; a step without "require" passes
-    # @param attempt [Hash{String=>Object}] the attempt that ended
+    # @param attempt [WorkflowRun::Attempt, Hash{String=>Object}] the attempt that ended
     # @param from [Integer] the index of the `require` entry to start at
     # @return [Hash{String=>Object}, nil] nil when every proof passes; `{"skipped" => record}` for an optional `command` that is unset (go on from "index" + 1); `{"outside" => pending}` when the next proof
     #   is one to give to {#run_outside} (pending: "proof", "token" (this run of it), "index", "timeout", and "role", "command", "log",
@@ -116,6 +116,8 @@ module Workspace
     #   `require_remote_unreachable`), "detail" (what was required and found), "unproven" (true when it could not be
     #   checked) and, for `commits`, "required", "found" and "base"; for `exec`, "program" (as written) and "log"
     def check(run:, step:, attempt:, from: 0)
+      run = WorkflowRun.from_h(run)
+      attempt = WorkflowRun::Attempt.from_h(attempt)
       Array(step["require"]).each_with_index do |entry, index|
         next if index < from
         name, value = entry.first
@@ -164,11 +166,11 @@ module Workspace
     end
 
     def commits(required, run, attempt)
-      base = attempt.dig("head", "before")
+      base = attempt.head&.dig("before")
       short = base.to_s[0, 7]
       noun = "#{required} commit#{"s" unless required == 1}"
       return unproven("required #{noun}, but this attempt has no recorded starting commit") if base.nil?
-      count = @guard.commits_since(run["worktree"], base)
+      count = @guard.commits_since(run.worktree, base)
       return unproven("required #{noun} since #{short}, but git could not count them") if count.nil?
       if count == :history_rewritten
         detail = "required #{noun} since #{short}, but #{short} is not an ancestor of HEAD, so history was rewritten"
@@ -179,7 +181,7 @@ module Workspace
     end
 
     def nonempty(file, run)
-      dir = run["artifacts_dir"]
+      dir = run.artifacts_dir
       return unproven("required #{file} to be non-empty, but the run has no artifacts directory recorded") unless dir.is_a?(String) && !dir.empty?
       path = File.join(dir, file)
       result = WorkflowProduced.inspect_file(path, strict: true)
@@ -199,7 +201,7 @@ module Workspace
     private_constant :RULE_TEXT
 
     def plan_status(wanted, run)
-      dir = @notes_dir_of.call(run["workspace"])
+      dir = @notes_dir_of.call(run.workspace)
       return unproven("required plan status #{wanted}, but the workspace's notes directory could not be found") if dir.nil?
       plan = PlanFile.read(File.join(dir, PlanFile::FILE_NAME))
       return {"detail" => "required plan status #{wanted}, found no #{PlanFile::FILE_NAME}"} if plan.nil?
@@ -213,19 +215,19 @@ module Workspace
     end
 
     def tracked_clean(run)
-      paths = @guard.dirty_paths(run["worktree"], base: run)
+      paths = @guard.dirty_paths(run.worktree, base: run)
       return unproven("required no changed tracked files, but git could not say") if paths.nil?
-      return {"detail" => "required no changed tracked files, found a rebase, merge, cherry-pick, revert or bisect in progress (or git could not say)"} if @guard.operation_in_progress?(run["worktree"])
+      return {"detail" => "required no changed tracked files, found a rebase, merge, cherry-pick, revert or bisect in progress (or git could not say)"} if @guard.operation_in_progress?(run.worktree)
       return nil if paths.empty?
       {"detail" => "required no changed tracked files, found #{"at least " if paths.size >= WorkflowGuard::MAX_PATHS}#{paths.size} (#{paths.first(5).join(", ")})", "paths" => paths}
     end
 
     def command(role, run, attempt, optional = false)
-      configured = @commands_config&.for_project(run["project"])&.[](role.to_s.to_sym)
+      configured = @commands_config&.for_project(run.project)&.[](role.to_s.to_sym)
       return {"skipped" => {"proof" => "command", "role" => role, "skipped" => "command_unset", "optional" => true}} if optional && !configured
       return unproven("required the project's #{role} command to exit 0, but #{@checker ? "it is not set" : "no checker is available"}") unless configured && @checker
       token = SecureRandom.hex(4)
-      log = File.join(run["artifacts_dir"].to_s, "steps", "#{run["current"]}.#{attempt["n"]}.require-#{role}.#{token}.log")
+      log = File.join(run.artifacts_dir.to_s, "steps", "#{run.current}.#{attempt.n}.require-#{role}.#{token}.log")
       {"outside" => {"proof" => "command", "token" => token, "role" => role, "command" => configured, "log" => log, "timeout" => COMMAND_TIMEOUT}}
     end
 
@@ -247,27 +249,27 @@ module Workspace
       wanted = "required #{argv.first} to exit 0"
       return exec_unproven(argv, "#{wanted}, but no checker is available") unless @checker
       used = list_names(argv)
-      head_before = present(attempt.dig("head", "before"))
-      base_sha = present(run["base_sha"])
+      head_before = present(attempt.head&.dig("before"))
+      base_sha = present(run.base_sha)
       (used & %w[changed.files changed.tests]).each do |name|
         return exec_unproven(argv, "#{wanted}, but its {{#{name}}} needs the commit this attempt began at, and this attempt has none recorded") unless head_before
       end
       if used.include?("run.changed.files") && !base_sha
         return exec_unproven(argv, "#{wanted}, but its {{run.changed.files}} needs the commit the run began at, and the run has none recorded")
       end
-      globs, problem = test_globs(run["workspace"])
+      globs, problem = test_globs(run.workspace)
       if used.include?("changed.tests") && globs.empty?
-        return exec_unproven(argv, "#{wanted}, but its {{changed.tests}} needs commands.test_files, which #{problem || "is not set for #{run["workspace"]}"}")
+        return exec_unproven(argv, "#{wanted}, but its {{changed.tests}} needs commands.test_files, which #{problem || "is not set for #{run.workspace}"}")
       end
       token = SecureRandom.hex(4)
-      log = File.join(run["artifacts_dir"].to_s, "steps", "#{run["current"]}.#{attempt["n"]}.require-exec-#{index}.#{token}.log")
-      scalars = {"checkout" => run["worktree"].to_s, "artifacts" => run["artifacts_dir"].to_s, "workspace" => run["workspace"].to_s,
-                 "run" => run["id"].to_s, "run.base_sha" => base_sha.to_s, "attempt.head_before" => head_before.to_s}
-        .merge(run["inputs"].to_h.to_h { |name, value| ["inputs.#{name}", value.to_s] })
+      log = File.join(run.artifacts_dir.to_s, "steps", "#{run.current}.#{attempt.n}.require-exec-#{index}.#{token}.log")
+      scalars = {"checkout" => run.worktree.to_s, "artifacts" => run.artifacts_dir.to_s, "workspace" => run.workspace.to_s,
+                 "run" => run.id.to_s, "run.base_sha" => base_sha.to_s, "attempt.head_before" => head_before.to_s}
+        .merge(run.inputs.to_h.to_h { |name, value| ["inputs.#{name}", value.to_s] })
       {"outside" => {"proof" => "exec", "token" => token, "program" => argv.first, "log" => log,
                      "timeout" => entry["timeout"] || WorkflowDefinition::EXEC_DEFAULT_TIMEOUT,
                      FACTS_KEY => {"argv" => argv, "head_before" => head_before, "base_sha" => base_sha,
-                                   "base_guard" => run["base_guard"], "test_files" => globs, "scalars" => scalars}}}
+                                   "base_guard" => run.base_guard, "test_files" => globs, "scalars" => scalars}}}
     end
 
     # Outside the lock: lists the changed files, writes each list that could be read to its NUL file in a private
@@ -366,13 +368,13 @@ module Workspace
     # `InboxStore` stamps `updated_at` in whole seconds, so the attempt's start is cut to seconds too.
     def inbox_item(template, run, attempt)
       return unproven("required an inbox item #{template}, but no inbox is available") unless @inbox_for
-      key = WorkflowDefinition.render(template, {"run" => run["id"], "workspace" => run["workspace"]}.merge(run["inputs"].to_h.transform_keys { |name| "inputs.#{name}" }))
+      key = WorkflowDefinition.render(template, {"run" => run.id, "workspace" => run.workspace}.merge(run.inputs.to_h.transform_keys { |name| "inputs.#{name}" }))
       return unproven("required an inbox item #{template}, but it renders to #{key.inspect[0, 80]}, which is not a valid dedupe key") unless key.match?(KEY_PATTERN)
-      item = @inbox_for.call(run["workspace"]).list.find { |each| each["dedupe_key"] == key }
-      wanted = "required an inbox item with dedupe key #{key} in workspace #{run["workspace"]}'s inbox"
+      item = @inbox_for.call(run.workspace).list.find { |each| each["dedupe_key"] == key }
+      wanted = "required an inbox item with dedupe key #{key} in workspace #{run.workspace}'s inbox"
       return {"detail" => "#{wanted}, found none (an item added with --project or --global is in another inbox and does not count)"} unless item
-      return nil if updated_since?(item, attempt["started_at"])
-      {"detail" => "#{wanted}, updated since this attempt began at #{attempt["started_at"]}, found one last updated at #{item["updated_at"].inspect} " \
+      return nil if updated_since?(item, attempt.started_at)
+      {"detail" => "#{wanted}, updated since this attempt began at #{attempt.started_at}, found one last updated at #{item["updated_at"].inspect} " \
         "(adding to a key whose item is done or dismissed changes nothing: pass --reopen)"}
     end
 
@@ -383,7 +385,7 @@ module Workspace
     end
 
     def remote_unchanged(attempt)
-      before = attempt["remote"]
+      before = attempt.remote
       return unproven("required the remote branch to be unchanged, but this attempt recorded no remote state") unless before.is_a?(Hash)
       return unproven("required the remote branch to be unchanged, but it could not be read when this attempt began: #{unread_text(before["unread"])}") if before["unread"]
       {"outside" => {"proof" => "remote_unchanged", "token" => SecureRandom.hex(4), "before" => before, "timeout" => WorkflowGuard::REMOTE_READ_LIMIT}}

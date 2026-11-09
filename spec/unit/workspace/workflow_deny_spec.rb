@@ -69,7 +69,7 @@ RSpec.describe Workspace::WorkflowDeny do
 
   it "reads nothing when the pane is not bound to a run" do
     allow(bound_run).to receive(:run_id).and_return(nil)
-    expect(store).not_to receive(:find)
+    expect(store).not_to receive(:run)
 
     expect(check("git push")).to be_nil
   end
