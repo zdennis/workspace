@@ -130,6 +130,59 @@ module Workspace
       raise store_error(e)
     end
 
+    # The typed reads and the typed write are built over {#find}, {#active},
+    # {#archived} and {#update}, so every read and write still passes through
+    # those until they become wrappers.
+
+    # @param id [String] a run id
+    # @return [WorkflowRun] the run, going or finished
+    # @raise [Workspace::Error] code `unknown_run` when no run has that id
+    def run(id)
+      WorkflowRun.from_h(find(id))
+    end
+
+    # @return [Array<WorkflowRun>] every run that has not finished, oldest first
+    def going
+      active.map { |run| WorkflowRun.from_h(run) }
+    end
+
+    # @return [Array<WorkflowRun>] finished runs, newest first
+    def finished
+      archived.map { |run| WorkflowRun.from_h(run) }
+    end
+
+    # @param path [String] a checkout path
+    # @return [WorkflowRun, nil] the run going whose worktree is that checkout (compared by realpath); nil when none, or when a path cannot be resolved
+    def on_checkout(path)
+      target = File.realpath(path)
+      going.find do |run|
+        worktree = run.to_h["worktree"]
+        worktree.is_a?(String) && File.realpath(worktree) == target
+      rescue SystemCallError
+        false
+      end
+    rescue SystemCallError
+      nil
+    end
+
+    # Changes one run as {#update} does (same lock, errors, retried archive and
+    # archive of a run the block finished), with the run as a frozen value.
+    #
+    # @param id [String] a run id
+    # @param nonblocking [Boolean] return nil at once when another process is changing the run
+    # @yieldparam run [WorkflowRun] the stored run
+    # @yieldreturn [WorkflowRun, nil] the run to store; nil stores the run as read
+    # @return [WorkflowRun, nil] the run stored; nil when `nonblocking` and the run is busy
+    # @raise [Workspace::Error] code `unknown_run`, or `run_not_active` for a finished run
+    def change(id, nonblocking: false)
+      update(id, nonblocking: nonblocking) do |hash|
+        read_value = WorkflowRun.from_h(hash)
+        stored = yield(read_value) || read_value
+        hash.replace(stored.to_h)
+        stored
+      end
+    end
+
     # Appends one line to a run's history. Never raises: the history is a
     # record, and a run must not stop because it can't be written.
     #

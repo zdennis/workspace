@@ -499,4 +499,118 @@ RSpec.describe Workspace::WorkflowRunStore do
 
     expect { create }.to raise_error(Workspace::Error, /Could not access the workflow run store at #{Regexp.escape(runs_dir)}/)
   end
+
+  describe "typed methods" do
+    it "reads a run, the runs going and the runs finished as frozen WorkflowRun values equal to the Hash reads" do
+      create
+      create
+      store.update("wr_2") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+
+      expect(store.run("wr_1")).to be_a(Workspace::WorkflowRun).and be_frozen
+      expect(store.run("wr_1").to_h).to eq(store.find("wr_1"))
+      expect(store.run("wr_2").to_h).to eq(store.find("wr_2"))
+      expect(store.going.map(&:to_h)).to eq(store.active)
+      expect(store.finished.map(&:to_h)).to eq(store.archived)
+      expect(store.going.size).to eq(1)
+      expect(store.finished.size).to eq(1)
+      expect { store.run("wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+
+    it "finds the run going on a checkout by realpath" do
+      checkout = File.join(@dir, "checkout")
+      FileUtils.mkdir_p(checkout)
+      link = File.join(@dir, "link")
+      File.symlink(checkout, link)
+      create("worktree" => checkout)
+      create("worktree" => File.join(@dir, "missing"))
+
+      expect(store.on_checkout(link).to_h["id"]).to eq("wr_1")
+      expect(store.on_checkout(@dir)).to be_nil
+      expect(store.on_checkout(File.join(@dir, "missing"))).to be_nil
+    end
+
+    it "reads through the Hash methods" do
+      create
+      calls = []
+      probe = Class.new(described_class) do
+        define_method(:find) { |id| (calls << :find) && super(id) }
+        define_method(:active) { (calls << :active) && super() }
+        define_method(:archived) { (calls << :archived) && super() }
+        define_method(:update) { |id, **kw, &block| (calls << :update) && super(id, **kw, &block) }
+      end.new(dir: runs_dir, archive_dir: archive_dir)
+
+      probe.run("wr_1")
+      probe.going
+      probe.finished
+      probe.change("wr_1") { |run| run }
+
+      expect(calls).to eq(%i[find active archived update])
+    end
+
+    it "stores the run the block returns and returns it" do
+      create
+
+      result = store.change("wr_1") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("note" => "kept")) }
+
+      expect(result).to be_a(Workspace::WorkflowRun)
+      expect(result.to_h["note"]).to eq("kept")
+      expect(store.find("wr_1")["note"]).to eq("kept")
+    end
+
+    it "stores the run it read when the block returns nil" do
+      create
+      before = File.read(File.join(runs_dir, "wr_1.json"))
+
+      result = store.change("wr_1") { |_run| nil }
+
+      expect(result.to_h).to eq(store.find("wr_1"))
+      expect(File.read(File.join(runs_dir, "wr_1.json"))).to eq(before)
+    end
+
+    it "archives a run the block finished, as update does" do
+      create
+
+      store.change("wr_1") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z")) }
+
+      expect(File.exist?(File.join(runs_dir, "wr_1.json"))).to be(false)
+      expect(File.exist?(File.join(archive_dir, "wr_1.json"))).to be(true)
+      expect(File.exist?(File.join(runs_dir, "wr_1.lock"))).to be(false)
+      expect(store.finished.map { |r| r.to_h["id"] }).to eq(["wr_1"])
+    end
+
+    it "raises unknown_run and run_not_active as update does, and retries the archive of a finished run still going" do
+      create
+      expect { store.change("wr_nope") { |run| run } }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+
+      path = File.join(runs_dir, "wr_1.json")
+      File.write(path, JSON.pretty_generate(store.find("wr_1").merge("state" => "failed", "ended_at" => "2026-10-04T13:00:01Z")))
+      expect { store.change("wr_1") { |run| run } }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
+      expect(File.exist?(path)).to be(false)
+      expect(File.exist?(File.join(archive_dir, "wr_1.json"))).to be(true)
+      expect { store.change("wr_1") { |run| run } }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
+    end
+
+    it "returns nil from a nonblocking change while another process changes the run, without yielding" do
+      create
+      reader, writer = IO.pipe
+      release_reader, release_writer = IO.pipe
+      pid = fork do
+        described_class.new(dir: runs_dir, archive_dir: archive_dir).update("wr_1") do |run|
+          writer.puts "held"
+          release_reader.gets
+          run["note"] = "held"
+        end
+        exit!(0)
+      end
+      reader.gets
+      yielded = false
+
+      expect(store.change("wr_1", nonblocking: true) { |run| (yielded = true) && run }).to be_nil
+      expect(yielded).to be(false)
+
+      release_writer.puts "go"
+      Process.wait(pid)
+      expect(store.find("wr_1")["note"]).to eq("held")
+    end
+  end
 end
