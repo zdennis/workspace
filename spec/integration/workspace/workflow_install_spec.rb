@@ -270,6 +270,74 @@ RSpec.describe "workflow install over a real cache directory" do
     end
   end
 
+  describe "uninstall" do
+    let(:entries) { ["acme/widgets/wf", local("src")] }
+    let(:cache) { Workspace::WorkflowSourceDirs.cache_dir(state, "acme/widgets/wf") }
+    let(:responses) do
+      {listing: [{"type" => "file", "name" => "ship.yml", "path" => "wf/ship.yml", "sha" => "s1"}],
+       files: {"ship.yml" => step_yaml}}
+    end
+
+    before do
+      write(local("src"), "ship", step_yaml)
+      command.install
+      expect(Dir.exist?(cache)).to be(true)
+    end
+
+    it "removes each GitHub source's cache and leaves the local source in place" do
+      row = command.uninstall(yes: true)
+
+      expect(row["outcome"]).to eq("uninstalled")
+      expect(Dir.exist?(cache)).to be(false)
+      expect(File.exist?(File.join(local("src"), "ship.yml"))).to be(true)
+      expect(row["sources"].map { |s| [s["index"], s["outcome"]] }).to eq([[1, "removed"], [2, "local"]])
+      expect(out.string).to include("Removed 1 of 2 source caches")
+      expect(out.string).to include("config unset workflows.sources")
+    end
+
+    it "never touches the presets or the user's workflows directory" do
+      write(global_dir, "mine", step_yaml)
+      builtin_before = Dir.children(builtin_dir)
+
+      command.uninstall(yes: true)
+
+      expect(File.exist?(File.join(global_dir, "mine.yml"))).to be(true)
+      expect(Dir.children(builtin_dir)).to eq(builtin_before)
+    end
+
+    it "reports absent on the second run" do
+      command.uninstall(yes: true)
+
+      row = command.uninstall(yes: true)
+
+      expect(row["outcome"]).to eq("unchanged")
+      expect(row["sources"].first["outcome"]).to eq("absent")
+    end
+
+    it "removes nothing under --dry-run" do
+      row = command.uninstall(dry_run: true)
+
+      expect(row["outcome"]).to eq("dry_run")
+      expect(Dir.exist?(cache)).to be(true)
+      expect(row["sources"].first["outcome"]).to eq("dry_run")
+    end
+
+    it "removes nothing when the stored list can't be parsed, as the catalog reads none of it" do
+      FileUtils.rm_rf(local("src"))
+      bad_resolver = double(view: double(raw: "relative/path, acme/widgets/wf"))
+      bad_installer = Workspace::WorkflowSourceInstaller.new(config: config, state_dir: state,
+        source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: bad_resolver, state_dir: state, home: @dir),
+        fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir))
+      bad_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
+        files: double, run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: bad_installer, output: out, error_output: err)
+
+      row = bad_command.uninstall(yes: true)
+
+      expect(row["outcome"]).to eq("unchanged")
+      expect(Dir.exist?(cache)).to be(true)
+    end
+  end
+
   describe "--source N" do
     let(:entries) { [local("one"), local("two")] }
 

@@ -298,6 +298,25 @@ module Workspace
           ["workspace workflow list --name app", "the definitions the app workspace's project reads first"]
         ]
       },
+      "uninstall" => {
+        usage: ["workflow uninstall [--yes] [--dry-run] [--json]"],
+        summary: "Remove every workflow installed from the workflows.sources entries",
+        about: [
+          "Deletes the cache directory of each GitHub source, so its workflows are no longer found",
+          "(the presets and your own files in ~/.config/workspace/workflows/ are never touched). A local",
+          "source is read where it is, so there is nothing to remove and it is only reported. The",
+          "entries stay listed in workflows.sources; unset them with `workspace config unset",
+          "workflows.sources` (the report says so). Asks before it deletes; --yes skips the question.",
+          "See docs/README.workflow.md."
+        ],
+        options: [["--yes", "Do not ask before deleting"],
+          ["--dry-run", "Report what would be removed and delete nothing; asks nothing"], JSON_OPT],
+        examples: [
+          ["workspace workflow uninstall", "ask, then remove every source's installed workflows"],
+          ["workspace workflow uninstall --dry-run", "see which sources have a cache, and remove nothing"],
+          ["workspace workflow uninstall --yes --json", "remove without asking, as one document, for a script"]
+        ]
+      },
       "show" => {
         usage: ["workflow show [ID] [--source] [--json]"],
         summary: "Print one workflow (its inputs and steps)",

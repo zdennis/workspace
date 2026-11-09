@@ -5086,7 +5086,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[list show validate add update remove install run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5147,7 +5147,7 @@ module Workspace
         opts.on("--install", "sweep: install the launchd entry that runs the sweep every 5 minutes (a per-user LaunchAgent; opt-in)") { options[:schedule_flags] << :install }
         opts.on("--uninstall", "sweep: unload and remove that launchd entry") { options[:schedule_flags] << :uninstall }
         opts.on("--installed", "sweep: say whether that launchd entry is installed and loaded") { options[:schedule_flags] << :status }
-        opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
+        opts.on("--yes", "remove, uninstall: do not ask before deleting") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
         opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
         opts.on("--branch BRANCH", "start: the branch for a --prompt (default: the prompt's words); refused with a REF") { |v| options[:branch] = v }
@@ -5192,7 +5192,7 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
@@ -5229,6 +5229,7 @@ module Workspace
       raise UsageError, "workflow install takes no argument; --source N installs only the Nth source." if subcommand == "install" && subject && !options[:source]
       raise UsageError, "--source N is not a position: use a whole number from 1." if subcommand == "install" && subject && !subject.match?(/\A[1-9][0-9]{0,5}\z/)
       raise UsageError, "--dry-run does not apply to `workflow install`." if subcommand == "install" && options[:dry_run]
+      raise UsageError, "workflow uninstall takes no argument." if subcommand == "uninstall" && subject
       gate_options = workflow_gate_options(subcommand, options)
       extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
       extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
@@ -5252,6 +5253,7 @@ module Workspace
       case subcommand
       when "list" then @workflow_command.list(json: options[:json], project: workflow_project(options))
       when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source], project: workflow_project(options))
+      when "uninstall" then workflow_action("workflow uninstall", options) { @workflow_command.uninstall(yes: options[:yes], dry_run: options[:dry_run], json: options[:json]) }
       when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json], project: workflow_project(options))
       when "render"
         name = workflow_workspace(options)

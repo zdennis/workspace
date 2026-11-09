@@ -12,6 +12,7 @@ workspace workflow add ID PATH|- [--dry-run] [--json]
 workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
 workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow install [--source N] [--json]
+workspace workflow uninstall [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow render ID STEP [--name WORKSPACE] [--input KEY=VALUE]... [--json]
 workspace workflow check ID STEP [--artifacts DIR] [--name WORKSPACE] [--json]
@@ -537,7 +538,7 @@ Each file of each source is checked through the same lookup a run uses, so an `e
 
 Run it again to update. The report names, per source, the workflows that are new (`installed`), `changed` or `removed` since the cached version, and warns (`shadowed`) when a source's definition hides a preset or an earlier source's definition of the same id, or is itself hidden by one of yours. Each definition shows its provenance in `workflow show` as `source:N`, the position in `workflows.sources`. `--source N` installs only the source at position N (1 is the first); write the number after the flag. With nothing listed, `install` says so and exits 0. `--json` prints one document: `outcome` (`installed`, `unchanged` or `failed`), a `sources` row each (`index`, `source`, `kind`, `path`, `outcome`, `installed`, `changed`, `removed`, `workflows`, `problems`) and `warnings`. A refused source makes the outcome `failed` and the exit code 1.
 
-To stop using a source, remove it from `workflows.sources` and delete its cache directory, `<state>/.workflows-sources/<sha256-of-source>/`; the report prints that path for each GitHub source.
+To stop using a source, remove it from `workflows.sources` and delete its cache directory, `<state>/.workflows-sources/<sha256-of-source>/`; the report prints that path for each GitHub source. `workflow uninstall [--yes] [--dry-run] [--json]` does the cache half in one move: it deletes every GitHub source's cache directory (so the presets and your own files in `~/.config/workspace/workflows/` are all that is found again), reports a local source without touching it (it is read in place, so there is nothing to remove), and never edits `workflows.sources` — the report says to unset the entries with `workspace config unset workflows.sources`. It asks before it deletes; `--yes` skips the question, `--dry-run` removes nothing and asks nothing.
 
 Other codes: `workflow_source_invalid` (an entry is not a usable source), `workflow_source_local_missing` (a local directory is not readable), `workflow_source_failed` (`gh` could not read the directory, or timed out).
 

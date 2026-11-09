@@ -58,6 +58,44 @@ module Workspace
       end
     end
 
+    # Drops every workflow installed from the `workflows.sources` entries: the cache
+    # directory of each GitHub source is deleted, a local source is only reported (it is
+    # read where it is, so there is nothing to remove), and the presets and the user's own
+    # files are never touched. The entries stay listed in `workflows.sources`.
+    #
+    # @param dry_run [Boolean]
+    # @return [Hash{String=>Object}] "sources" (a row per entry: "index", "source", "kind",
+    #   "outcome" `removed`, `absent` or `local`, "path") and "removed" (the count)
+    def uninstall(dry_run: false)
+      entries = begin
+        @source_dirs.entries
+      rescue Workspace::ConfigParseError, ArgumentError
+        # A stored list the schema refuses is one the catalog reads as nothing, so
+        # there is nothing installed from a source to remove.
+        return {"sources" => [], "removed" => 0}
+      end
+      rows = entries.each_with_index.map do |entry, i|
+        parsed = WorkflowSource.parse(entry)
+        row = {"index" => i + 1, "source" => entry, "kind" => parsed.kind.to_s, "path" => nil, "outcome" => nil}
+        if parsed.kind == :local
+          row.merge("outcome" => "local", "path" => parsed.path)
+        else
+          target = WorkflowSourceDirs.cache_dir(@state_dir, entry)
+          present = File.directory?(target)
+          FileUtils.rm_rf(target) if present && !dry_run
+          outcome = if present
+            dry_run ? "dry_run" : "removed"
+          else
+            "absent"
+          end
+          row.merge("outcome" => outcome, "path" => target)
+        end
+      rescue Workspace::UsageError
+        {"index" => i + 1, "source" => entry, "kind" => "invalid", "path" => nil, "outcome" => "invalid"}
+      end
+      {"sources" => rows, "removed" => rows.count { |row| row["outcome"] == "removed" }}
+    end
+
     private
 
     Staged = Struct.new(:dir, :local, :manifest, :staging, :target, keyword_init: true)

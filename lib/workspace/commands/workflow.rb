@@ -361,6 +361,51 @@ module Workspace
         {"workspace" => nil, "outcome" => outcome, "reason" => nil, "message" => message, "sources" => rows, "warnings" => result["warnings"]}
       end
 
+      # Deletes every workflow installed from the `workflows.sources` entries (a GitHub
+      # source's cache directory), leaving the presets and the user's own files in place. A
+      # local source is only reported: it is read where it is, so there is nothing to
+      # remove. The entries stay listed in `workflows.sources`; the report says how to drop
+      # them too. Without +yes+ (and not a dry run) it asks first; "y" confirms.
+      #
+      # @param yes [Boolean] skip the prompt
+      # @param dry_run [Boolean] report and delete nothing; needs no +yes+
+      # @param json [Boolean]
+      # @return [Hash{String=>Object}, nil] the action row: outcome "uninstalled",
+      #   "dry_run" or "unchanged", with "sources" (a row each); nil when the prompt was declined
+      def uninstall(yes: false, dry_run: false, json: false)
+        unless yes || dry_run
+          answer = Prompt.ask(@input, @output, "Uninstall every workflow installed from workflows.sources? [y/N] ", retry_flags: ["--yes"], destructive: true)
+          unless answer.to_s.strip.casecmp?("y")
+            @output.puts "Cancelled."
+            return nil
+          end
+        end
+        result = @source_installer.uninstall(dry_run: dry_run)
+        rows = result["sources"]
+        removed = result["removed"]
+        outcome = if dry_run
+          "dry_run"
+        elsif removed.zero?
+          "unchanged"
+        else
+          "uninstalled"
+        end
+        message = if rows.empty?
+          "No workflows.sources are set; nothing is installed from a source."
+        elsif removed.positive?
+          "#{dry_run ? "Would remove" : "Removed"} #{removed} of #{rows.size} source caches. The entries stay in workflows.sources; unset them with `workspace config unset workflows.sources`."
+        else
+          suffix = dry_run ? " (dry run)" : ""
+          "Nothing to remove#{suffix}: no GitHub source has a cache."
+        end
+        @output.puts message
+        rows.each do |row|
+          note = {"local" => "read in place; nothing to remove", "absent" => "no cache", "invalid" => "not a usable source", "dry_run" => "would remove", "removed" => "removed"}.fetch(row["outcome"], row["outcome"])
+          @output.puts "  source:#{row["index"]} #{TerminalText.escape(row["source"])}: #{note}"
+        end
+        {"workspace" => nil, "outcome" => outcome, "reason" => nil, "message" => message, "sources" => rows}
+      end
+
       # Refuses, before anyone is asked anything, an id that has no file of the user's.
       #
       # @param id [String]
