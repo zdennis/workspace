@@ -4,30 +4,6 @@ require "stringio"
 # Adversarial concurrency/liveness specs for restart_agent. Each example
 # documents one confirmed defect and fails against the current code.
 
-# A pane whose screen never changes; deliveries are recorded.
-class ConcurrencyRestartTmux
-  attr_reader :delivered
-
-  def initialize
-    @delivered = []
-  end
-
-  def session_name_for(_name) = "workspace-wt-myapp"
-
-  def capture_screen(_target) = "❯ "
-
-  def pane_details(_session, window: "0")
-    [{id: "%18", window: 0, index: 1, pid: 2, command: "claude", cwd: "/", title: ""}]
-  end
-
-  def deliver(session, target, text)
-    @delivered << {session: session, target: target, text: text}
-    Workspace::Tmux::Delivery.new(status: :submitted, message: "fake submitted")
-  end
-
-  def texts = @delivered.map { |d| d[:text] }
-end
-
 # A restart that runs until the spec opens its gate.
 class ConcurrencyGatedRestart
   attr_reader :entered
@@ -51,7 +27,7 @@ end
 
 RSpec.describe Workspace::AgentRestart, "adversarial concurrency" do
   let(:now) { [0.0] }
-  let(:tmux) { ConcurrencyRestartTmux.new }
+  let(:tmux) { FakeTmux.new(screens: ["❯ "], session_name: "workspace-wt-myapp", details: [{id: "%18", window: 0, index: 1, pid: 2, command: "claude", cwd: "/", title: ""}]) }
 
   def build_restart(context_reader:, pipeline_ref: ->(_index) {}, pane_state: ->(_id) {},
     wall_clock: -> { Time.utc(2026, 9, 27, 12, 0, 30) })
@@ -128,7 +104,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrenc
   let(:tmpdir) { Dir.mktmpdir("ws-restart-adv", "/tmp") }
   let(:agent_socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
   let(:output) { ReadyAnnouncingOutput.new }
-  let(:tmux) { ConcurrencyRestartTmux.new }
+  let(:tmux) { FakeTmux.new(screens: ["❯ "], session_name: "workspace-wt-myapp", details: [{id: "%18", window: 0, index: 1, pid: 2, command: "claude", cwd: "/", title: ""}]) }
   let(:error_output) { StringIO.new }
   let(:config) do
     instance_double(Workspace::Config).tap do |c|

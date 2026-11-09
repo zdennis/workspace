@@ -1,27 +1,6 @@
 require "spec_helper"
 require "tmpdir"
 
-class RestartMessageTmux < CLITestHelpers::FakeTmux
-  attr_accessor :details
-
-  def initialize
-    super
-    @details = [
-      {id: "%17", window: 0, index: 0, pid: 1, command: "zsh", cwd: "/", title: ""},
-      {id: "%18", window: 0, index: 1, pid: 2, command: "claude", cwd: "/", title: ""},
-      {id: "%30", window: 1, index: 0, pid: 3, command: "claude", cwd: "/", title: ""}
-    ]
-  end
-
-  def session_name_for(_config) = "workspace-wt-myapp"
-
-  def capture_screen(_target) = "❯ "
-
-  def pane_details(_session, window: "0")
-    window.nil? ? @details : @details.select { |d| d[:window] == window.to_i }
-  end
-end
-
 class RestartMessageMonitor
   attr_accessor :kinds, :pids, :facts, :background
 
@@ -94,7 +73,13 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   let(:agent_socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
   let(:output) { ReadyAnnouncingOutput.new }
   let(:error_output) { ReadyAnnouncingOutput.new }
-  let(:tmux) { RestartMessageTmux.new }
+  let(:tmux) {
+    FakeTmux.new(session_name: "workspace-wt-myapp", screens: ["❯ "], details: [
+      {id: "%17", window: 0, index: 0, pid: 1, command: "zsh", cwd: "/", title: ""},
+      {id: "%18", window: 0, index: 1, pid: 2, command: "claude", cwd: "/", title: ""},
+      {id: "%30", window: 1, index: 0, pid: 3, command: "claude", cwd: "/", title: ""}
+    ])
+  }
   let(:monitor) { RestartMessageMonitor.new }
   let(:config) do
     instance_double(Workspace::Config).tap do |c|

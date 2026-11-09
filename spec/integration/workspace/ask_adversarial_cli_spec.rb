@@ -13,7 +13,7 @@ RSpec.describe "workspace ask adversarial findings" do
     logger = Workspace::Logger.new(output: error_output)
     state = CLITestHelpers::FakeState.new
     window_manager = CLITestHelpers::FakeWindowManager.new
-    tmux = CLITestHelpers::FakeTmux.new
+    tmux = FakeTmux.new
     project_config = CLITestHelpers::FakeProjectConfig.new
     doctor = CLITestHelpers::FakeDoctor.new
     project_settings = CLITestHelpers::FakeProjectSettings.new

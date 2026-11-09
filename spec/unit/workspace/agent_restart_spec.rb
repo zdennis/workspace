@@ -1,40 +1,5 @@
 require "spec_helper"
 
-# A pane whose screen stays put unless a spec scripts it, and whose
-# deliveries are recorded. Time moves only when the restart sleeps.
-class RestartFakeTmux
-  # +screen_script+ replaces the screens with a callable; +on_deliver+ and +on_details+ run before the
-  # delivery and before the pane list is read.
-  attr_accessor :screens, :details, :statuses, :screen_script, :on_deliver, :on_details
-  attr_reader :delivered
-
-  def initialize
-    @screens = ["❯ "]
-    @details = [{id: "%18", window: 0, index: 1}]
-    @statuses = []
-    @delivered = []
-  end
-
-  def capture_screen(_target)
-    return @screen_script.call if @screen_script
-
-    (@screens.size > 1) ? @screens.shift : @screens.first
-  end
-
-  def pane_details(_session, window: "0")
-    raise ArgumentError, "expected every window" unless window.nil?
-    @on_details&.call
-    @details
-  end
-
-  def deliver(session, target, text)
-    @on_deliver&.call(text)
-    @delivered << {session: session, target: target, text: text}
-    status = @statuses.shift || :submitted
-    Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
-  end
-end
-
 # Readings come from a script; the last one repeats. Each carries the
 # time it was recorded, relative to the wall clock.
 class RestartFakeContextReader
@@ -55,7 +20,7 @@ end
 RSpec.describe Workspace::AgentRestart do
   let(:now) { [0.0] }
   let(:wall) { [Time.utc(2026, 9, 27, 12, 0, 0)] }
-  let(:tmux) { RestartFakeTmux.new }
+  let(:tmux) { FakeTmux.new(screens: ["❯ "], details: [{id: "%18", window: 0, index: 1}], strict_windows: true) }
   let(:pipeline_refs) { {} }
   let(:pane_states) { {} }
   let(:readings) { [] }

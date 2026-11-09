@@ -14,7 +14,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
     logger = overrides[:logger] || Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
     window_manager = overrides[:window_manager] || CLITestHelpers::FakeWindowManager.new
-    tmux = overrides[:tmux] || CLITestHelpers::FakeTmux.new
+    tmux = overrides[:tmux] || FakeTmux.new
     project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
     doctor = overrides[:doctor] || CLITestHelpers::FakeDoctor.new
     project_settings = overrides[:project_settings] || CLITestHelpers::FakeProjectSettings.new
@@ -151,7 +151,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
   # one piece of information (the configured budget) that would explain why
   # it fired is missing from the message that fires it.
   it "PU2 | low | stage-timeout failure message reports an absolute ISO deadline instead of the configured timeout duration | lib/workspace/commands/agent.rb:423 | interpolate the stage's configured timeout (e.g. \"30m\") into the failure message" do
-    tmux = CLITestHelpers::FakeTmux.new
+    tmux = FakeTmux.new
     pollers = []
     poller_class = Class.new do
       def start(on_error: nil, on_timeout: nil, &block)

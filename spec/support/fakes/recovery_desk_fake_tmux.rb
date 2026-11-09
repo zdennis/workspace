@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
 require_relative "../cli_test_helpers"
+require_relative "fake_tmux"
 
 # A tmux whose one pane shows a screen that a delivery with Enter empties and
 # one without Enter fills, for the agent recovery desk's specs.
-class RecoveryDeskFakeTmux < CLITestHelpers::FakeTmux
+class RecoveryDeskFakeTmux < FakeTmux
   attr_accessor :details, :screen, :scripted, :start_commands, :on_deliver, :gone, :on_details
 
   def initialize(screen)

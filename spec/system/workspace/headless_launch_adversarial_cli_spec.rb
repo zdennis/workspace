@@ -72,7 +72,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       state = CLITestHelpers::FakeState.new
       state["proj"] = {"iterm_window_id" => 42}
 
-      tmux = Class.new(CLITestHelpers::FakeTmux) do
+      tmux = Class.new(FakeTmux) do
         def sessions(**) = ["proj"]
 
         def start_headless(_name) = raise("should not start a session that is already running")
@@ -148,7 +148,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
     logger = Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
     window_manager = CLITestHelpers::FakeWindowManager.new
-    tmux = CLITestHelpers::FakeTmux.new
+    tmux = FakeTmux.new
     project_config = CLITestHelpers::FakeProjectConfig.new
     project_settings = CLITestHelpers::FakeProjectSettings.new
     hook_runner = CLITestHelpers::FakeHookRunner.new

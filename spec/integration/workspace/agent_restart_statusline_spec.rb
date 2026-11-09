@@ -1,25 +1,6 @@
 require "spec_helper"
 require "tmpdir"
 
-class StatuslineRestartTmux
-  attr_reader :delivered
-
-  def initialize(on_clear)
-    @on_clear = on_clear
-    @delivered = []
-  end
-
-  def capture_screen(_target) = "❯ "
-
-  def pane_details(_session, window: "0") = [{id: "%18", window: 0, index: 1}]
-
-  def deliver(_session, _target, text)
-    @delivered << text
-    @on_clear.call(text) if text == Workspace::AgentRestart::CLEAR_COMMAND
-    Workspace::Tmux::Delivery.new(status: :submitted, message: "fake")
-  end
-end
-
 # A restart against the real store and reader, with the status line's
 # writes scripted to land when /clear is typed. Claude re-renders within a
 # second of /clear, so the new conversation's first reading is often
@@ -37,7 +18,9 @@ RSpec.describe Workspace::AgentRestart, "with the status-line store" do
   let(:now) { [0.0] }
   let(:on_clear) { ->(_tmux) {} }
   let(:tmux) do
-    StatuslineRestartTmux.new(on_clear)
+    FakeTmux.new(screens: ["❯ "], details: [{id: "%18", window: 0, index: 1}], strict_windows: false).tap do |fake|
+      fake.on_deliver = ->(text) { on_clear.call(text) if text == Workspace::AgentRestart::CLEAR_COMMAND }
+    end
   end
 
   after { FileUtils.remove_entry(dir) }
@@ -65,7 +48,7 @@ RSpec.describe Workspace::AgentRestart, "with the status-line store" do
 
     it "confirms the clear and types the prompt" do
       expect(result).to include("ok" => true, "status" => "restarted", "context_before" => 42, "context_after" => nil)
-      expect(tmux.delivered).to eq(["/clear", "Read HANDOFF.md"])
+      expect(tmux.texts).to eq(["/clear", "Read HANDOFF.md"])
     end
   end
 
@@ -74,7 +57,7 @@ RSpec.describe Workspace::AgentRestart, "with the status-line store" do
 
     it "does not confirm, and the prompt is not typed" do
       expect(result).to include("ok" => false, "error" => "clear_not_confirmed")
-      expect(tmux.delivered).to eq(["/clear"])
+      expect(tmux.texts).to eq(["/clear"])
     end
   end
 
@@ -85,7 +68,7 @@ RSpec.describe Workspace::AgentRestart, "with the status-line store" do
 
     it "restarts it, confirming from the next session's reading" do
       expect(result).to include("ok" => true, "context_before" => nil, "context_after" => nil)
-      expect(tmux.delivered).to eq(["/clear", "Read HANDOFF.md"])
+      expect(tmux.texts).to eq(["/clear", "Read HANDOFF.md"])
     end
   end
 end

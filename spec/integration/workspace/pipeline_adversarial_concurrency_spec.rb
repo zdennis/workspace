@@ -71,7 +71,7 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
   let(:tmpdir) { Dir.mktmpdir("ws-pc", "/tmp") }
   let(:project_config_path) { File.join(tmpdir, "myapp.yml") }
   let(:state_path) { File.join(tmpdir, "state", "pipeline.json") }
-  let(:tmux) { CLITestHelpers::FakeTmux.new }
+  let(:tmux) { FakeTmux.new }
   let(:error_output) { StringIO.new }
   let(:output) { StringIO.new }
   let(:config) do

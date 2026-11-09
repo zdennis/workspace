@@ -20,7 +20,7 @@ RSpec.describe Workspace::CLI do
     logger = overrides[:logger] || Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
     window_manager = overrides[:window_manager] || CLITestHelpers::FakeWindowManager.new
-    tmux = overrides[:tmux] || CLITestHelpers::FakeTmux.new
+    tmux = overrides[:tmux] || FakeTmux.new
     project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
     doctor = overrides[:doctor] || CLITestHelpers::FakeDoctor.new
     project_settings = overrides[:project_settings] || CLITestHelpers::FakeProjectSettings.new
@@ -605,7 +605,7 @@ RSpec.describe Workspace::CLI do
         state = CLITestHelpers::FakeState.new
         state["my-project"] = {"unique_id" => "uid1"}
 
-        tmux = CLITestHelpers::FakeTmux.new
+        tmux = FakeTmux.new
         allow(tmux).to receive(:sessions).and_return(["my-project"])
 
         cli, output, _ = build_test_cli(state: state, tmux: tmux, working_dir: dir)
@@ -780,7 +780,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "keeps url and directory with --show-urls --json" do
-      git = ScriptedRemoteGit.new("git@h:o/r.git")
+      git = FakeGit.new(remote_url: "git@h:o/r.git")
       pc = CLITestHelpers::FakeProjectConfig.new({"up" => "/tmp/up"})
       cli, output, _ = build_test_cli(state: state, liveness: liveness, git: git, project_config: pc)
       cli.run(["list", "--liveness", "--show-urls", "--json"])
@@ -789,7 +789,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "shows the alive marker after the url column" do
-      git = ScriptedRemoteGit.new("u")
+      git = FakeGit.new(remote_url: "u")
       pc = CLITestHelpers::FakeProjectConfig.new({"up" => "/tmp/up"})
       cli, output, _ = build_test_cli(state: state, liveness: liveness, git: git, project_config: pc)
       cli.run(["list", "--liveness", "--show-urls"])
@@ -2531,7 +2531,7 @@ RSpec.describe Workspace::CLI do
       allow(composer).to receive(:compose_start)
       state = CLITestHelpers::FakeState.new
       state["proj1"] = {"unique_id" => "uid1"}
-      tmux = CLITestHelpers::FakeTmux.new
+      tmux = FakeTmux.new
       allow(tmux).to receive(:sessions).and_return(["proj1"])
       window_manager = CLITestHelpers::FakeWindowManager.new
       allow(window_manager).to receive(:iterm_windows).and_return({123 => "workspace-proj1"})
@@ -4013,7 +4013,7 @@ RSpec.describe Workspace::CLI do
       state["proj1"] = {"unique_id" => "uid1"}
       state["proj2"] = {"unique_id" => "uid2"}
 
-      tmux = CLITestHelpers::FakeTmux.new
+      tmux = FakeTmux.new
       allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
 
       iterm = CLITestHelpers::FakeITerm.new

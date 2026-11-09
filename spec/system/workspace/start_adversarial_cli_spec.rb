@@ -14,7 +14,7 @@ RSpec.describe "workspace start adversarial CLI specs" do
     logger = overrides[:logger] || Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
     window_manager = overrides[:window_manager] || CLITestHelpers::FakeWindowManager.new
-    tmux = overrides[:tmux] || CLITestHelpers::FakeTmux.new
+    tmux = overrides[:tmux] || FakeTmux.new
     project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
     doctor = overrides[:doctor] || CLITestHelpers::FakeDoctor.new
     project_settings = overrides[:project_settings] || CLITestHelpers::FakeProjectSettings.new

@@ -60,7 +60,7 @@ RSpec.describe Workspace::Commands::Agent do
 
   # Config stub that routes all socket paths into the spec's tmpdir.
   let(:project_config_path) { File.join(tmpdir, "myapp.yml") }
-  let(:tmux) { CLITestHelpers::FakeTmux.new }
+  let(:tmux) { FakeTmux.new }
 
   let(:config) do
     instance_double(Workspace::Config).tap do |c|

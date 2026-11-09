@@ -2,7 +2,7 @@ require "spec_helper"
 
 RSpec.describe Workspace::SessionMonitorBuilder do
   let(:tmux) do
-    Class.new(CLITestHelpers::FakeTmux) do
+    Class.new(FakeTmux) do
       def session_name_for(name) = "workspace-wt-#{name}"
     end.new
   end

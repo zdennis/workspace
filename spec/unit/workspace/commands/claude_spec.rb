@@ -1,7 +1,7 @@
 RSpec.describe Workspace::Commands::Claude do
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
-  let(:tmux) { CLITestHelpers::FakeTmux.new }
+  let(:tmux) { FakeTmux.new }
   let(:sleeps) { [] }
 
   subject(:command) do

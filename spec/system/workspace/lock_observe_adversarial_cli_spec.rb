@@ -16,7 +16,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
       config = Workspace::Config.new
       state = CLITestHelpers::FakeState.new
       window_manager = CLITestHelpers::FakeWindowManager.new
-      tmux = CLITestHelpers::FakeTmux.new
+      tmux = FakeTmux.new
       project_config = CLITestHelpers::FakeProjectConfig.new
       doctor = CLITestHelpers::FakeDoctor.new
       project_settings = CLITestHelpers::FakeProjectSettings.new

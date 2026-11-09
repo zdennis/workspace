@@ -1,25 +1,6 @@
 require "spec_helper"
 require "timeout"
 
-# Returns each canned capture in turn, repeating the last one forever, and
-# counts the captures taken.
-class ScriptedTmux
-  attr_reader :calls
-
-  def initialize(captures)
-    @captures = captures
-    @mutex = Mutex.new
-    @calls = 0
-  end
-
-  def capture_pane(_session, _pane, **_opts)
-    @mutex.synchronize do
-      @calls += 1
-      (@captures.size > 1) ? @captures.shift : @captures.first
-    end
-  end
-end
-
 RSpec.describe Workspace::SentinelPoller do
   let(:error_output) { StringIO.new }
 
@@ -30,7 +11,7 @@ RSpec.describe Workspace::SentinelPoller do
   # first raises, since fewer polls than that would prove less.
   def poll(captures, timeout: 10, token: nil, late_polls: 45)
     reads = captures.size + late_polls
-    tmux = ScriptedTmux.new(captures)
+    tmux = FakeTmux.new(captures: captures)
     poller = described_class.new(
       tmux: tmux, session_name: "myapp", pane: 0, token: token,
       poll_interval: 0.001, error_output: error_output
@@ -38,8 +19,8 @@ RSpec.describe Workspace::SentinelPoller do
     summary = Queue.new
     thread = poller.start { |text| summary << text }
     give_up = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
-    until !summary.empty? || tmux.calls >= reads
-      raise "poller read the pane #{tmux.calls} times in #{timeout}s" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= give_up
+    until !summary.empty? || tmux.capture_calls >= reads
+      raise "poller read the pane #{tmux.capture_calls} times in #{timeout}s" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= give_up
       sleep 0.001
     end
     poller.stop
@@ -115,7 +96,7 @@ RSpec.describe Workspace::SentinelPoller do
     # Runs one poller to its end and says which way it ended.
     def outcome(captures, now:)
       poller = described_class.new(
-        tmux: ScriptedTmux.new(captures), session_name: "myapp", pane: 0, token: "ab12",
+        tmux: FakeTmux.new(captures: captures), session_name: "myapp", pane: 0, token: "ab12",
         deadline: deadline, clock: -> { now }, poll_interval: 0.01, error_output: error_output
       )
       result = Queue.new
@@ -267,7 +248,7 @@ RSpec.describe Workspace::SentinelPoller do
 
   it "does not call on_error when the stage completes normally" do
     poller = described_class.new(
-      tmux: ScriptedTmux.new(["", "WORKSPACE_DONE: done\n"]),
+      tmux: FakeTmux.new(captures: ["", "WORKSPACE_DONE: done\n"]),
       session_name: "myapp", pane: 0, poll_interval: 0.01, error_output: error_output
     )
     failures = []
@@ -280,7 +261,7 @@ RSpec.describe Workspace::SentinelPoller do
 
   it "does not kill the calling thread when stopped from inside its callback" do
     poller = described_class.new(
-      tmux: ScriptedTmux.new(["", "WORKSPACE_DONE: done\n"]),
+      tmux: FakeTmux.new(captures: ["", "WORKSPACE_DONE: done\n"]),
       session_name: "myapp", pane: 0, poll_interval: 0.01, error_output: error_output
     )
     reached_end = Queue.new

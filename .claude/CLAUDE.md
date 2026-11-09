@@ -301,6 +301,8 @@ init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, 
 
 Every spec sits in one tier directory, which mirrors `lib/`: `spec/unit/workspace/...`, `spec/integration/workspace/...` or `spec/system/workspace/...` (a spec of the spec tooling itself, such as `spec/unit/spawn_guard_spec.rb`, sits directly under its tier). `spec_helper.rb`, `spec/support/` and `spec/fixtures/` are shared and stay at the top of `spec/`. Reach repo files through `PROJECT_ROOT` (set in `spec_helper.rb`), never through `__dir__`, so a spec can move between tiers.
 
+Shared fakes of the adapters live in `spec/support/fakes/`: `FakeTmux` (for `Tmux`; it replaced `CLITestHelpers::FakeTmux` and the per-spec restart, liveness and sentinel tmux fakes) and `FakeGit` (for `Git`). `spec/unit/fake_contract_spec.rb` holds each to its real class by the accepts-every-call rule in `spec/support/fake_contract.rb` (same required positionals, every real keyword accepted by name or `**`, nothing extra required); a section that adds a shared fake adds one `describe` block there.
+
 Place a new spec by the first rule that fits:
 
 1. It starts any process (`system`, backticks, `Open3`, `spawn`, `fork`, `IO.popen`, `PTY.spawn`, a real `git`, `tmux`, `osascript`, `ruby`, `sh`), even once or from a thread: **system**.
