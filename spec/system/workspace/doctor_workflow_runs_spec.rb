@@ -18,7 +18,8 @@ RSpec.describe Workspace::Doctor, "workflow runs" do
   def rows(fix: false) = doctor.report(fix: fix)[:rows].select { |row| row[:id].start_with?("workflow-run") }
 
   def orphan(id = "wr_1", **over)
-    {"id" => id, "workflow" => "rpiv", "workspace" => "app", "state" => "running", "why" => "its checkout /x is missing or unmounted"}.merge(over)
+    fields = {"id" => id, "workflow" => "rpiv", "workspace" => "app", "state" => "running", "worktree" => "/x", "why" => "its checkout /x is missing or unmounted"}.merge(over)
+    Workspace::WorkflowRunHealth::Orphan.new(**fields.transform_keys(&:to_sym))
   end
 
   def leak(name = "edit", **over)

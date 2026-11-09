@@ -368,9 +368,9 @@ module Workspace
 
     def orphan_row(run)
       add_row("workflow-run-orphaned", "warn",
-        "workflow run #{TerminalText.escape(run["id"])} (#{TerminalText.escape(run["workflow"])}, #{TerminalText.escape(run["state"])}) is orphaned: #{TerminalText.escape(run["why"])}",
-        fix: "check that the path is really gone (an unmounted volume comes back), then #{cancel_advice(run["id"].to_s)}; cancelling cannot be undone",
-        project: TerminalText.escape(run["workspace"]))
+        "workflow run #{TerminalText.escape(run.id)} (#{TerminalText.escape(run.workflow)}, #{TerminalText.escape(run.state)}) is orphaned: #{TerminalText.escape(run.why)}",
+        fix: "check that the path is really gone (an unmounted volume comes back), then #{cancel_advice(run.id.to_s)}; cancelling cannot be undone",
+        project: TerminalText.escape(run.workspace))
     end
 
     def cancel_advice(id)

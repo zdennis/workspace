@@ -33,6 +33,44 @@ module Workspace
   # holds the hash approve recorded and `note_changed` when the note's
   # bytes differ now.
   class WorkflowStatus
+    # One row of `workflow status`, as a frozen value over the Hash the `--json` document holds.
+    #
+    # Readers return the row's values as they are (a missing key reads nil), and {#to_h} gives
+    # back the Hash it was made from, every key in its order, so a row survives a round trip
+    # byte for byte. It never raises on a Hash with keys missing. {Workspace::InboxDerived},
+    # {Workspace::Commands::Goal} and {Workspace::GoalState} read rows through it.
+    class Row
+      # @param row [Hash{String=>Object}, Row, nil] a row as {WorkflowStatus#runs} gives it
+      # @return [Row]
+      def self.from_h(row)
+        row.is_a?(Row) ? row : new(row)
+      end
+
+      # @return [Hash{String=>Object}] the frozen Hash this row holds, as the `--json` row has it
+      attr_reader :to_h
+
+      # @param hash [Hash{String=>Object}, nil]
+      def initialize(hash)
+        @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
+        freeze
+      end
+
+      %w[id workflow title workspace state created_at pane current steps].each do |key|
+        define_method(key) { to_h[key] }
+      end
+
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(Row) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [Row, to_h].hash
+      end
+    end
+
     # Seconds to wait for the workspace's agent daemon before going on without it.
     SNAPSHOT_TIMEOUT = 1.0
 

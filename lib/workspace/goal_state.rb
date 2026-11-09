@@ -34,12 +34,12 @@ module Workspace
     def initialize(name:, member:, run:, turn:, pane:, plan_present:, delivery: nil)
       @name = name
       @member = member
-      @run = run
+      @run = run && WorkflowStatus::Row.from_h(run)
       @turn = turn
       @pane = pane
       @plan_present = plan_present
       @delivery_source = delivery
-      @reason = run&.dig("current", "reason")
+      @reason = @run&.current&.dig("reason")
       @plan_state = member.dig("plan", "state")
       @state = derive
       @waiting_on, @next_step = expect
@@ -87,7 +87,7 @@ module Workspace
     private
 
     def derive
-      flags = @run&.dig("current", "flags") || []
+      flags = @run&.current&.dig("flags") || []
       spine = @member["spine"]
       return "done" if done?(spine)
       return "waiting" if (@reason && WAITING_REASONS.include?(@reason["code"]) && !incomplete_while_working?) || @plan_state == "waiting" || @turn&.dig("state") == "waiting"
@@ -139,11 +139,11 @@ module Workspace
         counts = spine["counts"] || {}
         return true if counts["completed"].to_i + counts["skipped"].to_i == spine["stages"]
       end
-      @plan_state == "done" && (@run.nil? || @run["state"] == "completed")
+      @plan_state == "done" && (@run.nil? || @run.state == "completed")
     end
 
     def run_without_daemon?
-      @run && %w[running checking].include?(@run.dig("current", "state")) && @member["daemon"] && @member["daemon"]["up"] == false && @member["running"] != false
+      @run && %w[running checking].include?(@run.current&.dig("state")) && @member["daemon"] && @member["daemon"]["up"] == false && @member["running"] != false
     end
 
     def structure?(spine)
@@ -159,7 +159,7 @@ module Workspace
                   "action" => Array(@reason["actions"]).first}]
       when "working" then ["agent", {"event" => "turn_ended", "action" => nil}]
       when "stuck"
-        ["person", {"event" => @run ? "workflow_resumed" : "agent_restarted", "action" => @run ? action("workflow resume", @run["id"]) : action("launch", @name)}]
+        ["person", {"event" => @run ? "workflow_resumed" : "agent_restarted", "action" => @run ? action("workflow resume", @run.id) : action("launch", @name)}]
       when "stopped" then ["person", {"event" => "launched", "action" => action("launch", @name)}]
       else ["person", {"event" => (@run || !@plan_present) ? "stage_started" : "task_started", "action" => nil}]
       end

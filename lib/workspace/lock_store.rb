@@ -1206,8 +1206,8 @@ module Workspace
     #
     # @return [Boolean] whether a delegate took the lock
     def hand_over!(entry, name, cleared_by: nil, evicted: false)
-      run = entry["holder"]
-      delegate = live_delegate(run)
+      old_holder = entry["holder"]
+      delegate = live_delegate(old_holder)
       unless delegate
         entry["holder"] = nil
         return false
@@ -1217,8 +1217,8 @@ module Workspace
                   started_by: delegate["started_by"]}
       entry["holder"] = build_holder(identity, nil, waiter_pid: delegate["pid"]).merge("acquired_at" => delegate["since"])
       entry["holder"]["kept"] = true if delegate["kept"]
-      entry["holder"]["from_run"] = run["run_id"] unless evicted
-      audit(:acquire, name, holder: holder_summary(entry["holder"]), handed_over_from: holder_summary(run), cleared_by: cleared_by)
+      entry["holder"]["from_run"] = old_holder["run_id"] unless evicted
+      audit(:acquire, name, holder: holder_summary(entry["holder"]), handed_over_from: holder_summary(old_holder), cleared_by: cleared_by)
       true
     end
 

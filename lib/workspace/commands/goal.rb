@@ -124,15 +124,15 @@ module Workspace
       end
 
       def workspace_of_run(ref, warnings)
-        found = @workflow_status.runs["runs"].find { |run| run["id"] == ref }
+        found = rows(@workflow_status.runs).find { |run| run.id == ref }
         archived = false
         unless found
-          found = @workflow_status.runs(all: true)["runs"].find { |run| run["id"] == ref }
+          found = rows(@workflow_status.runs(all: true)).find { |run| run.id == ref }
           archived = !found.nil?
         end
         return nil unless found
-        warnings << {"code" => "run_archived", "message" => "Run #{ref} is finished; showing the goal of its workspace, '#{found["workspace"]}'."} if archived
-        found["workspace"]
+        warnings << {"code" => "run_archived", "message" => "Run #{ref} is finished; showing the goal of its workspace, '#{found.workspace}'."} if archived
+        found.workspace
       end
 
       def parse_ref(ref)
@@ -167,11 +167,15 @@ module Workspace
       def runs_by_workspace(warnings)
         result = @workflow_status.runs
         result["warnings"].each { |message| warnings << {"code" => "workflow_runs_unavailable", "message" => message} }
-        sort_runs(result["runs"]).group_by { |run| run["workspace"] }
+        sort_runs(result["runs"]).group_by(&:workspace)
       end
 
       def sort_runs(runs)
-        runs.sort_by { |run| run["created_at"].to_s }.reverse
+        runs.map { |each| WorkflowStatus::Row.from_h(each) }.sort_by { |run| run.created_at.to_s }.reverse
+      end
+
+      def rows(document)
+        document["runs"].map { |each| WorkflowStatus::Row.from_h(each) }
       end
 
       # --- the goal ---------------------------------------------------------
@@ -193,7 +197,7 @@ module Workspace
           "workspace" => name, "project" => project["name"], "title" => task["title"] || name, "ref" => task["ref"],
           "branch" => task["branch"] || member.dig("git", "branch"), "task_id" => task["id"],
           "state" => status.state, "waiting_on" => status.waiting_on, "next" => status.next_step, "stage" => stage, "step" => step_of(run, plan),
-          "runs" => runs.map { |each| {"id" => each["id"], "workflow" => each["workflow"], "step" => each.dig("current", "step"), "state" => each["state"]} },
+          "runs" => runs.map { |each| {"id" => each.id, "workflow" => each.workflow, "step" => each.current&.dig("step"), "state" => each.state} },
           "turn" => turn
         }
         if status.delivery_unknown?
@@ -234,8 +238,8 @@ module Workspace
 
       def step_of(run, plan)
         if run
-          current = run["current"]
-          return {"source" => "workflow", "run" => run["id"], "workflow" => run["workflow"], "step" => current["step"], "attempt" => current["attempt"],
+          current = run.current
+          return {"source" => "workflow", "run" => run.id, "workflow" => run.workflow, "step" => current["step"], "attempt" => current["attempt"],
                   "state" => current["state"], "reason" => current["reason"], "flags" => current["flags"]}
         end
         task = plan && plan != :missing && current_task(plan)
@@ -250,7 +254,7 @@ module Workspace
       # The run's pane, else the stage's owner, else the plan's owner, else the main agent pane.
       def pane_for(run, stage, plan, panes)
         return nil unless panes
-        candidates = [run && run["pane"], stage && stage["owner"], plan_owner(plan)].compact
+        candidates = [run&.pane, stage && stage["owner"], plan_owner(plan)].compact
         found = candidates.filter_map { |id| panes.find { |pane| pane["pane_id"] == id } }.first
         found || main_pane(panes)
       end
@@ -284,8 +288,8 @@ module Workspace
       def warn_turn_gone(name, member, run, turn, warnings)
         return if turn || member["running"] == false || member["panes"]
         warnings << {"code" => "turn_unavailable", "workspace" => name, "message" => "'#{name}' has no agent daemon answering, so its turn and tool call are unknown."}
-        return unless run && run["state"] != "waiting"
-        warnings << {"code" => "no_daemon", "workspace" => name, "message" => "'#{name}' has no agent daemon answering, so run #{run["id"]} will not move and its turn is unknown."}
+        return unless run && run.state != "waiting"
+        warnings << {"code" => "no_daemon", "workspace" => name, "message" => "'#{name}' has no agent daemon answering, so run #{run.id} will not move and its turn is unknown."}
       end
 
       # The goal is done by its own rules while the current stage says otherwise; both are reported as they are.
