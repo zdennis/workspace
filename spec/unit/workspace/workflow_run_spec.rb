@@ -175,6 +175,55 @@ RSpec.describe Workspace::WorkflowRun do
     end
   end
 
+  describe "the parts that hang on a run" do
+    {
+      "parked" => [Workspace::WorkflowRun::Park, "parked"],
+      "retry_backoff" => [Workspace::WorkflowRun::Backoff, "backoff"],
+      "budget_hold_extended" => [Workspace::WorkflowRun::BudgetHold, "budget_hold"],
+      "swept_stall" => [Workspace::WorkflowRun::SweepMarks, "sweep"]
+    }.each do |fixture, (klass, key)|
+      it "gives back #{key} of #{fixture} as it is stored" do
+        stored = run(fixture).to_h[key]
+        given = klass.from_h(stored)
+
+        expect(given.to_h).to eq(stored)
+        expect(JSON.generate(given.to_h)).to eq(JSON.generate(stored))
+        expect(given.to_h.keys).to eq(stored.keys)
+        expect(given.to_h).to be_frozen
+      end
+    end
+
+    it "reads each key and keeps the ones it has no reader for" do
+      park = Workspace::WorkflowRun::Park.from_h(run("parked").parked)
+      backoff = Workspace::WorkflowRun::Backoff.from_h(run("retry_backoff").backoff)
+      marks = Workspace::WorkflowRun::SweepMarks.from_h(run("swept_stall").sweep.merge("future" => 1))
+
+      expect(park).to have_attributes(id: "0123456789abcdef", from: "running")
+      expect(backoff).to have_attributes(to: "build", until: "2026-01-01T00:02:02Z")
+      expect(marks).to have_attributes(step: "build", attempt: 1)
+      expect(marks.to_h["future"]).to eq(1)
+      expect(Workspace::WorkflowRun::BudgetHold.from_h(run("budget_hold_extended").budget_hold).pane).to eq("%sim")
+    end
+
+    it "reads a missing or non-Hash value as empty" do
+      [Workspace::WorkflowRun::Park, Workspace::WorkflowRun::Backoff, Workspace::WorkflowRun::BudgetHold, Workspace::WorkflowRun::SweepMarks].each do |klass|
+        [nil, "x", []].each do |bad|
+          given = klass.from_h(bad)
+          expect(given.to_h).to eq({})
+          expect(klass::KEYS.map { |each| given.method(each).call }.compact).to eq([])
+        end
+      end
+    end
+
+    it "compares by what they hold" do
+      a = Workspace::WorkflowRun::Park.from_h("id" => "x")
+
+      expect(a).to eq(Workspace::WorkflowRun::Park.from_h("id" => "x"))
+      expect(a).not_to eq(Workspace::WorkflowRun::Backoff.from_h("id" => "x"))
+      expect(a.hash).to eq(Workspace::WorkflowRun::Park.from_h("id" => "x").hash)
+    end
+  end
+
   describe "equality" do
     it "compares runs by what they hold" do
       expect(run("parked")).to eq(run("parked"))

@@ -189,6 +189,150 @@ module Workspace
       end
     end
 
+    # A resume parked on the run until its pane can take it (+parked+).
+    class Park
+      # Keys the engine writes; each is a reader that returns the stored value, nil when absent.
+      KEYS = %w[id requested_at expires_at retries from note pane turn_over].freeze
+
+      # @param hash [Hash{String=>Object}, nil]
+      # @return [Park]
+      def self.from_h(hash)
+        new(hash)
+      end
+
+      # @return [Hash{String=>Object}] the frozen Hash this value holds, as the run file has it
+      attr_reader :to_h
+
+      # @param hash [Hash{String=>Object}, nil]
+      def initialize(hash)
+        @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
+        freeze
+      end
+
+      KEYS.each do |key|
+        define_method(key) { to_h[key] }
+      end
+
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(Park) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [Park, to_h].hash
+      end
+    end
+
+    # The wait before a looped step is retried (+backoff+); +blocked+ is the code that kept the retry from starting.
+    class Backoff
+      # Keys the engine writes; each is a reader that returns the stored value, nil when absent.
+      KEYS = %w[until to context text pane identity blocked].freeze
+
+      # @param hash [Hash{String=>Object}, nil]
+      # @return [Backoff]
+      def self.from_h(hash)
+        new(hash)
+      end
+
+      # @return [Hash{String=>Object}] the frozen Hash this value holds, as the run file has it
+      attr_reader :to_h
+
+      # @param hash [Hash{String=>Object}, nil]
+      def initialize(hash)
+        @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
+        freeze
+      end
+
+      KEYS.each do |key|
+        define_method(key) { to_h[key] }
+      end
+
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(Backoff) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [Backoff, to_h].hash
+      end
+    end
+
+    # The attempt held back because the token budget is spent (+budget_hold+), with the retry context it keeps.
+    class BudgetHold
+      # Keys the engine writes; each is a reader that returns the stored value, nil when absent.
+      KEYS = %w[context pane identity text].freeze
+
+      # @param hash [Hash{String=>Object}, nil]
+      # @return [BudgetHold]
+      def self.from_h(hash)
+        new(hash)
+      end
+
+      # @return [Hash{String=>Object}] the frozen Hash this value holds, as the run file has it
+      attr_reader :to_h
+
+      # @param hash [Hash{String=>Object}, nil]
+      def initialize(hash)
+        @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
+        freeze
+      end
+
+      KEYS.each do |key|
+        define_method(key) { to_h[key] }
+      end
+
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(BudgetHold) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [BudgetHold, to_h].hash
+      end
+    end
+
+    # What the sweep noted on the run (+sweep+): the step and attempt it saw, and the +stalled+ and +recovered+ causes with their times.
+    class SweepMarks
+      # Keys the engine writes; each is a reader that returns the stored value, nil when absent.
+      KEYS = %w[step attempt stalled recovered interrupt].freeze
+
+      # @param hash [Hash{String=>Object}, nil]
+      # @return [SweepMarks]
+      def self.from_h(hash)
+        new(hash)
+      end
+
+      # @return [Hash{String=>Object}] the frozen Hash this value holds, as the run file has it
+      attr_reader :to_h
+
+      # @param hash [Hash{String=>Object}, nil]
+      def initialize(hash)
+        @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
+        freeze
+      end
+
+      KEYS.each do |key|
+        define_method(key) { to_h[key] }
+      end
+
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(SweepMarks) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [SweepMarks, to_h].hash
+      end
+    end
+
     # What a file outside workflow may know of a run. +step_states+ lists the definition's steps in order as
     # +{"id" => ..., "state" => ...}+.
     Summary = Data.define(:id, :workflow, :title, :workspace, :worktree, :state, :step, :attempt, :pane, :step_states, :reads_plan_again)
