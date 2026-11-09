@@ -49,7 +49,9 @@ module Workspace
       malformed = 0
       used = 0
       first_ids = nil
-      loaded["runs"].each do |run|
+      loaded["runs"].each do |stored|
+        raise TypeError, "a run is a Hash" unless stored.is_a?(Hash) || stored.is_a?(WorkflowRun)
+        run = WorkflowRun.from_h(stored)
         row_ids = step_ids(run)
         found = tally(run)
         resumes = @loader.resumes(run)
@@ -69,11 +71,12 @@ module Workspace
     # How one attempt counts: `:passed` and `:failed` by its stored outcome, `:not_delivered` for one that never
     # reached the agent (or was typed again), `:unfinished` for anything else.
     #
-    # @param attempt [Hash{String=>Object}]
+    # @param attempt [WorkflowRun::Attempt, Hash{String=>Object}]
     # @return [Symbol]
     def self.kind_of(attempt)
-      return :not_delivered if attempt["outcome"] == "not_delivered" || attempt["redelivered"] == true
-      case attempt["outcome"]
+      attempt = WorkflowRun::Attempt.from_h(attempt) unless attempt.is_a?(WorkflowRun::Attempt)
+      return :not_delivered if attempt.outcome == "not_delivered" || attempt.redelivered == true
+      case attempt.outcome
       when "passed" then :passed
       when "failed" then :failed
       else :unfinished
@@ -118,15 +121,15 @@ module Workspace
     end
 
     def step_ids(run)
-      defined = Array(run.dig("definition", "steps")).grep(Hash).filter_map { |each| each["id"] if each["id"].is_a?(String) }
-      (defined + (run["steps"].is_a?(Hash) ? run["steps"].keys : [])).uniq
+      defined = Array(run.definition&.dig("steps")).grep(Hash).filter_map { |each| each["id"] if each["id"].is_a?(String) }
+      (defined + run.steps.keys).uniq
     end
 
     # Per step id: counts, durations and the run's token figure (an Integer, :uncounted, or nil with nothing finished).
     def tally(run)
-      return {} unless run["steps"].is_a?(Hash)
-      run["steps"].to_h do |id, state|
-        attempts = state.is_a?(Hash) ? Array(state["attempts"]).grep(Hash) : []
+      run.steps.to_h do |id, step|
+        stored = Array(step.to_h["attempts"])
+        attempts = step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
         t = {"passed" => 0, "failed" => 0, "not_delivered" => 0, "unfinished" => 0, "durations" => [], "unfinished_tokens" => 0}
         paid = []
         attempts.each do |attempt|
@@ -138,8 +141,8 @@ module Workspace
           end
           paid << attempt if tokens_count?(run, id, attempts, attempt, kind)
         end
-        t["unfinished_tokens"] = paid.count { |attempt| kind_of(attempt) == :unfinished && WorkflowBudget.tokens_of(attempt["usage"]) }
-        sums = paid.map { |attempt| WorkflowBudget.tokens_of(attempt["usage"]) }
+        t["unfinished_tokens"] = paid.count { |attempt| kind_of(attempt) == :unfinished && WorkflowBudget.tokens_of(attempt.usage) }
+        sums = paid.map { |attempt| WorkflowBudget.tokens_of(attempt.usage) }
         t["tokens"] = if paid.empty? then nil
         elsif sums.all? then sums.sum
         else :uncounted
@@ -153,15 +156,15 @@ module Workspace
     # did no work and is also left out.
     def tokens_count?(run, id, attempts, attempt, kind)
       return false unless WorkflowBudget.counted_attempt?(attempt) && kind != :not_delivered
-      going = !WorkflowRunStore::TERMINAL_STATES.include?(run["state"]) && id == run["current"] && attempt.equal?(attempts.last) && attempt["outcome"].nil?
+      going = !WorkflowRunStore::TERMINAL_STATES.include?(run.state) && id == run.current && attempt.equal?(attempts.last) && attempt.outcome.nil?
       !going
     end
 
     def kind_of(attempt) = self.class.kind_of(attempt)
 
     def seconds_of(attempt)
-      started = @loader.time_of(attempt["started_at"])
-      ended = @loader.time_of(attempt["ended_at"])
+      started = @loader.time_of(attempt.started_at)
+      ended = @loader.time_of(attempt.ended_at)
       return nil unless started && ended && ended >= started
       ended - started
     end

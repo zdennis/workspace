@@ -4,42 +4,28 @@ require "tmpdir"
 RSpec.describe Workspace::AgentStatusDesk do
   let(:prompt_screen) { "────────────────────\n❯ \n" }
 
+  # A paste shows in the input line and Enter empties it again, unless screens are scripted.
   let(:tmux) do
-    Class.new do
-      attr_accessor :details, :statuses
-      attr_reader :delivered
-
-      def initialize(screen)
-        @details = [{id: "%5", window: 0, index: 1, pid: 100}, {id: "%6", window: 0, index: 2, pid: 200}]
-        @screen = screen
-        @screens = [screen]
-        @statuses = []
-        @delivered = []
+    Interceptable.subclass(FakeTmux, :deliver).new(screens: [prompt_screen], server_pid: "77").tap do |t|
+      t.on(:deliver) do |original, session, target, text, enter: true|
+        t.screens = [enter ? prompt_screen : "────────────────────\n❯ #{text}\n────────────────────\n"] unless @scripted
+        t.statuses << (enter ? :submitted : :pasted) if t.statuses.empty?
+        original.call(session, target, text, enter: enter)
       end
+    end
+  end
+  let(:row5) { {id: "%5", window: 0, index: 1, pid: 100} }
+  let(:row6) { {id: "%6", window: 0, index: 2, pid: 200} }
+  let(:pane) { FakePane.new(id: "%5", tmux: tmux, row: row5) }
+  let(:factory) { FakePaneFactory.new(panes: [pane, FakePane.new(id: "%6", tmux: tmux, row: row6)]) }
 
-      def pane_details(_session, window: "0")
-        raise ArgumentError, "expected every window" unless window.nil?
-        @details
-      end
+  def script_screens(list)
+    @scripted = true
+    tmux.screens = list
+  end
 
-      # Scripted screens are shown as given; otherwise a paste shows in the
-      # input line and Enter empties it again.
-      def screens=(list)
-        @scripted = true
-        @screens = list
-      end
-
-      def capture_screen(_pane_id) = (@screens.size > 1) ? @screens.shift : @screens.first
-
-      def capture_screen_styled(pane_id) = capture_screen(pane_id)
-
-      def deliver(session, target, text, enter: true)
-        @delivered << [session, target, text, enter]
-        @screens = [enter ? @screen : "────────────────────\n❯ #{text}\n────────────────────\n"] unless @scripted
-        status = @statuses.shift || (enter ? :submitted : :pasted)
-        Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
-      end
-    end.new(prompt_screen)
+  def list(*rows)
+    factory.panes.replace(rows.map { |listed| FakePane.new(id: listed[:id], tmux: tmux, row: listed) })
   end
 
   let(:facts) { {"%5" => {kind: "claude", state: "idle", open_tools: []}, "%6" => {kind: "claude", state: "idle", open_tools: []}} }
@@ -47,10 +33,10 @@ RSpec.describe Workspace::AgentStatusDesk do
   let(:events_dir) { Dir.mktmpdir }
   let(:hook_log) { Workspace::HookEventLog.new(dir: events_dir, workspace: "api", boot_id: "BOOT") }
   let(:now) { [Time.utc(2026, 10, 17, 22, 0, 0)] }
-  let(:requests) { Workspace::AgentStatusRequests.new(clock: -> { now[0] }, id_generator: -> { "sr-abc" }) }
+  let(:requests) { Interceptable.subclass(Workspace::AgentStatusRequests, :open).new(clock: -> { now[0] }, id_generator: -> { "sr-abc" }) }
 
   subject(:desk) do
-    described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor,
+    described_class.new(panes: factory, session_name: "api", workspace: "api", session_monitor: monitor,
       hook_event_log: hook_log, delivery_lock: Mutex.new, requests: requests)
   end
 
@@ -64,7 +50,7 @@ RSpec.describe Workspace::AgentStatusDesk do
 
       expect(reply).to eq("ok" => true, "request_id" => "sr-abc", "expires_at" => "2026-10-17T22:10:00Z",
         "delivery" => "submitted", "pane" => "0.1", "pane_id" => "%5")
-      expect(tmux.delivered).to eq([["api", "0.1", described_class.prompt_for("sr-abc"), false], ["api", "0.1", "", true]])
+      expect(pane.deliveries).to eq([{text: described_class.prompt_for("sr-abc"), enter: false}, {text: "", enter: true}])
       expect(described_class.prompt_for("sr-abc")).to include("workspace agent status post --reply-to sr-abc --summary")
     end
 
@@ -72,7 +58,7 @@ RSpec.describe Workspace::AgentStatusDesk do
       let(:held) { ["%5"] }
 
       subject(:desk) do
-        described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor,
+        described_class.new(panes: factory, session_name: "api", workspace: "api", session_monitor: monitor,
           hook_event_log: hook_log, delivery_lock: Mutex.new, requests: requests, restarting: ->(id) { held.include?(id) })
       end
 
@@ -80,7 +66,7 @@ RSpec.describe Workspace::AgentStatusDesk do
         reply = desk.request("pane_id" => "%5")
 
         expect(reply).to include("ok" => false, "error" => "restart_in_progress", "pane_id" => "%5")
-        expect(tmux.delivered).to be_empty
+        expect(pane.deliveries).to be_empty
         expect(requests.claim("sr-abc", pane_id: "%5", pane_pid: 100).first).to eq("status_request_unknown")
       end
 
@@ -92,13 +78,13 @@ RSpec.describe Workspace::AgentStatusDesk do
         end
 
         expect(desk.request("pane_id" => "%5")).to include("error" => "restart_in_progress")
-        expect(tmux.delivered).to be_empty
+        expect(pane.deliveries).to be_empty
       end
     end
 
     it "refuses a pane that isn't in the session" do
       expect(desk.request("pane_id" => "%9")).to include("ok" => false, "error" => "no_such_pane")
-      expect(tmux.delivered).to be_empty
+      expect(pane.deliveries).to be_empty
     end
 
     it "types nothing and opens nothing when the pane can't take text" do
@@ -107,18 +93,18 @@ RSpec.describe Workspace::AgentStatusDesk do
       reply = desk.request("pane_id" => "%5")
 
       expect(reply).to include("ok" => false, "error" => "pane_not_ready", "reason" => "waiting", "pane_id" => "%5")
-      expect(tmux.delivered).to be_empty
+      expect(pane.deliveries).to be_empty
       facts["%5"] = {kind: "claude", state: "idle", open_tools: []}
       expect(desk.request("pane_id" => "%5")).to include("ok" => true)
     end
 
     it "checks again just before typing, with a fresh screen" do
-      tmux.screens = [prompt_screen, "│ ❯ 1. Yes\n"]
+      script_screens([prompt_screen, "│ ❯ 1. Yes\n"])
 
       reply = desk.request("pane_id" => "%5")
 
       expect(reply).to include("ok" => false, "error" => "pane_not_ready", "reason" => "no_input_prompt")
-      expect(tmux.delivered).to be_empty
+      expect(pane.deliveries).to be_empty
       expect(requests.claim("sr-abc", pane_id: "%5", pane_pid: 100).first).to eq("status_request_unknown")
     end
 
@@ -129,7 +115,7 @@ RSpec.describe Workspace::AgentStatusDesk do
 
       expect(reply).to include("ok" => false, "error" => "status_request_open", "request_id" => "sr-abc",
         "expires_at" => "2026-10-17T22:10:00Z")
-      expect(tmux.delivered.map { |d| d[2] }).to eq([described_class.prompt_for("sr-abc"), ""])
+      expect(pane.deliveries.map { |d| d[:text] }).to eq([described_class.prompt_for("sr-abc"), ""])
     end
 
     it "drops the request when the line never reached the pane" do
@@ -152,24 +138,24 @@ RSpec.describe Workspace::AgentStatusDesk do
       tmux.statuses = [:unverified]
 
       expect(desk.request("pane_id" => "%5")).to include("ok" => false, "error" => "not_submitted", "delivery" => "unverified")
-      expect(tmux.delivered.size).to eq(1)
+      expect(pane.deliveries.size).to eq(1)
       expect(requests.claim("sr-abc", pane_id: "%5", pane_pid: 100).first).to be_nil
     end
 
     it "doesn't press Enter when a dialog opened while the line was pasted" do
-      tmux.screens = [prompt_screen, prompt_screen, "│ ❯ 1. Yes\n"]
+      script_screens([prompt_screen, prompt_screen, "│ ❯ 1. Yes\n"])
 
       reply = desk.request("pane_id" => "%5")
 
       expect(reply).to include("ok" => false, "error" => "not_submitted", "reason" => "no_input_prompt", "request_id" => "sr-abc")
-      expect(tmux.delivered.map(&:last)).to eq([false])
+      expect(pane.deliveries.map { |d| d[:enter] }).to eq([false])
     end
 
     it "refuses a pane whose input line holds a draft" do
-      tmux.screens = ["────────────────────\n❯ half a thought\n"]
+      script_screens(["────────────────────\n❯ half a thought\n"])
 
       expect(desk.request("pane_id" => "%5")).to include("ok" => false, "error" => "pane_not_ready", "reason" => "input_not_empty")
-      expect(tmux.delivered).to be_empty
+      expect(pane.deliveries).to be_empty
     end
 
     it "drops the request when typing raises, so the pane isn't refused for the request's lifetime" do
@@ -180,14 +166,14 @@ RSpec.describe Workspace::AgentStatusDesk do
     end
 
     it "types nothing when the pane was replaced while the request opened" do
-      allow(requests).to receive(:open).and_wrap_original do |original, **args|
+      requests.on(:open) do |original, **args|
         result = original.call(**args)
-        tmux.details = [{id: "%5", window: 0, index: 1, pid: 999}]
+        list({id: "%5", window: 0, index: 1, pid: 999})
         result
       end
 
       expect(desk.request("pane_id" => "%5")).to include("ok" => false, "error" => "no_such_pane")
-      expect(tmux.delivered).to be_empty
+      expect(pane.deliveries).to be_empty
     end
   end
 
@@ -239,7 +225,7 @@ RSpec.describe Workspace::AgentStatusDesk do
 
     it "refuses a reply from a reused pane id" do
       desk.request("pane_id" => "%5")
-      tmux.details = [{id: "%5", window: 0, index: 1, pid: 4242}]
+      list({id: "%5", window: 0, index: 1, pid: 4242})
 
       expect(desk.post("pane_id" => "%5", "summary" => "ok", "reply_to" => "sr-abc")).to include("error" => "status_request_stale")
     end
@@ -253,7 +239,7 @@ RSpec.describe Workspace::AgentStatusDesk do
 
     it "says the line wasn't logged when the daemon has no hook event log, and keeps the request open" do
       desk.request("pane_id" => "%5")
-      unlogged = described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor,
+      unlogged = described_class.new(panes: factory, session_name: "api", workspace: "api", session_monitor: monitor,
         hook_event_log: nil, delivery_lock: Mutex.new, requests: requests)
 
       expect(unlogged.post("pane_id" => "%5", "summary" => "ok", "reply_to" => "sr-abc")).to include("error" => "status_not_logged")

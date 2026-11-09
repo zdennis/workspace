@@ -62,20 +62,31 @@ RSpec.describe Workspace::TranscriptLabel do
     expect(reader.read(path)[:title]).to be_nil
   end
 
-  it "keeps the cache bounded" do
-    paths = Array.new(described_class::MAX_CACHED + 5) { |i| File.join(dir, "s#{i}.jsonl").tap { |p| File.write(p, JSON.generate(ai_title("T#{i}")) + "\n") } }
+  # Rewrites a transcript with a same-size title and puts its mtime back, so only a reread can see the change.
+  def swap_title_keeping_stat(file, title)
+    mtime = File.mtime(file)
+    File.write(file, JSON.generate(ai_title(title)) + "\n")
+    File.utime(mtime, mtime, file)
+  end
 
-    expect(paths.map { |p| reader.read(p)[:title] }).to eq(paths.each_index.map { |i| "T#{i}" })
-    expect(reader.instance_variable_get(:@cache).size).to be <= described_class::MAX_CACHED
+  it "keeps the cache bounded: past the cap the oldest readings are read from disk again" do
+    small = described_class.new(max_cached: 3)
+    paths = Array.new(4) { |i| File.join(dir, "s#{i}.jsonl").tap { |p| File.write(p, JSON.generate(ai_title("T#{i}")) + "\n") } }
+
+    expect(paths.map { |p| small.read(p)[:title] }).to eq(%w[T0 T1 T2 T3])
+    swap_title_keeping_stat(paths.last, "X3")
+    swap_title_keeping_stat(paths.first, "X0")
+
+    expect(small.read(paths.last)[:title]).to eq("T3")
+    expect(small.read(paths.first)[:title]).to eq("X0")
   end
 
   it "rereads when the file changes and not otherwise" do
     write(ai_title("One"))
     expect(reader.read(path)[:title]).to eq("One")
-    allow(File).to receive(:open).and_call_original
+    swap_title_keeping_stat(path, "Two")
 
-    reader.read(path)
-    expect(File).not_to have_received(:open)
+    expect(reader.read(path)[:title]).to eq("One")
 
     File.write(path, JSON.generate(ai_title("Two")) + "\n", mode: "a")
     expect(reader.read(path)[:title]).to eq("Two")

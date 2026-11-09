@@ -65,9 +65,8 @@ module Workspace
       #   workspace's own, in which case the daemon is never asked.
       # @raise [Workspace::Error] when it was refused or failed and +json+ is false
       def call(name:, pane:, prompt:, force: false, wait: false, timeout: nil, json: false)
-        message = {"type" => "restart_agent", "workspace" => name, "pane" => pane_id(name, pane), "prompt" => prompt,
-                   "force" => force, "wait" => wait}
-        message["timeout"] = timeout if timeout
+        message = AgentProtocol.restart_agent(workspace: name, pane: pane_id(name, pane), prompt: prompt, force: force, wait: wait,
+          timeout: timeout)
         reply = send_message(name, message)
         return failure(reply, json) unless reply["ok"]
 

@@ -33,6 +33,44 @@ module Workspace
   # holds the hash approve recorded and `note_changed` when the note's
   # bytes differ now.
   class WorkflowStatus
+    # One row of `workflow status`, as a frozen value over the Hash the `--json` document holds.
+    #
+    # Readers return the row's values as they are (a missing key reads nil), and {#to_h} gives
+    # back the Hash it was made from, every key in its order, so a row survives a round trip
+    # byte for byte. It never raises on a Hash with keys missing. {Workspace::InboxDerived},
+    # {Workspace::Commands::Goal} and {Workspace::GoalState} read rows through it.
+    class Row
+      # @param row [Hash{String=>Object}, Row, nil] a row as {WorkflowStatus#runs} gives it
+      # @return [Row]
+      def self.from_h(row)
+        row.is_a?(Row) ? row : new(row)
+      end
+
+      # @return [Hash{String=>Object}] the frozen Hash this row holds, as the `--json` row has it
+      attr_reader :to_h
+
+      # @param hash [Hash{String=>Object}, nil]
+      def initialize(hash)
+        @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
+        freeze
+      end
+
+      %w[id workflow title workspace state created_at pane current steps].each do |key|
+        define_method(key) { to_h[key] }
+      end
+
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(Row) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [Row, to_h].hash
+      end
+    end
+
     # Seconds to wait for the workspace's agent daemon before going on without it.
     SNAPSHOT_TIMEOUT = 1.0
 
@@ -51,7 +89,11 @@ module Workspace
     # @param ask_store_for [#call] returns the {Workspace::AskStore} of a workspace
     # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param clock [#call] returns the current Time
-    def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now })
+    # @param snapshot_timeout [Numeric] seconds one daemon read may take
+    # @param list_grace [Numeric] seconds a list's reads share past the timeout
+    def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now }, snapshot_timeout: SNAPSHOT_TIMEOUT, list_grace: LIST_GRACE)
+      @snapshot_timeout = snapshot_timeout
+      @list_grace = list_grace
       @store = store
       @gate_note = gate_note
       @panes = panes
@@ -65,8 +107,8 @@ module Workspace
     # @return [Hash] "runs" (see {#run}) and "warnings" (strings): a run file that can't
     #   be read or shown is left out of "runs" and named in a warning
     def runs(workspace: nil, all: false)
-      stored = @store.active + (all ? @store.archived : [])
-      stored = stored.select { |run| run["workspace"] == workspace } if workspace
+      stored = @store.going + (all ? @store.finished : [])
+      stored = stored.select { |run| run.workspace == workspace } if workspace
       present_all(stored)
     end
 
@@ -81,18 +123,19 @@ module Workspace
     # @param project [#name, #members] a {Workspace::ProjectCatalog::Project}
     # @return [Hash] "runs" and "warnings", as {#runs}
     def in_project(project)
-      stored = (@store.active + @store.archived).select { |run| in_project?(run, project) }
+      stored = (@store.going + @store.finished).select { |run| in_project?(run, project) }
       present_all(stored)
     end
 
     # Whether a stored run belongs to a project, by the rules {#in_project} lists.
     #
-    # @param run [Hash] a stored run
+    # @param run [WorkflowRun, Hash] a stored run
     # @param project [#name, #members] a {Workspace::ProjectCatalog::Project}
     # @return [Boolean]
     def in_project?(run, project)
-      project.members.filter_map(&:workspace).include?(run["workspace"]) || run["project"] == project.name ||
-        WorkspaceLineage.split_worktree_name(run["workspace"])&.first == project.name
+      run = WorkflowRun.from_h(run)
+      project.members.filter_map(&:workspace).include?(run.workspace) || run.project == project.name ||
+        WorkspaceName.split(run.workspace)&.first == project.name
     end
 
     # @param id [String] a run id
@@ -105,7 +148,7 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run`
     def run(id)
       warnings = []
-      {"runs" => [present(@store.find(id), warnings)], "warnings" => warnings}
+      {"runs" => [present(@store.run(id), warnings)], "warnings" => warnings}
     end
 
     private
@@ -125,7 +168,7 @@ module Workspace
         present(run, warnings)
       rescue KeyError, NoMethodError, TypeError, ArgumentError
         malformed += 1
-        warnings << "Workflow run #{run["id"]} can't be shown: its run file is malformed. What it holds stays held: " \
+        warnings << "Workflow run #{run.id} can't be shown: its run file is malformed. What it holds stays held: " \
           "free a lock with `workspace lock clear NAME`, or delete the file."
         nil
       end
@@ -140,14 +183,14 @@ module Workspace
     # answered by the shared deadline reads as an error, as a refused connection would.
     def prefetch_snapshots(stored)
       names = stored.filter_map do |run|
-        next if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-        run["workspace"] if run["parked"] || %w[running checking].include?(run.dig("steps", run["current"], "state"))
+        next if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
+        run.workspace if run.parked || %w[running checking].include?(run.step(run.current)&.state)
       end.uniq
       clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
-      deadline = clock.call + SNAPSHOT_TIMEOUT + LIST_GRACE
+      deadline = clock.call + @snapshot_timeout + @list_grace
       threads = names.to_h do |name|
         thread = Thread.new do
-          [:ok, @snapshot_client.fetch(name, timeout: SNAPSHOT_TIMEOUT)]
+          [:ok, @snapshot_client.fetch(name, timeout: @snapshot_timeout)]
         rescue Workspace::Error => e
           [:error, e]
         rescue
@@ -164,37 +207,37 @@ module Workspace
     end
 
     def present(run, warnings)
-      state = run["steps"].fetch(run["current"])
-      finished = WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-      pane = finished ? nil : (run.dig("parked", "pane") || @panes.pane_of(run["id"]) || run["pane"])
-      working = !finished && %w[running checking].include?(state["state"])
+      state = run.steps.fetch(run.current)
+      finished = WorkflowRunStore::TERMINAL_STATES.include?(run.state)
+      pane = finished ? nil : (run.parked&.dig("pane") || @panes.pane_of(run.id) || run.pane)
+      working = !finished && %w[running checking].include?(state.state)
       daemon_warning(run, working, warnings) unless finished
       # What the pane shows matters only while an agent should be working in it, or a parked resume waits on
       # it; a run parked before its first step has no binding for `alive?` to find.
-      shown = ((working && @panes.alive?(run["id"])) || (!finished && run["parked"])) ? pane_state(run["workspace"], pane, warnings) : nil
+      shown = ((working && @panes.alive?(run.id)) || (!finished && run.parked)) ? pane_state(run.workspace, pane, warnings) : nil
       reason = finished ? nil : reason_for(run, working, pane, shown, warnings)
       reason = with_gate_file(run, reason, warnings) if reason
       {
-        "id" => run["id"], "workflow" => run["workflow"], "title" => run["title"], "workspace" => run["workspace"],
-        "project" => run["project"], "worktree" => run["worktree"], "state" => shown_state(run, reason, shown),
-        "created_at" => run["created_at"], "started_at" => run["started_at"], "ended_at" => run["ended_at"],
-        "cancelled_by" => run["cancelled_by"],
-        "current" => {"step" => run["current"], "attempt" => state["attempts"].last&.fetch("n", nil), "state" => state["state"],
+        "id" => run.id, "workflow" => run.workflow, "title" => run.title, "workspace" => run.workspace,
+        "project" => run.project, "worktree" => run.worktree, "state" => shown_state(run, reason, shown),
+        "created_at" => run.created_at, "started_at" => run.started_at, "ended_at" => run.ended_at,
+        "cancelled_by" => run.cancelled_by,
+        "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
                       "reason" => reason&.merge("actions" => actions(run, reason, pane)),
                       "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
             .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)),
-        "steps" => run["definition"]["steps"].map { |step| step_row(step, run["steps"].fetch(step["id"]), run) },
-        "base_sha" => run["base_sha"], "pane" => pane, "task" => run["task"], "inputs" => run["inputs"], "loops" => run["loops"],
-        "artifacts_dir" => run["artifacts_dir"], "events_path" => @store.events_path(run["id"]),
+        "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
+        "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
+        "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
         "guard_warnings" => guard_warnings(run)
       }.merge(budget_row(run))
     end
 
     # What the guard warned of on any attempt, oldest first; the run went on past each.
     def guard_warnings(run)
-      run["steps"].flat_map do |id, state|
-        state["attempts"].flat_map do |attempt|
-          Array(attempt["warnings"]).map { |each| each.merge("step" => id, "attempt" => attempt["n"]) }
+      run.steps.flat_map do |id, state|
+        state.attempts.flat_map do |attempt|
+          Array(attempt.warnings).map { |each| each.merge("step" => id, "attempt" => attempt.n) }
         end
       end.sort_by { |each| each["at"].to_s }
     end
@@ -202,7 +245,7 @@ module Workspace
     # The token budget as it stands, only for a run whose definition declares one. `used` is a minimum: it leaves
     # out sub-agents and any ended attempt whose `usage` is null (`uncounted`), and `minimum` says so.
     def budget_row(run)
-      reading = WorkflowBudget.reading(run)
+      reading = WorkflowBudget.reading(run.to_h)
       return {} unless reading
       {"budget" => reading.slice("tokens", "action", "extra_tokens", "allowance", "used", "counted", "uncounted", "measured", "spent")
         .merge("minimum" => true)}
@@ -215,9 +258,9 @@ module Workspace
     # pane is not working (a pane that can't be read leaves the stall standing). `actions` are a resume or a
     # cancel. Absent otherwise, and in runs stored before the sweep existed.
     def stuck_row(run, state, reason, shown, pane)
-      return {} if reason || live_park?(run) || run["parked"] || state["state"] != "running"
-      return {} if hidden_reason?(run["reason"], shown) || WorkflowEngine.delivery(state["attempts"].last, @clock.call) == :delivering
-      marks = WorkflowEngine.sweep_marks(run)
+      return {} if reason || live_park?(run) || run.parked || state.state != "running"
+      return {} if hidden_reason?(run.reason, shown) || WorkflowEngine.delivery(state.last_attempt&.to_h, @clock.call) == :delivering
+      marks = WorkflowEngine.sweep_marks(run.to_h)
       recovered = marks["recovered"].is_a?(Hash) ? marks["recovered"] : {}
       open = marks["stalled"].is_a?(Hash) ? marks["stalled"].reject { |cause, _| recovered.key?(cause) } : {}
       cause, since = open.min_by { |_, time| time.to_s }
@@ -236,26 +279,26 @@ module Workspace
     # A live park, as `current` shows it; never its note.
     def parked_row(run, pane)
       return {} unless live_park?(run)
-      {"parked" => run["parked"].slice("from", "requested_at", "expires_at").merge("pane" => pane)}
+      {"parked" => run.parked.slice("from", "requested_at", "expires_at").merge("pane" => pane)}
     end
 
     def live_park?(run)
-      WorkflowEngine.parked(run, @clock.call) == :waiting
+      WorkflowEngine.parked(run.to_h, @clock.call) == :waiting
     end
 
     # The stored state, except that a hidden turn_ended_incomplete leaves the run running.
     def shown_state(run, reason, shown)
-      return "waiting" if reason && run["state"] == "running"
-      return "running" if reason.nil? && hidden_reason?(run["reason"], shown)
-      run["state"]
+      return "waiting" if reason && run.state == "running"
+      return "running" if reason.nil? && hidden_reason?(run.reason, shown)
+      run.state
     end
 
     # An approved gate's note file, as recorded, and whether its bytes changed since; `gate_note` is the text the person
     # gave to approve or reject (null when none, and for a run stored before it was shown).
     def step_row(step, state, run)
-      file = state.dig("gate", "file")
-      {"id" => step["id"], "title" => step["title"], "state" => state["state"], "attempts" => state["attempts"].size,
-       "gate" => state.dig("gate", "state"), "gate_note" => state.dig("gate", "note"), "gate_file" => file,
+      file = state.gate&.dig("file")
+      {"id" => step["id"], "title" => step["title"], "state" => state.state, "attempts" => state.attempts.size,
+       "gate" => state.gate&.dig("state"), "gate_note" => state.gate&.dig("note"), "gate_file" => file,
        "note_changed" => file ? WorkflowGateNote.sha256(file["path"]) != file["sha256"] : false}
     end
 
@@ -265,7 +308,7 @@ module Workspace
       return reason unless reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
       error = nil
       file = begin
-        @gate_note.find(run)
+        @gate_note.find(run.to_h)
       rescue Workspace::Error => e
         raise unless e.code == "gate_note_unreadable"
         warnings << e.message
@@ -279,45 +322,45 @@ module Workspace
     # is seen and no lock is asked for again, while it keeps what it holds.
     def daemon_warning(run, working, warnings)
       # A run that waits for a person needs no daemon until that person acts.
-      return unless working || run["parked"] || %w[waiting_lock retry_backoff].include?(run.dig("reason", "code"))
-      return if @panes.daemon_running?(run["workspace"])
-      warnings << "Workflow run #{run["id"]} will not move: '#{run["workspace"]}' has no agent daemon running. It keeps the locks it holds " \
-        "and its place in a queue. Launch the workspace and run `workspace workflow resume #{run["id"]}`, or end it with " \
-        "`workspace workflow cancel #{run["id"]}`."
+      return unless working || run.parked || %w[waiting_lock retry_backoff].include?(run.reason&.dig("code"))
+      return if @panes.daemon_running?(run.workspace)
+      warnings << "Workflow run #{run.id} will not move: '#{run.workspace}' has no agent daemon running. It keeps the locks it holds " \
+        "and its place in a queue. Launch the workspace and run `workspace workflow resume #{run.id}`, or end it with " \
+        "`workspace workflow cancel #{run.id}`."
     end
 
     # The stored reason stands unless an agent should be working: then what
     # the pane shows comes first. A parked run hides it: the resume needs it,
     # and nobody has to act on it.
     def reason_for(run, working, pane, shown, warnings)
-      case WorkflowEngine.parked(run, @clock.call)
+      case WorkflowEngine.parked(run.to_h, @clock.call)
       when :waiting then return waiting_on_person(run, pane, shown, warnings)
-      when :expired then return gate_waiting?(run) ? run["reason"] : park_timeout(run, pane)
+      when :expired then return gate_waiting?(run) ? run.reason : park_timeout(run, pane)
       end
-      stored = run["reason"]
+      stored = run.reason
       return stored unless working
-      unless @panes.alive?(run["id"])
-        return {"code" => "pane_gone", "since" => stored&.fetch("since", nil) || run["steps"].fetch(run["current"])["attempts"].last&.fetch("started_at", nil),
-                "details" => {"step" => run["current"], "pane" => pane, "workspace" => run["workspace"]}}
+      unless @panes.alive?(run.id)
+        return {"code" => "pane_gone", "since" => stored&.fetch("since", nil) || run.steps.fetch(run.current).last_attempt&.started_at,
+                "details" => {"step" => run.current, "pane" => pane, "workspace" => run.workspace}}
       end
       waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || hide_while_working(stored, shown)
     end
 
     # The current attempt's `require:` proofs that ran outside the run's lock, with their results and logs.
     def proofs_row(state)
-      proofs = state["attempts"].last&.fetch("proofs", nil)
+      proofs = state.last_attempt&.proofs
       proofs ? {"proofs" => proofs} : {}
     end
 
     def gate_waiting?(run)
-      run.dig("steps", run["current"], "gate", "state") == "waiting"
+      run.step(run.current)&.gate_waiting? || false
     end
 
     # Worked out here, so a timeout shows even with no daemon to record it.
     def park_timeout(run, pane)
-      checking = run["steps"].fetch(run["current"])["state"] == "checking"
-      {"code" => "waiting_you", "since" => run["parked"]["expires_at"],
-       "details" => {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"], "error" => "parked_timeout",
+      checking = run.steps.fetch(run.current).state == "checking"
+      {"code" => "waiting_you", "since" => run.parked["expires_at"],
+       "details" => {"kind" => "dispatch", "step" => run.current, "pane" => pane, "workspace" => run.workspace, "error" => "parked_timeout",
                      "message" => WorkflowEngine.park_timeout_message(pane, checking: checking)}}
     end
 
@@ -345,22 +388,22 @@ module Workspace
     end
 
     def lost_delivery(run, pane, shown)
-      attempt = run["steps"].fetch(run["current"])["attempts"].last
+      attempt = run.steps.fetch(run.current).last_attempt&.to_h
       return nil unless WorkflowEngine.delivery(attempt, @clock.call) == :unknown && WorkflowPanes.turn_over?(shown, @clock.call)
       {"code" => "waiting_you", "since" => attempt["started_at"],
-       "details" => {"kind" => "delivery", "step" => run["current"], "attempt" => attempt["n"], "pane" => pane, "workspace" => run["workspace"]}}
+       "details" => {"kind" => "delivery", "step" => run.current, "attempt" => attempt["n"], "pane" => pane, "workspace" => run.workspace}}
     end
 
     def waiting_on_person(run, pane, shown, warnings)
       if shown && shown["state"] == "waiting"
         return {"code" => "waiting_you", "since" => shown["waiting_since"],
-                "details" => {"kind" => "prompt", "step" => run["current"], "pane" => pane, "message" => shown["waiting_message"]}}
+                "details" => {"kind" => "prompt", "step" => run.current, "pane" => pane, "message" => shown["waiting_message"]}}
       end
       # Only a question asked from the run's pane: another pane's question does not hold this run.
-      ask = open_asks(run["workspace"], warnings).find { |each| each["pane"] == pane }
+      ask = open_asks(run.workspace, warnings).find { |each| each["pane"] == pane }
       return nil unless ask
       {"code" => "waiting_you", "since" => ask["asked_at"],
-       "details" => {"kind" => "ask", "step" => run["current"], "ask" => ask["id"], "question" => ask["question"]}}
+       "details" => {"kind" => "ask", "step" => run.current, "ask" => ask["id"], "question" => ask["question"]}}
     end
 
     def pane_state(workspace, pane, warnings)
@@ -374,7 +417,7 @@ module Workspace
     # The daemon's snapshot of a workspace; while a list is built, the one read ahead (an error raised again).
     def snapshot_for(workspace)
       cached = @snapshots && @snapshots[workspace]
-      return @snapshot_client.fetch(workspace, timeout: SNAPSHOT_TIMEOUT) unless cached
+      return @snapshot_client.fetch(workspace, timeout: @snapshot_timeout) unless cached
       raise cached.last if cached.first == :error
       cached.last
     end
@@ -391,19 +434,19 @@ module Workspace
 
     def flags(run, state, reason, shown)
       flags = []
-      timeout = run["definition"]["steps"].find { |step| step["id"] == run["current"] }["timeout"]
-      started = state["attempts"].last&.fetch("started_at", nil)
-      if timeout && started && %w[running checking].include?(state["state"]) && @clock.call - Time.iso8601(started) > timeout
+      timeout = run.definition["steps"].find { |step| step["id"] == run.current }["timeout"]
+      started = state.last_attempt&.started_at
+      if timeout && started && %w[running checking].include?(state.state) && @clock.call - Time.iso8601(started) > timeout
         flags << "timed_out"
       end
-      delivering = WorkflowEngine.delivery(state["attempts"].last, @clock.call) == :delivering
+      delivering = WorkflowEngine.delivery(state.last_attempt&.to_h, @clock.call) == :delivering
       flags << "delivering" if delivering
       flags << "parked" if live_park?(run)
       # The agent is idle on a step that still reads as being worked on: its turn ended unseen.
-      if state["state"] == "running" && reason.nil? && !delivering && !hidden_reason?(run["reason"], shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
+      if state.state == "running" && reason.nil? && !delivering && !hidden_reason?(run.reason, shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
         flags << "idle"
       end
-      flags << "background_work" if run.dig("reason", "code") == "turn_ended_background"
+      flags << "background_work" if run.reason&.dig("code") == "turn_ended_background"
       flags
     end
 
@@ -420,34 +463,34 @@ module Workspace
 
     # A `focus` needs a pane to name: with none it is left out.
     def build_actions(run, reason, pane)
-      id = run["id"]
+      id = run.id
       cancel = action("workflow cancel", id)
       # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
       # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
-      spent = WorkflowEngine.attempts_spent?(run)
-      extra = spent ? [need("extra_attempts", "--extra-attempts").merge("min" => WorkflowEngine.extra_attempts_needed(run))] : []
-      budget = WorkflowBudget.reading(run)
+      spent = WorkflowEngine.attempts_spent?(run.to_h)
+      extra = spent ? [need("extra_attempts", "--extra-attempts").merge("min" => WorkflowEngine.extra_attempts_needed(run.to_h))] : []
+      budget = WorkflowBudget.reading(run.to_h)
       extra += [need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"])] if budget && budget["spent"]
-      plain = WorkflowEngine.starts_attempt?(run, from: nil, pane: nil) ? extra : []
-      with_pane = WorkflowEngine.starts_attempt?(run, from: nil, pane: "%0") ? extra : []
+      plain = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: nil) ? extra : []
+      with_pane = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: "%0") ? extra : []
       resume = action("workflow resume", id, needs: plain)
       from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra) }
-      focus = action("focus", run["workspace"], "--pane", pane) if pane
+      focus = action("focus", run.workspace, "--pane", pane) if pane
       # A held retry would block again on the same pane: the resume has to name another one.
-      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra), cancel] if run.dig("backoff", "blocked") && run["state"] == "waiting"
+      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}
         resource = reason.dig("details", "resource")
         [(action("workflow status", holder["run_id"]) if holder["run_id"]),
-          (action("dev down", "--name", run["workspace"]) if holder["kind"] == "process"),
-          (action("lock status", resource, "--name", run["workspace"]) if resource.is_a?(String) && resource.match?(/\A[A-Za-z0-9][\w.-]*\z/)), cancel].compact
+          (action("dev down", "--name", run.workspace) if holder["kind"] == "process"),
+          (action("lock status", resource, "--name", run.workspace) if resource.is_a?(String) && resource.match?(/\A[A-Za-z0-9][\w.-]*\z/)), cancel].compact
       when "waiting_you"
         case reason.dig("details", "kind")
         when "gate"
-          at = ["--step", run["current"], "--attempt", run["steps"].fetch(run["current"])["attempts"].last&.fetch("n", nil).to_s]
+          at = ["--step", run.current, "--attempt", run.steps.fetch(run.current).last_attempt&.n.to_s]
           [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")] + extra), cancel]
-        when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run["workspace"], needs: [need("answer", nil)]), focus]
+        when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run.workspace, needs: [need("answer", nil)]), focus]
         when "prompt" then [focus]
         # Resume decides the step as a turn's end would; --from types the line again.
         when "delivery" then [focus, resume, from.call(reason.dig("details", "step")), cancel]
@@ -465,7 +508,7 @@ module Workspace
           [resume, from.call(reason.dig("details", "step")), cancel]
         end
       when "stalled", "idle" then [resume, cancel]
-      when "pane_gone" then [action("launch", run["workspace"]), action("workflow resume", id, needs: with_pane), cancel]
+      when "pane_gone" then [action("launch", run.workspace), action("workflow resume", id, needs: with_pane), cancel]
       else [cancel]
       end
     end

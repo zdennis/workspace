@@ -65,7 +65,8 @@ module Workspace
     # wait would report a prompt that went in as not delivered.
     MIN_PROMPT_CONFIRM = 3
 
-    # @param tmux [Workspace::Tmux] pane reads and deliveries
+    # @param panes [Workspace::PaneFactory] builds the pane to read and to type into; a pane id it
+    #   cannot build reads as a screen tmux could not capture
     # @param context_reader [Workspace::ContextReader] reads the pane's usage
     # @param session_name [String] the tmux session the pane belongs to
     # @param delivery_lock [Mutex] held for each delivery, so a restart's
@@ -109,7 +110,7 @@ module Workspace
     # @param reply_timeout [Numeric] how long a waiting caller listens for the reply;
     #   it bounds the prompt's confirmation only when {#call} is told one is waiting
     # @param logger [Workspace::Logger] debug logger
-    def initialize(tmux:, context_reader:, session_name:, delivery_lock:, pipeline_ref:,
+    def initialize(panes:, context_reader:, session_name:, delivery_lock:, pipeline_ref:,
       pane_state: ->(_pane_id) {},
       agent_pid: ->(_pane_id) {},
       pane_kind: ->(_pane_id) {},
@@ -124,7 +125,7 @@ module Workspace
       quiet_timeout: QUIET_TIMEOUT, quiet_for: QUIET_FOR, poll_interval: POLL_INTERVAL,
       turn_over_for: TURN_OVER_FOR, prompt_confirm_timeout: PROMPT_CONFIRM_TIMEOUT, prompt_settle: PROMPT_SETTLE, reply_timeout: WorkflowPanes::REPLY_TIMEOUT,
       logger: Workspace::Logger.new)
-      @tmux = tmux
+      @panes = panes
       @context_reader = context_reader
       @session_name = session_name
       @delivery_lock = delivery_lock
@@ -284,7 +285,8 @@ module Workspace
       quiet_since = nil
       proven_since = nil
       loop do
-        current = @tmux.capture_screen(pane_id)
+        pane = @panes.for(pane_id)
+        current = pane.is_a?(Symbol) ? nil : pane.capture
         return failure("pane_gone", "pane #{pane_id} is gone; nothing was typed") if current.nil?
 
         now = @clock.call
@@ -484,7 +486,8 @@ module Workspace
     # @return [Hash] "delivery" (and "warning") on success, or a failure
     def deliver(pane_id, text, check_pipeline: false, before_typing: nil)
       @delivery_lock.synchronize do
-        detail = @tmux.pane_details(@session_name, window: nil).find { |d| d[:id] == pane_id }
+        pane = @panes.call(pane_id)
+        detail = pane.is_a?(Symbol) ? nil : pane.details
         next failure("pane_gone", "pane #{pane_id} closed during the restart; #{describe_text(text)} was not typed") unless detail
 
         if check_pipeline && detail[:window] == 0 && (ref = @pipeline_ref.call(detail[:index]))
@@ -498,7 +501,7 @@ module Workspace
         yield if block_given?
 
         target = "#{detail[:window]}.#{detail[:index]}"
-        delivery = @tmux.deliver(@session_name, target, text)
+        delivery = pane.deliver(text)
         @logger.debug { "restart_agent: #{describe_text(text)} to #{@session_name}:#{target}: #{delivery.status}" }
         unless delivery.landed?
           next failure("not_delivered", "#{describe_text(text)} was not typed into pane #{pane_id}: #{delivery.message}")

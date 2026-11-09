@@ -45,7 +45,7 @@ module Workspace
       # @param ticket_source [Workspace::TicketSource, nil] reads the ticket's title for +title_from_ticket+ and +slug+; nil reads none
       # @param plan_command [Workspace::Commands::Plan, nil] writes the new plan for `--plan` (`plan init`); nil refuses `--plan`
       # @param excluder [Workspace::BookkeepingExclude, nil] lists the `.workspace-project` marker in `info/exclude`; nil lists nothing
-      def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
+      def initialize(git:, project_config:, project_settings:, launch_command:, lineage:,
         hook_installer: nil, hooks_config: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
         notes_setup: nil, start_file_copies: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, agent_commands: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, excluder: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
@@ -845,7 +845,7 @@ module Workspace
         AgentProvider.all.select { |p| p.supports_statusline? && @which.call(agent_executable(p, config_name)) }.each do |provider|
           notices = begin
             @hook_installer.install_statusline(provider, worktree_path,
-              command: Commands::Init::STATUSLINE_COMMAND, project_settings: @project_settings, quiet: quiet, local: true)
+              command: HookInstaller::STATUSLINE_COMMAND, project_settings: @project_settings, quiet: quiet, local: true)
           rescue Workspace::Error => e
             quiet ? @warnings << "Note: #{provider.label} statusLine not routed: #{e.message}" : @output.puts("Note: #{provider.label} statusLine not routed: #{e.message}")
             next
@@ -858,9 +858,9 @@ module Workspace
       # A user-level hook file (Codex's) is not the worktree's: one that can't
       # be read is a warning, not a failed start.
       def install_provider_hooks(provider, worktree_path, quiet:)
-        changed = @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND, quiet: quiet, local: true)
+        changed = @hook_installer.install(provider, worktree_path, HookInstaller::HOOK_COMMAND, quiet: quiet, local: true)
         @warnings << "Note: #{provider.hook_trust_hint}." if changed && quiet && provider.hook_trust_hint
-        if !changed && !provider.user_scoped? && @hook_installer.stale_tracked_hooks?(provider, worktree_path, Commands::Init::HOOK_COMMAND)
+        if !changed && !provider.user_scoped? && @hook_installer.stale_tracked_hooks?(provider, worktree_path, HookInstaller::HOOK_COMMAND)
           message = "#{provider.label} hooks in #{@hook_installer.settings_path_for(provider, worktree_path)} are older; #{HookInstaller::STALE_NOTICE}"
           quiet ? @warnings << "Note: #{message}." : @output.puts("Note: #{message}.")
         end

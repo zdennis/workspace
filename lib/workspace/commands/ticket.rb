@@ -128,7 +128,7 @@ module Workspace
           return nil if path.nil? || File.expand_path(path) == File.expand_path(project.root)
           dir = File.basename(path)
         end
-        name = @project_config.worktree_config_name(project.name, dir)
+        name = WorkspaceName.join(project.name, @git.sanitize_for_filesystem(dir))
         @project_config.existing_name(name) || name
       end
 

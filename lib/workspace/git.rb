@@ -6,16 +6,22 @@ require "timeout"
 module Workspace
   # Git and worktree operations for the workspace CLI.
   class Git
+    REV_PARSE_FLAGS = {git_dir: "--git-dir", common_dir: "--git-common-dir", toplevel: "--show-toplevel"}.freeze
+
     # @param output [IO] output stream for user-facing messages
     # @param input [IO] input stream for interactive prompts
     # @param logger [Workspace::Logger] debug logger
     # @param runner [#call] `(argv, chdir:, timeout:)` (and `env:` for {#push}) returning `[stdout, stderr, success]`; runs the
     #   time-limited, prompt-free git calls of {#push}, {#fetch}, {#rebase} and the other write operations
-    def initialize(output: $stdout, input: $stdin, logger: Workspace::Logger.new, runner: TimedProcess.method(:run))
+    # @param gh_runner [#call] `(env, *argv, chdir:)` returning `[stdout, stderr, status]` as `Open3.capture3` does;
+    #   runs the `gh pr checkout` of {#checkout_pr_worktree}, with no time limit
+    def initialize(output: $stdout, input: $stdin, logger: Workspace::Logger.new, runner: TimedProcess.method(:run),
+      gh_runner: ->(env, *cmd, chdir:) { Open3.capture3(env, *cmd, chdir: chdir) })
       @output = output
       @input = input
       @logger = logger
       @runner = runner
+      @gh_runner = gh_runner
     end
 
     # Seconds `git push` may take.
@@ -92,6 +98,39 @@ module Workspace
     # The name of the repository's default branch as a local branch: what
     # `origin/HEAD` points at, else the first of `main` and `master` that exists.
     #
+    # What `git rev-parse` reports for a directory.
+    #
+    # @param dir [String] a directory in a checkout
+    # @param what [Symbol] :git_dir, :common_dir or :toplevel
+    # @return [String, nil] git's stripped answer, nil when git fails or is not installed
+    def path_of(dir, what)
+      stdout, _, status = capture_git("-C", dir, "rev-parse", REV_PARSE_FLAGS.fetch(what))
+      status.success? ? stdout.strip : nil
+    rescue Errno::ENOENT
+      nil
+    end
+
+    # @param dir [String] a directory in a checkout
+    # @return [String, nil] `git rev-parse --abbrev-ref HEAD`, stripped: the branch, `HEAD` when detached;
+    #   nil when git fails (an unborn branch, no repository) or is not installed
+    def head_name(dir)
+      stdout, _, status = capture_git("-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+      status.success? ? stdout.strip : nil
+    rescue Errno::ENOENT
+      nil
+    end
+
+    # @param dir [String] a directory in a checkout
+    # @return [String, nil] the checked-out branch, nil when HEAD is detached or git fails
+    def current_branch_name(dir)
+      stdout, _, status = capture_git("-C", dir, "branch", "--show-current")
+      return nil unless status.success?
+      name = stdout.strip
+      name.empty? ? nil : name
+    rescue Errno::ENOENT
+      nil
+    end
+
     # @param path [String] any checkout of the repository
     # @return [String, nil]
     def default_branch_name(path)
@@ -534,7 +573,7 @@ module Workspace
       @logger.debug { "git: #{cmd.join(" ")} (in #{chdir})" }
       @output.puts "Running: #{cmd.join(" ")}" unless quiet
       begin
-        _, stderr, status = Open3.capture3({"GH_PROMPT_DISABLED" => "1"}, *cmd, chdir: chdir)
+        _, stderr, status = @gh_runner.call({"GH_PROMPT_DISABLED" => "1"}, *cmd, chdir: chdir)
       rescue Errno::ENOENT
         raise Workspace::Error, "`gh` is not installed, but is required to check out a PR. " \
           "Install it, or pass the branch name directly instead of the PR."

@@ -52,6 +52,19 @@ RSpec.describe Workspace::ProjectGroups do
 
       expect(Dir.children(config.groups_dir).sort).to eq([".lock", "billing.yml"])
     end
+
+    it "never writes through a file already at the temp path" do
+      FileUtils.mkdir_p(config.groups_dir)
+      victim = File.join(@root, "victim")
+      File.write(victim, "keep")
+      allow(SecureRandom).to receive(:hex).with(8).and_return("fixed")
+      File.symlink(victim, File.join(config.groups_dir, ".billing.yml.fixed.tmp"))
+
+      expect { groups.create("Billing") }.to raise_error(Errno::EEXIST)
+
+      expect(File.read(victim)).to eq("keep")
+      expect(File.exist?(config.group_path("billing"))).to be false
+    end
   end
 
   describe "#add" do

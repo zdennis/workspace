@@ -18,11 +18,11 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:lock_dir) { File.join(@dir, "state", "locks", "ns") }
   let(:now) { [Time.utc(2026, 10, 4, 12, 0, 0)] }
   let(:ids) { %w[wr_1 wr_2 wr_3] }
-  let(:store) { Workspace::WorkflowRunStore.new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
+  let(:store) { Interceptable.subclass(Workspace::WorkflowRunStore, :update, :find).new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
   let(:liveness) { RunFileLiveness.new(runs_dir) }
   let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
   let(:resources) { Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: liveness, wall_clock: -> { now.first.to_i }) }
-  let(:panes) { FakeWorkflowPanes.new }
+  let(:panes) { InterruptibleWorkflowPanes.new }
   let(:composer) { FakeStepComposer.new }
   let(:check_results) { [] }
   let(:check_calls) { [] }
@@ -355,12 +355,14 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "never runs the pattern on a value over the limit" do
-        patterned
-        allow(Regexp).to receive(:new).and_call_original
+        # A back-reference defeats the regexp engine's memoization, so a run of this pattern lasts its whole 1s timeout;
+        # skipping it takes milliseconds, so 0.9s separates the two with room on both sides.
+        slow = definition("inputs:\n  pr: {pattern: '(a+)+b\\1'}\nsteps:\n  plan:\n    prompt: Plan.\n")
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-        refusal("1" * 5000)
+        expect(refusal("a" * 5000, definition: slow)&.code).to eq("invalid_input")
 
-        expect(Regexp).not_to have_received(:new).with(a_string_starting_with("\\A(?:"), any_args)
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.9
       end
 
       it "checks a whitespace-only value" do
@@ -425,10 +427,15 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(Dir.exist?(File.join(worktree, ".workflow"))).to be(false)
       end
 
+      # Sets only PATH and HOME on the real ENV, and puts them back after the example.
       before do
         FileUtils.mkdir_p(worktree)
-        stub_const("ENV", ENV.to_h.merge("PATH" => exec_path, "HOME" => @dir))
+        @saved_env = ENV.to_h.slice("PATH", "HOME")
+        ENV["PATH"] = exec_path
+        ENV["HOME"] = @dir
       end
+
+      after { @saved_env.each { |key, value| ENV[key] = value } }
 
       it "refuses a bare name that is not on PATH, naming the step and program" do
         refused("workflow_program_missing") do |error|
@@ -645,8 +652,9 @@ RSpec.describe Workspace::WorkflowEngine do
       it "does not refuse a target path that does not exist, or none" do
         start
 
-        expect(engine.send(:check_checkout, File.join(@dir, "nowhere"))).to be_nil
-        expect(engine.send(:check_checkout, nil)).to be_nil
+        [File.join(@dir, "nowhere"), nil].each do |tree|
+          expect(engine.preflight(definition: three_steps, workspace: "app.worktree-x", worktree: worktree, tree: tree, inputs: {"task" => "X-1"})).to include("step" => "plan")
+        end
       end
 
       it "is not raised by resume, which is the run itself" do
@@ -729,10 +737,12 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "leaves the run waiting for a person when the step's instructions can't be written" do
       start(definition("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n"), inputs: {})
-      allow(File).to receive(:write).and_call_original
-      allow(File).to receive(:write).with(a_string_ending_with("b.1.prompt.md"), anything, anything).and_raise(Errno::ENOSPC)
+      full = lambda do |path, text, **options|
+        raise Errno::ENOSPC if path.end_with?("b.1.prompt.md")
+        File.write(path, text, **options)
+      end
 
-      run = engine.turn_ended("wr_1")
+      run = engine_with(prompt_writer: full).turn_ended("wr_1")
 
       expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "error")
       expect(run["reason"]["details"]["message"]).to match(/No space left on device/)
@@ -876,11 +886,12 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "leaves a run waiting for a person, holding nothing, when a step's file can't be written as UTF-8" do
       start(definition("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    uses: [test-db]\n"), inputs: {})
-      allow(File).to receive(:write).and_call_original
-      allow(File).to receive(:write).with(a_string_ending_with("b.1.prompt.md"), anything, anything)
-        .and_raise(Encoding::UndefinedConversionError, "\"\\xC3\" from ASCII-8BIT to UTF-8")
+      unconvertible = lambda do |path, text, **options|
+        raise Encoding::UndefinedConversionError, "\"\\xC3\" from ASCII-8BIT to UTF-8" if path.end_with?("b.1.prompt.md")
+        File.write(path, text, **options)
+      end
 
-      run = engine.turn_ended("wr_1")
+      run = engine_with(prompt_writer: unconvertible).turn_ended("wr_1")
 
       expect(run["reason"]["details"]).to include("kind" => "dispatch")
       expect(lock_holder("test-db")).to be_nil
@@ -1140,13 +1151,16 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => nil}])
     end
 
-    it "records a file past the size cap by its size alone" do
-      stub_const("Workspace::WorkflowAttemptRecord::MAX_HASH_BYTES", 3)
-      start(ledger_flow, inputs: {})
-      artifact("plan.md")
-      engine.turn_ended("wr_1", pane: "%5")
+    context "with a hash cap of 3 bytes" do
+      subject(:engine) { engine_with(attempt_record: Workspace::WorkflowAttemptRecord.new(guard: guard, clock: -> { now.first }, max_hash_bytes: 3)) }
 
-      expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => 5, "too_large" => true}])
+      it "records a file past the size cap by its size alone" do
+        start(ledger_flow, inputs: {})
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => 5, "too_large" => true}])
+      end
     end
 
     it "records no outputs for a step with no produces" do
@@ -2621,13 +2635,13 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     it "starts a run whose `workflow run` was interrupted before its first step was under way" do
-      allow(panes).to receive(:bind).and_raise(Interrupt)
+      panes.bind_error = Interrupt
       expect { start }.to raise_error(Interrupt)
       left = store.find("wr_1")
       expect(left).to include("state" => "waiting", "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"))
       expect(left["reason"]).to include("code" => "waiting_you")
       expect(left["reason"]["details"]).to include("kind" => "dispatch", "error" => "not_started")
-      allow(panes).to receive(:bind).and_call_original
+      panes.bind_error = nil
 
       run = engine.resume("wr_1")
 
@@ -3194,7 +3208,7 @@ RSpec.describe Workspace::WorkflowEngine do
         armed = true
         baseline
       end
-      allow(store).to receive(:update).and_wrap_original do |original, *args, **options, &block|
+      store.on(:update) do |original, *args, **options, &block|
         if armed
           armed = false
           raise Workspace::Error.new("the run file can't be written", code: "run_file_unreadable")
@@ -3327,7 +3341,14 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(stop_when.call).to be true
 
       start(pane: "%6")
-      second = engine_with.send(:finish_check, "wr_2", {"step" => "verify", "attempt" => 1, "command" => "true", "timeout" => 5, "log" => "x", "cwd" => worktree})
+      # A check that never reported back is run again by a tick once past its limit: the public way into finishing a check.
+      store.update("wr_2") do |run|
+        run["current"] = "verify"
+        run["steps"]["verify"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:00:00Z", "check" => {"started_at" => "2026-10-04T12:00:00Z"}}]}
+      end
+      now[0] += 400
+      check_results << {exit_code: 1, timed_out: false}
+      second = engine.tick("wr_2")
       expect(second).to include("id" => "wr_2")
       wanted = stop_whens.last
       expect(wanted.call).to be true # wr_2 is on plan, not checking verify
@@ -3521,7 +3542,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "ends the other runs, and names the one it could not end, when ending one raises" do
       start(workspace: "app.worktree-a", pane: "%5")
       start(workspace: "app.worktree-a", pane: "%6")
-      allow(store).to receive(:update).and_wrap_original do |original, id, **options, &block|
+      store.on(:update) do |original, id, **options, &block|
         raise NoMethodError, "undefined method 'fetch' for nil" if id == "wr_1"
         original.call(id, **options, &block)
       end
@@ -3537,8 +3558,13 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect(engine.workspace_killed("app.worktree-a")).to eq("cancelled" => [], "failed" => [])
       expect(liveness.run_alive?("wr_1")).to be true
-      %i[cancel tick turn_ended approve].each do |verb|
-        expect { engine.public_send(verb, "wr_1") }.to raise_error(Workspace::Error) { |error|
+      {
+        cancel: -> { engine.cancel("wr_1") },
+        tick: -> { engine.tick("wr_1") },
+        turn_ended: -> { engine.turn_ended("wr_1") },
+        approve: -> { engine.approve("wr_1") }
+      }.each_value do |call_verb|
+        expect { call_verb.call }.to raise_error(Workspace::Error) { |error|
           expect(error.code).to eq("unknown_run")
           expect(error.details).to eq("run_id" => "wr_1", "path" => path)
         }
@@ -3584,7 +3610,7 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     it "leaves a running attempt when the process dies while the daemon answers, which a turn's end then decides" do
-      allow(panes).to receive(:kick).and_raise(Interrupt)
+      panes.kick_error = Interrupt
       expect { start }.to raise_error(Interrupt)
       left = store.find("wr_1")
       expect(left).to include("state" => "running", "reason" => nil)
@@ -3615,9 +3641,9 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     it "decides a step left delivering past the delivery window when its pane's turn is over, without typing again" do
-      allow(panes).to receive(:kick).and_raise(Interrupt)
+      panes.kick_error = Interrupt
       expect { start }.to raise_error(Interrupt)
-      allow(panes).to receive(:kick).and_call_original
+      panes.kick_error = nil
       now[0] += described_class::DELIVERY_WINDOW + 1
 
       expect(engine.resume("wr_1")["unchanged"]).to eq("an agent is working on step plan")
@@ -3629,9 +3655,9 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     it "types the line again in a new attempt only when asked to, with --from" do
-      allow(panes).to receive(:kick).and_raise(Interrupt)
+      panes.kick_error = Interrupt
       expect { start }.to raise_error(Interrupt)
-      allow(panes).to receive(:kick).and_call_original
+      panes.kick_error = nil
 
       run = engine.resume("wr_1", from: "plan")
 
@@ -3793,10 +3819,11 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     describe "a changed repository config" do
-      let(:inbox) { Workspace::InboxStore.new(path: File.join(worktree, "..", "inbox-#{File.basename(worktree)}.json")) }
+      let(:inbox_path) { File.join(worktree, "..", "inbox-#{File.basename(worktree)}.json") }
+      let(:inbox) { Workspace::InboxStore.new(path: inbox_path) }
       subject(:engine) { engine_with(inbox_for: ->(_workspace) { inbox }) }
 
-      after { FileUtils.rm_f([inbox.instance_variable_get(:@path), "#{inbox.instance_variable_get(:@path)}.lock"]) }
+      after { FileUtils.rm_f([inbox_path, "#{inbox_path}.lock"]) }
 
       def set_config(key, value)
         system("git", "-C", worktree, "config", key, value, exception: true)
@@ -3859,16 +3886,36 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(run).not_to have_key("guard_config_seen")
       end
 
-      it "tries again at the next guarded step when the warning could not be recorded" do
+      it "goes on when the inbox cannot be written, the warning still on the attempt" do
+        failing = engine_with(inbox_for: ->(_workspace) { raise "inbox is gone" })
         start(guarded, inputs: {})
         set_config("alias.x", "status")
-        allow(engine).to receive(:config_warning).and_raise(RuntimeError)
-        run = to_second_step
+        artifact("note.md")
+
+        run = failing.turn_ended("wr_1", pane: "%5")
+
+        expect(run["current"]).to eq("fix")
+        expect(run["steps"]["diagnose"]["attempts"].last).to include("outcome" => "passed", "warnings" => [include("code" => "config_changed")])
+      end
+
+      it "tries again at the next guarded step when the warning could not be recorded" do
+        reads = 0
+        flaky = Class.new(SimpleDelegator) do
+          define_method(:config_change) do |*args, **kwargs|
+            # The first reading carries a code the warning text does not know, so building the warning fails.
+            ((reads += 1) == 1) ? {"code" => "unknown_code", "reading" => "r"} : super(*args, **kwargs)
+          end
+        end.new(guard)
+        flaky_engine = engine_with(guard: flaky, inbox_for: ->(_workspace) { inbox })
+        start(guarded, inputs: {})
+        set_config("alias.x", "status")
+        artifact("note.md")
+
+        run = flaky_engine.turn_ended("wr_1", pane: "%5")
         expect(run["current"]).to eq("fix")
         expect(run).not_to have_key("guard_config_seen")
-        allow(engine).to receive(:config_warning).and_call_original
 
-        run = engine.turn_ended("wr_1", pane: "%5")
+        run = flaky_engine.turn_ended("wr_1", pane: "%5")
 
         expect(run["steps"]["fix"]["attempts"].last["warnings"].size).to eq(1)
       end
@@ -4301,8 +4348,7 @@ RSpec.describe Workspace::WorkflowEngine do
       it "refuses a pane another run has, now and not an hour from now" do
         undelivered
         panes.bind(workspace: "other", pane: "%9", run_id: "wr_2")
-        allow(store).to receive(:find).and_call_original
-        allow(store).to receive(:find).with("wr_2").and_return({"state" => "running"})
+        store.on(:find) { |original, id| (id == "wr_2") ? {"state" => "running"} : original.call(id) }
 
         expect { engine.park("wr_1", pane: "%9") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
         expect(parked).to be_nil

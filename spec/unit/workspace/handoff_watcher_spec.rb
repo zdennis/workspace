@@ -4,6 +4,20 @@ require "tmpdir"
 require "socket"
 
 RSpec.describe Workspace::HandoffWatcher do
+  # A delivery lock that runs what is scheduled for the wait on it, in place of a real wait.
+  let(:scheduled_lock_class) do
+    Class.new do
+      def initialize(waits)
+        @waits = waits
+      end
+
+      def synchronize
+        @waits.shift&.call
+        yield
+      end
+    end
+  end
+
   let(:empty_prompt) { "────────\n❯ \n" }
   let(:text) { "Are you handing off? Run workspace handoff new once the state is saved." }
   let(:sent_text) { "Your context is nearly full.\n\nSave your state, then run workspace handoff new." }
@@ -11,22 +25,14 @@ RSpec.describe Workspace::HandoffWatcher do
   # A paste shows in the input line and Enter empties it again.
   let(:tmux) do
     Class.new do
-      attr_accessor :details, :screen, :scripted, :statuses, :on_paste
-      attr_reader :delivered, :detail_calls
+      attr_accessor :screen, :scripted, :statuses, :on_paste
+      attr_reader :delivered
 
       def initialize(screen)
-        @details = [{id: "%5", window: 0, index: 1, pid: 100}, {id: "%6", window: 0, index: 2, pid: 200}]
         @screen = screen
         @empty = screen
         @delivered = []
         @statuses = []
-        @detail_calls = 0
-      end
-
-      def pane_details(_session, window: "0")
-        raise ArgumentError, "expected every window" unless window.nil?
-        @detail_calls += 1
-        @details
       end
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
@@ -73,24 +79,35 @@ RSpec.describe Workspace::HandoffWatcher do
     end
   end
   let(:restarting) { [] }
+  let(:rows) { [{id: "%5", window: 0, index: 1, pid: 100}, {id: "%6", window: 0, index: 2, pid: 200}] }
+  let(:factory) do
+    Class.new(FakePaneFactory) do
+      attr_reader :lookups
+
+      def call(pane_id)
+        @lookups = lookups.to_i + 1
+        super
+      end
+    end.new(panes: rows.map { |row| FakePane.new(id: row[:id], session_name: "ws", tmux: tmux, row: row) })
+  end
   let(:paused) { [false] }
   let(:lock_wait) { [] }
 
   # Runs what is scheduled for the wait on the lock, in place of a real wait.
   let(:delivery_lock) do
-    wait = lock_wait
-    Object.new.tap do |lock|
-      lock.define_singleton_method(:synchronize) do |&block|
-        wait.shift&.call
-        block.call
-      end
-    end
+    scheduled_lock_class.new(lock_wait)
   end
-  let(:typer) { Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor) }
+  let(:typer) { Workspace::PromptTyper.new(panes: factory, session_monitor: monitor) }
+  # Each sleep the watcher's thread starts, so a spec can wait for the thread to reach one.
+  let(:sleeping) { Queue.new }
+
+  let(:tick_seconds) { described_class::TICK }
+  let(:poll_every) { described_class::POLL_EVERY }
+
   let(:watcher) do
-    described_class.new(tmux: tmux, session_name: "ws", workspace: "ws", session_monitor: monitor, typer: typer,
+    described_class.new(tick: tick_seconds, poll_every: poll_every, panes: factory, session_name: "ws", workspace: "ws", session_monitor: monitor, typer: typer,
       delivery_lock: delivery_lock, restarting: ->(id) { restarting.include?(id) }, plan_paused: -> { paused.first },
-      event_log: event_log, clock: -> { now.first })
+      event_log: event_log, clock: -> { now.first }, sleeper: ->(seconds) { sleeping.push(seconds) && sleep(seconds) })
   end
 
   def arm(pane_id: "%5", sent_at: now.first, interval: 30, max: 3, text: self.text, sent_text: self.sent_text)
@@ -186,7 +203,7 @@ RSpec.describe Workspace::HandoffWatcher do
         arm(max: 2)
         tick(30)
         facts[field] = value
-        tmux.details.first[:pid] = value if field == :pane_pid
+        rows.first[:pid] = value if field == :pane_pid
         expect(arm(sent_at: now.first, max: 2, text: "New text", sent_text: "New prompt")).to eq({watching: true, reason: nil})
         expect(ends).to eq([{"pane_id" => "%5", "reason" => reason, "tries" => 1}])
         expect(events.count { |type, _, _| type == "handoff_watch_started" }).to eq(2)
@@ -200,7 +217,7 @@ RSpec.describe Workspace::HandoffWatcher do
         arm(max: 1)
         tick(30)
         facts[field] = value
-        tmux.details.first[:pid] = value if field == :pane_pid
+        rows.first[:pid] = value if field == :pane_pid
         arm(sent_at: now.first, max: 1)
         tmux.delivered.clear
 
@@ -262,7 +279,7 @@ RSpec.describe Workspace::HandoffWatcher do
     it "sends one follow-up after the interval and another one interval later" do
       arm
       tick(30)
-      expect(tmux.delivered).to eq([["ws", "0.1", text, false], ["ws", "0.1", "", true]])
+      expect(tmux.delivered).to eq([["ws", "%5", text, false], ["ws", "%5", "", true]])
       expect(followups).to eq([{"pane_id" => "%5", "attempt" => 1, "outcome" => "submitted"}])
 
       tick(29)
@@ -691,12 +708,12 @@ RSpec.describe Workspace::HandoffWatcher do
         panes[id]
       end
       expect { tick(30) }.not_to raise_error
-      expect(tmux.delivered.map { |d| d[1] }.uniq).to eq(["0.2"])
+      expect(tmux.delivered.map { |d| d[1] }.uniq).to eq(["%6"])
     end
 
     it "makes no tmux call with no watches" do
       tick(60)
-      expect(tmux.detail_calls).to eq(0)
+      expect(factory.lookups).to be_nil
       expect(monitor).not_to have_received(:followup_facts)
     end
   end
@@ -927,7 +944,7 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "ends pane_gone and types nothing when the pane has no target" do
       arm
-      tmux.details = []
+      factory.panes.clear
       tick(30)
       expect(tmux.delivered).to be_empty
       expect_end("pane_gone")
@@ -935,7 +952,7 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "ends pane_gone and types nothing when the target's pid changed" do
       arm
-      tmux.details = [{id: "%5", window: 0, index: 1, pid: 999}]
+      factory.panes.replace([FakePane.new(id: "%5", session_name: "ws", tmux: tmux, row: {id: "%5", window: 0, index: 1, pid: 999})])
       tick(30)
       expect(tmux.delivered).to be_empty
       expect_end("pane_gone")
@@ -962,8 +979,7 @@ RSpec.describe Workspace::HandoffWatcher do
     # A stop before the thread reaches its sleep would prove nothing.
     def start_and_settle
       watcher.start
-      thread = watcher.instance_variable_get(:@thread)
-      Thread.pass until thread.stop?
+      Timeout.timeout(5) { sleeping.pop }
     end
 
     it "stops within 1s with no watches" do
@@ -977,59 +993,66 @@ RSpec.describe Workspace::HandoffWatcher do
       expect(elapsed { watcher.stop }).to be < 1
     end
 
-    it "polls on its ticks and survives a poll that raises" do
-      stub_const("#{described_class}::TICK", 0.001)
-      stub_const("#{described_class}::POLL_EVERY", 0.002)
-      polled = Queue.new
-      arm
-      allow(monitor).to receive(:followup_facts) do
-        polled << true
-        raise Workspace::Error, "boom"
+    context "with a fast tick" do
+      let(:tick_seconds) { 0.001 }
+      let(:poll_every) { 0.002 }
+
+      it "polls on its ticks and survives a poll that raises" do
+        polled = Queue.new
+        arm
+        allow(monitor).to receive(:followup_facts) do
+          polled << true
+          raise Workspace::Error, "boom"
+        end
+        watcher.start
+        Timeout.timeout(5) { 2.times { polled.pop } }
+        watcher.stop
+        expect(sleeping.pop).to eq(0.001)
       end
-      watcher.start
-      Timeout.timeout(5) { 2.times { polled.pop } }
-      watcher.stop
     end
 
     context "with a real Mutex as the delivery lock" do
       let(:delivery_lock) { Mutex.new }
+      let(:tick_seconds) { 0.001 }
+      let(:poll_every) { 0.001 }
 
       it "types a follow-up from the thread, which a re-entrant take would stop" do
-        stub_const("#{described_class}::TICK", 0.001)
-        stub_const("#{described_class}::POLL_EVERY", 0.001)
         arm
         now[0] += 30
         watcher.start
         Timeout.timeout(5) { Thread.pass until tmux.delivered.size == 2 }
         watcher.stop
-        expect(tmux.delivered).to eq([["ws", "0.1", text, false], ["ws", "0.1", "", true]])
+        expect(tmux.delivered).to eq([["ws", "%5", text, false], ["ws", "%5", "", true]])
       end
     end
 
-    it "lets a started typing finish and types nothing further" do
-      stub_const("#{described_class}::TICK", 0.001)
-      stub_const("#{described_class}::POLL_EVERY", 0.001)
-      panes["%6"] = facts.merge(pane_pid: 200)
-      arm
-      arm(pane_id: "%6")
-      pasting = Queue.new
-      release = Queue.new
-      tmux.on_paste = lambda do
-        pasting << true
-        release.pop
-      end
-      now[0] += 30
+    context "with a fast tick" do
+      let(:tick_seconds) { 0.001 }
+      let(:poll_every) { 0.001 }
 
-      watcher.start
-      Timeout.timeout(5) do
-        pasting.pop
-        stopper = Thread.new { watcher.stop }
-        Thread.pass until stopper.stop?
-        release << true
-        stopper.join
-      end
+      it "lets a started typing finish and types nothing further" do
+        panes["%6"] = facts.merge(pane_pid: 200)
+        arm
+        arm(pane_id: "%6")
+        pasting = Queue.new
+        release = Queue.new
+        tmux.on_paste = lambda do
+          pasting << true
+          release.pop
+        end
+        now[0] += 30
 
-      expect(tmux.delivered).to eq([["ws", "0.1", text, false], ["ws", "0.1", "", true]])
+        watcher.start
+        Timeout.timeout(5) do
+          pasting.pop
+          stopper = Thread.new { watcher.stop }
+          Thread.pass until stopper.stop?
+          release << true
+          stopper.join
+        end
+
+        expect(tmux.delivered).to eq([["ws", "%5", text, false], ["ws", "%5", "", true]])
+      end
     end
   end
 end

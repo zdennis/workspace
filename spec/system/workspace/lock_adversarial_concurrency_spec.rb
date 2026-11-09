@@ -22,7 +22,7 @@ RSpec.describe "Lock adversarial concurrency" do
 
   def lock_command(lock_holder:, clock: Time, sleeper: ->(_) {}, trap: ->(_s, _h) { "DEFAULT" }, pid_provider: -> { 2001 })
     namespace = double("LockNamespace", resolve: {key: "k", display: "app", dir: tmpdir})
-    Workspace::Commands::Lock.new(config: double("Config"), lock_namespace: namespace, lock_holder: lock_holder,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: double("Config"), lock_namespace: namespace, lock_holder: lock_holder,
       output: StringIO.new, error_output: StringIO.new, sleeper: sleeper, clock: clock,
       pid_provider: pid_provider, trap: trap)
   end
@@ -40,10 +40,8 @@ RSpec.describe "Lock adversarial concurrency" do
       store.acquire("edit", identity: identity(pid: Process.pid, started: my_started),
         waiter_pid: Process.pid, waiter_started: my_started)
 
-      failed = instance_double(Process::Status, success?: false)
-      allow(Open3).to receive(:capture3).and_call_original
-      allow(Open3).to receive(:capture3).with("ps", any_args).and_return(["", "ps: fork failed", failed])
-      allow(Open3).to receive(:capture3).with(kind_of(Hash), "ps", any_args).and_return(["", "ps: fork failed", failed])
+      failing_ps = Workspace::ProcessTree.new(command: ["sh", "-c", "echo 'ps: fork failed' >&2; exit 1"])
+      store = Workspace::LockStore.new(dir: tmpdir, liveness: Workspace::LockHolder.new(process_tree: failing_ps))
 
       result = store.acquire("edit", identity: identity(pid: 999_999), waiter_pid: 999_999, waiter_started: "x")
 
@@ -76,11 +74,17 @@ RSpec.describe "Lock adversarial concurrency" do
     it "C5: one reap takes at most one process-table snapshot (not one `ps` per holder/waiter under the flock)" do
       real = Workspace::ProcessTree.new
       calls = 0
-      counting = Object.new
-      counting.define_singleton_method(:snapshot) do
-        calls += 1
-        real.snapshot
-      end
+      counting = Class.new do
+        def initialize(real, &on_call)
+          @real = real
+          @on_call = on_call
+        end
+
+        def snapshot
+          @on_call.call
+          @real.snapshot
+        end
+      end.new(real) { calls += 1 }
       liveness = Workspace::LockHolder.new(process_tree: counting)
       store = Workspace::LockStore.new(dir: tmpdir, liveness: liveness)
       store.acquire("edit", identity: identity(pid: Process.pid, started: my_started),
@@ -120,7 +124,7 @@ RSpec.describe "Lock adversarial concurrency" do
           end
         end.new
         ns = Struct.new(:dir) { def resolve(cwd:) = {key: "k", display: "a", dir: dir} }.new(dir)
-        lock = Workspace::Commands::Lock.new(config: nil, lock_namespace: ns, lock_holder: holder,
+        lock = Workspace::Commands::Lock.new(lineage: Workspace::WorkspaceLineage.new(rev_parse: ->(dir, what) { Workspace::Git.new.path_of(dir, what) }), config: nil, lock_namespace: ns, lock_holder: holder,
           output: StringIO.new, error_output: StringIO.new, sleeper: ->(_) { sleep 0.01 })
         $stdout.puts "READY"
         $stdout.flush
@@ -156,8 +160,7 @@ RSpec.describe "Lock adversarial concurrency" do
       t0 = Time.now
       calls = 0
       store_dir = tmpdir
-      clock = Object.new
-      clock.define_singleton_method(:now) do
+      clock = BlockClock.new do
         calls += 1
         if calls >= 2
           Workspace::LockStore.new(dir: store_dir, liveness: FakeLockIdentity.new(pid: 0)).release("edit", 100)
@@ -198,8 +201,8 @@ RSpec.describe "Lock adversarial concurrency" do
 
     it "C9: a waiter whose own start time could not be read must not be reaped as 'cleared' (exit 4)" do
       fake_store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
-      holder = FakeLockIdentity.new(pid: 200)
-      holder.define_singleton_method(:start_time) { |_pid = nil| nil }
+      unreadable_start = Class.new(FakeLockIdentity) { def start_time(_pid = nil) = nil }
+      holder = unreadable_start.new(pid: 200)
       store_dir = tmpdir
       sleeper = ->(_) { Workspace::LockStore.new(dir: store_dir, liveness: FakeLockIdentity.new(pid: 0)).release("edit", 100) }
       lock = lock_command(lock_holder: holder, sleeper: sleeper)

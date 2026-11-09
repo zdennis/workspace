@@ -30,7 +30,7 @@ RSpec.describe "lock clear adversarial CLI probes" do
   end
 
   def clear_command(pid: 999, out: output, err: error_output)
-    Workspace::Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: pid),
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: pid),
       output: out, error_output: err, terminator: terminator, clock: mono_clock, trap: ->(*) {}, pid_provider: -> { pid },
       sleeper: ->(seconds) { mono[0] += seconds })
   end
@@ -64,7 +64,7 @@ RSpec.describe "lock clear adversarial CLI probes" do
       # take a human `lock status` reading — the moment the in-progress
       # message tells a second caller to check.
       status_out = StringIO.new
-      status_command = Workspace::Commands::Lock.new(config: config, lock_namespace: lock_namespace,
+      status_command = Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace,
         lock_holder: FakeLockIdentity.new(pid: 1), output: status_out, error_output: StringIO.new,
         terminator: terminator, trap: ->(*) {})
       status_command.status("devenv")

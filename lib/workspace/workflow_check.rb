@@ -29,12 +29,13 @@ module Workspace
     # (empty for a run with no recorded commit), and every inherited `GIT_*` variable removed, so a caller's
     # `GIT_DIR`, `GIT_INDEX_FILE` or `GIT_CONFIG_*` can't steer the check.
     #
-    # @param run [Hash{String=>Object}] a stored run
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @return [Hash{String=>String, nil}]
     def self.env_for(run)
+      run = WorkflowRun.from_h(run)
       ENV.keys.select { |name| name.start_with?("GIT_") }.to_h { |name| [name, nil] }.merge(
-        "WORKSPACE_RUN_ID" => run["id"], "WORKSPACE_RUN_ARTIFACTS" => run["artifacts_dir"].to_s,
-        "WORKSPACE_RUN_BASE_SHA" => run["base_sha"].to_s
+        "WORKSPACE_RUN_ID" => run.id, "WORKSPACE_RUN_ARTIFACTS" => run.artifacts_dir.to_s,
+        "WORKSPACE_RUN_BASE_SHA" => run.base_sha.to_s
       )
     end
 

@@ -130,7 +130,7 @@ module Workspace
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
     # @param sleeper [#call] sleeps the given seconds, injected for fast tests
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, go_command: nil, workflow_project: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil, lineage: WorkspaceLineage.new)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, lineage:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, go_command: nil, workflow_project: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -3652,13 +3652,8 @@ module Workspace
     # Builds the "command" message shared by `agent run` and
     # `agent-run command`.
     def build_command_message(name:, work_item:, body:, dispatch_prefix: "debug-")
-      {
-        "type" => "command",
-        "workspace" => name,
-        "work_item_ref" => work_item,
-        "dispatch_id" => "#{dispatch_prefix}#{SecureRandom.hex(4)}",
-        "body" => jsonl_body(body || "Begin work.")
-      }
+      AgentProtocol.command(workspace: name, work_item_ref: work_item,
+        dispatch_id: "#{dispatch_prefix}#{SecureRandom.hex(4)}", body: jsonl_body(body || "Begin work."))
     end
 
     def cmd_agent_run_inject(args)
@@ -3683,13 +3678,7 @@ module Workspace
       raise UsageError, "Missing --work-item.\n\n#{agent_run_help}" if work_item.nil?
       raise UsageError, "Missing --body.\n\n#{agent_run_help}" if body.nil?
 
-      message = {
-        "type" => "inject",
-        "workspace" => name,
-        "work_item_ref" => work_item,
-        "interrupt" => interrupt,
-        "body" => jsonl_body(body)
-      }
+      message = AgentProtocol.inject(workspace: name, work_item_ref: work_item, interrupt: interrupt, body: jsonl_body(body))
       agent_run_send(name, message, dry_run: dry_run)
     end
 
@@ -3965,58 +3954,32 @@ module Workspace
         {
           label: "command — check GitHub CI status (safe, read-only)",
           cli: "workspace agent-run command --work-item WC-42 --body \"What is the current status of GitHub CI for this branch?\"",
-          message: {
-            "type" => "command",
-            "workspace" => name,
-            "work_item_ref" => "WC-42",
-            "dispatch_id" => "debug-abcd1234",
-            "body" => "What is the current status of GitHub CI for this branch?"
-          }
+          message: AgentProtocol.command(workspace: name, work_item_ref: "WC-42", dispatch_id: "debug-abcd1234",
+            body: "What is the current status of GitHub CI for this branch?")
         },
         {
           label: "command — run the linter (safe, re-runnable)",
           cli: "workspace agent-run command --work-item WC-42 --body \"Run the linter and report any issues.\"",
-          message: {
-            "type" => "command",
-            "workspace" => name,
-            "work_item_ref" => "WC-42",
-            "dispatch_id" => "debug-abcd1234",
-            "body" => "Run the linter and report any issues."
-          }
+          message: AgentProtocol.command(workspace: name, work_item_ref: "WC-42", dispatch_id: "debug-abcd1234",
+            body: "Run the linter and report any issues.")
         },
         {
           label: "inject — queue a steer for the next pipeline stage",
           cli: "workspace agent-run inject --work-item WC-42 --body \"Focus on the failing tests, not the linter warnings.\"",
-          message: {
-            "type" => "inject",
-            "workspace" => name,
-            "work_item_ref" => "WC-42",
-            "interrupt" => false,
-            "body" => "Focus on the failing tests, not the linter warnings."
-          }
+          message: AgentProtocol.inject(workspace: name, work_item_ref: "WC-42", interrupt: false,
+            body: "Focus on the failing tests, not the linter warnings.")
         },
         {
           label: "inject --interrupt — urgent steer: stop current stage and redirect",
           cli: "workspace agent-run inject --interrupt --work-item WC-42 --body \"Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.\"",
-          message: {
-            "type" => "inject",
-            "workspace" => name,
-            "work_item_ref" => "WC-42",
-            "interrupt" => true,
-            "body" => "Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first."
-          }
+          message: AgentProtocol.inject(workspace: name, work_item_ref: "WC-42", interrupt: true,
+            body: "Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.")
         },
         {
           label: "restart — clear the coding agent in one pane and hand it a fresh prompt",
           cli: "workspace agent-run restart --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait",
-          message: {
-            "type" => "restart_agent",
-            "workspace" => name,
-            "pane" => "0.1",
-            "prompt" => "Read HANDOFF.md and follow it.",
-            "force" => false,
-            "wait" => true
-          }
+          message: AgentProtocol.restart_agent(workspace: name, pane: "0.1", prompt: "Read HANDOFF.md and follow it.",
+            force: false, wait: true)
         }
       ]
 
@@ -4114,9 +4077,8 @@ module Workspace
 
       run_action("pipeline start", json: json) do
         reply = send_to_agent(project,
-          "type" => "command", "workspace" => project, "work_item_ref" => work_item,
-          "dispatch_id" => "manual-#{SecureRandom.hex(4)}",
-          "body" => body || "Begin work on #{work_item}.")
+          AgentProtocol.command(workspace: project, work_item_ref: work_item,
+            dispatch_id: "manual-#{SecureRandom.hex(4)}", body: body || "Begin work on #{work_item}."))
         raise Error, "The agent for #{project} refused the work item: #{reply["error"]}" unless reply["ok"]
         @output.puts "Sent #{work_item} into #{project}'s pipeline"
         {results: json ? [action_row(project, "started", work_item_ref: work_item)] : [], warnings: [PIPELINE_DEPRECATION]}
@@ -4138,8 +4100,8 @@ module Workspace
         # The body reaches a live shell, so it is escaped rather than interpolated.
         sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
         reply = send_to_agent(project,
-          "type" => "inject", "workspace" => project, "work_item_ref" => work_item,
-          "interrupt" => true, "expected_token" => token, "body" => "echo #{Shellwords.escape(sentinel)}")
+          AgentProtocol.inject(workspace: project, work_item_ref: work_item, interrupt: true, expected_token: token,
+            body: "echo #{Shellwords.escape(sentinel)}"))
         unless reply["ok"]
           raise Error.new("The stage moved on before the advance landed; run 'workspace pipeline advance' again", code: "stale_token") if reply["error"] == "stale_token"
           raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"
@@ -5477,8 +5439,8 @@ module Workspace
 
     def workflow_background_task(text)
       type, id = text.split(":", 2)
-      unless WorkflowEngine::BACKGROUND_TASK_TYPES.include?(type) && id.to_s.match?(WorkflowEngine::BACKGROUND_TASK_ID)
-        raise UsageError, "--background-task takes TYPE:ID with a type of #{WorkflowEngine::BACKGROUND_TASK_TYPES.join(", ")}, got #{text[0, 60].inspect}."
+      unless IdPatterns::BACKGROUND_TASK_TYPES.include?(type) && id.to_s.match?(IdPatterns::BACKGROUND_TASK_ID)
+        raise UsageError, "--background-task takes TYPE:ID with a type of #{IdPatterns::BACKGROUND_TASK_TYPES.join(", ")}, got #{text[0, 60].inspect}."
       end
       {"id" => id, "type" => type}
     end
@@ -6392,7 +6354,7 @@ module Workspace
       else
         project = config_workspace(name, page)
         config_report.show(project, scope: scope) if scope == "workspace"
-        project = WorkspaceLineage.split_worktree_name(project)&.first || project if scope == "project"
+        project = WorkspaceName.project_of(project) if scope == "project"
         data = @project_settings.load(project)
         path = @project_settings.project_config_path(project)
         @output.puts "# #{path}"
@@ -8279,7 +8241,7 @@ module Workspace
         opts.separator ""
         opts.separator "Subcommands:"
         HelpPages.overview_verbs(HelpPages::PLAN).each { |line| opts.separator line }
-        opts.separator "Run `workspace plan VERB --help` for a verb's options. Task states: #{PlanFile::TASK_STATES.join(", ")}."
+        opts.separator "Run `workspace plan VERB --help` for a verb's options. Task states: #{IdPatterns::TASK_STATES.join(", ")}."
         opts.separator ""
         opts.separator "A verb that writes (init, start, pause, delete, task) changes the plan or the workspace for real."
         opts.separator ""
@@ -8294,7 +8256,7 @@ module Workspace
         opts.on("--yes", "delete: confirm the delete") { take_plan_flag(options, :yes, true) }
         opts.on("--task ID", "start: send only this task; task set-state, set-title and move: the task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
         opts.on("--id ID", "task add: the new task's id (default: the next number after the plan's last id)") { |v| take_plan_flag(options, :id, v) }
-        opts.on("--state STATE", "task add and set-state: #{PlanFile::TASK_STATES.join(", ")}") { |v| take_plan_flag(options, :state, v) }
+        opts.on("--state STATE", "task add and set-state: #{IdPatterns::TASK_STATES.join(", ")}") { |v| take_plan_flag(options, :state, v) }
         opts.on("--reason TEXT", "task add and set-state: why a task is blocked or skipped") { |v| take_plan_flag(options, :reason, v) }
         opts.on("--phase NAME", "task add: the ### heading to add under; task move: move to the end of this phase") { |v| take_plan_flag(options, :phase, v) }
         opts.on("--after ID", "task add and move: place the task after this task") { |v| take_plan_flag(options, :after, v) }
@@ -8419,8 +8381,8 @@ module Workspace
         raise UsageError, "plan task move needs --task." unless options[:task]
         raise UsageError, "Give exactly one of --after, --before and --phase." unless [options[:after], options[:before], options[:phase]].compact.size == 1
       end
-      if options[:state] && !PlanFile::TASK_STATES.include?(options[:state])
-        raise UsageError, "Unknown task state: #{options[:state]}. One of #{PlanFile::TASK_STATES.join(", ")}."
+      if options[:state] && !IdPatterns::TASK_STATES.include?(options[:state])
+        raise UsageError, "Unknown task state: #{options[:state]}. One of #{IdPatterns::TASK_STATES.join(", ")}."
       end
     end
 

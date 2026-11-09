@@ -172,10 +172,13 @@ RSpec.describe Workspace::RunResultCleaner do
 
   it "does not raise when a file can't be removed, and removes the rest" do
     paths = run_files("old", days: 8)
-    allow(File).to receive(:delete).and_call_original
-    allow(File).to receive(:delete).with(paths.first).and_raise(Errno::EACCES)
+    # A non-empty directory where a run file belongs is one File.delete cannot remove.
+    FileUtils.rm(paths.first)
+    FileUtils.mkdir_p(File.join(paths.first, "inner"))
+    age(paths.first, 8)
 
     expect(cleaner.call).to eq(2)
+    expect(File.directory?(paths.first)).to be true
   end
 
   it "does not raise when the directory can't be read" do

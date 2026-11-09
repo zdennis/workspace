@@ -5,8 +5,9 @@ RSpec.describe Workspace::LockHolder do
   let(:snapshot) { instance_double(Workspace::ProcessTree::Snapshot) }
   let(:provider) { Workspace::AgentProvider.find("claude") }
   let(:env) { {} }
+  let(:tmux) { instance_double(Workspace::Tmux) }
 
-  subject(:holder) { described_class.new(process_tree: process_tree, providers: [provider], env: env) }
+  subject(:holder) { described_class.new(process_tree: process_tree, providers: [provider], env: env, tmux: tmux) }
 
   before { allow(process_tree).to receive(:snapshot).and_return(snapshot) }
 
@@ -25,9 +26,7 @@ RSpec.describe Workspace::LockHolder do
 
       it "falls back to walking down from the pane's process when no ancestor is an agent" do
         allow(snapshot).to receive(:find_ancestor).and_return(nil)
-        allow(Open3).to receive(:capture3)
-          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
-          .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
+        allow(tmux).to receive(:pane_pid).with("%12").and_return(4200)
         allow(snapshot).to receive(:find_descendant)
           .with(4200, ["claude"], exclude: {"claude" => provider.background_markers}, include_root: true, exact_only: [])
           .and_return({pid: 4411, ppid: 4200, lstart: "Sat Sep 26 09:12:03 2026", command: "claude", args: "claude"})
@@ -38,13 +37,13 @@ RSpec.describe Workspace::LockHolder do
       end
 
       it "prefers the nearest agent ancestor without asking tmux for the pane" do
-        allow(Open3).to receive(:capture3)
+        allow(tmux).to receive(:pane_pid)
         allow(snapshot).to receive(:find_ancestor)
           .with(Process.pid, ["claude"], exclude: {"claude" => provider.background_markers}, exact_only: [])
           .and_return({pid: 999, ppid: 1, lstart: "start-999", command: "claude", args: "claude"})
 
         expect(holder.current).to include(pid: 999, started: "start-999")
-        expect(Open3).not_to have_received(:capture3)
+        expect(tmux).not_to have_received(:pane_pid)
       end
     end
 
@@ -70,7 +69,7 @@ RSpec.describe Workspace::LockHolder do
   end
 
   describe "#current with the default provider registry" do
-    subject(:holder) { described_class.new(process_tree: process_tree, env: env) }
+    subject(:holder) { described_class.new(process_tree: process_tree, env: env, tmux: tmux) }
 
     let(:env) { {} }
     let(:snapshot) { Workspace::ProcessTree::Snapshot.new(processes) }
@@ -137,9 +136,7 @@ RSpec.describe Workspace::LockHolder do
       end
 
       before do
-        allow(Open3).to receive(:capture3)
-          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
-          .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
+        allow(tmux).to receive(:pane_pid).with("%12").and_return(4200)
       end
 
       it "resolves to the nearest agent above the caller, not the outermost one in the pane" do
@@ -159,9 +156,7 @@ RSpec.describe Workspace::LockHolder do
       end
 
       before do
-        allow(Open3).to receive(:capture3)
-          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
-          .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
+        allow(tmux).to receive(:pane_pid).with("%12").and_return(4200)
       end
 
       it "falls back to the agent running in the pane" do

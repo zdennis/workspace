@@ -32,7 +32,7 @@ module Workspace
       @dir = dir
     end
 
-    # @param run [Hash{String=>Object}] a stored run, going or finished
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run, going or finished
     # @param step [String, nil] only this step's attempts
     # @return [Hash{String=>Object}] `"files"`, one row per recorded entry (`step`, `attempt`, `name`, `kind`,
     #   `source`, `status`, `reason`, `recorded_sha256`, `now_sha256`, `bytes`, `source_status`), `"without_evidence"`
@@ -40,6 +40,7 @@ module Workspace
     #   `"counts"` (rows per status), `"clean"` (no copy mismatched) and `"directory"`
     # @raise [Workspace::Error] code `unknown_step` when +step+ is not one of the run's steps
     def read(run, step: nil)
+      run = WorkflowRun.from_h(run)
       rows = @attempts.read(run, step: step)["attempts"]
       files = []
       without = []
@@ -58,7 +59,7 @@ module Workspace
     private
 
     def directory(run)
-      id = run["id"].to_s
+      id = run.id.to_s
       RunLiveness::ID_PATTERN.match?(id) ? File.join(@dir, id) : nil
     end
 
@@ -117,8 +118,8 @@ module Workspace
 
     def source_status(run, entry)
       return nil unless SOURCE_KINDS.include?(entry["kind"])
-      return nil unless [entry["source"], run["artifacts_dir"]].all? { |each| each.is_a?(String) && !each.include?("\0") }
-      artifacts = File.realpath(run["artifacts_dir"].to_s)
+      return nil unless [entry["source"], run.artifacts_dir].all? { |each| each.is_a?(String) && !each.include?("\0") }
+      artifacts = File.realpath(run.artifacts_dir.to_s)
       parent = File.realpath(File.dirname(entry["source"]))
       return "outside" unless parent == artifacts || parent.start_with?("#{artifacts}/")
       return "gone" unless File.exist?(File.join(parent, File.basename(entry["source"])))

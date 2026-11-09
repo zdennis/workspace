@@ -29,7 +29,9 @@ module Workspace
       # @param error_output [IO] stream for notes that must stay out of script-readable output
       # @param home [String] home directory, abbreviated to `~` in the table
       # @param groups [Workspace::ProjectGroups, nil] says which group each project's repository is in; nil means none has one
-      def initialize(catalog:, tmux:, facts:, output: $stdout, error_output: $stderr, home: Dir.home, groups: nil)
+      # @param git_timeout [Numeric] seconds the worktree listing of `members --all` may take unless told otherwise
+      def initialize(catalog:, tmux:, facts:, output: $stdout, error_output: $stderr, home: Dir.home, groups: nil, git_timeout: ProjectFacts::DEFAULT_GIT_TIMEOUT)
+        @git_timeout = git_timeout
         @groups = groups
         @catalog = catalog
         @tmux = tmux
@@ -206,7 +208,7 @@ module Workspace
           Thread.current.report_on_exception = false
           @catalog.members(project, include_unconfigured: true)
         end
-        return thread.value if thread.join(timeout || ProjectFacts::DEFAULT_GIT_TIMEOUT)
+        return thread.value if thread.join(timeout || @git_timeout)
         thread.kill
         raise Workspace::Error, "Timed out listing the worktrees of project '#{project.name}'. Run without --all to list configured workspaces only."
       end

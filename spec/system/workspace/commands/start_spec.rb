@@ -13,15 +13,14 @@ RSpec.describe Workspace::Commands::Start do
   let(:launch_command) { double("launch_command") }
 
   subject(:command) do
-    described_class.new(
+    described_class.new(lineage: LineageSupport.lineage,
       git: git,
       project_config: project_config,
       project_settings: project_settings,
       launch_command: launch_command,
       output: output,
       error_output: error_output,
-      input: input
-    )
+      input: input)
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -260,11 +259,10 @@ RSpec.describe Workspace::Commands::Start do
       let(:tracked_settings_path) { File.join(worktree_path, ".claude", "settings.json") }
 
       subject(:command) do
-        described_class.new(
+        described_class.new(lineage: LineageSupport.lineage,
           git: git, project_config: project_config, project_settings: project_settings,
           launch_command: launch_command, hook_installer: hook_installer, which: which,
-          output: output, input: input
-        )
+          output: output, input: input)
       end
 
       before do
@@ -305,11 +303,10 @@ RSpec.describe Workspace::Commands::Start do
 
         it "lists the .workspace-project marker through the excluder" do
           excluder = instance_double(Workspace::BookkeepingExclude, created: true)
-          described_class.new(
+          described_class.new(lineage: LineageSupport.lineage,
             git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, hook_installer: hook_installer, which: which,
-            excluder: excluder, output: output, input: input
-          ).call("PROJ-123")
+            excluder: excluder, output: output, input: input).call("PROJ-123")
 
           expect(excluder).to have_received(:created).with(File.join(worktree_path, ".workspace-project"))
         end
@@ -336,9 +333,9 @@ RSpec.describe Workspace::Commands::Start do
 
         it "neither reads nor warns about a malformed settings.local.json when the tracked file already holds the entries" do
           claude = Workspace::AgentProvider.find("claude")
-          hook_installer.install(claude, worktree_path, Workspace::Commands::Init::HOOK_COMMAND, quiet: true)
+          hook_installer.install(claude, worktree_path, Workspace::HookInstaller::HOOK_COMMAND, quiet: true)
           hook_installer.install_statusline(claude, worktree_path,
-            command: Workspace::Commands::Init::STATUSLINE_COMMAND, project_settings: project_settings, quiet: true)
+            command: Workspace::HookInstaller::STATUSLINE_COMMAND, project_settings: project_settings, quiet: true)
           FileUtils.mkdir_p(File.dirname(settings_path))
           File.write(settings_path, "{nope")
 
@@ -374,11 +371,10 @@ RSpec.describe Workspace::Commands::Start do
         let(:which) { ->(exe) { seen << exe && exe == "claude-dev" } }
 
         subject(:command) do
-          described_class.new(
+          described_class.new(lineage: LineageSupport.lineage,
             git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, hook_installer: hook_installer, which: which, agent_commands: agent_commands,
-            output: output, input: input
-          )
+            output: output, input: input)
         end
 
         before do
@@ -422,11 +418,10 @@ RSpec.describe Workspace::Commands::Start do
           let(:hooks_config) { instance_double(Workspace::HooksConfig, install_user_hooks?: false) }
 
           subject(:command) do
-            described_class.new(
+            described_class.new(lineage: LineageSupport.lineage,
               git: git, project_config: project_config, project_settings: project_settings,
               launch_command: launch_command, hook_installer: hook_installer, hooks_config: hooks_config,
-              which: which, output: output, input: input
-            )
+              which: which, output: output, input: input)
           end
 
           it "leaves the user-level file alone and says so once in the JSON warnings" do
@@ -470,10 +465,9 @@ RSpec.describe Workspace::Commands::Start do
 
       context "with no hook installer" do
         subject(:command) do
-          described_class.new(
+          described_class.new(lineage: LineageSupport.lineage,
             git: git, project_config: project_config, project_settings: project_settings,
-            launch_command: launch_command, output: output, input: input
-          )
+            launch_command: launch_command, output: output, input: input)
         end
         let(:which) { ->(exe) { exe == "claude" } }
 
@@ -529,12 +523,12 @@ RSpec.describe Workspace::Commands::Start do
       let(:library_dir) { File.join(tmpdir, "library") }
       let(:library) do
         Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: library_dir, builtin_library_dir: File.join(library_dir, "builtin")),
-          lineage: Workspace::WorkspaceLineage.new, project_config: project_config)
+          lineage: LineageSupport.lineage, project_config: project_config)
       end
       let(:project_name) { Workspace::WorkspaceLineage.name_from_path(tmpdir) }
       let(:global_path) { library.global_store.path_for("play", "kickoff") }
       let(:play_command) do
-        described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
           launch_command: launch_command, library: library, output: output, error_output: error_output, input: input)
       end
 
@@ -639,7 +633,7 @@ RSpec.describe Workspace::Commands::Start do
           allow(copier).to receive(:relative_path).and_return("x")
           recipe("agents: [reviewer]\n")
           library.global_store.write("agent", "reviewer", "# Reviewer\n")
-          installing = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+          installing = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, library: library, library_installer: copier, output: output, error_output: error_output, input: input)
           allow(copier).to receive(:copy).and_return({"ref" => "agent/reviewer", "outcome" => "copied"})
 
@@ -672,7 +666,7 @@ RSpec.describe Workspace::Commands::Start do
           recipe("plays: [kickoff]\n")
           plan_command = double("plan_command")
           allow(plan_command).to receive(:init).and_return({"path" => "/p/IMPLEMENTATION_PLAN.md"})
-          planning = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+          planning = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, library: library, plan_command: plan_command, output: output, error_output: error_output, input: input)
 
           expect { planning.call("PROJ-123", recipe: play_command.recipe_entry("review-pass"), plan: true, no_launch: true, json: true) }.not_to raise_error
@@ -769,11 +763,11 @@ RSpec.describe Workspace::Commands::Start do
 
       context "with packs" do
         let(:composer) do
-          Workspace::InstructionComposer.new(library: library, lineage: Workspace::WorkspaceLineage.new, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
+          Workspace::InstructionComposer.new(library: library, lineage: LineageSupport.lineage, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
             pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)))
         end
         let(:packs_command) do
-          described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+          described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, library: library, instruction_composer: composer, output: output, error_output: error_output, input: input)
         end
         let(:notes_text) { "## From pack notes (built-in)\n\nNotes go in the notes directory.\n" }
@@ -906,7 +900,7 @@ RSpec.describe Workspace::Commands::Start do
           let(:handoff_config) { instance_double(Workspace::HandoffConfig, auto?: handoff_auto) }
           let(:main_agent) { instance_double(Workspace::MainAgent, kind: agent_kind) }
           let(:composer) do
-            Workspace::InstructionComposer.new(library: library, lineage: Workspace::WorkspaceLineage.new, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
+            Workspace::InstructionComposer.new(library: library, lineage: LineageSupport.lineage, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
               pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
               handoff_config: handoff_config, main_agent: main_agent)
           end
@@ -1027,12 +1021,12 @@ RSpec.describe Workspace::Commands::Start do
       let(:library_dir) { File.join(tmpdir, "library") }
       let(:library) do
         Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: library_dir, builtin_library_dir: File.join(library_dir, "builtin")),
-          lineage: Workspace::WorkspaceLineage.new, project_config: project_config)
+          lineage: LineageSupport.lineage, project_config: project_config)
       end
       let(:installer) { instance_double(Workspace::LibraryInstaller) }
       let(:worktree_path) { File.join(tmpdir, ".worktrees", "proj-123") }
       let(:kit_command) do
-        described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
           launch_command: launch_command, library: library, library_installer: installer,
           output: output, error_output: error_output, input: input)
       end
@@ -1410,7 +1404,7 @@ RSpec.describe Workspace::Commands::Start do
 
     context "with real git, run from inside a linked worktree" do
       let(:real_git) { Workspace::Git.new(output: output, input: input) }
-      let(:lineage) { Workspace::WorkspaceLineage.new }
+      let(:lineage) { LineageSupport.lineage }
       let(:worktree_path) { File.join(tmpdir, ".worktrees", "existing") }
 
       subject(:command) do
@@ -1716,7 +1710,7 @@ RSpec.describe Workspace::Commands::Start do
       context "with a task store" do
         let(:task_store) { Workspace::TaskStore.new(dir: File.join(tmpdir, "tasks")) }
         let(:task_command) do
-          described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+          described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, task_store: task_store, output: output, error_output: error_output, input: input)
         end
 
@@ -1765,7 +1759,7 @@ RSpec.describe Workspace::Commands::Start do
         let(:fetched) { {"title" => "Fix the Login: redirect (v2)!", "body" => nil, "url" => nil} }
         let(:ticket_source) { instance_double(Workspace::TicketSource, fetch: fetched) }
         let(:ticket_command) do
-          described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+          described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, task_store: task_store, ticket_source: ticket_source,
             output: output, error_output: error_output, input: input)
         end
@@ -1891,7 +1885,7 @@ RSpec.describe Workspace::Commands::Start do
         end
 
         it "warns when --slug is given and no ticket source is wired" do
-          bare = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+          bare = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
             launch_command: launch_command, task_store: task_store, output: output, error_output: error_output, input: input)
 
           bare.call("PROJ-123", json: true, slug: true)
@@ -2002,7 +1996,7 @@ RSpec.describe Workspace::Commands::Start do
     let(:worktree_path) { File.join(tmpdir, ".worktrees", "feature") }
 
     subject(:command) do
-      described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+      described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
         launch_command: launch_command, task_store: task_store, event_log: event_log,
         output: output, error_output: error_output, input: input)
     end
@@ -2095,7 +2089,7 @@ RSpec.describe Workspace::Commands::Start do
     end
 
     it "starts and launches when the log can't be written" do
-      broken = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+      broken = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
         launch_command: launch_command, event_log: CLITestHelpers.unwritable_event_log(tmpdir),
         output: output, error_output: error_output, input: input)
 
@@ -2110,7 +2104,7 @@ RSpec.describe Workspace::Commands::Start do
     let(:calls) { [] }
 
     subject(:command) do
-      described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+      described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
         launch_command: launch_command, notes_setup: notes_setup, output: output, error_output: error_output, input: input)
     end
 
@@ -2182,7 +2176,7 @@ RSpec.describe Workspace::Commands::Start do
     end
 
     it "sets nothing up and reports no notes_dir when no setup is wired" do
-      bare = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+      bare = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
         launch_command: launch_command, output: output, error_output: error_output, input: input)
 
       bare.call("feature", yes: true, json: true)
@@ -2195,7 +2189,7 @@ RSpec.describe Workspace::Commands::Start do
     let(:which) { ->(_exe) { true } }
     let(:name) { "myproject.worktree-proj-123" }
     subject(:command) do
-      described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+      described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
         launch_command: launch_command, main_agent: main_agent, which: which, output: output, error_output: error_output, input: input)
     end
 
@@ -2297,7 +2291,7 @@ RSpec.describe Workspace::Commands::Start do
 
     it "warns when the agent is not on PATH" do
       allow(main_agent).to receive(:kind).and_return("codex")
-      missing = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+      missing = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings,
         launch_command: launch_command, main_agent: main_agent, which: ->(_) { false }, output: output, error_output: error_output, input: input)
 
       missing.call("PROJ-123", agent_kind: "codex", no_launch: true, json: true)
@@ -2309,7 +2303,7 @@ RSpec.describe Workspace::Commands::Start do
       let(:agent_commands) { instance_double(Workspace::AgentCommands, kind: "codex") }
       let(:which_seen) { [] }
       subject(:command) do
-        described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+        described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
           main_agent: main_agent, agent_commands: agent_commands, which: ->(program) { which_seen << program && false }, output: output, error_output: error_output, input: input)
       end
 
@@ -2377,7 +2371,7 @@ RSpec.describe Workspace::Commands::Start do
     let(:init_answer) { {"outcome" => "created", "dir" => "/n/spine", "files" => ["a.md"], "template" => {"name" => "default", "scope" => "builtin", "source" => "default"}} }
     let(:events) { [] }
     subject(:command) do
-      described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+      described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
         library: library, instruction_composer: composer, spine_init: spine_init, spine_config: spine_config,
         output: output, error_output: error_output, input: input)
     end
@@ -2428,7 +2422,7 @@ RSpec.describe Workspace::Commands::Start do
     end
 
     it "runs on spine.auto, and --no-spine skips it even then" do
-      auto_command = described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+      auto_command = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
         library: library, instruction_composer: composer, spine_init: spine_init, spine_config: double("c", auto?: true), output: output, error_output: error_output, input: input)
 
       auto_command.call("PROJ-123", json: true)
@@ -2494,7 +2488,7 @@ RSpec.describe Workspace::Commands::Start do
     end
 
     it "refuses --spine when no spine init command was wired" do
-      bare = described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, error_output: error_output, input: input)
+      bare = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, error_output: error_output, input: input)
 
       expect { bare.call("PROJ-123", spine: true) }.to raise_error(Workspace::Error, /--spine is not available/)
     end
@@ -2508,7 +2502,7 @@ RSpec.describe Workspace::Commands::Start do
     let(:plan_file) { File.join(tmpdir, "IMPLEMENTATION_PLAN.md") }
     let(:plan_text) { "---\nplan: 1\ntitle: \"Add SSO\"\nstatus: active\n---\n\n## Tasks\n" }
     subject(:command) do
-      described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+      described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
         library: library, plan_command: plan_command, output: output, error_output: error_output, input: input)
     end
 
@@ -2625,7 +2619,7 @@ RSpec.describe Workspace::Commands::Start do
     end
 
     it "refuses --plan when no plan command was wired" do
-      bare = described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+      bare = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
         library: library, output: output, error_output: error_output, input: input)
 
       expect { bare.call("PROJ-123", plan: true) }.to raise_error(Workspace::Error, /--plan is not available/)
@@ -2654,7 +2648,7 @@ RSpec.describe Workspace::Commands::Start do
     end
 
     subject(:command) do
-      described_class.new(git: git, project_config: project_config, project_settings: settings,
+      described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: settings,
         launch_command: launch_command, event_log: event_log,
         start_file_copies: Workspace::StartFileCopies.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)),
         output: output, error_output: error_output, input: input)
@@ -2778,7 +2772,7 @@ RSpec.describe Workspace::Commands::Start do
       start_ref = double("start_ref")
       allow(start_ref).to receive(:project) { |root| Struct.new(:root, :name, :from_worktree).new(main, "main", true) }
       allow(start_ref).to receive(:call).and_return(ref)
-      from_worktree = described_class.new(git: git, project_config: project_config, project_settings: settings,
+      from_worktree = described_class.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: settings,
         launch_command: launch_command, event_log: event_log, start_ref: start_ref,
         start_file_copies: Workspace::StartFileCopies.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)),
         output: output, error_output: error_output, input: input)

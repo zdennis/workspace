@@ -21,10 +21,10 @@ module Workspace
       before = @notes.info(name: workspace)
       path = before["dir"]
       warnings = []
-      if before["source"] != "worktree" && before["exists"] && WorkspaceLineage.split_worktree_name(workspace) && !Dir.empty?(path)
+      if before["source"] != "worktree" && before["exists"] && WorkspaceName.split(workspace) && !Dir.empty?(path)
         warnings << "Warning: the notes directory #{path} for #{workspace} already holds files; another branch whose name maps to the same directory (feat/a and feat-a) may share it. Set notes.dir for this workspace to keep them apart."
       end
-      store(workspace, path, warnings) if WorkspaceLineage.split_worktree_name(workspace)
+      store(workspace, path, warnings) if WorkspaceName.split(workspace)
       create(workspace, path, warnings)
       {"dir" => path, "warnings" => warnings}
     rescue Workspace::Error, SystemCallError => e

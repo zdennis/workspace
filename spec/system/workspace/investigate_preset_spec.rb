@@ -225,7 +225,7 @@ RSpec.describe "the investigate preset" do
     let(:start_ref) { Workspace::StartRef.new(git: git, lineage: lineage) }
     let(:ticket_source) { instance_double(Workspace::TicketSource) }
     let(:engine) { instance_double(Workspace::WorkflowEngine) }
-    let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: nil, worktree_config_name: "app.worktree-x") }
+    let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: nil) }
     let(:agent_commands) { instance_double(Workspace::AgentCommands, detector: :detector, kind: "claude") }
     let(:command) do
       Workspace::Commands::WorkflowStart.new(catalog: catalog, workflow_defaults: instance_double(Workspace::WorkflowDefaults), engine: engine, start_ref: start_ref, ticket_source: ticket_source, git: git,

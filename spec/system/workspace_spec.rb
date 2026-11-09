@@ -22,6 +22,14 @@ RSpec.describe Workspace do
       expect(output.string).to match(/Usage: workspace/)
     end
 
+    it "sends the process exit to the exit_handler it is given" do
+      exits = []
+      handler = Struct.new(:exits) { def exit(code = 0) = exits << code }.new(exits)
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {}, exit_handler: handler)
+      cli.run(["bogus"])
+      expect(exits).to include(1)
+    end
+
     it "accepts a logger parameter" do
       logger = Workspace::Logger.new(enabled: true)
       cli = Workspace.build_cli(
@@ -51,385 +59,203 @@ RSpec.describe Workspace do
         ENV.delete("WORKSPACE_DEBUG")
       end
     end
+  end
 
-    it "wires the shared ConfigResolver into the config command, so config get can print the layered hint" do
-      cli = Workspace.build_cli(
-        output: StringIO.new,
-        error_output: StringIO.new,
-        input: StringIO.new
-      )
+  describe "wired through a temporary HOME" do
+    let(:home) { File.realpath(Dir.mktmpdir("ws-wiring", "/tmp")) }
+    let(:repo) { File.join(home, "repo") }
+    let(:config) { Workspace::Config.new }
+    let(:out) { StringIO.new }
+    let(:err) { StringIO.new }
 
-      config_command = cli.instance_variable_get(:@config_command)
-      resolver = config_command.instance_variable_get(:@config_resolver)
-
-      expect(resolver).to be_a(Workspace::ConfigResolver)
-      # The one resolver build_cli hands every reader, not a second build.
-      expect(resolver).to equal(cli.instance_variable_get(:@notes_command).instance_variable_get(:@config_resolver))
-    end
-
-    describe "the agent recovery desk factory" do
-      def recovery_wiring
-        Dir.mktmpdir("ws-recovery-wiring") do |state|
-          allow(ENV).to receive(:fetch).and_call_original
-          allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
-          cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-          factory = cli.instance_variable_get(:@agent_command).instance_variable_get(:@agent_recovery_desk_factory)
-          release = cli.instance_variable_get(:@session_event_command).instance_variable_get(:@dev_session_release)
-          args = {workspace: "ws-smoke", session_name: "ws", session_monitor: instance_double(Workspace::SessionMonitor),
-                  delivery_lock: Mutex.new, event_log: nil, restarting: ->(_) { false }, claim_restart: ->(_) {},
-                  release_restart: ->(*) {}, rebind_queue: ->(*) {}}
-          yield factory, args, release
-        end
-      end
-
-      it "builds a desk with the defaults, sharing one stop marker with the session-event hook" do
-        recovery_wiring do |factory, args, release|
-          desk = factory.call(**args)
-
-          expect(desk).to be_a(Workspace::AgentRecoveryDesk)
-          expect(desk.instance_variable_get(:@marker)).to equal(release.instance_variable_get(:@recovery_marker))
-        end
-      end
-
-      it "builds no desk with agent.recovery.enabled off" do
-        allow_any_instance_of(Workspace::AgentRecoveryConfig).to receive(:enabled?).and_return(false)
-
-        recovery_wiring { |factory, args, _| expect(factory.call(**args)).to be_nil }
-      end
-
-      it "builds no desk when the workspace's agent.kind is not claude" do
-        allow_any_instance_of(Workspace::AgentCommands).to receive(:kind).and_return("codex")
-
-        recovery_wiring { |factory, args, _| expect(factory.call(**args)).to be_nil }
+    around do |example|
+      saved = ENV.to_h
+      begin
+        ENV.replace("HOME" => home, "PATH" => saved["PATH"], "LANG" => "en_US.UTF-8", "LC_ALL" => "en_US.UTF-8",
+          "XDG_STATE_HOME" => File.join(home, "state"), "XDG_CONFIG_HOME" => File.join(home, "config"),
+          "XDG_DATA_HOME" => File.join(home, "data"), "XDG_CACHE_HOME" => File.join(home, "cache"), "TMUX_TMPDIR" => home)
+        example.run
+      ensure
+        system("tmux", "kill-server", err: File::NULL, out: File::NULL)
+        ENV.replace(saved)
+        FileUtils.rm_rf(home)
       end
     end
 
-    it "wires pr feedback to the reader and the shared workspace checkout" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      command = cli.instance_variable_get(:@pr_feedback_command)
-
-      expect(command).to be_a(Workspace::Commands::PrFeedback)
-      expect(command.instance_variable_get(:@feedback)).to be_a(Workspace::PullRequestFeedback)
-      expect(command.instance_variable_get(:@checkout)).to equal(cli.instance_variable_get(:@push_command).instance_variable_get(:@checkout))
+    def cli(input: "")
+      out.truncate(0)
+      out.rewind
+      err.truncate(0)
+      err.rewind
+      Workspace.build_cli(output: out, error_output: err, input: StringIO.new(input), env: {}, exit_handler: FakeExitHandler)
     end
 
-    it "hands push a PullRequestStatus to check a pull request checkout's head" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      command = cli.instance_variable_get(:@push_command)
-
-      expect(command).to be_a(Workspace::Commands::Push)
-      expect(command.instance_variable_get(:@pr_status)).to be_a(Workspace::PullRequestStatus)
+    def run_cli(*args, input: "")
+      cli(input: input).run(args)
+      0
+    rescue FakeSystemExit => e
+      e.status
     end
 
-    it "wires a real LockReaper into the agent command's session monitor" do
-      cli = Workspace.build_cli(
-        output: StringIO.new,
-        error_output: StringIO.new,
-        input: StringIO.new
-      )
-
-      agent_command = cli.instance_variable_get(:@agent_command)
-      lock_reaper = agent_command.instance_variable_get(:@lock_reaper)
-
-      expect(lock_reaper).to be_a(Workspace::LockReaper)
-      # Ticking with no cwds touches nothing on disk; this only confirms the
-      # dependency reaches the command, not stubbing it out.
-      expect(lock_reaper.tick([])).to eq(0)
+    def git_repo
+      _, status = Open3.capture2e("git", "init", "-q", repo)
+      raise "git init failed" unless status.success?
     end
 
-    it "wires the shared ProcessGroupTerminator into the statusline command" do
-      cli = Workspace.build_cli(
-        output: StringIO.new,
-        error_output: StringIO.new,
-        input: StringIO.new
-      )
-
-      statusline_command = cli.instance_variable_get(:@statusline_command)
-      lock_command = cli.instance_variable_get(:@lock_command)
-
-      terminator = statusline_command.instance_variable_get(:@terminator)
-      expect(terminator).to be_a(Workspace::ProcessGroupTerminator)
-      expect(terminator).to equal(lock_command.instance_variable_get(:@terminator))
+    def start_session(name)
+      _, status = Open3.capture2e("tmux", "new-session", "-d", "-s", name, "-c", repo)
+      raise "tmux new-session failed" unless status.success?
+      Open3.capture2("tmux", "list-panes", "-t", "=#{name}", "-F", "\#{pane_id}").first.strip
     end
 
-    it "gives every command that resolves a pane title the one shared AgentLabels" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      labels = %i[@run_command @capture_command @wait_until_content_command @claude_command @agent_command].map do |name|
-        cli.instance_variable_get(name).instance_variable_get(:@agent_labels)
-      end
-
-      expect(labels.first).to be_a(Workspace::AgentLabels)
-      expect(labels.map(&:object_id).uniq.size).to eq(1)
+    def run_store
+      Workspace::WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
     end
 
-    it "gives lock and dev the same view of which run a pane is bound to, from the bindings `binding set` writes" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      bound_run = cli.instance_variable_get(:@lock_command).instance_variable_get(:@bound_run)
-      binding_command = cli.instance_variable_get(:@binding_command)
-
-      expect(bound_run).to be_a(Workspace::BoundRun)
-      expect(cli.instance_variable_get(:@dev_command).instance_variable_get(:@bound_run)).to equal(bound_run)
-      expect(bound_run.instance_variable_get(:@pane_bindings)).to equal(binding_command.instance_variable_get(:@bindings))
+    def lock_store
+      namespace = Workspace::LockNamespace.new(lineage: LineageSupport.lineage, config: config).resolve(cwd: repo)
+      liveness = Workspace::LockHolder.new(run_liveness: Workspace::RunLiveness.new(dir: config.workflow_runs_dir))
+      Workspace::LockStore.new(dir: namespace[:dir], liveness: liveness)
     end
 
-    it "checks a run holder's liveness against the run files in the state directory, in the CLI and in the daemon's reaper" do
-      Dir.mktmpdir("ws-run-wiring") do |state|
-        allow(ENV).to receive(:fetch).and_call_original
-        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
-        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-        runs = File.join(state, "workspace", ".workflows", "runs")
-        FileUtils.mkdir_p(runs)
-        File.write(File.join(runs, "wr_live.json"), JSON.generate("state" => "running"))
-        File.write(File.join(runs, "wr_done.json"), JSON.generate("state" => "completed"))
-
-        holders = [
-          cli.instance_variable_get(:@lock_command).instance_variable_get(:@lock_holder),
-          cli.instance_variable_get(:@agent_command).instance_variable_get(:@lock_reaper).instance_variable_get(:@lock_holder)
-        ]
-
-        holders.each do |holder|
-          expect(holder.run_alive?("wr_live")).to be(true)
-          expect(holder.run_alive?("wr_done")).to be(false)
-          expect(holder.run_alive?("wr_none")).to be(false)
-        end
-      end
+    def hold_lock_for(run_id, name: "test-db")
+      lock_store.acquire_run([name], run: {run_id: run_id, step: "verify", workflow: "rpiv", workspace: "bindws", worktree: repo, pane: "%0"})
     end
 
-    it "wires the plan command to the notes command's answer and the task store start writes" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+    it "tells the pane bound by `binding set` that its run already holds the lock" do
+      git_repo
+      pane = start_session("bindws")
+      FileUtils.mkdir_p(config.workflow_runs_dir)
+      File.write(File.join(config.workflow_runs_dir, "wr_1.json"), JSON.generate("state" => "running"))
+      hold_lock_for("wr_1")
+      expect(run_cli("binding", "set", "bindws", "--pane", pane, "--kind", "run", "--id", "wr_1")).to eq(0)
+      ENV["TMUX_PANE"] = pane
 
-      plan = cli.instance_variable_get(:@plan_command)
+      status = Dir.chdir(repo) { run_cli("lock", "acquire", "test-db") }
 
-      expect(plan).to be_a(Workspace::Commands::Plan)
-      expect(plan.instance_variable_get(:@notes)).to equal(cli.instance_variable_get(:@notes_command))
-      expect(plan.instance_variable_get(:@task_store)).to be_a(Workspace::TaskStore)
-      expect(plan.instance_variable_get(:@ask_store_for).call("api")).to be_a(Workspace::AskStore)
+      expect(status).to eq(0)
+      expect(out.string).to eq("test-db lock is already held for this pane by run wr_1; there is nothing to acquire or release.\n")
     end
 
-    it "wires the goal command to the snapshot, the run status and the spine reads" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+    it "shows a lock held by a running run and drops it once the run's file says it finished" do
+      git_repo
+      FileUtils.mkdir_p(config.workflow_runs_dir)
+      run_file = File.join(config.workflow_runs_dir, "wr_live.json")
+      File.write(run_file, JSON.generate("state" => "running"))
+      hold_lock_for("wr_live")
 
-      goal = cli.instance_variable_get(:@goal_command)
+      Dir.chdir(repo) { run_cli("lock", "status", "test-db") }
+      expect(out.string).to include("held by run wr_live")
+      expect(out.string).not_to include("STALE")
 
-      expect(goal).to be_a(Workspace::Commands::Goal)
-      expect(goal.instance_variable_get(:@snapshot)).to equal(cli.instance_variable_get(:@snapshot_command))
-      expect(goal.instance_variable_get(:@workflow_status)).to be_a(Workspace::WorkflowStatus)
+      File.write(run_file, JSON.generate("state" => "completed"))
+      Dir.chdir(repo) { run_cli("lock", "status", "test-db") }
+      expect(out.string).to match(/held by run wr_live.*STALE/)
     end
 
-    it "wires the ticket command to the start-input resolver start uses" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+    it "reads a run from the run files under XDG_STATE_HOME" do
+      run = run_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan",
+        "definition" => {"steps" => [{"id" => "plan"}]}, "steps" => {"plan" => {"attempts" => []}})
 
-      ticket = cli.instance_variable_get(:@ticket_command)
-      start = cli.instance_variable_get(:@start_command)
+      expect(run_cli("workflow", "status", run["id"], "--json")).to eq(0)
 
-      expect(ticket).to be_a(Workspace::Commands::Ticket)
-      expect(ticket.instance_variable_get(:@start_ref)).to equal(start.instance_variable_get(:@start_ref))
-      expect(ticket.instance_variable_get(:@source)).to be_a(Workspace::TicketSource)
+      expect(JSON.parse(out.string).to_s).to include(run["id"])
+      expect(File.exist?(File.join(home, "state", "workspace", ".workflows", "runs", "#{run["id"]}.json"))).to be(true)
     end
 
-    it "wires the spine command to the notes command" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+    it "restores from the ledger that session-event writes" do
+      git_repo
+      pane = start_session("bindws")
+      ENV["TMUX_PANE"] = pane
+      transcript = File.join(home, "transcript.jsonl")
+      File.write(transcript, "{}\n")
+      FileUtils.mkdir_p(File.dirname(config.config_path_for("bindws")))
+      File.write(config.config_path_for("bindws"), "name: bindws\nroot: #{repo}\nwindows:\n  - main:\n      panes:\n        - claude\n")
+      payload = JSON.generate("hook_event_name" => "SessionStart", "session_id" => "abc-123", "source" => "startup", "transcript_path" => transcript, "cwd" => repo)
+      expect(run_cli("session-event", "--workspace", "bindws", input: payload)).to eq(0)
 
-      spine = cli.instance_variable_get(:@spine_command)
+      expect(run_cli("restore", "bindws", "--dry-run", "--json")).to eq(0)
 
-      expect(spine).to be_a(Workspace::Commands::Spine)
-      expect(spine.instance_variable_get(:@notes)).to equal(cli.instance_variable_get(:@notes_command))
-    end
-
-    it "wires the spine command to SpineFacts, built over the review command" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      reader = cli.instance_variable_get(:@spine_command).instance_variable_get(:@spine_facts).call
-
-      expect(reader).to be_a(Workspace::SpineFacts)
-      expect(reader.instance_variable_get(:@review)).to be_a(Workspace::Commands::Review)
-      expect(reader.instance_variable_get(:@pull_request_status)).to be_a(Workspace::PullRequestStatus)
-    end
-
-    it "gives finish the same pull request command that pr create runs" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      pr = cli.instance_variable_get(:@pull_request_command)
-      finish = cli.instance_variable_get(:@finish_command)
-
-      expect(pr).to be_a(Workspace::Commands::PullRequest)
-      expect(finish.instance_variable_get(:@pull_request)).to equal(pr)
-    end
-
-    it "wires the binding command into launch, so a delivered play binds the pane binding set and session-event use" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      binding_command = cli.instance_variable_get(:@binding_command)
-      launch_command = cli.instance_variable_get(:@launch_command)
-
-      expect(launch_command.instance_variable_get(:@binder)).to equal(binding_command)
-    end
-
-    it "wires restore to the ledger session-event writes and the bindings binding set writes" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      restore = cli.instance_variable_get(:@restore_command)
-      session_event = cli.instance_variable_get(:@session_event_command)
-      binding_command = cli.instance_variable_get(:@binding_command)
-
-      expect(restore).to be_a(Workspace::Commands::Restore)
-      expect(restore.instance_variable_get(:@ledger)).to equal(session_event.instance_variable_get(:@session_ledger))
-      expect(restore.instance_variable_get(:@pane_bindings)).to equal(binding_command.instance_variable_get(:@bindings))
-      expect(restore.instance_variable_get(:@tmuxinator_report)).to equal(cli.instance_variable_get(:@tmuxinator_report))
-      expect(restore.instance_variable_get(:@process_tree)).to be_a(Workspace::ProcessTree)
-      expect(restore.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
-    end
-
-    it "wires one name migration into agentd and agentd --ensure" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      migration = cli.instance_variable_get(:@ensure_agent_command).instance_variable_get(:@name_migration)
-
-      expect(migration).to be_a(Workspace::NameMigration)
-      expect(cli.instance_variable_get(:@agent_command).instance_variable_get(:@name_migration)).to equal(migration)
-      expect(migration.instance_variable_get(:@state)).to equal(cli.instance_variable_get(:@state))
-    end
-
-    it "wires the dev environment's release to session end, and the same dev command and ledger into kill and dev up" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      session_event = cli.instance_variable_get(:@session_event_command)
-      dev = cli.instance_variable_get(:@dev_command)
-      kill = cli.instance_variable_get(:@kill_command)
-
-      expect(session_event.instance_variable_get(:@dev_session_release)).to be_a(Workspace::DevSessionRelease)
-      expect(kill.instance_variable_get(:@dev)).to equal(dev)
-      expect(dev.instance_variable_get(:@session_ledger)).to equal(session_event.instance_variable_get(:@session_ledger))
-    end
-
-    it "wires instructions compose to the library start uses and the binding command binding show uses" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      instructions = cli.instance_variable_get(:@instructions_command)
-      composer = instructions.instance_variable_get(:@composer)
-
-      expect(instructions).to be_a(Workspace::Commands::Instructions)
-      expect(instructions.instance_variable_get(:@bindings)).to equal(cli.instance_variable_get(:@binding_command))
-      expect(composer.instance_variable_get(:@library)).to equal(cli.instance_variable_get(:@library))
-      expect(composer.instance_variable_get(:@commands_config)).to be_a(Workspace::CommandsConfig)
-      expect(composer.instance_variable_get(:@pane_bindings)).to be_a(Workspace::PaneBindings)
-    end
-
-    it "wires one workflow engine into the workflow command and kill, over the run files the lock store reads" do
-      Dir.mktmpdir("ws-workflow-wiring") do |state|
-        allow(ENV).to receive(:fetch).and_call_original
-        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
-        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-        workflow = cli.instance_variable_get(:@workflow_command)
-        engine = workflow.instance_variable_get(:@engine)
-        store = engine.instance_variable_get(:@store)
-        panes = engine.instance_variable_get(:@panes)
-
-        expect(workflow).to be_a(Workspace::Commands::Workflow)
-        expect(cli.instance_variable_get(:@kill_command).instance_variable_get(:@workflow_runs)).to equal(engine)
-        expect(workflow.instance_variable_get(:@store)).to equal(store)
-        expect(workflow.instance_variable_get(:@status).instance_variable_get(:@store)).to equal(store)
-        expect(engine.instance_variable_get(:@resources)).to be_a(Workspace::RunResources)
-        expect(engine.instance_variable_get(:@composer)).to equal(cli.instance_variable_get(:@instructions_command).instance_variable_get(:@composer))
-        expect(engine.instance_variable_get(:@composer).instance_variable_get(:@workflow_config)).to be_a(Workspace::WorkflowConfig)
-        expect(panes.instance_variable_get(:@bindings)).to equal(cli.instance_variable_get(:@binding_command).instance_variable_get(:@bindings))
-        expect(panes.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
-
-        # Approve and status name a gate's note through one resolver, over the notes command; the caller checks read tmux and ps.
-        gate_note = engine.instance_variable_get(:@gate_note)
-        expect(gate_note).to be_a(Workspace::WorkflowGateNote)
-        expect(workflow.instance_variable_get(:@status).instance_variable_get(:@gate_note)).to equal(gate_note)
-        expect(gate_note.instance_variable_get(:@notes)).to be_a(Workspace::Commands::Notes)
-        expect(workflow.instance_variable_get(:@tmux)).to be_a(Workspace::Tmux)
-        expect(workflow.instance_variable_get(:@process_tree)).to be_a(Workspace::ProcessTree)
-        expect(workflow.instance_variable_get(:@lock_holder)).to be_a(Workspace::LockHolder)
-
-        # The engine's events go to the one shared log, and the environment a run left is stopped through `dev`.
-        dev = cli.instance_variable_get(:@dev_command)
-        expect(engine.instance_variable_get(:@event_log)).to be_a(Workspace::EventLog)
-        expect(engine.instance_variable_get(:@event_log)).to equal(cli.instance_variable_get(:@kill_command).instance_variable_get(:@event_log))
-        allow(dev).to receive(:down_for_run).and_return(exit_code: 0)
-        engine.instance_variable_get(:@env_stopper).call(run_id: "wr_1", worktree: "/src/app")
-        expect(dev).to have_received(:down_for_run).with("wr_1", working_dir: "/src/app")
-
-        # A run the store creates is alive to the lock holder the run's locks are checked with.
-        run = store.create("state" => "running", "workspace" => "app", "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
-          "definition" => {"steps" => [{"id" => "a"}]})
-        lock_holder = engine.instance_variable_get(:@resources).instance_variable_get(:@lock_holder)
-        expect(lock_holder.run_alive?(run["id"])).to be true
-        expect(File.dirname(File.dirname(store.events_path(run["id"])))).to eq(File.join(state, "workspace", ".workflows"))
-      end
-    end
-
-    it "gives the agent daemon a nudger over the same run files and bindings, which starts this checkout's bin/workspace" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      nudger = cli.instance_variable_get(:@agent_command).instance_variable_get(:@workflow_nudger)
-      engine = cli.instance_variable_get(:@workflow_command).instance_variable_get(:@engine)
-
-      expect(nudger).to be_a(Workspace::WorkflowNudger)
-      expect(nudger.instance_variable_get(:@store)).to equal(engine.instance_variable_get(:@store))
-      expect(nudger.instance_variable_get(:@panes)).to equal(engine.instance_variable_get(:@panes))
-      expect(nudger.instance_variable_get(:@executable)).to eq(File.join(PROJECT_ROOT, "bin", "workspace"))
-    end
-
-    it "gives workflow the reader of workspace facts that status --table needs" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      facts = cli.instance_variable_get(:@workflow_command).instance_variable_get(:@workspace_facts)
-
-      expect(facts).to be_a(Workspace::WorkflowWorkspaceFacts)
-    end
-
-    it "gives start a library installer that checks tracked files with the shared git" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      start_command = cli.instance_variable_get(:@start_command)
-      installer = start_command.instance_variable_get(:@library_installer)
-
-      expect(installer).to be_a(Workspace::LibraryInstaller)
-      expect(installer.instance_variable_get(:@git)).to equal(start_command.instance_variable_get(:@git))
-    end
-
-    it "gives the one library installer to start and to library, reading the install directories from config" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
-
-      installer = cli.instance_variable_get(:@start_command).instance_variable_get(:@library_installer)
-      library_command = cli.instance_variable_get(:@library_command)
-
-      expect(library_command.instance_variable_get(:@installer)).to equal(installer)
-      expect(installer.instance_variable_get(:@dirs)).to be_a(Workspace::LibraryInstallDirs)
-      expect(installer.instance_variable_get(:@dirs).instance_variable_get(:@config_resolver)).to be_a(Workspace::ConfigResolver)
+      expect(out.string).to include("abc-123")
     end
 
     it "builds a doctor that no longer reports mixed-case workspace names" do
-      require "tmpdir"
-      saved = %w[HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME].to_h { |k| [k, ENV[k]] }
-      Dir.mktmpdir("wsd", File.realpath("/tmp")) do |home|
-        ENV["HOME"] = home
-        ENV["XDG_CONFIG_HOME"] = File.join(home, ".config")
-        ENV["XDG_STATE_HOME"] = File.join(home, ".local", "state")
-        ENV["XDG_DATA_HOME"] = File.join(home, ".local", "share")
-        ENV["XDG_CACHE_HOME"] = File.join(home, ".cache")
-        FileUtils.mkdir_p(File.join(home, ".config", "tmuxinator"))
-        FileUtils.mkdir_p(File.join(home, ".config", "workspace", "projects"))
-        File.write(File.join(home, ".config", "tmuxinator", "workspace.Notes.yml"), "name: workspace-Notes\n")
-        File.write(File.join(home, ".config", "workspace", "projects", "Notes.yml"), "{}\n")
-        File.write(File.join(home, ".workspace-state.json"), JSON.generate("Notes" => {"iterm_window_id" => 1}))
+      FileUtils.mkdir_p(File.join(home, "config", "tmuxinator"))
+      FileUtils.mkdir_p(File.join(home, "config", "workspace", "projects"))
+      File.write(File.join(home, "config", "tmuxinator", "workspace.Notes.yml"), "name: workspace-Notes\n")
+      File.write(File.join(home, "config", "workspace", "projects", "Notes.yml"), "{}\n")
+      File.write(File.join(home, ".workspace-state.json"), JSON.generate("Notes" => {"iterm_window_id" => 1}))
 
-        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
-        rows = cli.instance_variable_get(:@doctor).report(headless: true)[:rows]
+      run_cli("doctor", "--headless", "--json")
 
-        expect(rows.map { |r| r[:id] }).not_to include("mixed-case-workspaces")
-        expect(rows.map { |r| r[:message] }.join("\n")).not_to match(/capitals/)
+      expect(out.string).not_to match(/mixed-case-workspaces|capitals/)
+      expect(JSON.parse(out.string)).to include("ok")
+    end
+
+    describe "the agent daemon's scan slots" do
+      let(:slot_dir) { File.join(config.state_dir, "scan-slots") }
+      let(:ws) { "slotws" }
+
+      def snapshot
+        UNIXSocket.open(config.agent_socket_path(ws)) do |socket|
+          socket.puts({"type" => "sessions", "workspace" => ws}.to_json)
+          JSON.parse(socket.gets)
+        end
       end
-    ensure
-      ENV.update(saved)
+
+      def wait_for(timeout: 15)
+        deadline = Time.now + timeout
+        sleep 0.1 until yield || Time.now > deadline
+      end
+
+      around do |example|
+        previous = Signal.trap("TERM", "DEFAULT")
+        example.run
+      ensure
+        Signal.trap("TERM", previous)
+      end
+
+      it "scans only when a slot under <state>/scan-slots is free" do
+        git_repo
+        start_session(ws)
+        FileUtils.mkdir_p(File.dirname(config.config_path_for(ws)))
+        File.write(config.config_path_for(ws), "name: #{ws}\nroot: #{repo}\nwindows:\n  - main:\n      panes:\n        - claude\n")
+        FileUtils.mkdir_p(File.join(home, "config", "workspace", "projects"))
+        File.write(File.join(home, "config", "workspace", "projects", "#{ws}.yml"), "agentd:\n  poll_interval: 1\n")
+        holder = HeldScanSlot.take(dir: slot_dir, limit: 1)
+        expect(holder).to be_held
+
+        daemon = Thread.new { run_cli("agentd", ws) }
+        begin
+          wait_for { File.socket?(config.agent_socket_path(ws)) }
+          sleep 2.5
+          expect(snapshot["panes"]).to be_empty
+
+          holder.release
+          wait_for { snapshot["panes"].any? }
+          expect(snapshot["panes"]).not_to be_empty
+        ensure
+          holder.release unless holder.nil? || !holder.held?
+          Process.kill("TERM", Process.pid) if daemon.alive?
+          daemon.join(5)
+        end
+      end
+    end
+  end
+
+  describe "the bin/workspace executable" do
+    it "prints help and exits 0 for every subcommand in the main help" do
+      exe = File.join(PROJECT_ROOT, "bin", "workspace")
+      listing, = Open3.capture2e(exe, "--help")
+      names = listing[/Subcommands:\n(.*?)\n\n/m, 1].scan(/^  (\S+)\s{2,}\S/).flatten - %w[help run-and-report report-run-status]
+      expect(names.size).to be > 40
+
+      failures = names.reject do |name|
+        text, status = Open3.capture2e(exe, name, "--help")
+        status.success? && !text.strip.empty?
+      end
+
+      expect(failures).to eq([])
     end
   end
 end

@@ -136,17 +136,18 @@ end
 require_relative "workspace/version"
 require_relative "workspace/help_pages"
 require_relative "workspace/help_json"
-require_relative "workspace/error_codes"
+require_relative "workspace/core/error_codes"
 require_relative "workspace/output_gate"
 require_relative "workspace/json_envelope"
 require_relative "workspace/push_failure"
 require_relative "workspace/prompt_input"
 require_relative "workspace/warn"
-require_relative "workspace/logger"
+require_relative "workspace/core/id_patterns"
+require_relative "workspace/core/logger"
 require_relative "workspace/config"
-require_relative "workspace/config_schema"
+require_relative "workspace/core/config_schema"
 require_relative "workspace/config_schema_docs"
-require_relative "workspace/config_layering"
+require_relative "workspace/core/config_layering"
 require_relative "workspace/event_log"
 require_relative "workspace/tool_input_summary"
 require_relative "workspace/hook_event_log"
@@ -170,6 +171,8 @@ require_relative "workspace/doctor"
 require_relative "workspace/styled_screen"
 require_relative "workspace/tmux"
 require_relative "workspace/tmux_pane"
+require_relative "workspace/pane"
+require_relative "workspace/pane_factory"
 require_relative "workspace/pane_locator"
 require_relative "workspace/pane_bindings"
 require_relative "workspace/library_store"
@@ -195,7 +198,7 @@ require_relative "workspace/window_manager"
 require_relative "workspace/window_positions"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
-require_relative "workspace/config_resolver"
+require_relative "workspace/core/config_resolver"
 require_relative "workspace/config_file"
 require_relative "workspace/config_report"
 require_relative "workspace/tmuxinator_report"
@@ -206,7 +209,7 @@ require_relative "workspace/liveness"
 require_relative "workspace/window_liveness"
 require_relative "workspace/agent_readiness"
 require_relative "workspace/agent_restart"
-require_relative "workspace/workspace_lineage"
+require_relative "workspace/core/workspace_lineage"
 require_relative "workspace/ref_in_text"
 require_relative "workspace/start_ref"
 require_relative "workspace/timed_process"
@@ -220,7 +223,11 @@ require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/project_agents"
 require_relative "workspace/project_facts"
-require_relative "workspace/duration"
+require_relative "workspace/core/duration"
+require_relative "workspace/core/agent_protocol"
+require_relative "workspace/core/file_lock"
+require_relative "workspace/core/atomic_file"
+require_relative "workspace/core/locked_json_file"
 require_relative "workspace/terminal_text"
 require_relative "workspace/note_path"
 require_relative "workspace/shell_safe_path"
@@ -252,9 +259,15 @@ require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/prompt_queue_store"
+require_relative "workspace/pane_locks"
 require_relative "workspace/prompt_queue_desk"
 require_relative "workspace/agent_recovery_store"
+require_relative "workspace/restart_registry"
+require_relative "workspace/restart_runner"
+require_relative "workspace/session_monitor_builder"
+require_relative "workspace/agent_recovery_steps"
 require_relative "workspace/agent_recovery_desk"
+require_relative "workspace/agent_recovery_desk_factory"
 require_relative "workspace/inbox_store"
 require_relative "workspace/inbox_derived"
 require_relative "workspace/inbox_acks"
@@ -267,7 +280,7 @@ require_relative "workspace/transcript_label"
 require_relative "workspace/session_monitor"
 require_relative "workspace/clear_confirmation"
 require_relative "workspace/scan_slot_limiter"
-require_relative "workspace/agent_provider"
+require_relative "workspace/core/agent_provider"
 require_relative "workspace/agent_labels"
 require_relative "workspace/pane_dispatch"
 require_relative "workspace/file_backup"
@@ -316,6 +329,7 @@ require_relative "workspace/workflow_catalog"
 require_relative "workspace/workflow_router"
 require_relative "workspace/workflow_files"
 require_relative "workspace/workflow_project"
+require_relative "workspace/workflow_run"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_deny"
 require_relative "workspace/workflow_run_files"
@@ -331,6 +345,7 @@ require_relative "workspace/workflow_attempts"
 require_relative "workspace/workflow_audit"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
+require_relative "workspace/workflow_inputs"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
 require_relative "workspace/workflow_needs_me"
@@ -347,7 +362,7 @@ require_relative "workspace/workflow_nudger"
 require_relative "workspace/bookkeeping_exclude"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
-require_relative "workspace/workspace_name"
+require_relative "workspace/core/workspace_name"
 require_relative "workspace/workspace_store_rename"
 require_relative "workspace/name_migration"
 require_relative "workspace/rename_plan"
@@ -375,6 +390,7 @@ require_relative "workspace/commands/resize"
 require_relative "workspace/commands/layout"
 require_relative "workspace/commands/repair"
 require_relative "workspace/commands/cleanup"
+require_relative "workspace/gh_pull_requests"
 require_relative "workspace/commands/prune"
 require_relative "workspace/commands/remove"
 require_relative "workspace/commands/lookup"
@@ -446,13 +462,21 @@ module Workspace
   # @param env [Hash] environment; `WORKSPACE_NO_INPUT` makes every prompt fail instead of waiting
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
+  # @param exit_handler [#exit, nil] receives the process exit; nil uses Kernel (specs pass a recorder)
+  # @param tmux [Workspace::Tmux, nil] the tmux adapter every collaborator shares; nil builds the real one
+  # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
+  # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
     logger ||= Logger.new(output: error_output, enabled: ENV.key?("WORKSPACE_DEBUG"))
+    exit_handler ||= Kernel
     config = Config.new
+    skill_source ||= SkillSource.new(workspace_dir: config.workspace_dir)
+    tmux ||= Tmux.new(config: config, logger: logger)
+    task_store ||= TaskStore.new(dir: config.task_dir, error_output: error_output)
     project_settings = ProjectSettings.new(config: config)
     config_resolver = ConfigResolver.new(project_settings: project_settings)
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
@@ -460,7 +484,6 @@ module Workspace
     osascript = OsascriptRunner.new
     iterm = ITerm.new(config: config, output: output, logger: logger, osascript: osascript)
     window_manager = WindowManager.new(config: config, logger: logger, osascript: osascript)
-    tmux = Tmux.new(config: config, logger: logger)
     git = Git.new(output: output, input: input, logger: logger)
     agent_commands = AgentCommands.new(config_resolver: config_resolver)
     project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands)
@@ -488,8 +511,7 @@ module Workspace
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, event_log: event_log, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
-    lineage = WorkspaceLineage.new
-    task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
+    lineage = WorkspaceLineage.new(rev_parse: git.method(:path_of))
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
     library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
@@ -514,7 +536,7 @@ module Workspace
     start_ref = StartRef.new(git: git, lineage: lineage)
     ticket_source = TicketSource.new
     skills_home = env["HOME"].to_s.empty? ? Dir.home : env["HOME"]
-    skills_command = Commands::Skills.new(harnesses: SkillHarnesses.new(home: skills_home, env: env), source: SkillSource.new(workspace_dir: config.workspace_dir),
+    skills_command = Commands::Skills.new(harnesses: SkillHarnesses.new(home: skills_home, env: env), source: skill_source,
       links: SkillLinks.new(state_dir: config.state_dir), state: SkillsState.new(dir: config.state_dir), input: input, output: output, error_output: error_output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: ticket_source, output: output, error_output: error_output)
     agent_snapshot_client = AgentSnapshotClient.new(config: config)
@@ -526,7 +548,7 @@ module Workspace
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, agent_commands: agent_commands, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
-    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, output: output, input: input)
+    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), output: output, input: input)
     remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
@@ -570,7 +592,7 @@ module Workspace
     reap_interval = cwd_project_name ? lock_config.reap_interval_for(cwd_project_name) : LockReaper::DEFAULT_INTERVAL
     process_tree = ProcessTree.new(logger: logger, timeout: ps_timeout)
     run_liveness = RunLiveness.new(dir: config.workflow_runs_dir)
-    lock_holder = LockHolder.new(process_tree: process_tree, run_liveness: run_liveness)
+    lock_holder = LockHolder.new(process_tree: process_tree, run_liveness: run_liveness, tmux: tmux)
     sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       project_config: project_config, snapshot_client: agent_snapshot_client, output: output, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
@@ -588,7 +610,7 @@ module Workspace
       lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
-    lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
+    lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, lineage: lineage,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
       bound_run: bound_run, output: output, error_output: error_output)
     dev_events = DevEvents.new(event_log: event_log, lineage: lineage)
@@ -601,6 +623,7 @@ module Workspace
       dev_runner: dev_runner,
       terminator: process_group_terminator,
       tmux: tmux,
+      git: git,
       executable: File.expand_path("../bin/workspace", __dir__),
       event_log: event_log,
       bound_run: bound_run,
@@ -677,7 +700,7 @@ module Workspace
       rescue SystemCallError, Timeout::Error => e
         [e.message, nil]
       end,
-      source: SkillSource.new(workspace_dir: config.workspace_dir), ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
+      source: skill_source, ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
     workflow_catalog = WorkflowCatalog.new(config: config)
     workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
     workflow_needs_me = WorkflowNeedsMe.new
@@ -752,7 +775,7 @@ module Workspace
       real = CheckoutMove.real_path(path)
       project_config.available_projects.find { |name| (root = project_config.project_root_for(name)) && CheckoutMove.real_path(File.expand_path(root)) == real }
     end
-    go_task = Commands::GoTask.new(engine: workflow_engine, plan_task: plan_task_command, access: plan_access, output: output)
+    go_task = Commands::GoTask.new(run_store: workflow_store, plan_task: plan_task_command, access: plan_access, output: output)
     namer_value = lambda do |key|
       lambda do |workspace|
         view = workspace ? config_resolver.view(workspace: workspace, upto: "project") : config_resolver.view(workspace: "global", upto: "global")
@@ -808,14 +831,14 @@ module Workspace
       resume_command: agent_resume_command, output: output, error_output: error_output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
-    # The reader takes its own limiter, separate from the monitor's: it serves
-    # `sessions` requests rather than polls, and its busy reads fall back to a
-    # cached reading instead of skipping. The limiter's slot is re-entrant per
-    # directory, so the reader's scrape inside a monitor's scan — a separate
-    # instance over the same slot files — runs under the slot the scan holds.
-    context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger,
-      lock_holder: lock_holder, scan_slots: ScanSlotLimiter.new(dir: File.join(config.state_dir, "scan-slots"), logger: logger))
-    statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(logger: logger),
+    # One limiter for the reader and the monitors: it bounds how many scans and
+    # scrapes run at once, machine-wide, over the slot files under the state
+    # directory. A reader's scrape inside a monitor's scan runs under the slot
+    # the scan holds, since the slot is re-entrant per thread and directory.
+    scan_slots = ScanSlotLimiter.new(dir: File.join(config.state_dir, "scan-slots"), logger: logger)
+    context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings,
+      tmux: tmux, logger: logger, lock_holder: lock_holder, scan_slots: scan_slots)
+    statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(git: git, logger: logger),
       project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
       lock_holder: lock_holder)
 
@@ -836,25 +859,25 @@ module Workspace
       output: output, error_output: error_output, notes: notes_command)
 
     # Nil with recovery off or for a workspace whose agent isn't Claude Code, so the daemon builds no desk.
-    agent_recovery_desk_factory = lambda do |**given|
-      workspace = given.fetch(:workspace)
-      next nil unless agent_recovery_config.enabled?(workspace) && agent_commands.kind(workspace) == "claude"
-      session_monitor = given.fetch(:session_monitor)
-      AgentRecoveryDesk.new(tmux: tmux, workspace: workspace, session_name: given.fetch(:session_name), session_monitor: session_monitor,
-        store: AgentRecoveryStore.new(path: config.agent_recovery_path(workspace)), transcript: TranscriptSummary.new,
-        stopper: AgentStopper.new(process_tree: process_tree), detector: agent_commands.detector(workspace),
-        process_tree: process_tree, ledger: session_ledger, resume_command: agent_resume_command,
-        prompt_typer: PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger),
-        readiness: agent_readiness, marker: recovery_stop_marker,
-        inbox: -> { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) },
-        logger: logger, **given.slice(:delivery_lock, :event_log, :restarting, :claim_restart, :release_restart, :rebind_queue))
-    end
+    agent_recovery_desk_factory = AgentRecoveryDeskFactory.new(tmux: tmux, config: config, recovery_config: agent_recovery_config,
+      agent_commands: agent_commands, process_tree: process_tree, ledger: session_ledger, resume_command: agent_resume_command,
+      readiness: agent_readiness, marker: recovery_stop_marker, logger: logger, error_output: error_output,
+      transcript: TranscriptSummary.new, stopper: AgentStopper.new(process_tree: process_tree))
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
       status_socket_path: config.work_coordinator_status_socket,
       logger: logger
     )
+    # Its own LockHolder: the reaper runs on the monitor thread, and a
+    # LockHolder's snapshot scope is per-instance, not per-thread.
+    lock_reaper = LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness, tmux: tmux),
+      terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output,
+      on_reap: dev_events.method(:reaped))
+    session_monitor_builder = SessionMonitorBuilder.new(tmux: tmux, logger: logger, error_output: error_output,
+      agent_commands: agent_commands, alert_config: alert_config, agentd_config: agentd_config,
+      lock_reaper: lock_reaper, ps_timeout: ps_timeout, event_log: event_log, context_reader: context_reader,
+      label_reader: TranscriptLabel.new, task_store: task_store, scan_slots: scan_slots)
     agent_command = Commands::Agent.new(
       config: config,
       tmux: tmux,
@@ -862,30 +885,22 @@ module Workspace
       agent_commands: agent_commands,
       work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
-      # Its own LockHolder: the reaper runs on the monitor thread, and a
-      # LockHolder's snapshot scope is per-instance, not per-thread.
-      lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness),
-        terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output,
-        on_reap: dev_events.method(:reaped)),
-      alert_config: alert_config,
-      agentd_config: agentd_config,
-      ps_timeout: ps_timeout,
+      session_monitor_factory: session_monitor_builder,
       event_log: event_log,
       context_reader: context_reader,
-      label_reader: TranscriptLabel.new,
-      task_store: task_store,
       workflow_nudger: workflow_nudger,
       name_migration: name_migration,
       agent_recovery_desk_factory: agent_recovery_desk_factory,
+      restart_registry: RestartRegistry.new,
       transcript_summary: TranscriptSummary.new,
       idle_prompt_check: IdlePromptCheck.new,
       pane_bindings: pane_bindings,
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
-      handoff_watcher_factory: ->(workspace:, session_monitor:, **rest) {
-        HandoffWatcher.new(tmux: tmux, workspace: workspace, session_monitor: session_monitor, logger: logger,
+      handoff_watcher_factory: ->(workspace:, session_monitor:, session_name:, **rest) {
+        HandoffWatcher.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor, logger: logger,
           plan_paused: PlanPaused.new(workspace: workspace, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }),
-          typer: PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger), **rest)
+          typer: PromptTyper.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_monitor: session_monitor, logger: logger), **rest)
       },
       spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
@@ -908,7 +923,7 @@ module Workspace
 
     rename_journal = RenameJournal.new(config: config)
     rename_plan = RenamePlan.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes_command,
-      notes_dir: NotesDir.new(git: git), workflow_engine: workflow_engine, dev_lock: ->(path) { dev_command.lock_held_by?(path) },
+      notes_dir: NotesDir.new(git: git), run_store: workflow_store, dev_lock: ->(path) { dev_command.lock_held_by?(path) },
       journal: rename_journal.method(:read))
     rename_command = Commands::Rename.new(plan: rename_plan, journal: rename_journal, git: git, config: config, project_config: project_config,
       project_settings: project_settings, tmux: tmux, state: state, notes: notes_command, name_migration: name_migration, task_store: task_store,
@@ -1010,6 +1025,7 @@ module Workspace
       ensure_agent_command: ensure_agent_command,
       name_migration: name_migration,
       handoff_command: handoff_command,
+      exit_handler: exit_handler,
       logger: logger,
       output: output,
       error_output: error_output,

@@ -35,11 +35,6 @@ module Workspace
   # be matched to a Notification, which names no agent: if its dialog asks again
   # after a restart, it alerts again with a new start time.
   class SessionMonitor
-    # A pane whose output has not changed for this long is reported idle. Agents
-    # spend most of a turn blocked on the network, so CPU is not a usable
-    # signal; changing output is.
-    DEFAULT_IDLE_AFTER = 30
-
     # What this daemon can do that an older one can't, listed in {#snapshot}:
     # `parked_resume` is the fields {WorkflowPanes} proves a turn's end from.
     FEATURES = ["parked_resume"].freeze
@@ -111,7 +106,7 @@ module Workspace
     # @param question_check [Workspace::QuestionClosedCheck] reads whether a
     #   question dialog is gone from a pane's screen
     def initialize(tmux:, process_tree:, session_name:,
-      providers: AgentProvider.all, detector: AgentDetector.new, poll_interval: DEFAULT_POLL_INTERVAL, idle_after: DEFAULT_IDLE_AFTER,
+      providers: AgentProvider.all, detector: AgentDetector.new, poll_interval: DEFAULT_POLL_INTERVAL, idle_after: AgentProvider::DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
       context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil, question_check: QuestionClosedCheck.new)
@@ -324,7 +319,7 @@ module Workspace
 
     # The state the restart busy check goes by. A pane's agent that has ended
     # its turn (a Stop hook) is idle here even though {#pane_state} still says
-    # "working" until {DEFAULT_IDLE_AFTER} of screen quiet; otherwise an agent
+    # "working" until {AgentProvider::DEFAULT_IDLE_AFTER} of screen quiet; otherwise an agent
     # restarting itself would wait on its own last output. A pane with waits
     # is "waiting". With no turn event seen (or one still in progress) this
     # is {#pane_state}.
@@ -1246,6 +1241,9 @@ module Workspace
         "waiting_message" => wait&.dig(:message),
         "waiting_tool" => wait&.dig(:tool),
         "waiting_input" => wait&.dig(:input),
+        "waits" => pane[:waits].map { |agent_id, w|
+          {"agent_id" => agent_id, "tool" => w[:tool], "input" => w[:input], "since" => w[:since]&.utc&.iso8601}
+        },
         "stop_reason" => pane[:done]&.dig(:stop_reason),
         "turn_failed" => !pane[:turn_failed].nil?,
         "session_id" => pane[:session_id],

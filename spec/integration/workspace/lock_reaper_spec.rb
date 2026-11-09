@@ -116,13 +116,22 @@ RSpec.describe Workspace::LockReaper do
       end
     end
 
-    it "reaps each namespace once, however many panes share it" do
-      hold("edit", 100)
-      liveness.kill(100)
-      allow(Workspace::LockStore).to receive(:new).and_call_original
+    context "with a liveness that counts its questions" do
+      let(:liveness) { CountingLockLiveness.new }
 
-      expect(reaper.reap([app_cwd, app_cwd, nil])).to eq(1)
-      expect(Workspace::LockStore).to have_received(:new).once
+      it "reaps each namespace once, however many panes share it" do
+        allow(lock_namespace).to receive(:resolve).with(cwd: lib_cwd).and_return(key: "app", display: "app", dir: app_dir)
+        hold("edit", 100)
+        reaper.reap([app_cwd])
+        one_pass = liveness.checks.size
+        liveness.checks.clear
+
+        # Two cwds in one namespace must cost the same liveness checks as one pass: each namespace is reaped once.
+        reaper.reap([app_cwd, lib_cwd, nil])
+
+        expect(one_pass).to be > 0
+        expect(liveness.checks.size).to eq(one_pass)
+      end
     end
 
     it "leaves a namespace with no locks.json untouched" do

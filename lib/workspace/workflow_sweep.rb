@@ -91,8 +91,8 @@ module Workspace
     #   "step", "attempt", "cause", "action"
     # @raise [Workspace::Error] code `unknown_run` for a +run+ that does not exist
     def call(run: nil, workspace: nil, dry_run: false, allow: nil)
-      runs = run ? [@store.find(run)] : @store.active
-      runs = runs.select { |each| each["workspace"] == workspace } if workspace
+      runs = run ? [@store.run(run)] : @store.going
+      runs = runs.select { |each| each.workspace == workspace } if workspace
       pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}}
       rows = runs.map { |each| sweep_run(each, pass) }
       rows += unreadable_rows unless run || workspace
@@ -116,24 +116,24 @@ module Workspace
     end
 
     def sweep_run(run, pass)
-      return row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-      state = run["steps"].fetch(run["current"])
-      running = state["state"] == "running"
-      backoff = WorkflowEngine.backoff(run, @clock.call)
+      return row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
+      state = run.steps.fetch(run.current)
+      running = state.state == "running"
+      backoff = WorkflowEngine.backoff(run.to_h, @clock.call)
       return sweep_backoff(run, backoff, pass) if backoff
-      return blocked_row(run) if run.dig("backoff", "blocked") && run["state"] == "waiting"
-      return budget_row(run) if run["budget_hold"] && run["state"] == "waiting"
-      daemon_needed = running || state["state"] == "checking" || run["parked"] || run.dig("reason", "code") == "waiting_lock"
-      if running && !@panes.alive?(run["id"])
-        pane = run["pane"]
-        return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run["id"]}`) or cancelled.", "pane" => pane)
+      return blocked_row(run) if run.backoff&.dig("blocked") && run.state == "waiting"
+      return budget_row(run) if run.budget_hold && run.state == "waiting"
+      daemon_needed = running || state.state == "checking" || run.parked || run.reason&.dig("code") == "waiting_lock"
+      if running && !@panes.alive?(run.id)
+        pane = run.pane
+        return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", "pane" => pane)
       end
-      redelivery = WorkflowEngine.redelivery(run, @clock.call)
+      redelivery = WorkflowEngine.redelivery(run.to_h, @clock.call)
       return sweep_undelivered(run, redelivery, pass) if redelivery
-      return respawn(run, pass) if daemon_needed && daemon_down?(run["workspace"], pass)
-      return row(run, "nothing", reason: "parked", message: "a resume is parked; it is carried out when the pane's turn ends") if run["parked"]
-      return row(run, "nothing", reason: "checking", message: "the step's check is running") if state["state"] == "checking"
-      return row(run, "nothing", reason: "not_running", message: "no agent is working on step #{run["current"]} (#{state["state"]})") unless running
+      return respawn(run, pass) if daemon_needed && daemon_down?(run.workspace, pass)
+      return row(run, "nothing", reason: "parked", message: "a resume is parked; it is carried out when the pane's turn ends") if run.parked
+      return row(run, "nothing", reason: "checking", message: "the step's check is running") if state.state == "checking"
+      return row(run, "nothing", reason: "not_running", message: "no agent is working on step #{run.current} (#{state.state})") unless running
       sweep_running(run, state, pass)
     rescue Workspace::Error => e
       return row(run, "nothing", reason: "finished", message: "the run ended while it was being looked at") if e.code == "run_not_active"
@@ -148,15 +148,15 @@ module Workspace
     # The step failed and its `on_fail` retry waits out a `backoff`: not a stall. Once the time has come the retry
     # starts, as a tick or a resume would start it.
     def sweep_backoff(run, info, pass)
-      what = "step #{run["current"]} failed; step #{info[:to]} starts again at #{info[:until]}"
+      what = "step #{run.current} failed; step #{info[:to]} starts again at #{info[:until]}"
       return row(run, "nothing", reason: "backoff", cause: "retry_backoff", message: "#{what} (in #{info[:wait]} seconds)") if info[:state] == :waiting
       message = "#{what}, and that time has passed"
       # A retry types a line, which only a running daemon's turn end follows up; the next pass retries after a respawn.
-      return respawn(run, pass, notes: false) if daemon_down?(run["workspace"], pass)
+      return respawn(run, pass, notes: false) if daemon_down?(run.workspace, pass)
       return row(run, "dry_run", message: message, cause: "retry_backoff", action: "retry") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return row(run, "nothing", reason: "refused", message: refusal, cause: "retry_backoff") if refusal
-      outcome = @engine.retry_backoff(run["id"], step: run["current"], attempt: attempt_of(run))
+      outcome = @engine.retry_backoff(run.id, step: run.current, attempt: attempt_of(run))
       return blocked_row(run) if outcome == :blocked
       return budget_row(run, cause: "retry_backoff", action: "retry") if outcome == :held
       engine_row(run, outcome, "retried", cause: "retry_backoff", message: message, action: "retry")
@@ -164,30 +164,30 @@ module Workspace
 
     # The retry's wait is over but the token budget is used: not a failure, and the sweep cannot raise the budget.
     def budget_row(run, **rest)
-      row(run, "nothing", reason: "budget_spent", message: "step #{run["current"]} was not started: the run's token budget is used. Resume it with --extra-tokens N (see `workspace workflow status #{run["id"]}`) or cancel it", **rest)
+      row(run, "nothing", reason: "budget_spent", message: "step #{run.current} was not started: the run's token budget is used. Resume it with --extra-tokens N (see `workspace workflow status #{run.id}`) or cancel it", **rest)
     end
 
     # The pane the retry would type into is no longer the run's. Not a failure: the sweep cannot fix it, and a person can.
     def blocked_row(run)
       row(run, "nothing", reason: "retry_blocked", cause: "retry_backoff", action: "retry",
-        message: "the retry of step #{run.dig("backoff", "to")} is held: its pane is no longer the run's. Resume the run with --pane for another agent pane, or cancel it")
+        message: "the retry of step #{run.backoff&.dig("to")} is held: its pane is no longer the run's. Resume the run with --pane for another agent pane, or cancel it")
     end
 
     # The step waits on a line that was not delivered, and {WorkflowEngine.redelivery} says where a retry stands.
     def sweep_undelivered(run, info, pass)
-      pane = run["pane"]
-      what = "step #{run["current"]}'s line was not delivered to pane #{pane} (#{info[:code]})"
+      pane = run.pane
+      what = "step #{run.current}'s line was not delivered to pane #{pane} (#{info[:code]})"
       case info[:state]
       when :exhausted
-        return note(run, pass, "redelivery_exhausted", "#{what}, and it was retried #{info[:retries]} time#{"s" unless info[:retries] == 1}; resume the run (`workspace workflow resume #{run["id"]}`) once the pane is ready", "code" => info[:code], "retries" => info[:retries])
+        return note(run, pass, "redelivery_exhausted", "#{what}, and it was retried #{info[:retries]} time#{"s" unless info[:retries] == 1}; resume the run (`workspace workflow resume #{run.id}`) once the pane is ready", "code" => info[:code], "retries" => info[:retries])
       when :waiting
         return row(run, "nothing", reason: "backoff", cause: "undelivered", message: "#{what}; retry #{info[:retries] + 1} of #{info[:limit]} in #{info[:wait]} seconds")
       end
-      unless @panes.alive?(run["id"])
-        return note(run, pass, "pane_gone", "pane #{pane} is gone, so #{what} cannot be retried. The run keeps its checkout until it is resumed (`workspace workflow resume #{run["id"]}`) or cancelled.", "pane" => pane)
+      unless @panes.alive?(run.id)
+        return note(run, pass, "pane_gone", "pane #{pane} is gone, so #{what} cannot be retried. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", "pane" => pane)
       end
-      return respawn(run, pass) if daemon_down?(run["workspace"], pass)
-      shown = pane && @panes.pane_row(run["workspace"], pane)
+      return respawn(run, pass) if daemon_down?(run.workspace, pass)
+      shown = pane && @panes.pane_row(run.workspace, pane)
       return row(run, "nothing", reason: "unknown", cause: "undelivered", message: "#{what}; the agent daemon did not say what pane #{pane} shows") unless shown
       unless WorkflowPanes.turn_over?(shown, @clock.call) && shown["idle_seconds"].to_i >= IDLE_FLOOR
         return row(run, "nothing", reason: "pane_busy", cause: "undelivered", message: "#{what}; pane #{pane} is not idle, so nothing is typed. The next pass looks again")
@@ -196,7 +196,7 @@ module Workspace
       return row(run, "dry_run", message: message, cause: "undelivered", action: "redeliver") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return row(run, "nothing", reason: "refused", message: refusal, cause: "undelivered") if refusal
-      outcome = @engine.redeliver(run["id"], step: run["current"], attempt: attempt_of(run))
+      outcome = @engine.redeliver(run.id, step: run.current, attempt: attempt_of(run))
       case outcome
       when :not_delivered
         row(run, "nothing", reason: "not_delivered", cause: "undelivered", action: "redeliver", message: "#{message}, but it was not delivered again; the next retry waits out a longer backoff")
@@ -208,57 +208,57 @@ module Workspace
 
     # The step reads `running` and its pane is there.
     def sweep_running(run, state, pass)
-      attempt = state["attempts"].last
-      return row(run, "nothing", reason: "no_attempt", message: "step #{run["current"]} reads running and has no attempt; resume the run") unless attempt
+      attempt = state.last_attempt
+      return row(run, "nothing", reason: "no_attempt", message: "step #{run.current} reads running and has no attempt; resume the run") unless attempt
       begin
-        started = Time.iso8601(attempt["started_at"].to_s)
+        started = Time.iso8601(attempt.started_at.to_s)
       rescue ArgumentError
         return row(run, "failed", reason: "unreadable_run", message: "the attempt has no readable start time")
       end
       elapsed = @clock.call - started
-      step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
+      step = run.definition["steps"].find { |each| each["id"] == run.current }
       timeout = step["timeout"]
       timed_out = timeout.is_a?(Numeric) && elapsed > timeout
       on_timeout = WorkflowDefinition.on_timeout(step)
 
-      if run["reason"]
-        return time_out(run, attempt, pass, elapsed, timeout, nil) if timed_out && on_timeout == "fail" && run.dig("reason", "code") == "turn_ended_incomplete"
-        return row(run, "nothing", reason: "held", message: "step #{run["current"]} is held (#{run.dig("reason", "code")}); a person decides it")
+      if run.reason
+        return time_out(run, attempt, pass, elapsed, timeout, nil) if timed_out && on_timeout == "fail" && run.reason&.dig("code") == "turn_ended_incomplete"
+        return row(run, "nothing", reason: "held", message: "step #{run.current} is held (#{run.reason&.dig("code")}); a person decides it")
       end
-      return row(run, "nothing", reason: "delivering", message: "the step's line is still on its way to the pane") if WorkflowEngine.delivery(attempt, @clock.call) == :delivering
-      pane = @panes.pane_of(run["id"])
-      shown = @panes.pane_row(run["workspace"], pane)
+      return row(run, "nothing", reason: "delivering", message: "the step's line is still on its way to the pane") if WorkflowEngine.delivery(attempt.to_h, @clock.call) == :delivering
+      pane = @panes.pane_of(run.id)
+      shown = @panes.pane_row(run.workspace, pane)
       return row(run, "nothing", reason: "unknown", message: "the agent daemon did not say what pane #{pane} shows") unless shown
       if WorkflowPanes.agent_gone_row?(shown)
         return note(run, pass, "agent_gone", "pane #{pane} shows a shell: the agent has exited, so nothing will end this step. Resume the run to start it again.", "pane" => pane)
       end
       return row(run, "nothing", reason: "prompt", message: "pane #{pane} waits for an answer") if shown["state"] == "waiting"
 
-      stall = WorkflowDefinition.stall(run["definition"])
+      stall = WorkflowDefinition.stall(run.definition)
       idle_for = shown["idle_seconds"].to_i
       if WorkflowPanes.turn_over?(shown, @clock.call) && elapsed >= IDLE_GRACE && idle_for >= IDLE_FLOOR
-        cause = if WorkflowEngine.sweep_marks(run).dig("interrupt", "state") == "sent" then "interrupted"
+        cause = if WorkflowEngine.sweep_marks(run.to_h).dig("interrupt", "state") == "sent" then "interrupted"
         elsif (stall && idle_for >= stall) || (timed_out && on_timeout != "warn") then "idle_turn_over"
         end
         return row(run, "nothing", reason: "idle", message: "the agent's turn is over; the step is decided once it has been idle for the definition's stall") unless cause
         return evaluate(run, attempt, pass, pane, shown, cause, idle_for, (timed_out && on_timeout == "fail") ? {"elapsed" => elapsed, "timeout" => timeout} : nil)
       end
       return row(run, "nothing", reason: "healthy", message: nil) unless timed_out
-      return row(run, "nothing", reason: "timed_out", message: "step #{run["current"]} is past its #{timeout} second timeout (on_timeout: warn)") if on_timeout == "warn"
-      return row(run, "nothing", reason: "not_working", message: "step #{run["current"]} is past its timeout, but pane #{pane} does not show the agent working") unless shown["state"] == "working"
+      return row(run, "nothing", reason: "timed_out", message: "step #{run.current} is past its #{timeout} second timeout (on_timeout: warn)") if on_timeout == "warn"
+      return row(run, "nothing", reason: "not_working", message: "step #{run.current} is past its timeout, but pane #{pane} does not show the agent working") unless shown["state"] == "working"
       press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail: on_timeout == "fail")
     end
 
     def note(run, pass, cause, message, data = {})
-      return row(run, "nothing", reason: "already_recorded", message: message, cause: cause) if WorkflowEngine.sweep_marks(run).dig("stalled", cause)
+      return row(run, "nothing", reason: "already_recorded", message: message, cause: cause) if WorkflowEngine.sweep_marks(run.to_h).dig("stalled", cause)
       return row(run, "dry_run", message: message, cause: cause, action: "record") if pass[:dry_run]
-      outcome = @engine.note_stall(run["id"], step: run["current"], attempt: attempt_of(run), cause: cause, data: data)
+      outcome = @engine.note_stall(run.id, step: run.current, attempt: attempt_of(run), cause: cause, data: data)
       engine_row(run, outcome, "recorded", cause: cause, message: message, action: "record")
     end
 
     # Starts the workspace's daemon. The run is not acted on again in this pass.
     def respawn(run, pass, notes: true)
-      workspace = run["workspace"]
+      workspace = run.workspace
       message = "the agent daemon of '#{workspace}' is not running, so no turn's end is seen"
       unless @panes.session_live?(workspace)
         return row(run, "nothing", reason: "workspace_stopped", cause: "daemon_down", message: "#{message}, and the workspace has no tmux session, so none is started")
@@ -266,35 +266,35 @@ module Workspace
       return row(run, "dry_run", message: message, cause: "daemon_down", action: "respawn_daemon") if pass[:dry_run]
       started = (pass[:daemons][workspace] ||= @panes.respawn_daemon(workspace))
       attempt = attempt_of(run)
-      @engine.note_stall(run["id"], step: run["current"], attempt: attempt, cause: "daemon_down", data: {"workspace" => workspace}) if notes
+      @engine.note_stall(run.id, step: run.current, attempt: attempt, cause: "daemon_down", data: {"workspace" => workspace}) if notes
       unless started[:ok]
         return row(run, "failed", reason: "daemon_not_started", cause: "daemon_down", action: "respawn_daemon",
           message: "#{message}, and it could not be started#{": #{started[:detail]}" if started[:detail]}")
       end
-      @engine.note_recovery(run["id"], step: run["current"], attempt: attempt, cause: "daemon_down", action: "daemon_respawned") if notes
+      @engine.note_recovery(run.id, step: run.current, attempt: attempt, cause: "daemon_down", action: "daemon_respawned") if notes
       row(run, "respawned", cause: "daemon_down", action: "respawn_daemon", message: "#{message}; it is running again, and the pane is read on the next pass")
     end
 
     def evaluate(run, attempt, pass, pane, shown, cause, idle_for, fail_if_incomplete)
-      message = "the agent's turn ended and nothing decided step #{run["current"]} (idle for #{idle_for} seconds)"
+      message = "the agent's turn ended and nothing decided step #{run.current} (idle for #{idle_for} seconds)"
       return row(run, "dry_run", message: message, cause: cause, action: "evaluate") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return row(run, "nothing", reason: "refused", message: refusal, cause: cause) if refusal
       # The proof is read again just before the change, so it is as fresh as the lock allows.
-      fresh = @panes.pane_row(run["workspace"], pane)
+      fresh = @panes.pane_row(run.workspace, pane)
       unless fresh && fresh["kind"] == shown["kind"] && WorkflowPanes.turn_over?(fresh, @clock.call) && fresh["idle_seconds"].to_i >= IDLE_FLOOR
         return row(run, "nothing", reason: "pane_changed", message: "pane #{pane} no longer shows the agent's turn over; the next pass looks again", cause: cause)
       end
-      outcome = @engine.recover(run["id"], turn_over: {"step" => run["current"], "attempt" => attempt["n"]}, cause: cause,
+      outcome = @engine.recover(run.id, turn_over: {"step" => run.current, "attempt" => attempt.n}, cause: cause,
         data: {"idle_for" => idle_for}, fail_if_incomplete: fail_if_incomplete)
       engine_row(run, outcome, (outcome == :timed_out) ? "timed_out" : "evaluated", cause: cause, message: message, action: "evaluate")
     end
 
     # Claims under the run's lock, presses with it given up, confirms under it. For `fail` the confirmation is the failure itself.
     def press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail:)
-      message = "step #{run["current"]} is #{elapsed.round} seconds in, past its #{timeout} second timeout"
+      message = "step #{run.current} is #{elapsed.round} seconds in, past its #{timeout} second timeout"
       action = then_fail ? "fail" : "interrupt"
-      held = WorkflowEngine.sweep_marks(run)["interrupt"]
+      held = WorkflowEngine.sweep_marks(run.to_h)["interrupt"]
       return time_out(run, attempt, pass, elapsed, timeout, nil) if then_fail && held && held["state"] == "sent"
       keys = AgentProvider.find(shown["kind"].to_s)&.interrupt_keys.to_a
       if keys.empty?
@@ -303,18 +303,18 @@ module Workspace
       return row(run, "dry_run", message: message, cause: "timed_out", action: action) if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return row(run, "nothing", reason: "refused", message: refusal, cause: "timed_out") if refusal
-      step_ref = {step: run["current"], attempt: attempt["n"]}
-      claim, claim_at = @engine.claim_interrupt(run["id"], **step_ref, elapsed: elapsed, timeout: timeout)
+      step_ref = {step: run.current, attempt: attempt.n}
+      claim, claim_at = @engine.claim_interrupt(run.id, **step_ref, elapsed: elapsed, timeout: timeout)
       unless claim == :claimed
         return row(run, "nothing", reason: "already_interrupted", message: message, cause: "timed_out") if claim == :repeat
         return engine_row(run, claim, "interrupted", cause: "timed_out", message: message, action: action)
       end
       unless still_working?(run, pane, shown)
-        @engine.interrupt_sent(run["id"], **step_ref, claim_at: claim_at, sent: false)
+        @engine.interrupt_sent(run.id, **step_ref, claim_at: claim_at, sent: false)
         return row(run, "nothing", reason: "pane_changed", message: "pane #{pane} no longer shows the agent working in this run; nothing was pressed", cause: "timed_out")
       end
       failure = press(run, pane, keys)
-      @engine.interrupt_sent(run["id"], **step_ref, claim_at: claim_at, sent: failure.nil?, record: !then_fail)
+      @engine.interrupt_sent(run.id, **step_ref, claim_at: claim_at, sent: failure.nil?, record: !then_fail)
       return row(run, "failed", reason: "interrupt_failed", message: "could not interrupt pane #{pane}: #{failure}", cause: "timed_out", action: action) if failure
       return row(run, "interrupted", message: message, cause: "timed_out", action: action) unless then_fail
       time_out(run, attempt, pass, elapsed, timeout, "the agent was interrupted")
@@ -322,22 +322,22 @@ module Workspace
 
     # Read just before the press: the same agent still works in the pane, and the pane is still this run's.
     def still_working?(run, pane, shown)
-      fresh = @panes.pane_row(run["workspace"], pane)
-      !fresh.nil? && fresh["state"] == "working" && fresh["kind"] == shown["kind"] && @panes.run_on(pane) == run["id"]
+      fresh = @panes.pane_row(run.workspace, pane)
+      !fresh.nil? && fresh["state"] == "working" && fresh["kind"] == shown["kind"] && @panes.run_on(pane) == run.id
     end
 
     def time_out(run, attempt, pass, elapsed, timeout, note)
-      message = "step #{run["current"]} is #{elapsed.round} seconds in, past its #{timeout} second timeout#{" (#{note})" if note}"
+      message = "step #{run.current} is #{elapsed.round} seconds in, past its #{timeout} second timeout#{" (#{note})" if note}"
       return row(run, "dry_run", message: message, cause: "timed_out", action: "fail") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return row(run, "nothing", reason: "refused", message: refusal, cause: "timed_out") if refusal
-      outcome = @engine.time_out(run["id"], step: run["current"], attempt: attempt["n"], elapsed: elapsed, timeout: timeout)
+      outcome = @engine.time_out(run.id, step: run.current, attempt: attempt.n, elapsed: elapsed, timeout: timeout)
       engine_row(run, outcome, "timed_out", cause: "timed_out", message: message, action: "fail")
     end
 
     # nil once the keys are pressed; otherwise why they were not.
     def press(run, pane, keys)
-      @interrupter.call(run["workspace"], pane, keys)
+      @interrupter.call(run.workspace, pane, keys)
       nil
     rescue Workspace::Error => e
       e.message.lines.first.to_s.strip
@@ -354,12 +354,12 @@ module Workspace
     end
 
     def attempt_of(run)
-      run.dig("steps", run["current"], "attempts")&.last&.fetch("n", nil)
+      run.step(run.current)&.last_attempt&.n
     end
 
     def row(run, outcome, reason: nil, message: nil, cause: nil, action: nil)
-      {"workspace" => run["workspace"], "outcome" => outcome, "reason" => reason, "message" => message, "run_id" => run["id"],
-       "step" => run["current"], "attempt" => attempt_of(run), "cause" => cause, "action" => action}
+      {"workspace" => run.workspace, "outcome" => outcome, "reason" => reason, "message" => message, "run_id" => run.id,
+       "step" => run.current, "attempt" => attempt_of(run), "cause" => cause, "action" => action}
     end
   end
 end

@@ -11,7 +11,7 @@ RSpec.describe "workspace handoff adversarial CLI probes" do
     logger = overrides[:logger] || Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
     window_manager = overrides[:window_manager] || CLITestHelpers::FakeWindowManager.new
-    tmux = overrides[:tmux] || CLITestHelpers::FakeTmux.new
+    tmux = overrides[:tmux] || FakeTmux.new
     project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
     doctor = overrides[:doctor] || CLITestHelpers::FakeDoctor.new
     project_settings = overrides[:project_settings] || CLITestHelpers::FakeProjectSettings.new
@@ -26,7 +26,7 @@ RSpec.describe "workspace handoff adversarial CLI probes" do
 
     stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
-    start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
+    start_command = overrides[:start_command] || Workspace::Commands::Start.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = overrides[:finish_command] || Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = overrides[:focus_command] || Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
@@ -54,7 +54,7 @@ RSpec.describe "workspace handoff adversarial CLI probes" do
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
     ask_command = overrides[:ask_command] || CLITestHelpers::FakeAskCommand.new
 
-    cli = Workspace::CLI.new(
+    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,
@@ -101,8 +101,7 @@ RSpec.describe "workspace handoff adversarial CLI probes" do
       exit_handler: overrides[:exit_handler] || FakeExitHandler,
       input: input,
       working_dir: working_dir,
-      clock: overrides[:clock] || -> { Time.now }
-    )
+      clock: overrides[:clock] || -> { Time.now })
     [cli, output, error_output]
   end
 

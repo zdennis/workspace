@@ -4,7 +4,7 @@ require "timeout"
 RSpec.describe Workspace::Git do
   let(:output) { StringIO.new }
   let(:input) { StringIO.new }
-  subject(:git) { described_class.new(output: output, input: input) }
+  subject(:git) { Interceptable.subclass(described_class, :capture_git).new(output: output, input: input) }
 
   describe "#parse_start_input" do
     it "parses a JIRA URL" do
@@ -604,8 +604,9 @@ RSpec.describe Workspace::Git do
 
       it "still creates the worktree when the marker cannot be set" do
         failed = instance_double(Process::Status, success?: false)
-        allow(git).to receive(:capture_git).and_call_original
-        allow(git).to receive(:capture_git).with("-C", anything, "config", "branch.brand-new.workspace-created", "true").and_return(["", "boom", failed])
+        git.on(:capture_git) do |original, *args|
+          (args.length == 5 && args[2..] == ["config", "branch.brand-new.workspace-created", "true"]) ? ["", "boom", failed] : original.call(*args)
+        end
 
         path = create("brand-new", base: "main")
 
@@ -669,8 +670,10 @@ RSpec.describe Workspace::Git do
       end
 
       it "returns nil when git can't be started" do
-        allow(git).to receive(:capture_git).and_call_original
-        allow(git).to receive(:capture_git).with("-C", @repo_dir, "rev-list", any_args).and_raise(Errno::E2BIG)
+        git.on(:capture_git) do |original, *args|
+          raise Errno::E2BIG if args.first(3) == ["-C", @repo_dir, "rev-list"]
+          original.call(*args)
+        end
 
         expect(git.unpushed_commit_count(@repo_dir)).to be_nil
       end
@@ -700,8 +703,9 @@ RSpec.describe Workspace::Git do
       end
 
       it "returns :unknown when git cannot answer for an existing directory" do
-        allow(git).to receive(:capture_git).and_call_original
-        allow(git).to receive(:capture_git).with("-C", @repo_dir, "status", any_args).and_return(["", "", instance_double(Process::Status, success?: false)])
+        git.on(:capture_git) do |original, *args|
+          (args.first(3) == ["-C", @repo_dir, "status"]) ? ["", "", instance_double(Process::Status, success?: false)] : original.call(*args)
+        end
 
         expect(git.unsaved_work(@repo_dir)).to eq(:unknown)
       end
@@ -829,8 +833,9 @@ RSpec.describe Workspace::Git do
         end
 
         it "is nil when rev-list fails" do
-          allow(git).to receive(:capture_git).and_call_original
-          allow(git).to receive(:capture_git).with("-C", @repo_dir, "rev-list", "--count", anything).and_return(["", "boom", instance_double(Process::Status, success?: false)])
+          git.on(:capture_git) do |original, *args|
+            (args.length == 5 && args.first(4) == ["-C", @repo_dir, "rev-list", "--count"]) ? ["", "boom", instance_double(Process::Status, success?: false)] : original.call(*args)
+          end
 
           expect(git.branch_vs_base(@repo_dir, "feature")).to be_nil
         end
@@ -956,6 +961,62 @@ RSpec.describe Workspace::Git do
 
           expect(git.diff_stat(@repo_dir, "origin/main").map { |e| e["path"] }).to include("with space.txt")
         end
+      end
+    end
+  end
+
+  describe "#path_of and #current_branch_name" do
+    around do |example|
+      Dir.mktmpdir("path-of") do |dir|
+        @repo = File.realpath(dir)
+        run = ->(*args) { Open3.capture2e("git", "-C", @repo, "-c", "user.name=t", "-c", "user.email=t@example.com", *args) }
+        run.call("init", "-q", "-b", "main")
+        run.call("commit", "-q", "--allow-empty", "-m", "init")
+        run.call("worktree", "add", "-q", "-b", "feature", File.join(@repo, "wt"))
+
+        example.run
+      end
+    end
+
+    it "answers git rev-parse for each kind, stripped" do
+      wt = File.join(@repo, "wt")
+
+      expect(git.path_of(@repo, :git_dir)).to eq(".git")
+      expect(git.path_of(@repo, :common_dir)).to eq(".git")
+      expect(git.path_of(@repo, :toplevel)).to eq(@repo)
+      expect(File.realpath(git.path_of(wt, :common_dir))).to eq(File.join(@repo, ".git"))
+      expect(git.path_of(wt, :git_dir)).to end_with(".git/worktrees/wt")
+    end
+
+    it "answers nil outside a repository" do
+      Dir.mktmpdir { |dir| expect(git.path_of(dir, :git_dir)).to be_nil }
+    end
+
+    it "answers the branch checked out, and nil on a detached HEAD or outside a repository" do
+      expect(git.current_branch_name(@repo)).to eq("main")
+      expect(git.current_branch_name(File.join(@repo, "wt"))).to eq("feature")
+      Open3.capture2e("git", "-C", @repo, "checkout", "-q", "--detach")
+      expect(git.current_branch_name(@repo)).to be_nil
+      Dir.mktmpdir { |dir| expect(git.current_branch_name(dir)).to be_nil }
+    end
+
+    it "answers nil when git is not installed" do
+      allow(Open3).to receive(:popen3).and_raise(Errno::ENOENT)
+
+      expect(git.path_of(@repo, :git_dir)).to be_nil
+      expect(git.current_branch_name(@repo)).to be_nil
+      expect(git.head_name(@repo)).to be_nil
+    end
+
+    it "answers head_name as the branch, HEAD when detached, and nil outside a repository or on an unborn branch" do
+      expect(git.head_name(@repo)).to eq("main")
+      expect(git.head_name(File.join(@repo, "wt"))).to eq("feature")
+      Open3.capture2e("git", "-C", @repo, "checkout", "-q", "--detach")
+      expect(git.head_name(@repo)).to eq("HEAD")
+      Dir.mktmpdir do |dir|
+        expect(git.head_name(dir)).to be_nil
+        Open3.capture2e("git", "-C", dir, "init", "-q", "-b", "main")
+        expect(git.head_name(dir)).to be_nil
       end
     end
   end

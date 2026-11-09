@@ -39,15 +39,6 @@ module Workspace
       # @param token_generator [#call] returns a fresh completion token for one stage dispatch
       # @param clock [#call] returns the current Time, for stage deadlines
       # @param session_monitor_factory [#call] builds the session monitor for a workspace name
-      # @param lock_reaper [Workspace::LockReaper, nil] reaps stale lock holds from the session monitor's scan thread
-      # @param alert_config [Workspace::AlertConfig, nil] reads the workspace's
-      #   notify command and idle alert threshold; nil sends no alerts
-      # @param agentd_config [Workspace::AgentdConfig, nil] reads the workspace's
-      #   session-monitor scan interval; nil scans at
-      #   {SessionMonitor::DEFAULT_POLL_INTERVAL}
-      # @param notifier_factory [#call] builds a {Workspace::Notifier} for a command
-      # @param ps_timeout [Numeric] seconds to wait for `ps` before killing it, for
-      #   the session monitor's {Workspace::ProcessTree}
       # @param retry_backoff [Float] seconds to wait between status report retries
       # @param event_log [Workspace::EventLog, nil] records dispatches, stage
       #   completions and failures, and (through the session monitor) each agent
@@ -93,34 +84,26 @@ module Workspace
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
-      # @param label_reader [Workspace::TranscriptLabel, nil] reads each pane's
-      #   transcript title for `sessions --json`; nil leaves transcripts unread
       # @param agent_commands [Workspace::AgentCommands, nil] the program names that count as an agent, read
       #   once when the session monitor starts; nil knows only the providers' executables
-      # @param task_store [Workspace::TaskStore, nil] the workspace's task, for `sessions --json`'s
-      #   `task` and first `display_label` source; nil reports no task
-      # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
-      #   monitors scan at once, machine-wide; nil builds one from config
-      #   when the session monitor starts
-      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, agent_labels: nil, agent_commands: nil, pipeline_state: nil,
+      # @param restart_registry [Workspace::RestartRegistry] the panes being restarted; one is
+      #   built by default
+      # @param restart_runner_factory [#call, nil] given the session monitor, builds the
+      #   {Workspace::RestartRunner} once, when the first restart needs it; nil builds the real one
+      # @param current_name [String, nil] the workspace served before {#call} starts, so {#handle}
+      #   works without it; +call+ sets it from its +name+
+      # @param socket_poll_interval [Numeric] seconds between the socket watcher's passes
+      # @param workflow_tick_passes [Integer] the watcher ticks the workflow nudger every this many passes
+      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, session_monitor_factory:, agent_labels: nil, agent_commands: nil, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
         token_generator: -> { SecureRandom.hex(4) },
         clock: -> { Time.now },
-        session_monitor_factory: nil,
-        lock_reaper: nil,
-        alert_config: nil,
-        agentd_config: nil,
-        notifier_factory: nil,
-        ps_timeout: Workspace::ProcessTree::DEFAULT_TIMEOUT,
         retry_backoff: 0.5,
         event_log: nil,
         context_reader: nil,
-        label_reader: nil,
-        task_store: nil,
         workflow_nudger: nil,
-        scan_slots: nil,
         agent_restart_factory: nil,
         transcript_summary: TranscriptSummary.new,
         idle_prompt_check: IdlePromptCheck.new,
@@ -129,15 +112,23 @@ module Workspace
         agent_status_desk_factory: nil,
         prompt_queue_desk_factory: nil,
         agent_recovery_desk_factory: nil,
+        restart_registry: RestartRegistry.new,
+        restart_runner_factory: nil,
+        current_name: nil,
         handoff_watcher_factory: nil,
         name_migration: nil,
         plan_progress_watcher_factory: nil,
         spine_watcher_factory: nil,
         spine_owner_report_factory: nil,
+        socket_poll_interval: SOCKET_POLL_INTERVAL,
+        workflow_tick_passes: WORKFLOW_TICK_PASSES,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
+        @socket_poll_interval = socket_poll_interval
+        @workflow_tick_passes = workflow_tick_passes
         @name_migration = name_migration
         @config = config
         @tmux = tmux
+        serve_workspace(current_name) if current_name
         @agent_labels = agent_labels
         @agent_commands = agent_commands
         @work_coordinator_client = work_coordinator_client
@@ -148,16 +139,10 @@ module Workspace
         @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
         @token_generator = token_generator
         @clock = clock
-        @session_monitor_factory = session_monitor_factory || method(:build_session_monitor)
+        @session_monitor_factory = session_monitor_factory
         @session_monitor = nil
-        @lock_reaper = lock_reaper
-        @alert_config = alert_config
-        @agentd_config = agentd_config
         @context_reader = context_reader
-        @label_reader = label_reader
-        @task_store = task_store
         @workflow_nudger = workflow_nudger
-        @scan_slots = scan_slots
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         @transcript_summary = transcript_summary
         @idle_prompt_check = idle_prompt_check
@@ -172,11 +157,11 @@ module Workspace
         @agent_recovery_desk = nil
         @handoff_watcher_factory = handoff_watcher_factory || method(:build_handoff_watcher)
         # Restart workers by pane id, so one pane is restarted once at a time.
-        @restarts = {}
+        @restarts = restart_registry
+        @restart_runner_factory = restart_runner_factory || method(:build_restart_runner)
+        @restart_runner = nil
         # When the main agent's current turn began, by pane id, for the workflow nudger.
         @turn_starts = {}
-        @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: @error_output) }
-        @ps_timeout = ps_timeout
         @retry_backoff = retry_backoff
         @event_log = event_log
         @pollers = {}
@@ -219,8 +204,7 @@ module Workspace
       # @return [Boolean] false when the agent refused to start, true after a clean shutdown
       def call(name:, wc_socket: nil, force: false)
         name = migrate_name(name)
-        @current_name = name
-        @tmux_session = @tmux.session_name_for(name)
+        serve_workspace(name)
         socket_path = @config.agent_socket_path(name)
 
         # Read once up front so a bad stage timeout stops the agent here, with
@@ -245,6 +229,8 @@ module Workspace
 
         @hook_event_log = @hook_event_log_factory&.call(name)
         @session_monitor = @session_monitor_factory.call(name)
+        # Built here, before any worker thread can ask for it.
+        @restart_runner = @restart_runner_factory.call(@session_monitor)
         @session_monitor.start
         @plan_progress_watcher = @plan_progress_watcher_factory&.call(name)
         @plan_progress_watcher&.start
@@ -252,7 +238,7 @@ module Workspace
         @spine_watcher = @spine_watcher_factory&.call(name)
         @spine_watcher.owner_report = @spine_owner_report if @spine_watcher.respond_to?(:owner_report=)
         @spine_watcher&.start
-        restarting = ->(pane_id) { @state_lock.synchronize { @restarts.key?(pane_id) } }
+        restarting = ->(pane_id) { @restarts.held?(pane_id) }
         recovering = ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false }
         @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock,
@@ -261,8 +247,8 @@ module Workspace
         # until its text is typed, so restart_agent and status requests keep out.
         @prompt_queue_desk = @prompt_queue_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, delivery_lock: @delivery_lock, restarting: restarting,
-          claim_restart: ->(pane_id) { claim_restart_for_queue(pane_id) },
-          release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) },
+          claim_restart: ->(pane_id) { @restarts.claim_for_queue(pane_id) },
+          release_restart: ->(pane_id, token) { @restarts.release(pane_id, token) },
           recovering: recovering)
         @agent_recovery_desk = build_agent_recovery_desk(name, restarting)
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
@@ -281,13 +267,13 @@ module Workspace
 
         true
       ensure
-        @shutting_down = true
+        begin_shutdown
         @shutdown_signal << :stop
         @session_monitor&.stop
         @plan_progress_watcher&.stop
         @spine_watcher&.stop
         @handoff_watcher&.stop
-        stop_restarts
+        @restarts.stop_all
         watcher&.join(1)
         watcher&.kill
         shutdown(name, socket_path) if @server
@@ -312,12 +298,12 @@ module Workspace
             handed_off = dispatch(JSON.parse(line), client) == :handed_off if line
           rescue JSON::ParserError => e
             @logger.debug { "malformed message dropped: #{e.message}" }
-            reply_to(client, "ok" => false, "error" => "malformed_message")
+            reply_to(client, AgentProtocol.error(AgentProtocol::MALFORMED_MESSAGE))
           rescue => e
             # One bad pane or a wedged tmux must cost us this connection, not
             # the agent and every pipeline running under it.
             @error_output.puts "workspace agent: dropped a message: #{e.message}"
-            reply_to(client, "ok" => false, "error" => "internal_error")
+            reply_to(client, AgentProtocol.error(AgentProtocol::INTERNAL_ERROR))
           ensure
             client.close unless handed_off
           end
@@ -326,6 +312,17 @@ module Workspace
           # from under the accept — in which case we go round on the new one.
           break if @shutting_down
         end
+      end
+
+      # Routes one parsed socket message as the accept loop does, answering on
+      # +client+ with one JSON line. A message for another workspace is dropped
+      # with a +wrong_workspace+ reply.
+      #
+      # @param message [Hash] the parsed message, with its +"type"+ and +"workspace"+
+      # @param client [#puts, #close, nil] the connection to answer on
+      # @return [Symbol, nil] +:handed_off+ when a worker thread now owns +client+
+      def handle(message, client = nil)
+        dispatch(message, client)
       end
 
       # Reports something noteworthy that happened while a stage is running.
@@ -414,7 +411,7 @@ module Workspace
       def dispatch(message, client = nil)
         @logger.debug { "received: #{JSON.pretty_generate(message)}" }
 
-        if message["type"] == "coordinator_restart"
+        if AgentProtocol.type_of(message) == AgentProtocol::COORDINATOR_RESTART
           @logger.debug { "coordinator_restart received, entering unavailable window" }
           @state_lock.synchronize { @coordinator_unavailable = true }
           return
@@ -423,17 +420,17 @@ module Workspace
         workspace = message["workspace"]
         if !WorkspaceName.same?(workspace, @current_name)
           @logger.debug { "dropped message for workspace '#{workspace}' (I am '#{@current_name}')" }
-          return reply_to(client, "ok" => false, "error" => "wrong_workspace")
+          return reply_to(client, AgentProtocol.error(AgentProtocol::WRONG_WORKSPACE))
         end
 
         # Every inbound connection ends in one JSON line, so a caller can always
         # read a reply and tell an answer apart from a dead agent.
-        case message["type"]
-        when "command"
+        case AgentProtocol.type_of(message)
+        when AgentProtocol::COMMAND
           reply_to(client, handle_command(message))
-        when "inject" then handle_inject(message, client)
-        when "restart_agent" then handle_restart_agent(message, client)
-        when "session_event"
+        when AgentProtocol::INJECT then handle_inject(message, client)
+        when AgentProtocol::RESTART_AGENT then handle_restart_agent(message, client)
+        when AgentProtocol::SESSION_EVENT
           # Before the monitor records it: a /clear moves the pane's session_id there, and a poll
           # in the gap would end the watch session_changed, not carried_out.
           notify_handoff_watcher(message)
@@ -443,19 +440,19 @@ module Workspace
           report_owner_finished(message) if @spine_owner_report && message["agent_id"].nil?
           @prompt_queue_desk&.session_event(message)
           @agent_recovery_desk&.session_event(message)
-          reply_to(client, "ok" => true)
-        when "handoff_watch" then reply_to(client, handle_handoff_watch(message))
-        when "status_request" then handle_status_request(message, client)
-        when "prompt_send" then handle_prompt_send(message, client)
-        when "prompt_interrupt_send" then handle_prompt_send(message, client, :interrupt_send)
-        when "status_post" then reply_to(client, @agent_status_desk.post(message))
-        when "sessions"
+          reply_to(client, AgentProtocol.ok)
+        when AgentProtocol::HANDOFF_WATCH then reply_to(client, handle_handoff_watch(message))
+        when AgentProtocol::STATUS_REQUEST then handle_status_request(message, client)
+        when AgentProtocol::PROMPT_SEND then handle_prompt_send(message, client)
+        when AgentProtocol::PROMPT_INTERRUPT_SEND then handle_prompt_send(message, client, :interrupt_send)
+        when AgentProtocol::STATUS_POST then reply_to(client, @agent_status_desk.post(message))
+        when AgentProtocol::SESSIONS
           reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
-        when "version"
-          reply_to(client, "ok" => true, "version" => Workspace::VERSION)
+        when AgentProtocol::VERSION_REQUEST
+          reply_to(client, AgentProtocol.ok(version: Workspace::VERSION))
         else
           @logger.debug { "unknown message type: #{message["type"]}" }
-          reply_to(client, "ok" => false, "error" => "unknown_type")
+          reply_to(client, AgentProtocol.error(AgentProtocol::UNKNOWN_TYPE))
         end
       end
 
@@ -474,22 +471,22 @@ module Workspace
             entry = @pipeline_state.current(ref)
             if entry.nil?
               @logger.debug { "steer for #{ref} dropped: no active pipeline" }
-              {"ok" => false, "error" => "no_active_pipeline"}
+              AgentProtocol.error("no_active_pipeline")
             elsif stale_token?(message, entry)
               # The sender aimed at a stage that has since finished; typing into
               # the pane now would reach the stage that replaced it.
               @logger.debug { "steer for #{ref} dropped: stage token no longer current" }
-              {"ok" => false, "error" => "stale_token"}
+              AgentProtocol.error("stale_token")
             elsif message["interrupt"]
               urgent = entry
               nil
             elsif (next_stage = next_stage_for(entry))
               (@queued_steers[ref] ||= []) << message["body"]
-              {"ok" => true, "queued_for_pane" => next_stage[:pane_index]}
+              AgentProtocol.ok(queued_for_pane: next_stage[:pane_index])
             else
               # Nothing comes after the last stage, so there is no later pane to
               # hold this for. Say so rather than queue it into a vanishing state.
-              {"ok" => false, "error" => "no_next_stage"}
+              AgentProtocol.error("no_next_stage")
             end
           end
           decided || urgent_steer_reply(ref, urgent, message["body"])
@@ -508,7 +505,7 @@ module Workspace
           reply = begin
             @agent_status_desk.request(message)
           rescue => e
-            {"ok" => false, "error" => "internal_error", "message" => e.message}
+            AgentProtocol.error(AgentProtocol::INTERNAL_ERROR, e.message)
           end
           reply_to(client, reply)
         ensure
@@ -542,25 +539,25 @@ module Workspace
           max.is_a?(Integer) && max > 0 &&
           [text, sent_text].all? { |t| t.is_a?(String) && !t.strip.empty? && t.length <= MAX_WATCH_TEXT }
         unless valid
-          return {"ok" => false, "error" => "usage",
-                  "message" => "handoff_watch needs a pane_id, an ISO 8601 sent_at, a positive interval and max, " \
-                               "and a text and sent_text of 1 to #{MAX_WATCH_TEXT} characters"}
+          return AgentProtocol.error("usage",
+            "handoff_watch needs a pane_id, an ISO 8601 sent_at, a positive interval and max, " \
+            "and a text and sent_text of 1 to #{MAX_WATCH_TEXT} characters")
         end
 
         detail = @tmux.pane_details(@tmux_session, window: nil).find { |d| d[:id] == pane_id }
         ref = (detail && detail[:window] == 0) ? pipeline_ref_on(detail[:index]) : nil
         if ref
-          return {"ok" => false, "error" => "pipeline_stage", "work_item_ref" => ref,
-                  "message" => "#{ref} has a pipeline stage running on pane #{pane_id}; it gets no handoff follow-ups"}
+          return AgentProtocol.error("pipeline_stage", nil, work_item_ref: ref,
+            message: "#{ref} has a pipeline stage running on pane #{pane_id}; it gets no handoff follow-ups")
         end
 
         # Started on the first arm, not at boot: its thread wakes every tick, and a stop waits for the tick.
         # Safe without a lock: this runs on the accept thread, so no two arms race to start it.
         @handoff_watcher.start
         result = @handoff_watcher.arm(pane_id: pane_id, sent_at: sent_at, interval: interval, max: max, text: text, sent_text: sent_text)
-        {"ok" => true, "watching" => result[:watching], "reason" => result[:reason]}
+        AgentProtocol.ok(watching: result[:watching], reason: result[:reason])
       rescue => e
-        {"ok" => false, "error" => "internal_error", "message" => e.message}
+        AgentProtocol.error(AgentProtocol::INTERNAL_ERROR, e.message)
       end
 
       # @return [Time, nil] the time +value+ spells as ISO 8601, nil when it is not a string or not a time
@@ -580,7 +577,7 @@ module Workspace
             @prompt_queue_desk.public_send(handler, message)
           rescue => e
             code = e.is_a?(Workspace::Error) ? e.code : "internal_error"
-            {"ok" => false, "error" => code, "message" => e.message}
+            AgentProtocol.error(code, e.message)
           end
           reply_to(client, reply)
         ensure
@@ -628,20 +625,19 @@ module Workspace
         pane_id = started["pane_id"]
         spawned = false
         begin
-          timeout = started.delete("confirm_timeout")
+          timeout = started["confirm_timeout"]
+          started = started.except("confirm_timeout")
           wait = message["wait"] == true
           reply_to(client, started) unless wait
-          @state_lock.synchronize do
-            @restarts[pane_id] = Thread.new do
-              run_restart(started, message["prompt"], message["force"] == true,
-                timeout, wait ? client : nil, run_id: message["run_id"])
-            end
+          @restarts.start_worker(pane_id) do
+            restart_runner.run(started, message["prompt"], message["force"] == true,
+              timeout, wait ? client : nil, run_id: message["run_id"])
           end
           spawned = true
         ensure
           # A pane left claimed with no worker would refuse every later
           # restart on it until the daemon restarts.
-          @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id] == :starting } unless spawned
+          @restarts.abandon_pending(pane_id) unless spawned
         end
         wait ? :handed_off : nil
       end
@@ -714,25 +710,20 @@ module Workspace
             "nothing was typed", target).merge("reason" => reading[:error], "fix" => ContextReasons.fix_hint(kind))]
         end
 
-        claimed = @state_lock.synchronize do
-          next false if @restarts.key?(pane_id)
-          @restarts[pane_id] = :starting
-        end
+        claimed = @restarts.claim_pending(pane_id)
         return [nil, restart_error("restart_in_progress", "a restart is already running on pane #{target}", target)] unless claimed
 
-        started = {"ok" => true, "status" => "started", "pane" => target, "pane_id" => pane_id,
-                   "context_pct" => reading[:pct], "confirm_timeout" => timeout}
+        started = AgentProtocol.ok(status: "started", pane: target, pane_id: pane_id,
+          context_pct: reading[:pct], confirm_timeout: timeout)
         if ref
-          started["warning"] = "#{ref} has a pipeline stage running on this pane; " \
-            "it will only finish if the new conversation prints its sentinel"
+          started = started.merge("warning" => "#{ref} has a pipeline stage running on this pane; " \
+            "it will only finish if the new conversation prints its sentinel")
         end
         [started, nil]
       end
 
       def restart_error(error, message, pane = nil)
-        reply = {"ok" => false, "error" => error, "message" => message}
-        reply["pane"] = pane if pane
-        reply
+        pane ? AgentProtocol.error(error, message, pane: pane) : AgentProtocol.error(error, message)
       end
 
       # @return [Numeric, nil] the confirm timeout, the default when absent,
@@ -778,105 +769,46 @@ module Workspace
         end
       end
 
-      # Runs one restart on its worker thread and reports how it ended: on
-      # the caller's connection when it waited, and on the daemon's stderr
-      # when it failed, since a caller that didn't wait has nowhere else to
-      # hear about it.
-      #
-      # A worker killed by {#stop_restarts} says so on stderr and to a
-      # waiting caller, including whether /clear was already typed, since
-      # that leaves the pane cleared with no prompt.
-      def run_restart(started, prompt, force, timeout, client, run_id: nil)
-        pane_id = started["pane_id"]
-        restart = nil
-        finished = false
-        result = begin
-          restart = @agent_restart_factory.call(
-            session_name: @tmux_session,
-            delivery_lock: @delivery_lock,
-            pipeline_ref: method(:pipeline_ref_on),
-            pane_state: ->(id) { @session_monitor&.restart_state(id) },
-            agent_pid: ->(id) { @session_monitor&.agent_pid(id) },
-            pane_kind: ->(id) { @session_monitor&.pane_kind(id) },
-            delivery_facts: ->(id) { @session_monitor&.delivery_facts(id) },
-            turn_over: method(:main_turn_missing),
-            screen_ready: ->(id) { @idle_prompt_check.refusal(@session_monitor&.typing_facts(id), @tmux.capture_screen_styled(id)) },
-            subagents_running: ->(id) { @session_monitor&.background_subagents(id) },
-            run_bound: method(:pane_bound_to_run?)
-          )
-          restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout, run_id: run_id, waiting: !client.nil?)
-        rescue => e
-          {"ok" => false, "error" => "internal_error", "message" => e.message}
-        end
-        finished = true
-        result = {"pane" => started["pane"]}.merge(result)
-        @error_output.puts "workspace agent: restart_agent for pane #{started["pane"]}: #{result["message"]}" unless result["ok"]
-        # Released before the caller hears the outcome, so a follow-up sent
-        # the moment it does isn't refused as already running.
-        release_restart(pane_id)
-        reply_to(client, result)
-      ensure
-        report_stopped(started, restart, client) unless finished
-        begin
-          client&.close
-        rescue IOError, SystemCallError
-          nil
-        end
-        release_restart(pane_id)
+      # The one place the workspace this daemon serves, and its tmux session, are set.
+      def serve_workspace(name)
+        @current_name = name
+        @tmux_session = @tmux.session_name_for(name)
       end
 
-      # What keeps a pane's main turn from being proven over, by name: the monitor's
-      # evidence, then what the transcript holds after the Stop. nil once proven.
-      def main_turn_missing(pane_id)
-        evidence = @session_monitor&.main_turn_evidence(pane_id)
-        return "no_monitor" unless evidence
-        return evidence[:missing] if evidence[:missing]
-
-        found = @transcript_summary.main_activity_after?(evidence[:transcript_path], evidence[:since])
-        found && "transcript_activity:#{found}"
+      def restart_runner
+        @restart_runner ||= @restart_runner_factory.call(@session_monitor)
       end
 
-      def pane_bound_to_run?(pane_id, run_id)
-        entry = @pane_bindings&.binding_for(pane_id)
-        !entry.nil? && entry["kind"] == "run" && entry["id"] == run_id
+      # Stops new recovery claims and marks the daemon as going down; takes no lock,
+      # so the signal handler may call it.
+      def begin_shutdown
+        @shutting_down = true
+        @restarts.shut_down!
       end
 
-      def release_restart(pane_id)
-        @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id].equal?(Thread.current) }
-      end
-
-      def report_stopped(started, restart, client)
-        typed = (restart.respond_to?(:cleared?) && restart.cleared?) ?
-          "/clear was typed but the prompt may not have been" : "nothing was typed"
-        message = "stopped by shutdown; #{typed}"
-        @error_output.puts "workspace agent: restart_agent for pane #{started["pane"]}: #{message}"
-        reply_to(client, restart_error("agent_stopped", message, started["pane"]).merge("pane_id" => started["pane_id"]))
-      end
-
-      # Stops restart workers on shutdown; one mid-wait would otherwise keep
-      # typing into a pane after its daemon has gone.
-      def stop_restarts
-        workers = @state_lock.synchronize { @restarts.values.grep(Thread) }
-        workers.each(&:kill)
-        workers.each { |worker| worker.join(1) }
+      def build_restart_runner(session_monitor)
+        RestartRunner.new(restart_factory: @agent_restart_factory, registry: @restarts, panes: PaneFactory.new(tmux: @tmux, session_name: @tmux_session),
+          session_name: @tmux_session, delivery_lock: @delivery_lock, pipeline_ref: method(:pipeline_ref_on),
+          monitor: session_monitor, idle_prompt_check: @idle_prompt_check,
+          transcript_summary: @transcript_summary, pane_bindings: @pane_bindings,
+          error_output: @error_output, logger: @logger)
       end
 
       def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
         delivery_facts: ->(_pane_id) {}, **proof)
-        AgentRestart.new(tmux: @tmux, context_reader: @context_reader, session_name: session_name,
+        AgentRestart.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), context_reader: @context_reader, session_name: session_name,
           delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid, pane_kind: pane_kind,
           delivery_facts: delivery_facts, logger: @logger, **proof)
       end
 
       def urgent_steer_reply(ref, entry, body)
         delivery = deliver_urgent_steer(entry, body)
-        return {"ok" => true, "queued_for_pane" => entry[:pane_index]} if delivery.ok?
+        return AgentProtocol.ok(queued_for_pane: entry[:pane_index]) if delivery.ok?
 
         # "not_submitted" means the text is, or may be, in the pane: resending
         # could type it twice.
         @error_output.puts "workspace agent: steer for #{ref} to pane #{entry[:pane_index]}: #{delivery.message}"
-        {"ok" => false, "error" => (delivery.landed? ? "not_submitted" : "not_delivered"),
-         "message" => delivery.message}
+        AgentProtocol.error((delivery.landed? ? "not_submitted" : "not_delivered"), delivery.message)
       end
 
       # An inject may name the stage it was meant for by that stage's token.
@@ -972,7 +904,7 @@ module Workspace
           @error_output.puts "workspace agent: #{failure}"
           log_activity("dispatch_failed", "work_item_ref" => ref, "dispatch_id" => message["dispatch_id"], "message" => delivery.message)
           report(entry, "type" => "error", "message" => failure)
-          return {"ok" => false, "error" => "not_delivered", "message" => delivery.message}
+          return AgentProtocol.error("not_delivered", delivery.message)
         end
 
         log_activity("dispatched", "work_item_ref" => ref, "dispatch_id" => message["dispatch_id"],
@@ -985,7 +917,7 @@ module Workspace
           report(entry, "type" => "status_update", "message" => "Warning: #{delivery.message}")
         end
         arm_watch(ref, watch_pane, token, deadline, timeout) if watch_pane
-        {"ok" => true}
+        AgentProtocol.ok
       end
 
       # The coordinator ships a ready-rendered block telling Claude how to report
@@ -1331,7 +1263,7 @@ module Workspace
       end
 
       def build_agent_status_desk(workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:, restarting:)
-        AgentStatusDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+        AgentStatusDesk.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
           hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting, logger: @logger)
       end
 
@@ -1343,23 +1275,24 @@ module Workspace
       end
 
       def build_handoff_watcher(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:)
-        HandoffWatcher.new(tmux: @tmux, session_name: session_name, workspace: workspace, session_monitor: session_monitor,
-          typer: PromptTyper.new(tmux: @tmux, session_monitor: session_monitor, logger: @logger),
+        HandoffWatcher.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor,
+          typer: PromptTyper.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), session_monitor: session_monitor, logger: @logger),
           delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: @logger)
       end
 
       def build_prompt_queue_desk(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:,
         claim_restart:, release_restart:, recovering: ->(_pane_id) { false })
-        PromptQueueDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+        PromptQueueDesk.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
           store: PromptQueueStore.new(path: @config.prompt_queue_path(workspace)), delivery_lock: delivery_lock,
           restarting: restarting, claim_restart: claim_restart, release_restart: release_restart,
           recovering: recovering, event_log: @event_log, logger: @logger)
       end
 
-      # Asks the injected factory for the recovery desk. Its claim runs on the
-      # attempt's own thread, so the thread goes into @restarts as the token
-      # and {#stop_restarts} can kill an attempt; the claim is refused while
-      # any claim holds the pane, and a release matches by identity.
+      # Asks the injected factory for the recovery desk. The desk claims a pane
+      # through {RestartRegistry#claim_for_recovery} on the attempt's own thread,
+      # so {RestartRegistry#stop_all} can kill an attempt; the claim is refused
+      # while any claim holds the pane or the daemon is shutting down, and a
+      # release matches by the token the claim returned.
       #
       # @return [Workspace::AgentRecoveryDesk, nil] nil with no factory, with recovery off, or for another agent
       def build_agent_recovery_desk(workspace, restarting)
@@ -1368,8 +1301,8 @@ module Workspace
         @agent_recovery_desk_factory.call(workspace: workspace, session_name: @tmux_session,
           session_monitor: @session_monitor, delivery_lock: @delivery_lock, event_log: @event_log,
           restarting: restarting,
-          claim_restart: ->(pane_id) { claim_restart_for_recovery(pane_id) },
-          release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) },
+          claim_restart: ->(pane_id) { @restarts.claim_for_recovery(pane_id) },
+          release_restart: ->(pane_id, token) { @restarts.release(pane_id, token) },
           rebind_queue: ->(pane_id, agent_pid) { PromptQueueStore.new(path: queue_path).rebind_agent(pane_id, agent_pid: agent_pid) })
       end
 
@@ -1381,69 +1314,6 @@ module Workspace
         rescue => e
           @logger.debug { "agent: #{desk.class.name.split("::").last} scan failed (#{e.class}: #{e.message})" }
         end
-      end
-
-      # Claims a pane in @restarts for a queued prompt's clear, refusing
-      # (never waiting) when a restart already holds it.
-      #
-      # @return [Object, nil] the claim's token, for releasing it; nil when the pane is held
-      def claim_restart_for_queue(pane_id)
-        @state_lock.synchronize do
-          next nil if @restarts.key?(pane_id)
-          @restarts[pane_id] = Object.new
-        end
-      end
-
-      # Claims a pane in @restarts for a recovery attempt, on the attempt's own
-      # thread. The token is that thread, so {#stop_restarts} kills it, and a claim
-      # made after shutdown began is refused: that sweep would never see it.
-      #
-      # @return [Thread, nil] the claim's token, for releasing it; nil when the
-      #   pane is held or the daemon is shutting down
-      def claim_restart_for_recovery(pane_id)
-        @state_lock.synchronize do
-          next nil if @shutting_down || @restarts.key?(pane_id)
-          @restarts[pane_id] = Thread.current
-        end
-      end
-
-      # Releases a claim {#claim_restart_for_queue} or
-      # {#claim_restart_for_recovery} made, and only that one.
-      def release_restart_for_queue(pane_id, token)
-        @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id].equal?(token) }
-      end
-
-      # Watches for the agent's socket file going missing — macOS sweeps old
-      # /tmp entries, and another agent start for this workspace unlinks it.
-      # The listening fd survives that, so the agent looks healthy while no
-      # caller can reach it; rebinding and re-registering is what actually
-      # restores it.
-      def build_session_monitor(name)
-        # Alert and scan settings are read once, here, so a change takes
-        # effect the next time the daemon starts.
-        alerts = @alert_config&.for_workspace(name) || {}
-        notifier = alerts[:notify] && @notifier_factory.call(alerts[:notify])
-        SessionMonitor.new(
-          tmux: @tmux,
-          process_tree: ProcessTree.new(logger: @logger, timeout: @ps_timeout),
-          session_name: @tmux.session_name_for(name),
-          detector: @agent_commands&.detector(name) || AgentDetector.new,
-          poll_interval: @agentd_config&.poll_interval_for(name) || SessionMonitor::DEFAULT_POLL_INTERVAL,
-          logger: @logger,
-          error_output: @error_output,
-          lock_reaper: @lock_reaper,
-          notifier: notifier,
-          idle_alert_after: alerts[:idle_after],
-          event_log: @event_log,
-          project: name,
-          context_reader: @context_reader,
-          label_reader: @label_reader,
-          task_reader: @task_store && ->(workspace) { @task_store.active_for(workspace) },
-          scan_slots: @scan_slots || ScanSlotLimiter.new(
-            dir: File.join(@config.state_dir, "scan-slots"),
-            logger: @logger
-          )
-        )
       end
 
       # The main agent's turn ended: a workflow run bound to the pane decides
@@ -1468,17 +1338,22 @@ module Workspace
         Thread.new { @spine_owner_report.turn_ended(pane_id) }
       end
 
+      # Watches for the agent's socket file going missing — macOS sweeps old
+      # /tmp entries, and another agent start for this workspace unlinks it.
+      # The listening fd survives that, so the agent looks healthy while no
+      # caller can reach it; rebinding and re-registering is what actually
+      # restores it.
       def start_socket_watcher(socket_path, needs_registration: false)
         Thread.new do
           passes = 0
           loop do
             # Woken by shutdown rather than slept through, so a terminating
             # agent does not wait out a whole poll interval to exit.
-            @shutdown_signal.pop(timeout: SOCKET_POLL_INTERVAL)
+            @shutdown_signal.pop(timeout: @socket_poll_interval)
             break if @shutting_down
 
             passes += 1
-            @workflow_nudger&.tick(@current_name) if (passes % WORKFLOW_TICK_PASSES).zero?
+            @workflow_nudger&.tick(@current_name) if (passes % @workflow_tick_passes).zero?
 
             unless File.socket?(socket_path)
               @logger.debug { "agent socket at #{socket_path} has disappeared; rebinding" }
@@ -1667,7 +1542,7 @@ module Workspace
       def install_signal_handlers
         %w[TERM INT].each do |signal|
           @signal_trapper.trap(signal) do
-            @shutting_down = true
+            begin_shutdown
             @server.close
           end
         end

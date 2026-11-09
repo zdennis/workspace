@@ -58,7 +58,7 @@ module Workspace
       end
 
       def uninstall_at(provider, dir, dry_run)
-        result = @hook_installer.uninstall(provider, dir, Init::HOOK_COMMAND, dry_run: dry_run)
+        result = @hook_installer.uninstall(provider, dir, HookInstaller::HOOK_COMMAND, dry_run: dry_run)
         {"agent" => provider.key, "path" => result[:path], "removed" => result[:removed],
          "backup" => result[:backup], "dry_run" => dry_run}
       end

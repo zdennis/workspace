@@ -59,14 +59,11 @@ RSpec.describe "invalid_workflow problem lines through build_cli" do
   end
 
   it "keeps trailing blank lines of an error message" do
-    cli = Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {})
-    allow_any_instance_of(Workspace::CLI).to receive(:cmd_workflow).and_raise(Workspace::Error.new("boom\n\n\n"))
-    begin
-      cli.run(["workflow", "show"])
-    rescue SystemExit
-      nil
-    end
-    expect(err.string).to eq("Error: boom\n\n\n")
+    missing = File.join(@home, "nowhere.yml\n\n\n")
+    run_cli("validate", missing)
+
+    expect(err.string).to start_with("Can't read ")
+    expect(err.string).to end_with("nowhere.yml\n\n\n")
   end
 
   it "leaves the --json problems unchanged (control characters as JSON escapes)" do

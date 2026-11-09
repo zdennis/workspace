@@ -1110,7 +1110,7 @@ RSpec.describe Workspace::Doctor do
     end
     let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)) }
     let(:project_config) { Workspace::ProjectConfig.new(config: config, git: double("git"), output: StringIO.new, agent_commands: agent_commands) }
-    let(:main_agent) { Workspace::MainAgent.new(project_config: project_config, agent_commands: agent_commands) }
+    let(:main_agent) { Interceptable.subclass(Workspace::MainAgent, :kind).new(project_config: project_config, agent_commands: agent_commands) }
     let(:pane) { "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions" }
 
     before { allow(config).to receive(:tmuxinator_dir).and_return(tmpdir) }
@@ -1297,11 +1297,10 @@ RSpec.describe Workspace::Doctor do
 
       it "reads each config once per run" do
         write_config("myapp", pane)
-        allow(main_agent).to receive(:kind).and_call_original
 
         doctor_with.report(headless: true, fix: true)
 
-        expect(main_agent).to have_received(:kind).once
+        expect(main_agent.calls_to(:kind).size).to eq(1)
       end
 
       it "reports a file it can't back up as a failed fix and goes on to the next config" do

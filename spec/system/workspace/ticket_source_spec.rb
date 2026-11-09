@@ -3,7 +3,7 @@ require "json"
 
 RSpec.describe Workspace::TicketSource do
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  let(:resolver) { Workspace::StartRef.new(git: git, lineage: Workspace::WorkspaceLineage.new) }
+  let(:resolver) { Workspace::StartRef.new(git: git, lineage: LineageSupport.lineage) }
   let(:calls) { [] }
   let(:reply) { ["{}", "", true] }
   let(:runner) do

@@ -23,7 +23,8 @@ module Workspace
     def save(project_name, data)
       path = project_config_path(project_name)
       FileUtils.mkdir_p(File.dirname(path))
-      atomic_write(path, YAML.dump(data))
+      AtomicFile.write(path, YAML.dump(data), perm: nil, fsync: false,
+        temp_name: ->(target) { "#{target}.tmp#{Process.pid}" })
     end
 
     # @return [Hash] parsed global config, or empty hash if none exists
@@ -43,7 +44,8 @@ module Workspace
     def save_global(data)
       path = global_config_path
       FileUtils.mkdir_p(File.dirname(path))
-      atomic_write(path, YAML.dump(data))
+      AtomicFile.write(path, YAML.dump(data), perm: nil, fsync: false,
+        temp_name: ->(target) { "#{target}.tmp#{Process.pid}" })
     end
 
     # Guards a load -> mutate -> write cycle on the global config with an
@@ -58,8 +60,7 @@ module Workspace
     def with_global_lock
       path = global_config_path
       FileUtils.mkdir_p(File.dirname(path))
-      File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600) do |f|
-        f.flock(File::LOCK_EX)
+      FileLock.new("#{path}.lock", dir_mode: nil).hold do
         data = yield(read_strict(path))
         save_global(data)
       end
@@ -123,14 +124,6 @@ module Workspace
       data
     rescue Psych::Exception => e
       raise ConfigParseError.new(path, e.message.delete_prefix("(<unknown>): ").delete_prefix("(#{path}): "))
-    end
-
-    def atomic_write(path, content)
-      tmp_path = "#{path}.tmp#{Process.pid}"
-      File.write(tmp_path, content)
-      File.rename(tmp_path, path)
-    ensure
-      File.delete(tmp_path) if tmp_path && File.exist?(tmp_path)
     end
   end
 end

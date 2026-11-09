@@ -65,7 +65,7 @@ RSpec.describe Workspace::SpineWatcher do
 
   it "tells the owner report when a stage with an owner turns completed, even for a spine set write" do
     told = []
-    watcher.owner_report = Object.new.tap { |r| r.define_singleton_method(:stage_completed) { |*args| told << args } }
+    watcher.owner_report = Struct.new(:told) { def stage_completed(*args) = told << args }.new(told)
     stage("40-verify.md", status: "in_progress", owner: "%5")
     stage("50-ship.md", status: "in_progress")
     watcher.baseline

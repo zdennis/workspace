@@ -62,18 +62,18 @@ module Workspace
     # What a run stands in now, for {#fire} to compare with a later reading.
     # Reads only the stored run.
     #
-    # @param run [Hash{String=>Object}] a stored run
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @return [Hash{Symbol=>Object}]
     def marks(run)
-      step = run["current"]
-      state = run.dig("steps", step) || {}
-      swept = WorkflowEngine.sweep_marks(run)
+      run = WorkflowRun.from_h(run)
+      step = run.current
+      swept = WorkflowEngine.sweep_marks(run.to_h)
       stalled = swept["stalled"]
       {
-        gate: (step if state.dig("gate", "state") == "waiting"),
-        failed: (step if run["state"] == "failed" || %w[failed_check budget_spent].include?(run.dig("reason", "code"))),
+        gate: (step if run.step(step)&.gate_waiting?),
+        failed: (step if run.state == "failed" || %w[failed_check budget_spent].include?(run.reason&.dig("code"))),
         stalled: stalled.is_a?(Hash) ? stalled.keys.map { |cause| ["#{swept["step"]}:#{swept["attempt"]}", cause.to_s] } : [],
-        finished: run["state"] == "completed"
+        finished: run.state == "completed"
       }
     rescue
       {gate: nil, failed: nil, stalled: [], finished: false}
@@ -83,20 +83,21 @@ module Workspace
     # run's stored state started, when `alerts.workflow` names it.
     #
     # @param before [Hash] {#marks} taken before the change
-    # @param run [Hash{String=>Object}] the run as stored after it
+    # @param run [WorkflowRun, Hash{String=>Object}] the run as stored after it
     # @return [void]
     def fire(before, run)
+      run = WorkflowRun.from_h(run)
       after = marks(run)
       events = new_events(before, after)
       return if events.empty?
-      alerts = @alert_config.for_workspace(run["workspace"].to_s)
+      alerts = @alert_config.for_workspace(run.workspace.to_s)
       command = alerts[:notify]
       return unless command
       wanted = events & Array(alerts[:workflow])
       return if wanted.empty?
       wanted.each { |event| deliver(command, env(event, run, before, after)) }
     rescue => e
-      report "workspace workflow: could not send alerts for #{clean(run.is_a?(Hash) ? run["id"] : nil)}: #{clean(e.message)}"
+      report "workspace workflow: could not send alerts for #{clean(run.id)}: #{clean(e.message)}"
     end
 
     # Starts the supervisor for one alert and returns at once.
@@ -133,8 +134,8 @@ module Workspace
     end
 
     def env(event, run, before, after)
-      id, workspace, step = clean(run["id"]), clean(run["workspace"]), clean(run["current"])
-      reason = clean(run.dig("reason", "code"))
+      id, workspace, step = clean(run.id), clean(run.workspace), clean(run.current)
+      reason = clean(run.reason&.dig("code"))
       env = {
         "WORKSPACE_ALERT" => "workflow",
         "WORKSPACE_ALERT_EVENT" => event,

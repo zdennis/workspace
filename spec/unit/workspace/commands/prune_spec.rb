@@ -1,6 +1,14 @@
 require "tmpdir"
 
 RSpec.describe Workspace::Commands::Prune do
+  let(:fake_pull_requests_class) do
+    Struct.new(:usable_answer, :table) do
+      def usable? = usable_answer.call
+
+      def status_for(branch, root) = table.fetch([branch, root])
+    end
+  end
+
   let(:tmpdir) { Dir.mktmpdir }
   let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
   let(:state_file) { File.join(tmpdir, "state.json") }
@@ -9,7 +17,7 @@ RSpec.describe Workspace::Commands::Prune do
     allow(config).to receive(:state_file).and_return(state_file)
     allow(config).to receive(:event_log_file).and_return(event_log_file)
     event_log = Workspace::EventLog.new(config: config)
-    Workspace::State.new(config: config, event_log: event_log)
+    CountingState.new(config: config, event_log: event_log)
   end
   let(:output) { StringIO.new }
   let(:input) { StringIO.new }
@@ -17,6 +25,8 @@ RSpec.describe Workspace::Commands::Prune do
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:project_settings) { instance_double(Workspace::ProjectSettings) }
   let(:stop_command) { instance_double(Workspace::Commands::Stop) }
+  let(:gh_usable) { true }
+  let(:pr_table) { {} }
 
   subject(:command) do
     described_class.new(
@@ -26,6 +36,7 @@ RSpec.describe Workspace::Commands::Prune do
       git: git,
       stop_command: stop_command,
       event_log: state.event_log,
+      pull_requests: fake_pull_requests_class.new(-> { gh_usable }, pr_table),
       output: output,
       input: input
     )
@@ -128,8 +139,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-no-pr").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/no-pr")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/no-pr", project_root).and_return(nil)
+        pr_table[["feature/no-pr", project_root]] = nil
       end
 
       it "skips the project" do
@@ -148,8 +158,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-open").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/open")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/open", project_root).and_return({number: 42, url: "https://github.com/org/repo/pull/42", state: "OPEN"})
+        pr_table[["feature/open", project_root]] = {number: 42, url: "https://github.com/org/repo/pull/42", state: "OPEN"}
       end
 
       it "skips the project" do
@@ -168,8 +177,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-closed").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/closed")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/closed", project_root).and_return({number: 10, url: "https://github.com/org/repo/pull/10", state: "CLOSED"})
+        pr_table[["feature/closed", project_root]] = {number: 10, url: "https://github.com/org/repo/pull/10", state: "CLOSED"}
       end
 
       it "includes the project as a candidate" do
@@ -195,8 +203,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-merged").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/merged")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/merged", project_root).and_return({number: 20, url: "https://github.com/org/repo/pull/20", state: "MERGED"})
+        pr_table[["feature/merged", project_root]] = {number: 20, url: "https://github.com/org/repo/pull/20", state: "MERGED"}
       end
 
       it "includes the project as a candidate" do
@@ -222,8 +229,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-dry").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/dry")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/dry", project_root).and_return({number: 5, url: "https://github.com/org/repo/pull/5", state: "MERGED"})
+        pr_table[["feature/dry", project_root]] = {number: 5, url: "https://github.com/org/repo/pull/5", state: "MERGED"}
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
         allow(git).to receive(:unsaved_work).with(project_root).and_return(nil)
       end
@@ -274,8 +280,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-confirm").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/confirm")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/confirm", project_root).and_return({number: 7, url: "https://github.com/org/repo/pull/7", state: "CLOSED"})
+        pr_table[["feature/confirm", project_root]] = {number: 7, url: "https://github.com/org/repo/pull/7", state: "CLOSED"}
 
         input.string = "y\n"
         input.rewind
@@ -322,8 +327,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-nosession").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/nosession")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/nosession", project_root).and_return({number: 99, url: "https://github.com/org/repo/pull/99", state: "MERGED"})
+        pr_table[["feature/nosession", project_root]] = {number: 99, url: "https://github.com/org/repo/pull/99", state: "MERGED"}
 
         input.string = "y\n"
         input.rewind
@@ -363,8 +367,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-cancel").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/cancel")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/cancel", project_root).and_return({number: 8, url: "https://github.com/org/repo/pull/8", state: "CLOSED"})
+        pr_table[["feature/cancel", project_root]] = {number: 8, url: "https://github.com/org/repo/pull/8", state: "CLOSED"}
 
         input.string = "n\n"
         input.rewind
@@ -400,8 +403,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-force").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/force")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/force", project_root).and_return({number: 9, url: "https://github.com/org/repo/pull/9", state: "MERGED"})
+        pr_table[["feature/force", project_root]] = {number: 9, url: "https://github.com/org/repo/pull/9", state: "MERGED"}
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(false)
         allow(project_config).to receive(:remove).with("wt-force")
         allow(project_settings).to receive(:remove).with("wt-force")
@@ -418,6 +420,7 @@ RSpec.describe Workspace::Commands::Prune do
 
     context "when gh is unavailable" do
       let(:project_root) { File.join(tmpdir, "wt-nogh") }
+      let(:gh_usable) { false }
 
       before do
         make_worktree_dir(project_root)
@@ -425,7 +428,6 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-nogh").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/nogh")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(false)
       end
 
       it "emits a warning and skips all projects" do
@@ -450,8 +452,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-state-only").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/state-only")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/state-only", project_root).and_return({number: 11, url: "https://github.com/org/repo/pull/11", state: "CLOSED"})
+        pr_table[["feature/state-only", project_root]] = {number: 11, url: "https://github.com/org/repo/pull/11", state: "CLOSED"}
 
         input.string = "y\n"
         input.rewind
@@ -478,8 +479,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-config-only").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/config-only")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/config-only", project_root).and_return({number: 12, url: "https://github.com/org/repo/pull/12", state: "CLOSED"})
+        pr_table[["feature/config-only", project_root]] = {number: 12, url: "https://github.com/org/repo/pull/12", state: "CLOSED"}
 
         input.string = "y\n"
         input.rewind
@@ -504,8 +504,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-gone").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/gone")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/gone", project_root).and_return({number: 13, url: "https://github.com/org/repo/pull/13", state: "MERGED"})
+        pr_table[["feature/gone", project_root]] = {number: 13, url: "https://github.com/org/repo/pull/13", state: "MERGED"}
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(false)
         allow(project_config).to receive(:remove).with("wt-gone")
         allow(project_settings).to receive(:remove).with("wt-gone")
@@ -531,8 +530,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(project_config).to receive(:project_root_for).with("wt-unsaved").and_return(project_root)
         allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/unsaved")
-        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/unsaved", project_root).and_return({number: 14, url: "https://github.com/org/repo/pull/14", state: "MERGED"})
+        pr_table[["feature/unsaved", project_root]] = {number: 14, url: "https://github.com/org/repo/pull/14", state: "MERGED"}
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
 
         input.string = "y\n"
@@ -556,9 +554,9 @@ RSpec.describe Workspace::Commands::Prune do
       it "skips a candidate whose removal git refuses, with git's reason, still saves state, and raises" do
         allow(git).to receive(:remove_worktree).with(project_root, force: false)
           .and_raise(Workspace::Error, "Error removing worktree: cannot remove a locked working tree")
-        expect(state).to receive(:save).and_call_original
 
         expect { command.call }.to raise_error(Workspace::Error, /1 project\(s\) were skipped/)
+        expect(state.save_count).to eq(1)
         expect(output.string).to include("Skipped wt-unsaved: Error removing worktree: cannot remove a locked working tree")
         expect(output.string).to include("Skipped 1: wt-unsaved.")
       end
@@ -589,9 +587,8 @@ RSpec.describe Workspace::Commands::Prune do
       allow(git).to receive(:linked_worktree?).and_return(true)
       allow(git).to receive(:worktree_branch).with(clean_root).and_return("clean")
       allow(git).to receive(:worktree_branch).with(dirty_root).and_return("dirty")
-      allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
-      allow_any_instance_of(described_class).to receive(:pr_status).with("clean", clean_root).and_return({number: 1, url: "u1", state: "MERGED"})
-      allow_any_instance_of(described_class).to receive(:pr_status).with("dirty", dirty_root).and_return({number: 2, url: "u2", state: "CLOSED"})
+      pr_table[["clean", clean_root]] = {number: 1, url: "u1", state: "MERGED"}
+      pr_table[["dirty", dirty_root]] = {number: 2, url: "u2", state: "CLOSED"}
       allow(git).to receive(:worktree_exists?).and_return(true)
       allow(git).to receive(:worktree_exists?).with(gone_root).and_return(false)
       allow(git).to receive(:remove_worktree)
@@ -664,13 +661,13 @@ RSpec.describe Workspace::Commands::Prune do
     end
 
     it "saves state after removing" do
-      expect(state).to receive(:save).once.and_call_original
       command.call_structured
+      expect(state.save_count).to eq(1)
     end
 
     it "does not save state on a dry run" do
-      expect(state).not_to receive(:save)
       command.call_structured(dry_run: true)
+      expect(state.save_count).to eq(0)
     end
 
     it "stops a live session and drops the state entry of a removed candidate" do
@@ -686,7 +683,9 @@ RSpec.describe Workspace::Commands::Prune do
       tmux = double("tmux", socket_arguments: ["-L", "mysock"])
       allow(tmux).to receive(:session_name_for).with("wt-clean").and_return("proj-wt-clean")
       pruner = described_class.new(state: state, project_config: project_config, project_settings: project_settings,
-        git: git, stop_command: stop_command, event_log: state.event_log, tmux: tmux, output: output, input: input)
+        git: git, stop_command: stop_command, event_log: state.event_log, tmux: tmux,
+        pull_requests: fake_pull_requests_class.new(-> { true }, pr_table),
+        output: output, input: input)
       state["wt-clean"] = {"unique_id" => "x"}
       expect(stop_command).to receive(:call).with(["wt-clean"], session_names: {"wt-clean" => "proj-wt-clean"}, socket_arguments: {"wt-clean" => ["-L", "mysock"]})
 

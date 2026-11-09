@@ -18,6 +18,10 @@ RSpec.describe Workspace::WorkflowNudger do
      "steps" => {"verify" => {"state" => state, "attempts" => [{"n" => 1, "check" => check_started && {"started_at" => check_started}}.compact]}}}
   end
 
+  def going(runs)
+    allow(store).to receive(:going).and_return(runs.map { |each| Workspace::WorkflowRun.from_h(each) })
+  end
+
   describe "#turn_ended" do
     it "starts `workflow advance` for the run the pane is bound to, logging beside the daemon" do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
@@ -79,7 +83,7 @@ RSpec.describe Workspace::WorkflowNudger do
 
   describe "#tick" do
     it "wakes this workspace's runs that wait for a lock or whose check never reported back, and no others" do
-      allow(store).to receive(:active).and_return([
+      going([
         run("wr_1", "app", reason: "waiting_lock"),
         run("wr_2", "app"),
         run("wr_3", "app", reason: "waiting_you"),
@@ -95,7 +99,7 @@ RSpec.describe Workspace::WorkflowNudger do
 
     it "wakes a hold for background tasks only once it is more than 90 minutes old" do
       held = ->(id, seen_at) { run(id, "app").merge("reason" => {"code" => "turn_ended_background", "seen_at" => seen_at}) }
-      allow(store).to receive(:active).and_return([
+      going([
         held.call("wr_1", "2026-10-04T11:00:00Z"),
         held.call("wr_2", "2026-10-04T11:00:01Z"),
         held.call("wr_3", "2026-10-04T10:59:59Z")
@@ -105,7 +109,7 @@ RSpec.describe Workspace::WorkflowNudger do
     end
 
     it "wakes a run with a parked resume, with no note on the command line" do
-      allow(store).to receive(:active).and_return([
+      going([
         run("wr_1", "app").merge("parked" => {"id" => "p1", "note" => "secret", "pane" => "%5", "expires_at" => "2026-10-04T13:00:00Z"})
       ])
 
@@ -115,14 +119,14 @@ RSpec.describe Workspace::WorkflowNudger do
 
     it "picks up a parked run a turn's end could not wake, its pane being bound to no run" do
       allow(panes).to receive(:run_on).with("%5").and_return(nil)
-      allow(store).to receive(:active).and_return([run("wr_1", "app").merge("parked" => {"id" => "p1", "expires_at" => "2026-10-04T13:00:00Z"})])
+      going([run("wr_1", "app").merge("parked" => {"id" => "p1", "expires_at" => "2026-10-04T13:00:00Z"})])
 
       expect(nudger.turn_ended("app", "%5")).to be_nil
       expect(nudger.tick("app")).to eq(%w[wr_1])
     end
 
     it "wakes the other runs, and says which one it could not look at, when a run file is malformed" do
-      allow(store).to receive(:active).and_return([
+      going([
         run("wr_1", "app", reason: "waiting_lock").except("steps"),
         run("wr_2", "app", state: "checking", check_started: "not a time"),
         run("wr_3", "app", reason: "waiting_lock")
@@ -133,7 +137,7 @@ RSpec.describe Workspace::WorkflowNudger do
     end
 
     it "does not raise when the store can't be read" do
-      allow(store).to receive(:active).and_raise(Workspace::Error, "no store")
+      allow(store).to receive(:going).and_raise(Workspace::Error, "no store")
 
       expect(nudger.tick("app")).to eq([])
     end

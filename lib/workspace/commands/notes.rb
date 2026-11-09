@@ -104,7 +104,7 @@ module Workspace
       #   checkout workspace's notes directory, for a worktree with no template; else nil)
       def location_rule(name:)
         view = @config_resolver.view(workspace: name)
-        parent = WorkspaceLineage.split_worktree_name(name)&.first
+        parent = WorkspaceName.split(name)&.first
         template = valid(view, "default_dir")
         {template: template, main_dir: (parent && template.nil?) ? main_notes_dir(parent) : nil}
       end
@@ -113,7 +113,7 @@ module Workspace
 
       def resolve(name, root)
         view = @config_resolver.view(workspace: name)
-        parent = WorkspaceLineage.split_worktree_name(name)&.first
+        parent = WorkspaceName.split(name)&.first
         rule = location_rule(name: name)
         template = rule[:template]
         main_dir = rule[:main_dir]
@@ -136,7 +136,7 @@ module Workspace
       # The real root of the main checkout when +path+ is inside it but the workspace +name+ is a
       # worktree elsewhere, so its notes still get a line in the shared `info/exclude`.
       def main_root_holding(name, real_path)
-        parent = WorkspaceLineage.split_worktree_name(name)&.first
+        parent = WorkspaceName.split(name)&.first
         main_root = parent && @project_config.project_root_for(parent)
         return nil unless main_root
         main_root = real(File.expand_path(main_root))

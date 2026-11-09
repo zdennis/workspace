@@ -179,11 +179,7 @@ module Workspace
         raise Workspace::Error, "agent-run send #{flag} is not available in this build" unless @client
 
         detail = locate(name, pane)
-        message = {"type" => "prompt_send", "pane_id" => detail[:id], "text" => body}
-        if clear_first
-          message["clear_first"] = true
-          message["when_idle"] = when_idle
-        end
+        message = AgentProtocol.prompt_send(pane_id: detail[:id], text: body, clear_first: clear_first, when_idle: when_idle)
         reply = exchange(name, message)
         fail_with(reply, name, detail[:id]) unless reply["ok"]
 
@@ -228,7 +224,7 @@ module Workspace
         raise Workspace::Error, "agent-run send --interrupt is not available in this build" unless @client
 
         detail = locate(name, pane)
-        reply = exchange(name, {"type" => "prompt_interrupt_send", "pane_id" => detail[:id], "text" => body}, flag: "--interrupt")
+        reply = exchange(name, AgentProtocol.prompt_interrupt_send(pane_id: detail[:id], text: body), flag: "--interrupt")
         fail_with(reply, name, detail[:id], flag: "--interrupt") unless reply["ok"]
 
         result = reply.except("ok", "pane").merge("pane" => detail[:id])

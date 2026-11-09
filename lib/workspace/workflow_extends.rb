@@ -49,8 +49,8 @@ module Workspace
         @problems << "replace only means something with extends:" unless replacements.nil?
         return raw
       end
-      unless own.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(own)
-        @failure << "extends must be the id of a workflow (#{WorkflowDefinition::ID_RULE}), got #{own.inspect[0, 60]}"
+      unless own.is_a?(String) && IdPatterns::WORKFLOW_ID.match?(own)
+        @failure << "extends must be the id of a workflow (#{IdPatterns::WORKFLOW_ID_RULE}), got #{own.inspect[0, 60]}"
         return raw
       end
       parent = parent_of(own)

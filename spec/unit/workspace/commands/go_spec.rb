@@ -21,7 +21,7 @@ RSpec.describe Workspace::Commands::Go do
   let(:definition) { Workspace::WorkflowDefinition.parse(yaml, id: "rpiv", source: "global", path: "/defs/rpiv.yml") }
   let(:project) { Workspace::StartRef::Project.new(root: project_root, name: "app", from_worktree: from_worktree) }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  let(:start_ref) { Workspace::StartRef.new(git: git) }
+  let(:start_ref) { Workspace::StartRef.new(lineage: LineageSupport.lineage, git: git) }
   let(:picked) { Workspace::BranchNamePicker::Result.new(reason: :disabled) }
   let(:picker) { instance_double(Workspace::BranchNamePicker) }
   let(:workflow_start) { instance_double(Workspace::Commands::WorkflowStart, catalog_project: tied, check_agent!: nil, check_agent_kind!: nil, locate_project: {root: root, project: project, project_workspace: "app"}) }
@@ -58,8 +58,7 @@ RSpec.describe Workspace::Commands::Go do
       held.key(path)
     end
     allow(workflow_defaults).to receive(:lookup).and_return(stored_default)
-    allow(File).to receive(:realpath).and_call_original
-    allow(File).to receive(:realpath).with(%r{\A/(src|home)}) { |path| path }
+    allow(File).to receive(:realpath) { |path| path }
     allow(workflow_start).to receive(:tracks_repository?) { |_root, repo| repo == "o/r" }
     allow(workflow_start).to receive(:call).and_return(start_row)
     allow(workflow).to receive(:run).and_return(run_row)
@@ -549,19 +548,15 @@ RSpec.describe Workspace::Commands::Go do
       allow(git).to receive(:branch_names).and_return([])
       allow(git).to receive(:local_branch_names).with(root).and_return(%w[abc-7])
       allow(git).to receive(:branch_names).with(root).and_return(%w[abc-7])
-      allow(start_ref).to receive(:call).and_call_original
-
       row = command.call(argument: "ABC-7")
 
       expect(row["decision"]).to include("kind" => "jira", "route" => "start")
-      expect(start_ref).to have_received(:call).with("ABC-7", root: root)
+      expect(start_ref.call("ABC-7", root: root).branch).to eq("abc-7")
     end
 
     it "reuses a branch that only origin has, under its real name" do
       allow(git).to receive(:local_branch_names).and_return(%w[main])
       allow(git).to receive(:branch_names).and_return(%w[Proj-1 main])
-      allow(start_ref).to receive(:call).and_call_original
-
       expect(command.call(argument: "PROJ-1")["decision"]).to include("kind" => "jira", "route" => "start")
       expect(start_ref.call("PROJ-1", root: root).branch).to eq("Proj-1")
     end
@@ -922,12 +917,14 @@ RSpec.describe Workspace::Commands::Go do
       expect(workflow).not_to have_received(:run)
     end
 
-    it "takes a ~ root in the config" do
-      allow(File).to receive(:expand_path).and_call_original
-      allow(File).to receive(:expand_path).with("~/app/.worktrees/feature").and_return(root)
-      allow(project_config).to receive(:project_root_for).and_return("~/app/.worktrees/feature")
+    context "with a ~ root in the config" do
+      let(:root) { File.join(Dir.home, "app/.worktrees/feature") }
 
-      expect(command.call["decision"]["route"]).to eq("run")
+      it "takes it" do
+        allow(project_config).to receive(:project_root_for).and_return("~/app/.worktrees/feature")
+
+        expect(command.call["decision"]["route"]).to eq("run")
+      end
     end
 
     context "with a marker and no config" do

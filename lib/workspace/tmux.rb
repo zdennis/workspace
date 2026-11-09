@@ -26,7 +26,8 @@ module Workspace
     #   give tmux before stopping it and raising
     def initialize(config:, logger: Workspace::Logger.new,
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) },
-      start_timeout: DEFAULT_START_TIMEOUT, command_timeout: DEFAULT_COMMAND_TIMEOUT)
+      start_timeout: DEFAULT_START_TIMEOUT, command_timeout: DEFAULT_COMMAND_TIMEOUT, spawner: Process.method(:spawn))
+      @spawner = spawner
       @config = config
       @logger = logger
       @clock = clock
@@ -288,6 +289,15 @@ module Workspace
       end
       pid = stdout.strip
       pid.empty? ? nil : pid
+    end
+
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @return [Integer, nil] the pid of the process the pane started, nil if tmux fails or says nothing
+    def pane_pid(pane_id)
+      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", pane_id, "\#{pane_pid}")
+      return nil unless status.success?
+      value = stdout.strip
+      value.empty? ? nil : value.to_i
     end
 
     # Brings a pane to the front of its tmux session: selects its window, then
@@ -944,7 +954,7 @@ module Workspace
     # @return [String, nil] nil once it exited 0, or why it didn't
     def run_tmuxinator(*command)
       reader, writer = IO.pipe
-      pid = Process.spawn(*command, in: File::NULL, out: File::NULL, err: writer, pgroup: true)
+      pid = @spawner.call(*command, in: File::NULL, out: File::NULL, err: writer, pgroup: true)
       writer.close
       stderr = Thread.new { reader.read }
       waiter = Process.detach(pid)

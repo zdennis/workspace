@@ -14,19 +14,27 @@ RSpec.describe Workspace::Commands::Rename do
   let(:notes_b) { File.join(main_notes, "feat-b") }
   let(:old) { "api.worktree-feat-a" }
   let(:new) { "api.worktree-feat-b" }
-  let(:config) { Workspace::Config.new(workspace_dir: home) }
-  let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
-  let(:project_settings) { Workspace::ProjectSettings.new(config: config) }
+  let(:config) { Interceptable.subclass(Workspace::Config, :agent_running?).new(workspace_dir: home) }
+  let(:git) { Interceptable.subclass(Workspace::Git, :move_worktree, :rename_branch).new(output: StringIO.new, input: StringIO.new) }
+  let(:project_settings) { Interceptable.subclass(Workspace::ProjectSettings, :save).new(config: config) }
   let(:event_log) { Workspace::EventLog.new(config: config, error_output: StringIO.new) }
-  let(:state) { Workspace::State.new(config: config, event_log: event_log) }
+  let(:state) { Interceptable.subclass(Workspace::State, :save).new(config: config, event_log: event_log) }
   let(:tmux) { Workspace::Tmux.new(config: config) }
-  let(:task_store) { Workspace::TaskStore.new(dir: config.task_dir, error_output: StringIO.new) }
-  let(:session_ledger) { Workspace::SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl")) }
-  let(:pane_bindings) { Workspace::PaneBindings.new(path: config.pane_bindings_path, error_output: StringIO.new) }
-  let(:git_exclude) { Workspace::GitExclude.new(git: git) }
-  let(:journal) { Workspace::RenameJournal.new(config: config) }
-  let(:engine) { instance_double(Workspace::WorkflowEngine, run_on_checkout: nil) }
-  let(:inbox_store_factory) { ->(path:, scope:, error_output:) { Workspace::InboxStore.new(path: path, scope: scope, error_output: error_output) } }
+  let(:task_store) { Interceptable.subclass(Workspace::TaskStore, :update, :active_for).new(dir: config.task_dir, error_output: StringIO.new) }
+  let(:session_ledger) { Interceptable.subclass(Workspace::SessionLedger, :carry).new(path: File.join(config.state_dir, "ledger.jsonl")) }
+  let(:pane_bindings) { Interceptable.subclass(Workspace::PaneBindings, :rename_workspace).new(path: config.pane_bindings_path, error_output: StringIO.new) }
+  let(:git_exclude) { Interceptable.subclass(Workspace::GitExclude, :add).new(git: git) }
+  let(:journal) { Interceptable.subclass(Workspace::RenameJournal, :write, :delete).new(config: config) }
+  let(:engine) { instance_double(Workspace::WorkflowRunStore, on_checkout: nil) }
+  let(:inbox_failures) { [] }
+  let(:inbox_store_factory) do
+    failures = inbox_failures
+    lambda do |path:, scope:, error_output:|
+      raise Errno::EACCES, "no" if failures.shift
+      Workspace::InboxStore.new(path: path, scope: scope, error_output: error_output)
+    end
+  end
+  let(:blocked_directories) { [] }
 
   around do |example|
     saved = ENV.to_h.slice("HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME")
@@ -37,6 +45,7 @@ RSpec.describe Workspace::Commands::Rename do
   ensure
     %w[HOME XDG_STATE_HOME XDG_CONFIG_HOME].each { |key| ENV.delete(key) }
     saved.each { |key, value| ENV[key] = value }
+    unblock_directories
     FileUtils.remove_entry(home)
   end
 
@@ -63,13 +72,22 @@ RSpec.describe Workspace::Commands::Rename do
   end
 
   # A fresh set of the objects a process reads through, as a re-run gets (ProjectConfig caches roots).
-  def command
+  def fresh_world
     project_config = Workspace::ProjectConfig.new(config: config, git: git, output: StringIO.new)
     resolver = Workspace::ConfigResolver.new(project_settings: Workspace::ProjectSettings.new(config: config))
     notes = Workspace::Commands::Notes.new(notes_dir: Workspace::NotesDir.new(git: git), project_config: project_config, config_resolver: resolver,
       git_exclude: git_exclude, output: StringIO.new)
-    plan = Workspace::RenamePlan.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
-      notes_dir: Workspace::NotesDir.new(git: git, home: home), workflow_engine: engine, journal: journal.method(:read), transcripts: ->(_path) { false })
+    [project_config, notes]
+  end
+
+  def plan_over(project_config, notes)
+    Workspace::RenamePlan.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
+      notes_dir: Workspace::NotesDir.new(git: git, home: home), run_store: engine, journal: ->(name) { journal.read(name) }, transcripts: ->(_path) { false })
+  end
+
+  def command
+    project_config, notes = fresh_world
+    plan = plan_over(project_config, notes)
     name_migration = Workspace::NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
       project_catalog_factory: -> { [] })
     described_class.new(plan: plan, journal: journal, git: git, config: config, project_config: project_config, project_settings: project_settings,
@@ -101,22 +119,33 @@ RSpec.describe Workspace::Commands::Rename do
   # Makes the next call of +method+ raise; later calls go through.
   def fail_once(object, method, error = Errno::EACCES.new("no"))
     calls = 0
-    allow(object).to receive(method).and_wrap_original do |original, *args, **options, &block|
+    object.on(method) do |original, *args, **options, &block|
       calls += 1
       raise error if calls == 1
       original.call(*args, **options, &block)
     end
   end
 
-  # Makes the next File.rename to a path matching +pattern+ raise.
-  def fail_rename_once(pattern)
-    calls = 0
-    allow(File).to receive(:rename).and_wrap_original do |original, from, to|
-      if to.to_s.match?(pattern) && (calls += 1) == 1
-        raise Errno::EACCES, to
-      end
-      original.call(from, to)
-    end
+  # Makes the next lookup of an inbox store raise.
+  def fail_inbox_once = inbox_failures << :fail
+
+  # Makes every rename inside +dir+ fail, until {#unblock_directories}.
+  def block_directory(dir)
+    blocked_directories << dir
+    FileUtils.chmod(0o555, dir)
+  end
+
+  def unblock_directories
+    blocked_directories.each { |dir| FileUtils.chmod(0o755, dir) if File.directory?(dir) }
+    blocked_directories.clear
+  end
+
+  # Makes opening the startup lock of +name+ fail with a permission error.
+  def refuse_startup_lock(name)
+    lock = config.agent_lock_path(name)
+    FileUtils.mkdir_p(File.dirname(lock))
+    FileUtils.touch(lock)
+    FileUtils.chmod(0o000, lock)
   end
 
   def catching(*signals)
@@ -208,7 +237,7 @@ RSpec.describe Workspace::Commands::Rename do
 
     it "holds both startup locks while it works" do
       held = nil
-      allow(task_store).to receive(:active_for).and_wrap_original do |original, *args|
+      task_store.on(:active_for) do |original, *args|
         held = [old, new].map do |name|
           File.open(config.agent_lock_path(name), File::RDWR | File::CREAT) { |file| file.flock(File::LOCK_EX | File::LOCK_NB) }
         end
@@ -235,7 +264,7 @@ RSpec.describe Workspace::Commands::Rename do
 
     it "refuses when a daemon starts before the locks are held, with nothing changed" do
       reads = 0
-      allow(config).to receive(:agent_running?).and_wrap_original do |_original, name|
+      config.on(:agent_running?) do |_original, name|
         (reads += 1) > 1 && name == old
       end
 
@@ -291,7 +320,7 @@ RSpec.describe Workspace::Commands::Rename do
 
   describe "a failed git step" do
     it "undoes the move after a failed branch step, ending with rename_failed and no journal" do
-      allow(git).to receive(:rename_branch).and_return([false, "fatal: no\nmore"])
+      git.on(:rename_branch) { [false, "fatal: no\nmore"] }
 
       error = refused("rename_failed")
 
@@ -314,9 +343,9 @@ RSpec.describe Workspace::Commands::Rename do
     end
 
     it "is rename_incomplete, keeping the journal, when the undo fails; the re-run finishes" do
-      allow(git).to receive(:rename_branch).and_return([false, "no"])
+      git.on(:rename_branch) { [false, "no"] }
       calls = 0
-      allow(git).to receive(:move_worktree).and_wrap_original do |original, *args|
+      git.on(:move_worktree) do |original, *args|
         ((calls += 1) == 2) ? [false, "busy"] : original.call(*args)
       end
 
@@ -324,7 +353,7 @@ RSpec.describe Workspace::Commands::Rename do
 
       expect(error.details).to include("failed" => ["undo"], "fix" => "workspace rename #{old} feat/b", "rerun" => true)
       expect(File.exist?(journal_path)).to be(true)
-      allow(git).to receive(:rename_branch).and_call_original
+      git.on(:rename_branch)
 
       expect(rename["resume"]).to be(true)
       expect_finished
@@ -332,16 +361,15 @@ RSpec.describe Workspace::Commands::Rename do
 
     it "moves nothing for a signal that comes before the first git step" do
       catching("TERM") do |caught|
-        allow(journal).to receive(:write).and_wrap_original do |original, *args|
+        journal.on(:write) do |original, *args|
           Process.kill("TERM", Process.pid)
           original.call(*args)
         end
-        allow(git).to receive(:move_worktree).and_call_original
 
         error = refused("rename_failed")
 
         expect(error.details).to include("signal" => "SIGTERM", "step" => "worktree_move", "rolled_back" => true)
-        expect(git).not_to have_received(:move_worktree)
+        expect(git.calls_to(:move_worktree)).to be_empty
         expect(caught).to eq([])
       end
       expect(branch_of(linked)).to eq("feat/a")
@@ -350,7 +378,7 @@ RSpec.describe Workspace::Commands::Rename do
 
     it "undoes both git steps for a signal that comes after the branch step" do
       catching("TERM") do |caught|
-        allow(git).to receive(:rename_branch).and_wrap_original do |original, *args|
+        git.on(:rename_branch) do |original, *args|
           Process.kill("TERM", Process.pid)
           original.call(*args)
         end
@@ -370,11 +398,11 @@ RSpec.describe Workspace::Commands::Rename do
     {
       "notes_dir" => ["notes_dir", ->(spec) { spec.fail_once(spec.project_settings, :save) }],
       "state" => ["state", ->(spec) { spec.fail_once(spec.state, :save) }],
-      "tmuxinator_config" => ["tmuxinator_config", ->(spec) { spec.fail_rename_once(/workspace\.api\.worktree-feat-b\.yml\z/) }],
+      "tmuxinator_config" => ["tmuxinator_config", ->(spec) { spec.block_directory(spec.config.tmuxinator_dir) }],
       "notes_exclude" => ["notes_exclude", ->(spec) { spec.fail_once(spec.git_exclude, :add) }],
       "task" => ["task", ->(spec) { spec.fail_once(spec.task_store, :update) }],
-      "inbox" => ["inbox", ->(spec) { spec.fail_once(spec.inbox_store_factory, :call) }],
-      "hook_events" => ["hook_events", ->(spec) { spec.fail_rename_once(/\.events\/.*feat-b\.jsonl\z/) }],
+      "inbox" => ["inbox", ->(spec) { spec.fail_inbox_once }],
+      "hook_events" => ["hook_events", ->(spec) { spec.block_directory(spec.config.hook_events_dir) }],
       "ledger" => ["ledger", ->(spec) { spec.fail_once(spec.session_ledger, :carry) }],
       "bindings" => ["bindings", ->(spec) { spec.fail_once(spec.pane_bindings, :rename_workspace) }]
     }.each do |label, (step, arrange)|
@@ -382,6 +410,7 @@ RSpec.describe Workspace::Commands::Rename do
         arrange.call(self)
 
         error = refused("rename_incomplete")
+        unblock_directories
 
         expect(error.details["failed"]).to eq([step])
         expect(error.details).to include("workspace" => old, "new_workspace" => new, "new_branch" => "feat/b", "rerun" => true)
@@ -424,11 +453,7 @@ RSpec.describe Workspace::Commands::Rename do
     it "takes a failed startup lock on a re-run as unfinished, keeping the journal" do
       fail_once(task_store, :update)
       refused("rename_incomplete")
-      lock = config.agent_lock_path(old)
-      allow(File).to receive(:open).and_wrap_original do |original, *args, **options, &block|
-        raise Errno::EACCES, lock if args.first == lock
-        original.call(*args, **options, &block)
-      end
+      refuse_startup_lock(old)
 
       error = refused("rename_incomplete")
 
@@ -438,11 +463,7 @@ RSpec.describe Workspace::Commands::Rename do
     end
 
     it "is rename_failed when the startup lock fails on a first run" do
-      lock = config.agent_lock_path(old)
-      allow(File).to receive(:open).and_wrap_original do |original, *args, **options, &block|
-        raise Errno::EACCES, lock if args.first == lock
-        original.call(*args, **options, &block)
-      end
+      refuse_startup_lock(old)
 
       expect(refused("rename_failed").details).to include("step" => "startup_lock")
       expect(branch_of(linked)).to eq("feat/a")
@@ -491,11 +512,12 @@ RSpec.describe Workspace::Commands::Rename do
       end
 
       it "leaves both files whole when the join fails, and the re-run finishes it" do
-        fail_rename_once(/feat-b\.jsonl\z/)
+        block_directory(config.hook_events_dir)
 
         expect(refused("rename_incomplete").details["failed"]).to eq(["hook_events"])
         expect(File.read(new_events)).to eq("{\"launch\":1}\n")
         expect(Dir.children(config.hook_events_dir)).to contain_exactly(File.basename(old_events), File.basename(new_events))
+        unblock_directories
 
         rename
 
@@ -551,7 +573,7 @@ RSpec.describe Workspace::Commands::Rename do
     end
 
     it "finishes from the journal when the process died after the journal was written" do
-      plan = command.instance_variable_get(:@plan).call(workspace: old, new: "feat/b")
+      plan = plan_over(*fresh_world).call(workspace: old, new: "feat/b")
       journal.write(plan)
 
       expect(rename["resume"]).to be(true)
@@ -563,7 +585,7 @@ RSpec.describe Workspace::Commands::Rename do
     it "waits for the step, stops before the next, and keeps the journal" do
       ran = []
       catching("TERM") do |caught|
-        allow(task_store).to receive(:active_for).and_wrap_original do |original, *args|
+        task_store.on(:active_for) do |original, *args|
           Process.kill("TERM", Process.pid) if ran.empty?
           ran << :task
           original.call(*args)
@@ -583,7 +605,7 @@ RSpec.describe Workspace::Commands::Rename do
 
     it "sends on a signal that came during the last step, after the handlers are back" do
       catching("TERM") do |caught|
-        allow(pane_bindings).to receive(:rename_workspace).and_wrap_original do |original, **options|
+        pane_bindings.on(:rename_workspace) do |original, **options|
           Process.kill("TERM", Process.pid)
           original.call(**options)
         end
@@ -693,8 +715,9 @@ RSpec.describe Workspace::Commands::Rename do
     end
 
     it "moves over an empty target" do
-      fail_rename_once(/workspace-notes\/feat-b\z/)
+      block_directory(main_notes)
       refused("rename_incomplete")
+      unblock_directories
       FileUtils.mkdir_p(notes_b)
 
       rename
@@ -703,8 +726,9 @@ RSpec.describe Workspace::Commands::Rename do
     end
 
     it "stops as a failed step when both are there and the target holds files, and never merges" do
-      fail_rename_once(/workspace-notes\/feat-b\z/)
+      block_directory(main_notes)
       refused("rename_incomplete")
+      unblock_directories
       FileUtils.mkdir_p(notes_b)
       File.write(File.join(notes_b, "other.md"), "theirs")
 
@@ -736,8 +760,8 @@ RSpec.describe Workspace::Commands::Rename do
     end
 
     it "keeps the journal when it can not be deleted after the git steps were undone; the re-run finishes" do
-      allow(git).to receive(:rename_branch).and_return([false, "no"])
-      allow(journal).to receive(:delete).and_raise(Errno::EACCES)
+      git.on(:rename_branch) { [false, "no"] }
+      journal.on(:delete) { raise Errno::EACCES }
 
       error = refused("rename_incomplete")
 
@@ -745,8 +769,8 @@ RSpec.describe Workspace::Commands::Rename do
       expect(File.exist?(journal_path)).to be(true)
       expect(branch_of(linked)).to eq("feat/a")
       expect(Dir.exist?(moved)).to be(false)
-      allow(git).to receive(:rename_branch).and_call_original
-      allow(journal).to receive(:delete).and_call_original
+      git.on(:rename_branch)
+      journal.on(:delete)
 
       expect(rename["resume"]).to be(true)
       expect_finished
@@ -768,15 +792,15 @@ RSpec.describe Workspace::Commands::Rename do
     end
 
     it "skips the worktree move when the directory moved and the branch did not, and renames the branch" do
-      allow(git).to receive(:rename_branch).and_return([false, "no"])
+      git.on(:rename_branch) { [false, "no"] }
       calls = 0
-      allow(git).to receive(:move_worktree).and_wrap_original do |original, *args|
+      git.on(:move_worktree) do |original, *args|
         ((calls += 1) == 2) ? [false, "busy"] : original.call(*args)
       end
       refused("rename_incomplete")
       expect(Dir.exist?(linked)).to be(false)
       expect(branch_of(moved)).to eq("feat/a")
-      allow(git).to receive(:rename_branch).and_call_original
+      git.on(:rename_branch)
       expect(git).not_to receive(:move_worktree)
 
       rename
@@ -786,21 +810,18 @@ RSpec.describe Workspace::Commands::Rename do
   end
 
   describe "notes.dir after the move" do
-    let(:notes_move) { Workspace::RenamePlan::NotesMove.new(action: "move", from: notes_a, to: notes_b) }
-    let(:plan) { instance_double(Workspace::RenamePlan::Plan, notes: notes_move, workspace: old, new_workspace: new) }
-
     [
       ["notes is not a Hash", "oops"],
       ["notes.dir is not a String", {"dir" => 5}],
       ["notes.dir names neither end", {"dir" => "/somewhere/else"}]
     ].each do |label, notes|
       it "leaves the settings alone when #{label}" do
+        FileUtils.mkdir_p(notes_a)
         project_settings.save(old, {"notes" => notes})
-        expect(project_settings).not_to receive(:save)
 
-        command.send(:write_notes_dir, plan)
+        rename
 
-        expect(project_settings.load(old)["notes"]).to eq(notes)
+        expect(project_settings.load(new)["notes"]).to eq(notes)
       end
     end
 
@@ -818,8 +839,10 @@ RSpec.describe Workspace::Commands::Rename do
     it "moves a dangling symlink as the notes directory" do
       FileUtils.rm_rf(notes_a)
       File.symlink(File.join(home, "nowhere"), notes_a)
+      project_settings.save(old, {"notes" => {"dir" => notes_a}})
 
-      command.send(:move_notes, plan)
+      # Setting up the notes directory afterwards cannot make a directory of the link, so the rename stops there, resumable.
+      expect { rename }.to raise_error(Workspace::Error, /stopped at notes_exclude/)
 
       expect(File.symlink?(notes_a)).to be(false)
       expect(File.symlink?(notes_b)).to be(true)

@@ -145,9 +145,9 @@ module Workspace
         problems << "#{where}: #{key} must be a string of at most #{MAX_TEXT} characters" unless entry[key].is_a?(String) && entry[key].size <= MAX_TEXT
       end
       if entry.key?("code")
-        if !(entry["code"].is_a?(String) && Commands::Workflow::CODE_PATTERN.match?(entry["code"]))
+        if !(entry["code"].is_a?(String) && WorkflowDefinition::CODE_PATTERN.match?(entry["code"]))
           problems << "#{where}: code must be lowercase letters, digits and underscores, starting with a letter, at most 40 characters"
-        elsif (refusal = Commands::Workflow.engine_code_refusal(entry["code"]))
+        elsif (refusal = WorkflowDefinition.engine_code_refusal(entry["code"]))
           problems << "#{where}: code #{refusal}"
         end
       end

@@ -129,11 +129,10 @@ RSpec.describe "T5 start adversarial concurrency" do
 
   def start(git:, project_config: T5StartConcurrencyFakes::ProjectConfig.new, launch: T5StartConcurrencyFakes::Launch.new,
     hook_installer: nil, which: ->(_) { false })
-    Workspace::Commands::Start.new(
+    Workspace::Commands::Start.new(lineage: LineageSupport.lineage,
       git: git, project_config: project_config, project_settings: CLITestHelpers::FakeProjectSettings.new,
       launch_command: launch, hook_installer: hook_installer, which: which,
-      output: output, input: StringIO.new
-    )
+      output: output, input: StringIO.new)
   end
 
   def stdout_lines = output.string.lines
@@ -210,15 +209,18 @@ RSpec.describe "T5 start adversarial concurrency" do
     root = File.join(tmpdir, "proj")
     FileUtils.mkdir_p(root)
     worktrees = File.join(root, ".worktrees")
-    # The other `start` creates .worktrees/ between this run's check and its mkdir.
-    allow(File).to receive(:directory?).and_call_original
-    allow(File).to receive(:directory?).with(worktrees) do
-      Dir.mkdir(worktrees) unless Dir.exist?(worktrees)
-      false
-    end
+    # The other `start` creates .worktrees/ after this run settled the name and before its mkdir.
+    rival_creates_worktrees = Class.new(T5StartConcurrencyFakes::ProjectConfig) do
+      def initialize(dir) = @dir = dir
+
+      def settle_worktree_name(project, dir, path)
+        Dir.mkdir(@dir) unless Dir.exist?(@dir)
+        super
+      end
+    end.new(worktrees)
 
     result = nil
-    expect { result = start(git: git_double(root)).call("x", base: "main", json: true) }.not_to raise_error
+    expect { result = start(git: git_double(root), project_config: rival_creates_worktrees).call("x", base: "main", json: true) }.not_to raise_error
     expect(result).to eq({exit_code: 0})
     expect(JSON.parse(stdout_lines.last)).to include("created" => true)
   end

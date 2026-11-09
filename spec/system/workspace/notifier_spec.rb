@@ -139,8 +139,7 @@ RSpec.describe Workspace::Notifier do
 
   it "still stops a run past its timeout when reporting it raises" do
     pid_file = File.join(dir, "leader")
-    broken = Object.new
-    broken.define_singleton_method(:puts) { |*| raise IOError, "closed stream" }
+    broken = Class.new { def puts(*) = raise(IOError, "closed stream") }.new
     n = described_class.new(command: %(echo $$ > "#{pid_file}"; exec sleep 30), timeout: 0.3, kill_grace: 0.5,
       error_output: broken)
 

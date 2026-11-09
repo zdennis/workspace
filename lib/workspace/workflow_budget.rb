@@ -21,7 +21,7 @@ module Workspace
     # `suggested` rounds the least `--extra-tokens` up to a multiple of this, so one more attempt fits.
     ROUND_TO = 100_000
 
-    # @param run [Hash{String=>Object}] a stored run
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @param live [Boolean] false when the attempt in progress is about to be replaced, so its tokens count too
     # @return [Hash{String=>Object}, nil] nil unless the run's definition declares a budget (a stored run from
     #   before the key, or a bad value, reads nil); else "tokens", "action", "extra_tokens", "allowance",
@@ -29,18 +29,21 @@ module Workspace
     #   "measured" (false when no attempt was counted but some ended), "spent" (used has reached the allowance),
     #   "needed" (the least `--extra-tokens` that lets another attempt start, nil unless spent) and "suggested"
     def self.reading(run, live: true)
-      budget = WorkflowDefinition.budget(run["definition"])
+      run = WorkflowRun.from_h(run)
+      budget = WorkflowDefinition.budget(run.definition)
       return nil unless budget
-      extra = run["extra_tokens"].is_a?(Integer) ? [run["extra_tokens"], 0].max : 0
+      raise TypeError, "a run's steps are a Hash" unless run.to_h["steps"].is_a?(Hash)
+      extra = run.extra_tokens.is_a?(Integer) ? [run.extra_tokens, 0].max : 0
       allowance = budget["tokens"] + extra
       used = 0
       counted = 0
       uncounted = 0
-      run["steps"].each do |id, state|
-        running = (live && id == run["current"] && %w[running checking].include?(state["state"])) ? Array(state["attempts"]).last : nil
-        Array(state["attempts"]).each do |attempt|
-          next unless attempt.is_a?(Hash) && counted_attempt?(attempt) && !attempt.equal?(running)
-          tokens = tokens_of(attempt["usage"])
+      run.steps.each do |id, step|
+        stored = Array(step.to_h["attempts"])
+        running = (live && id == run.current && %w[running checking].include?(step.state)) ? step.attempts.last : nil
+        step.attempts.each_with_index do |attempt, index|
+          next unless stored[index].is_a?(Hash) && counted_attempt?(attempt) && !attempt.equal?(running)
+          tokens = tokens_of(attempt.usage)
           if tokens
             used += tokens
             counted += 1
@@ -58,11 +61,12 @@ module Workspace
       nil
     end
 
-    # @param attempt [Hash] a stored attempt
+    # @param attempt [WorkflowRun::Attempt, Hash] a stored attempt
     # @return [Boolean] whether the attempt's tokens count toward a run: every attempt but one never delivered
     #   (no outcome counts too: a cancel, or a `resume --from`, ends an attempt without one)
     def self.counted_attempt?(attempt)
-      attempt["outcome"] != "not_delivered"
+      attempt = WorkflowRun::Attempt.from_h(attempt) unless attempt.is_a?(WorkflowRun::Attempt)
+      attempt.outcome != "not_delivered"
     end
 
     # @param usage [Object] an attempt's stored `usage`

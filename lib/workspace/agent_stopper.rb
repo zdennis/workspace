@@ -115,7 +115,7 @@ module Workspace
     end
 
     def shell_name?(name)
-      Commands::Restore::SHELLS.include?(File.basename(name.to_s).delete_prefix("-"))
+      AgentProvider::SHELLS.include?(File.basename(name.to_s).delete_prefix("-"))
     end
   end
 end

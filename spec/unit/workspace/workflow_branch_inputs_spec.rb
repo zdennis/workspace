@@ -92,16 +92,28 @@ RSpec.describe Workspace::WorkflowBranchInputs do
     expect(pull_request_status).not_to have_received(:summary)
   end
 
-  {
-    "git" => -> { allow(git).to receive(:worktree_branch).and_raise(Workspace::Error, "x") },
-    "start_ref" => -> { allow(start_ref).to receive(:project).and_raise(Workspace::Error, "x") },
-    "protected_branch" => -> { allow(protected_branch).to receive(:call).and_raise(Errno::ENOENT) },
-    "gh" => -> { allow(pull_request_status).to receive(:summary).and_raise(Errno::ENOENT) }
-  }.each do |name, setup|
-    it "returns the inputs untouched when #{name} raises" do
-      instance_exec(&setup)
-      expect(run).to eq([inputs, {}])
-    end
+  def expect_inputs_untouched
+    expect(run).to eq([inputs, {}])
+  end
+
+  it "returns the inputs untouched when git raises" do
+    allow(git).to receive(:worktree_branch).and_raise(Workspace::Error, "x")
+    expect_inputs_untouched
+  end
+
+  it "returns the inputs untouched when start_ref raises" do
+    allow(start_ref).to receive(:project).and_raise(Workspace::Error, "x")
+    expect_inputs_untouched
+  end
+
+  it "returns the inputs untouched when protected_branch raises" do
+    allow(protected_branch).to receive(:call).and_raise(Errno::ENOENT)
+    expect_inputs_untouched
+  end
+
+  it "returns the inputs untouched when gh raises" do
+    allow(pull_request_status).to receive(:summary).and_raise(Errno::ENOENT)
+    expect_inputs_untouched
   end
 
   it "reads the given worktree path" do

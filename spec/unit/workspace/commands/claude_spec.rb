@@ -1,14 +1,16 @@
 RSpec.describe Workspace::Commands::Claude do
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
-  let(:tmux) { CLITestHelpers::FakeTmux.new }
+  let(:tmux) { FakeTmux.new }
+  let(:sleeps) { [] }
 
   subject(:command) do
     described_class.new(
       state: CLITestHelpers::FakeState.new,
       tmux: tmux,
       output: output,
-      error_output: error_output
+      error_output: error_output,
+      sleeper: ->(seconds) { sleeps << seconds }
     )
   end
 
@@ -16,13 +18,13 @@ RSpec.describe Workspace::Commands::Claude do
     it "sends Ctrl-C to the Claude pane multiple times" do
       allow(tmux).to receive(:sessions).and_return(["myproject"])
       allow(tmux).to receive(:send_key).and_return(true)
-      allow(command).to receive(:sleep)
 
       command.deactivate(["myproject"])
 
       expect(tmux).to have_received(:send_key)
         .with("myproject", "0.1", "C-c")
         .exactly(3).times
+      expect(sleeps).to eq([Workspace::Commands::Claude::CTRL_C_DELAY] * 2)
       expect(output.string).to include("Deactivating Claude in myproject")
       expect(output.string).to include("Done.")
     end
@@ -39,7 +41,6 @@ RSpec.describe Workspace::Commands::Claude do
     it "returns each project's outcome, skipped ones included" do
       allow(tmux).to receive(:sessions).and_return(["proj1"])
       allow(tmux).to receive(:send_key).and_return(true)
-      allow(command).to receive(:sleep)
 
       expect(command.deactivate(%w[proj1 gone])).to eq(
         "proj1" => {"outcome" => "deactivated"},
@@ -50,7 +51,6 @@ RSpec.describe Workspace::Commands::Claude do
     it "deactivates multiple projects" do
       allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
       allow(tmux).to receive(:send_key).and_return(true)
-      allow(command).to receive(:sleep)
 
       command.deactivate(["proj1", "proj2"])
 

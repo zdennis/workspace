@@ -92,12 +92,16 @@ RSpec.describe Workspace::EventLog, "rotation" do
 
   it "never leaves a moment without a log for readers, which take no lock" do
     seen = []
-    %i[rename link].each do |op|
-      allow(File).to receive(op).and_wrap_original do |original, *args|
-        seen << File.exist?(event_log_file)
-        original.call(*args)
-      end
+    renamer = lambda do |*args|
+      seen << File.exist?(event_log_file)
+      File.rename(*args)
     end
+    linker = lambda do |*args|
+      seen << File.exist?(event_log_file)
+      File.link(*args)
+    end
+    event_log = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep,
+      renamer: renamer, linker: linker)
 
     event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "u1"})
     fill(event_log, count: 20)
@@ -108,9 +112,8 @@ RSpec.describe Workspace::EventLog, "rotation" do
   end
 
   it "writes the event even when rotation fails, and does not raise" do
-    allow(File).to receive(:rename).and_call_original
-    allow(File).to receive(:link).and_call_original
-    allow(File).to receive(:link).with(event_log_file, anything).and_raise(Errno::EACCES)
+    event_log = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep,
+      linker: ->(*) { raise Errno::EACCES })
 
     expect { fill(event_log, count: 20) }.not_to raise_error
     expect(lines_of(event_log_file).size).to eq(20)
@@ -119,26 +122,29 @@ RSpec.describe Workspace::EventLog, "rotation" do
   it "drops no rotated file when the log can't be linked" do
     fill(event_log, count: 20)
     before = Dir["#{event_log_file}.*"].reject { |f| f.end_with?(".lock") }.to_h { |f| [f, File.stat(f).ino] }
-    allow(File).to receive(:link).and_call_original
-    allow(File).to receive(:link).with(event_log_file, anything).and_raise(Errno::EPERM)
+    refusing = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep,
+      linker: ->(*) { raise Errno::EPERM })
 
-    fill(event_log, count: 40)
+    fill(refusing, count: 40)
 
     expect(Dir["#{event_log_file}.*"].reject { |f| f.end_with?(".lock") }.to_h { |f| [f, File.stat(f).ino] }).to eq(before)
   end
 
   it "skips rotation when another process holds the log's lock, and still appends" do
-    stub_const("Workspace::EventLog::ROTATE_LOCK_WAIT", 0.05)
+    event_log = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep, rotate_lock_wait: 0.05)
     fill(event_log, count: 5)
     holder = File.open("#{event_log_file}.lock", File::RDWR | File::CREAT, 0o600)
     holder.flock(File::LOCK_SH)
 
     begin
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       fill(event_log, count: 15)
+      waited = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
     ensure
       holder.close
     end
 
+    expect(waited).to be < 3
     expect(File.exist?("#{event_log_file}.1")).to be(false)
     expect(lines_of(event_log_file).size).to eq(20)
   end

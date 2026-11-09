@@ -14,7 +14,8 @@ RSpec.describe Workspace::WorkflowSimulator do
       FileUtils.rm_rf(dir)
     end
   end
-  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace::WorkflowEngine.new(**parts) }, tmpdir: tmpdir) }
+  let(:max_actions) { described_class::MAX_ACTIONS }
+  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace::WorkflowEngine.new(**parts) }, tmpdir: tmpdir, max_actions: max_actions) }
 
   after { FileUtils.rm_rf(base) }
 
@@ -102,11 +103,14 @@ RSpec.describe Workspace::WorkflowSimulator do
     expect(types(result)).to include("budget_spent")
   end
 
-  it "ends at the action cap and says so" do
-    stub_const("Workspace::WorkflowSimulator::MAX_ACTIONS", 1)
-    result = play("steps: {}\n")
+  context "with a cap of 1 action" do
+    let(:max_actions) { 1 }
 
-    expect(result).to include("outcome" => "capped", "capped" => true, "max_actions" => 1, "actions" => 1)
+    it "ends at the action cap and says so" do
+      result = play("steps: {}\n")
+
+      expect(result).to include("outcome" => "capped", "capped" => true, "max_actions" => 1, "actions" => 1)
+    end
   end
 
   it "records an engine refusal as the end of the simulation" do
@@ -167,7 +171,8 @@ RSpec.describe Workspace::WorkflowSimulator do
 end
 
 RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
-  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace::WorkflowEngine.new(**parts) }) }
+  let(:max_actions) { described_class::MAX_ACTIONS }
+  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace::WorkflowEngine.new(**parts) }, max_actions: max_actions) }
 
   def definition(text)
     Workspace::WorkflowDefinition.parse(text, id: "demo", source: "file", path: nil)
@@ -228,13 +233,16 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
     expect(play(gated, "inputs: {task: from script}\n")["inputs"]).to eq("task" => "from script")
   end
 
-  it "does not count the attempt in progress against the budget when it is cut off" do
-    stub_const("Workspace::WorkflowSimulator::MAX_ACTIONS", 0)
-    data = definition("schema_version: 1\nid: demo\ntitle: D\nbudget: {tokens: 10}\nsteps:\n  one:\n    prompt: p\n    produces: [a.md]\n")
-    result = play(data, "steps: {}\n")
+  context "with a cap of 0 actions" do
+    let(:max_actions) { 0 }
 
-    expect(result["outcome"]).to eq("capped")
-    expect(result["budget"]).to include("counted" => 0, "uncounted" => 0)
+    it "does not count the attempt in progress against the budget when it is cut off" do
+      data = definition("schema_version: 1\nid: demo\ntitle: D\nbudget: {tokens: 10}\nsteps:\n  one:\n    prompt: p\n    produces: [a.md]\n")
+      result = play(data, "steps: {}\n")
+
+      expect(result["outcome"]).to eq("capped")
+      expect(result["budget"]).to include("counted" => 0, "uncounted" => 0)
+    end
   end
 
   it "answers one error, not a backtrace, for files that can't both exist" do
@@ -244,39 +252,6 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
       expect(e.code).to eq("invalid_workflow")
       expect(e.details).to include("workflow" => "demo")
     }
-  end
-
-  describe "the fake agent's moves" do
-    let(:run) { {"state" => "waiting", "current" => "a", "steps" => {"a" => {"state" => "running"}}, "reason" => nil} }
-
-    def move(changes)
-      simulator.send(:next_move, run.merge(changes))
-    end
-
-    it "takes a turn only for a running step with no reason and no park" do
-      expect(move({})).to eq(:turn)
-      expect(move("reason" => {"code" => "x"})).to be_nil
-      expect(move("parked" => {"id" => "p"})).to be_nil
-    end
-
-    it "waits out a backoff unless it is blocked" do
-      expect(move("backoff" => {"to" => "a", "until" => "x"})).to eq(:backoff)
-      blocked = {"state" => "waiting", "reason" => {"code" => "pane_gone"}, "steps" => {"a" => {"state" => "failed"}}}
-      expect(move(blocked.merge("backoff" => {"to" => "a", "blocked" => "pane_gone"}))).to be_nil
-    end
-
-    it "writes only inside the artifacts directory" do
-      Dir.mktmpdir do |dir|
-        inner = File.join(dir, "art")
-        FileUtils.mkdir_p(inner)
-        clock = Workspace::WorkflowSimulator::SimClock.new
-        simulator.send(:write, {"artifacts_dir" => inner}, "../escape.md", clock)
-        simulator.send(:write, {"artifacts_dir" => inner}, "ok.md", clock)
-
-        expect(File.exist?(File.join(dir, "escape.md"))).to be false
-        expect(File.mtime(File.join(inner, "ok.md"))).to eq(clock.call)
-      end
-    end
   end
 
   it "stubs the repository the engine reads" do

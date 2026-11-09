@@ -1,5 +1,4 @@
 require "json"
-require "fileutils"
 require "securerandom"
 require "time"
 
@@ -18,7 +17,9 @@ module Workspace
     def initialize(path:, error_output: $stderr)
       @path = path
       @error_output = error_output
-      @lockfile_path = "#{path}.lock"
+      access_error = ->(e) { Workspace::Error.new("Could not access question store at #{@path} (#{e.class}: errno #{e.errno})") }
+      @writer = LockedJsonFile.new(path, parse: ->(text) { parse_list(text, false) }, access_error: access_error)
+      @reader = LockedJsonFile.new(path, parse: ->(text) { parse_list(text, true) }, access_error: access_error)
     end
 
     # Appends a new open question. Never blocks on anything but the file
@@ -33,7 +34,7 @@ module Workspace
     #   a later `answer --deliver` can tell the pane from one that reused its id after a restart
     # @return [Hash] the new record
     def add(question:, default:, context: nil, pane: nil, worktree: nil, tmux_server: nil)
-      with_lock do |data|
+      @writer.exclusive do |data|
         record = {
           "id" => unused_id(data),
           "question" => question,
@@ -60,7 +61,7 @@ module Workspace
     # @return [Array<Hash>] records, oldest first
     def list(open_only: false)
       return [] unless File.exist?(@path)
-      records = with_lock(readonly: true) { |data| records_in(data) }
+      records = @reader.shared { |data| records_in(data) }
       records = records.select { |r| r["status"] == "open" } if open_only
       records
     end
@@ -71,7 +72,7 @@ module Workspace
     # @param answer [String]
     # @return [Hash, nil] the updated record, or nil when no open question has this id
     def answer(id, answer)
-      with_lock do |data|
+      @writer.exclusive do |data|
         record = records_in(data).find { |r| r["id"] == id && r["status"] == "open" }
         next nil unless record
         record["answer"] = answer
@@ -87,7 +88,7 @@ module Workspace
     # @param id [String]
     # @return [Hash, nil] the updated record, or nil when no open question has this id
     def withdraw(id)
-      with_lock do |data|
+      @writer.exclusive do |data|
         record = records_in(data).find { |r| r["id"] == id && r["status"] == "open" }
         next nil unless record
         record["status"] = "withdrawn"
@@ -98,29 +99,12 @@ module Workspace
 
     private
 
-    # @param readonly [Boolean] shared lock, and never rewrites the file. A
-    #   write raises rather than replace a file it couldn't read, since that
-    #   would drop every question in it.
-    def with_lock(readonly: false)
-      FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
-      result = nil
-      File.open(@lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
-        f.flock(readonly ? File::LOCK_SH : File::LOCK_EX)
-        data = read_data(readonly: readonly)
-        result = yield data
-        write_data(data) unless readonly
-      end
-      result
-    rescue SystemCallError => e
-      raise Workspace::Error, "Could not access question store at #{@path} (#{e.class}: errno #{e.errno})"
-    end
-
-    def read_data(readonly:)
-      return [] unless File.exist?(@path)
-      # Written as UTF-8 JSON; read as that whatever the locale of the process.
-      content = File.read(@path, encoding: Encoding::UTF_8)
-      return [] if content.strip.empty?
-      parsed = JSON.parse(content)
+    # @param readonly [Boolean] a read warns and reads as empty. A write raises
+    #   rather than replace a file it couldn't read, since that would drop
+    #   every question in it.
+    def parse_list(text, readonly)
+      return [] if text.nil? || text.strip.empty?
+      parsed = JSON.parse(text)
       return parsed if parsed.is_a?(Array)
       unreadable("it is not a JSON list", readonly)
     rescue JSON::ParserError
@@ -147,16 +131,6 @@ module Workspace
         id = SecureRandom.hex(3)
         return id unless taken.include?(id)
       end
-    end
-
-    def write_data(data)
-      tmp = "#{@path}.#{Process.pid}.tmp"
-      File.open(tmp, "w", 0o600) do |f|
-        f.write(JSON.pretty_generate(data))
-        f.flush
-        f.fsync
-      end
-      File.rename(tmp, @path)
     end
 
     def now_iso

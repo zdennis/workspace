@@ -121,7 +121,7 @@ module Workspace
     end
 
     def scan(workspace)
-      split = WorkspaceLineage.split_worktree_name(workspace)
+      split = WorkspaceName.split(workspace)
       parent = split&.first
       files = []
       files << ConfigFile.read("worktree", @project_settings.project_config_path(workspace)) if parent
@@ -323,7 +323,7 @@ module Workspace
       return [scan.workspace] if layer == "worktree"
 
       root = scan.parent || scan.workspace
-      ([root] + all.select { |name| name.start_with?("#{root}#{WorkspaceLineage::WORKTREE_SEPARATOR}") }).uniq.sort
+      ([root] + all.select { |name| name.start_with?("#{root}#{WorkspaceName::SEPARATOR}") }).uniq.sort
     end
 
     def dig(data, parts)
@@ -408,7 +408,7 @@ module Workspace
     def spine_template_problems(file, scan, declared)
       return [] unless @library && declared.any? { |key| key.name == "spine.template" }
       name = dig(file.data, %w[spine template])
-      return [] unless name.is_a?(String) && name.match?(LibraryStore::NAME)
+      return [] unless name.is_a?(String) && name.match?(IdPatterns::LIBRARY_NAME)
       root = @project_config.project_root_for(scan.workspace)
       return [] unless root
       @library.spine_template(name, cwd: root)
@@ -427,7 +427,7 @@ module Workspace
       declared.filter_map do |key|
         next unless key.name == "workflows.default" || key.name.start_with?("workflows.by_ref.")
         id = dig(file.data, key.name.split("."))
-        next unless id.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(id)
+        next unless id.is_a?(String) && IdPatterns::WORKFLOW_ID.match?(id)
         next if @catalog.known?(id, project: project)
         located(file, "warning", "unknown_default_workflow", key.name,
           "#{key.name} names '#{id}', and no workflow has that id. List them with: workspace workflow show")
@@ -436,7 +436,7 @@ module Workspace
 
     def worktrees?(scan)
       root = scan.parent || scan.workspace
-      @project_config.available_projects.any? { |name| name.start_with?("#{root}#{WorkspaceLineage::WORKTREE_SEPARATOR}") }
+      @project_config.available_projects.any? { |name| name.start_with?("#{root}#{WorkspaceName::SEPARATOR}") }
     end
 
     def unknown_problems(file, declared, scope)

@@ -41,7 +41,7 @@ Both pieces are committed on `feat/session-monitor`.
 wants to add, and asks before writing. `--install-hooks` / `--no-install-hooks`
 keep it scriptable.
 
-- `lib/workspace/agent_provider.rb` — the registry. Claude Code, Codex, OpenCode
+- `lib/workspace/core/agent_provider.rb` — the registry. Claude Code, Codex, OpenCode
   and Pi are entries; adding another agent is one more entry, not a conditional.
   An agent with no hook system still appears, marked "monitored by pane activity
   only", so the gap is visible rather than silent.

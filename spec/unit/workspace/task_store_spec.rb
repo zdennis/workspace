@@ -145,7 +145,7 @@ RSpec.describe Workspace::TaskStore do
     end
 
     it "keeps only the newest ARCHIVE_LIMIT archived tasks" do
-      stub_const("Workspace::TaskStore::ARCHIVE_LIMIT", 3)
+      store = described_class.new(dir: dir, clock: -> { now.first }, error_output: error_output, archive_limit: 3)
       ids = 5.times.map do |i|
         now[0] = Time.utc(2026, 10, 2, 12, i)
         id = store.start(workspace: "w#{i}")["id"]

@@ -211,19 +211,23 @@ RSpec.describe Workspace::LockStore do
     end
 
     it "shares one liveness snapshot across a single operation" do
-      liveness = FakeLockLiveness.new
-      scopes = 0
-      liveness.define_singleton_method(:within_snapshot) do |&block|
-        scopes += 1
-        block.call
+      counting = Class.new(FakeLockLiveness) do
+        attr_accessor :scopes
+
+        def within_snapshot
+          @scopes += 1
+          yield
+        end
       end
+      liveness = counting.new
+      liveness.scopes = 0
       s = store(liveness: liveness)
       s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
 
-      scopes = 0
+      liveness.scopes = 0
       s.status
 
-      expect(scopes).to eq(1)
+      expect(liveness.scopes).to eq(1)
     end
   end
 
@@ -1082,26 +1086,28 @@ RSpec.describe Workspace::LockStore do
     end
 
     it "records nothing when the locks.json write fails" do
-      allow(File).to receive(:rename).and_call_original
-      allow(File).to receive(:rename).with(/locks\.json\.\d+\.tmp\z/, anything).and_raise(Errno::ENOSPC)
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      events_before = audit_events
+      # A directory where the store writes its temp file: the rewrite can't be made.
+      # wait: true makes the second acquire change the data, which forces a write.
+      Dir.mkdir(File.join(tmpdir, "locks.json.#{Process.pid}.tmp"))
 
       expect {
-        store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        store.acquire("edit", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
       }.to raise_error(Workspace::Error)
 
-      expect(audit_events).to eq([])
+      expect(audit_events).to eq(events_before)
     end
 
     it "flushes audit events only after the rename that commits locks.json" do
       events_at_commit = nil
-      rename = File.method(:rename)
-      allow(File).to receive(:rename).and_call_original
-      allow(File).to receive(:rename).with(/locks\.json\.\d+\.tmp\z/, anything) do |*args|
+      renamer = lambda do |from, to|
         events_at_commit = audit_events.map { |e| e["event"] }
-        rename.call(*args)
+        File.rename(from, to)
       end
+      s = described_class.new(dir: tmpdir, liveness: liveness, renamer: renamer)
 
-      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
 
       expect(events_at_commit).to eq([])
       expect(audit_events.map { |e| e["event"] }).to eq(["acquire"])

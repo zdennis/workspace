@@ -20,7 +20,7 @@ RSpec.describe "workspace workflow sweep through build_cli" do
   let(:out) { StringIO.new }
   let(:err) { StringIO.new }
   let(:cli) do
-    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}).tap { |each| each.instance_variable_set(:@exit_handler, FakeExitHandler) }
+    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}, exit_handler: FakeExitHandler)
   end
 
   before do

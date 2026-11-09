@@ -1,25 +1,6 @@
 require "spec_helper"
 require "tmpdir"
 
-class RestartMessageTmux < CLITestHelpers::FakeTmux
-  attr_accessor :details
-
-  def initialize
-    super
-    @details = [
-      {id: "%17", window: 0, index: 0, pid: 1, command: "zsh", cwd: "/", title: ""},
-      {id: "%18", window: 0, index: 1, pid: 2, command: "claude", cwd: "/", title: ""},
-      {id: "%30", window: 1, index: 0, pid: 3, command: "claude", cwd: "/", title: ""}
-    ]
-  end
-
-  def session_name_for(_config) = "workspace-wt-myapp"
-
-  def pane_details(_session, window: "0")
-    window.nil? ? @details : @details.select { |d| d[:window] == window.to_i }
-  end
-end
-
 class RestartMessageMonitor
   attr_accessor :kinds, :pids, :facts, :background
 
@@ -34,6 +15,8 @@ class RestartMessageMonitor
   def pane_kind(id) = @kinds[id]
   def agent_pid(id) = @pids[id]
   def pane_state(_id) = "idle"
+  def restart_state(_id) = nil
+  def main_turn_evidence(_id) = {missing: "pane_unknown"}
   def delivery_facts(_id) = @facts
   def background_subagents(id) = @background&.fetch(id, nil)
 
@@ -72,12 +55,31 @@ end
 
 # The daemon's side of a restart_agent message: resolving the explicit pane,
 # the checks made before replying, and handing the work to a worker thread.
+# A restart runner that records the restart and frees the pane's claim.
+class RecordingRunner
+  def initialize(registry, runs)
+    @registry = registry
+    @runs = runs
+  end
+
+  def run(started, prompt, *_rest, **_opts)
+    @runs << [started["pane_id"], prompt]
+    @registry.release(started["pane_id"])
+  end
+end
+
 RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   let(:tmpdir) { Dir.mktmpdir("ws-restart", "/tmp") }
   let(:agent_socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
-  let(:output) { StringIO.new }
-  let(:error_output) { StringIO.new }
-  let(:tmux) { RestartMessageTmux.new }
+  let(:output) { ReadyAnnouncingOutput.new }
+  let(:error_output) { ReadyAnnouncingOutput.new }
+  let(:tmux) {
+    FakeTmux.new(session_name: "workspace-wt-myapp", screens: ["❯ "], details: [
+      {id: "%17", window: 0, index: 0, pid: 1, command: "zsh", cwd: "/", title: ""},
+      {id: "%18", window: 0, index: 1, pid: 2, command: "claude", cwd: "/", title: ""},
+      {id: "%30", window: 1, index: 0, pid: 3, command: "claude", cwd: "/", title: ""}
+    ])
+  }
   let(:monitor) { RestartMessageMonitor.new }
   let(:config) do
     instance_double(Workspace::Config).tap do |c|
@@ -115,15 +117,18 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
       session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
-      agent_restart_factory: restart.method(:build), output: output, error_output: error_output)
+      agent_restart_factory: ->(**kwargs) { restart.build(**kwargs) }, output: output, error_output: error_output)
   end
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 
   def run_agent
-    thread = Thread.new { agent.call(name: "myapp") }
-    deadline = Time.now + 2
-    sleep(0.01) until output.string.include?("ready") || !thread.alive? || Time.now > deadline
+    thread = Thread.new do
+      agent.call(name: "myapp")
+    ensure
+      output.announce
+    end
+    output.wait_ready
     yield
   ensure
     restart.finish
@@ -148,6 +153,69 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
       expect(restart.calls.pop(timeout: 2)).to eq(pane_id: "%18", prompt: "Read HANDOFF.md", force: false,
         confirm_timeout: Workspace::AgentRestart::CONFIRM_TIMEOUT, run_id: nil, waiting: false)
       expect(restart.built_with).to include(session_name: "workspace-wt-myapp")
+    end
+  end
+
+  context "with the default restart factory" do
+    let(:context_reader) do
+      instance_double(Workspace::ContextReader).tap do |reader|
+        # The message-time check reads a usable value; the restart's own read then finds none.
+        allow(reader).to receive(:read).and_return({pct: 42, error: nil, updated_at: nil}, {pct: nil, error: "no_reading", updated_at: nil})
+      end
+    end
+
+    subject(:agent) do
+      described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
+        session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
+        output: output, error_output: error_output)
+    end
+
+    it "runs a real AgentRestart over the daemon's tmux and context reader" do
+      run_agent do
+        reply = send_restart("wait" => true, "timeout" => 5)
+
+        expect(reply).to include("ok" => false, "error" => "context_unknown", "pane" => "0.1")
+        expect(reply["message"]).to include("can't read context usage for pane %18 (no_reading)")
+        expect(tmux.sent_keys).to be_empty
+      end
+    end
+  end
+
+  context "with a restart runner factory" do
+    let(:registry) { Workspace::RestartRegistry.new }
+    let(:runs) { Queue.new }
+    let(:built_with) { [] }
+    let(:runner_factory) do
+      lambda do |session_monitor|
+        built_with << session_monitor
+        RecordingRunner.new(registry, runs)
+      end
+    end
+
+    subject(:agent) do
+      described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
+        session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
+        restart_registry: registry, restart_runner_factory: runner_factory,
+        output: output, error_output: error_output)
+    end
+
+    it "builds the runner over the session monitor as soon as the daemon starts, before any restart" do
+      run_agent do
+        expect(built_with).to eq([monitor])
+      end
+    end
+
+    it "reuses that runner for every restart" do
+      run_agent do
+        send_restart
+        expect(runs.pop(timeout: 2)).to eq(["%18", "Read HANDOFF.md"])
+        send_restart("prompt" => "again")
+        expect(runs.pop(timeout: 2)).to eq(["%18", "again"])
+
+        expect(built_with).to eq([monitor])
+      end
     end
   end
 
@@ -198,16 +266,14 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     agent_with_failure = described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
       session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
-      agent_restart_factory: failing.method(:build), output: output, error_output: error_output)
+      agent_restart_factory: ->(**kwargs) { failing.build(**kwargs) }, output: output, error_output: error_output)
     thread = Thread.new { agent_with_failure.call(name: "myapp") }
-    deadline = Time.now + 2
-    sleep(0.01) until output.string.include?("ready") || Time.now > deadline
+    output.wait_ready
 
     send_restart
     failing.calls.pop(timeout: 2)
     failing.finish
-    deadline = Time.now + 2
-    sleep(0.01) until error_output.string.include?("usage did not drop") || Time.now > deadline
+    error_output.wait_for_text("usage did not drop")
 
     expect(error_output.string).to include("restart_agent for pane 0.1: usage did not drop")
   ensure
@@ -219,8 +285,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
 
   it "stops a restart still running when the daemon shuts down, telling a waiting caller and stderr" do
     thread = Thread.new { agent.call(name: "myapp") }
-    deadline = Time.now + 2
-    sleep(0.01) until output.string.include?("ready") || Time.now > deadline
+    output.wait_ready
     waiter = Thread.new do
       UNIXSocket.open(agent_socket_path) do |socket|
         socket.puts({"type" => "restart_agent", "workspace" => "myapp", "pane" => "%18",
@@ -239,15 +304,6 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   ensure
     thread&.kill
     waiter&.kill
-  end
-
-  it "builds a real AgentRestart by default, on the workspace's tmux session" do
-    plain = described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
-      pipeline_config: pipeline_config, context_reader: context_reader)
-
-    built = plain.send(:build_agent_restart, session_name: "workspace-wt-myapp", delivery_lock: Mutex.new,
-      pipeline_ref: ->(_) {}, pane_state: ->(_) {}, agent_pid: ->(_) {}, pane_kind: ->(_) {})
-    expect(built).to be_a(Workspace::AgentRestart)
   end
 
   it "refuses a second restart on a pane while one is running" do

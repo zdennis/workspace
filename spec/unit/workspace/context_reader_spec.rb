@@ -94,7 +94,7 @@ RSpec.describe Workspace::ContextReader do
         snapshot = Workspace::ProcessTree::Snapshot.new([{pid: 999, ppid: 1, lstart: "Mon Sep 28 09:00:00 2026", command: "claude", args: "claude"}])
         allow(process_tree).to receive(:snapshot).and_return(snapshot)
         real_reader = described_class.new(context_store: context_store, project_settings: project_settings,
-          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}))
+          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}, tmux: tmux))
 
         result = real_reader.read(pane_id: "%1", agent_pid: 999)
         expect(result).to eq(pct: nil, error: Workspace::ContextReasons::PID_UNVERIFIED, updated_at: nil)
@@ -105,7 +105,7 @@ RSpec.describe Workspace::ContextReader do
         snapshot = Workspace::ProcessTree::Snapshot.new([{pid: 999, ppid: 1, lstart: started, command: "claude", args: "claude"}])
         allow(process_tree).to receive(:snapshot).and_return(snapshot)
         real_reader = described_class.new(context_store: context_store, project_settings: project_settings,
-          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}))
+          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}, tmux: tmux))
 
         expect(real_reader.read(pane_id: "%1", agent_pid: 999)[:pct]).to eq(10)
       end
@@ -115,7 +115,7 @@ RSpec.describe Workspace::ContextReader do
         allow(process_tree).to receive(:snapshot)
           .and_raise(Workspace::Error, "could not read the process table (ps timed out after 5s)")
         real_reader = described_class.new(context_store: context_store, project_settings: project_settings,
-          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}))
+          lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}, tmux: tmux))
 
         result = real_reader.read(pane_id: "%1", agent_pid: 999)
         expect(result).to eq(pct: nil, error: Workspace::ContextReasons::PID_UNVERIFIED, updated_at: nil)
@@ -284,24 +284,23 @@ RSpec.describe Workspace::ContextReader do
       it "scrapes and caches inside a scan already holding a slot, as the daemon's monitor does" do
         slot_dir = Dir.mktmpdir("ws-scan-slots")
         begin
-          # Separate limiter instances over one slot directory, as the daemon
-          # wires the monitor's limiter apart from the reader's.
-          monitor_slots = Workspace::ScanSlotLimiter.new(dir: slot_dir, limit: 1)
-          reader_slots = Workspace::ScanSlotLimiter.new(dir: slot_dir, limit: 1)
+          # One limiter shared by the monitor's scan and the reader, as the daemon wires it.
+          shared_slots = Workspace::ScanSlotLimiter.new(dir: slot_dir, limit: 1)
           in_scan = described_class.new(context_store: context_store, project_settings: project_settings,
-            tmux: tmux, lock_holder: lock_holder, scan_slots: reader_slots, clock: -> { now[0] })
+            tmux: tmux, lock_holder: lock_holder, scan_slots: shared_slots, clock: -> { now[0] })
           allow(tmux).to receive(:capture_screen).with("%1").and_return("37% ctx")
 
-          first = monitor_slots.with_scan_slot { in_scan.read(pane_id: "%1") }
+          first = shared_slots.with_scan_slot { in_scan.read(pane_id: "%1") }
           expect(first).to include(pct: 37, error: nil)
 
           # The scan populated the reader's cache, so a later busy read of
           # the pane serves the reading the scan scraped.
-          holder = reader_slots.send(:take_slot)
+          holder = HeldScanSlot.take(dir: slot_dir, limit: 1)
+          expect(holder).to be_held
           begin
             expect(in_scan.read(pane_id: "%1")).to eq(first)
           ensure
-            holder&.close
+            holder.release
           end
         ensure
           FileUtils.remove_entry(slot_dir)

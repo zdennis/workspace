@@ -278,9 +278,8 @@ RSpec.describe Workspace::EventStream do
   end
 
   it "reads a large backlog a bounded piece at a time, and says when there is more" do
-    stub_const("#{described_class}::Source::MAX_READ", 300)
     5.times { |n| hook("alpha", n, n + 1) }
-    s = stream
+    s = described_class.new(lifecycle_path: lifecycle, hook_dir: hook_dir, clock: clock, max_read: 300)
     s.open(at: :start)
 
     seqs = s.read.map { |line| line["seq"] }

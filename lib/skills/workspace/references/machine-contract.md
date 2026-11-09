@@ -1,6 +1,6 @@
 # Machine contract for the workspace CLI
 
-Written against workspace 0.75.0. Source: `docs/README.json.md`, `lib/workspace/error_codes.rb`, `workspace capabilities --json`.
+Written against workspace 0.75.0. Source: `docs/README.json.md`, `lib/workspace/core/error_codes.rb`, `workspace capabilities --json`.
 
 ## Mistakes agents make
 
@@ -90,4 +90,4 @@ Under `--json`, stdout holds exactly one JSON value and failures are the envelop
 | Daemon | `malformed_message`, `internal_error`, `wrong_workspace`, `unknown_type`, `not_bound`, `unsupported_agent`, `not_an_agent`, `no_interrupt_key` | Report. Usually the wrong pane or agent kind. |
 | Warnings only | `saved_window_offscreen`, `window_position_unreadable`, `launcher_pane_missing`, promote's `default_ahead`, `left_behind`, `locks_held`, `launch_failed` | Appear in `warnings`, never as an error `code`. |
 
-The full list with meanings is in `docs/README.json.md` and `lib/workspace/error_codes.rb` in the repo.
+The full list with meanings is in `docs/README.json.md` and `lib/workspace/core/error_codes.rb` in the repo.

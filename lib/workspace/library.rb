@@ -207,7 +207,7 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_template`, or `library_source_missing` when it can't be read
     def spine_template(name, cwd:)
       stores = stores(cwd: expand(cwd))
-      unless name.to_s.match?(LibraryStore::NAME)
+      unless name.to_s.match?(IdPatterns::LIBRARY_NAME)
         raise Error.new("'#{name.to_s[0, 60]}' is not a spine template name: lowercase letters, digits and hyphens.",
           code: "unknown_template", details: {"template" => name.to_s[0, 60]})
       end
@@ -285,7 +285,7 @@ module Workspace
     # @return [void]
     # @raise [Workspace::UsageError]
     def validate_name!(name)
-      return if name.to_s.match?(LibraryStore::NAME)
+      return if name.to_s.match?(IdPatterns::LIBRARY_NAME)
       raise UsageError, "'#{name}' is not a valid library name: lowercase letters, digits and hyphens, e.g. my-play."
     end
 

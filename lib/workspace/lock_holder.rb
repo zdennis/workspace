@@ -1,5 +1,3 @@
-require "open3"
-
 module Workspace
   # Identifies the coding agent calling `workspace lock`, and checks whether a
   # previously recorded holder or waiter is still alive.
@@ -32,7 +30,9 @@ module Workspace
     # @param env [Hash] environment lookup, injectable for tests
     # @param run_liveness [Workspace::RunLiveness, nil] answers {#run_alive?};
     #   without one every run counts as alive
-    def initialize(process_tree: Workspace::ProcessTree.new, providers: AgentProvider.all, env: ENV, run_liveness: nil)
+    # @param tmux [Workspace::Tmux, nil] names the pane's process (#pane_pid); without one the pane is not searched
+    def initialize(process_tree: Workspace::ProcessTree.new, providers: AgentProvider.all, env: ENV, run_liveness: nil, tmux: nil)
+      @tmux = tmux
       @run_liveness = run_liveness
       @process_tree = process_tree
       @executables = providers.map(&:executable)
@@ -124,23 +124,13 @@ module Workspace
     def pane_process(snapshot)
       pane = pane_id
       return nil if pane.nil? || pane.empty?
-      pane_pid = pane_pid_for(pane)
+      pane_pid = @tmux&.pane_pid(pane)
       return nil unless pane_pid
       snapshot.find_descendant(pane_pid, @executables, exclude: @background_markers, include_root: true, exact_only: @exact_only)
     end
 
     def ancestor_process(snapshot)
       snapshot.find_ancestor(Process.pid, @executables, exclude: @background_markers, exact_only: @exact_only)
-    end
-
-    PANE_PID_FORMAT = "#" + "{pane_pid}"
-    private_constant :PANE_PID_FORMAT
-
-    def pane_pid_for(pane)
-      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", pane, PANE_PID_FORMAT)
-      return nil unless status.success?
-      value = stdout.strip
-      value.empty? ? nil : value.to_i
     end
   end
 end

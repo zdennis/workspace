@@ -854,7 +854,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     before do
       allow(status).to receive(:run).with("wr_1").and_return("runs" => [shown], "warnings" => [])
-      allow(store).to receive(:find).with("wr_1") { stored }
+      allow(store).to receive(:run).with("wr_1") { Workspace::WorkflowRun.from_h(stored) }
       allow(panes).to receive_messages(alive?: true, pane_of: "%5", idle?: false, parkable?: false)
       allow(engine).to receive(:refuse_resume)
       allow(engine).to receive(:resume).and_return("id" => "wr_1", "workspace" => "app")
@@ -1547,7 +1547,7 @@ RSpec.describe Workspace::Commands::Workflow do
       end
 
       it "leaves a run the store doesn't have to the engine's own refusal" do
-        allow(store).to receive(:find).with("wr_9").and_raise(Workspace::Error.new("no run", code: "unknown_run"))
+        allow(store).to receive(:run).with("wr_9").and_raise(Workspace::Error.new("no run", code: "unknown_run"))
 
         command.advance(run: "wr_9", turn_ended: true, caller_pane: "%5")
 
@@ -1566,7 +1566,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
   describe "#advance" do
     it "tells the engine a turn ended in a pane, or takes the timer's look" do
-      allow(store).to receive(:find).with("wr_1").and_return("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]})
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}))
       allow(engine).to receive(:turn_ended)
       allow(engine).to receive(:tick)
 
@@ -1581,7 +1581,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "passes the background tasks to the engine, and [] for nil from the nudger" do
-      allow(store).to receive(:find).with("wr_1").and_return("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]})
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}))
       allow(engine).to receive(:turn_ended)
       tasks = [{"id" => "k12345678", "type" => "MCP task"}]
 
@@ -1599,7 +1599,7 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(engine).to receive(:report).with("wr_1", status: "fail", summary: "Two specs red.", code: nil)
         .and_return("run_id" => "wr_1", "step" => "verify", "attempt" => 2,
           "reported" => {"status" => "fail", "summary" => "Two specs red.", "at" => "2026-10-04T12:00:00Z"})
-      allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
 
       row = command.step_done(pane: "%5", status: "fail", summary: "Two specs red.")
 
@@ -1613,7 +1613,7 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(engine).to receive(:report).with("wr_1", status: "fail", summary: nil, code: "not_reproduced")
         .and_return("run_id" => "wr_1", "step" => "reproduce", "attempt" => 1,
           "reported" => {"status" => "fail", "summary" => nil, "code" => "not_reproduced", "at" => "t"})
-      allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
 
       row = command.step_done(pane: "%5", status: "fail", code: "not_reproduced")
 
@@ -1636,7 +1636,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "accepts a code of 40 characters" do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
       allow(engine).to receive(:report).and_return("run_id" => "wr_1", "step" => "s", "attempt" => 1, "reported" => {"status" => "fail", "summary" => nil})
-      allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
 
       expect { command.step_done(pane: "%5", status: "fail", code: "a" * 40) }.not_to raise_error
     end
@@ -1674,7 +1674,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     before do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
-      allow(store).to receive(:find).with("wr_1").and_return(run)
+      allow(store).to receive(:run).with("wr_1") { Workspace::WorkflowRun.from_h(run) }
     end
 
     it "prints the step this pane is on, and whether the files it must leave exist" do
@@ -1713,7 +1713,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "says a symlink and a directory are not regular files" do
       strict = run.merge("definition" => definition.to_h.merge("produces_check" => "strict"))
-      allow(store).to receive(:find).with("wr_1").and_return(strict)
+      allow(store).to receive(:run).with("wr_1") { Workspace::WorkflowRun.from_h(strict) }
       File.write(File.join(@dir, "real.md"), "x")
       File.symlink(File.join(@dir, "real.md"), File.join(@dir, "plan.md"))
 
@@ -2908,22 +2908,23 @@ RSpec.describe Workspace::Commands::Workflow do
       Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes, pane_of: "%5", alive?: true, daemon_running?: true),
         snapshot_client: instance_double(Workspace::AgentSnapshotClient, fetch: {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]}),
         ask_store_for: ->(_workspace) { instance_double(Workspace::AskStore, list: []) },
-        gate_note: instance_double(Workspace::WorkflowGateNote, find: nil), clock: -> { now })
+        gate_note: instance_double(Workspace::WorkflowGateNote, find: gate_file), clock: -> { now })
     end
+    let(:gate_file) { nil }
     subject(:command) do
       described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new(clock: -> { now }),
         tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output)
     end
     let(:scope) { Workspace::StatusScope::Scope.new(kind: :needs_me) }
 
-    def create(workspace: "app", reason: nil, state: "waiting", gate: nil)
+    def create(workspace: "app", reason: nil, state: "waiting", gate: nil, **rest)
       store.create({
         "workflow" => "flow", "title" => "Flow", "workspace" => workspace, "project" => "app", "worktree" => @dir, "task" => "t",
         "inputs" => {}, "state" => state, "created_at" => "2026-10-04T11:00:00Z", "started_at" => "2026-10-04T11:00:00Z", "ended_at" => nil,
         "current" => "plan", "pane" => "%5", "loops" => {}, "reason" => reason, "artifacts_dir" => "#{@dir}/wr",
         "definition" => {"steps" => [{"id" => "plan", "title" => "Plan", "timeout" => nil}]},
         "steps" => {"plan" => {"state" => "passed", "gate" => gate, "attempts" => [{"n" => 1, "started_at" => "2026-10-04T11:00:00Z"}]}}
-      })
+      }.merge(rest))
     end
 
     def failed(code, since) = {"code" => "failed_check", "since" => since, "details" => {"step" => "plan", "code" => code, "attempt" => 1}}
@@ -3004,23 +3005,32 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "words the wait in seconds, minutes, hours and days" do
-      {45 => "45s", 125 => "2m", 3700 => "1h 1m", 90_000 => "1d 1h"}.each do |seconds, text|
-        expect(command.send(:wait_text, seconds)).to eq(text)
+      {"2026-10-04T12:59:15Z" => "45s", "2026-10-04T12:57:55Z" => "2m", "2026-10-04T11:58:20Z" => "1h 1m", "2026-10-03T12:00:00Z" => "1d 1h"}.each do |since, text|
+        output.truncate(0)
+        output.rewind
+        ids.replace(%w[wr_1])
+        create(reason: failed("a", since))
+        command.status(scope: scope)
+        expect(lines.last).to match(/\Awr_1 +app +plan +#{text} +failed_check/)
+        FileUtils.rm_rf(File.join(@dir, "runs"))
       end
-      expect(command.send(:wait_text, nil)).to eq("-")
     end
 
     it "writes a value the caller supplies as an upper-case placeholder" do
-      held = {"action" => "workflow resume", "args" => ["wr_1"], "needs" => [{"name" => "pane", "flag" => "--pane"}]}
-      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 60, "code" => "retry_backoff", "kind" => nil, "detail" => nil,
-             "gate_file" => nil, "next_action" => held}
-      expect(command.send(:needs_me_cells, row).last).to eq("workflow resume wr_1 --pane PANE")
+      create(reason: {"code" => "retry_backoff", "since" => "2026-10-04T12:59:00Z", "details" => {"step" => "plan"}}, backoff: {"blocked" => "pane_gone", "to" => "plan"})
+      command.status(scope: scope)
+      expect(lines.last).to match(/\Awr_1 +app +plan +1m +retry_backoff +workflow resume wr_1 --pane PANE\z/)
     end
 
-    it "shows a gate's note in WHY" do
-      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 60, "code" => "waiting_you", "kind" => "gate", "detail" => nil,
-             "gate_file" => {"name" => "plan.md"}, "next_action" => nil}
-      expect(command.send(:needs_me_cells, row)[4..]).to eq(["gate (plan.md)", "-"])
+    context "with a gate whose note was found" do
+      let(:gate_file) { {"name" => "plan.md"} }
+
+      it "shows a gate's note in WHY" do
+        create(reason: {"code" => "waiting_you", "since" => "2026-10-04T12:59:00Z", "details" => {"kind" => "gate", "step" => "plan"}},
+          gate: {"state" => "waiting"})
+        command.status(scope: scope)
+        expect(lines.last).to match(/\Awr_1 +app +plan +1m +gate \(plan\.md\) +workflow approve wr_1 --step plan --attempt 1\z/)
+      end
     end
 
     it "does not claim nothing is waiting when a run file could not be read, and exits 3" do
@@ -3046,9 +3056,9 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "prints - for a lock wait that offers only cancel" do
-      row = {"run" => "wr_1", "workspace" => "app", "step" => "plan", "waiting_seconds" => 4000, "code" => "waiting_lock", "kind" => nil, "detail" => nil,
-             "gate_file" => nil, "next_action" => nil}
-      expect(command.send(:needs_me_cells, row).last).to eq("-")
+      create(reason: {"code" => "waiting_lock", "since" => "2026-10-04T12:00:00Z", "details" => {"resource" => nil, "holder" => {}, "position" => 1, "total" => 1}})
+      command.status(scope: scope)
+      expect(lines.last).to match(/\Awr_1 +app +plan +1h 0m +waiting_lock +-\z/)
     end
 
     it "says status partial in the JSON of an incomplete list" do

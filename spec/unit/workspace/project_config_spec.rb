@@ -720,8 +720,10 @@ RSpec.describe Workspace::ProjectConfig do
       end
     end
 
-    it "names a worktree's config the way create_worktree does" do
-      expect(pc.worktree_config_name("MyApp", "PROJ-123")).to eq("myapp.worktree-proj-123")
+    it "names a worktree config from the project and the sanitized directory name, in lowercase" do
+      allow(pc).to receive(:settle_new_name) { |name, _path| name }
+
+      expect(pc.settle_worktree_name("MyApp", "PROJ/123", "/tmp/wt")).to eq("myapp.worktree-proj-123")
     end
 
     it "raises error when worktree template is missing" do

@@ -25,9 +25,12 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
 
+  let(:followup_reply_wait) { described_class::FOLLOWUP_REPLY_WAIT }
+
   subject(:command) do
     described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, notes: notes, binder: binder, library: library, output: output, error_output: error_output)
+      restart_agent_command: restart_agent_command, notes: notes, binder: binder, library: library, output: output, error_output: error_output,
+      followup_reply_wait: followup_reply_wait)
   end
 
   let(:defaults) { {threshold: 11, check_prompt: nil, resume_prompt: nil} }
@@ -110,19 +113,22 @@ RSpec.describe Workspace::Commands::Handoff do
     expect(tmux).not_to have_received(:deliver)
   end
 
-  it "HD5: guards handoff.followup_prompt like check_prompt, so a stray % in it neither crashes check nor changes its exit code" do
-    stub_const("Workspace::Commands::Handoff::FOLLOWUP_REPLY_WAIT", 0.1)
-    allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
-    allow(handoff_config).to receive(:for_workspace).and_return(
-      defaults.merge(followup_interval: 30, followup_max: 10, followup_prompt: "100% sure, run %{oops}")
-    )
+  context "with a short follow-up wait" do
+    let(:followup_reply_wait) { 0.1 }
 
-    result = nil
-    expect {
-      with_raw_reply({"panes" => [claude_pane]}.to_json) { result = command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
-    }.not_to raise_error
+    it "HD5: guards handoff.followup_prompt like check_prompt, so a stray % in it neither crashes check nor changes its exit code" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
+      allow(handoff_config).to receive(:for_workspace).and_return(
+        defaults.merge(followup_interval: 30, followup_max: 10, followup_prompt: "100% sure, run %{oops}")
+      )
 
-    expect(result).to eq(exit_code: 1)
-    expect(error_output.string).to match(/invalid prompt template/i)
+      result = nil
+      expect {
+        with_raw_reply({"panes" => [claude_pane]}.to_json) { result = command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
+      }.not_to raise_error
+
+      expect(result).to eq(exit_code: 1)
+      expect(error_output.string).to match(/invalid prompt template/i)
+    end
   end
 end

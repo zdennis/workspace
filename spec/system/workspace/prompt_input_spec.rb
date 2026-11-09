@@ -1,4 +1,6 @@
 require "stringio"
+require "tmpdir"
+require "fileutils"
 
 RSpec.describe Workspace::PromptInput do
   describe ".env_truthy?" do
@@ -82,17 +84,42 @@ RSpec.describe Workspace::Prompt do
 end
 
 RSpec.describe "Workspace.build_cli" do
-  it "refuses prompts when WORKSPACE_NO_INPUT is set" do
-    out = StringIO.new
-    cli = Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {"WORKSPACE_NO_INPUT" => "1"})
-    input = cli.instance_variable_get(:@input)
+  around do |example|
+    Dir.mktmpdir("workspace-prompt-input") do |home|
+      saved = ENV.to_h
+      begin
+        ENV.replace("HOME" => home, "PATH" => ENV["PATH"])
+        @workflow_file = File.join(home, ".config", "workspace", "workflows", "ship.yml")
+        FileUtils.mkdir_p(File.dirname(@workflow_file))
+        File.write(@workflow_file, "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n")
+        example.run
+      ensure
+        ENV.replace(saved)
+      end
+    end
+  end
 
-    expect(input).to be_no_input
+  def remove_ship(answer, env:)
+    err = StringIO.new
+    begin
+      Workspace.build_cli(output: StringIO.new, error_output: err, input: StringIO.new(answer), env: env, exit_handler: FakeExitHandler)
+        .run(["workflow", "remove", "ship"])
+    rescue FakeSystemExit
+      nil
+    end
+    err.string
+  end
+
+  it "refuses prompts when WORKSPACE_NO_INPUT is set" do
+    err = remove_ship("y\n", env: {"WORKSPACE_NO_INPUT" => "1"})
+
+    expect(err).to include("--no-input (or WORKSPACE_NO_INPUT) set")
+    expect(File.exist?(@workflow_file)).to be(true)
   end
 
   it "accepts prompts otherwise" do
-    cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
+    remove_ship("y\n", env: {})
 
-    expect(cli.instance_variable_get(:@input)).not_to be_no_input
+    expect(File.exist?(@workflow_file)).to be(false)
   end
 end

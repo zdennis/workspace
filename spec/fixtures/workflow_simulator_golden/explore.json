@@ -1,0 +1,145 @@
+{
+  "workflow": "explore",
+  "inputs": {
+    "task": "golden",
+    "topic": ""
+  },
+  "outcome": "completed",
+  "stopped": null,
+  "capped": false,
+  "max_actions": 200,
+  "actions": 3,
+  "run": {
+    "state": "completed",
+    "current": "report",
+    "reason": null,
+    "loops": {}
+  },
+  "steps": [
+    {
+      "id": "survey",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        }
+      ]
+    }
+  ],
+  "budget": null,
+  "transitions": [
+    {
+      "n": 1,
+      "at": 0,
+      "type": "run_started",
+      "workflow": "explore",
+      "workspace": "simulation"
+    },
+    {
+      "n": 2,
+      "at": 0,
+      "type": "step_dispatching",
+      "step": "survey",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 3,
+      "at": 0,
+      "type": "step_dispatched",
+      "step": "survey",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 4,
+      "at": 0,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "survey",
+      "attempt": 1,
+      "wrote": [
+        "survey.md"
+      ]
+    },
+    {
+      "n": 5,
+      "at": 1,
+      "type": "step_passed",
+      "step": "survey",
+      "attempt": 1
+    },
+    {
+      "n": 6,
+      "at": 1,
+      "type": "gate_waiting",
+      "step": "survey"
+    },
+    {
+      "n": 7,
+      "at": 1,
+      "type": "simulated_person",
+      "action": "approve",
+      "step": "survey",
+      "attempt": 1
+    },
+    {
+      "n": 8,
+      "at": 1,
+      "type": "gate_approved",
+      "step": "survey"
+    },
+    {
+      "n": 9,
+      "at": 1,
+      "type": "step_dispatching",
+      "step": "report",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 10,
+      "at": 1,
+      "type": "step_dispatched",
+      "step": "report",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 11,
+      "at": 1,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "report",
+      "attempt": 1,
+      "wrote": [
+        "report.md"
+      ]
+    },
+    {
+      "n": 12,
+      "at": 2,
+      "type": "step_passed",
+      "step": "report",
+      "attempt": 1
+    },
+    {
+      "n": 13,
+      "at": 2,
+      "type": "run_completed"
+    }
+  ]
+}

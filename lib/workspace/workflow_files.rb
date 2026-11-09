@@ -12,9 +12,11 @@ module Workspace
   class WorkflowFiles
     # @param config [Workspace::Config] names the directory
     # @param catalog [Workspace::WorkflowCatalog] checks an id and names its file
-    def initialize(config:, catalog:)
+    # @param random_hex [#call] `() -> String` the random part of a temp file's name
+    def initialize(config:, catalog:, random_hex: -> { SecureRandom.hex(8) })
       @config = config
       @catalog = catalog
+      @random_hex = random_hex
     end
 
     # The directory the files are written to; a relative `prompt_file:` in one is read from here.
@@ -162,25 +164,16 @@ module Workspace
 
     # Holds the id's lock for the whole check-and-write. The lock file stays.
     def with_lock(id)
-      FileUtils.mkdir_p(dir)
-      File.open(File.join(dir, ".#{id}.yml.lock"), File::RDWR | File::CREAT, 0o600) do |lock|
-        lock.flock(File::LOCK_EX)
-        yield
-      end
+      FileLock.new(File.join(dir, ".#{id}.yml.lock"), dir_mode: nil).hold { yield }
     end
 
     def write(id, target, text)
       # A new name each time, created exclusively: a link or leftover file there is never followed or reused.
-      tmp_path = File.join(dir, ".#{id}.yml.#{SecureRandom.hex(8)}.tmp")
-      created = false
-      File.open(tmp_path, File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o644) do |file|
-        created = true
-        file.write(text)
-      end
-      File.rename(tmp_path, target)
-      created = false
-    ensure
-      File.unlink(tmp_path) if created && File.exist?(tmp_path)
+      AtomicFile.write(target, text,
+        temp_name: ->(_) { File.join(dir, ".#{id}.yml.#{@random_hex.call}.tmp") },
+        writer: ->(temp, content) {
+          File.open(temp, File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o644) { |file| file.write(content) }
+        })
     end
   end
 end

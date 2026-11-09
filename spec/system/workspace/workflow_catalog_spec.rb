@@ -266,10 +266,12 @@ RSpec.describe Workspace::WorkflowCatalog do
     FileUtils.mkdir_p(File.join(@dir, "elsewhere"))
     FileUtils.mkdir_p(global_dir)
     File.symlink(File.join(@dir, "elsewhere"), File.join(global_dir, "linked.yml"))
-    allow(Dir).to receive(:glob).and_call_original
-    allow(Dir).to receive(:glob).with(File.join(global_dir, "*.yml")).and_return([File.join(global_dir, "linked.yml"), File.join(global_dir, "vanished.yml")])
+    pattern = File.join(global_dir, "*.yml")
+    racing = lambda do |glob|
+      (glob == pattern) ? [File.join(global_dir, "linked.yml"), File.join(global_dir, "vanished.yml")] : Dir.glob(glob)
+    end
 
-    list = catalog.list
+    list = described_class.new(config: config, globber: racing).list
 
     expect(list.map { |entry| entry["id"] }).to eq(%w[linked rpiv])
     expect(list.first["problems"]).to eq(["#{File.join(global_dir, "linked.yml")} is not a file"])

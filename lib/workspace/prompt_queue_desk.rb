@@ -55,7 +55,7 @@ module Workspace
     # SessionStart with source `clear`. Codex waits on a check against a live pane.
     CLEARABLE_KINDS = %w[claude].freeze
 
-    # @param tmux [Workspace::Tmux] pane lookups, screen reads, server pids
+    # @param panes [Workspace::PaneFactory] looks a pane up for its details, screen reads, keys and server pid
     # @param session_name [String] the workspace's tmux session
     # @param workspace [String] the workspace the daemon serves, events are recorded under it
     # @param session_monitor [Workspace::SessionMonitor] pane facts and readiness
@@ -69,19 +69,21 @@ module Workspace
     #   clear; returns a token, or nil when a restart already holds the pane
     # @param release_restart [#call] given a pane id and a token, releases that claim
     # @param event_log [Workspace::EventLog, nil] where `prompt_queued` and `prompt_dequeued` go
-    # @param typer [Workspace::PromptTyper, nil] nil builds one from +tmux+ and +session_monitor+
+    # @param typer [Workspace::PromptTyper, nil] nil builds one from +panes+ and +session_monitor+
+    # @param pane_locks [Workspace::PaneLocks] answers the Mutex that serialises each pane's
+    #   deliveries; the default keeps one per pane in this desk
     # @param providers [Array<Workspace::AgentProvider>] the known agents
     # @param clock [#now] time source; the session monitor's, so their times compare
     # @param sleeper [#call] sleeps the given seconds
     # @param spawn [#call] runs the given block on its own thread
     # @param daemon_pid [Integer] written into each claim
     # @param logger [Workspace::Logger] debug logger
-    def initialize(tmux:, session_name:, workspace:, session_monitor:, store:, delivery_lock:,
+    def initialize(panes:, session_name:, workspace:, session_monitor:, store:, delivery_lock:,
       restarting: ->(_pane_id) { false }, recovering: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
-      release_restart: ->(_pane_id, _token) {}, event_log: nil, typer: nil, providers: AgentProvider.all,
+      release_restart: ->(_pane_id, _token) {}, event_log: nil, typer: nil, pane_locks: PaneLocks.new, providers: AgentProvider.all,
       clock: Time, sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) },
       daemon_pid: Process.pid, logger: Workspace::Logger.new)
-      @tmux = tmux
+      @panes = panes
       @session_name = session_name
       @workspace = workspace
       @session_monitor = session_monitor
@@ -92,15 +94,14 @@ module Workspace
       @claim_restart = claim_restart
       @release_restart = release_restart
       @event_log = event_log
-      @typer = typer || PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger)
+      @typer = typer || PromptTyper.new(panes: panes, session_monitor: session_monitor, logger: logger)
       @providers = providers
       @clock = clock
       @sleeper = sleeper
       @spawn = spawn
       @daemon_pid = daemon_pid
       @logger = logger
-      @pane_locks = {}
-      @pane_locks_guard = Mutex.new
+      @pane_locks = pane_locks
     end
 
     # Handles a "prompt_send" message. Runs on a worker thread: when the
@@ -130,7 +131,7 @@ module Workspace
       return refused.merge(context) if refused
 
       # Without these a later restart of tmux or of the agent couldn't be told apart.
-      server_pid = @tmux.server_pid_for_pane(pane_id)
+      server_pid = detail.pane.server_pid
       unless server_pid && facts[:agent_pid]
         return error("pane_not_ready", "the pane's tmux server or agent process can't be read yet; try again in a few seconds",
           "reason" => "unknown").merge(context)
@@ -216,7 +217,7 @@ module Workspace
     # @return [void]
     def scan
       @store.pane_ids.each do |pane_id|
-        next if pane_lock(pane_id).locked?
+        next if @pane_locks.for(pane_id).locked?
         facts = @session_monitor.delivery_facts(pane_id)
         next if facts && facts[:kind] != "shell" && !facts[:fresh_since]
         @spawn.call { deliver_next(pane_id, wait: false) }
@@ -235,7 +236,7 @@ module Workspace
     #   none was claimed
     def deliver_next(pane_id, wait: true)
       return nil if @recovering.call(pane_id)
-      lock = pane_lock(pane_id)
+      lock = @pane_locks.for(pane_id)
       return nil unless wait || lock.try_lock
       begin
         lock.lock if wait
@@ -347,12 +348,12 @@ module Workspace
       target = "#{detail[:window]}.#{detail[:index]}"
       return error("pane_busy", "a restart took the pane; nothing was pressed or typed", "reason" => "restarting") if @restarting.call(pane_id)
       keys.each_with_index do |key, sent|
-        next if @tmux.send_key(@session_name, pane_id, key)
+        next if detail.pane.send_key(key)
         return error("not_delivered", "failed to press #{key} (#{sent} of #{keys.size} keys sent); nothing was typed",
           "keys_sent" => sent, "interrupted" => sent.positive?)
       end
 
-      gate = wait_for_prompt(pane_id)
+      gate = wait_for_prompt(detail.pane, pane_id)
       if gate
         return error("not_ready", "the agent's prompt did not come back within #{INTERRUPT_TIMEOUT}s of the interrupt " \
           "(#{gate[:message]}); nothing was typed", "interrupted" => true, "keys" => keys, "reason" => gate[:reason])
@@ -379,14 +380,14 @@ module Workspace
     #
     # @return [Hash, nil] nil when the prompt is back; else the last refusal
     #   (`:reason`, `:message`) once {INTERRUPT_TIMEOUT} passed
-    def wait_for_prompt(pane_id)
+    def wait_for_prompt(pane, pane_id)
       deadline = @clock.now + INTERRUPT_TIMEOUT
       screen = nil
       quiet_since = nil
       gate = {reason: "busy", message: "the screen never stayed unchanged"}
       loop do
         @sleeper.call(POLL_INTERVAL)
-        current = @tmux.capture_screen(pane_id)
+        current = pane.capture
         now = @clock.now
         if current.nil? || current != screen
           screen = current
@@ -593,7 +594,7 @@ module Workspace
       detail = pane_lookup(pane_id)
       return [:not_ready, nil, nil] if detail == :unknown
       facts = @session_monitor.delivery_facts(pane_id)
-      server_pid = detail && @tmux.server_pid_for_pane(pane_id)
+      server_pid = detail&.pane&.server_pid
       reason = identity_change(entry, detail, server_pid, facts)
       return [reason, detail, facts] if reason
       return [:not_ready, detail, facts] unless server_pid && facts
@@ -628,7 +629,7 @@ module Workspace
     # Drops the pane's queued entries that can no longer go to it.
     def prune(pane_id)
       detail = pane_lookup(pane_id)
-      server_pid = detail.is_a?(Hash) ? @tmux.server_pid_for_pane(pane_id) : nil
+      server_pid = detail.is_a?(Found) ? detail.pane.server_pid : nil
       facts = @session_monitor.delivery_facts(pane_id)
       @store.bind_session(pane_id, facts[:session_id]) if facts&.dig(:session_id)
       @store.drop_queued(pane_id) { |entry| identity_change(entry, detail, server_pid, facts) }
@@ -644,10 +645,11 @@ module Workspace
     #   pane that can't be read, which the re-check then deals with
     def wait_until_quiet(pane_id)
       deadline = @clock.now + QUIET_TIMEOUT
+      pane = @panes.for(pane_id)
       screen = nil
       quiet_since = nil
       loop do
-        current = @tmux.capture_screen(pane_id)
+        current = pane.is_a?(Symbol) ? nil : pane.capture
         return true if current.nil?
         now = @clock.now
         if current != screen
@@ -673,22 +675,25 @@ module Workspace
       @event_log&.record(type: type, project: @workspace, data: data)
     end
 
-    # The pane's details, nil when the session doesn't have it, or
+    # A pane the session lists, with the row it was listed by; +[]+ reads the row.
+    Found = Struct.new(:pane, :row) do
+      def [](key) = row[key]
+    end
+    private_constant :Found
+
+    # The pane (a {Found}), nil when the session doesn't have it, or
     # :unknown when tmux listed no pane at all (it failed, or the session is
     # gone): a failed tmux call must not read as every pane gone.
     def pane_lookup(pane_id)
-      return nil unless pane_id.is_a?(String)
-      details = @tmux.pane_details(@session_name, window: nil)
-      return :unknown if details.empty?
-      details.find { |d| d[:id] == pane_id }
+      pane = @panes.call(pane_id)
+      return :unknown if pane == :unlisted
+      return nil if pane == :gone
+      row = pane.details
+      row && Found.new(pane, row)
     end
 
     def with_pane(pane_id, &block)
-      pane_lock(pane_id).synchronize(&block)
-    end
-
-    def pane_lock(pane_id)
-      @pane_locks_guard.synchronize { @pane_locks[pane_id] ||= Mutex.new }
+      @pane_locks.for(pane_id).synchronize(&block)
     end
 
     def error(code, message, extra = {})

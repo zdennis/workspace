@@ -1,0 +1,145 @@
+{
+  "workflow": "pr-feedback",
+  "inputs": {
+    "task": "",
+    "pr": ""
+  },
+  "outcome": "completed",
+  "stopped": null,
+  "capped": false,
+  "max_actions": 200,
+  "actions": 3,
+  "run": {
+    "state": "completed",
+    "current": "fix",
+    "reason": null,
+    "loops": {}
+  },
+  "steps": [
+    {
+      "id": "triage",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        }
+      ]
+    },
+    {
+      "id": "fix",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        }
+      ]
+    }
+  ],
+  "budget": null,
+  "transitions": [
+    {
+      "n": 1,
+      "at": 0,
+      "type": "run_started",
+      "workflow": "pr-feedback",
+      "workspace": "simulation"
+    },
+    {
+      "n": 2,
+      "at": 0,
+      "type": "step_dispatching",
+      "step": "triage",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 3,
+      "at": 0,
+      "type": "step_dispatched",
+      "step": "triage",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 4,
+      "at": 0,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "triage",
+      "attempt": 1,
+      "wrote": [
+        "triage.md"
+      ]
+    },
+    {
+      "n": 5,
+      "at": 1,
+      "type": "step_passed",
+      "step": "triage",
+      "attempt": 1
+    },
+    {
+      "n": 6,
+      "at": 1,
+      "type": "gate_waiting",
+      "step": "triage"
+    },
+    {
+      "n": 7,
+      "at": 1,
+      "type": "simulated_person",
+      "action": "approve",
+      "step": "triage",
+      "attempt": 1
+    },
+    {
+      "n": 8,
+      "at": 1,
+      "type": "gate_approved",
+      "step": "triage"
+    },
+    {
+      "n": 9,
+      "at": 1,
+      "type": "step_dispatching",
+      "step": "fix",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 10,
+      "at": 1,
+      "type": "step_dispatched",
+      "step": "fix",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 11,
+      "at": 1,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "fix",
+      "attempt": 1,
+      "wrote": [
+        "fix.md"
+      ]
+    },
+    {
+      "n": 12,
+      "at": 2,
+      "type": "step_passed",
+      "step": "fix",
+      "attempt": 1
+    },
+    {
+      "n": 13,
+      "at": 2,
+      "type": "run_completed"
+    }
+  ]
+}

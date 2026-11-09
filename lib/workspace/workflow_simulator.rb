@@ -32,7 +32,9 @@ module Workspace
 
     # @param engine_factory [#call] given the engine's collaborators as keywords, returns a {WorkflowEngine}
     # @param tmpdir [#call] as `Dir.mktmpdir`: given a prefix, yields a directory and removes it after
-    def initialize(engine_factory:, tmpdir: Dir.method(:mktmpdir))
+    # @param max_actions [Integer] the most actions played before the run is capped
+    def initialize(engine_factory:, tmpdir: Dir.method(:mktmpdir), max_actions: MAX_ACTIONS)
+      @max_actions = max_actions
       @engine_factory = engine_factory
       @tmpdir = tmpdir
     end
@@ -70,18 +72,18 @@ module Workspace
       engine = @engine_factory.call(store: store, resources: SimResources.new, composer: SimComposer.new, panes: panes, checker: SimChecker.new(script),
         commands_config: SimCommands.new, lineage: SimLineage.new, git: SimGit.new, guard: guard, excludes: SimExcludes.new, gate_note: SimGateNote.new,
         attempt_record: records, require_check: SimRequire.new(script), clock: clock)
-      run = engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE)
-      actions, capped = drive(engine, store, run["id"], definition.to_h, script, clock, records)
-      report(store, run["id"], definition.to_h, clock, actions, capped)
+      run = WorkflowRun.from_h(engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE))
+      actions, capped = drive(engine, store, run.id, definition.to_h, script, clock, records)
+      report(store, run.id, definition.to_h, clock, actions, capped)
     end
 
     # The fake agent and the fake person, one move at a time, until the run is finished or waits for a real person.
     def drive(engine, store, id, data, script, clock, records)
       actions = 0
       loop do
-        run = store.find(id)
-        return [actions, false] if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-        return [actions, true] if actions >= MAX_ACTIONS
+        run = store.run(id)
+        return [actions, false] if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
+        return [actions, true] if actions >= @max_actions
         move = next_move(run)
         return [actions, false] unless move
         actions += 1
@@ -95,23 +97,23 @@ module Workspace
     end
 
     def next_move(run)
-      state = run["steps"].fetch(run["current"])
-      backoff = run["backoff"]
+      state = run.steps.fetch(run.current)
+      backoff = run.backoff
       return :backoff if backoff.is_a?(Hash) && backoff["to"].is_a?(String) && !backoff["blocked"]
-      return :gate if state.dig("gate", "state") == "waiting"
-      :turn if state["state"] == "running" && run["reason"].nil? && !run["parked"]
+      return :gate if state.gate_waiting?
+      :turn if state.state == "running" && run.reason.nil? && !run.parked
     end
 
     def act(move, engine, store, run, data, script, clock, records)
-      id = run["id"]
-      step = run["current"]
+      id = run.id
+      step = run.current
       case move
       when :backoff
-        clock.advance_to(Time.iso8601(run["backoff"]["until"]))
-        store.record_event(id, "simulated_wait", "step" => step, "until" => run["backoff"]["until"])
+        clock.advance_to(Time.iso8601(run.backoff["until"]))
+        store.record_event(id, "simulated_wait", "step" => step, "until" => run.backoff["until"])
         engine.tick(id)
       when :gate
-        number = run["steps"][step]["attempts"].last["n"]
+        number = run.step(step).last_attempt.n
         said = script.attempt(step, number)
         if said["gate"] == "reject"
           note = said["note"] || "rejected by the script"
@@ -127,9 +129,9 @@ module Workspace
     end
 
     def turn(engine, store, run, data, script, records, clock)
-      id = run["id"]
-      step = run["current"]
-      number = run["steps"][step]["attempts"].last["n"]
+      id = run.id
+      step = run.current
+      number = run.step(step).last_attempt.n
       said = script.attempt(step, number)
       definition = data["steps"].find { |each| each["id"] == step }
       files = said.key?("writes") ? said["writes"] : definition["produces"]
@@ -143,24 +145,24 @@ module Workspace
     end
 
     def write(run, file, clock)
-      path = File.join(run["artifacts_dir"], file)
-      return unless File.expand_path(path).start_with?(File.expand_path(run["artifacts_dir"]) + File::SEPARATOR)
+      path = File.join(run.artifacts_dir, file)
+      return unless File.expand_path(path).start_with?(File.expand_path(run.artifacts_dir) + File::SEPARATOR)
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "written by workflow simulate\n")
       File.utime(clock.call, clock.call, path)
     end
 
     def report(store, id, data, clock, actions, capped)
-      run = store.find(id)
+      run = store.run(id)
       events = store.events(id, limit: WorkflowRunStore::EVENTS_LIMIT)["events"]
       outcome = if capped then "capped"
-      elsif WorkflowRunStore::TERMINAL_STATES.include?(run["state"]) then run["state"]
+      elsif WorkflowRunStore::TERMINAL_STATES.include?(run.state) then run.state
       else "stopped"
       end
-      stopped = (outcome == "stopped") ? {"step" => run["current"], "attempt" => run["steps"][run["current"]]["attempts"].last&.fetch("n", nil), "reason" => run.dig("reason", "code")} : nil
-      {"workflow" => data["id"], "inputs" => run["inputs"], "outcome" => outcome, "stopped" => stopped, "capped" => capped, "max_actions" => MAX_ACTIONS, "actions" => actions,
-       "run" => {"state" => run["state"], "current" => run["current"], "reason" => run.dig("reason", "code"), "loops" => run["loops"]},
-       "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run["steps"][step["id"]]["state"], "attempts" => run["steps"][step["id"]]["attempts"].map { |each| each.slice("n", "outcome", "code") }} },
+      stopped = (outcome == "stopped") ? {"step" => run.current, "attempt" => run.step(run.current).last_attempt&.n, "reason" => run.reason&.dig("code")} : nil
+      {"workflow" => data["id"], "inputs" => run.inputs, "outcome" => outcome, "stopped" => stopped, "capped" => capped, "max_actions" => @max_actions, "actions" => actions,
+       "run" => {"state" => run.state, "current" => run.current, "reason" => run.reason&.dig("code"), "loops" => run.loops},
+       "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run.step(step["id"]).state, "attempts" => run.step(step["id"]).attempts.map { |each| each.to_h.slice("n", "outcome", "code") }} },
        "budget" => WorkflowBudget.reading(run),
        "transitions" => events.map { |event| {"n" => event["n"], "at" => (Time.iso8601(event["ts"]) - START).round}.merge(event.except("n", "ts")) }}
     end

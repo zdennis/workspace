@@ -216,14 +216,12 @@ RSpec.describe Workspace::SessionMonitor do
 
     it "drops the main agent's unanswered permission request, as a Stop does" do
       monitor.record(ask.merge("event" => "permission_request", "tool" => "Bash", "input" => {"command" => "ls"}))
-      requests = monitor.instance_variable_get(:@panes)["%2"][:permission_requests]
-      expect(requests.keys).to eq([nil])
-
       show("question_closed_single")
       scans(2)
 
       expect(open_tools).to eq([])
-      expect(requests).to be_empty
+      monitor.record(ask.merge("event" => "notification", "message" => "Claude needs your permission"))
+      expect(pane("%2")).to include("waiting_tool" => nil, "waiting_input" => nil)
     end
 
     it "leaves a sub-agent's wait alone" do
@@ -407,8 +405,7 @@ RSpec.describe Workspace::SessionMonitor do
   end
 
   describe "the default poll interval" do
-    it "matches the agentd.poll_interval default the config schema declares" do
-      expect(monitor.instance_variable_get(:@poll_interval)).to eq(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL)
+    it "declares the DEFAULT_POLL_INTERVAL the config schema gives agentd.poll_interval" do
       expect(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL).to eq(Workspace::ConfigSchema.default("agentd.poll_interval"))
     end
   end
@@ -958,11 +955,7 @@ RSpec.describe Workspace::SessionMonitor do
     end
 
     def waits
-      monitor.instance_variable_get(:@panes)["%2"][:waits]
-    end
-
-    def requests
-      monitor.instance_variable_get(:@panes)["%2"][:permission_requests]
+      pane("%2")["waits"].to_h { |wait| [wait["agent_id"], wait] }
     end
 
     def expect_null_fields
@@ -994,13 +987,15 @@ RSpec.describe Workspace::SessionMonitor do
         expect(pane("%2")).to include("waiting_tool" => "mcp__x__y", "waiting_input" => nil)
       end
 
-      it "puts a replaced request last" do
+      it "keeps only an agent's newest request" do
         request(agent_id: "sub-1")
         request(agent_id: "sub-2")
         request(tool: "Read", agent_id: "sub-1")
+        event("subagent_stop", agent_id: "sub-2")
+        prompt
 
-        expect(requests.keys).to eq(["sub-2", "sub-1"])
-        expect(requests["sub-1"][:tool]).to eq("Read")
+        expect(waits.keys).to eq(["sub-1"])
+        expect(pane("%2")["waiting_tool"]).to eq("Read")
       end
     end
 
@@ -1183,23 +1178,27 @@ RSpec.describe Workspace::SessionMonitor do
         event("stop")
 
         expect(waits).to be_empty
-        expect(requests).to be_empty
+        prompt
+        expect_null_fields
       end
 
       it "leaves the request on a tool_use of another name and clears it on one of the same" do
         request
         tool_done(tool: "Read")
-        expect(requests.keys).to eq([nil])
+        prompt
+        expect(pane("%2")["waiting_tool"]).to eq("Bash")
 
         tool_done
-        expect(requests).to be_empty
+        prompt
+        expect_null_fields
       end
 
       it "leaves the request on a tool_start" do
         request
         event("tool_start", tool: "Bash")
+        prompt
 
-        expect(requests.keys).to eq([nil])
+        expect(pane("%2")["waiting_tool"]).to eq("Bash")
       end
 
       it "clears that sub-agent's request on its subagent_stop and no other's" do
@@ -1209,8 +1208,13 @@ RSpec.describe Workspace::SessionMonitor do
 
         event("subagent_stop", agent_id: "sub-1")
         event("subagent_stop")
+        prompt
+        expect_null_fields
 
-        expect(requests.keys).to eq([nil, "sub-2"])
+        tool_done
+        prompt
+        expect(waits.keys).to eq(["sub-2"])
+        expect(pane("%2")["waiting_tool"]).to eq("Bash")
       end
 
       it "clears main's request on a main stop or turn_failed and keeps a sub-agent's" do
@@ -1219,19 +1223,24 @@ RSpec.describe Workspace::SessionMonitor do
           request(agent_id: "sub-1")
 
           event(name)
+          prompt
 
-          expect(requests.keys).to eq(["sub-1"])
+          expect(waits.keys).to eq(["sub-1"])
+          expect(pane("%2")["waiting_tool"]).to eq("Bash")
+          event("user_prompt")
         end
       end
 
       %w[user_prompt session_start session_end].each do |name|
-        it "clears every request on #{name}" do
-          request
-          request(agent_id: "sub-1")
+        [nil, "sub-1"].each do |agent_id|
+          it "clears #{agent_id ? "a sub-agent's" : "the main agent's"} request on #{name}" do
+            request(agent_id: agent_id)
 
-          event(name)
+            event(name)
+            prompt
 
-          expect(requests).to be_empty
+            expect_null_fields
+          end
         end
       end
 
@@ -1241,8 +1250,12 @@ RSpec.describe Workspace::SessionMonitor do
         allow(snapshot).to receive(:find_descendant).and_return(nil)
 
         monitor.scan
+        allow(snapshot).to receive(:find_descendant).with(200, ["claude"], hash_including(include_root: true))
+          .and_return({pid: 250, command: "claude", args: "claude"})
+        monitor.scan
+        prompt
 
-        expect(requests).to be_empty
+        expect_null_fields
       end
     end
 
@@ -1317,13 +1330,13 @@ RSpec.describe Workspace::SessionMonitor do
 
       it "leaves a main elicitation under the main agent when a sub-agent's dialog binds" do
         prompt("elicitation_dialog")
-        since = waits[nil][:since]
+        since = waits[nil]["since"]
         allow(clock).to receive(:now).and_return(now + 5)
         request(agent_id: "sub-1")
         prompt
 
         expect(waits.keys).to contain_exactly(nil, "sub-1")
-        expect(waits[nil][:since]).to eq(since)
+        expect(waits[nil]["since"]).to eq(since)
         expect_null_fields
 
         tool_done(agent_id: "sub-1")
@@ -1383,14 +1396,38 @@ RSpec.describe Workspace::SessionMonitor do
           "   2. Yes, and don’t ask again for: touch *\n   3. No\n\n Esc to cancel · Tab to amend\n"
       end
 
-      def alerted_waits
-        monitor.instance_variable_get(:@panes)["%2"][:alerted_waits]
+      let(:tmpdir) { Dir.mktmpdir }
+      let(:event_log) do
+        log_config = Workspace::Config.new(workspace_dir: tmpdir)
+        allow(log_config).to receive(:event_log_file).and_return(File.join(tmpdir, "events.jsonl"))
+        Workspace::EventLog.new(config: log_config, error_output: StringIO.new, clock: clock)
+      end
+
+      after { FileUtils.remove_entry(tmpdir) }
+
+      def daemon
+        described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+          idle_after: 30, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
+      end
+
+      # A daemon that alerted for the main agent's wait, then a new one that takes the wait up.
+      subject(:monitor) do
+        predecessor = daemon
+        predecessor.scan
+        predecessor.record("event" => "notification", "pane_id" => "%2", "message" => "Claude needs your permission")
+        predecessor.scan
+        predecessor.send_alerts
+        daemon
       end
 
       def wait_on_bound_tool
         request
         prompt
-        monitor.instance_variable_get(:@panes)["%2"][:alerted_waits] = {nil => now}
+      end
+
+      def expect_request_kept(tool)
+        prompt
+        expect(pane("%2")["waiting_tool"]).to eq(tool)
       end
 
       def scan_showing(screen)
@@ -1405,7 +1442,7 @@ RSpec.describe Workspace::SessionMonitor do
         scan_showing(ready)
 
         expect(waits).to be_empty
-        expect(requests[nil]).to eq(tool: "Write", input: "notes.txt")
+        expect_request_kept("Write")
       end
 
       it "reads a capture with invalid UTF-8 bytes" do
@@ -1422,10 +1459,11 @@ RSpec.describe Workspace::SessionMonitor do
         scan_showing(ready)
 
         expect(waits).to be_empty
-        expect(alerted_waits).to be_empty
-        expect(requests).to be_empty
         expect(pane("%2")["state"]).not_to eq("waiting")
         expect_null_fields
+        prompt
+        expect_null_fields
+        expect(monitor.send_alerts.size).to eq(1)
       end
 
       it "ends the wait when blank rows sit below the footer" do
@@ -1442,8 +1480,8 @@ RSpec.describe Workspace::SessionMonitor do
         scan_showing(dialog)
 
         expect(waits.keys).to eq([nil])
-        expect(alerted_waits).to eq({nil => now})
-        expect(requests.keys).to eq([nil])
+        expect(monitor.send_alerts).to be_empty
+        expect_request_kept("Bash")
       end
 
       it "keeps the wait while the cursor sits on an AskUserQuestion menu's last row" do
@@ -1452,7 +1490,7 @@ RSpec.describe Workspace::SessionMonitor do
         scan_showing("  3. Blue\n     Blue\n  4. Type something.\n#{rule}\n❯ 5. Chat about this\n\nEnter to select · Esc to cancel\n")
 
         expect(waits.keys).to eq([nil])
-        expect(requests.keys).to eq([nil])
+        expect_request_kept("Bash")
       end
 
       it "keeps the wait for a dialog below an old ready prompt in scrollback" do
@@ -1461,7 +1499,7 @@ RSpec.describe Workspace::SessionMonitor do
         scan_showing(ready + ("older output\n" * 3) + dialog + ("\n" * 20))
 
         expect(waits.keys).to eq([nil])
-        expect(requests.keys).to eq([nil])
+        expect_request_kept("Bash")
       end
 
       it "keeps the wait when the capture is empty or blank" do
@@ -1471,19 +1509,20 @@ RSpec.describe Workspace::SessionMonitor do
         scan_showing("\n\n  \n")
 
         expect(waits.keys).to eq([nil])
-        expect(requests.keys).to eq([nil])
+        expect_request_kept("Bash")
       end
 
       it "keeps a wait with no bound tool" do
         request(agent_id: "sub-1")
         request(tool: "Write", input: "a.rb", agent_id: "sub-2")
         prompt
-        expect(waits.values.map { |wait| wait[:tool] }).to eq([nil])
+        expect(waits.values.map { |wait| wait["tool"] }).to eq([nil])
 
         scan_showing(ready)
 
         expect(waits.size).to eq(1)
-        expect(requests.keys).to eq(["sub-1", "sub-2"])
+        tool_done(agent_id: "sub-1")
+        expect_request_kept("Write")
       end
     end
   end
@@ -2210,7 +2249,7 @@ RSpec.describe Workspace::SessionMonitor do
       logging = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
         idle_after: 30, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
       logging.scan
-      state = -> { logging.instance_variable_get(:@panes)["%2"].slice(:alerted_idle_since, :alerted_waits, :waits) }
+      state = -> { logging.snapshot["panes"].find { |p| p["pane_id"] == "%2" }.slice("state", "state_since", "waits") }
       before_state = state.call
 
       logging.alert_handoff_stalled("%2", seconds: 600, followups: 3)

@@ -22,14 +22,13 @@ module Workspace
     # `README.md`, which only describes it.
     OPTIONAL_BODY = %w[spine].freeze
 
-    # Entry names: lowercase letters, digits and hyphens.
-    NAME = /\A[a-z0-9]+(-[a-z0-9]+)*\z/
-
     # @param dir [String] the scope's directory
     # @param scope [String] "global" or "project"
     # @param project [String, nil] the project name for a project scope
-    def initialize(dir:, scope:, project: nil)
+    # @param renamer [#call] moves a finished temp entry into place, given the temp path and the entry path
+    def initialize(dir:, scope:, project: nil, renamer: File.method(:rename))
       @dir = dir
+      @renamer = renamer
       @scope = scope
       @project = project
     end
@@ -65,7 +64,7 @@ module Workspace
       kinds.flat_map do |k|
         ext = DIRECTORY_KINDS.key?(k) ? "" : ".md"
         Dir.glob(File.join(@dir, k, "*#{ext}")).map { |path| File.basename(path, ext) }
-          .select { |name| name.match?(NAME) }.sort
+          .select { |name| name.match?(IdPatterns::LIBRARY_NAME) }.sort
           .map { |name| entry(k, name) }
       end
     end
@@ -176,7 +175,7 @@ module Workspace
         File.rename(path, old)
       end
       begin
-        File.rename(tmp, path)
+        @renamer.call(tmp, path)
       rescue SystemCallError
         File.rename(old, path) if old
         old = nil

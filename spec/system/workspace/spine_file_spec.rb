@@ -405,11 +405,19 @@ RSpec.describe Workspace::SpineFile do
     end
 
     it "reports a cut when the file itself was cut at 64 KB" do
-      file = described_class.parse("x")
-      file.instance_variable_set(:@body, "short")
-      file.instance_variable_set(:@truncated, true)
+      Dir.mktmpdir("spine-file") do |dir|
+        path = File.join(dir, "10-big.md")
+        filler = "# #{"x" * 1000}\n" * 60
+        File.write(path, "---\nstatus: done\n#{filler}---\nshort\n" + ("y" * 10_000))
 
-      expect(file.body_excerpt).to eq(["short", true])
+        file = described_class.read(path)
+
+        expect(file.truncated).to be(true)
+        text, cut = file.body_excerpt
+        expect(text).to start_with("short")
+        expect(text.bytesize).to be < 16_384
+        expect(cut).to be(true)
+      end
     end
 
     it "is not cut at the limit" do

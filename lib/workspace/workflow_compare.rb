@@ -78,7 +78,9 @@ module Workspace
       loaded ||= @loader.load(workflow: workflow, last: last, include: include)
       groups = {}
       counts = {"read" => 0, "without_pack" => 0, "no_attempts" => 0, "malformed" => 0}
-      loaded["runs"].each do |run|
+      loaded["runs"].each do |stored|
+        raise TypeError, "a run is a Hash" unless stored.is_a?(Hash) || stored.is_a?(WorkflowRun)
+        run = WorkflowRun.from_h(stored)
         key = (kind == :pack) ? pack_key(run, name) : definition_key(run)
         figures = figures_of(run)
       rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
@@ -100,9 +102,9 @@ module Workspace
 
     private
 
+    # Every attempt of the run as a {WorkflowRun::Attempt}, in step order; a stored entry that is not a Hash is left out.
     def attempts_of(run)
-      return [] unless run["steps"].is_a?(Hash)
-      run["steps"].values.flat_map { |state| state.is_a?(Hash) ? Array(state["attempts"]).grep(Hash) : [] }
+      steps_of(run).flatten
     end
 
     def delivered(run)
@@ -112,17 +114,17 @@ module Workspace
     def sha_of(value) = (value.is_a?(String) && value.match?(SHA)) ? value : UNKNOWN
 
     def definition_key(run)
-      return run["definition_sha256"].then { |sha| sha_of(sha) } if run["definition_sha256"]
-      shas = attempts_of(run).map { |attempt| attempt["definition_sha256"] }.compact.map { |sha| sha_of(sha) }.uniq
+      return sha_of(run.definition_sha256) if run.definition_sha256
+      shas = attempts_of(run).map(&:definition_sha256).compact.map { |sha| sha_of(sha) }.uniq
       (shas.size > 1) ? MIXED : (shas.first || UNKNOWN)
     end
 
     def pack_key(run, name)
       list = delivered(run)
       return :none if list.empty?
-      recorded = list.select { |attempt| attempt["packs"].is_a?(Array) }
+      recorded = list.select { |attempt| attempt.packs.is_a?(Array) }
       return UNKNOWN if recorded.empty?
-      found = recorded.flat_map { |attempt| attempt["packs"].grep(Hash).select { |pack| pack["ref"] == name || pack["ref"].to_s.split("/", 2).last == name } }
+      found = recorded.flat_map { |attempt| attempt.packs.grep(Hash).select { |pack| pack["ref"] == name || pack["ref"].to_s.split("/", 2).last == name } }
       return :without if found.empty?
       shas = found.map { |pack| sha_of(pack["sha256"]) }.uniq
       (shas.size > 1) ? MIXED : shas.first
@@ -130,25 +132,28 @@ module Workspace
 
     # What one run adds to its group.
     def figures_of(run)
-      missed = steps_of(run).any? { |attempts| missed?(attempts, run["state"] == "completed") }
-      state = case run["state"]
+      missed = steps_of(run).any? { |attempts| missed?(attempts, run.state == "completed") }
+      state = case run.state
       when "completed" then :settled
       when "cancelled" then missed ? :settled : :cancelled
-      else (missed && STUCK.include?(run.dig("reason", "code"))) ? :stuck : :running
+      else (missed && STUCK.include?(run.reason&.dig("code"))) ? :stuck : :running
       end
-      {state: state, first_try: run["state"] == "completed" && !missed, resumes: @loader.resumes(run).values.sum}
+      {state: state, first_try: run.state == "completed" && !missed, resumes: @loader.resumes(run).values.sum}
     end
 
+    # Per step, its attempts that are stored as Hashes.
     def steps_of(run)
-      return [] unless run["steps"].is_a?(Hash)
-      run["steps"].values.map { |state| state.is_a?(Hash) ? Array(state["attempts"]).grep(Hash) : [] }
+      run.steps.values.map do |step|
+        stored = Array(step.to_h["attempts"])
+        step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
+      end
     end
 
     # In a completed run an attempt with no outcome was passed over (a `resume --from` later step), not passed: a miss.
     # The engine has stored `outcome` on passed and failed attempts since it first wrote attempts, so an old run is not misread.
     def missed?(attempts, completed)
       delivered = attempts.reject { |attempt| WorkflowStats.kind_of(attempt) == :not_delivered }
-      delivered.size > 1 || delivered.any? { |attempt| attempt["outcome"] != "passed" && (completed || !attempt["outcome"].nil?) }
+      delivered.size > 1 || delivered.any? { |attempt| attempt.outcome != "passed" && (completed || !attempt.outcome.nil?) }
     end
 
     def row(sha, list)

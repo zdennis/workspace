@@ -1,0 +1,12 @@
+# Written by script/boundary-baseline. Delete a line when its violation is fixed;
+# the spec fails on an entry that no longer matches.
+core_references_nothing|lib/workspace/core/config_schema.rb|ByteSize:
+  reason: baseline
+core_references_nothing|lib/workspace/core/workspace_name.rb|Workspace::Error:
+  reason: baseline
+process_outside_adapter|lib/workspace/doctor.rb|gh:
+  reason: asks whether gh is installed through check_command (a PATH lookup and a
+    --version read); starts no gh process of its own
+process_outside_adapter|lib/workspace/spine_facts.rb|gh:
+  reason: asks @which whether gh is on the PATH before PullRequestStatus reads; starts
+    no gh process

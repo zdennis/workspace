@@ -485,7 +485,7 @@ RSpec.describe Workspace::InboxStore do
       File.write(path, JSON.generate(items))
     end
 
-    before { stub_const("Workspace::InboxStore::LIVE_LIMIT", 3) }
+    let(:store) { described_class.new(path: path, scope: "workspace:api", clock: -> { clock.call }, error_output: err, live_limit: 3) }
 
     it "refuses the item past the live limit as inbox_full and writes nothing" do
       3.times { store.add(fields) }

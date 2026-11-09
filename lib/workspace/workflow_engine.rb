@@ -240,8 +240,10 @@ module Workspace
     # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
     # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
     # @param clock [#call] returns the current Time
+    # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-      env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now })
+      env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
+      @prompt_writer = prompt_writer
       @store = store
       @resources = resources
       @composer = composer
@@ -266,11 +268,6 @@ module Workspace
       @clock = clock
       @delivery = nil
     end
-
-    # The background task types that hold a step (the labels Claude Code lists), and the shape of a
-    # task id. The Stop hook boundary and `workflow advance --background-task` both check against these.
-    BACKGROUND_TASK_TYPES = ["subagent", "workflow", "shell", "monitor", "MCP task", "cloud session"].freeze
-    BACKGROUND_TASK_ID = /\A[\w-]{1,64}\z/
 
     # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
     BACKGROUND_HOLD = 90 * 60
@@ -1390,43 +1387,7 @@ module Workspace
     end
 
     def check_inputs(data, inputs)
-      inputs = (inputs || {}).transform_keys(&:to_s)
-      unknown = inputs.keys - data["inputs"].keys
-      if unknown.any?
-        raise UsageError, "Workflow #{data["id"]} has no input #{unknown.first.to_s[0, 60].inspect} " \
-          "(inputs: #{data["inputs"].keys.join(", ").then { |list| list.empty? ? "none" : list }})."
-      end
-      missing = data["inputs"].select { |name, spec| spec["required"] && inputs[name].to_s.strip.empty? }
-      if missing.any?
-        raise Workspace::Error.new("Workflow #{data["id"]} needs input #{missing.keys.join(", ")}. Pass --input #{missing.keys.first}=VALUE.",
-          code: "input_required",
-          details: {"workflow" => data["id"], "inputs" => missing.map { |name, spec| {"name" => name, "description" => spec["description"]} }})
-      end
-      check_input_patterns(data, inputs)
-      data["inputs"].keys.to_h { |name| [name, inputs[name].to_s] }
-    end
-
-    INPUT_VALUE_LIMIT = 4096
-
-    # Only a truly empty value is unset and passes; whitespace is checked like any other. A value too long, or one the pattern takes too long to judge, is a mismatch. The value is never echoed.
-    def check_input_patterns(data, inputs)
-      data["inputs"].each do |name, spec|
-        pattern = spec["pattern"]
-        value = inputs[name].to_s
-        next if pattern.nil? || value.empty?
-        next if value.length <= INPUT_VALUE_LIMIT && input_matches?(pattern, value)
-        raise Workspace::Error.new("Input #{name} of workflow #{data["id"]} does not match its pattern #{pattern}.",
-          code: "invalid_input", details: {"workflow" => data["id"], "input" => name, "pattern" => pattern})
-      end
-    end
-
-    # Ruby 3.2 and later bound the match by time; older Rubies rely on the length cap alone.
-    def input_matches?(pattern, value)
-      source = "\\A(?:#{pattern})\\z"
-      regexp = Regexp.respond_to?(:timeout) ? Regexp.new(source, timeout: 1) : Regexp.new(source)
-      regexp.match?(value)
-    rescue RegexpError
-      false
+      WorkflowInputs.check(data, inputs)
     end
 
     # Every step's `status: command:` and every `require: command:` that isn't optional, each unset one listed.
@@ -1877,7 +1838,7 @@ module Workspace
       @excludes.add(run["worktree"], "/.workflow/")
       path = prompt_path(run, step, attempt["n"])
       composed = compose(run, step, attempt["context"], binding: step_binding(run, step, attempt["n"], path))
-      File.write(path, composed["text"], encoding: Encoding::UTF_8)
+      @prompt_writer.call(path, composed["text"], encoding: Encoding::UTF_8)
       [path, composed]
     end
 

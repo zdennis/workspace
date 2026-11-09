@@ -1,5 +1,4 @@
 require "json"
-require "fileutils"
 require "time"
 
 module Workspace
@@ -50,7 +49,10 @@ module Workspace
     # @param clock [#now] time source
     def initialize(path:, clock: Time)
       @path = path
-      @lockfile_path = "#{path}.lock"
+      @file = LockedJsonFile.new(path, parse: method(:parse_data), tag: -> { Thread.current.object_id },
+        fingerprint: JSON.method(:generate), access_error: lambda { |e|
+          Workspace::Error.new("Could not access the agent recovery record at #{path} (#{e.class}: errno #{e.errno})")
+        })
       @clock = clock
     end
 
@@ -60,7 +62,7 @@ module Workspace
     # @param entry [Hash] the entry (string keys)
     # @return [Hash] the entry as stored
     def put(pane_id, entry)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         data[pane_id] = stringify(entry)
         data[pane_id].dup
       end
@@ -70,7 +72,7 @@ module Workspace
     # @return [Hash, nil] the pane's entry, or nil when it has none
     def get(pane_id)
       return nil unless File.exist?(@path)
-      with_lock(readonly: true) { |data| data[pane_id]&.dup }
+      @file.shared { |data| data[pane_id]&.dup }
     end
 
     # Changes one entry under the lock, so a conditional write sees what a
@@ -87,7 +89,7 @@ module Workspace
     # @return [Hash, nil] the stored copy (string keys), or nil when no entry
     #   is stored
     def update(pane_id)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         entry = data[pane_id] || {}
         yield entry
         if entry.empty?
@@ -102,7 +104,7 @@ module Workspace
     # @param pane_id [String]
     # @return [Hash, nil] the entry removed, or nil when there was none
     def delete(pane_id)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         data.delete(pane_id)
       end
     end
@@ -110,7 +112,7 @@ module Workspace
     # @return [Hash{String => Hash}] every pane's entry; empty when the file is missing
     def entries
       return {} unless File.exist?(@path)
-      with_lock(readonly: true) { |data| data }
+      @file.shared { |data| data }
     end
 
     # Whether the pane's queued prompts must wait for the recovery. Never in
@@ -146,37 +148,12 @@ module Workspace
 
     # A corrupt or unreadable-shaped file reads as empty: a lost schedule is
     # better than a recovery that can never write again. Other failures raise.
-    def with_lock(readonly: false)
-      FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
-      result = nil
-      File.open(@lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
-        f.flock(readonly ? File::LOCK_SH : File::LOCK_EX)
-        data = read_data
-        before = JSON.generate(data)
-        result = yield data
-        write_data(data) unless readonly || JSON.generate(data) == before
-      end
-      result
-    rescue SystemCallError => e
-      raise Workspace::Error, "Could not access the agent recovery record at #{@path} (#{e.class}: errno #{e.errno})"
-    end
-
-    def read_data
-      return {} unless File.exist?(@path)
-      parsed = JSON.parse(File.read(@path, encoding: Encoding::UTF_8))
+    def parse_data(text)
+      return {} unless text
+      parsed = JSON.parse(text)
       (parsed.is_a?(Hash) && parsed.values.all?(Hash)) ? parsed : {}
     rescue JSON::ParserError
       {}
-    end
-
-    def write_data(data)
-      tmp = "#{@path}.#{Process.pid}.#{Thread.current.object_id}.tmp"
-      File.open(tmp, "w", 0o600) do |f|
-        f.write(JSON.pretty_generate(data))
-        f.flush
-        f.fsync
-      end
-      File.rename(tmp, @path)
     end
   end
 end

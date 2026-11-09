@@ -60,20 +60,35 @@ RSpec.describe Workspace::SpineInferred do
 
   def missing_plan = {"exists" => false, "counts" => counts(total: 0, todo: 0, left: 0), "state" => "empty", "owner_pane" => nil}
 
-  [
-    ["no plan file", -> { missing_plan }, {"research" => "not_started", "plan" => "not_started", "implement" => "not_started"}],
-    ["an empty plan is being drafted", -> { empty_plan }, {"research" => "skipped", "plan" => "in_progress", "implement" => "not_started"}],
-    ["tasks never started wait for approval", -> { plan_of(state: "idle", counts: counts) },
-      {"research" => "skipped", "plan" => "in_progress", "implement" => "not_started"}],
-    ["work under way", -> { plan_of }, {"research" => "skipped", "plan" => "completed", "implement" => "in_progress"}],
-    ["a blocked task", -> { plan_of(state: "blocked", counts: counts(done: 3, blocked: 1, todo: 0, left: 1)) },
-      {"plan" => "completed", "implement" => "blocked"}],
-    ["every task done", -> { plan_of(state: "done", counts: counts(done: 3, skipped: 1, todo: 0, left: 0)) },
-      {"plan" => "completed", "implement" => "completed"}]
-  ].each do |name, plan, expected|
-    it "from the plan: #{name}" do
-      expect(statuses(input(plan: instance_exec(&plan)))).to include(expected)
-    end
+  def expect_plan_statuses(plan, expected)
+    expect(statuses(input(plan: plan))).to include(expected)
+  end
+
+  it "from the plan: no plan file" do
+    expect_plan_statuses(missing_plan, {"research" => "not_started", "plan" => "not_started", "implement" => "not_started"})
+  end
+
+  it "from the plan: an empty plan is being drafted" do
+    expect_plan_statuses(empty_plan, {"research" => "skipped", "plan" => "in_progress", "implement" => "not_started"})
+  end
+
+  it "from the plan: tasks never started wait for approval" do
+    expect_plan_statuses(plan_of(state: "idle", counts: counts),
+      {"research" => "skipped", "plan" => "in_progress", "implement" => "not_started"})
+  end
+
+  it "from the plan: work under way" do
+    expect_plan_statuses(plan_of, {"research" => "skipped", "plan" => "completed", "implement" => "in_progress"})
+  end
+
+  it "from the plan: a blocked task" do
+    expect_plan_statuses(plan_of(state: "blocked", counts: counts(done: 3, blocked: 1, todo: 0, left: 1)),
+      {"plan" => "completed", "implement" => "blocked"})
+  end
+
+  it "from the plan: every task done" do
+    expect_plan_statuses(plan_of(state: "done", counts: counts(done: 3, skipped: 1, todo: 0, left: 0)),
+      {"plan" => "completed", "implement" => "completed"})
   end
 
   it "gives Implement the plan's owner pane, so its owner state shows" do
@@ -167,7 +182,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     before do
-      allow(store).to receive(:active).and_return([stored_run, stored_run.merge("id" => "wr_2", "workspace" => "web")])
+      allow(store).to receive(:going).and_return([stored_run, stored_run.merge("id" => "wr_2", "workspace" => "web")].map { |each| Workspace::WorkflowRun.from_h(each) })
       allow(panes).to receive(:pane_of).with("wr_1").and_return("%7")
       allow(git).to receive(:checkout_layout).with("/src/api").and_return({toplevel: "/src/api", common_dir: "/src/.git", linked: true})
     end
@@ -193,7 +208,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "treats a broken checkout as a main checkout" do
-      allow(store).to receive(:active).and_return([])
+      allow(store).to receive(:going).and_return([])
       allow(git).to receive(:checkout_layout).and_return({toplevel: "/src/api", common_dir: nil, linked: true, broken: true})
 
       stages = inferred.infer(workspace: "api", checkout: "/src/api", result: result(plan: :missing))
@@ -202,7 +217,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "derives the plan's state from the owner pane, so a working owner starts Implement" do
-      allow(store).to receive(:active).and_return([])
+      allow(store).to receive(:going).and_return([])
       plan = Workspace::PlanFile.parse("---\nowner_pane: \"%3\"\n---\n## Tasks\n- [ ] T1 One\n- [ ] T2 Two\n")
 
       idle = inferred.infer(workspace: "api", checkout: "/src/api", result: result(plan: plan, panes: [{"pane_id" => "%3", "state" => "idle"}]))
@@ -213,7 +228,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "reads unknown stages when the plan file could not be read" do
-      allow(store).to receive(:active).and_return([])
+      allow(store).to receive(:going).and_return([])
 
       stages = inferred.infer(workspace: "api", checkout: "/src/api", result: result(plan: nil))
 
@@ -221,7 +236,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "is ready for review only when the agent is done and the branch is ahead" do
-      allow(store).to receive(:active).and_return([])
+      allow(store).to receive(:going).and_return([])
       done = Workspace::SpineEvaluator::ReviewFact.new(agent_done: true, changes_requested: false)
       review = ->(res) { inferred.infer(workspace: "api", checkout: "/src/api", result: res).find { |s| s["id"] == "review" }["status"] }
 
@@ -231,7 +246,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "reads no runs when the run store can't be read" do
-      allow(store).to receive(:active).and_raise(Errno::EACCES)
+      allow(store).to receive(:going).and_raise(Errno::EACCES)
 
       stages = inferred.infer(workspace: "api", checkout: "/src/api", result: result(plan: :missing))
 
@@ -240,7 +255,7 @@ RSpec.describe Workspace::SpineInferred do
 
     describe "#current_stage" do
       it "gives the current stage as a goal stage, marked inferred" do
-        allow(store).to receive(:active).and_return([])
+        allow(store).to receive(:going).and_return([])
 
         stage = inferred.current_stage(workspace: "api", checkout: "/src/api", result: result(plan: :missing))
 

@@ -14,7 +14,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
     logger = overrides[:logger] || Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
     window_manager = overrides[:window_manager] || CLITestHelpers::FakeWindowManager.new
-    tmux = overrides[:tmux] || CLITestHelpers::FakeTmux.new
+    tmux = overrides[:tmux] || FakeTmux.new
     project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
     doctor = overrides[:doctor] || CLITestHelpers::FakeDoctor.new
     project_settings = overrides[:project_settings] || CLITestHelpers::FakeProjectSettings.new
@@ -29,7 +29,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
 
     stop_command = Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
-    start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
+    start_command = Workspace::Commands::Start.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
@@ -56,7 +56,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
     parent_command = CLITestHelpers::FakeParentCommand.new
     agent_command = CLITestHelpers::FakeAgentCommand.new
 
-    cli = Workspace::CLI.new(
+    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,
@@ -101,8 +101,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
       exit_handler: overrides[:exit_handler] || FakeExitHandler,
       input: input,
       working_dir: working_dir,
-      clock: overrides[:clock] || -> { Time.now }
-    )
+      clock: overrides[:clock] || -> { Time.now })
     [cli, output, error_output]
   end
 
@@ -152,15 +151,20 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
   # one piece of information (the configured budget) that would explain why
   # it fired is missing from the message that fires it.
   it "PU2 | low | stage-timeout failure message reports an absolute ISO deadline instead of the configured timeout duration | lib/workspace/commands/agent.rb:423 | interpolate the stage's configured timeout (e.g. \"30m\") into the failure message" do
-    tmux = CLITestHelpers::FakeTmux.new
+    tmux = FakeTmux.new
     pollers = []
-    sentinel_poller_factory = lambda do |session_name:, pane:, token:, deadline:|
-      poller = Object.new
-      poller.define_singleton_method(:start) do |on_error: nil, on_timeout: nil, &block|
-        poller.define_singleton_method(:fire_timeout) { on_timeout.call }
-        poller
+    poller_class = Class.new do
+      def start(on_error: nil, on_timeout: nil, &block)
+        @on_timeout = on_timeout
+        self
       end
-      poller.define_singleton_method(:stop) {}
+
+      def fire_timeout = @on_timeout.call
+
+      def stop = nil
+    end
+    sentinel_poller_factory = lambda do |session_name:, pane:, token:, deadline:|
+      poller = poller_class.new
       pollers << poller
       poller
     end
@@ -185,7 +189,8 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
     error_output = StringIO.new
     now = Time.utc(2026, 9, 27, 12, 0, 0)
 
-    agent = Workspace::Commands::Agent.new(
+    agent = Workspace::Commands::Agent.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+
       config: config_double,
       tmux: tmux,
       work_coordinator_client: instance_double(Workspace::WorkCoordinatorClient, report_status: {}),
@@ -199,14 +204,12 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
       token_generator: -> { "tok-1" },
       clock: -> { now },
       retry_backoff: 0,
+      current_name: "myapp",
       output: StringIO.new,
-      error_output: error_output
-    )
+      error_output: error_output)
 
-    # Drive the private dispatch path the same way the socket server would,
-    # without opening a real socket or thread.
-    agent.instance_variable_set(:@current_name, "myapp")
-    agent.send(:handle_command,
+    # Hand the message over as the socket server would, without a real socket or thread.
+    agent.handle("type" => "command", "workspace" => "myapp",
       "work_item_ref" => "WC-42", "dispatch_id" => "d-1", "body" => "go")
 
     pollers.first.fire_timeout

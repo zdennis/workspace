@@ -32,7 +32,7 @@ RSpec.describe "Lock idle takeover: adversarial concurrency review" do
   end
 
   def command_for(identity, clock:, trap: ->(_signal, _handler) {})
-    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, sleeper: ->(_) { now[0] += 5 },
       clock: clock, pid_provider: -> { 200 }, trap: trap, lock_config: lock_config, wall_clock: -> { now[0] })
   end
@@ -68,15 +68,23 @@ RSpec.describe "Lock idle takeover: adversarial concurrency review" do
     now[0] += 300
     handlers = {}
     fired = [false]
-    interrupting = FakeLockIdentity.new(pid: 200, pane: "%2", worktree: "app.b")
-    interrupting.define_singleton_method(:alive?) do |pid:, started:|
-      if handlers["INT"] && !fired[0]
-        fired[0] = true
-        handlers["INT"].call
+    interrupting_class = Class.new(FakeLockIdentity) do
+      def initialize(handlers:, fired:, **rest)
+        super(**rest)
+        @handlers = handlers
+        @fired = fired
       end
-      super(pid: pid, started: started)
+
+      def alive?(pid:, started:)
+        if @handlers["INT"] && !@fired[0]
+          @fired[0] = true
+          @handlers["INT"].call
+        end
+        super
+      end
     end
-    monotonic = Object.new.tap { |c| c.define_singleton_method(:now) { 0.0 } }
+    interrupting = interrupting_class.new(handlers: handlers, fired: fired, pid: 200, pane: "%2", worktree: "app.b")
+    monotonic = BlockClock.new { 0.0 }
     trap = ->(signal, handler) {
       handlers[signal] = handler
       nil
@@ -96,13 +104,11 @@ RSpec.describe "Lock idle takeover: adversarial concurrency review" do
     now[0] += 299
     calls = [0]
     wall = now
-    monotonic = Object.new.tap do |c|
-      c.define_singleton_method(:now) do
-        calls[0] += 1
-        next 0.0 if calls[0] == 1
-        wall[0] = 1_000_300
-        10.0
-      end
+    monotonic = BlockClock.new do
+      calls[0] += 1
+      next 0.0 if calls[0] == 1
+      wall[0] = 1_000_300
+      10.0
     end
 
     result = command_for(waiter_identity, clock: monotonic).acquire("edit", task: "B", wait: true, max_wait: 1)

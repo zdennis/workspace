@@ -196,20 +196,20 @@ module Workspace
         warnings << {"code" => "workflow_unreadable", "message" => "Failed checks, lock waits and stalls could not be worked out, so they are not shown: #{first_line(e)}"}
         {}
       end
-      reply[:runs]["runs"].filter_map do |run|
-        next unless workspaces.include?(run["workspace"])
-        next attention_row(run, attention[run["id"]]) if attention.key?(run["id"])
-        current = run["current"] || {}
+      reply[:runs]["runs"].map { |each| WorkflowStatus::Row.from_h(each) }.filter_map do |run|
+        next unless workspaces.include?(run.workspace)
+        next attention_row(run, attention[run.id]) if attention.key?(run.id)
+        current = run.current || {}
         reason = current["reason"]
         next unless reason
         next undelivered_row(run, current, reason) if undelivered?(reason)
         next unless reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
-        step = Array(run["steps"]).find { |each| each["id"] == current["step"] }
+        step = Array(run.steps).find { |each| each["id"] == current["step"] }
         next unless step && step["gate"] == "waiting"
-        row(id: "workflow:waiting_you:#{run["id"]}", kind: "workflow_waiting_you", fingerprint: "#{current["step"]}:#{reason["since"]}",
-          scope: workspace_scope(run["workspace"]), title: "Workflow #{run["title"] || run["workflow"]} waits for approval at #{current["step"]}",
+        row(id: "workflow:waiting_you:#{run.id}", kind: "workflow_waiting_you", fingerprint: "#{current["step"]}:#{reason["since"]}",
+          scope: workspace_scope(run.workspace), title: "Workflow #{run.title || run.workflow} waits for approval at #{current["step"]}",
           body: nil, since: reason["since"],
-          links: {"run_id" => run["id"], "step" => current["step"], "attempt" => current["attempt"]})
+          links: {"run_id" => run.id, "step" => current["step"], "attempt" => current["attempt"]})
       end
     end
 
@@ -228,7 +228,7 @@ module Workspace
     # run-file text is not a safe thing to put on a command line. Title text is escaped for a terminal.
     def attention_row(run, found)
       code = found["code"]
-      title = TerminalText.escape(run["title"] || run["workflow"])
+      title = TerminalText.escape(run.title || run.workflow)
       step = TerminalText.escape(found["step"])
       detail = found["detail"] && " (#{TerminalText.escape(found["detail"])})"
       summary = {
@@ -238,9 +238,9 @@ module Workspace
         "stalled" => "Workflow #{title}: step #{step} stalled#{detail}",
         "idle" => "Workflow #{title}: step #{step} is idle, its turn is over"
       }.fetch(code)
-      row(id: "workflow:#{code}:#{run["id"]}", kind: "workflow_#{code}", fingerprint: "#{found["step"]}:#{found["attempt"]}:#{found["since"]}",
-        scope: workspace_scope(run["workspace"]), title: one_line(summary), body: nil, since: found["since"],
-        links: {"run_id" => run["id"], "step" => found["step"], "attempt" => found["attempt"], "next_action" => found["next_action"]})
+      row(id: "workflow:#{code}:#{run.id}", kind: "workflow_#{code}", fingerprint: "#{found["step"]}:#{found["attempt"]}:#{found["since"]}",
+        scope: workspace_scope(run.workspace), title: one_line(summary), body: nil, since: found["since"],
+        links: {"run_id" => run.id, "step" => found["step"], "attempt" => found["attempt"], "next_action" => found["next_action"]})
     end
 
     # A step whose line never reached an agent: a stored `pane_gone` or `waiting_you` of kind `dispatch`
@@ -251,10 +251,10 @@ module Workspace
     end
 
     def undelivered_row(run, current, reason)
-      row(id: "workflow:undelivered:#{run["id"]}", kind: "workflow_undelivered", fingerprint: "#{current["step"]}:#{reason["since"]}",
-        scope: workspace_scope(run["workspace"]), title: "Workflow #{run["title"] || run["workflow"]}: step #{current["step"]} was not started",
+      row(id: "workflow:undelivered:#{run.id}", kind: "workflow_undelivered", fingerprint: "#{current["step"]}:#{reason["since"]}",
+        scope: workspace_scope(run.workspace), title: "Workflow #{run.title || run.workflow}: step #{current["step"]} was not started",
         body: reason.dig("details", "message"), since: reason["since"],
-        links: {"run_id" => run["id"], "step" => current["step"], "attempt" => current["attempt"]})
+        links: {"run_id" => run.id, "step" => current["step"], "attempt" => current["attempt"]})
     end
 
     # As workspace-ui's `staleLocks`: a held lock with a live waiter whose holder is dead, or an

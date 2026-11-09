@@ -19,7 +19,10 @@ module Workspace
     # @param tmp_root [String] where the temporary directory is made
     # @param clock [#call] monotonic seconds
     # @param wall_clock [#call] the current Time, which ages old temporary directories
-    def initialize(engine:, checker:, tmp_root: Dir.tmpdir, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, wall_clock: -> { Time.now })
+    # @param lstat [#call] reads a path's status without following a link, as +File.lstat+ does
+    def initialize(engine:, checker:, tmp_root: Dir.tmpdir, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, wall_clock: -> { Time.now },
+      lstat: File.method(:lstat))
+      @lstat = lstat
       @engine = engine
       @checker = checker
       @tmp_root = tmp_root
@@ -66,7 +69,7 @@ module Workspace
       cutoff = @wall_clock.call - STALE_AFTER
       Dir.children(@tmp_root).grep(MADE).each do |name|
         path = File.join(@tmp_root, name)
-        info = File.lstat(path)
+        info = @lstat.call(path)
         next unless info.directory? && info.uid == Process.uid && info.mtime < cutoff
         next if keep && (File.realpath(path) + File::SEPARATOR).then { |prefix| (keep + File::SEPARATOR).start_with?(prefix) }
         FileUtils.rm_rf(path)

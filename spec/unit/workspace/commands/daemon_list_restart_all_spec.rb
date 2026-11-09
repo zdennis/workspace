@@ -15,6 +15,11 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
   let(:alive) { [] }
   let(:stuck) { [] }
   let(:signals) { [] }
+  # Callables run when a socket holder is looked up (with the workspace name) or a signal is sent (with signal and pid).
+  let(:lookup_hooks) { [] }
+  let(:signal_hooks) { [] }
+  # Holders to report for a workspace in place of the one `holders` names.
+  let(:holder_overrides) { {} }
   let(:ensure_calls) { [] }
   let(:failing_start) { [] }
   let(:next_pid) { [9000] }
@@ -37,8 +42,7 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
   let(:project_config) { instance_double(Workspace::ProjectConfig, available_projects: workspaces, exists?: true) }
   let(:process_tree) do
     rows = table
-    snapshot = Object.new
-    snapshot.define_singleton_method(:find) { |pid| rows[pid] }
+    snapshot = Struct.new(:rows) { def find(pid) = rows[pid] }.new(rows)
     double("process_tree", snapshot: snapshot)
   end
   let(:ensure_agent) do
@@ -58,6 +62,7 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
   end
   let(:signaller) do
     ->(signal, pid) {
+      signal_hooks.each { |hook| hook.call(signal, pid) }
       raise Errno::ESRCH unless alive.include?(pid)
       next if signal == 0
 
@@ -71,7 +76,11 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
   end
   let(:now) { [0.0] }
   let(:command) do
-    holder_lookup = ->(path) { [holders[File.basename(path)[/workspace-(.*)\.sock/, 1]]].compact }
+    holder_lookup = lambda do |path|
+      name = File.basename(path)[/workspace-(.*)\.sock/, 1]
+      lookup_hooks.each { |hook| hook.call(name) }
+      holder_overrides.fetch(name) { [holders[name]].compact }
+    end
     described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, process_tree: process_tree,
       version_client: version_client, pid_finder: holder_lookup, signaller: signaller, sleeper: ->(s) { now[0] += s }, clock: -> { now[0] }, stop_timeout: 1, output: output)
   end
@@ -193,7 +202,7 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
 
     it "lists a hung daemon whose socket several processes hold, with an unknown pid" do
       run_daemon("api", 4242, answers: false)
-      allow(command).to receive(:socket_pids).and_return([4242, 4243])
+      holder_overrides["api"] = [4242, 4243]
 
       command.list(json: true)
 
@@ -223,24 +232,18 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
     it "prints each candidate before probing, then reports findings and restarts" do
       run_daemon("api", 4242)
       run_daemon("web", 4243)
-      original_restart = command.method(:restart)
       allow(config).to receive(:agent_running?) do |name|
         expect(output.string).to include("Checking agentd candidate for #{name}...")
         answering.include?(name)
       end
-      allow(command).to receive(:socket_pids) do |name|
-        expect(output.string).to include("Checking agentd candidate for #{name}...")
-        [holders[name]].compact
-      end
+      lookup_hooks << ->(name) { expect(output.string).to include("Checking agentd candidate for #{name}...") }
       allow(version_client).to receive(:version) do |name, timeout:|
         expect(output.string).to include("Found agentd for #{name}.")
         expect(output.string).not_to include("Restarting agentd for #{name}...")
         nil
       end
-      allow(command).to receive(:restart) do |name:|
-        expect(output.string).to include("Restarting agentd for #{name}...")
-        original_restart.call(name: name)
-      end
+      owners = holders.invert
+      signal_hooks << ->(_signal, pid) { expect(output.string).to include("Restarting agentd for #{owners[pid]}...") if owners.key?(pid) }
 
       command.restart_all
 
@@ -301,7 +304,7 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
 
     it "gives a hung daemon with several holders a failed row and signals nothing" do
       run_daemon("api", 4242, answers: false)
-      allow(command).to receive(:socket_pids).and_return([4242, 4243])
+      holder_overrides["api"] = [4242, 4243]
 
       results = command.restart_all.to_h
 
@@ -314,11 +317,7 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
       run_daemon("api", 4242)
       run_daemon("web", 4243)
       run_daemon("worker", 4244)
-      original = command.method(:restart)
-      allow(command).to receive(:restart) do |name:|
-        raise Workspace::Error, "ps blew up" if name == "web"
-        original.call(name: name)
-      end
+      signal_hooks << ->(_signal, pid) { raise Workspace::Error, "ps blew up" if pid == 4243 }
 
       results = command.restart_all.to_h
 
@@ -328,7 +327,7 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
 
     it "keeps the code an error carries as the reason" do
       run_daemon("api", 4242)
-      allow(command).to receive(:restart).and_raise(Workspace::Error.new("gone", code: "unknown_workspace"))
+      allow(project_config).to receive(:exists?).with("api").and_return(false)
 
       expect(command.restart_all.to_h["api"].reason).to eq("unknown_workspace")
     end

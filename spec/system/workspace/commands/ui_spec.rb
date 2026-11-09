@@ -1,5 +1,7 @@
 require "spec_helper"
 require "stringio"
+require "tmpdir"
+require "fileutils"
 
 # Behaves like `open URL`: [stdout, stderr, status], raising Errno::ENOENT when `open` is missing.
 class UiFakeOpener
@@ -146,10 +148,32 @@ RSpec.describe Workspace::Commands::Ui do
       }
     end
 
-    it "is wired with the notes command by build_cli" do
-      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
-      ui = cli.instance_variable_get(:@ui_command)
-      expect(ui.instance_variable_get(:@notes)).to be_a(Workspace::Commands::Notes)
+    it "is wired with the notes command by build_cli, so a note path is checked against the real notes directory" do
+      Dir.mktmpdir("workspace-ui-wiring") do |home|
+        saved = ENV.to_h
+        begin
+          ENV.replace("HOME" => home, "PATH" => ENV["PATH"])
+          project = File.join(home, "proj")
+          FileUtils.mkdir_p(File.join(project, "tmp", "workspace-notes"))
+          system("git", "init", "-q", project, out: File::NULL, err: File::NULL)
+          File.write(File.join(project, "tmp", "workspace-notes", "a.md"), "hi")
+          run = lambda do |*args|
+            out = StringIO.new
+            begin
+              Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {}).run(args)
+            rescue SystemExit
+              nil
+            end
+            out.string
+          end
+          run.call("init")
+          run.call("add", project)
+
+          expect(run.call("ui", "open", "notes", "proj", "--path", "a.md", "--print")).to eq("workspace-ui://notes/proj/a.md\n")
+        ensure
+          ENV.replace(saved)
+        end
+      end
     end
   end
 

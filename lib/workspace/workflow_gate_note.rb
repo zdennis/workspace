@@ -18,13 +18,14 @@ module Workspace
       @notes = notes
     end
 
-    # @param run [Hash{String=>Object}] a stored run
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @param step_id [String] the gated step
     # @return [Hash{String=>String}, nil] "name", "path" and "sha256" (of the bytes read now);
     #   nil when the step's first file is missing or has no `note:` line
     # @raise [Workspace::Error] code `gate_note_unreadable` when the named note is not a
     #   readable regular file in the notes directory
-    def find(run, step_id = run["current"])
+    def find(run, step_id = WorkflowRun.from_h(run).current)
+      run = WorkflowRun.from_h(run)
       name = named(run, step_id)
       return nil unless name
       raise unreadable(run, step_id, "#{name} is not a plain file name", name: name) if name.include?("/")
@@ -52,10 +53,11 @@ module Workspace
 
     # The error for a gate that names no note, for a caller that needs one.
     #
-    # @param run [Hash{String=>Object}] a stored run
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @param step_id [String] the gated step
     # @return [Workspace::Error] code `gate_note_unreadable`
-    def missing(run, step_id = run["current"])
+    def missing(run, step_id = WorkflowRun.from_h(run).current)
+      run = WorkflowRun.from_h(run)
       unreadable(run, step_id, "its first file #{first_file(run, step_id) || "(none)"} has no `note:` line")
     end
 
@@ -79,9 +81,9 @@ module Workspace
     private
 
     def first_file(run, step_id)
-      step = run["definition"]["steps"].find { |each| each["id"] == step_id }
+      step = run.definition["steps"].find { |each| each["id"] == step_id }
       produced = Array(step && step["produces"]).first
-      produced && File.join(run["artifacts_dir"], produced)
+      produced && File.join(run.artifacts_dir, produced)
     end
 
     # A step file that is gone, a link, or not a regular file names no note; it is opened
@@ -106,16 +108,16 @@ module Workspace
     end
 
     def notes_dir(run, step_id, name)
-      @notes.info(name: run["workspace"])["dir"]
+      @notes.info(name: run.workspace)["dir"]
     rescue Workspace::Error, SystemCallError => e
-      raise unreadable(run, step_id, "the notes directory of #{run["workspace"]} can't be found (#{e.message})", name: name)
+      raise unreadable(run, step_id, "the notes directory of #{run.workspace} can't be found (#{e.message})", name: name)
     end
 
     def unreadable(run, step_id, why, name: nil, path: nil)
-      attempt = run["steps"].fetch(step_id)["attempts"].last&.fetch("n", nil)
-      Workspace::Error.new("The gate of step #{step_id} in run #{run["id"]} has no note that can be read: #{why}.",
+      attempt = run.steps.fetch(step_id).last_attempt&.n
+      Workspace::Error.new("The gate of step #{step_id} in run #{run.id} has no note that can be read: #{why}.",
         code: "gate_note_unreadable",
-        details: {"run_id" => run["id"], "step" => step_id, "attempt" => attempt, "name" => name, "path" => path})
+        details: {"run_id" => run.id, "step" => step_id, "attempt" => attempt, "name" => name, "path" => path})
     end
   end
 end

@@ -151,7 +151,7 @@ RSpec.describe Workspace::Commands::Goal do
         Open3.capture2e("git", "-C", repo, "init", "-q")
         Open3.capture2e("git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i")
         Open3.capture2e("git", "-C", repo, "branch", "PROJ-1")
-        real = Workspace::StartRef.new(git: Workspace::Git.new(output: StringIO.new, input: StringIO.new))
+        real = Workspace::StartRef.new(lineage: LineageSupport.lineage, git: Workspace::Git.new(output: StringIO.new, input: StringIO.new))
         tasks["lab-wc-lab-1"] = {"id" => "t_1", "workspace" => "lab-wc-lab-1", "title" => "T", "ref" => "OTHER", "branch" => "proj-1"}
         allow(start_ref).to receive(:call) { |ref, **options| real.call(ref, **options) }
 

@@ -27,29 +27,50 @@ RSpec.describe "workspace workflow attempts through build_cli" do
     row = JSON.parse(out.string)["attempts"].first
     expect(row).to include("step" => "plan", "attempt" => 1, "outcome" => "failed", "code" => "check_failed")
   end
-  it "wires the evidence copier into the attempt record and the run store" do
-    out = StringIO.new
-    cli = Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {})
-    command = cli.instance_variable_get(:@workflow_command)
-    record = command.instance_variable_get(:@engine).instance_variable_get(:@attempt_record)
+  it "copies an open attempt's produced files as evidence when a run is cancelled" do
     config = Workspace::Config.new
     art = File.join(ENV.fetch("HOME"), "art")
     FileUtils.mkdir_p(art)
     File.write(File.join(art, "plan.md"), "plan")
-    attempt = {"n" => 1}
+    store = Workspace::WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, id_generator: -> { "wr_2611010900wired" })
+    store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan", "artifacts_dir" => art, "worktree" => art,
+      "definition" => {"steps" => [{"id" => "plan", "produces" => ["plan.md"]}]}, "steps" => {"plan" => {"attempts" => [{"n" => 1}]}})
+    out = StringIO.new
+    cli = Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {}, exit_handler: FakeExitHandler)
 
-    record.finish(run: {"id" => "wr_wired", "artifacts_dir" => art, "worktree" => art}, step: {"id" => "plan", "produces" => ["plan.md"]}, attempt: attempt)
+    cli.run(["workflow", "cancel", "wr_2611010900wired"])
+    out.truncate(0)
+    out.rewind
+    cli.run(["workflow", "attempts", "wr_2611010900wired", "--json"])
 
-    expect(attempt["evidence"].first).to include("name" => "plan.1.out.0.plan.md", "sha256" => Digest::SHA256.hexdigest("plan"))
-    expect(File.read(File.join(config.workflow_evidence_dir, "wr_wired", "plan.1.out.0.plan.md"))).to eq("plan")
-    expect(command.instance_variable_get(:@store).instance_variable_get(:@evidence)).to be_a(Workspace::WorkflowEvidence)
+    evidence = JSON.parse(out.string)["attempts"].first["evidence"].first
+    expect(evidence).to include("name" => "plan.1.out.0.plan.md", "sha256" => Digest::SHA256.hexdigest("plan"))
+    expect(File.read(File.join(config.workflow_evidence_dir, "wr_2611010900wired", "plan.1.out.0.plan.md"))).to eq("plan")
+  end
+  it "removes the evidence of an archived run pruned when a run ends" do
+    config = Workspace::Config.new
+    FileUtils.mkdir_p(config.workflow_archive_dir)
+    Workspace::WorkflowRunStore::ARCHIVE_LIMIT.times do |n|
+      id = format("wr_old%03d", n)
+      File.write(File.join(config.workflow_archive_dir, "#{id}.json"), JSON.generate("id" => id, "workflow" => "rpiv", "state" => "completed", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}, "ended_at" => format("2026-01-01T00:%02d:%02dZ", n / 60, n % 60), "steps" => {"plan" => {"attempts" => []}}))
+    end
+    evidence = File.join(config.workflow_evidence_dir, "wr_old000")
+    FileUtils.mkdir_p(evidence)
+    File.write(File.join(evidence, "plan.1.out.0.plan.md"), "plan")
+    store = Workspace::WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, id_generator: -> { "wr_2611010900prune" })
+    store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan", "worktree" => ENV.fetch("HOME"), "definition" => {"steps" => [{"id" => "plan"}]}, "steps" => {"plan" => {"attempts" => []}})
+
+    Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {}, exit_handler: FakeExitHandler).run(["workflow", "cancel", "wr_2611010900prune"])
+
+    expect(File.exist?(File.join(config.workflow_archive_dir, "wr_old000.json"))).to be(false)
+    expect(File.exist?(evidence)).to be(false)
   end
   describe "workflow audit" do
     let(:config) { Workspace::Config.new }
     let(:art) { File.join(ENV.fetch("HOME"), "art") }
     let(:out) { StringIO.new }
     let(:cli) do
-      Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {}).tap { |each| each.instance_variable_set(:@exit_handler, FakeExitHandler) }
+      Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {}, exit_handler: FakeExitHandler)
     end
 
     before do

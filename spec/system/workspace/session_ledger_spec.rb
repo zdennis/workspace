@@ -459,11 +459,6 @@ RSpec.describe Workspace::SessionLedger, "#carry through several renames" do
   let(:ledger) { described_class.new(path: File.join(tmpdir, "ledger.jsonl"), logger: Workspace::Logger.new) }
   let(:transcript) { File.join(tmpdir, "s1.jsonl").tap { |path| File.write(path, "") } }
   let(:checkout) { tmpdir }
-  let(:restore) do
-    Workspace::Commands::Restore.new(ledger: ledger, tmux: nil, pane_bindings: nil, tmuxinator_report: nil, process_tree: nil, resume_command: nil,
-      output: StringIO.new, error_output: StringIO.new)
-  end
-
   after { FileUtils.remove_entry(tmpdir) }
 
   before do
@@ -475,10 +470,13 @@ RSpec.describe Workspace::SessionLedger, "#carry through several renames" do
     ledger.carry(from: from, to: to, cwd: checkout, from_session: "s#{from}", to_session: "s#{to}")
   end
 
-  # What `restore NAME` makes of the slots: the ones nothing rules out.
+  # The slots `restore NAME` can resume: those whose session has not ended, or ended for a reason it resumes after.
   def resumable(name)
-    session = "s#{name}"
-    restore.send(:slots_for, name, session).reject { |slot| restore.send(:precheck, {workspace: name, session: session}, slot) }
+    ledger.slots_for(name, "s#{name}").select do |slot|
+      Workspace::Commands::Restore::RESUMABLE_END_REASONS.include?(slot["end_reason"]) &&
+        slot["session_id"].to_s.match?(Workspace::AgentResumeCommand::SESSION_ID) &&
+        File.directory?(slot["cwd"].to_s) && File.exist?(slot["transcript_path"].to_s)
+    end
   end
 
   it "keeps the conversation on a trip there and back" do

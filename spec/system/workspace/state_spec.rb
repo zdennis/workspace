@@ -15,9 +15,9 @@ RSpec.describe Workspace::State do
 
   after { FileUtils.remove_entry(tmpdir) }
 
-  def new_state
+  def new_state(**options)
     event_log = Workspace::EventLog.new(config: config)
-    described_class.new(config: config, event_log: event_log)
+    described_class.new(config: config, event_log: event_log, **options)
   end
 
   describe "#load" do
@@ -206,10 +206,6 @@ RSpec.describe Workspace::State do
       allow(home_config).to receive(:state_file).and_return(File.join(home, ".workspace-state.json"))
       allow(home_config).to receive(:event_log_file).and_return(File.join(home, ".workspace-events.jsonl"))
       marker = File.join(home, "saving")
-      first = described_class.new(config: home_config, event_log: Workspace::EventLog.new(config: home_config))
-      first.load
-      first["proj-a"] = {"unique_id" => "uid-a"}
-
       script = <<~CHILD
         require "workspace"
         config = Workspace::Config.new(workspace_dir: ENV["HOME"])
@@ -221,15 +217,18 @@ RSpec.describe Workspace::State do
       env = {"HOME" => home, "XDG_STATE_HOME" => File.join(home, "state"),
              "XDG_CONFIG_HOME" => File.join(home, "config"), "SKIP_SIMPLECOV" => "1"}
       pid = nil
-      allow(File).to receive(:write).and_wrap_original do |original, path, *rest|
+      writer = lambda do |path, text|
         if path.end_with?(".tmp") && pid.nil?
           pid = Process.spawn(env, RbConfig.ruby, "-I", File.join(PROJECT_ROOT, "lib"), "-e", script,
             out: File::NULL, err: File::NULL)
           Timeout.timeout(30) { sleep 0.01 until File.exist?(marker) }
           sleep 0.5
         end
-        original.call(path, *rest)
+        File.write(path, text)
       end
+      first = described_class.new(config: home_config, event_log: Workspace::EventLog.new(config: home_config), writer: writer)
+      first.load
+      first["proj-a"] = {"unique_id" => "uid-a"}
 
       begin
         first.save
@@ -244,8 +243,7 @@ RSpec.describe Workspace::State do
     end
 
     it "saves without the lock once another holder keeps it past the wait" do
-      stub_const("Workspace::State::LOCK_WAIT", 0.05)
-      state = new_state.load
+      state = new_state(lock_wait: 0.05).load
       state["proj1"] = {"unique_id" => "uid1"}
 
       File.open("#{state_file}.lock", File::RDWR | File::CREAT) do |held|
@@ -257,8 +255,8 @@ RSpec.describe Workspace::State do
     end
 
     it "saves without the lock when the lock file can't be opened" do
-      allow(File).to receive(:open).and_call_original
-      allow(File).to receive(:open).with("#{state_file}.lock", any_args).and_raise(Errno::EACCES)
+      FileUtils.touch("#{state_file}.lock")
+      FileUtils.chmod(0o000, "#{state_file}.lock")
       state = new_state.load
       state["proj1"] = {"unique_id" => "uid1"}
 
@@ -267,13 +265,50 @@ RSpec.describe Workspace::State do
       expect(JSON.parse(File.read(state_file)).keys).to eq(["proj1"])
     end
 
+    it "logs why it saves without the lock when the lock file can't be opened" do
+      FileUtils.touch("#{state_file}.lock")
+      FileUtils.chmod(0o000, "#{state_file}.lock")
+      out = StringIO.new
+      state = new_state(logger: Workspace::Logger.new(output: out, enabled: true)).load
+      state["proj1"] = {"unique_id" => "uid1"}
+
+      state.save
+
+      expect(out.string).to include("state: can't open the lock file (Errno::EACCES: ")
+      expect(out.string).to include("state: saving without the state file lock")
+    end
+
+    it "logs why it saves without the lock when the lock can't be taken" do
+      out = StringIO.new
+      stuck = instance_double(File, close: nil)
+      allow(stuck).to receive(:flock).and_raise(Errno::ENOLCK)
+      state = new_state(logger: Workspace::Logger.new(output: out, enabled: true), lock_opener: ->(*, &_) { stuck }).load
+      state["proj1"] = {"unique_id" => "uid1"}
+
+      state.save
+
+      expect(out.string).to include("state: can't lock the state file (Errno::ENOLCK: ")
+    end
+
+    it "does not make the state file's directory for the lock, and still reaches the write" do
+      missing = File.join(tmpdir, "gone", "state.json")
+      allow(config).to receive(:state_file).and_return(missing)
+      out = StringIO.new
+      state = new_state(logger: Workspace::Logger.new(output: out, enabled: true)).load
+      state["proj1"] = {"unique_id" => "uid1"}
+
+      expect { state.save }.to raise_error(Errno::ENOENT)
+      expect(File.exist?(File.dirname(missing))).to be(false)
+      expect(out.string).to include("state: can't open the lock file")
+    end
+
     it "writes each save through its own temp file and leaves none behind" do
       temp_files = []
-      allow(File).to receive(:rename).and_wrap_original do |original, from, to|
+      renamer = lambda do |from, to|
         temp_files << from
-        original.call(from, to)
+        File.rename(from, to)
       end
-      first = new_state.load
+      first = described_class.new(config: config, event_log: Workspace::EventLog.new(config: config), renamer: renamer).load
       first["proj1"] = {"headless" => true}
       first.save
       first.save

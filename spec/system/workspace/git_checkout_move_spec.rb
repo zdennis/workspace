@@ -4,7 +4,7 @@ require "spec_helper"
 RSpec.describe Workspace::Git do
   include MoveRepos
 
-  let(:runner) { Workspace::TimedProcess.method(:run) }
+  let(:runner) { ->(*args, **kw) { Workspace::TimedProcess.run(*args, **kw) } }
   subject(:git) { described_class.new(output: StringIO.new, input: StringIO.new, runner: runner) }
 
   describe "#status_entries" do

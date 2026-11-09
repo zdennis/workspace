@@ -1,5 +1,4 @@
 require "json"
-require "fileutils"
 require "securerandom"
 require "time"
 
@@ -38,7 +37,10 @@ module Workspace
     def initialize(path:, clock: Time, id_generator: -> { SecureRandom.hex(8) },
       pid_alive: ->(pid) { PromptQueueStore.pid_alive?(pid) })
       @path = path
-      @lockfile_path = "#{path}.lock"
+      @file = LockedJsonFile.new(path, parse: method(:parse_data), tag: -> { Thread.current.object_id },
+        fingerprint: JSON.method(:generate), access_error: lambda { |e|
+          Workspace::Error.new("Could not access the prompt queue at #{path} (#{e.class}: errno #{e.errno})")
+        })
       @clock = clock
       @id_generator = id_generator
       @pid_alive = pid_alive
@@ -71,7 +73,7 @@ module Workspace
     # @return [Array(Symbol, Hash)] `:added` and the entry with its
     #   "position" (from 1), or `:queue_full` and nil
     def add(pane_id:, text:, identity:, clear_first: false)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         mine = data["entries"].count { |e| e["pane_id"] == pane_id }
         next [:queue_full, nil] if mine >= MAX_PER_PANE
 
@@ -88,7 +90,7 @@ module Workspace
     # @return [Array<Hash>] entries in queue order; none when the file is missing
     def entries(pane_id: nil)
       return [] unless File.exist?(@path)
-      list = with_lock(readonly: true) { |data| data["entries"] }
+      list = @file.shared { |data| data["entries"] }
       pane_id ? list.select { |e| e["pane_id"] == pane_id } : list
     end
 
@@ -102,7 +104,7 @@ module Workspace
     # @param id [String]
     # @return [Hash, nil] the entry with its "position", or nil when it is gone
     def announce(id)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         entry = data["entries"].find { |e| e["id"] == id }
         next nil unless entry
         entry["announced"] = true
@@ -118,7 +120,7 @@ module Workspace
     # @return [Integer] how many entries took it
     def bind_session(pane_id, session_id)
       return 0 unless session_id && File.exist?(@path)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         unbound = data["entries"].select { |e| e["pane_id"] == pane_id && e["session_id"].nil? }
         unbound.each { |e| e["session_id"] = session_id }
         unbound.size
@@ -133,7 +135,7 @@ module Workspace
     # @return [Array<Array(Hash, String)>] each entry dropped and its reason
     def drop_queued(pane_id)
       return [] unless File.exist?(@path)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         dropped = data["entries"].filter_map do |entry|
           next unless entry["pane_id"] == pane_id && entry["state"] == "queued"
           reason = yield(entry)
@@ -159,7 +161,7 @@ module Workspace
     # @return [Array(Hash, Array)] the claimed entry (nil when none) and the
     #   entries dropped as `interrupted`
     def claim(pane_id, daemon_pid:)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         reaped = reap(data)
         mine = data["entries"].select { |e| e["pane_id"] == pane_id }
         head = mine.first
@@ -185,7 +187,7 @@ module Workspace
     # @param claim [Hash] the entry {#claim} returned
     # @return [Symbol] `:ok`, `:cancelled` or `:missing`
     def proceed(claim)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         entry = claimed(data, claim)
         next :missing unless entry && !entry["paste_started_at"]
         next :ok unless entry["cancel_requested"]
@@ -204,7 +206,7 @@ module Workspace
     # @return [Integer] how many entries took it
     def rebind_session(pane_id, from:, to:)
       return 0 unless from && to
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         moved = data["entries"].select { |e| e["pane_id"] == pane_id && e["session_id"] == from }
         moved.each { |e| e["session_id"] = to }
         moved.size
@@ -219,7 +221,7 @@ module Workspace
     # @return [Integer] how many entries took it
     def rebind_agent(pane_id, agent_pid:)
       return 0 unless agent_pid
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         moved = data["entries"].select { |e| e["pane_id"] == pane_id }
         moved.each { |e| e["agent_pid"] = agent_pid }
         moved.size
@@ -235,7 +237,7 @@ module Workspace
     # @param claim [Hash] the entry {#claim} returned
     # @return [Symbol] `:started`, `:cancelled` or `:missing`
     def start_paste(claim)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         entry = claimed(data, claim)
         next :missing unless entry && !entry["paste_started_at"]
         if entry["cancel_requested"]
@@ -262,7 +264,7 @@ module Workspace
     # @param message [String, nil] the refusal's wording
     # @return [Hash, nil] the entry as it was, or nil when it is gone
     def finish(claim, outcome, reason: nil, message: nil)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         entry = claimed(data, claim)
         next nil unless entry
         before = entry.dup
@@ -290,7 +292,7 @@ module Workspace
     #   asked), `:pasting` (its text may be in the
     #   pane; nothing changed) or `:unknown` (nil)
     def cancel(id)
-      with_lock do |data|
+      @file.exclusive(write: :if_changed) do |data|
         entry = data["entries"].find { |e| e["id"] == id }
         next [:unknown, nil] unless entry
         next [:pasting, entry] if entry["paste_started_at"]
@@ -359,25 +361,8 @@ module Workspace
 
     # A write raises rather than replace a file it couldn't read, since that
     # would drop every entry in it.
-    def with_lock(readonly: false)
-      FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
-      result = nil
-      File.open(@lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
-        f.flock(readonly ? File::LOCK_SH : File::LOCK_EX)
-        data = read_data
-        before = JSON.generate(data)
-        result = yield data
-        write_data(data) unless readonly || JSON.generate(data) == before
-      end
-      result
-    rescue SystemCallError => e
-      raise Workspace::Error, "Could not access the prompt queue at #{@path} (#{e.class}: errno #{e.errno})"
-    end
-
-    def read_data
-      return empty unless File.exist?(@path)
-      content = File.read(@path, encoding: Encoding::UTF_8)
-      return empty if content.strip.empty?
+    def parse_data(content)
+      return empty if content.nil? || content.strip.empty?
       parsed = JSON.parse(content)
       entries = parsed.is_a?(Hash) && parsed["entries"]
       panes = parsed.is_a?(Hash) && parsed.fetch("panes", {})
@@ -396,16 +381,6 @@ module Workspace
     def unreadable(reason)
       raise Workspace::Error, "The prompt queue #{@path} can't be read (#{reason}); " \
         "nothing was changed. Fix or move it aside and retry."
-    end
-
-    def write_data(data)
-      tmp = "#{@path}.#{Process.pid}.#{Thread.current.object_id}.tmp"
-      File.open(tmp, "w", 0o600) do |f|
-        f.write(JSON.pretty_generate(data))
-        f.flush
-        f.fsync
-      end
-      File.rename(tmp, @path)
     end
   end
 end

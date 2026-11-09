@@ -13,8 +13,8 @@ RSpec.describe Workspace::HelpPages do
     def respond_to_missing?(*) = true
   end
 
-  # The real CLI in a throwaway HOME, so no real state is read or written.
-  def with_cli
+  # A throwaway HOME, so no real state is read or written. Yields what the block builds a CLI from.
+  def in_throwaway_home
     Dir.mktmpdir("workspace-help-pages") do |home|
       saved = ENV.to_h
       ENV.replace("HOME" => home, "PATH" => File.dirname(RbConfig.ruby))
@@ -23,11 +23,31 @@ RSpec.describe Workspace::HelpPages do
         err = StringIO.new
         raise "#{Dir.home} is outside the throwaway HOME" unless Dir.home == home
 
-        cli = Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {})
-        yield cli, out, err, home
+        yield out, err, home
       ensure
         ENV.replace(saved)
       end
+    end
+  end
+
+  # The real CLI over real collaborators.
+  def with_cli
+    in_throwaway_home do |out, err, home|
+      cli = Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {})
+      yield cli, out, err, home
+    end
+  end
+
+  # A CLI whose every command object and library is `untouchable` (any call fails the example), except the
+  # ones given in +overrides+.
+  def with_untouchable_cli(untouchable, **overrides)
+    in_throwaway_home do |out, err, home|
+      parameters = Workspace::CLI.instance_method(:initialize).parameters
+      names = parameters.select { |kind, name| kind == :keyreq || name.match?(/_command\z|\Alibrary\z/) }.map(&:last)
+      # Config only computes paths under the throwaway HOME; help text names them.
+      collaborators = names.to_h { |name| [name, untouchable.new] }.merge(config: Workspace::Config.new).merge(overrides)
+      cli = Workspace::CLI.new(lineage: LineageSupport.lineage, output: out, error_output: err, input: StringIO.new, env: {}, **collaborators)
+      yield cli, out, err, home
     end
   end
 
@@ -115,30 +135,32 @@ RSpec.describe Workspace::HelpPages do
       end
     end
 
-    parsers = {
-      "plan" => :plan_parser, "daemon" => :daemon_parser, "workflow" => :workflow_parser, "library" => :library_parser,
-      "spine" => :spine_parser, "binding" => :binding_parser, "step" => :step_parser, "review" => :review_parser,
-      "pr" => :pr_parser, "ticket" => :ticket_parser, "goal" => :goal_parser, "notes" => :notes_parser,
-      "instructions" => :instructions_parser, "ui" => :ui_parser, "skills" => :skills_parser, "event-log" => :event_log_show_parser,
-      # `projects list` parses inline, so it has no factory to check.
-      "projects" => {"show" => :projects_show_parser, "members" => :projects_members_parser,
-                     "stop" => :projects_stop_parser, "kill" => :projects_kill_parser}
+    # Run each verb with each flag its page lists. Parsing comes first, so an unaccepted flag is reported on
+    # stderr as an option error; once parsing succeeds the untouchable collaborators stop the command.
+    option_errors = /invalid option|missing argument|invalid argument|ambiguous option|needless argument/
+    checked = {
+      "plan" => nil, "daemon" => nil, "workflow" => nil, "library" => nil, "spine" => nil, "binding" => nil,
+      "step" => nil, "review" => nil, "pr" => nil, "ticket" => nil, "goal" => nil, "notes" => nil,
+      "instructions" => nil, "ui" => nil, "skills" => nil, "event-log" => ["show"],
+      "projects" => %w[show members stop kill]
     }
-    parsers.each do |command, factory|
+    checked.each do |command, only|
       it "list only flags the #{command} parser accepts" do
-        with_cli do |cli, *|
-          pages.fetch(command).each do |key, page|
-            parser_factory = ((command == "spine" && key == "init") ? :spine_init_parser : factory)
-            parser_factory = factory[key] if factory.is_a?(Hash)
-            next unless parser_factory
-            page[:options].each do |label, _|
-              word = label.split(", ").first
-              flag = word.split.first.sub("[no-]", "")
-              takes_value = word.include?(" ") && !word.include?("[")
-              options = Hash.new { |hash, k| hash[k] = [] }
-              value = label.include?("TYPE:ID") ? "shell:1" : "1"
-              argv = takes_value ? [flag, value] : [flag]
-              expect { cli.send(parser_factory, options).parse(argv) }.not_to raise_error, "#{command} #{key} #{label}"
+        pages.fetch(command).each do |key, page|
+          next if only && !only.include?(key)
+          page[:options].each do |label, _|
+            word = label.split(", ").first
+            flag = word.split.first.sub("[no-]", "")
+            takes_value = word.include?(" ") && !word.include?("[")
+            value = label.include?("TYPE:ID") ? "shell:1" : "1"
+            argv = command.split + key.split + (takes_value ? [flag, value] : [flag])
+            with_untouchable_cli(untouchable) do |cli, _out, err, _home|
+              begin
+                cli.run(argv)
+              rescue SystemExit, StandardError
+                nil
+              end
+              expect(err.string).not_to match(option_errors), argv.join(" ")
             end
           end
         end
@@ -214,10 +236,7 @@ RSpec.describe Workspace::HelpPages do
     ]
 
     def run_with_untouchable_collaborators(argv, untouchable)
-      with_cli do |cli, out, _err, home|
-        cli.instance_variables.grep(/_command\z|\A@library\z/).each do |ivar|
-          cli.instance_variable_set(ivar, untouchable.new) unless cli.instance_variable_get(ivar).nil?
-        end
+      with_untouchable_cli(untouchable) do |cli, out, _err, home|
         cli.run(argv)
         expect(out.string).not_to be_empty
         expect(Dir.children(home)).to eq([])
@@ -284,45 +303,39 @@ RSpec.describe Workspace::HelpPages do
 
   describe "a literal --help" do
     it "is a value after a flag that takes one, and nothing after --" do
-      page = pages["workflow"]["approve"]
-      expect(cli_help_requested(%w[wr_1 --note --help], page)).to be(false)
-      expect(cli_help_requested(%w[wr_1 --note=x --help], page)).to be(true)
-      expect(cli_help_requested(%w[wr_1 -- --help], page)).to be(false)
-      expect(cli_help_requested(%w[wr_1 --json --help], page)).to be(true)
-      expect(cli_help_requested(%w[wr_1 -h], page)).to be(true)
+      expect(page_shown(untouchable, %w[workflow approve wr_1 --note --help])).to be(false)
+      expect(page_shown(untouchable, %w[workflow approve wr_1 --note=x --help])).to be(true)
+      expect(page_shown(untouchable, %w[workflow approve wr_1 -- --help])).to be(false)
+      expect(page_shown(untouchable, %w[workflow approve wr_1 --json --help])).to be(true)
+      expect(page_shown(untouchable, %w[workflow approve wr_1 -h])).to be(true)
     end
 
     it "does not swallow the word after a flag whose value is optional" do
-      page = pages["library"]["remove"]
-      expect(cli_help_requested(%w[play/x --project --help], page)).to be(true)
+      expect(page_shown(untouchable, %w[library remove play/x --project --help])).to be(true)
     end
 
     it "is the value of --name on a layout verb, so the verb's page is not shown" do
-      page = pages["layout"]["save"]
-      expect(cli_help_requested(%w[--name --help], page)).to be(false)
-      expect(cli_help_requested(%w[--name x --help], page)).to be(true)
-      with_cli do |cli, out, *|
-        layout = instance_double(Workspace::Commands::Layout)
-        expect(layout).to receive(:save).with("--help", "default")
-        cli.instance_variable_set(:@layout_command, layout)
+      expect(page_shown(untouchable, %w[layout save --name --help])).to be(false)
+      expect(page_shown(untouchable, %w[layout save --name x --help])).to be(true)
+      layout = instance_double(Workspace::Commands::Layout)
+      expect(layout).to receive(:save).with("--help", "default")
+      with_untouchable_cli(untouchable, layout_command: layout) do |cli, out, *|
         cli.run(%w[layout save --name --help])
         expect(out.string).not_to include("Usage: workspace layout save")
       end
     end
 
     it "stays the question text of an ask that records one, and the answer text after --" do
-      with_cli do |cli, out, *|
-        ask = instance_double(Workspace::Commands::Ask)
-        expect(ask).to receive(:call).with(hash_including(question: "--help", default: "-h")).and_return({exit_code: 0})
-        cli.instance_variable_set(:@ask_command, ask)
+      ask = instance_double(Workspace::Commands::Ask)
+      expect(ask).to receive(:call).with(hash_including(question: "--help", default: "-h")).and_return({exit_code: 0})
+      with_untouchable_cli(untouchable, ask_command: ask) do |cli, out, *|
         cli.run(["ask", "--default", "-h", "--", "--help"])
         expect(out.string).not_to include("Usage: workspace ask")
       end
     end
 
     it "leaves --help after --default to the option parser, which prints usage and exits 0" do
-      with_cli do |cli, out, *|
-        cli.instance_variable_set(:@ask_command, untouchable.new)
+      with_untouchable_cli(untouchable) do |cli, out, *|
         saved = $stdout
         $stdout = out
         begin
@@ -335,10 +348,9 @@ RSpec.describe Workspace::HelpPages do
     end
 
     it "takes --help after -- as the title of inbox add" do
-      with_cli do |cli, out, *|
-        inbox = instance_double(Workspace::Commands::Inbox)
-        expect(inbox).to receive(:add).with(hash_including(title: "--help")).and_return({exit_code: 0, results: []})
-        cli.instance_variable_set(:@inbox_command, inbox)
+      inbox = instance_double(Workspace::Commands::Inbox)
+      expect(inbox).to receive(:add).with(hash_including(title: "--help")).and_return({exit_code: 0, results: []})
+      with_untouchable_cli(untouchable, inbox_command: inbox) do |cli, out, *|
         cli.run(["inbox", "add", "--", "--help"])
         expect(out.string).not_to include("Usage: workspace inbox add")
       end
@@ -351,8 +363,17 @@ RSpec.describe Workspace::HelpPages do
       end
     end
 
-    def cli_help_requested(argv, page)
-      with_cli { |cli, *| return cli.send(:help_requested?, argv, page) }
+    # Whether running +argv+ printed the verb's page (otherwise the command ran and failed on an untouchable
+    # collaborator); --json prints the page as a document.
+    def page_shown(untouchable, argv)
+      with_untouchable_cli(untouchable) do |cli, out, *|
+        begin
+          cli.run(argv)
+        rescue SystemExit, StandardError
+          nil
+        end
+        return out.string.include?("workspace #{argv.first(2).join(" ")}")
+      end
     end
   end
 

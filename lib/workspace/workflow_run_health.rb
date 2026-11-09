@@ -18,6 +18,15 @@ module Workspace
   #   agent daemon sweeps periodically, so one seen here means neither has run
   #   since the run ended (a run that has only just ended shows the same way).
   class WorkflowRunHealth
+    # A run still going that nothing can move: its checkout is missing, unmounted or never recorded.
+    # {#to_h} is the string-keyed Hash `call` returned before this value existed.
+    Orphan = Struct.new(:id, :workflow, :workspace, :state, :worktree, :why, keyword_init: true) do
+      # @return [Hash{String=>Object}]
+      def to_h
+        {"id" => id, "workflow" => workflow, "workspace" => workspace, "state" => state, "worktree" => worktree, "why" => why}
+      end
+    end
+
     # @param store [Workspace::WorkflowRunStore] lists the runs still going and the run files it can't read
     # @param liveness [Workspace::RunLiveness] says whether a run is still going
     # @param lock_dir [String] the directory holding one lock store directory per repository ({Config#lock_dir})
@@ -29,7 +38,7 @@ module Workspace
       @lock_store_for = lock_store_for
     end
 
-    # @return [Hash{Symbol=>Array}] `:orphans` (hashes with `id`, `workflow`, `workspace`, `state`, `worktree`, `why`),
+    # @return [Hash{Symbol=>Array}] `:orphans` ({Orphan} values),
     #   `:unreadable` (run file paths), `:leaked` (hashes with `namespace`, `dir`, `lock`, `run_id`, `role`, `worktree`, `delegate_pid`)
     #   and `:warnings` (strings for files that could not be read)
     def call
@@ -40,15 +49,15 @@ module Workspace
     private
 
     def orphaned_runs(warnings)
-      @store.active.filter_map do |run|
-        worktree = run["worktree"]
+      @store.going.filter_map do |run|
+        worktree = run.worktree
         why = if !worktree.is_a?(String) || worktree.empty?
           "it records no checkout"
         elsif !File.directory?(worktree)
           "its checkout #{worktree} is missing or unmounted"
         end
         next unless why
-        {"id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "state" => run["state"], "worktree" => worktree, "why" => why}
+        Orphan.new(id: run.id, workflow: run.workflow, workspace: run.workspace, state: run.state, worktree: worktree, why: why)
       end
     rescue SystemCallError, Workspace::Error => e
       warnings << "could not list the workflow runs (#{e.class})"

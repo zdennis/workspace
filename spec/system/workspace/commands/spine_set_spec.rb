@@ -178,8 +178,8 @@ RSpec.describe Workspace::Commands::Spine, "#set" do
       target = File.join(@root, "elsewhere.md")
       File.write(target, "---\nstatus: blocked\n---\n")
       swapped = false
-      writer = Workspace::SpineWriter.new
-      allow(writer).to receive(:write).and_wrap_original do |original, path, **args|
+      writer = Interceptable.subclass(Workspace::SpineWriter, :write).new
+      writer.on(:write) do |original, path, **args|
         unless swapped
           swapped = true
           FileUtils.rm(path)
@@ -452,10 +452,7 @@ RSpec.describe Workspace::Commands::Spine, "#set" do
       pids = [%w[in_progress first], %w[blocked second]].each_with_index.map do |(status, note), index|
         fork do
           readers[index].read(1)
-          appender = Object.new
-          log_path = File.join(@root, "events.jsonl")
-          appender.define_singleton_method(:latest_agent_states) { |_| {} }
-          appender.define_singleton_method(:record) { |type:, project:, data:| File.open(log_path, "a") { |f| f.syswrite(JSON.generate({"type" => type, "data" => data}) + "\n") } }
+          appender = FileAppendingEventLog.new(File.join(@root, "events.jsonl"))
           build_command(output: StringIO.new, event_log: appender).set(name: "api", path: "verify", status: status, note: note)
           exit!(0)
         rescue Exception # standard:disable Lint/RescueException

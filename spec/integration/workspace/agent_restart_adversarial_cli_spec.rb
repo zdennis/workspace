@@ -107,7 +107,7 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
   # any other provider, such as opencode, would type a command that agent
   # does not know, so the daemon refuses it.
   it "U3: refuses a restart_agent for a pane running a provider that is not restartable (opencode)" do
-    tmux = AgentRestartAdversarialFakeTmux.new
+    tmux = FakeTmux.new(session_name: "workspace-wt-myapp", details: [{id: "%18", window: 0, index: 1, pid: 2, command: "opencode", cwd: "/", title: ""}])
     monitor = AgentRestartAdversarialFakeMonitor.new("%18" => "opencode")
     restart = AgentRestartAdversarialGatedRestart.new({"ok" => true, "status" => "restarted", "pane_id" => "%18"})
     config = instance_double(Workspace::Config).tap do |c|
@@ -129,17 +129,20 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
 
       def trap(signal, &block) = @handlers[signal] = block
     }.new
-    output = StringIO.new
+    output = ReadyAnnouncingOutput.new
     error_output = StringIO.new
 
     agent = Workspace::Commands::Agent.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, signal_trapper: signal_trapper,
       session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
-      agent_restart_factory: restart.method(:build), output: output, error_output: error_output)
+      agent_restart_factory: ->(**kwargs) { restart.build(**kwargs) }, output: output, error_output: error_output)
 
-    thread = Thread.new { agent.call(name: "myapp") }
-    deadline = Time.now + 2
-    sleep(0.01) until output.string.include?("ready") || Time.now > deadline
+    thread = Thread.new do
+      agent.call(name: "myapp")
+    ensure
+      output.announce
+    end
+    output.wait_ready
 
     reply = UNIXSocket.open(socket_path) do |socket|
       socket.puts({"type" => "restart_agent", "workspace" => "myapp", "pane" => "%18",
@@ -154,19 +157,6 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
     signal_trapper&.handlers&.[]("TERM")&.call
     thread&.join(2)
     thread&.kill
-  end
-end
-
-class AgentRestartAdversarialFakeTmux < CLITestHelpers::FakeTmux
-  def initialize
-    super
-    @details = [{id: "%18", window: 0, index: 1, pid: 2, command: "opencode", cwd: "/", title: ""}]
-  end
-
-  def session_name_for(_config) = "workspace-wt-myapp"
-
-  def pane_details(_session, window: "0")
-    window.nil? ? @details : @details.select { |d| d[:window] == window.to_i }
   end
 end
 

@@ -24,12 +24,14 @@ module Workspace
     # @return [String, nil]
     def self.project_of(workspace)
       return nil if workspace.nil? || workspace.to_s.empty?
-      WorkspaceLineage.split_worktree_name(workspace.to_s)&.first || workspace.to_s
+      WorkspaceName.project_of(workspace.to_s)
     end
 
     # @param config [Workspace::Config] names the directories
-    def initialize(config:)
+    # @param globber [#call] lists the paths matching a glob pattern, as +Dir.glob+ does
+    def initialize(config:, globber: Dir.method(:glob))
       @config = config
+      @globber = globber
     end
 
     # @param id [String] the workflow's id
@@ -50,7 +52,7 @@ module Workspace
     # @return [Array(String, String), nil] "project", "global" or "builtin" and the path, or nil when no file has that id
     #   (including an id that could not be a file name)
     def locate(id, project: nil)
-      return nil unless WorkflowDefinition::ID_PATTERN.match?(id)
+      return nil unless IdPatterns::WORKFLOW_ID.match?(id)
       dirs(project).each do |source, dir|
         path = File.join(dir, "#{id}.yml")
         return [source, path] if File.file?(path)
@@ -83,7 +85,7 @@ module Workspace
     # @param project [String, nil] the project whose definitions are searched first
     # @return [Hash{String=>String}, nil] "text", "path" and "source", or nil when no file has that id or it can't be read
     def parent(id, below: nil, project: nil)
-      return nil unless WorkflowDefinition::ID_PATTERN.match?(id.to_s)
+      return nil unless IdPatterns::WORKFLOW_ID.match?(id.to_s)
       all = dirs(project)
       names = all.keys
       names = names.drop(names.index(all.key?(below) ? below : "global") + 1) if below
@@ -130,8 +132,8 @@ module Workspace
     # @return [String]
     # @raise [Workspace::Error] code `invalid_workflow` when the id could not be a file name
     def global_path(id)
-      unless WorkflowDefinition::ID_PATTERN.match?(id.to_s)
-        problem = "the workflow id #{id.to_s[0, 60].inspect} must be #{WorkflowDefinition::ID_RULE}"
+      unless IdPatterns::WORKFLOW_ID.match?(id.to_s)
+        problem = "the workflow id #{id.to_s[0, 60].inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}"
         raise Workspace::Error.new(problem, code: "invalid_workflow", details: {"workflow" => id.to_s[0, 60], "problems" => [problem]})
       end
       File.join(dirs.fetch("global"), "#{id}.yml")
@@ -226,10 +228,10 @@ module Workspace
       return nil unless path
       problem = if File.symlink?(path) && !File.exist?(path)
         "#{path} is a link to a file that is not there"
-      elsif WorkflowDefinition::ID_PATTERN.match?(name)
+      elsif IdPatterns::WORKFLOW_ID.match?(name)
         "#{path} is not a file"
       else
-        "the file's name must be a workflow id: #{WorkflowDefinition::ID_RULE}, at most 40 characters"
+        "the file's name must be a workflow id: #{IdPatterns::WORKFLOW_ID_RULE}, at most 40 characters"
       end
       summary(name, source, path, project).merge("problems" => [problem])
     end
@@ -242,7 +244,7 @@ module Workspace
     end
 
     def ids(project = nil)
-      dirs(project).values.flat_map { |dir| Dir.glob(File.join(dir, "*.yml")).map { |path| File.basename(path, ".yml") } }.uniq.sort
+      dirs(project).values.flat_map { |dir| @globber.call(File.join(dir, "*.yml")).map { |path| File.basename(path, ".yml") } }.uniq.sort
     end
 
     def raise_unknown(id, project = nil)

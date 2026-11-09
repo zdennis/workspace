@@ -67,7 +67,6 @@ RSpec.describe Workspace::Commands::Spine, "#goal_set" do
   end
 
   it "writes to the file that appeared while it was being made instead of replacing it" do
-    real_link = File.method(:link)
     raced = false
     allow(File).to receive(:link) do |from, to|
       unless raced
@@ -75,7 +74,7 @@ RSpec.describe Workspace::Commands::Spine, "#goal_set" do
         File.binwrite(to, "---\ntitle: Racer\nkeep: yes\n---\n")
         raise Errno::EEXIST
       end
-      real_link.call(from, to)
+      FileUtils.cp(from, to)
     end
 
     command.goal_set(name: "api", text: "Mine")

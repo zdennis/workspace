@@ -13,24 +13,11 @@ module Workspace
       # Bumped whenever a `--json` document's shape changes incompatibly.
       JSON_SCHEMA_VERSION = 1
 
-      # What `step done --code` accepts.
-      CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
-
       # Lines of a check's output `check` prints.
       CHECK_TAIL_LINES = 40
 
       # The workspace name `render` shows when the working directory is in no workspace.
       RENDER_WORKSPACE = "<workspace>".freeze
-
-      # Why a report's code is refused for being one the engine sets itself; nil for any other. The one rule
-      # `step done --code` and `workflow simulate`'s `code:` share.
-      #
-      # @param code [String, nil]
-      # @return [String, nil] the sentence after "--code ", or nil when the code is allowed
-      def self.engine_code_refusal(code)
-        return nil unless code && Workspace::WorkflowEngine::ENGINE_CODES.include?(code)
-        "#{code} is a word the engine sets itself (#{Workspace::WorkflowEngine::ENGINE_CODES.join(", ")}); choose another."
-      end
 
       # What `step done --status` accepts.
       REPORT_STATUSES = %w[pass fail].freeze
@@ -382,7 +369,7 @@ module Workspace
         pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace)
         if caller_in_pane?(workspace, caller_pane, pane_id) && @panes.parkable?(workspace, pane_id)
           created = @engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, note: note, dispatch: false)
-          return park_resume(created, from: nil, note: nil, pane: nil, target: pane_id, turn_over: nil).merge("inputs_from" => from)
+          return park_resume(WorkflowRun.from_h(created), from: nil, note: nil, pane: nil, target: pane_id, turn_over: nil).merge("inputs_from" => from)
         end
         row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, note: note), "started").merge("inputs_from" => from)
       end
@@ -443,7 +430,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] code `unknown_run`
       def files(run:, json: false)
-        record = @store.find(run)
+        record = @store.run(run)
         rows = @run_files.list(record)
         return document("run" => run, "artifacts_dir" => @run_files.artifacts_dir(record), "files" => rows) if json
         @output.puts "No files recorded for #{run}." if rows.empty?
@@ -467,7 +454,7 @@ module Workspace
       # @raise [Workspace::Error] code `unknown_run`, or `unknown_step` for a +step+ the run doesn't have
       def attempts(run:, step: nil, json: false)
         raise Workspace::Error, "workflow attempts is not available: no attempts reader was wired" unless @attempts
-        result = @attempts.read(@store.find(run), step: step)
+        result = @attempts.read(@store.run(run), step: step)
         return document("run" => run, "attempts" => result["attempts"], "unowned_reasons" => result["unowned_reasons"]) if json
         @output.puts "No attempts recorded for #{run}#{" step #{TerminalText.escape(step)}" if step}." if result["attempts"].empty?
         unless result["attempts"].empty?
@@ -548,7 +535,7 @@ module Workspace
       # @raise [Workspace::Error] code `unknown_run`, or `unknown_step` for a +step+ the run doesn't have
       def audit(run:, step: nil, json: false)
         raise Workspace::Error, "workflow audit is not available: no audit reader was wired" unless @audit
-        result = @audit.read(@store.find(run), step: step)
+        result = @audit.read(@store.run(run).to_h, step: step)
         if json
           document("run" => run, "step" => step, "clean" => result["clean"], "counts" => result["counts"], "directory" => result["directory"],
             "files" => result["files"], "without_evidence" => result["without_evidence"])
@@ -574,7 +561,7 @@ module Workspace
       def sweep(run: nil, name: nil, dry_run: false, json: false, caller_pane: nil)
         raise Workspace::Error, "workflow sweep is not available: no sweep was wired" unless @sweep
         allow = lambda do |stored|
-          refuse_caller!(stored, caller_pane, "workflow sweep", "A run is moved by a person or the sweep, not by its own agent")
+          refuse_caller!(WorkflowRun.from_h(stored), caller_pane, "workflow sweep", "A run is moved by a person or the sweep, not by its own agent")
           nil
         rescue Workspace::Error => e
           raise unless e.code == "bound_pane"
@@ -618,23 +605,23 @@ module Workspace
       # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate from a pane
       #   bound to a run, or see {Workspace::WorkflowEngine#resume}
       def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil)
-        stored = @store.find(run)
+        stored = @store.run(run)
         pane_id = nil
         turn_over = nil
-        unless WorkflowRunStore::TERMINAL_STATES.include?(stored["state"])
-          state = stored["steps"].fetch(stored["current"])
-          refuse_bound_pane!(caller_pane, "workflow resume --from") if from && state.dig("gate", "state") == "waiting"
+        unless WorkflowRunStore::TERMINAL_STATES.include?(stored.state)
+          state = stored.steps.fetch(stored.current)
+          refuse_bound_pane!(caller_pane, "workflow resume --from") if from && state.gate_waiting?
           refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && checked_step?(stored)
-          @engine.refuse_resume(stored, from: from)
+          @engine.refuse_resume(stored.to_h, from: from)
           pane_id = resume_pane(stored, pane)
-          if pane_id.nil? && from.nil? && state["state"] == "running" && stored["reason"].nil? &&
-              @panes.idle?(stored["workspace"], @panes.pane_of(run) || stored["pane"])
-            turn_over = {"step" => stored["current"], "attempt" => state["attempts"].last&.fetch("n", nil)}
+          if pane_id.nil? && from.nil? && state.state == "running" && stored.reason.nil? &&
+              @panes.idle?(stored.workspace, @panes.pane_of(run) || stored.pane)
+            turn_over = {"step" => stored.current, "attempt" => state.last_attempt&.n}
           end
         end
-        target = pane_id || @panes.pane_of(run) || stored["pane"]
-        if !WorkflowRunStore::TERMINAL_STATES.include?(stored["state"]) && caller_in_pane?(stored["workspace"], caller_pane, target) &&
-            @panes.parkable?(stored["workspace"], target)
+        target = pane_id || @panes.pane_of(run) || stored.pane
+        if !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && caller_in_pane?(stored.workspace, caller_pane, target) &&
+            @panes.parkable?(stored.workspace, target)
           return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
         end
         resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
@@ -660,7 +647,7 @@ module Workspace
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#approve}
       def approve(run:, note: nil, step: nil, attempt: nil, note_sha256: nil, caller_pane: nil)
-        guard = ->(stored) { refuse_caller!(stored, caller_pane, "workflow approve") }
+        guard = ->(stored) { refuse_caller!(WorkflowRun.from_h(stored), caller_pane, "workflow approve") }
         row(@engine.approve(run, note: note, step: step, attempt: attempt, note_sha256: note_sha256, guard: guard), "approved")
       end
 
@@ -676,7 +663,7 @@ module Workspace
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#reject}
       def reject(run:, note:, to: nil, step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil)
-        guard = ->(stored) { refuse_caller!(stored, caller_pane, "workflow reject") }
+        guard = ->(stored) { refuse_caller!(WorkflowRun.from_h(stored), caller_pane, "workflow reject") }
         row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens), "rejected")
       end
 
@@ -697,7 +684,7 @@ module Workspace
       #   bound to the run or a process under it
       def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, caller_pane: nil)
         stored = begin
-          @store.find(run)
+          @store.run(run)
         rescue Workspace::Error
           nil
         end
@@ -706,7 +693,7 @@ module Workspace
         if stored && checked_step?(stored)
           refuse_caller!(stored, caller_pane, "workflow advance", "A guarded or checked step is decided by the agent daemon")
         end
-        return release_parked(stored, caller_pane) if stored && stored["parked"]
+        return release_parked(stored, caller_pane) if stored&.parked
         turn_ended ? @engine.turn_ended(run, pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || []) : @engine.tick(run)
         nil
       end
@@ -716,20 +703,20 @@ module Workspace
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
       # @param status [String] "pass" or "fail"
       # @param summary [String, nil]
-      # @param code [String, nil] a word for why, matching {CODE_PATTERN} (`usage` otherwise)
+      # @param code [String, nil] a word for why, matching {WorkflowDefinition::CODE_PATTERN} (`usage` otherwise)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `not_bound` outside a run's pane, `step_not_running`
       def step_done(pane:, status: "pass", summary: nil, code: nil)
         raise UsageError, "--status must be pass or fail, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
-        raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || CODE_PATTERN.match?(code)
-        if (refusal = self.class.engine_code_refusal(code))
+        raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || WorkflowDefinition::CODE_PATTERN.match?(code)
+        if (refusal = WorkflowDefinition.engine_code_refusal(code))
           raise UsageError, "--code #{refusal}"
         end
         run_id = bound_run!(pane)
         reported = @engine.report(run_id, status: status, summary: summary, code: code)
         @output.puts "Recorded #{status} for step #{reported["step"]} (attempt #{reported["attempt"]}) of run #{run_id}. " \
           "End your turn now; the step is decided when the turn ends."
-        {"workspace" => @store.find(run_id)["workspace"], "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => run_id,
+        {"workspace" => @store.run(run_id).workspace, "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => run_id,
          "step" => reported["step"], "attempt" => reported["attempt"], "reported" => reported["reported"].slice("status", "summary", "code")}
       end
 
@@ -740,22 +727,22 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] code `not_bound` outside a run's pane
       def step_status(pane:, json: false)
-        run = @store.find(bound_run!(pane))
-        step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
-        state = run["steps"].fetch(run["current"])
-        attempt = state["attempts"].last || {}
-        started = attempt["started_at"] && Time.iso8601(attempt["started_at"])
-        strict = Workspace::WorkflowProduced.strict?(run["definition"])
-        produces = step["produces"].map { |file| File.join(run["artifacts_dir"], file) }.map do |path|
+        run = @store.run(bound_run!(pane))
+        step = run.definition["steps"].find { |each| each["id"] == run.current }
+        state = run.steps.fetch(run.current)
+        attempt = state.last_attempt || WorkflowRun::Attempt.from_h({})
+        started = attempt.started_at && Time.iso8601(attempt.started_at)
+        strict = Workspace::WorkflowProduced.strict?(run.definition)
+        produces = step["produces"].map { |file| File.join(run.artifacts_dir, file) }.map do |path|
           # A file an earlier attempt left has to be written again to count.
           found = Workspace::WorkflowProduced.inspect_file(path, strict: strict)
           {"path" => path, "exists" => found.exists, "problem" => found.rule, "current" => found.current?(started) == true}
         end
-        info = {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "step" => run["current"],
-                "attempt" => attempt["n"], "state" => state["state"], "instructions" => attempt["prompt_file"],
-                "artifacts_dir" => run["artifacts_dir"], "produces" => produces, "check" => !step["status"].nil?,
-                "reported" => attempt["reported"]&.slice("status", "summary")}
-        info["proofs"] = attempt["proofs"] if attempt["proofs"]
+        info = {"run_id" => run.id, "workflow" => run.workflow, "workspace" => run.workspace, "step" => run.current,
+                "attempt" => attempt.n, "state" => state.state, "instructions" => attempt.prompt_file,
+                "artifacts_dir" => run.artifacts_dir, "produces" => produces, "check" => !step["status"].nil?,
+                "reported" => attempt.reported&.slice("status", "summary")}
+        info["proofs"] = attempt.proofs if attempt.proofs
         return document("step" => info) if json
         @output.puts "Step #{info["step"]} (attempt #{info["attempt"]}, #{info["state"]}) of workflow run #{info["run_id"]} (#{info["workflow"]}) in #{info["workspace"]}."
         @output.puts "Instructions: #{info["instructions"]}" if info["instructions"]
@@ -909,7 +896,7 @@ module Workspace
 
       def scope_filter(scope)
         if scope&.workspace
-          ->(run) { run["workspace"] == scope.workspace }
+          ->(run) { run.workspace == scope.workspace }
         elsif scope&.project
           ->(run) { @status.in_project?(run, scope.project) }
         end
@@ -1184,7 +1171,7 @@ module Workspace
 
       def file_id(path)
         name = File.basename(path, ".*")
-        WorkflowDefinition::ID_PATTERN.match?(name) ? name : FILE_ID
+        IdPatterns::WORKFLOW_ID.match?(name) ? name : FILE_ID
       end
 
       # A definition file in a directory a lookup reaches later than another file of its id is never the one a
@@ -1243,15 +1230,15 @@ module Workspace
       # Whether the run's current step has a `guard:`, a `status:` check or a `command` proof. An agent that
       # re-ran its own check from a shell could put a fake `git` first on PATH.
       def checked_step?(run)
-        step = Array(run.dig("definition", "steps")).find { |each| each["id"] == run["current"] }
+        step = Array(run.definition&.dig("steps")).find { |each| each["id"] == run.current }
         !!(step && (step["guard"] || step["status"] || Array(step["require"]).any? { |entry| entry.key?("command") || entry.key?("exec") }))
       end
 
       # The caller is in the pane the resume would type into, so nothing is typed:
       # the resume is stored and the daemon carries it out once this turn ends.
       def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil)
-        existing = WorkflowEngine.parked(stored, @clock.call) == :waiting
-        parked = @engine.park(stored["id"], from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
+        existing = WorkflowEngine.parked(stored.to_h, @clock.call) == :waiting
+        parked = @engine.park(stored.id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
         if parked["unchanged"]
           message = "Nothing was done: #{parked["unchanged"]}."
           if existing
@@ -1267,9 +1254,9 @@ module Workspace
       end
 
       def resume_pane(stored, pane)
-        return @panes.locate(stored["workspace"], pane) if pane
-        gone = stored.dig("reason", "code") == "pane_gone" || (@panes.pane_of(stored["id"]) && !@panes.alive?(stored["id"]))
-        gone ? @panes.default_pane(stored["workspace"]) : nil
+        return @panes.locate(stored.workspace, pane) if pane
+        gone = stored.reason&.dig("code") == "pane_gone" || (@panes.pane_of(stored.id) && !@panes.alive?(stored.id))
+        gone ? @panes.default_pane(stored.workspace) : nil
       end
 
       # A gate is passed by a person. The check guards against an agent's mistake and is not
@@ -1289,12 +1276,12 @@ module Workspace
       # session's pane after tmux restarts, which is what the binding check tells apart.
       def refuse_caller!(run, caller_pane, verb, subject = "A gate is passed by a person")
         refuse_bound_pane!(caller_pane, verb, subject)
-        pane = @panes.pane_of(run["id"]) || run["pane"]
-        return unless caller_in_pane?(run["workspace"], nil, pane)
+        pane = @panes.pane_of(run.id) || run.pane
+        return unless caller_in_pane?(run.workspace, nil, pane)
         agent = calling_agent
-        raise Workspace::Error.new("#{subject}: this process runs under pane #{pane}, which workflow run #{run["id"]} " \
+        raise Workspace::Error.new("#{subject}: this process runs under pane #{pane}, which workflow run #{run.id} " \
           "is bound to, so `#{verb}` is refused here. Run it from another terminal.",
-          code: "bound_pane", details: {"pane" => pane, "run_id" => run["id"], "agent" => agent})
+          code: "bound_pane", details: {"pane" => pane, "run_id" => run.id, "agent" => agent})
       end
 
       # Whether this process is in the pane: `$TMUX_PANE` names it, or the process
@@ -1312,37 +1299,37 @@ module Workspace
       # over, and its own process must not start what follows it. Everything here is read
       # outside the run's lock; the park's id settles two processes that both saw the proof.
       def release_parked(run, caller_pane)
-        workspace = run["workspace"]
-        target = run["parked"]["pane"] || @panes.pane_of(run["id"]) || run["pane"]
+        workspace = run.workspace
+        target = run.parked["pane"] || @panes.pane_of(run.id) || run.pane
         unless caller_in_pane?(workspace, caller_pane, target)
           return release_park(run) if @panes.main_turn_over?(workspace, target)
           return end_park(run, "pane_gone", "pane #{target} of '#{workspace}' is gone, so nothing was typed") if @panes.pane_gone?(target)
           return end_park(run, "not_an_agent", "the agent in pane #{target} has exited, so nothing was typed") if @panes.agent_gone?(workspace, target)
         end
-        return unless WorkflowEngine.parked(run, @clock.call) == :expired
-        checking = run.dig("steps", run["current"], "state") == "checking"
+        return unless WorkflowEngine.parked(run.to_h, @clock.call) == :expired
+        checking = run.current_step&.state == "checking"
         end_park(run, "parked_timeout", WorkflowEngine.park_timeout_message(target, checking: checking))
       end
 
       # A release that raised would raise again on every tick, and with proof ahead of
       # expiry would never reach the limit, so any failure ends the park.
       def release_park(run)
-        released = @engine.release_park(run["id"], run["parked"]["id"])
+        released = @engine.release_park(run.id, run.parked["id"])
         unchanged = released && released["unchanged"]
-        @error_output.puts "workflow: the parked resume of run #{run["id"]} did nothing: #{unchanged}" if unchanged
+        @error_output.puts "workflow: the parked resume of run #{run.id} did nothing: #{unchanged}" if unchanged
         nil
       rescue Workspace::Error => e
         unless RUN_ENDED_CODES.include?(e.code)
-          @error_output.puts "workflow: the parked resume of run #{run["id"]} failed: #{first_line(e)}"
+          @error_output.puts "workflow: the parked resume of run #{run.id} failed: #{first_line(e)}"
           end_park(run, e.code.to_s, first_line(e))
         end
       rescue => e
-        @error_output.puts "workflow: the parked resume of run #{run["id"]} failed: #{first_line(e)}"
+        @error_output.puts "workflow: the parked resume of run #{run.id} failed: #{first_line(e)}"
         end_park(run, "error", first_line(e))
       end
 
       def end_park(run, code, message)
-        @engine.park_failed(run["id"], run["parked"]["id"], code: code, message: message)
+        @engine.park_failed(run.id, run.parked["id"], code: code, message: message)
         nil
       rescue Workspace::Error => e
         park_not_ended(run, e) unless RUN_ENDED_CODES.include?(e.code)
@@ -1351,7 +1338,7 @@ module Workspace
       end
 
       def park_not_ended(run, error)
-        @error_output.puts "workflow: could not end the parked resume of run #{run["id"]}: #{first_line(error)}"
+        @error_output.puts "workflow: could not end the parked resume of run #{run.id}: #{first_line(error)}"
         nil
       end
 

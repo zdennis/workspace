@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Writes today's dependency-direction violations into spec/support/boundary_allow.yml,
+# so dependency_direction_spec passes and then works as a ratchet: a new violation
+# fails, and a fixed one must have its line deleted.
+#
+#   script/boundary-baseline
+#
+# Run it only to start or to regenerate the baseline at a planned task. A later
+# commit that removes a violation deletes that entry by hand. An entry already in
+# the file keeps its reason.
+
+require "yaml"
+require_relative "../spec/support/boundary_rules"
+
+root = File.expand_path("..", __dir__)
+violations = BoundaryRules.violations(root)
+kept = BoundaryRules.allow_list(File.join(root, BoundaryRules::ALLOW_FILE))
+entries = violations.to_h { |v| [v.key, kept[v.key] || {"reason" => "baseline"}] }
+File.write(File.join(root, BoundaryRules::ALLOW_FILE), "# Written by script/boundary-baseline. Delete a line when its violation is fixed;\n# the spec fails on an entry that no longer matches.\n" + entries.to_yaml.sub(/\A---\s*\n/, "").then { |y| entries.empty? ? "{}\n" : y })
+puts "#{entries.size} entries written to #{BoundaryRules::ALLOW_FILE}"

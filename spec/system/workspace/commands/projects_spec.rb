@@ -33,7 +33,24 @@ RSpec.describe Workspace::Commands::Projects do
   end
 
   let(:catalog) do
-    Workspace::ProjectCatalog.new(project_config: fake_config, git: Workspace::Git.new(output: StringIO.new, input: StringIO.new))
+    Interceptable.subclass(Workspace::ProjectCatalog, :members).new(project_config: fake_config, git: catalog_git)
+  end
+
+  let(:catalog_git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
+  let(:listing_calls) { [] }
+  let(:listed_worktrees) { [] }
+  let(:listing_gate) { nil }
+  let(:listing_git) do
+    calls = listing_calls
+    listed = listed_worktrees
+    gate = listing_gate
+    Class.new(Workspace::Git) do
+      define_method(:list_worktrees) do |repo:|
+        calls << repo
+        gate&.pop
+        listed
+      end
+    end.new(output: StringIO.new, input: StringIO.new)
   end
 
   let(:error_output) { StringIO.new }
@@ -115,9 +132,11 @@ RSpec.describe Workspace::Commands::Projects do
     end.new
   end
 
+  let(:clock) { -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) } }
+
   let(:facts) do
     Workspace::ProjectFacts.new(tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
-      lock_holder: liveness, dev: dev, agents: agents, git: fake_git, catalog: catalog, error_output: error_output)
+      lock_holder: liveness, dev: dev, agents: agents, git: fake_git, catalog: catalog, error_output: error_output, clock: clock)
   end
 
   subject(:command) do
@@ -324,6 +343,7 @@ RSpec.describe Workspace::Commands::Projects do
 
     context "with a main checkout, a worktree and a worktree whose checkout is gone" do
       let!(:main) { build_app_with_worktrees }
+      let(:catalog_git) { listing_git }
       let(:login) { File.join(main, ".worktrees", "login") }
       let(:old) { File.join(main, ".worktrees", "old") }
 
@@ -381,13 +401,13 @@ RSpec.describe Workspace::Commands::Projects do
       end
 
       it "does not list worktrees without all" do
-        expect_any_instance_of(Workspace::Git).not_to receive(:list_worktrees)
-
         command.members(name: "app")
+
+        expect(listing_calls).to be_empty
       end
 
       it "adds nothing with --all when every worktree git lists has a config" do
-        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees).and_return([main, login])
+        listed_worktrees.replace([main, login])
 
         command.members(name: "app", all: true)
 
@@ -489,6 +509,8 @@ RSpec.describe Workspace::Commands::Projects do
     end
 
     context "with a project whose checkouts are all gone" do
+      let(:catalog_git) { listing_git }
+
       before do
         roots["lost"] = File.join(@root, "lost")
         roots["lost.worktree-x"] = File.join(@root, "lost", ".worktrees", "x")
@@ -501,10 +523,9 @@ RSpec.describe Workspace::Commands::Projects do
       end
 
       it "makes no git subprocess for --all when the project is not a git repository on disk" do
-        expect_any_instance_of(Workspace::Git).not_to receive(:list_worktrees)
-
         command.members(name: "lost", all: true)
 
+        expect(listing_calls).to be_empty
         expect(lines).to eq(%w[lost lost.worktree-x])
       end
     end
@@ -521,12 +542,12 @@ RSpec.describe Workspace::Commands::Projects do
 
     context "with --all and a worktree that has no workspace config" do
       let!(:main) { build_app_with_worktrees }
+      let(:catalog_git) { listing_git }
       let(:spike) { File.join(@root, "spike") }
       let(:gone) { File.join(@root, "gone") }
 
       before do
-        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees)
-          .and_return([main, File.join(main, ".worktrees", "login"), File.join(main, ".worktrees", "old"), spike, gone])
+        listed_worktrees.replace([main, File.join(main, ".worktrees", "login"), File.join(main, ".worktrees", "old"), spike, gone])
         FileUtils.mkdir_p(spike)
       end
 
@@ -565,19 +586,20 @@ RSpec.describe Workspace::Commands::Projects do
         expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
       end
 
-      it "bounds the listing by timeout:" do
-        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees) { sleep 5 }
+      context "when git never answers the worktree listing" do
+        let(:listing_gate) { Queue.new }
 
-        expect { command.members(name: "app", all: true, timeout: 0.1) }.to raise_error(Workspace::Error, /Timed out listing/)
-      end
+        it "bounds the listing by timeout:" do
+          expect { command.members(name: "app", all: true, timeout: 0.1) }.to raise_error(Workspace::Error, /Timed out listing/)
+        end
 
-      it "fails with a clear error when the listing times out" do
-        stub_const("Workspace::ProjectFacts::DEFAULT_GIT_TIMEOUT", 0.1)
-        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees) { sleep 5 }
+        it "fails with a clear error when the listing times out" do
+          command = described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, error_output: error_output, home: @root, git_timeout: 0.1)
 
-        expect { command.members(name: "app", all: true) }.to raise_error(Workspace::Error, /Timed out listing the worktrees of project 'app'/)
-        expect(command.members(name: "app", all: true, json: true)).to eq(exit_code: 1)
-        expect(payload["error"]).to include("Timed out listing")
+          expect { command.members(name: "app", all: true) }.to raise_error(Workspace::Error, /Timed out listing the worktrees of project 'app'/)
+          expect(command.members(name: "app", all: true, json: true)).to eq(exit_code: 1)
+          expect(payload["error"]).to include("Timed out listing")
+        end
       end
     end
 
@@ -1289,18 +1311,20 @@ RSpec.describe Workspace::Commands::Projects do
         expect(payload["members"]).to all(have_key("git"))
       end
 
-      it "stops a git read that outlasts the timeout, and reports the listing of worktrees timing out" do
-        allow(catalog).to receive(:members).and_wrap_original do |original, *args, **kwargs|
-          sleep 5 if kwargs[:include_unconfigured]
-          original.call(*args, **kwargs)
+      context "when git never answers the worktree listing and every clock reading is a second later" do
+        let(:catalog_git) { listing_git }
+        let(:listing_gate) { Queue.new }
+        let(:clock) do
+          seconds = 0.0
+          -> { seconds += 1.0 }
         end
-        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-        command.show(name: "app", json: true, timeout: 0.2)
+        it "stops a git read that outlasts the timeout, and reports the listing of worktrees timing out" do
+          command.show(name: "app", json: true, timeout: 0.2)
 
-        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 2
-        expect(payload["errors"]).to include("worktrees" => /timed out/)
-        expect(payload["members"].map { |m| m["workspace"] }).to eq(%w[app app.worktree-login app.worktree-old])
+          expect(payload["errors"]).to include("worktrees" => /timed out/)
+          expect(payload["members"].map { |m| m["workspace"] }).to eq(%w[app app.worktree-login app.worktree-old])
+        end
       end
 
       it "gives a project whose checkout is gone no git facts" do
@@ -1434,7 +1458,7 @@ RSpec.describe Workspace::Commands::Projects do
       end
 
       it "reports unconfigured worktrees as unknown and the counts as incomplete when listing times out" do
-        allow(catalog).to receive(:members).and_wrap_original do |original, *args, **kwargs|
+        catalog.on(:members) do |original, *args, **kwargs|
           sleep 5 if kwargs[:include_unconfigured]
           original.call(*args, **kwargs)
         end
@@ -1561,7 +1585,7 @@ RSpec.describe Workspace::Commands::Projects do
         def group_path(slug) = File.join(groups_dir, "#{slug}.yml")
       end.new(File.join(@root, "groups"))
     end
-    let(:group_store) { Workspace::ProjectGroups.new(config: group_config, git: Workspace::Git.new(output: StringIO.new, input: StringIO.new)) }
+    let(:group_store) { Interceptable.subclass(Workspace::ProjectGroups, :groups_by_project_id).new(config: group_config, git: Workspace::Git.new(output: StringIO.new, input: StringIO.new)) }
 
     subject(:command) do
       described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, error_output: error_output, home: @root, groups: group_store)
@@ -1604,9 +1628,9 @@ RSpec.describe Workspace::Commands::Projects do
     end
 
     it "reads the groups once per list call" do
-      expect(group_store).to receive(:groups_by_project_id).once.and_call_original
-
       command.list(json: true)
+
+      expect(group_store.calls_to(:groups_by_project_id).size).to eq(1)
     end
 
     it "leaves the members document alone" do
@@ -1615,16 +1639,19 @@ RSpec.describe Workspace::Commands::Projects do
       expect(payload["project"].keys).to eq(%w[name id path vcs])
     end
 
-    %i[show members].each do |verb|
+    {
+      show: ->(command, **options) { command.show(**options) },
+      members: ->(command, **options) { command.members(**options) }
+    }.each do |verb, call_verb|
       it "refuses a group id in #{verb} with group_not_supported, pointing at projects group show" do
-        expect(command.public_send(verb, name: "group:billing", json: true)).to eq(exit_code: 1)
+        expect(call_verb.call(command, name: "group:billing", json: true)).to eq(exit_code: 1)
 
         expect(payload).to include("ok" => false, "code" => "group_not_supported", "details" => {"id" => "group:billing"})
         expect(payload["error"]).to include("projects group show group:billing")
       end
 
       it "raises group_not_supported from #{verb} without --json" do
-        expect { command.public_send(verb, name: "group:billing") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("group_not_supported") }
+        expect { call_verb.call(command, name: "group:billing") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("group_not_supported") }
       end
     end
 

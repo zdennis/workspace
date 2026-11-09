@@ -6,12 +6,17 @@ RSpec.describe Workspace::LockNamespace do
   let(:state_home) { Dir.mktmpdir("ws-lock-namespace-state") }
   let(:config) { Workspace::Config.new }
 
-  before { allow(ENV).to receive(:fetch).and_call_original }
-  before { allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state_home) }
+  around do |example|
+    saved = ENV["XDG_STATE_HOME"]
+    ENV["XDG_STATE_HOME"] = state_home
+    example.run
+  ensure
+    ENV["XDG_STATE_HOME"] = saved
+  end
 
   after { FileUtils.remove_entry(state_home) if File.directory?(state_home) }
 
-  subject(:namespace) { described_class.new(config: config) }
+  subject(:namespace) { described_class.new(config: config, lineage: LineageSupport.lineage) }
 
   def git(*args, chdir:)
     system("git", *args, chdir: chdir, out: File::NULL, err: File::NULL)

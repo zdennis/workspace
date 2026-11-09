@@ -23,9 +23,6 @@ module Workspace
         "default" => "the built-in default"
       }.freeze
 
-      # The stage file (and folder) a main checkout's spine leaves out: it has no branch to ship.
-      SHIP_STAGE = /\A\d{1,3}-ship(\.md)?\z/
-
       # @param notes [Workspace::Commands::Notes] answers where a workspace's notes are, and makes the directory
       # @param library [Workspace::Library] finds the template
       # @param project_config [Workspace::ProjectConfig] gives a workspace's checkout
@@ -59,7 +56,7 @@ module Workspace
         entry = find_template(chosen, root)
         notes_dir = @notes.info(name: name)["dir"]
         spine_dir = File.join(real(notes_dir), "spine")
-        main = WorkspaceLineage.split_worktree_name(name).nil?
+        main = !WorkspaceName.worktree?(name)
 
         outcome, files = plan(entry, spine_dir, main, dry_run)
         outcome = "exists" if outcome == "created" && !write(name, root, spine_dir, files)
@@ -86,11 +83,11 @@ module Workspace
         root = File.expand_path(root)
         spine_dir = spine_dir ? File.expand_path(spine_dir) : File.join(real(@notes.info(name: name)["dir"]), "spine")
         return {"outcome" => "no_spine", "files" => []} if File.symlink?(spine_dir) || !File.directory?(spine_dir)
-        return {"outcome" => "present", "files" => []} if Dir.children(spine_dir).any? { |c| SHIP_STAGE.match?(c) }
+        return {"outcome" => "present", "files" => []} if Dir.children(spine_dir).any? { |c| SpineTree::SHIP_STAGE.match?(c) }
 
         entry = find_template(choose_template(name, nil), root)
         template_root = File.realpath(entry["path"])
-        files = entry["files"].select { |rel| SHIP_STAGE.match?(rel.split("/").first) }
+        files = entry["files"].select { |rel| SpineTree::SHIP_STAGE.match?(rel.split("/").first) }
         return {"outcome" => "present", "files" => []} if files.empty?
         return {"outcome" => "would_add", "files" => files} if dry_run
 
@@ -154,7 +151,7 @@ module Workspace
       def template_files(path, files, main)
         root = File.realpath(path)
         files.filter_map do |rel|
-          next if main && SHIP_STAGE.match?(rel.split("/").first)
+          next if main && SpineTree::SHIP_STAGE.match?(rel.split("/").first)
           [rel, File.join(root, rel)]
         end
       end

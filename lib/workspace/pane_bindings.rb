@@ -36,6 +36,7 @@ module Workspace
     # @param error_output [IO] where a warning about a corrupt file is written
     def initialize(path:, clock: -> { Time.now }, logger: Workspace::Logger.new, error_output: $stderr)
       @path = path
+      @lock = FileLock.new("#{path}.lock")
       @error_output = error_output
       @clock = clock
       @logger = logger
@@ -216,7 +217,7 @@ module Workspace
     # @return [Array<String>] pack names; empty when the entry has none or its value is not a list of names
     def packs_for(entry)
       packs = entry["packs"]
-      return [] unless packs.is_a?(Array) && packs.all? { |name| name.is_a?(String) && name.match?(LibraryStore::NAME) }
+      return [] unless packs.is_a?(Array) && packs.all? { |name| name.is_a?(String) && name.match?(IdPatterns::LIBRARY_NAME) }
       packs
     end
 
@@ -303,7 +304,7 @@ module Workspace
       value.map do |name|
         raise UsageError, "packs must be a list of pack names." unless name.is_a?(String)
         bare = name.sub(%r{\Aplay/}, "")
-        raise UsageError, "#{bare[0, 40].inspect} is not a pack name: lowercase letters, digits and hyphens." unless bare.match?(LibraryStore::NAME)
+        raise UsageError, "#{bare[0, 40].inspect} is not a pack name: lowercase letters, digits and hyphens." unless bare.match?(IdPatterns::LIBRARY_NAME)
         bare
       end.uniq
     end
@@ -340,18 +341,10 @@ module Workspace
     # Writers hold an exclusive lock on a sidecar file and replace the file
     # whole, so a reader never sees a torn write.
     def update
-      FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
-      File.open("#{@path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
-        lock.flock(File::LOCK_EX)
+      @lock.hold do
         all = read(keep_corrupt: true)
         yield all
-        temp = "#{@path}.#{Process.pid}.tmp"
-        begin
-          File.write(temp, JSON.pretty_generate(all), perm: 0o600)
-          File.rename(temp, @path)
-        ensure
-          FileUtils.rm_f(temp)
-        end
+        AtomicFile.write(@path, JSON.pretty_generate(all), perm: 0o600, fsync: false)
       end
     end
   end

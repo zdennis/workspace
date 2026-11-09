@@ -26,7 +26,7 @@ RSpec.describe "lock clear on a process holder, under concurrency" do
       member_states: ->(_pgid) { member_states }, member_owners: ->(_pgid) { ["root"] })
   end
   let(:command) do
-    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, terminator: terminator, clock: mono_clock, sleeper: advance,
       pid_provider: -> { 999 }, trap: ->(*) {})
   end
@@ -170,17 +170,18 @@ RSpec.describe "lock clear's clearing marker, under concurrency" do
       member_states: ->(_pgid) { group_running[0] ? ["S"] : [] }, member_owners: ->(_pgid) { [] })
   end
   let(:lock_command) do
-    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
       output: output, error_output: error_output, terminator: terminator, clock: mono_clock, sleeper: advance,
       pid_provider: -> { 999 }, trap: ->(*) {})
   end
   let(:dev_command) do
-    lineage = Object.new
-    lineage.define_singleton_method(:resolve) { |cwd:| Struct.new(:name, :worktree).new("app", nil) }
+    lineage = Class.new do
+      def resolve(cwd:) = Struct.new(:name, :worktree).new("app", nil)
+    end.new
     settings = Struct.new(:data) { def load(_name) = data }.new({"dev" => {"up" => "true", "stop_timeout" => 2}})
     Workspace::Commands::Dev.new(lock_namespace: lock_namespace, lock_holder: identity, lineage: lineage,
       dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)), dev_runner: nil, terminator: terminator,
-      tmux: nil, executable: "unused", output: output, error_output: error_output, env: {}, sleeper: advance,
+      tmux: nil, git: Workspace::Git.new, executable: "unused", output: output, error_output: error_output, env: {}, sleeper: advance,
       clock: mono_clock, poll: 0.1)
   end
 

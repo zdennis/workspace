@@ -51,15 +51,22 @@ RSpec.describe Workspace::WorkflowRunHealth do
       it "calls a #{state} run whose checkout is gone orphaned" do
         write_run("wr_1", state: state, worktree: File.join(root, "gone"))
 
-        expect(health.call[:orphans].map { |run| run["id"] }).to eq(["wr_1"])
-        expect(health.call[:orphans].first["why"]).to include("is missing or unmounted")
+        expect(health.call[:orphans].map(&:id)).to eq(["wr_1"])
+        expect(health.call[:orphans].first.why).to include("is missing or unmounted")
       end
+    end
+
+    it "gives each orphan as a value whose to_h is the old string-keyed hash" do
+      write_run("wr_1", worktree: File.join(root, "gone"))
+
+      expect(health.call[:orphans].first).to be_a(Workspace::WorkflowRunHealth::Orphan)
+      expect(health.call[:orphans].first.to_h.keys).to eq(%w[id workflow workspace state worktree why])
     end
 
     it "calls a run that records no checkout orphaned" do
       write_run("wr_1", worktree: nil)
 
-      expect(health.call[:orphans].first["why"]).to eq("it records no checkout")
+      expect(health.call[:orphans].first.why).to eq("it records no checkout")
     end
 
     %w[completed failed cancelled].each do |state|

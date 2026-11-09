@@ -44,22 +44,40 @@ RSpec.describe "devenv lock: adversarial concurrency" do
   end
 
   def adv_liveness
-    Object.new.tap do |o|
-      o.define_singleton_method(:start_time) { |_pid = nil| "Sat Jan  1 00:00:00 2000" }
-      o.define_singleton_method(:alive?) { |pid:, started:| true }
-    end
+    Class.new do
+      def start_time(_pid = nil) = "Sat Jan  1 00:00:00 2000"
+
+      def alive?(pid:, started:) = true
+    end.new
   end
 
   def adv_trap
-    handlers = {}
-    Object.new.tap do |o|
-      o.define_singleton_method(:handlers) { handlers }
-      o.define_singleton_method(:call) do |signal, handler|
-        previous = handlers.fetch(signal, "DEFAULT")
-        handlers[signal] = handler
+    Class.new do
+      attr_reader :handlers
+
+      def initialize = @handlers = {}
+
+      def call(signal, handler)
+        previous = @handlers.fetch(signal, "DEFAULT")
+        @handlers[signal] = handler
         previous
       end
-    end
+    end.new
+  end
+
+  # A lock store whose calls are the given lambdas; a call with no lambda fails.
+  def scripted_store(**steps)
+    Class.new do
+      def initialize(steps) = @steps = steps
+
+      def acquire(*args, **opts) = @steps.fetch(:acquire).call(*args, **opts)
+
+      def poll(*args) = @steps.fetch(:poll).call(*args)
+
+      def dequeue(name, pid) = @steps.fetch(:dequeue).call(name, pid)
+
+      def release(name, pid) = @steps.fetch(:release).call(name, pid)
+    end.new(steps)
   end
 
   describe Workspace::DevRunner do
@@ -75,16 +93,17 @@ RSpec.describe "devenv lock: adversarial concurrency" do
     end
 
     it "D-C1: a SIGTERM that lands while the queued poll promotes the wrapper is dropped, so the dev command runs anyway" do
-      store = Object.new
       calls = []
       handlers = trap.handlers
-      store.define_singleton_method(:acquire) { |*, **| {status: :queued} }
-      store.define_singleton_method(:poll) do |*|
-        handlers["TERM"].call # `dev up --max-wait` give_up / `dev down` arrives mid-poll
-        {status: :acquired}
-      end
-      store.define_singleton_method(:dequeue) { |name, pid| calls << [:dequeue, name, pid] && :released }
-      store.define_singleton_method(:release) { |name, pid| calls << [:release, name, pid] && true }
+      store = scripted_store(
+        acquire: ->(*, **) { {status: :queued} },
+        poll: lambda { |*|
+          handlers["TERM"].call # `dev up --max-wait` give_up / `dev down` arrives mid-poll
+          {status: :acquired}
+        },
+        dequeue: ->(name, pid) { calls << [:dequeue, name, pid] && :released },
+        release: ->(name, pid) { calls << [:release, name, pid] && true }
+      )
       spawner = ->(command, _dir) {
         spawner_calls << command
         spawn_group("/bin/sh", "-c", "exit 0")
@@ -97,9 +116,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
     end
 
     it "D-C2: a child that exits normally with status 130 is reported as killed by SIGINT" do
-      store = Object.new
-      store.define_singleton_method(:acquire) { |*, **| {status: :acquired} }
-      store.define_singleton_method(:release) { |*| true }
+      store = scripted_store(acquire: ->(*, **) { {status: :acquired} }, release: ->(_name, _pid) { true })
       spawner = ->(_command, _dir) { spawn_group("/bin/sh", "-c", "exit 130") }
 
       code = runner(spawner: spawner).call(store: store, command: "exit-130", worktree: tmpdir)
@@ -149,10 +166,10 @@ RSpec.describe "devenv lock: adversarial concurrency" do
         ns = Struct.new(:dir) { def resolve(cwd:) = {dir: dir} }.new(lock_dir)
         store = Struct.new(:data) { def load(_name) = data }.new(JSON.parse(settings))
         liveness = Workspace::LockHolder.new
-        dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
+        dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new(rev_parse: ->(dir, what) { Workspace::Git.new.path_of(dir, what) }),
           dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
           dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}, poll: 0.05),
-          terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
+          terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, git: Workspace::Git.new, executable: "unused")
         begin
           exit dev.run(wait: wait == "1", working_dir: Dir.pwd)[:exit_code]
         rescue Workspace::Error => e
@@ -177,8 +194,8 @@ RSpec.describe "devenv lock: adversarial concurrency" do
 
     def dev
       described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
-        lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
-        terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
+        lineage: LineageSupport.lineage, dev_config: dev_config, dev_runner: nil,
+        terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, git: Workspace::Git.new, executable: "/ws/bin/workspace",
         output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05)
     end
 

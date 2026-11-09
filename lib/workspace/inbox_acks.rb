@@ -1,5 +1,4 @@
 require "json"
-require "fileutils"
 require "time"
 
 module Workspace
@@ -21,7 +20,10 @@ module Workspace
     def initialize(path:, clock: -> { Time.now })
       @path = path
       @clock = clock
-      @lockfile_path = "#{path}.lock"
+      @file = LockedJsonFile.new(path, parse: method(:parse_entries), read_error: ->(e) { unreadable_error("errno #{e.errno}") }, access_error: lambda { |e|
+        Workspace::Error.new("Could not access inbox acks at #{@path} (#{e.class}: errno #{e.errno})",
+          code: "inbox_store_unreadable", details: {"scope" => "acks"})
+      })
     end
 
     # Leaves out the rows an entry hides now.
@@ -62,7 +64,7 @@ module Workspace
     private
 
     def store(id, fingerprint, until_time)
-      with_lock do |data|
+      @file.exclusive(write: :if_true) do |data|
         same = records(data).any? do |entry|
           entry["id"] == id && entry["fingerprint"] == fingerprint && entry["until"] == until_time
         end
@@ -76,35 +78,27 @@ module Workspace
       end
     end
 
-    def with_lock
-      FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
-      File.open(@lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
-        f.flock(File::LOCK_EX)
-        data = read_entries
-        changed = yield data
-        write(data) if changed
-        changed
-      end
-    rescue SystemCallError => e
-      raise Workspace::Error.new("Could not access inbox acks at #{@path} (#{e.class}: errno #{e.errno})",
-        code: "inbox_store_unreadable", details: {"scope" => "acks"})
-    end
-
     def read_entries
-      return [] unless File.exist?(@path)
-      content = File.read(@path, encoding: Encoding::UTF_8)
-      return [] if content.strip.empty?
-      parsed = JSON.parse(content)
-      return parsed if parsed.is_a?(Array)
-      unreadable("it is not a JSON list")
-    rescue JSON::ParserError
-      unreadable("it is not valid JSON")
+      parse_entries(File.exist?(@path) ? File.read(@path, encoding: Encoding::UTF_8) : nil)
     rescue SystemCallError => e
       unreadable("errno #{e.errno}")
     end
 
+    def parse_entries(text)
+      return [] if text.nil? || text.strip.empty?
+      parsed = JSON.parse(text)
+      return parsed if parsed.is_a?(Array)
+      unreadable("it is not a JSON list")
+    rescue JSON::ParserError
+      unreadable("it is not valid JSON")
+    end
+
     def unreadable(reason)
-      raise Workspace::Error.new(
+      raise unreadable_error(reason)
+    end
+
+    def unreadable_error(reason)
+      Workspace::Error.new(
         "Inbox acks #{@path} can't be read (#{reason}); nothing was recorded and the file " \
         "was left unchanged. Fix or move it aside and retry.",
         code: "inbox_store_unreadable", details: {"scope" => "acks"}
@@ -140,16 +134,6 @@ module Workspace
       Time.iso8601(value.to_s)
     rescue ArgumentError
       nil
-    end
-
-    def write(data)
-      tmp = "#{@path}.#{Process.pid}.tmp"
-      File.open(tmp, "w", 0o600) do |f|
-        f.write(JSON.pretty_generate(data))
-        f.flush
-        f.fsync
-      end
-      File.rename(tmp, @path)
     end
   end
 end

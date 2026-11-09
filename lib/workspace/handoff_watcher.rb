@@ -55,7 +55,7 @@ module Workspace
       :tries, :last_sent_at, :held_at, :agent_changed_at, keyword_init: true)
     private_constant :Watch
 
-    # @param tmux [Workspace::Tmux] pane lookups
+    # @param panes [Workspace::PaneFactory] looks a watched pane up for its row; a pane it cannot give reads as gone
     # @param session_name [String] the workspace's tmux session
     # @param workspace [String] the workspace the daemon serves
     # @param session_monitor [Workspace::SessionMonitor] pane facts and the stall alert
@@ -65,11 +65,14 @@ module Workspace
     # @param plan_paused [#call] whether the workspace's plan is paused
     # @param event_log [Workspace::EventLog, nil] gets the watch's events
     # @param clock [#call] returns the current Time
+    # @param sleeper [#call] sleeps the given seconds between the thread's ticks
     # @param logger [Workspace::Logger] debug logger
-    def initialize(tmux:, session_name:, workspace:, session_monitor:, typer:, delivery_lock:,
+    # @param tick [Numeric] seconds between the thread's ticks
+    # @param poll_every [Numeric] seconds between polls
+    def initialize(panes:, session_name:, workspace:, session_monitor:, typer:, delivery_lock:,
       restarting: ->(_pane_id) { false }, plan_paused: -> { false }, event_log: nil, clock: -> { Time.now },
-      logger: Workspace::Logger.new)
-      @tmux = tmux
+      sleeper: ->(seconds) { sleep(seconds) }, logger: Workspace::Logger.new, tick: TICK, poll_every: POLL_EVERY)
+      @panes = panes
       @session_name = session_name
       @workspace = workspace
       @session_monitor = session_monitor
@@ -79,7 +82,10 @@ module Workspace
       @plan_paused = plan_paused
       @event_log = event_log
       @clock = clock
+      @sleeper = sleeper
       @logger = logger
+      @tick = tick
+      @poll_every = poll_every
       @mutex = Mutex.new
       @watches = {}
       @thread = nil
@@ -94,9 +100,9 @@ module Workspace
       @thread = Thread.new do
         ticks = 0
         until @stopping
-          sleep TICK
+          @sleeper.call(@tick)
           ticks += 1
-          next if ticks * TICK < POLL_EVERY
+          next if ticks * @tick < @poll_every
           ticks = 0
           begin
             poll
@@ -339,7 +345,8 @@ module Workspace
     end
 
     def pane_detail(pane_id)
-      @tmux.pane_details(@session_name, window: nil).find { |d| d[:id] == pane_id }
+      pane = @panes.call(pane_id)
+      pane.details unless pane.is_a?(Symbol)
     end
 
     # Only the caller that takes the watch out writes the event and sends the

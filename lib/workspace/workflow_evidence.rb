@@ -43,38 +43,46 @@ module Workspace
 
     # @param dir [String] the evidence directory ({Config#workflow_evidence_dir})
     # @param clock [#call] returns the current Time
-    def initialize(dir:, clock: -> { Time.now })
+    # @param opener [#call] opens a copy's temporary file like `File.open` (path, flags, mode, block)
+    # @param max_bytes [Integer] the largest file copied
+    # @param budget [Integer] the most bytes copied for one attempt
+    def initialize(dir:, clock: -> { Time.now }, opener: File.method(:open), max_bytes: MAX_BYTES, budget: BUDGET)
       @dir = dir
+      @max_bytes = max_bytes
+      @budget = budget
       @clock = clock
+      @opener = opener
     end
 
     # Copies the attempt's prompt file as it was written, before it is delivered. The attempt's `prompt_sha256`
     # hashes the composed text, which may differ from the file's bytes, so the copy's `sha256` and
     # `prompt_sha256` are not always equal.
     #
-    # @param run [Hash{String=>Object}] a stored run
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @param step_id [String]
     # @param attempt [Hash{String=>Object}] with `n` and `prompt_file`
     # @return [Array<Hash{String=>Object}>] one entry; never raises
     def prompt(run:, step_id:, attempt:)
+      run = WorkflowRun.from_h(run)
       batch(run, attempt, [["prompt", "#{base(step_id, attempt)}.prompt.md", attempt["prompt_file"].to_s]], 0)
     end
 
     # Copies the check log (when the attempt had a check) and each `produces` file as the attempt ends.
     #
-    # @param run [Hash{String=>Object}] a stored run; its `artifacts_dir` holds the files
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run; its `artifacts_dir` holds the files
     # @param step [Hash{String=>Object}] the step's definition
     # @param attempt [Hash{String=>Object}] the attempt that is ending; its prompt entry counts against the budget
     # @return [Array<Hash{String=>Object}>] `{name, kind, source, sha256, bytes}` per file, with `problem`
     #   (`missing`, `outside_artifacts`, `copy_failed`) or `too_large` (and `budget` when the attempt's total did it)
     #   when nothing was copied; never raises
     def copy(run:, step:, attempt:)
-      steps = File.join(run["artifacts_dir"].to_s, "steps")
+      run = WorkflowRun.from_h(run)
+      steps = File.join(run.artifacts_dir.to_s, "steps")
       base = base(step["id"], attempt)
       wanted = []
       wanted << ["check_log", "#{base}.check.log", File.join(steps, "#{step["id"]}.#{attempt["n"]}.check.log")] if attempt["check"].is_a?(Hash)
       Array(step["produces"]).each_with_index do |file, index|
-        wanted << ["output", "#{base}.out.#{index}.#{safe(file)}", File.join(run["artifacts_dir"].to_s, file)]
+        wanted << ["output", "#{base}.out.#{index}.#{safe(file)}", File.join(run.artifacts_dir.to_s, file)]
       end
       used = Array(attempt["evidence"]).grep(Hash).sum { |each| (each["kind"] == "prompt") ? each["bytes"].to_i : 0 }
       batch(run, attempt, wanted, used)
@@ -101,7 +109,7 @@ module Workspace
     end
 
     def batch(run, attempt, wanted, used)
-      id = run["id"].to_s
+      id = run.id.to_s
       return [] unless RunLiveness::ID_PATTERN.match?(id)
       directory = File.join(@dir, id)
       sweep(directory)
@@ -116,10 +124,10 @@ module Workspace
 
     def entry(run, directory, kind, name, source, used)
       record = {"name" => name, "kind" => kind, "source" => source, "sha256" => nil, "bytes" => nil}
-      path, problem = placement(run["artifacts_dir"].to_s, source)
+      path, problem = placement(run.artifacts_dir.to_s, source)
       return record.merge("problem" => problem) if problem
       FileUtils.mkdir_p(directory, mode: 0o700)
-      store(record, directory, name, path, run["artifacts_dir"].to_s, [MAX_BYTES, BUDGET - used].min)
+      store(record, directory, name, path, run.artifacts_dir.to_s, [@max_bytes, @budget - used].min)
     rescue
       record.merge("problem" => "copy_failed")
     end
@@ -165,7 +173,7 @@ module Workspace
         false
       end
       begin
-        File.open(temp, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600) do |io|
+        @opener.call(temp, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600) do |io|
           sink = Sink.new(io)
           content = WorkflowProduced.digest(source, max_bytes: limit, sink: sink, check: check)
           failure = sink.error
@@ -179,7 +187,7 @@ module Workspace
         elsif content.too_large
           record["bytes"] = content.bytes
           record["too_large"] = true
-          record["budget"] = true if content.bytes <= MAX_BYTES
+          record["budget"] = true if content.bytes <= @max_bytes
         else
           File.rename(temp, target)
           record["sha256"] = content.sha256

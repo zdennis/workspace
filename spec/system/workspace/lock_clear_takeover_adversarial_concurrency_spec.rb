@@ -39,7 +39,7 @@ RSpec.describe "lock clear devenv racing dev up --takeover" do
 
   let(:dev) do
     Workspace::Commands::Dev.new(lock_namespace: lock_namespace, lock_holder: liveness, lineage: lineage, dev_config: dev_config,
-      dev_runner: nil, terminator: dev_terminator, tmux: tmux, executable: "/ws/bin/workspace", output: output,
+      dev_runner: nil, terminator: dev_terminator, tmux: tmux, git: Workspace::Git.new, executable: "/ws/bin/workspace", output: output,
       error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 1, clock: clock, sleeper: sleeper,
       kill: ->(signal, pid) {
         raise Errno::ESRCH unless liveness.alive?(pid: pid, started: "start-#{pid}")
@@ -48,7 +48,7 @@ RSpec.describe "lock clear devenv racing dev up --takeover" do
   end
 
   let(:lock_command) do
-    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: liveness,
+    Workspace::Commands::Lock.new(lineage: LineageSupport.lineage, config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: liveness,
       output: clear_output, error_output: clear_error_output, terminator: clear_terminator, clock: clock, sleeper: sleeper,
       pid_provider: -> { 999 }, trap: ->(*) {})
   end

@@ -154,18 +154,15 @@ RSpec.describe "T4 finish/kill/prune adversarial concurrency" do
   end
 
   def build_prune(git:, state:, stop:)
-    prune = Workspace::Commands::Prune.new(
+    merged_pull_requests = Class.new do
+      def usable? = true
+
+      def status_for(_branch, _repo_path) = {number: 1, url: "u", state: "MERGED"}
+    end.new
+    Workspace::Commands::Prune.new(
       state: state, project_config: project_config, project_settings: T4ConcurrencyFakes::RecordingSettings.new,
-      git: git, stop_command: stop, output: output, input: StringIO.new("y\n")
+      git: git, stop_command: stop, output: output, pull_requests: merged_pull_requests, input: StringIO.new("y\n")
     )
-    ok = double("status", success?: true)
-    allow(Open3).to receive(:capture3).and_call_original
-    allow(Open3).to receive(:capture3).with("gh", "auth", "status").and_return(["", "", ok])
-    allow(Open3).to receive(:capture3).with("git", "-C", worktree, "remote", "get-url", "origin")
-      .and_return(["git@github.com:o/r.git\n", "", ok])
-    allow(Open3).to receive(:capture3).with("gh", "pr", "view", "feat", "--repo", "o/r", "--json", "number,url,state")
-      .and_return([JSON.generate("number" => 1, "url" => "u", "state" => "MERGED"), "", ok])
-    prune
   end
 
   # Seed 2: prune without --force used to stop the session (whose agent may
@@ -207,12 +204,14 @@ RSpec.describe "T4 finish/kill/prune adversarial concurrency" do
     build_repo
     marker = File.join(worktree, ".workspace-project")
     # The user sits at the [y/N] prompt while the agent keeps editing.
-    prompt = Object.new
-    tf = tracked_file
-    prompt.define_singleton_method(:gets) do
-      File.write(tf, "edit while the prompt waited\n")
-      "y\n"
-    end
+    prompt = Class.new do
+      def initialize(file) = @file = file
+
+      def gets
+        File.write(@file, "edit while the prompt waited\n")
+        "y\n"
+      end
+    end.new(tracked_file)
     kill = build_kill(git: real_git, stop: T4ConcurrencyFakes::RecordingStop.new, input: prompt)
 
     begin

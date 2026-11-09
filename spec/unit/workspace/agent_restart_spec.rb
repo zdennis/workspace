@@ -1,34 +1,5 @@
 require "spec_helper"
 
-# A pane whose screen stays put unless a spec scripts it, and whose
-# deliveries are recorded. Time moves only when the restart sleeps.
-class RestartFakeTmux
-  attr_accessor :screens, :details, :statuses
-  attr_reader :delivered
-
-  def initialize
-    @screens = ["❯ "]
-    @details = [{id: "%18", window: 0, index: 1}]
-    @statuses = []
-    @delivered = []
-  end
-
-  def capture_screen(_target)
-    (@screens.size > 1) ? @screens.shift : @screens.first
-  end
-
-  def pane_details(_session, window: "0")
-    raise ArgumentError, "expected every window" unless window.nil?
-    @details
-  end
-
-  def deliver(session, target, text)
-    @delivered << {session: session, target: target, text: text}
-    status = @statuses.shift || :submitted
-    Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
-  end
-end
-
 # Readings come from a script; the last one repeats. Each carries the
 # time it was recorded, relative to the wall clock.
 class RestartFakeContextReader
@@ -49,7 +20,8 @@ end
 RSpec.describe Workspace::AgentRestart do
   let(:now) { [0.0] }
   let(:wall) { [Time.utc(2026, 9, 27, 12, 0, 0)] }
-  let(:tmux) { RestartFakeTmux.new }
+  let(:tmux) { FakeTmux.new(screens: ["❯ "], details: [{id: "%18", window: 0, index: 1}], strict_windows: true) }
+  let(:panes) { Workspace::PaneFactory.new(tmux: tmux, session_name: "workspace-wt-app") }
   let(:pipeline_refs) { {} }
   let(:pane_states) { {} }
   let(:readings) { [] }
@@ -58,7 +30,7 @@ RSpec.describe Workspace::AgentRestart do
 
   subject(:restart) do
     described_class.new(
-      tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+      panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
       delivery_lock: Mutex.new,
       pipeline_ref: ->(index) { pipeline_refs[index] },
       pane_state: ->(id) { pane_states[id] },
@@ -89,20 +61,23 @@ RSpec.describe Workspace::AgentRestart do
     expect(result).to include("ok" => true, "status" => "restarted", "pane_id" => "%18",
       "context_before" => 42, "context_after" => 3, "delivery" => "submitted")
     expect(tmux.delivered).to eq([
-      {session: "workspace-wt-app", target: "0.1", text: "/clear"},
-      {session: "workspace-wt-app", target: "0.1", text: "Read HANDOFF.md"}
+      {session: "workspace-wt-app", target: "%18", text: "/clear"},
+      {session: "workspace-wt-app", target: "%18", text: "Read HANDOFF.md"}
     ])
   end
 
   it "reads by the pane's agent pid too, so readings recorded without $TMUX_PANE confirm the /clear" do
     scripted = [reading(14, session: "old"), reading(nil, session: "new")]
     clock_now = wall
-    pid_reader = Object.new
-    pid_reader.define_singleton_method(:read) do |pane_id:, agent_pid: nil, current_session_id: nil, kind: nil|
+    pid_reader = Class.new do
+      def initialize(&on_read) = @on_read = on_read
+
+      def read(pane_id:, agent_pid: nil, current_session_id: nil, kind: nil) = @on_read.call(agent_pid)
+    end.new do |agent_pid|
       next {pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil} unless agent_pid == 4242
       ((scripted.size > 1) ? scripted.shift : scripted.first).call(clock_now[0])
     end
-    restart = described_class.new(tmux: tmux, context_reader: pid_reader, session_name: "workspace-wt-app",
+    restart = described_class.new(panes: panes, context_reader: pid_reader, session_name: "workspace-wt-app",
       delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, agent_pid: ->(id) { (id == "%18") ? 4242 : nil },
       clock: -> { now[0] }, wall_clock: -> { wall[0] },
       sleeper: ->(seconds) {
@@ -235,7 +210,7 @@ RSpec.describe Workspace::AgentRestart do
       frozen = wall[0]
 
       result = described_class.new(
-        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
         delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, pane_state: ->(_) {},
         clock: -> { now[0] }, wall_clock: -> { frozen },
         sleeper: ->(seconds) { now[0] += seconds },
@@ -318,12 +293,14 @@ RSpec.describe Workspace::AgentRestart do
     let(:bound) { [true] }
     let(:prompt_hook) { [true] }
     let(:moving) { [true] }
+    let(:subagent_counter) { nil }
     let(:hook_facts) do
       ->(_id) { {hooks: true, last_user_prompt_at: (prompt_hook[0] && tmux.delivered.size >= 2) ? wall[0] : nil} }
     end
 
     def proven(**overrides)
-      described_class.new(tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+      counter = subagent_counter ? {subagents_running: subagent_counter} : {}
+      described_class.new(panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
         delivery_lock: Mutex.new, pipeline_ref: ->(_) {},
         pane_state: ->(id) { pane_states[id] }, pane_kind: ->(id) { kinds[id] }, delivery_facts: hook_facts,
         turn_over: ->(_id) { missing[0] }, screen_ready: ->(_id) { screen_refusals[0] },
@@ -334,7 +311,7 @@ RSpec.describe Workspace::AgentRestart do
           wall[0] += seconds
           @on_tick&.call
         },
-        quiet_timeout: 30, quiet_for: 1, poll_interval: 0.5, turn_over_for: 5, prompt_confirm_timeout: 15, **overrides)
+        quiet_timeout: 30, quiet_for: 1, poll_interval: 0.5, turn_over_for: 5, prompt_confirm_timeout: 15, **counter, **overrides)
     end
 
     def go(**opts)
@@ -345,7 +322,7 @@ RSpec.describe Workspace::AgentRestart do
       pane_states["%18"] = "idle"
       frame = 0
       flag = moving
-      tmux.define_singleton_method(:capture_screen) { |_| flag[0] ? "frame #{frame += 1}" : "still" }
+      tmux.screen_script = -> { flag[0] ? "frame #{frame += 1}" : "still" }
       readings.push(reading(42, at: wall[0] - 60), reading(3, at: wall[0] + 3600))
     end
 
@@ -455,7 +432,7 @@ RSpec.describe Workspace::AgentRestart do
 
       before do
         moving[0] = false
-        tmux.define_singleton_method(:capture_screen) { |_| "still" }
+        tmux.screen_script = -> { "still" }
       end
 
       def after_clear
@@ -522,11 +499,7 @@ RSpec.describe Workspace::AgentRestart do
       before do
         times = clear_times
         clock = now
-        original = tmux.method(:deliver)
-        tmux.define_singleton_method(:deliver) do |session, target, text|
-          times << clock[0] if text == "/clear"
-          original.call(session, target, text)
-        end
+        tmux.on_deliver = ->(text) { times << clock[0] if text == "/clear" }
       end
 
       # A last check that refuses once the wait has passed, until t=9.
@@ -538,7 +511,7 @@ RSpec.describe Workspace::AgentRestart do
       it "holds QUIET_FOR again after a draft is deleted" do
         moving[0] = false
         screen = ["❯ half a thought"]
-        tmux.define_singleton_method(:capture_screen) { |_| screen[0] }
+        tmux.screen_script = -> { screen[0] }
         screen_refusals[0] = draft
         @on_tick = lambda do
           next unless now[0] >= 3
@@ -553,7 +526,7 @@ RSpec.describe Workspace::AgentRestart do
       it "holds QUIET_FOR again after a submitted draft's turn stops" do
         moving[0] = false
         screen = ["❯ half a thought"]
-        tmux.define_singleton_method(:capture_screen) { |_| screen[0] }
+        tmux.screen_script = -> { screen[0] }
         screen_refusals[0] = draft
         @on_tick = lambda do
           next unless now[0] >= 2
@@ -613,7 +586,7 @@ RSpec.describe Workspace::AgentRestart do
       it "answers pane_gone when the pane closes during the retry's wait" do
         moving[0] = false
         gone = [false]
-        tmux.define_singleton_method(:capture_screen) { |_| gone[0] ? nil : "still" }
+        tmux.screen_script = -> { gone[0] ? nil : "still" }
         screen_refusals[0] = draft
         @on_tick = -> { gone[0] = true if now[0] >= 2 }
 
@@ -634,10 +607,7 @@ RSpec.describe Workspace::AgentRestart do
 
       context "with a sub-agent running" do
         let(:running) { [2] }
-
-        before do
-          allow(self).to receive(:proven).and_wrap_original { |m, **o| m.call(subagents_running: ->(_id) { running[0] }, **o) }
-        end
+        let(:subagent_counter) { ->(_id) { running[0] } }
 
         it "warns that background work may be lost, and still clears" do
           result = go
@@ -697,13 +667,9 @@ RSpec.describe Workspace::AgentRestart do
       end
 
       it "refuses when the monitor turns to working during the last check" do
-        tmux.define_singleton_method(:capture_screen) { |_| "still" }
+        tmux.screen_script = -> { "still" }
         states = pane_states
-        original = tmux.method(:pane_details)
-        tmux.define_singleton_method(:pane_details) do |session, window: "0"|
-          states["%18"] = "working"
-          original.call(session, window: window)
-        end
+        tmux.on_details = -> { states["%18"] = "working" }
 
         expect(go).to include("ok" => false, "reason" => "turn_started")
         expect(tmux.delivered).to be_empty
@@ -732,12 +698,8 @@ RSpec.describe Workspace::AgentRestart do
     end
 
     it "gives run_unbound before the prompt when the run goes after /clear" do
-      original = tmux.method(:deliver)
       flag = bound
-      tmux.define_singleton_method(:deliver) do |*args|
-        flag[0] = false
-        original.call(*args)
-      end
+      tmux.on_deliver = ->(_text) { flag[0] = false }
 
       expect(go(run_id: "wr_1")).to include("ok" => false, "error" => "run_unbound")
       expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
@@ -832,7 +794,7 @@ RSpec.describe Workspace::AgentRestart do
   describe "when the pane never goes quiet" do
     before do
       frame = 0
-      tmux.define_singleton_method(:capture_screen) { |_| "⠋ working #{frame += 1}" }
+      tmux.screen_script = -> { "⠋ working #{frame += 1}" }
       readings.push(reading(42))
     end
 
@@ -893,7 +855,7 @@ RSpec.describe Workspace::AgentRestart do
 
     subject(:restart) do
       described_class.new(
-        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
         delivery_lock: Mutex.new, pipeline_ref: ->(_) {},
         pane_state: ->(id) { monitor.restart_state(id) },
         clock: -> { now[0] }, wall_clock: -> { wall[0] },
@@ -932,18 +894,18 @@ RSpec.describe Workspace::AgentRestart do
   end
 
   it "reports a pane that is gone before anything is typed" do
-    tmux.define_singleton_method(:capture_screen) { |_| nil }
+    tmux.screen_script = -> {}
 
     expect(call).to include("ok" => false, "error" => "pane_gone")
   end
 
-  it "types into the pane's current window.index when the index moved" do
+  it "types into the pane by its id when its index moved" do
     readings.push(reading(42), reading(2))
     tmux.details = [{id: "%9", window: 0, index: 0}, {id: "%18", window: 0, index: 3}]
 
     call
 
-    expect(tmux.delivered.map { |d| d[:target] }.uniq).to eq(["0.3"])
+    expect(tmux.delivered.map { |d| d[:target] }.uniq).to eq(["%18"])
   end
 
   it "reports /clear that never reached the pane" do
@@ -1032,7 +994,7 @@ RSpec.describe Workspace::AgentRestart do
     let(:kinds_by_pane) { {"%18" => "codex"} }
     subject(:restart) do
       described_class.new(
-        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        panes: panes, context_reader: context_reader, session_name: "workspace-wt-app",
         delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, pane_kind: ->(id) { kinds_by_pane[id] },
         clock: -> { now[0] }, wall_clock: -> { wall[0] },
         sleeper: ->(seconds) {

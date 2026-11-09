@@ -1,0 +1,367 @@
+{
+  "protocol_version": 1,
+  "cases": {
+    "status_request#plain": {
+      "builder": "status_request",
+      "args": {
+        "pane_id": "%5"
+      },
+      "transport_workspace": true,
+      "wire": "{\"type\":\"status_request\",\"pane_id\":\"%5\",\"workspace\":\"pf\"}"
+    },
+    "status_post#summary_only": {
+      "builder": "status_post",
+      "args": {
+        "pane_id": "%7",
+        "summary": "doing it"
+      },
+      "transport_workspace": true,
+      "wire": "{\"type\":\"status_post\",\"pane_id\":\"%7\",\"summary\":\"doing it\",\"workspace\":\"pf\"}"
+    },
+    "status_post#all_fields": {
+      "builder": "status_post",
+      "args": {
+        "pane_id": "%7",
+        "summary": "doing it",
+        "task": "T1",
+        "progress": {
+          "done": 1,
+          "total": 3
+        },
+        "reply_to": "req1"
+      },
+      "transport_workspace": true,
+      "wire": "{\"type\":\"status_post\",\"pane_id\":\"%7\",\"summary\":\"doing it\",\"task\":\"T1\",\"progress\":{\"done\":1,\"total\":3},\"reply_to\":\"req1\",\"workspace\":\"pf\"}"
+    },
+    "prompt_send#when_idle": {
+      "builder": "prompt_send",
+      "args": {
+        "pane_id": "%5",
+        "text": "hello"
+      },
+      "transport_workspace": true,
+      "wire": "{\"type\":\"prompt_send\",\"pane_id\":\"%5\",\"text\":\"hello\",\"workspace\":\"pf\"}"
+    },
+    "prompt_send#clear_first": {
+      "builder": "prompt_send",
+      "args": {
+        "pane_id": "%5",
+        "text": "hello",
+        "clear_first": true,
+        "when_idle": false
+      },
+      "transport_workspace": true,
+      "wire": "{\"type\":\"prompt_send\",\"pane_id\":\"%5\",\"text\":\"hello\",\"clear_first\":true,\"when_idle\":false,\"workspace\":\"pf\"}"
+    },
+    "prompt_send#clear_first_when_idle": {
+      "builder": "prompt_send",
+      "args": {
+        "pane_id": "%5",
+        "text": "hello",
+        "clear_first": true,
+        "when_idle": true
+      },
+      "transport_workspace": true,
+      "wire": "{\"type\":\"prompt_send\",\"pane_id\":\"%5\",\"text\":\"hello\",\"clear_first\":true,\"when_idle\":true,\"workspace\":\"pf\"}"
+    },
+    "prompt_interrupt_send#plain": {
+      "builder": "prompt_interrupt_send",
+      "args": {
+        "pane_id": "%5",
+        "text": "stop"
+      },
+      "transport_workspace": true,
+      "wire": "{\"type\":\"prompt_interrupt_send\",\"pane_id\":\"%5\",\"text\":\"stop\",\"workspace\":\"pf\"}"
+    },
+    "sessions#client": {
+      "builder": "sessions",
+      "args": {},
+      "transport_workspace": true,
+      "wire": "{\"type\":\"sessions\",\"workspace\":\"pf\"}"
+    },
+    "version#client": {
+      "builder": "version",
+      "args": {},
+      "transport_workspace": true,
+      "wire": "{\"type\":\"version\",\"workspace\":\"pf\"}"
+    },
+    "restart_agent#cli_minimal": {
+      "builder": "restart_agent",
+      "args": {
+        "workspace": "pf",
+        "pane": "%5",
+        "prompt": "go",
+        "force": false,
+        "wait": false
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"restart_agent\",\"workspace\":\"pf\",\"pane\":\"%5\",\"prompt\":\"go\",\"force\":false,\"wait\":false}"
+    },
+    "restart_agent#cli_all": {
+      "builder": "restart_agent",
+      "args": {
+        "workspace": "pf",
+        "pane": "%5",
+        "prompt": "go",
+        "force": true,
+        "wait": true,
+        "timeout": 30
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"restart_agent\",\"workspace\":\"pf\",\"pane\":\"%5\",\"prompt\":\"go\",\"force\":true,\"wait\":true,\"timeout\":30}"
+    },
+    "restart_agent#workflow_panes": {
+      "builder": "restart_agent",
+      "args": {
+        "workspace": "pf",
+        "pane": "%5",
+        "prompt": "next step",
+        "force": false,
+        "wait": true
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"restart_agent\",\"workspace\":\"pf\",\"pane\":\"%5\",\"prompt\":\"next step\",\"force\":false,\"wait\":true}"
+    },
+    "restart_agent#workflow_panes_run_id": {
+      "builder": "restart_agent",
+      "args": {
+        "workspace": "pf",
+        "pane": "%5",
+        "prompt": "next step",
+        "force": false,
+        "wait": true,
+        "run_id": "wr_1"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"restart_agent\",\"workspace\":\"pf\",\"pane\":\"%5\",\"prompt\":\"next step\",\"force\":false,\"wait\":true,\"run_id\":\"wr_1\"}"
+    },
+    "handoff_watch#plain": {
+      "builder": "handoff_watch",
+      "args": {
+        "workspace": "pf",
+        "pane_id": "%5",
+        "sent_at": "2026-01-02T03:04:05.678Z",
+        "interval": 60,
+        "max": 3,
+        "text": "Continue: claude --resume",
+        "sent_text": "save state"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"handoff_watch\",\"workspace\":\"pf\",\"pane_id\":\"%5\",\"sent_at\":\"2026-01-02T03:04:05.678Z\",\"interval\":60,\"max\":3,\"text\":\"Continue: claude --resume\",\"sent_text\":\"save state\"}"
+    },
+    "sessions#handoff_inline": {
+      "builder": "sessions",
+      "args": {
+        "workspace": "pf"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"sessions\",\"workspace\":\"pf\"}"
+    },
+    "session_event#user_prompt": {
+      "builder": "session_event",
+      "args": {
+        "workspace": "pf",
+        "event": "user_prompt",
+        "agent_kind": "claude",
+        "pane_id": "%5",
+        "session_id": "s1",
+        "cwd": "/tmp/x",
+        "transcript_path": "/tmp/t.jsonl",
+        "prompt": "hi"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"session_event\",\"workspace\":\"pf\",\"event\":\"user_prompt\",\"agent_kind\":\"claude\",\"pane_id\":\"%5\",\"session_id\":\"s1\",\"cwd\":\"/tmp/x\",\"transcript_path\":\"/tmp/t.jsonl\",\"prompt\":\"hi\"}"
+    },
+    "session_event#session_start": {
+      "builder": "session_event",
+      "args": {
+        "workspace": "pf",
+        "event": "session_start",
+        "agent_kind": "claude",
+        "pane_id": "%5",
+        "session_id": "s1",
+        "cwd": "/tmp/x",
+        "kind": "claude",
+        "source": "startup"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"session_event\",\"workspace\":\"pf\",\"event\":\"session_start\",\"agent_kind\":\"claude\",\"pane_id\":\"%5\",\"session_id\":\"s1\",\"cwd\":\"/tmp/x\",\"kind\":\"claude\",\"source\":\"startup\"}"
+    },
+    "session_event#pre_tool_use": {
+      "builder": "session_event",
+      "args": {
+        "workspace": "pf",
+        "event": "tool_start",
+        "agent_kind": "claude",
+        "pane_id": "%5",
+        "session_id": "s1",
+        "cwd": "/tmp/x",
+        "agent_id": "ag1",
+        "tool": "Bash",
+        "tool_use_id": "tu1",
+        "input": "ls"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"session_event\",\"workspace\":\"pf\",\"event\":\"tool_start\",\"agent_kind\":\"claude\",\"pane_id\":\"%5\",\"session_id\":\"s1\",\"cwd\":\"/tmp/x\",\"agent_id\":\"ag1\",\"tool\":\"Bash\",\"tool_use_id\":\"tu1\",\"input\":\"ls\"}"
+    },
+    "session_event#post_tool_use": {
+      "builder": "session_event",
+      "args": {
+        "workspace": "pf",
+        "event": "tool_use",
+        "agent_kind": "claude",
+        "pane_id": "%5",
+        "session_id": "s1",
+        "cwd": "/tmp/x",
+        "tool": "Bash",
+        "tool_use_id": "tu1",
+        "input": "ls",
+        "ok": true,
+        "duration_ms": 12
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"session_event\",\"workspace\":\"pf\",\"event\":\"tool_use\",\"agent_kind\":\"claude\",\"pane_id\":\"%5\",\"session_id\":\"s1\",\"cwd\":\"/tmp/x\",\"tool\":\"Bash\",\"tool_use_id\":\"tu1\",\"input\":\"ls\",\"ok\":true,\"duration_ms\":12}"
+    },
+    "session_event#notification": {
+      "builder": "session_event",
+      "args": {
+        "workspace": "pf",
+        "event": "notification",
+        "agent_kind": "claude",
+        "pane_id": "%5",
+        "session_id": "s1",
+        "cwd": "/tmp/x",
+        "message": "needs input",
+        "notification_type": "permission_prompt"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"session_event\",\"workspace\":\"pf\",\"event\":\"notification\",\"agent_kind\":\"claude\",\"pane_id\":\"%5\",\"session_id\":\"s1\",\"cwd\":\"/tmp/x\",\"message\":\"needs input\",\"notification_type\":\"permission_prompt\"}"
+    },
+    "session_event#stop": {
+      "builder": "session_event",
+      "args": {
+        "workspace": "pf",
+        "event": "stop",
+        "agent_kind": "claude",
+        "pane_id": "%5",
+        "session_id": "s1",
+        "cwd": "/tmp/x",
+        "stop_reason": "end_turn"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"session_event\",\"workspace\":\"pf\",\"event\":\"stop\",\"agent_kind\":\"claude\",\"pane_id\":\"%5\",\"session_id\":\"s1\",\"cwd\":\"/tmp/x\",\"stop_reason\":\"end_turn\"}"
+    },
+    "command#agent_run": {
+      "builder": "command",
+      "args": {
+        "workspace": "pf",
+        "work_item_ref": "WC-42",
+        "dispatch_id": "debug-a37ed177",
+        "body": "do it"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"command\",\"workspace\":\"pf\",\"work_item_ref\":\"WC-42\",\"dispatch_id\":\"debug-a37ed177\",\"body\":\"do it\"}"
+    },
+    "inject#agent_run_interrupt": {
+      "builder": "inject",
+      "args": {
+        "workspace": "pf",
+        "work_item_ref": "WC-42",
+        "interrupt": true,
+        "body": "steer"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"inject\",\"workspace\":\"pf\",\"work_item_ref\":\"WC-42\",\"interrupt\":true,\"body\":\"steer\"}"
+    },
+    "inject#agent_run": {
+      "builder": "inject",
+      "args": {
+        "workspace": "pf",
+        "work_item_ref": "WC-42",
+        "interrupt": false,
+        "body": "steer"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"inject\",\"workspace\":\"pf\",\"work_item_ref\":\"WC-42\",\"interrupt\":false,\"body\":\"steer\"}"
+    },
+    "command#pipeline_start": {
+      "builder": "command",
+      "args": {
+        "workspace": "pf",
+        "work_item_ref": "WC-42",
+        "dispatch_id": "manual-9a4aebcb",
+        "body": "Begin work on WC-42."
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"command\",\"workspace\":\"pf\",\"work_item_ref\":\"WC-42\",\"dispatch_id\":\"manual-9a4aebcb\",\"body\":\"Begin work on WC-42.\"}"
+    },
+    "inject#pipeline_advance": {
+      "builder": "inject",
+      "args": {
+        "workspace": "pf",
+        "work_item_ref": "WC-42",
+        "interrupt": true,
+        "expected_token": "tok1",
+        "body": "echo WORKSPACE_DONE:tok1\\ manual\\ advance"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"inject\",\"workspace\":\"pf\",\"work_item_ref\":\"WC-42\",\"interrupt\":true,\"expected_token\":\"tok1\",\"body\":\"echo WORKSPACE_DONE:tok1\\\\ manual\\\\ advance\"}"
+    },
+    "command#example_0": {
+      "builder": "command",
+      "args": {
+        "workspace": "workspace",
+        "work_item_ref": "WC-42",
+        "dispatch_id": "debug-abcd1234",
+        "body": "What is the current status of GitHub CI for this branch?"
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"command\",\"workspace\":\"workspace\",\"work_item_ref\":\"WC-42\",\"dispatch_id\":\"debug-abcd1234\",\"body\":\"What is the current status of GitHub CI for this branch?\"}"
+    },
+    "command#example_1": {
+      "builder": "command",
+      "args": {
+        "workspace": "workspace",
+        "work_item_ref": "WC-42",
+        "dispatch_id": "debug-abcd1234",
+        "body": "Run the linter and report any issues."
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"command\",\"workspace\":\"workspace\",\"work_item_ref\":\"WC-42\",\"dispatch_id\":\"debug-abcd1234\",\"body\":\"Run the linter and report any issues.\"}"
+    },
+    "inject#example_2": {
+      "builder": "inject",
+      "args": {
+        "workspace": "workspace",
+        "work_item_ref": "WC-42",
+        "interrupt": false,
+        "body": "Focus on the failing tests, not the linter warnings."
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"inject\",\"workspace\":\"workspace\",\"work_item_ref\":\"WC-42\",\"interrupt\":false,\"body\":\"Focus on the failing tests, not the linter warnings.\"}"
+    },
+    "inject#example_3": {
+      "builder": "inject",
+      "args": {
+        "workspace": "workspace",
+        "work_item_ref": "WC-42",
+        "interrupt": true,
+        "body": "Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first."
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"inject\",\"workspace\":\"workspace\",\"work_item_ref\":\"WC-42\",\"interrupt\":true,\"body\":\"Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.\"}"
+    },
+    "restart_agent#example_4": {
+      "builder": "restart_agent",
+      "args": {
+        "workspace": "workspace",
+        "pane": "0.1",
+        "prompt": "Read HANDOFF.md and follow it.",
+        "force": false,
+        "wait": true
+      },
+      "transport_workspace": false,
+      "wire": "{\"type\":\"restart_agent\",\"workspace\":\"workspace\",\"pane\":\"0.1\",\"prompt\":\"Read HANDOFF.md and follow it.\",\"force\":false,\"wait\":true}"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-04T12:00:00Z",
+  "type": "run_started",
+  "workflow": "flow",
+  "workspace": "app.worktree-x"
+}
+{
+  "ts": "2026-10-04T12:00:00Z",
+  "type": "step_dispatching",
+  "step": "build",
+  "attempt": 1,
+  "pane": "%5"
+}
+{
+  "ts": "2026-10-04T12:00:00Z",
+  "type": "step_dispatched",
+  "step": "build",
+  "attempt": 1,
+  "pane": "%5",
+  "delivered": true
+}
+{
+  "ts": "2026-10-04T12:00:00Z",
+  "type": "run_cancelled",
+  "cause": "kill"
+}

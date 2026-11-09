@@ -196,7 +196,8 @@ RSpec.describe Workspace::Commands::Finish do
             end
 
             it "has no override to skip the clean/pushed check" do
-              expect(command.method(:call).parameters.map(&:last)).not_to include(:discard_unpushed)
+              expect { command.call("myproject.worktree-PROJ-123", discard_unpushed: true, working_dir: tmpdir) }
+                .to raise_error(ArgumentError, /discard_unpushed/)
             end
 
             context "with --pr" do

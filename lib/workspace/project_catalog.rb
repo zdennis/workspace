@@ -14,7 +14,7 @@ module Workspace
   #    by the realpath of the root, with vcs "none". A `.git` file pointing at
   #    a missing git dir (a broken checkout) is the same but with vcs "broken".
   # 3. The root is gone: attached by config-name prefix
-  #    ({Workspace::WorkspaceLineage.split_worktree_name}) to the project whose
+  #    ({Workspace::WorkspaceName.split}) to the project whose
   #    name matches the prefix, else its own project (vcs "unknown"). The
   #    member has +exists+ false.
   class ProjectCatalog
@@ -195,8 +195,8 @@ module Workspace
       groups.each_value { |group| name_group(group) }
 
       # Standalone configs first, so worktree-named configs can attach to them.
-      missing.sort_by { |entry| [WorkspaceLineage.split_worktree_name(entry[:name]) ? 1 : 0, entry[:name]] }.each do |entry|
-        split = WorkspaceLineage.split_worktree_name(entry[:name])
+      missing.sort_by { |entry| [WorkspaceName.split(entry[:name]) ? 1 : 0, entry[:name]] }.each do |entry|
+        split = WorkspaceName.split(entry[:name])
         group = split && group_for_missing(groups.values, split.first, entry[:path])
         if group
           group[:members] << member_for(entry, "worktree")

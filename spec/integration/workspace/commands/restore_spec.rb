@@ -9,8 +9,8 @@ RSpec.describe Workspace::Commands::Restore do
   # layout with fewer panes than the window is refused.
   let(:tmux_class) do
     Class.new do
-      attr_reader :delivered, :layouts, :split_count, :last_error
-      attr_accessor :rows, :delivery_status, :sessions_error, :server_pid, :pane_base
+      attr_reader :delivered, :layouts, :split_count, :last_error, :windows
+      attr_accessor :rows, :delivery_status, :sessions_error, :server_pid, :pane_base, :before_pane_details, :before_deliver
 
       def initialize
         @windows = {}
@@ -43,6 +43,15 @@ RSpec.describe Workspace::Commands::Restore do
       end
 
       def pane_details(session, window: "0")
+        # The hook reads pane_details itself, so it must not fire again for that inner call.
+        if before_pane_details && !@in_pane_details_hook
+          @in_pane_details_hook = true
+          begin
+            before_pane_details.call
+          ensure
+            @in_pane_details_hook = false
+          end
+        end
         windows = @windows.fetch(session, {})
         windows = windows.slice(window.to_i) unless window.nil?
         windows.sort.flat_map do |index, panes|
@@ -78,6 +87,7 @@ RSpec.describe Workspace::Commands::Restore do
       end
 
       def deliver(session, pane, text, enter: true)
+        before_deliver&.call
         @delivered << [session, pane, text]
         Workspace::Tmux::Delivery.new(status: delivery_status, message: "delivery #{delivery_status}")
       end
@@ -721,10 +731,7 @@ RSpec.describe Workspace::Commands::Restore do
 
     it "stops waiting as soon as the panes are there" do
       started("api:0.4", sid(1))
-      allow(tmux).to receive(:pane_details).and_wrap_original do |original, *args, **options|
-        tmux.add_pane("api", "zsh") if original.call("api", window: nil).size < 4
-        original.call(*args, **options)
-      end
+      tmux.before_pane_details = -> { tmux.add_pane("api", "zsh") if tmux.pane_details("api", window: nil).size < 4 }
 
       result = restore.call(["api"]) do
         tmux.add_session("api", %w[zsh])
@@ -873,10 +880,7 @@ RSpec.describe Workspace::Commands::Restore do
       started("api:0.4", sid(1), pane_id: "%7")
       running_session
       bound_when_typed = nil
-      allow(tmux).to receive(:deliver).and_wrap_original do |original, *args, **options|
-        bound_when_typed = bindings.binding_for("%4")
-        original.call(*args, **options)
-      end
+      tmux.before_deliver = -> { bound_when_typed = bindings.binding_for("%4") }
 
       result = call
 
@@ -1011,7 +1015,7 @@ RSpec.describe Workspace::Commands::Restore do
   describe "a session that never restarted, after a sibling pane closed" do
     # Agents X (%4) and Y (%5) ran at 0.4 and 0.5, both bound. The pane at
     # 0.3 was closed, so they are at 0.3 and 0.4 now, and no hook has fired.
-    let(:panes) { tmux.instance_variable_get(:@windows)["api"][0] }
+    let(:panes) { tmux.windows["api"][0] }
 
     before do
       running_session("api", %w[zsh 2.1.289 zsh ruby 2.1.289 2.1.289])
@@ -1135,13 +1139,12 @@ RSpec.describe Workspace::Commands::Restore do
     it "is started for a running session that has none, before anything is typed" do
       running_session
       started("api:0.2", sid(1))
-      allow(tmux).to receive(:deliver).and_wrap_original do |original, *args, **options|
-        expect(ensured).to eq(["api"])
-        original.call(*args, **options)
-      end
+      ensured_when_typed = nil
+      tmux.before_deliver = -> { ensured_when_typed = ensured.dup }
 
       call
 
+      expect(ensured_when_typed).to eq(["api"])
       expect(ensured).to eq(["api"])
       expect(tmux.delivered.size).to eq(1)
     end
@@ -1287,15 +1290,13 @@ RSpec.describe Workspace::Commands::Restore do
   describe "sessions carried by a rename" do
     it "resumes a stopped session under the new name" do
       write_config("fresh")
-      started("api:0.2", sid(7), pane_id: "%7", transcript_path: nil)
-      ended("api:0.2", sid(7), "other")
+      started("api:0.4", sid(7), pane_id: "%7", transcript_path: nil)
+      ended("api:0.4", sid(7), "other")
       ledger.carry(from: "api", to: "fresh", cwd: cwd)
 
-      slot = restore.send(:slots_for, "fresh", "fresh").first
-      plan = {workspace: "fresh", session: "fresh", launch: true, config: nil, slots: [slot]}
+      result = restore.call(["fresh"], dry_run: true)
 
-      expect(restore.send(:precheck, plan, slot)).to be_nil
-      expect(slot).to include("session_id" => sid(7), "cwd" => cwd, "end_reason" => "other")
+      expect(rows(result)).to match([include("outcome" => "would_restore", "session_id" => sid(7), "cwd" => cwd)])
     end
   end
 end

@@ -309,26 +309,26 @@ module Workspace
 
         name = "subagent_start" if claude? && hook == "PreToolUse" && SUBAGENT_TOOLS.include?(payload["tool_name"])
 
-        {
-          "type" => "session_event",
-          "workspace" => workspace,
-          "event" => name,
-          "agent_kind" => @agent,
-          "pane_id" => pane_id,
-          "session_id" => payload["session_id"],
-          "cwd" => payload["cwd"],
-          "transcript_path" => text_field(payload, "transcript_path"),
+        AgentProtocol.session_event(
+          workspace: workspace,
+          event: name,
+          agent_kind: @agent,
+          pane_id: pane_id,
+          session_id: payload["session_id"],
+          cwd: payload["cwd"],
+          transcript_path: text_field(payload, "transcript_path"),
           # Set only when the hook fired inside a sub-agent, so the daemon can
           # tell its events from the main agent's.
-          "agent_id" => agent_id_for(payload),
-          "agent" => agent_for(payload),
-          "message" => message_for(payload),
-          "notification_type" => notification_type_for(payload),
-          "prompt" => prompt_for(payload),
-          "stop_reason" => stop_reason_for(payload),
-          "error" => error_kind_for(payload),
-          "background_tasks" => background_tasks_for(payload)
-        }.merge(tool_fields(payload), session_fields(payload), codex_subagent_fields(payload)).compact
+          agent_id: agent_id_for(payload),
+          agent: agent_for(payload),
+          message: message_for(payload),
+          notification_type: notification_type_for(payload),
+          prompt: prompt_for(payload),
+          stop_reason: stop_reason_for(payload),
+          error: error_kind_for(payload),
+          background_tasks: background_tasks_for(payload),
+          fields: tool_fields(payload).merge(session_fields(payload), codex_subagent_fields(payload))
+        )
       end
 
       def claude?
@@ -493,8 +493,8 @@ module Workspace
         tasks.first(MAX_BACKGROUND_TASKS).filter_map do |task|
           next unless task.is_a?(Hash)
           type, id = task["type"], task["id"]
-          next unless type.is_a?(String) && WorkflowEngine::BACKGROUND_TASK_TYPES.include?(type)
-          next unless id.is_a?(String) && id.match?(WorkflowEngine::BACKGROUND_TASK_ID)
+          next unless type.is_a?(String) && IdPatterns::BACKGROUND_TASK_TYPES.include?(type)
+          next unless id.is_a?(String) && id.match?(IdPatterns::BACKGROUND_TASK_ID)
 
           {"id" => id, "type" => type}
         end

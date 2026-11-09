@@ -39,16 +39,17 @@ RSpec.describe "workspace rename, end to end" do
     output
   end
 
+  def stopped_tmux
+    Class.new(Workspace::Tmux) { def session_exists?(*, **) = false }.new(config: config, logger: Workspace::Logger.new)
+  end
+
   def cli
     out.truncate(0)
     out.rewind
     err.truncate(0)
     err.rewind
-    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}).tap do |built|
-      handler = Object.new
-      handler.define_singleton_method(:exit) { |code = 0| raise SystemExit.new(code) }
-      built.instance_variable_set(:@exit_handler, handler)
-    end
+    handler = Class.new { def exit(code = 0) = raise(SystemExit.new(code)) }.new
+    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}, exit_handler: handler, tmux: stopped_tmux)
   end
 
   # Runs the CLI; returns the exit status (0 when it does not exit).
@@ -87,7 +88,6 @@ RSpec.describe "workspace rename, end to end" do
     state.save
     tasks.start(workspace: old, branch: "feat/a", path: linked)
     inbox(old).add({"kind" => "note", "title" => "t", "scope" => {"kind" => "workspace", "key" => old, "name" => old}})
-    allow_any_instance_of(Workspace::Tmux).to receive(:session_exists?).and_return(false)
   end
 
   # Files under the temp HOME that still name the old workspace, minus the logs a rename leaves as history,
@@ -141,12 +141,16 @@ RSpec.describe "workspace rename, end to end" do
   end
 
   it "finishes a half-done rename with the old name, after the config moved" do
-    allow_any_instance_of(Workspace::TaskStore).to receive(:update).and_raise(Errno::EACCES.new("no"))
-    expect(run_cli("rename", old, "feat/b")).not_to eq(0)
+    skip "a root user is not stopped by file permissions" if Process.uid.zero?
+    FileUtils.chmod(0o555, config.task_dir)
+    begin
+      expect(run_cli("rename", old, "feat/b")).not_to eq(0)
+    ensure
+      FileUtils.chmod(0o700, config.task_dir)
+    end
     expect(File.exist?(config.config_path_for(new))).to be(true)
     expect(File.exist?(config.config_path_for(old))).to be(false)
     expect(File.exist?(config.rename_journal_path(old))).to be(true)
-    allow_any_instance_of(Workspace::TaskStore).to receive(:update).and_call_original
 
     expect(run_cli("rename", old, "feat/b", "--json")).to eq(0)
 

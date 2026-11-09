@@ -11,13 +11,13 @@ RSpec.describe "statusline adversarial: CLI/UX" do
     dir = Dir.mktmpdir("ws-config")
     fake_path_config = Struct.new(:workspace_config_dir).new(dir)
     project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
-    lineage = Workspace::WorkspaceLineage.new
+    lineage = LineageSupport.lineage
     file_backup = Workspace::FileBackup.new(output: output)
     command = Workspace::Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
     [command, project_settings]
   end
 
-  # U1: capture_group_count (lib/workspace/config_schema.rb) strips
+  # U1: capture_group_count (lib/workspace/core/config_schema.rb) strips
   # `(?<` via the same gsub that's supposed to detect it, so the later
   # `stripped.scan("(?<")` correction is dead code. A named capture group
   # like `(?<pct>\d+)` is counted as zero capturing groups instead of one,
@@ -48,7 +48,8 @@ RSpec.describe "statusline adversarial: CLI/UX" do
   it "U3: never returns the documented 'no pane id' context_error reason" do
     context_store = instance_double(Workspace::ContextStore, reading_for_pane: nil)
     project_settings = instance_double(Workspace::ProjectSettings, load_global: {})
-    reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings)
+    reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings,
+      lock_holder: Workspace::LockHolder.new)
 
     result = reader.read(pane_id: nil, agent_pid: nil)
 
@@ -66,15 +67,16 @@ RSpec.describe "statusline adversarial: CLI/UX" do
       reading_for_pane: {"pct" => 88, "recorded_at" => "2026-09-20T00:00:00Z", "session_id" => "old-session-abc"}
     )
     project_settings = instance_double(Workspace::ProjectSettings, load_global: {})
-    reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings)
+    reader = Workspace::ContextReader.new(context_store: context_store, project_settings: project_settings,
+      lock_holder: Workspace::LockHolder.new)
 
     result = reader.read(pane_id: "%1", agent_pid: nil)
+    from_new_session = reader.read(pane_id: "%1", agent_pid: nil, current_session_id: "new-session-xyz")
 
-    # The reader has no `current_session_id` parameter at all, so it can
-    # never compare the stored reading's session_id against the pane's
-    # actual current session and flag a mismatch -- it just hands back the
-    # stale reading as if it were fresh.
-    expect(reader.method(:read).parameters.map(&:last)).to include(:current_session_id)
+    # Told the pane's current session, the reader compares it with the stored
+    # reading's session_id and refuses to hand back the stale one as fresh.
+    expect(from_new_session[:pct]).to be_nil
+    expect(from_new_session[:error]).to eq(Workspace::ContextReasons::STALE_SESSION)
     expect(result[:pct]).to eq(88)
   end
 
@@ -85,7 +87,7 @@ RSpec.describe "statusline adversarial: CLI/UX" do
   # reading, violating the documented "never estimates a percentage it
   # hasn't actually read" rule (docs/README.statusline.md:57).
   it "U5: does not render a non-numeric used_percentage as a fabricated 0%" do
-    renderer = Workspace::StatuslineRenderer.new
+    renderer = Workspace::StatuslineRenderer.new(git: Workspace::Git.new)
     payload = {"model" => {"display_name" => "Sonnet"}, "context_window" => {"used_percentage" => "N/A"}}
 
     line = renderer.render(payload, cwd: Dir.mktmpdir("ws-nogit"))
@@ -98,7 +100,7 @@ RSpec.describe "statusline adversarial: CLI/UX" do
   # "150% ctx" is never a valid context-window usage and should not be
   # printed as though it is.
   it "U5b: does not render an out-of-range used_percentage (150) verbatim" do
-    renderer = Workspace::StatuslineRenderer.new
+    renderer = Workspace::StatuslineRenderer.new(git: Workspace::Git.new)
     payload = {"model" => {"display_name" => "Sonnet"}, "context_window" => {"used_percentage" => 150}}
 
     line = renderer.render(payload, cwd: Dir.mktmpdir("ws-nogit"))

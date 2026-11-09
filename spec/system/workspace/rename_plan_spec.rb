@@ -24,13 +24,13 @@ RSpec.describe Workspace::RenamePlan do
   let(:notes_dir) { Workspace::NotesDir.new(git: git, home: @dir) }
   let(:current_notes) { File.join(main_notes, "feat-a") }
   let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => current_notes}, location_rule: {template: nil, main_dir: main_notes}) }
-  let(:engine) { instance_double(Workspace::WorkflowEngine, run_on_checkout: nil) }
+  let(:engine) { instance_double(Workspace::WorkflowRunStore, on_checkout: nil) }
   let(:journal) { ->(_workspace) {} }
   let(:dev_lock) { ->(_path) { false } }
   let(:transcripts) { ->(_path) { false } }
   subject(:plan) do
     described_class.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
-      notes_dir: notes_dir, workflow_engine: engine, dev_lock: dev_lock, journal: journal, transcripts: transcripts)
+      notes_dir: notes_dir, run_store: engine, dev_lock: dev_lock, journal: journal, transcripts: transcripts)
   end
 
   def sh(*args, dir: repo)
@@ -165,7 +165,7 @@ RSpec.describe Workspace::RenamePlan do
       describe "on two volumes" do
         subject(:plan) do
           described_class.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
-            notes_dir: notes_dir, workflow_engine: engine, transcripts: transcripts, device: device)
+            notes_dir: notes_dir, run_store: engine, transcripts: transcripts, device: device)
         end
 
         before { FileUtils.mkdir_p(current_notes) }
@@ -257,7 +257,7 @@ RSpec.describe Workspace::RenamePlan do
     end
 
     it "refuses a workflow run going on the checkout" do
-      allow(engine).to receive(:run_on_checkout).with(linked).and_return({"id" => "wr_1"})
+      allow(engine).to receive(:on_checkout).with(linked).and_return(Workspace::WorkflowRun.from_h({"id" => "wr_1"}))
 
       expect(refusal("run_active").details).to include("run_id" => "wr_1")
     end
@@ -332,7 +332,7 @@ RSpec.describe Workspace::RenamePlan do
     it "refuses when an earlier rename is not finished" do
       journal = ->(_workspace) { {"new_branch" => "feat/b"} }
       locked = described_class.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
-        notes_dir: notes_dir, workflow_engine: engine, journal: journal)
+        notes_dir: notes_dir, run_store: engine, journal: journal)
 
       expect { locked.call(workspace: workspace, new: "feat/b") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("rename_in_progress") }
       expect { locked.call(workspace: workspace, new: "other") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("rename_in_progress") }
@@ -452,7 +452,7 @@ RSpec.describe Workspace::RenamePlan do
     it "says how to clear a journal whose checkouts are both gone" do
       journal = ->(_workspace) { {"workspace" => workspace, "new_branch" => "feat/b", "path" => File.join(@dir, "gone-a"), "new_path" => File.join(@dir, "gone-b")} }
       stuck = described_class.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
-        notes_dir: notes_dir, workflow_engine: engine, journal: journal)
+        notes_dir: notes_dir, run_store: engine, journal: journal)
 
       expect { stuck.call(workspace: workspace, new: "feat/b", resume: true) }.to raise_error(Workspace::Error) { |e|
         file = File.join(@dir, "renames", "#{workspace}.json")
@@ -472,7 +472,7 @@ RSpec.describe Workspace::RenamePlan do
     it "reports a journal before the branch being unchanged" do
       journal = ->(_workspace) { {"new_branch" => "feat/a"} }
       crashed = described_class.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
-        notes_dir: notes_dir, workflow_engine: engine, journal: journal)
+        notes_dir: notes_dir, run_store: engine, journal: journal)
 
       expect { crashed.call(workspace: workspace, new: "feat/a") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("rename_in_progress") }
     end
@@ -525,7 +525,7 @@ RSpec.describe Workspace::RenamePlan do
     it "asks for a rerun when a rename is in progress" do
       journal = ->(_workspace) { {"new_branch" => "feat/b"} }
       crashed = described_class.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
-        notes_dir: notes_dir, workflow_engine: engine, journal: journal)
+        notes_dir: notes_dir, run_store: engine, journal: journal)
 
       expect { crashed.call(workspace: workspace, new: "other") }.to raise_error(Workspace::Error) { |e| expect(e.details).to include("new_branch" => "feat/b", "rerun" => true) }
     end

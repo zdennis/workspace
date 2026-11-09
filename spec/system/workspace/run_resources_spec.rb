@@ -156,7 +156,7 @@ RSpec.describe Workspace::RunResources do
     let(:worktree) { File.join(tmpdir, "app-login") }
     let(:config) { instance_double(Workspace::Config, lock_dir: File.join(tmpdir, "state", "locks")) }
     let(:real) do
-      described_class.new(lock_namespace: Workspace::LockNamespace.new(config: config), lock_holder: liveness)
+      described_class.new(lock_namespace: Workspace::LockNamespace.new(lineage: LineageSupport.lineage, config: config), lock_holder: liveness)
     end
 
     def git(*args)
@@ -182,7 +182,7 @@ RSpec.describe Workspace::RunResources do
     it "keeps a run's locks through the SessionEnd and /clear release of the agent in its pane" do
       real.acquire(run_id: "wr_1", step: "implement", uses: %w[devenv test-db], worktree: worktree, pane: "%1")
       agent = FakeLockIdentity.new(pid: 100, pane: "%1", worktree: worktree)
-      namespace = Workspace::LockNamespace.new(config: config)
+      namespace = Workspace::LockNamespace.new(lineage: LineageSupport.lineage, config: config)
       dir = namespace.resolve(cwd: worktree)[:dir]
       id = agent.current
       Workspace::LockStore.new(dir: dir, liveness: agent).acquire("edit", identity: id, waiter_pid: 100, waiter_started: id[:started])

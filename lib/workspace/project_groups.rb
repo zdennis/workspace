@@ -1,6 +1,5 @@
 require "yaml"
-require "fileutils"
-require "tempfile"
+require "securerandom"
 
 module Workspace
   # Groups of repositories ("multi-repository projects"), one hand-editable
@@ -117,7 +116,7 @@ module Workspace
         raise Error.new("Invalid group name '#{name}': use letters or digits, at most #{MAX_SLUG_LENGTH} characters once made into a slug.",
           code: "invalid_group_name", details: {"name" => name})
       end
-      locked do
+      lock.hold do
         path = @config.group_path(slug)
         if File.exist?(path)
           raise Error.new("A group named '#{slug}' already exists (#{path}).", code: "group_exists", details: {"group" => "#{ID_PREFIX}#{slug}", "path" => path})
@@ -141,7 +140,7 @@ module Workspace
         raise Error.new("Not a directory: #{path}", code: "not_a_directory", details: {"path" => expanded})
       end
       id = repository_id(expanded)
-      locked do
+      lock.hold do
         group = find(token)
         broken = Dir.glob(File.join(@config.groups_dir, "*.yml")).find { |file| read(file).nil? }
         if broken
@@ -190,26 +189,18 @@ module Workspace
     # Group files are read by anyone, written under one lock for the whole
     # directory (the one-group-per-repository check spans files) and renamed
     # into place, so a reader never sees a half-written file.
-    def locked
-      FileUtils.mkdir_p(@config.groups_dir)
-      File.open(File.join(@config.groups_dir, ".lock"), File::RDWR | File::CREAT, 0o600) do |lock|
-        lock.flock(File::LOCK_EX)
-        yield
-      end
+    def lock
+      FileLock.new(File.join(@config.groups_dir, ".lock"), dir_mode: nil)
     end
 
     def write(path, name, repositories)
       data = {"name" => name, "repositories" => repositories.map { |r| {"id" => r.id, "path" => r.path} }}
-      temp = Tempfile.create([".#{File.basename(path)}", ".tmp"], File.dirname(path))
-      begin
-        temp.write(YAML.dump(data))
-        temp.close
-        File.chmod(0o644, temp.path)
-        File.rename(temp.path, path)
-      ensure
-        temp.close unless temp.closed?
-        File.delete(temp.path) if File.exist?(temp.path)
-      end
+      AtomicFile.write(path, YAML.dump(data), fsync: false,
+        temp_name: ->(target) { File.join(File.dirname(target), ".#{File.basename(target)}.#{SecureRandom.hex(8)}.tmp") },
+        writer: ->(temp, content) {
+          File.open(temp, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(content) }
+          File.chmod(0o644, temp)
+        })
     end
 
     def read(path)

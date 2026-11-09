@@ -172,7 +172,8 @@ module Workspace
     }.freeze
     private_constant :GIVE_UP_BODIES
 
-    # @param tmux [Workspace::Tmux] pane lookups, screen reads, server pids
+    # @param panes [Workspace::PaneFactory] builds the pane to read, press a key in and type into; the pane list
+    #   is read only to look a pane up ({#pane_detail})
     # @param workspace [String] the workspace the daemon serves; events and items go under it
     # @param session_name [String] the workspace's tmux session
     # @param session_monitor [Workspace::SessionMonitor] pane facts
@@ -200,13 +201,16 @@ module Workspace
     # @param clock [#now] time source
     # @param sleeper [#call] sleeps the given seconds
     # @param spawn [#call] runs the given block on its own thread
+    # @param steps [Workspace::AgentRecoverySteps] picks the runner of steps 2 to 5 for each kind of attempt
+    # @param max_attempts [Integer] attempts after which the desk gives up
     # @param logger [Workspace::Logger] debug logger
-    def initialize(tmux:, workspace:, session_name:, session_monitor:, store:, transcript:, stopper:, detector:,
+    def initialize(panes:, workspace:, session_name:, session_monitor:, store:, transcript:, stopper:, detector:,
       process_tree:, ledger:, resume_command:, prompt_typer:, readiness:, marker:, inbox:, delivery_lock:, event_log: nil,
       restarting: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
       release_restart: ->(_pane_id, _token) {}, rebind_queue: ->(_pane_id, _agent_pid) {}, clock: Time,
-      sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) }, logger: Workspace::Logger.new)
-      @tmux = tmux
+      sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) }, steps: AgentRecoverySteps.new, max_attempts: AgentRecoveryStore::MAX_ATTEMPTS,
+      logger: Workspace::Logger.new)
+      @panes = panes
       @workspace = workspace
       @session_name = session_name
       @session_monitor = session_monitor
@@ -230,6 +234,8 @@ module Workspace
       @clock = clock
       @sleeper = sleeper
       @spawn = spawn
+      @steps = steps
+      @max_attempts = max_attempts
       @logger = logger
       @queue = []
       @queue_guard = Mutex.new
@@ -721,12 +727,12 @@ module Workspace
 
     # The attempt for `attempts` 0: the message typed at the live prompt.
     def typed_attempt(pane_id)
-      @spawn.call { run_claimed(pane_id, method(:begin_typed), method(:typed_steps)) }
+      @spawn.call { run_claimed(pane_id, method(:begin_typed), @steps.typed_runner(method(:typed_steps))) }
     end
 
     # The attempt for `attempts` above 0: stop, resume, wait, type.
     def restart_attempt(pane_id)
-      @spawn.call { run_claimed(pane_id, method(:begin_restart), method(:restart_steps)) }
+      @spawn.call { run_claimed(pane_id, method(:begin_restart), @steps.restart_runner(method(:restart_steps))) }
     end
 
     # Runs one attempt inside a claim on the pane. An attempt that raises or is
@@ -997,9 +1003,10 @@ module Workspace
       look, agent = pane_look(attempt)
       return [:other, agent] if look == :other
       return ["pane_not_clear"] unless look == :clear && !held && @store.get(pane_id)&.fetch("stopped", false) == true
-      return ["not_delivered"] unless @tmux.send_key(@session_name, pane_id, "C-u")
+      pane = @panes.for(pane_id)
+      return ["not_delivered"] if pane.is_a?(Symbol) || !pane.send_key("C-u")
 
-      @tmux.deliver(@session_name, pane_id, attempt.command).landed? ? nil : ["not_delivered"]
+      pane.deliver(attempt.command).landed? ? nil : ["not_delivered"]
     end
 
     # A tree that can't be read counts as held.
@@ -1088,7 +1095,12 @@ module Workspace
     def press_enter(attempt)
       pane_id = attempt.pane_id
       typing_refusal(attempt).nil? && @prompt_typer.check(pane_id, pasted: attempt.message).nil? &&
-        @tmux.deliver(@session_name, pane_id, "", enter: true).ok?
+        enter_pressed?(pane_id)
+    end
+
+    def enter_pressed?(pane_id)
+      pane = @panes.for(pane_id)
+      !pane.is_a?(Symbol) && pane.deliver("", enter: true).ok?
     end
 
     # Step 6: one update, so it can't overwrite a hook's write, then the line.
@@ -1367,7 +1379,7 @@ module Workspace
 
     # @return [Boolean] whether this gave up, the attempts being used up
     def schedule_next(entry)
-      if entry["attempts"].to_i >= AgentRecoveryStore::MAX_ATTEMPTS
+      if entry["attempts"].to_i >= @max_attempts
         give_up_in(entry, "attempts_exhausted")
         return true
       end
@@ -1456,9 +1468,10 @@ module Workspace
     end
 
     def restart_verdict(pane_id, entry, detail, tree, agent)
-      row = @tmux.pane_start_commands(@session_name).find { |pane| pane[:id] == pane_id }
-      return verdict(:defer) unless row
-      return verdict(:never) if row[:start_command]
+      pane = @panes.for(pane_id)
+      start_command = pane.is_a?(Symbol) ? :gone : pane.start_command
+      return verdict(:defer) if start_command == :gone
+      return verdict(:never) if start_command
       return verdict(:never) unless @stopper.restartable?(pid: agent[:pid], pane_pid: detail[:pid], tree: tree)
 
       command = resume_line(entry)
@@ -1507,10 +1520,15 @@ module Workspace
     #   with one capture in place of the wait
     # @return [String, nil] the screen, when it stayed unchanged for {QUIET_FOR}
     def still_screen(pane_id, quiet = nil)
-      before = quiet || @tmux.capture_screen(pane_id)
+      before = quiet || screen_of(pane_id)
       return nil unless before
       @sleeper.call(QUIET_FOR) unless quiet
-      (@tmux.capture_screen(pane_id) == before) ? before : nil
+      (screen_of(pane_id) == before) ? before : nil
+    end
+
+    def screen_of(pane_id)
+      pane = @panes.for(pane_id)
+      pane.is_a?(Symbol) ? nil : pane.capture
     end
 
     # The flags are the pane's own agent's, stored with its pid. The config's
@@ -1545,7 +1563,8 @@ module Workspace
     # @return [Hash, nil, Symbol] the open session's entry, nil when none is
     #   open, or :unreadable when the ledger or the tmux server can't be read
     def open_record(pane_id)
-      server = @tmux.server_pid_for_pane(pane_id)
+      pane = @panes.for(pane_id)
+      server = pane.is_a?(Symbol) ? nil : pane.server_pid
       return :unreadable if server.to_s.empty?
       @ledger.read_open_record(pane_id: pane_id, tmux_server: server)
     rescue SystemCallError => e
@@ -1557,9 +1576,13 @@ module Workspace
     # when tmux listed no pane at all and doesn't say the session is gone: a
     # failed tmux call must not read as the pane being gone.
     def pane_detail(pane_id)
-      details = @tmux.pane_details(@session_name, window: nil)
-      return @tmux.session_gone?(@session_name) ? nil : :unknown if details.empty?
-      details.find { |d| d[:id] == pane_id }
+      pane = @panes.call(pane_id)
+      return nil if pane == :gone
+      if pane == :unlisted
+        gone = @panes.for(pane_id)
+        return (gone.is_a?(Symbol) || gone.session_gone?) ? nil : :unknown
+      end
+      pane.details
     end
 
     def verdict(answer, mode: nil, command: nil)

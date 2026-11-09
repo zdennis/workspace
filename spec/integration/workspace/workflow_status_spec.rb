@@ -18,17 +18,23 @@ RSpec.describe Workspace::WorkflowStatus do
   let(:snapshot) { {"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "working"}]} }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:asks) { [] }
-  let(:ask_store) { instance_double(Workspace::AskStore) }
+  let(:ask_store) do
+    instance_double(Workspace::AskStore).tap do |store|
+      allow(store).to receive(:list).with(open_only: true) { asks }
+    end
+  end
   let(:notes_dir) { File.join(@dir, "notes") }
   let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir}) }
+  let(:snapshot_timeout) { described_class::SNAPSHOT_TIMEOUT }
+  let(:list_grace) { described_class::LIST_GRACE }
   subject(:status) do
     described_class.new(store: store, panes: panes, snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store },
-      gate_note: Workspace::WorkflowGateNote.new(notes: notes), clock: -> { now.first })
+      gate_note: Workspace::WorkflowGateNote.new(notes: notes), clock: -> { now.first },
+      snapshot_timeout: snapshot_timeout, list_grace: list_grace)
   end
 
   before do
     allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { snapshot }
-    allow(ask_store).to receive(:list).with(open_only: true) { asks }
   end
 
   def create(state: "running", step_state: "running", reason: nil, workspace: "app", pane: "%5", bound: true, timeout: nil, **rest)
@@ -135,8 +141,6 @@ RSpec.describe Workspace::WorkflowStatus do
   describe "with the workspace's real question store, read by a process with no UTF-8 locale" do
     let(:ask_path) { File.join(@dir, "asks.json") }
     let(:ask_store) { Workspace::AskStore.new(path: ask_path, error_output: StringIO.new) }
-
-    before { allow(ask_store).to receive(:list).and_call_original }
 
     it "shows the run, and a question from its pane, though the store holds non-ASCII text" do
       create
@@ -809,17 +813,20 @@ RSpec.describe Workspace::WorkflowStatus do
         expect(actions.find { |each| each["action"] == "workflow approve" }["needs"]).to eq([])
       end
 
-      # The row replaces a stored reason for a step that reads running, so these read the actions of the stored run.
-      def actions_of(reason, step_state)
+      # A stored reason on a step that reads running shows through status while the agent's pane is bound and not hidden.
+      def actions_of(reason, step_state, bound: true)
         run = spent_run(3, reason)
+        panes.bind(workspace: "app", pane: "%5", run_id: run["id"]) if bound
         store.update(run["id"]) { |stored| stored["steps"]["plan"]["state"] = step_state }
-        status.send(:actions, store.find(run["id"]), reason, "%5").select { |each| each["action"] == "workflow resume" }
+        status.run(run["id"])["runs"].first.dig("current", "reason", "actions").select { |each| each["action"] == "workflow resume" }
       end
 
       it "leaves a plain resume unmarked for a running step, which it would only look at, but marks --from" do
         delivery = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "delivery", "step" => "plan"}}
 
         expect(actions_of(delivery, "running")).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan", needs: extra)])
+        # An incomplete turn shows only once the pane has stopped working.
+        allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0).and_return({"panes" => [{"pane_id" => "%5", "kind" => "claude", "state" => "idle"}]})
         expect(actions_of({"code" => "turn_ended_incomplete", "since" => "t", "details" => {}}, "running")).to eq([action("workflow resume", "wr_2")])
       end
 
@@ -831,7 +838,7 @@ RSpec.describe Workspace::WorkflowStatus do
       end
 
       it "keeps a gone pane's resume marked over a running step, since it needs --pane" do
-        expect(actions_of({"code" => "pane_gone", "since" => "t", "details" => {}}, "running")).to eq([action("workflow resume", "wr_1", needs: extra)])
+        expect(actions_of({"code" => "pane_gone", "since" => "t", "details" => {}}, "running", bound: false)).to eq([action("workflow resume", "wr_1", needs: extra)])
       end
 
       it "takes the minimum from the overrun and from a stored extra_attempts" do
@@ -1182,16 +1189,23 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(result["runs"].size).to eq(3)
   end
 
-  it "reads a daemon that does not answer by the shared deadline as no answer, with a warning" do
-    stub_const("Workspace::WorkflowStatus::SNAPSHOT_TIMEOUT", 0.05)
-    stub_const("Workspace::WorkflowStatus::LIST_GRACE", 0.05)
-    allow(snapshot_client).to receive(:fetch) { |*, **| sleep 30 }
-    create
+  context "with a short snapshot timeout and grace" do
+    let(:snapshot_timeout) { 0.05 }
+    let(:list_grace) { 0.05 }
 
-    result = status.runs
+    it "reads a daemon that does not answer by the shared deadline as no answer, with a warning" do
+      allow(snapshot_client).to receive(:fetch) { |*, **| sleep 30 }
+      create
 
-    expect(result["warnings"].join).to include("did not answer")
-    expect(result["runs"].size).to eq(1)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result = status.runs
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      expect(result["warnings"].join).to include("did not answer")
+      expect(result["runs"].size).to eq(1)
+      expect(snapshot_client).to have_received(:fetch).with("app", timeout: 0.05)
+      expect(elapsed).to be < 0.5
+    end
   end
 
   it "asks a workspace's daemon once for a whole list" do

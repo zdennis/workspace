@@ -275,7 +275,7 @@ module Workspace
       end
 
       statusline_capable.each do |provider|
-        @hook_installer.install_statusline(provider, @working_dir, command: Commands::Init::STATUSLINE_COMMAND,
+        @hook_installer.install_statusline(provider, @working_dir, command: HookInstaller::STATUSLINE_COMMAND,
           project_settings: @project_settings)
       end
       @output.puts "Restart any running Claude Code sessions for the statusLine change to take effect."
@@ -288,7 +288,7 @@ module Workspace
     # @return [Boolean] whether any file was changed
     def install_user_hooks(providers)
       providers.map do |provider|
-        @hook_installer.install(provider, @working_dir, Commands::Init::HOOK_COMMAND)
+        @hook_installer.install(provider, @working_dir, HookInstaller::HOOK_COMMAND)
       rescue Workspace::Error => e
         add_row("fix", "fail", "--fix: #{provider.label} hooks not installed: #{e.message}")
         false
@@ -368,9 +368,9 @@ module Workspace
 
     def orphan_row(run)
       add_row("workflow-run-orphaned", "warn",
-        "workflow run #{TerminalText.escape(run["id"])} (#{TerminalText.escape(run["workflow"])}, #{TerminalText.escape(run["state"])}) is orphaned: #{TerminalText.escape(run["why"])}",
-        fix: "check that the path is really gone (an unmounted volume comes back), then #{cancel_advice(run["id"].to_s)}; cancelling cannot be undone",
-        project: TerminalText.escape(run["workspace"]))
+        "workflow run #{TerminalText.escape(run.id)} (#{TerminalText.escape(run.workflow)}, #{TerminalText.escape(run.state)}) is orphaned: #{TerminalText.escape(run.why)}",
+        fix: "check that the path is really gone (an unmounted volume comes back), then #{cancel_advice(run.id.to_s)}; cancelling cannot be undone",
+        project: TerminalText.escape(run.workspace))
     end
 
     def cancel_advice(id)
@@ -514,7 +514,7 @@ module Workspace
       user_capable, capable = all_capable.partition(&:user_scoped?)
       if all_capable.empty?
         add_row("hooks", "skipped", "session monitoring hooks (no hook-capable agent detected, skipped)", project: project)
-      elsif capable.any? { |p| @hook_installer.installed?(p, @working_dir, Commands::Init::HOOK_COMMAND) }
+      elsif capable.any? { |p| @hook_installer.installed?(p, @working_dir, HookInstaller::HOOK_COMMAND) }
         add_row("hooks", "ok", "session monitoring hooks installed for #{project}", project: project)
       elsif capable.any?
         add_row("hooks", "fail", "session monitoring hooks not installed for #{project}",
@@ -550,7 +550,7 @@ module Workspace
         path = @hook_installer.settings_path_for(provider, @working_dir)
         message = "#{provider.label} hooks turned off by config (codex.hooks.install is false; start leaves #{path} alone)"
         hints = ["workspace config set codex.hooks.install true"]
-        if @hook_installer.installed?(provider, @working_dir, Commands::Init::HOOK_COMMAND)
+        if @hook_installer.installed?(provider, @working_dir, HookInstaller::HOOK_COMMAND)
           message += ", but hooks from an earlier install are still there"
           hints << "workspace hooks uninstall --agent #{provider.key}"
         end
@@ -559,7 +559,7 @@ module Workspace
       end
 
       path = @hook_installer.settings_path_for(provider, @working_dir)
-      if @hook_installer.installed?(provider, @working_dir, Commands::Init::HOOK_COMMAND)
+      if @hook_installer.installed?(provider, @working_dir, HookInstaller::HOOK_COMMAND)
         add_row(id, "ok", "#{provider.label} hooks installed in #{path}", hints: [provider.hook_trust_hint].compact, project: project)
       else
         add_row(id, "warn", "#{provider.label} hooks not installed in #{path} (its panes are watched by activity only)",
@@ -587,7 +587,7 @@ module Workspace
 
       shadow = statusline_capable.each_with_object([]) do |provider, shadows|
         command = @hook_installer.local_statusline_command(provider, @working_dir)
-        shadows << [provider, command] if command && !command.to_s.empty? && command != Commands::Init::STATUSLINE_COMMAND
+        shadows << [provider, command] if command && !command.to_s.empty? && command != HookInstaller::STATUSLINE_COMMAND
       end.first
       if shadow
         provider, command = shadow
@@ -597,7 +597,7 @@ module Workspace
         return
       end
 
-      if statusline_capable.any? { |p| @hook_installer.statusline_installed?(p, @working_dir, Commands::Init::STATUSLINE_COMMAND) }
+      if statusline_capable.any? { |p| @hook_installer.statusline_installed?(p, @working_dir, HookInstaller::STATUSLINE_COMMAND) }
         add_row("statusline", "ok", "statusLine routed through workspace", project: project)
       else
         add_row("statusline", "warn", "statusLine not routed through workspace (context usage can't be read)",
@@ -693,7 +693,7 @@ module Workspace
       worktrees = @git.list_worktrees(repo: @working_dir).select { |path| File.directory?(path) }
       return if worktrees.empty?
 
-      missing = worktrees.reject { |path| capable.any? { |p| @hook_installer.installed?(p, path, Commands::Init::HOOK_COMMAND) } }
+      missing = worktrees.reject { |path| capable.any? { |p| @hook_installer.installed?(p, path, HookInstaller::HOOK_COMMAND) } }
       if missing.empty?
         add_row("edit-lock-hooks", "ok", "edit lock hooks installed in every worktree", project: project)
       else

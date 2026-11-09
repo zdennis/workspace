@@ -8,23 +8,11 @@ RSpec.describe Workspace::Commands::Config do
     dir = Dir.mktmpdir("ws-config")
     fake_path_config = Struct.new(:workspace_config_dir).new(dir)
     project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
-    lineage = Workspace::WorkspaceLineage.new
+    lineage = LineageSupport.lineage
     file_backup = Workspace::FileBackup.new(output: output)
     config_resolver = with_resolver ? Workspace::ConfigResolver.new(project_settings: project_settings) : nil
     command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, config_resolver: config_resolver, output: output, error_output: error_output)
-    remember_last_write(command)
     [command, project_settings]
-  end
-
-  # Keeps the result of the latest set or unset on the command, for the specs that look at the write alone.
-  def remember_last_write(command)
-    command.singleton_class.class_eval do
-      attr_reader :last_write
-
-      %i[set unset].each do |name|
-        define_method(name) { |*args, **opts| super(*args, **opts).tap { |result| @last_write = result } }
-      end
-    end
   end
 
   describe "alerts.workflow without alerts.notify" do
@@ -300,7 +288,7 @@ RSpec.describe Workspace::Commands::Config do
       error_output = StringIO.new
       dir = Dir.mktmpdir("ws-config")
       project_settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
-      command = described_class.new(project_settings: project_settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output), output: output, error_output: error_output)
+      command = described_class.new(project_settings: project_settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: output), output: output, error_output: error_output)
 
       expect(command.get("notes.dir", cwd: Dir.mktmpdir("ws-config-project"))).to eq(false)
       expect(output.string).to eq("")
@@ -313,7 +301,7 @@ RSpec.describe Workspace::Commands::Config do
       let(:dir) { Dir.mktmpdir("ws-config") }
       let(:project_settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
       let(:command) do
-        described_class.new(project_settings: project_settings, lineage: Workspace::WorkspaceLineage.new,
+        described_class.new(project_settings: project_settings, lineage: LineageSupport.lineage,
           file_backup: Workspace::FileBackup.new(output: output), output: output, error_output: error_output)
       end
       let(:root) { Dir.mktmpdir("ws-config-repo") }
@@ -631,13 +619,13 @@ RSpec.describe Workspace::Commands::Config do
     end
 
     it "names the daemon to restart after a restart-required key, for a plain project" do
-      command, = build_command
+      output = StringIO.new
+      command, = build_command(output: output)
       project_dir = Dir.mktmpdir("ws-config-project")
       name = File.basename(project_dir)
 
       command.set("locks.reap_interval", "1m", cwd: project_dir)
 
-      output = command.instance_variable_get(:@output)
       expect(output.string).to include("workspace agentd #{name} --force, or relaunch")
     end
 
@@ -646,7 +634,7 @@ RSpec.describe Workspace::Commands::Config do
       dir = Dir.mktmpdir("ws-config")
       fake_path_config = Struct.new(:workspace_config_dir).new(dir)
       project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
-      lineage = Workspace::WorkspaceLineage.new
+      lineage = LineageSupport.lineage
       file_backup = Workspace::FileBackup.new(output: output)
       command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
@@ -667,12 +655,12 @@ RSpec.describe Workspace::Commands::Config do
     end
 
     it "doesn't add a restart hint for a key that takes effect immediately" do
-      command, = build_command
+      output = StringIO.new
+      command, = build_command(output: output)
       project_dir = Dir.mktmpdir("ws-config-project")
 
       command.set("dev.up", "./start-dev", cwd: project_dir)
 
-      output = command.instance_variable_get(:@output)
       expect(output.string).not_to include("Takes effect")
     end
   end
@@ -710,7 +698,7 @@ RSpec.describe Workspace::Commands::Config do
       dir = Dir.mktmpdir("ws-config")
       fake_path_config = Struct.new(:workspace_config_dir).new(dir)
       project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
-      lineage = Workspace::WorkspaceLineage.new
+      lineage = LineageSupport.lineage
       file_backup = Workspace::FileBackup.new(output: output)
       command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output, error_output: error_output)
       project_dir = Dir.mktmpdir("ws-config-project")
@@ -996,10 +984,10 @@ RSpec.describe Workspace::Commands::Config do
 
       command.set("context.source", "scrape")
       expect(Dir.glob("#{path}.workspace-backup-*").size).to eq(1)
-      command.unset("context.source")
+      last_write = command.unset("context.source")
       expect(Dir.glob("#{path}.workspace-backup-*").size).to eq(2)
       expect(error_output.string).to be_empty
-      expect(command.last_write.comments_preserved).to be(true)
+      expect(last_write.comments_preserved).to be(true)
     end
 
     it "notes the lost comment, naming the backup, on a project set" do
@@ -1008,13 +996,13 @@ RSpec.describe Workspace::Commands::Config do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "# my notes\ndev:\n  up: bin/dev\n")
 
-      command.set("dev.up", "bin/dev2", cwd: project_dir)
+      last_write = command.set("dev.up", "bin/dev2", cwd: project_dir)
 
       backup = Dir.glob("#{path}.workspace-backup-*").first
       expect(File.read(backup)).to include("# my notes")
       expect(error_output.string).to eq("Note: comments in #{path} were not kept; backup at #{backup}\n")
-      expect(command.last_write.comments_preserved).to be(false)
-      expect(command.last_write.backup).to eq(backup)
+      expect(last_write.comments_preserved).to be(false)
+      expect(last_write.backup).to eq(backup)
     end
 
     it "notes the lost comment on a global set" do
@@ -1023,10 +1011,10 @@ RSpec.describe Workspace::Commands::Config do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "context:\n  source: statusline # why\n")
 
-      command.set("context.source", "scrape")
+      last_write = command.set("context.source", "scrape")
 
       expect(error_output.string).to match(/\ANote: comments in #{Regexp.escape(path)} were not kept; backup at #{Regexp.escape(path)}\.workspace-backup-/)
-      expect(command.last_write.comments_preserved).to be(false)
+      expect(last_write.comments_preserved).to be(false)
     end
 
     it "notes the lost comment on unset" do
@@ -1035,10 +1023,10 @@ RSpec.describe Workspace::Commands::Config do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "dev:\n  up: bin/dev  # start\n")
 
-      command.unset("dev.up", cwd: project_dir)
+      last_write = command.unset("dev.up", cwd: project_dir)
 
       expect(error_output.string).to include("comments in #{path} were not kept")
-      expect(command.last_write.comments_preserved).to be(false)
+      expect(last_write.comments_preserved).to be(false)
     end
 
     it "prints no note for a file without comments" do
@@ -1046,10 +1034,10 @@ RSpec.describe Workspace::Commands::Config do
       project_settings.save(File.basename(project_dir), {"dev" => {"up" => "bin/dev"}})
 
       command.set("dev.up", "bin/dev2", cwd: project_dir)
-      command.unset("dev.up", cwd: project_dir)
+      last_write = command.unset("dev.up", cwd: project_dir)
 
       expect(error_output.string).to be_empty
-      expect(command.last_write.comments_preserved).to be(true)
+      expect(last_write.comments_preserved).to be(true)
     end
 
     it "ignores a # inside a quoted scalar or glued to a word" do
@@ -1058,10 +1046,10 @@ RSpec.describe Workspace::Commands::Config do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "dev:\n  up: \"echo # hi\"\nalerts:\n  notify: 'say #1'\n  idle_after: a#b\n")
 
-      command.set("dev.up", "bin/dev2", cwd: project_dir)
+      last_write = command.set("dev.up", "bin/dev2", cwd: project_dir)
 
       expect(error_output.string).to be_empty
-      expect(command.last_write.comments_preserved).to be(true)
+      expect(last_write.comments_preserved).to be(true)
     end
 
     it "counts a comment after a quoted value ending in an escaped backslash" do
@@ -1070,9 +1058,9 @@ RSpec.describe Workspace::Commands::Config do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "a: \"b\\\\\" # c\n")
 
-      command.set("dev.up", "bin/dev", cwd: project_dir)
+      last_write = command.set("dev.up", "bin/dev", cwd: project_dir)
 
-      expect(command.last_write.comments_preserved).to be(false)
+      expect(last_write.comments_preserved).to be(false)
     end
 
     it "counts a comment-only file" do
@@ -1081,9 +1069,9 @@ RSpec.describe Workspace::Commands::Config do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "# just a note\n")
 
-      command.set("dev.up", "bin/dev", cwd: project_dir)
+      last_write = command.set("dev.up", "bin/dev", cwd: project_dir)
 
-      expect(command.last_write.comments_preserved).to be(false)
+      expect(last_write.comments_preserved).to be(false)
       expect(error_output.string).to include("comments in #{path} were not kept")
     end
 
@@ -1093,9 +1081,9 @@ RSpec.describe Workspace::Commands::Config do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "alerts:\n  notify: open http://x/#y\n")
 
-      command.set("dev.up", "bin/dev", cwd: project_dir)
+      last_write = command.set("dev.up", "bin/dev", cwd: project_dir)
 
-      expect(command.last_write.comments_preserved).to be(true)
+      expect(last_write.comments_preserved).to be(true)
       expect(error_output.string).to be_empty
     end
 
@@ -1103,12 +1091,12 @@ RSpec.describe Workspace::Commands::Config do
       command, project_settings = build_command(error_output: error_output)
       path = project_path(project_settings)
 
-      command.set("dev.up", "bin/dev", cwd: project_dir)
+      last_write = command.set("dev.up", "bin/dev", cwd: project_dir)
 
       expect(Dir.glob("#{path}.workspace-backup-*")).to be_empty
       expect(error_output.string).to be_empty
-      expect(command.last_write.backup).to be_nil
-      expect(command.last_write.comments_preserved).to be(true)
+      expect(last_write.backup).to be_nil
+      expect(last_write.comments_preserved).to be(true)
     end
 
     it "returns the write on every successful project and global set and unset" do
@@ -1122,8 +1110,7 @@ RSpec.describe Workspace::Commands::Config do
         -> { command.unset("context.source") },
         -> { command.unset("context.source") }
       ].each do |step|
-        step.call
-        expect(command.last_write).to be_a(Workspace::Commands::Config::Result)
+        expect(step.call).to be_a(Workspace::Commands::Config::Result)
       end
     end
 
@@ -1131,9 +1118,13 @@ RSpec.describe Workspace::Commands::Config do
       command, project_settings = build_command(error_output: error_output)
       path = project_path(project_settings)
 
-      expect(File).to receive(:rename).with(/\A#{Regexp.escape(path)}\.tmp\d+\z/, path).and_call_original
       command.set("dev.up", "bin/dev", cwd: project_dir)
+      inode = File.stat(path).ino
 
+      command.set("dev.up", "bin/other", cwd: project_dir)
+
+      expect(File.stat(path).ino).not_to eq(inode)
+      expect(File.read(path)).to include("bin/other")
       expect(Dir.glob("#{path}.tmp*")).to be_empty
     end
 
@@ -1157,7 +1148,7 @@ RSpec.describe Workspace::Commands::Config do
       dir = Dir.mktmpdir("ws-config-events")
       settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
       output = StringIO.new
-      described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new,
+      described_class.new(project_settings: settings, lineage: LineageSupport.lineage,
         file_backup: Workspace::FileBackup.new(output: output), event_log: log, output: output)
     end
 
@@ -1213,7 +1204,7 @@ RSpec.describe Workspace::Commands::Config do
     let(:dir) { Dir.mktmpdir("ws-config-scope") }
     let(:settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
     let(:command) do
-      described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+      described_class.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: output),
         project_config: project_config, output: output, error_output: error_output)
     end
 
@@ -1226,7 +1217,7 @@ RSpec.describe Workspace::Commands::Config do
     describe "with no name, outside any workspace" do
       let(:detector) { Struct.new(:found) { def detect(_cwd) = found }.new(nil) }
       let(:command) do
-        described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+        described_class.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: output),
           project_config: project_config, project_detector: detector, output: output, error_output: error_output)
       end
       let(:cwd) { Dir.mktmpdir("loose-dir") }
@@ -1483,9 +1474,8 @@ RSpec.describe Workspace::Commands::Config do
 
       it "returns the write's outcome and logs the real layer" do
         events = []
-        event_log = Object.new
-        event_log.define_singleton_method(:record) { |**args| events << args }
-        logged = described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+        event_log = Struct.new(:events) { def record(**args) = events << args }.new(events)
+        logged = described_class.new(project_settings: settings, lineage: LineageSupport.lineage, file_backup: Workspace::FileBackup.new(output: output),
           event_log: event_log, project_config: project_config, output: output, error_output: error_output)
 
         result = logged.set("dev.ready_timeout", "90s", project: "myapp.worktree-a", scope: "workspace")
@@ -1719,13 +1709,11 @@ RSpec.describe Workspace::Commands::Config do
       expect(keys_output(json: true)).not_to include("Run `workspace config keys")
     end
 
-    it "cuts a long doc at the end of its first sentence when that fits, never inside an e.g. fragment" do
-      command, = build_command
-      summary = ->(doc) { command.send(:key_summary, doc) }
+    it "cuts a long doc to the list width with an ellipsis, never inside an e.g. fragment" do
+      docs = key_rows.map { |line| line.split(/\s{2,}/).last }
 
-      expect(summary.call("Short first sentence. " + "More words follow here. " * 5)).to eq("Short first sentence.")
-      expect(summary.call("Grace period before force-stopping the dev environment, e.g. `20s` or `20`, and then some more words")).to eq("Grace period before force-stopping the dev environment...")
-      expect(summary.call("Size warning threshold (e.g. 10kb). " + "x " * 60)).to start_with("Size warning threshold (e.g. 10kb).").and(end_with("...").or(end_with("10kb).")))
+      expect(docs.map(&:length).max).to be <= Workspace::Commands::Config::KEY_LIST_DOC_WIDTH
+      expect(docs.grep(/\.\.\.\z/)).not_to be_empty
       expect(key_rows.grep(/e\.g\.\s*\.\.\.|\(\.\.\./)).to be_empty
     end
 

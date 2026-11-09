@@ -13,7 +13,9 @@ RSpec.describe Workspace::WorkflowEvidence do
   let(:evidence_dir) { File.join(@dir, "evidence") }
   let(:art) { File.join(@dir, "art") }
   let(:now) { [Time.now] }
-  subject(:evidence) { described_class.new(dir: evidence_dir, clock: -> { now.first }) }
+  let(:max_bytes) { described_class::MAX_BYTES }
+  let(:budget) { described_class::BUDGET }
+  subject(:evidence) { described_class.new(dir: evidence_dir, clock: -> { now.first }, max_bytes: max_bytes, budget: budget) }
   let(:run) { {"id" => "wr_1", "artifacts_dir" => art} }
   let(:step) { {"id" => "report", "produces" => ["report.md"]} }
   let(:attempt) { {"n" => 1, "check" => {"log" => "x"}} }
@@ -132,26 +134,32 @@ RSpec.describe Workspace::WorkflowEvidence do
     expect(File.read(File.join(copies, two.first["name"]))).to eq("second")
   end
 
-  it "records a file over the limit with its size and no copy" do
-    stub_const("#{described_class}::MAX_BYTES", 2)
-    put("report.md", "abcd")
-    entry = evidence.copy(run: run, step: step, attempt: {"n" => 1}).last
-    expect(entry).to include("sha256" => nil, "bytes" => 4, "too_large" => true)
-    expect(entry).not_to have_key("budget")
-    expect(Dir.children(copies)).to eq([])
+  context "with a 2 byte limit" do
+    let(:max_bytes) { 2 }
+
+    it "records a file over the limit with its size and no copy" do
+      put("report.md", "abcd")
+      entry = evidence.copy(run: run, step: step, attempt: {"n" => 1}).last
+      expect(entry).to include("sha256" => nil, "bytes" => 4, "too_large" => true)
+      expect(entry).not_to have_key("budget")
+      expect(Dir.children(copies)).to eq([])
+    end
   end
 
-  it "stops copying past the budget for one attempt, the prompt counted" do
-    stub_const("#{described_class}::BUDGET", 15)
-    path = put("steps/s.1.prompt.md", "12345")
-    prompt = evidence.prompt(run: run, step_id: "s", attempt: {"n" => 1, "prompt_file" => path})
-    put("a.md", "12345678")
-    put("b.md", "12345678")
-    entries = evidence.copy(run: run, step: {"id" => "s", "produces" => ["a.md", "b.md"]}, attempt: {"n" => 1, "evidence" => prompt})
+  context "with a 15 byte budget" do
+    let(:budget) { 15 }
 
-    expect(entries[0]).to include("sha256" => sha("12345678"))
-    expect(entries[1]).to include("sha256" => nil, "bytes" => 8, "too_large" => true, "budget" => true)
-    expect(Dir.children(copies)).not_to include(entries[1]["name"])
+    it "stops copying past the budget for one attempt, the prompt counted" do
+      path = put("steps/s.1.prompt.md", "12345")
+      prompt = evidence.prompt(run: run, step_id: "s", attempt: {"n" => 1, "prompt_file" => path})
+      put("a.md", "12345678")
+      put("b.md", "12345678")
+      entries = evidence.copy(run: run, step: {"id" => "s", "produces" => ["a.md", "b.md"]}, attempt: {"n" => 1, "evidence" => prompt})
+
+      expect(entries[0]).to include("sha256" => sha("12345678"))
+      expect(entries[1]).to include("sha256" => nil, "bytes" => 8, "too_large" => true, "budget" => true)
+      expect(Dir.children(copies)).not_to include(entries[1]["name"])
+    end
   end
 
   it "copies nothing for a run id that is not a plain id" do
@@ -170,20 +178,25 @@ RSpec.describe Workspace::WorkflowEvidence do
     put("a.md", "a")
     put("b.md", "b")
     calls = 0
-    allow(Workspace::WorkflowProduced).to receive(:digest).and_wrap_original do |original, *args, **kwargs|
+    flaky = described_class.new(dir: evidence_dir, opener: lambda { |path, flags, mode, &block|
       raise ArgumentError, "boom" if (calls += 1) == 1
-      original.call(*args, **kwargs)
-    end
-    entries = evidence.copy(run: run, step: {"id" => "s", "produces" => ["a.md", "b.md"]}, attempt: {"n" => 1})
+      File.open(path, flags, mode, &block)
+    })
+    entries = flaky.copy(run: run, step: {"id" => "s", "produces" => ["a.md", "b.md"]}, attempt: {"n" => 1})
 
     expect(entries.map { |e| e["problem"] }).to eq(["copy_failed", nil])
     expect(entries.last["sha256"]).to eq(sha("b"))
   end
 
+  # An opener whose file takes no bytes: the disk is full.
+  def full_disk_opener
+    ->(path, flags, mode, &block) { File.open(path, flags, mode) { |io| block.call(Struct.new(:io) { def write(*) = raise(Errno::ENOSPC) }.new(io)) } }
+  end
+
   it "reports a failed write as copy_failed, not missing" do
     put("report.md", "x")
-    allow_any_instance_of(File).to receive(:write).and_raise(Errno::ENOSPC)
-    entry = evidence.copy(run: run, step: step, attempt: {"n" => 1}).last
+    full = described_class.new(dir: evidence_dir, opener: full_disk_opener)
+    entry = full.copy(run: run, step: step, attempt: {"n" => 1}).last
     expect(entry).to include("problem" => "copy_failed", "sha256" => nil)
     expect(Dir.children(copies)).to eq([])
   end
@@ -196,12 +209,12 @@ RSpec.describe Workspace::WorkflowEvidence do
     put("sub/a.md", "mine")
     FileUtils.mkdir_p(File.join(@dir, "elsewhere"))
     File.write(File.join(@dir, "elsewhere", "a.md"), "key")
-    allow(Workspace::WorkflowProduced).to receive(:digest).and_wrap_original do |original, *args, **kwargs|
+    swapping = described_class.new(dir: evidence_dir, opener: lambda { |path, flags, mode, &block|
       File.rename(File.join(art, "sub"), File.join(art, "sub.old"))
       File.symlink(File.join(@dir, "elsewhere"), File.join(art, "sub"))
-      original.call(*args, **kwargs)
-    end
-    entry = evidence.copy(run: run, step: {"id" => "s", "produces" => ["sub/a.md"]}, attempt: {"n" => 1}).last
+      File.open(path, flags, mode, &block)
+    })
+    entry = swapping.copy(run: run, step: {"id" => "s", "produces" => ["sub/a.md"]}, attempt: {"n" => 1}).last
 
     expect(entry).to include("problem" => "outside_artifacts", "sha256" => nil)
     expect(Dir.glob(File.join(copies, "*"), File::FNM_DOTMATCH).map { |p| File.basename(p) } - %w[. ..]).to eq([])

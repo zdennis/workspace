@@ -4,6 +4,7 @@ require "tmpdir"
 # iTerm pane makes its session asynchronously, after +pane_start_delay+.
 class T9Tmux
   attr_reader :headless_starts
+  attr_accessor :before_start_headless, :after_start_headless
 
   def initialize(live: [], pane_start_delay: 0.3)
     @mutex = Mutex.new
@@ -32,8 +33,10 @@ class T9Tmux
   def remove(session) = @mutex.synchronize { @live.delete(session) }
 
   def start_headless(project)
+    before_start_headless&.call
     @mutex.synchronize { @headless_starts << project }
     add(session_name_for(project))
+    after_start_headless&.call
     nil
   end
 
@@ -209,13 +212,11 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
     windowed = new_launch(tmux: tmux, iterm: windowed_iterm)
     headless = new_launch(tmux: tmux, iterm: T9ITerm.new(tmux: tmux, uid: "unused"))
 
-    allow(tmux).to receive(:start_headless).and_wrap_original do |m, project|
-      result = m.call(project)
+    tmux.after_start_headless = lambda do
       # The windowed launch runs after the headless one loaded state but
       # before it records the project; it may wait on the start lock.
       threads << Thread.new { windowed.call(["proj"]) }
       join_unless_blocked_on_start_lock(threads.last, start_lock_path("proj"))
-      result
     end
 
     headless.call(["proj"], headless: true)
@@ -236,10 +237,9 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
     window_manager = double("window_manager", close_window: true)
     headless = new_launch(tmux: tmux, iterm: iterm, window_manager: window_manager)
 
-    allow(tmux).to receive(:start_headless).and_wrap_original do |m, project|
+    tmux.before_start_headless = lambda do
       # A windowed launch records its pane after the headless one loaded state.
       new_state.load["proj"] = {"unique_id" => "uid-w", "iterm_window_id" => 7}
-      m.call(project)
     end
 
     headless.call(["proj"], headless: true)

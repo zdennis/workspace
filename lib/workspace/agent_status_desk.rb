@@ -40,7 +40,7 @@ module Workspace
       [cleaned[0, limit], cleaned.length > limit]
     end
 
-    # @param tmux [Workspace::Tmux] pane lookups, screen reads and deliveries
+    # @param panes [Workspace::PaneFactory] looks the request's pane up
     # @param session_name [String] the workspace's tmux session
     # @param workspace [String] the workspace the daemon serves
     # @param session_monitor [Workspace::SessionMonitor, nil] pane facts
@@ -50,11 +50,11 @@ module Workspace
     #   delivery) holds the pane; such a pane is refused, not waited for
     # @param requests [Workspace::AgentStatusRequests] the open requests
     # @param typer [Workspace::PromptTyper, nil] checks the pane and types the line; nil builds
-    #   one from +tmux+ and +session_monitor+
+    #   one from +panes+ and +session_monitor+
     # @param logger [Workspace::Logger] debug logger
-    def initialize(tmux:, session_name:, workspace:, session_monitor:, hook_event_log:, delivery_lock:,
+    def initialize(panes:, session_name:, workspace:, session_monitor:, hook_event_log:, delivery_lock:,
       restarting: ->(_pane_id) { false }, requests: AgentStatusRequests.new, typer: nil, logger: Workspace::Logger.new)
-      @tmux = tmux
+      @panes = panes
       @session_name = session_name
       @workspace = workspace
       @session_monitor = session_monitor
@@ -62,7 +62,7 @@ module Workspace
       @delivery_lock = delivery_lock
       @restarting = restarting
       @requests = requests
-      @typer = typer || PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger)
+      @typer = typer || PromptTyper.new(panes: panes, session_monitor: session_monitor, logger: logger)
       @logger = logger
     end
 
@@ -130,7 +130,8 @@ module Workspace
 
     def pane_detail(pane_id)
       return nil unless pane_id.is_a?(String)
-      @tmux.pane_details(@session_name, window: nil).find { |d| d[:id] == pane_id }
+      pane = @panes.call(pane_id)
+      pane.details unless pane.is_a?(Symbol)
     end
 
     def refusal(pane_id)

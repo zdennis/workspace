@@ -81,6 +81,8 @@ A failed step whose `on_fail` retry waits out a `backoff` has the run file's `ba
 
 The agent daemon's pane list (`sessions --json`) carries a boolean `turn_failed` per pane, `true` while the agent's last turn stands as ended by an API error (see [`sessions`](README.sessions.md), and [`agentd`](README.agentd.md#recovering-from-an-api-error) for the recovery). The panes of `snapshot --json` don't list it.
 
+The same pane list carries `waits` per pane: every open wait as `agent_id`, `tool`, `input` and `since` (the main agent's `agent_id` is `null`). `input` is as sensitive as `waiting_input`, and the panes of `snapshot --json` leave `waits` out (see [`sessions`](README.sessions.md)).
+
 `snapshot --json` prints one read-only document of everything a UI polls (see [`snapshot`](README.snapshot.md)). `--json` is required; a source that can't answer is reported as unavailable (null fields, `daemons_unavailable` rows, `warnings`) rather than as clean, and the command still succeeds. Its `cursor` is `ev:<inode>:<byte offset>` of the event log.
 
 `ui status --json` prints one read-only document: `{"schema_version":1,"ok":true,"running","pids","handler","links","probe","warnings"}`. It opens nothing. A probe that cannot answer is `ok: true`, exit 0, with `running`, `pids` and `handler` null and `probe` naming the problem; a usage error is the error envelope (see [`ui`](README.ui.md#status)).

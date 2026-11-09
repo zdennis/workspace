@@ -55,13 +55,13 @@ module Workspace
     # @return [Array<String>] the runs that were woken
     def tick(workspace)
       now = @clock.call
-      @store.active.select { |run| run["workspace"] == workspace }.filter_map do |run|
-        next unless WorkflowEngine.wakeable?(run, now)
-        advance(workspace, run["id"])
-        run["id"]
+      @store.going.select { |run| run.workspace == workspace }.filter_map do |run|
+        next unless WorkflowEngine.wakeable?(run.to_h, now)
+        advance(workspace, run.id)
+        run.id
       rescue => e
         # One malformed run file must not stop the others from being woken.
-        @error_output.puts "workflow: could not look at run #{run["id"]} (#{e.class}: #{e.message}); its run file may be malformed"
+        @error_output.puts "workflow: could not look at run #{run.id} (#{e.class}: #{e.message}); its run file may be malformed"
         nil
       end
     rescue => e

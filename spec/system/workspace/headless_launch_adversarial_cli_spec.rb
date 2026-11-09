@@ -25,8 +25,11 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
 
       windowed_calls = []
       headless_calls = []
-      launch_command = Object.new
-      launch_command.define_singleton_method(:call) do |projects, **opts|
+      launch_command = Class.new do
+        def initialize(&on_call) = @on_call = on_call
+
+        def call(projects, **opts) = @on_call.call(projects, **opts)
+      end.new do |projects, **opts|
         if opts[:headless]
           headless_calls << projects
           {exit_code: 0, prompt_failures: {}}
@@ -69,9 +72,11 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       state = CLITestHelpers::FakeState.new
       state["proj"] = {"iterm_window_id" => 42}
 
-      tmux = CLITestHelpers::FakeTmux.new
-      tmux.define_singleton_method(:sessions) { ["proj"] }
-      tmux.define_singleton_method(:start_headless) { |_name| raise "should not start a session that is already running" }
+      tmux = Class.new(FakeTmux) do
+        def sessions(**) = ["proj"]
+
+        def start_headless(_name) = raise("should not start a session that is already running")
+      end.new
 
       launch = Workspace::Commands::Launch.new(
         state: state, iterm: CLITestHelpers::FakeITerm.new, window_manager: CLITestHelpers::FakeWindowManager.new,
@@ -108,15 +113,21 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       File.write(source, "name: proj\nroot: /tmp\ntmux_options: \"-CC\"\nwindows:\n  - main: echo hi\n")
 
       tmux = Workspace::Tmux.new(config: config)
-      seen_content = nil
+      seen_content = File.join(tmpdir, "seen.yml")
       # tmuxinator is spawned in its own process group (for its start
-      # timeout); run `true` in its place and keep the config it was given.
-      allow(Process).to receive(:spawn).and_wrap_original do |original, *args, **opts|
-        seen_content = File.read(args[3])
-        original.call("true", **opts)
+      # timeout); a stand-in on PATH keeps the config it was given.
+      bin = File.join(tmpdir, "bin")
+      FileUtils.mkdir_p(bin)
+      File.write(File.join(bin, "tmuxinator"), "#!/bin/sh\ncp \"$3\" #{seen_content}\n")
+      File.chmod(0o755, File.join(bin, "tmuxinator"))
+      saved_path = ENV["PATH"]
+      ENV["PATH"] = "#{bin}:#{saved_path}"
+      begin
+        tmux.start_headless("proj")
+      ensure
+        ENV["PATH"] = saved_path
       end
-
-      tmux.start_headless("proj")
+      seen_content = File.read(seen_content)
 
       # A quoted -CC value should be stripped just like an unquoted one;
       # currently it survives, which is the defect.
@@ -137,7 +148,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
     logger = Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
     window_manager = CLITestHelpers::FakeWindowManager.new
-    tmux = CLITestHelpers::FakeTmux.new
+    tmux = FakeTmux.new
     project_config = CLITestHelpers::FakeProjectConfig.new
     project_settings = CLITestHelpers::FakeProjectSettings.new
     hook_runner = CLITestHelpers::FakeHookRunner.new
@@ -152,7 +163,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       sleeper: ->(_) {}
     )
     stop_command = Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
-    start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
+    start_command = Workspace::Commands::Start.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
@@ -168,7 +179,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
     stop_command_for_prune = instance_double(Workspace::Commands::Stop)
     prune_command = Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command_for_prune, output: output, input: input)
 
-    cli = Workspace::CLI.new(
+    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,
@@ -216,8 +227,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       working_dir: Dir.tmpdir,
       clock: -> { Time.now },
       sleeper: ->(_) {},
-      launch_mode: CLITestHelpers.launch_mode(headless: false)
-    )
+      launch_mode: CLITestHelpers.launch_mode(headless: false))
     [cli, output, error_output, hook_runner]
   end
 end

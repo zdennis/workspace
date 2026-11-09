@@ -28,7 +28,7 @@ module Workspace
     MAX_ITEMS = 20
     MAX_PROMPT = 20_000
 
-    ITEM = %r{\A([a-z]+/)?#{LibraryStore::NAME.source[2..-3]}\z}
+    ITEM = %r{\A([a-z]+/)?#{IdPatterns::LIBRARY_NAME.source[2..-3]}\z}
 
     # @param text [String] the entry's body
     # @param ref [String] `recipe/name`, for the error
@@ -103,10 +103,10 @@ module Workspace
     def self.workflow(data, fields, problems)
       return unless data.key?("workflow")
       value = data["workflow"]
-      if value.is_a?(String) && WorkflowDefinition::ID_PATTERN.match?(value)
+      if value.is_a?(String) && IdPatterns::WORKFLOW_ID.match?(value)
         fields["workflow"] = value
       else
-        problems << "workflow must be a workflow id (#{WorkflowDefinition::ID_RULE}, at most 40 characters); not #{value.inspect[0, 40]}"
+        problems << "workflow must be a workflow id (#{IdPatterns::WORKFLOW_ID_RULE}, at most 40 characters); not #{value.inspect[0, 40]}"
       end
     end
     private_class_method :workflow

@@ -35,20 +35,16 @@ RSpec.describe Workspace::Commands::Tile do
       state["myproject.worktree-feat-2"] = {"iterm_window_id" => 300}
       state["other-project"] = {"iterm_window_id" => 400}
 
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200, 300, 400]) }
-
-      tiled_entries = nil
-      wl = CLITestHelpers::FakeWindowLayout.new
-      wl.define_singleton_method(:tile) { |entries| tiled_entries = entries }
+      wm = ConfiguredWindowManager.new(live_window_ids: Set.new([100, 200, 300, 400]))
+      wl = RecordingWindowLayout.new
 
       cmd = described_class.new(
         state: state, window_manager: wm, window_layout: wl, output: output
       )
       cmd.call("myproject")
 
-      expect(tiled_entries.size).to eq(3)
-      expect(tiled_entries.map { |e| e[:project] }).to eq(
+      expect(wl.tiled_entries.size).to eq(3)
+      expect(wl.tiled_entries.map { |e| e[:project] }).to eq(
         ["myproject", "myproject.worktree-feat-1", "myproject.worktree-feat-2"]
       )
       expect(output.string).to include("Tiling 3 window(s)")
@@ -58,52 +54,37 @@ RSpec.describe Workspace::Commands::Tile do
       state["my"] = {"iterm_window_id" => 100}
       state["myproject"] = {"iterm_window_id" => 200}
 
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200]) }
-
-      tiled_entries = nil
-      wl = CLITestHelpers::FakeWindowLayout.new
-      wl.define_singleton_method(:tile) { |entries| tiled_entries = entries }
+      wm = ConfiguredWindowManager.new(live_window_ids: Set.new([100, 200]))
+      wl = RecordingWindowLayout.new
 
       cmd = described_class.new(
         state: state, window_manager: wm, window_layout: wl, output: output
       )
       cmd.call("my")
 
-      expect(tiled_entries.size).to eq(1)
-      expect(tiled_entries.first[:project]).to eq("my")
+      expect(wl.tiled_entries.size).to eq(1)
+      expect(wl.tiled_entries.first[:project]).to eq("my")
     end
 
     it "focuses all matched windows" do
       state["myproject"] = {"iterm_window_id" => 100}
       state["myproject.worktree-feat-1"] = {"iterm_window_id" => 200}
 
-      focused_ids = []
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200]) }
-      wm.define_singleton_method(:focus_by_id) { |wid|
-        focused_ids << wid
-        true
-      }
-
-      wl = CLITestHelpers::FakeWindowLayout.new
-      wl.define_singleton_method(:tile) { |_| }
+      wm = ConfiguredWindowManager.new(live_window_ids: Set.new([100, 200]))
+      wl = RecordingWindowLayout.new
 
       cmd = described_class.new(
         state: state, window_manager: wm, window_layout: wl, output: output
       )
       cmd.call("myproject")
 
-      expect(focused_ids).to contain_exactly(100, 200)
+      expect(wm.focused_ids).to contain_exactly(100, 200)
     end
 
     it "never runs the focus chain" do
       state["myproject"] = {"iterm_window_id" => 100}
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100]) }
-      wm.define_singleton_method(:run_focus_steps) { |*| raise "tile must not run focus steps" }
-      wl = CLITestHelpers::FakeWindowLayout.new
-      wl.define_singleton_method(:tile) { |_| }
+      wm = ConfiguredWindowManager.new(live_window_ids: Set.new([100]), forbid_focus_steps: true)
+      wl = RecordingWindowLayout.new
 
       expect { described_class.new(state: state, window_manager: wm, window_layout: wl, output: output).call("myproject") }.not_to raise_error
     end
@@ -121,20 +102,16 @@ RSpec.describe Workspace::Commands::Tile do
       state["project-b"] = {"iterm_window_id" => 200}
       state["project-c"] = {"iterm_window_id" => 300}
 
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200, 300]) }
-
-      tiled_entries = nil
-      wl = CLITestHelpers::FakeWindowLayout.new
-      wl.define_singleton_method(:tile) { |entries| tiled_entries = entries }
+      wm = ConfiguredWindowManager.new(live_window_ids: Set.new([100, 200, 300]))
+      wl = RecordingWindowLayout.new
 
       cmd = described_class.new(
         state: state, window_manager: wm, window_layout: wl, output: output
       )
       cmd.call_all
 
-      expect(tiled_entries.size).to eq(3)
-      expect(tiled_entries.map { |e| e[:project] }).to eq(
+      expect(wl.tiled_entries.size).to eq(3)
+      expect(wl.tiled_entries.map { |e| e[:project] }).to eq(
         ["project-a", "project-b", "project-c"]
       )
       expect(output.string).to include("Tiling 3 window(s)")
@@ -144,20 +121,16 @@ RSpec.describe Workspace::Commands::Tile do
       state["alive"] = {"iterm_window_id" => 100}
       state["dead"] = {"iterm_window_id" => 200}
 
-      wm = CLITestHelpers::FakeWindowManager.new
-      wm.define_singleton_method(:live_window_ids) { Set.new([100]) }
-
-      tiled_entries = nil
-      wl = CLITestHelpers::FakeWindowLayout.new
-      wl.define_singleton_method(:tile) { |entries| tiled_entries = entries }
+      wm = ConfiguredWindowManager.new(live_window_ids: Set.new([100]))
+      wl = RecordingWindowLayout.new
 
       cmd = described_class.new(
         state: state, window_manager: wm, window_layout: wl, output: output
       )
       cmd.call_all
 
-      expect(tiled_entries.size).to eq(1)
-      expect(tiled_entries.first[:project]).to eq("alive")
+      expect(wl.tiled_entries.size).to eq(1)
+      expect(wl.tiled_entries.first[:project]).to eq("alive")
     end
   end
 

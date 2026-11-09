@@ -14,7 +14,7 @@ RSpec.describe "T9 adversarial CLI specs" do
     config = Workspace::Config.new
     state = CLITestHelpers::FakeState.new
     window_manager = CLITestHelpers::FakeWindowManager.new
-    tmux = CLITestHelpers::FakeTmux.new
+    tmux = FakeTmux.new
     project_config = CLITestHelpers::FakeProjectConfig.new
     doctor = CLITestHelpers::FakeDoctor.new
     project_settings = CLITestHelpers::FakeProjectSettings.new
@@ -26,7 +26,7 @@ RSpec.describe "T9 adversarial CLI specs" do
 
     stop_command = Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
-    start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
+    start_command = Workspace::Commands::Start.new(lineage: LineageSupport.lineage, git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
@@ -53,7 +53,7 @@ RSpec.describe "T9 adversarial CLI specs" do
     agent_command = CLITestHelpers::FakeAgentCommand.new
     ask_command = CLITestHelpers::FakeAskCommand.new
 
-    Workspace::CLI.new(
+    Workspace::CLI.new(lineage: LineageSupport.lineage,
       config: config, state: state, project_config: project_config, git: git,
       window_manager: window_manager, doctor: doctor, project_settings: project_settings,
       hook_runner: hook_runner, project_detector: project_detector,
@@ -68,8 +68,7 @@ RSpec.describe "T9 adversarial CLI specs" do
       agent_command: agent_command, sessions_command: sessions_command, session_event_command: session_event_command,
       config_command: CLITestHelpers::FakeConfigCommand.new, statusline_command: CLITestHelpers::FakeStatuslineCommand.new,
       ask_command: ask_command, exit_handler: Kernel, output: output, error_output: error_output, input: input,
-      working_dir: Dir.mktmpdir
-    )
+      working_dir: Dir.mktmpdir)
   end
 
   # UC1: `workspace --headless --json launch` has two leading options before

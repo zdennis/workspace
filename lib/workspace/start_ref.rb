@@ -35,7 +35,7 @@ module Workspace
 
     # @param git [Workspace::Git] reads the input
     # @param lineage [Workspace::WorkspaceLineage] finds the parent repository of a linked worktree
-    def initialize(git:, lineage: WorkspaceLineage.new)
+    def initialize(git:, lineage:)
       @git = git
       @lineage = lineage
     end

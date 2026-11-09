@@ -14,10 +14,13 @@ RSpec.describe Workspace::Doctor, "skills" do
     Workspace::Commands::Skills.new(harnesses: harnesses, source: Workspace::SkillSource.new(workspace_dir: checkout), links: links, state: state, output: StringIO.new, error_output: StringIO.new)
   end
   let(:doctor) do
-    described_class.new(config: Workspace::Config.new, state: CLITestHelpers::FakeState.new, hook_installer: hook_installer, project_detector: project_detector,
+    described_class.new(config: doctor_config, command_probe: command_probe, app_probe: app_probe, state: CLITestHelpers::FakeState.new, hook_installer: hook_installer, project_detector: project_detector,
       output: output, project_settings: CLITestHelpers::FakeProjectSettings.new, skills: skills, which: ->(_exe) { true },
       launch_mode: Workspace::LaunchMode.new(project_settings: CLITestHelpers::FakeProjectSettings.new, platform: "arm64-darwin", env: {}, which: ->(_exe) { true }))
   end
+  let(:doctor_config) { Workspace::Config.new }
+  let(:command_probe) { Workspace::Doctor::CommandProbe.new }
+  let(:app_probe) { Workspace::Doctor::AppProbe.new }
   let(:claude_dir) { File.join(home, ".claude", "skills") }
 
   def rows(id = "skills-claude") = doctor.report(fix: false)[:rows].select { |row| row[:id] == id }
@@ -85,11 +88,25 @@ RSpec.describe Workspace::Doctor, "skills" do
       expect(output.string).to include("--fix: Claude Code skills linked")
     end
 
-    it "counts no issue for a repair made outside a project" do
-      allow_any_instance_of(described_class).to receive(:dependency_checks).and_return([])
-      allow_any_instance_of(described_class).to receive(:check_templates)
+    context "when every tool, app and template is present" do
+      let(:templates_dir) { File.join(@tmp, "tmuxinator") }
+      let(:doctor_config) do
+        dir = templates_dir
+        Class.new(Workspace::Config) do
+          define_method(:tmuxinator_dir) { dir }
+        end.new
+      end
+      let(:command_probe) { ->(_name, _flag) { "9" } }
+      let(:app_probe) { ->(_bundle_id) { true } }
 
-      expect(fix[:issues]).to eq(0)
+      before do
+        FileUtils.mkdir_p(templates_dir)
+        %w[workspace.project-template.yml workspace.project-worktree-template.yml].each { |t| File.write(File.join(templates_dir, t), "") }
+      end
+
+      it "counts no issue for a repair made outside a project" do
+        expect(fix[:issues]).to eq(0)
+      end
     end
 
     it "names each refusal once and offers no fix command when the repair was refused" do

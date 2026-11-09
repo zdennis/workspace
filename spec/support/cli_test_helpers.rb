@@ -5,8 +5,7 @@ module CLITestHelpers
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the
   # machine (platform, osascript, CI) or on a real ~/.config.
   def self.launch_mode(headless:, global: {})
-    settings = FakeProjectSettings.new
-    settings.define_singleton_method(:load_global) { global }
+    settings = FakeProjectSettings.new(global: global)
     Workspace::LaunchMode.new(project_settings: settings, platform: headless ? "x86_64-linux" : "arm64-darwin",
       env: {}, which: ->(_exe) { true })
   end
@@ -53,9 +52,18 @@ module CLITestHelpers
   def self.unwritable_event_log(dir, error_output: StringIO.new)
     blocker = File.join(dir, "not-a-directory")
     File.write(blocker, "")
-    config = Workspace::Config.new(workspace_dir: dir)
-    config.define_singleton_method(:event_log_file) { File.join(blocker, "events.jsonl") }
+    config = UnwritableEventLogConfig.new(File.join(blocker, "events.jsonl"), workspace_dir: dir)
     Workspace::EventLog.new(config: config, error_output: error_output)
+  end
+
+  # A Config whose event log file is somewhere unwritable.
+  class UnwritableEventLogConfig < Workspace::Config
+    attr_reader :event_log_file
+
+    def initialize(event_log_file, **opts)
+      super(**opts)
+      @event_log_file = event_log_file
+    end
   end
 
   class FakeState
@@ -130,6 +138,13 @@ module CLITestHelpers
   end
 
   class FakeWindowManager
+    attr_reader :live_window_ids_calls
+
+    def initialize(live_window_ids: Set.new)
+      @live_window_ids = live_window_ids
+      @live_window_ids_calls = 0
+    end
+
     def window_exists?(_wid) = false
     def find_window_by_title(_title) = nil
     def find_window_for_project(_project) = nil
@@ -138,84 +153,16 @@ module CLITestHelpers
     def run_focus_steps(_wid, _steps) = nil
     def highlight_by_id(_wid, _color) = true
     def shake_by_id(_wid) = true
-    def live_window_ids = Set.new
+
+    def live_window_ids
+      @live_window_ids_calls += 1
+      @live_window_ids
+    end
+
     def window_ids_front_to_back = []
     def set_window_bounds(_wid, _x, _y, _w, _h) = nil
     def all_window_bounds(_wids) = {}
     def close_window(_wid) = nil
-  end
-
-  class FakeTmux
-    def sessions = []
-    def start_server = nil
-    def kill_session(_name, project: nil, socket: nil) = nil
-    def custom_socket_option(_config_name) = nil
-    def rename_window(_session, _index, _name) = nil
-    def resize_pane(_session, _pane, _size) = true
-    def capture_layout(_session, **_opts) = "layout-string"
-    def apply_layout(_session, _layout, **_opts) = true
-
-    attr_reader :sent_keys, :sent_key_names
-    attr_accessor :captured_output, :pane_indexes, :delivery_status
-
-    def initialize
-      @sent_keys = []
-      @sent_key_names = []
-      @captured_output = ""
-      @pane_indexes = [0, 1, 2]
-      @delivery_status = :submitted
-    end
-
-    def send_key(session, pane, key_name)
-      sent_key_names << {session: session, pane: pane, key: key_name}
-      true
-    end
-
-    def capture_pane(_session, _pane, **_opts)
-      @captured_output
-    end
-
-    def send_keys(session, pane, text, enter: true)
-      deliver(session, pane, text, enter: enter).ok?
-    end
-
-    # Records the send; the outcome is whatever delivery_status says.
-    def deliver(session, pane, text, enter: true)
-      sent_keys << {session: session, pane: pane, text: text, enter: enter}
-      Workspace::Tmux::Delivery.new(status: delivery_status, message: "fake #{delivery_status}")
-    end
-
-    def panes(_session, **_opts)
-      @pane_indexes
-    end
-
-    def find_pane_by_title(_session, _pattern, **_opts)
-      nil
-    end
-
-    def pane_details(_session, **_opts)
-      []
-    end
-
-    def find_claude_pane(_session, **_opts)
-      1
-    end
-
-    def split_window(_session, **_opts)
-      3
-    end
-
-    def command_for(_project, **_opts)
-      "tmuxinator start test --attach"
-    end
-
-    def session_name_for(config)
-      config
-    end
-
-    def reattach_or_start(session, start)
-      "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}"
-    end
   end
 
   # A tmux server with named sessions and panes, answering the way real tmux
@@ -308,15 +255,23 @@ module CLITestHelpers
   end
 
   class FakeProjectConfig
+    # +resolutions+ maps an argument to the [name, root] it resolves to (default [arg, nil]);
+    # +created+ and +root_lookups+ record what was asked.
+    attr_reader :resolutions, :created, :root_lookups
+
     def initialize(roots = {})
       @roots = roots
+      @resolutions = {}
+      @created = []
+      @root_lookups = []
     end
 
     def resolve_project_arg(arg)
-      [arg, nil]
+      @resolutions.fetch(arg) { [arg, nil] }
     end
 
-    def create(name, _root)
+    def create(name, root)
+      @created << [name, root]
       name
     end
 
@@ -349,6 +304,7 @@ module CLITestHelpers
     end
 
     def project_root_for(name)
+      @root_lookups << name
       @roots[name]
     end
   end
@@ -360,12 +316,15 @@ module CLITestHelpers
   end
 
   class FakeDoctor
-    attr_reader :headless, :fix
+    attr_reader :headless, :fix, :run_count
     attr_writer :result
+    attr_accessor :run_error
 
     def run(headless: nil, fix: false)
+      @run_count = run_count.to_i + 1
       @headless = headless
       @fix = fix
+      raise @run_error if @run_error
     end
 
     def report(headless: nil, fix: false)
@@ -376,9 +335,15 @@ module CLITestHelpers
   end
 
   class FakeProjectSettings
-    def load(_project_name) = {}
+    # +loader+ answers #load per project name; +global+ is what #load_global returns.
+    def initialize(loader: nil, global: {})
+      @loader = loader
+      @global = global
+    end
+
+    def load(project_name) = @loader ? @loader.call(project_name) : {}
     def save(_project_name, _data) = nil
-    def load_global = {}
+    def load_global = @global
     def ensure_exists(_project_name) = nil
     def hook_for(_project_name, _event) = nil
     def layouts_for(_project_name) = {}
@@ -387,7 +352,6 @@ module CLITestHelpers
     def global_config_path = "/tmp/workspace/config.yml"
 
     def with_global_lock
-      @global ||= {}
       @global = yield(@global)
     end
   end
@@ -584,7 +548,7 @@ module CLITestHelpers
 
   class FakeDevCommand
     attr_reader :calls, :working_dirs
-    attr_accessor :result
+    attr_accessor :result, :up_error
 
     def initialize
       @calls = []
@@ -595,6 +559,7 @@ module CLITestHelpers
     def up(**opts)
       @working_dirs << opts[:working_dir]
       @calls << {action: :up, **opts.except(:working_dir)}
+      raise @up_error if @up_error
       @result
     end
 
@@ -1032,15 +997,19 @@ module CLITestHelpers
   end
 
   class FakeConfigCommand
-    attr_reader :calls
+    # +handlers+ maps an action (:set, :unset, :edit) to a callable that answers it instead
+    # of the canned result; it gets the same arguments as the action.
+    attr_reader :calls, :handlers
 
     def initialize(get_returns: true)
       @calls = []
       @get_returns = get_returns
+      @handlers = {}
     end
 
     def set(key, value, project: nil, scope: nil, cwd: Dir.pwd)
       @calls << {action: :set, key: key, value: value, project: project, scope: scope, cwd: cwd}
+      return @handlers[:set].call(key, value, project: project, scope: scope, cwd: cwd) if @handlers.key?(:set)
       result(key, project, scope)
     end
 
@@ -1051,6 +1020,7 @@ module CLITestHelpers
 
     def unset(key, project: nil, scope: nil, cwd: Dir.pwd)
       @calls << {action: :unset, key: key, project: project, scope: scope, cwd: cwd}
+      return @handlers[:unset].call(key, project: project, scope: scope, cwd: cwd) if @handlers.key?(:unset)
       result(key, project, scope)
     end
 
@@ -1061,6 +1031,7 @@ module CLITestHelpers
 
     def edit(project: nil, scope: nil, cwd: Dir.pwd)
       @calls << {action: :edit, project: project, scope: scope, cwd: cwd}
+      return @handlers[:edit].call(project: project, scope: scope, cwd: cwd) if @handlers.key?(:edit)
       layer = (scope == "global") ? "global" : "project"
       Workspace::Commands::Config::EditResult.new(workspace: (layer == "global") ? nil : project, layer: layer, scope: layer,
         path: "/cfg/#{project || "config"}.yml", created: true)

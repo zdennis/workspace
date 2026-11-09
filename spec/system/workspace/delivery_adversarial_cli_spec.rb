@@ -142,10 +142,9 @@ RSpec.describe "delivery adversarial (CLI/UX)" do
       project_settings = CLITestHelpers::FakeProjectSettings.new
       launch_command = double("launch_command", call: {exit_code: 0, prompt_failures: {}})
 
-      start = Workspace::Commands::Start.new(
+      start = Workspace::Commands::Start.new(lineage: LineageSupport.lineage,
         git: git, project_config: project_config, project_settings: project_settings,
-        launch_command: launch_command, output: StringIO.new, input: StringIO.new
-      )
+        launch_command: launch_command, output: StringIO.new, input: StringIO.new)
 
       result = start.call("PROJ-123")
 

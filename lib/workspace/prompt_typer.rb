@@ -35,12 +35,13 @@ module Workspace
       end
     end
 
-    # @param tmux [Workspace::Tmux] screen reads and deliveries
+    # @param panes [Workspace::PaneFactory] builds the pane, with no tmux call, for its screen reads and deliveries; a pane
+    #   it cannot give reads as a screen tmux could not capture
     # @param session_monitor [Workspace::SessionMonitor, nil] pane facts
     # @param safety [Workspace::TypingSafety] the typed-text test
     # @param logger [Workspace::Logger] debug logger
-    def initialize(tmux:, session_monitor:, safety: TypingSafety.new, logger: Workspace::Logger.new)
-      @tmux = tmux
+    def initialize(panes:, session_monitor:, safety: TypingSafety.new, logger: Workspace::Logger.new)
+      @panes = panes
       @session_monitor = session_monitor
       @safety = safety
       @logger = logger
@@ -53,8 +54,7 @@ module Workspace
     # @param exact [String, nil] text the whole input must equal; see {TypingSafety#check}
     # @return [Hash, nil] nil when the pane can take text, else the {TypingSafety#check} refusal
     def check(pane_id, pasted: nil, exact: nil)
-      screen = StyledScreen.parse(@tmux.capture_screen_styled(pane_id))
-      @safety.check(@session_monitor&.typing_facts(pane_id), screen, pasted: pasted, exact: exact)
+      check_pane(pane_id, @panes.for(pane_id), pasted: pasted, exact: exact)
     end
 
     # Checks, pastes, checks again, presses Enter.
@@ -70,28 +70,34 @@ module Workspace
     #   text left in the pane
     # @return [Result]
     def type(session_name:, target:, pane_id:, text:, before_paste: nil, before_enter: nil)
-      refused = check(pane_id)
+      pane = @panes.for(pane_id)
+      refused = check_pane(pane_id, pane)
       return Result.new(outcome: :refused, code: refused[:code], reason: refused[:reason], message: refused[:message]) if refused
       return Result.new(outcome: :aborted) if before_paste && !before_paste.call
 
-      pasted = @tmux.deliver(session_name, target, text, enter: false)
+      pasted = pane.deliver(text, enter: false)
       @logger.debug { "prompt typer: pasted into #{session_name}:#{target}: #{pasted.status}" }
       return Result.new(outcome: pasted.status, message: pasted.message, delivery: pasted) unless pasted.landed?
       unless pasted.ok?
         return unsubmitted("it may not have arrived, so Enter was not pressed (#{pasted.message})", pasted)
       end
 
-      changed = check(pane_id, pasted: text)
+      changed = check_pane(pane_id, pane, pasted: text)
       return unsubmitted("Enter was not pressed: #{changed[:message]}", pasted, reason: changed[:reason]) if changed
       return unsubmitted("Enter was not pressed: the caller's last check refused", pasted) if before_enter && !before_enter.call
 
-      submitted = @tmux.deliver(session_name, target, "", enter: true)
+      submitted = pane.deliver("", enter: true)
       @logger.debug { "prompt typer: submitted in #{session_name}:#{target}: #{submitted.status}" }
       return unsubmitted(submitted.message, submitted) unless submitted.ok?
       Result.new(outcome: :submitted, delivery: submitted)
     end
 
     private
+
+    def check_pane(pane_id, pane, pasted: nil, exact: nil)
+      screen = StyledScreen.parse(pane.is_a?(Symbol) ? nil : pane.capture_styled)
+      @safety.check(@session_monitor&.typing_facts(pane_id), screen, pasted: pasted, exact: exact)
+    end
 
     def unsubmitted(message, delivery, reason: nil)
       Result.new(outcome: :not_submitted, reason: reason, message: message, delivery: delivery)

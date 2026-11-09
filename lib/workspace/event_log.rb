@@ -93,10 +93,19 @@ module Workspace
     # @param clock [#now] time source, injected for deterministic tests
     # @param rotate_threshold [Integer] log size in bytes past which an append rotates it
     # @param keep_rotated [Integer] how many rotated files to keep
+    # @param lock_wait [Numeric] seconds an append or a compact waits for the log's lock
+    # @param rotate_lock_wait [Numeric] seconds a rotation waits for the log's lock
+    # @param renamer [#call] renames a file, given the old and new path
+    # @param linker [#call] hard-links a file, given the existing and new path
     def initialize(config:, project_settings: nil, error_output: $stderr, logger: Workspace::Logger.new, clock: Time,
-      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, keep_rotated: KEEP_ROTATED)
+      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, keep_rotated: KEEP_ROTATED, lock_wait: LOCK_WAIT, rotate_lock_wait: ROTATE_LOCK_WAIT,
+      renamer: File.method(:rename), linker: File.method(:link))
+      @renamer = renamer
+      @linker = linker
       @rotate_threshold = rotate_threshold
       @keep_rotated = keep_rotated
+      @lock_wait = lock_wait
+      @rotate_lock_wait = rotate_lock_wait
       @config = config
       @project_settings = project_settings
       @error_output = error_output
@@ -438,7 +447,7 @@ module Workspace
         pane_states.each { |event| f.puts JSON.generate(event) }
       end
       shift_rotated if rotate
-      File.rename(tmp, @config.event_log_file)
+      @renamer.call(tmp, @config.event_log_file)
       state
     ensure
       remove(tmp) if tmp
@@ -451,7 +460,7 @@ module Workspace
     # first rotates, and one that can't get the lock leaves it to the others.
     def rotate_if_large
       return unless size > @rotate_threshold
-      with_lock(File::LOCK_EX, wait: ROTATE_LOCK_WAIT) do |locked|
+      with_lock(File::LOCK_EX, wait: @rotate_lock_wait) do |locked|
         next unless locked && size > @rotate_threshold
         @logger.debug { "event_log: rotating #{size} bytes" }
         rewrite(rotate: true)
@@ -471,12 +480,12 @@ module Workspace
       log = @config.event_log_file
       pending = "#{log}.#{Process.pid}.rotating"
       remove(pending)
-      File.link(log, pending)
+      @linker.call(log, pending)
       remove("#{log}.#{@keep_rotated}")
       (@keep_rotated - 1).downto(1) do |n|
-        File.rename("#{log}.#{n}", "#{log}.#{n + 1}") if File.exist?("#{log}.#{n}")
+        @renamer.call("#{log}.#{n}", "#{log}.#{n + 1}") if File.exist?("#{log}.#{n}")
       end
-      File.rename(pending, "#{log}.1")
+      @renamer.call(pending, "#{log}.1")
     ensure
       remove(pending) if pending
     end
@@ -546,7 +555,7 @@ module Workspace
     # Yields whether the lock was taken: false if the lock file can't be
     # opened or the lock isn't free within {LOCK_WAIT}. Closing the file
     # releases the lock.
-    def with_lock(mode, wait: LOCK_WAIT)
+    def with_lock(mode, wait: @lock_wait)
       lock = begin
         File.open("#{@config.event_log_file}.lock", File::RDWR | File::CREAT, 0o600)
       rescue SystemCallError => e

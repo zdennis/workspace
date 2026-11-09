@@ -124,9 +124,9 @@ RSpec.describe "the shipped workflow presets" do
       expect(topic).not_to match("two words")
     end
 
-    it "refuses a topic with a space or a placeholder through the engine's input check, and takes a slug or none" do
+    it "refuses a topic with a space or a placeholder through the input check, and takes a slug or none" do
       data = catalog.find("explore").to_h
-      check = ->(topic) { Workspace::WorkflowEngine.allocate.send(:check_inputs, data, {"task" => "q", "topic" => topic}) }
+      check = ->(topic) { Workspace::WorkflowInputs.check(data, {"task" => "q", "topic" => topic}) }
       ["bad{{", "two words", "a\nb", "-lead"].each do |bad|
         expect { check.call(bad) }.to raise_error(Workspace::Error) { |error|
           expect(error.code).to eq("invalid_input")

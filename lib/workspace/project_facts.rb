@@ -17,7 +17,9 @@ module Workspace
     # @param git [Workspace::Git] reads each checkout's branch, changes and unsaved work
     # @param catalog [Workspace::ProjectCatalog] lists the worktrees that have no workspace config
     # @param error_output [IO] stream for warnings about unreadable ask or pipeline stores
-    def initialize(tmux:, state:, config:, lock_namespace:, lock_holder:, dev:, agents:, git:, catalog:, error_output: $stderr)
+    # @param clock [#call] answers the monotonic time in seconds; the git deadline is read against it
+    def initialize(tmux:, state:, config:, lock_namespace:, lock_holder:, dev:, agents:, git:, catalog:, error_output: $stderr, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
+      @clock = clock
       @tmux = tmux
       @state = state
       @config = config
@@ -68,7 +70,7 @@ module Workspace
     # @param timeout [Numeric, nil] seconds from now ({DEFAULT_GIT_TIMEOUT} when nil)
     # @return [Float] the monotonic-clock time by which all git reads must finish
     def git_deadline(timeout = nil)
-      Process.clock_gettime(Process::CLOCK_MONOTONIC) + (timeout || DEFAULT_GIT_TIMEOUT)
+      @clock.call + (timeout || DEFAULT_GIT_TIMEOUT)
     end
 
     # A project's members including the worktrees that have no workspace
@@ -131,7 +133,7 @@ module Workspace
     private
 
     def remaining(deadline)
-      [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
+      [deadline - @clock.call, 0].max
     end
 
     def await_git(thread, deadline)

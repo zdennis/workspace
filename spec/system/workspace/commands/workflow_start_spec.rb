@@ -37,7 +37,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     YAML
   end
   let(:definition) { Workspace::WorkflowDefinition.parse(yaml, id: "flow", source: "global", path: "/defs/flow.yml") }
-  let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: nil, worktree_config_name: "app.worktree-x", project_root_for: root) }
+  let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: nil, project_root_for: root) }
   let(:start) { instance_double(Workspace::Commands::Start) }
   let(:workflow) { instance_double(Workspace::Commands::Workflow) }
   let(:readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 99.0) }
@@ -61,16 +61,16 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, router: router, output: output)
   end
 
+  def build_engine(store: instance_double(Workspace::WorkflowRunStore, active: []), commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
+    Workspace::WorkflowEngine.new(
+      store: store, resources: instance_double(Workspace::RunResources), composer: instance_double(Workspace::InstructionComposer, compose: {"packs" => []}),
+      panes: nil, checker: instance_double(Workspace::WorkflowCheck), commands_config: commands_config, lineage: lineage, git: git,
+      guard: Workspace::WorkflowGuard.new, excludes: excludes, gate_note: instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil)
+    )
+  end
+
   def real_engine(active: [])
-    Workspace::WorkflowEngine.allocate.tap do |real|
-      real.instance_variable_set(:@guard, Workspace::WorkflowGuard.new)
-      real.instance_variable_set(:@lineage, lineage)
-      real.instance_variable_set(:@panes, nil)
-      real.instance_variable_set(:@store, instance_double(Workspace::WorkflowRunStore, active: active))
-      real.instance_variable_set(:@gate_note, instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil))
-      real.instance_variable_set(:@commands_config, instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
-      allow(real).to receive(:compose).and_return({"packs" => []})
-    end
+    build_engine(store: instance_double(Workspace::WorkflowRunStore, active: active))
   end
 
   before do
@@ -464,10 +464,9 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     allow(project_config).to receive(:existing_name).with("app").and_return("App")
     allow(project_config).to receive(:project_root_for).with("App").and_return(root)
     allow(agent_commands).to receive(:kind).with("App").and_return("claude")
-    allow(agent_commands).to receive(:kind).with("app.worktree-x").and_return("codex")
+    allow(agent_commands).to receive(:kind).with("app.worktree-proj-1").and_return("codex")
 
     expect { command.call(id: "flow", ref: "PROJ-1", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_needs_claude") }
-    expect(project_config).to have_received(:worktree_config_name).with("App", "proj-1")
   end
 
   it "refuses before anything is made when the agent kind is not claude" do
@@ -1067,11 +1066,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     config = instance_double(Workspace::ConfigResolver)
     view = ->(workspace) { double(raw: ->(_) {}).tap { |v| allow(v).to receive(:raw) { |key| (workspace == "app" && key == "commands.test") ? "bundle exec rspec" : nil } } }
     allow(config).to receive(:view) { |workspace:| view.call(workspace) }
-    real = Workspace::WorkflowEngine.allocate
-    real.instance_variable_set(:@commands_config, Workspace::CommandsConfig.new(config_resolver: config))
-    real.instance_variable_set(:@lineage, lineage)
-    real.instance_variable_set(:@panes, nil)
-    allow(real).to receive(:compose).and_return({"packs" => []})
+    real = build_engine(commands_config: Workspace::CommandsConfig.new(config_resolver: config))
     checking = Workspace::WorkflowDefinition.parse(<<~YAML, id: "flow", source: "global", path: "/defs/flow.yml")
       inputs:
         task: {required: true}
@@ -1333,7 +1328,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     it "keeps the cancel command of a checkout_has_run raised after the workspace was made" do
       holder = {"id" => "wr_9", "worktree" => Dir.tmpdir, "current" => "plan", "state" => "running"}
       refusal = begin
-        real_engine(active: [holder]).send(:check_checkout, Dir.tmpdir)
+        real_engine(active: [holder]).preflight(definition: definition, workspace: "app", worktree: Dir.tmpdir, inputs: {"task" => "x"})
       rescue Workspace::Error => e
         e
       end
@@ -1615,8 +1610,6 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
     it "checks the worktree's agent kind, not the project's" do
       allow(agent_commands).to receive(:kind).with("app.proj-1", project: an_instance_of(String)).and_return("claude")
-      # A worktree from `workspace add` is not named as `worktree_config_name` would name it.
-      expect(project_config).not_to receive(:worktree_config_name)
 
       expect(command.call(id: "flow", ref: "PROJ-1", here: here)["run"]).to eq("r1")
     end

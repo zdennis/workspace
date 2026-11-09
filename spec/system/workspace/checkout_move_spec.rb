@@ -12,11 +12,8 @@ RSpec.describe Workspace::CheckoutMove do
 
   # A real Git whose named methods go through +overrides+, each `(original, *args, **kw)`.
   def git_with(**overrides)
-    Workspace::Git.new(output: StringIO.new, input: StringIO.new).tap do |double|
-      overrides.each do |name, fn|
-        original = double.method(name)
-        double.define_singleton_method(name) { |*args, **kw| fn.call(original, *args, **kw) }
-      end
+    Interceptable.subclass(Workspace::Git, *overrides.keys).new(output: StringIO.new, input: StringIO.new).tap do |git|
+      overrides.each { |name, fn| git.on(name) { |original, *args, **kw| fn.call(original, *args, **kw) } }
     end
   end
 

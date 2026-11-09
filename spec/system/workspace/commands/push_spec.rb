@@ -5,7 +5,8 @@ RSpec.describe Workspace::Commands::Push do
   include RebaseRepos
 
   let(:output) { StringIO.new }
-  let(:runner) { Workspace::TimedProcess.method(:run) }
+  let(:runs) { [] }
+  let(:runner) { ->(*args, **kw) { runs << args.first and Workspace::TimedProcess.run(*args, **kw) } }
   let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: runner) }
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:project_detector) { instance_double(Workspace::ProjectDetector, detect: "api.worktree-x") }
@@ -210,10 +211,9 @@ RSpec.describe Workspace::Commands::Push do
     push_feature
     old_tip = remote_tip
     rebase_feature
-    allow(git).to receive(:push).and_call_original
 
     expect(run_json).to include("outcome" => "pushed", "forced" => true)
-    expect(git).to have_received(:push).with(wt, "feature/x", set_upstream: false, dest: nil, lease: old_tip)
+    expect(runs.last).to eq(["git", "push", "--force-with-lease=refs/heads/feature/x:#{old_tip}", "origin", "refs/heads/feature/x:refs/heads/feature/x"])
   end
 
   it "asks gh nothing for a pr-N branch whose upstream is on another remote" do
@@ -284,10 +284,9 @@ RSpec.describe Workspace::Commands::Push do
     it "leases a push after a rebase on the head commit gh gave" do
       head = remote_tip
       rebase_feature
-      allow(git).to receive(:push).and_call_original
 
       expect(run_json).to include("remote_branch" => "feature/x", "outcome" => "pushed", "forced" => true)
-      expect(git).to have_received(:push).with(wt, "pr-123", set_upstream: false, dest: "feature/x", lease: head)
+      expect(runs.last).to eq(["git", "push", "--force-with-lease=refs/heads/feature/x:#{head}", "origin", "refs/heads/pr-123:refs/heads/feature/x"])
       expect(remote_tip).to eq(rev("HEAD", dir: wt))
       expect(pr_branch_on_remote?).to be(false)
     end

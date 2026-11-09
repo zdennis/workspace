@@ -54,7 +54,8 @@ module Workspace
       # @param error_output [IO] stream for the "undetermined" reason (non-JSON)
       # @param env [Hash] process environment, for `TMUX_PANE` (the calling
       #   pane an agent checks from)
-      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, notes:, binder:, library:, output: $stdout, error_output: $stderr, env: ENV)
+      # @param followup_reply_wait [Numeric] seconds `check` waits for the daemon's follow-up reply
+      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, notes:, binder:, library:, output: $stdout, error_output: $stderr, env: ENV, followup_reply_wait: FOLLOWUP_REPLY_WAIT)
         @binder = binder
         @library = library
         @config = config
@@ -66,6 +67,7 @@ module Workspace
         @output = output
         @error_output = error_output
         @env = env
+        @followup_reply_wait = followup_reply_wait
       end
 
       # @param name [String] workspace name
@@ -306,9 +308,9 @@ module Workspace
           return {"watching" => false, "reason" => "text_too_long"}
         end
 
-        reply = request_watch("type" => "handoff_watch", "workspace" => name, "pane_id" => pane_id,
-          "sent_at" => sent_at.iso8601(3), "interval" => defaults[:followup_interval], "max" => max,
-          "text" => text, "sent_text" => sent_text)
+        reply = request_watch(AgentProtocol.handoff_watch(workspace: name, pane_id: pane_id,
+          sent_at: sent_at.iso8601(3), interval: defaults[:followup_interval], max: max,
+          text: text, sent_text: sent_text))
         parsed = reply[:parsed]
         return {"watching" => false, "reason" => reply[:reason]} unless parsed
         if parsed["ok"] == true && parsed["watching"] == true
@@ -331,9 +333,9 @@ module Workspace
         path = @config.agent_socket_path(message["workspace"])
         UNIXSocket.open(path) do |socket|
           socket.puts(JSON.generate(message))
-          line = read_line_within(socket, FOLLOWUP_REPLY_WAIT)
+          line = read_line_within(socket, @followup_reply_wait)
           unless line
-            @error_output.puts "Warning: the agent daemon did not answer the handoff follow-up request in #{FOLLOWUP_REPLY_WAIT}s; the save-state prompt was sent."
+            @error_output.puts "Warning: the agent daemon did not answer the handoff follow-up request in #{@followup_reply_wait}s; the save-state prompt was sent."
             return {reason: "no_reply"}
           end
           parsed = begin
@@ -371,7 +373,7 @@ module Workspace
       def fetch_sessions(name)
         path = @config.agent_socket_path(name)
         snapshot = UNIXSocket.open(path) do |socket|
-          socket.puts(JSON.generate("type" => "sessions", "workspace" => name))
+          socket.puts(JSON.generate(AgentProtocol.sessions(workspace: name)))
           reply = socket.gets
           return [nil, "no reply from the agent daemon for '#{name}'"] unless reply
           begin

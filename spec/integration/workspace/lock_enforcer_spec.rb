@@ -65,10 +65,13 @@ RSpec.describe Workspace::LockEnforcer do
 
     it "denies an edit when the lock directory cannot be listed" do
       hold(holder_agent)
-      allow(Dir).to receive(:children).and_call_original
-      allow(Dir).to receive(:children).with(lock_dir).and_raise(Errno::EACCES)
+      File.chmod(0o111, lock_dir)
 
-      expect(enforcer.check(tool_name: "Edit")).to include("Workspace edit lock held by %1")
+      begin
+        expect(enforcer.check(tool_name: "Edit")).to include("Workspace edit lock held by %1")
+      ensure
+        File.chmod(0o755, lock_dir)
+      end
     end
 
     it "allows an edit when the caller's own locks.json is corrupt" do

@@ -37,6 +37,7 @@ module Workspace
       # @param config [Workspace::Config] path configuration
       # @param lock_namespace [Workspace::LockNamespace] resolves the shared lock store directory
       # @param lock_holder [Workspace::LockHolder] identifies the calling agent and checks liveness
+      # @param lineage [Workspace::WorkspaceLineage] names the worktree a waiter runs from
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for refusals and warnings
       # @param sleeper [#call] sleeps between polls, injectable for tests
@@ -55,7 +56,7 @@ module Workspace
       #   acquired, takeover, gave up, cleared, abandoned); nil records nothing
       # @param bound_run [Workspace::BoundRun, nil] names the workflow run the calling pane is
       #   bound to; nil means no pane counts as bound
-      def initialize(config:, lock_namespace:, lock_holder:, output: $stdout, error_output: $stderr,
+      def initialize(config:, lock_namespace:, lock_holder:, lineage:, output: $stdout, error_output: $stderr,
         sleeper: ->(seconds) { sleep(seconds) }, clock: MonotonicClock, pid_provider: -> { Process.pid },
         trap: ->(signal, handler) { Signal.trap(signal, handler) }, terminator: ProcessGroupTerminator.new, dev_config: nil,
         lock_config: nil, wall_clock: -> { Time.now.to_i }, event_log: nil, bound_run: nil)
@@ -63,6 +64,7 @@ module Workspace
         @config = config
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
+        @lineage = lineage
         @output = output
         @error_output = error_output
         @sleeper = sleeper
@@ -404,7 +406,7 @@ module Workspace
       def wait_logger(working_dir, name, waiter_pid)
         return ->(*) {} unless @event_log
         project = @lock_namespace.resolve(cwd: working_dir)[:display]
-        workspace = WorkspaceLineage.new.resolve(cwd: working_dir).worktree
+        workspace = @lineage.resolve(cwd: working_dir).worktree
         lambda do |type, data|
           entry_data = {"lock" => name, "pid" => waiter_pid}.merge(data)
           entry_data["workspace"] = workspace if workspace

@@ -68,9 +68,9 @@ module Workspace
 
       run_id = @bound_run.run_id
       return nil unless run_id
-      run = @run_store.find(run_id)
-      return nil if FINISHED.include?(run["state"])
-      patterns = WorkflowDefinition.deny(run["definition"])
+      run = @run_store.run(run_id)
+      return nil if FINISHED.include?(run.state)
+      patterns = WorkflowDefinition.deny(run.definition)
       return nil if patterns.empty?
 
       pattern = first_match(command, patterns)
@@ -259,18 +259,18 @@ module Workspace
 
     def record(run, command, pattern)
       shown = TerminalText.escape(command[0, MAX_RECORDED])
-      data = {"step" => run["current"], "pattern" => pattern, "command" => shown}
-      @run_store.record_event(run["id"], "command_denied", data)
-      @event_log&.record(type: "command_denied", project: run["workspace"],
-        data: data.merge("run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"]))
+      data = {"step" => run.current, "pattern" => pattern, "command" => shown}
+      @run_store.record_event(run.id, "command_denied", data)
+      @event_log&.record(type: "command_denied", project: run.workspace,
+        data: data.merge("run_id" => run.id, "workflow" => run.workflow, "workspace" => run.workspace))
     end
 
     def step_clause(run)
-      run["current"].is_a?(String) ? ", step #{TerminalText.escape(run["current"])}" : ""
+      run.current.is_a?(String) ? ", step #{TerminalText.escape(run.current)}" : ""
     end
 
     def message(run, pattern)
-      "denied by workflow #{TerminalText.escape(run["workflow"])}#{step_clause(run)}: " \
+      "denied by workflow #{TerminalText.escape(run.workflow)}#{step_clause(run)}: " \
         "#{TerminalText.escape(pattern).inspect}. Report this and stop."
     end
   end

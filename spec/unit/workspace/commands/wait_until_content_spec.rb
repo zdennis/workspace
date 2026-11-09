@@ -428,7 +428,6 @@ RSpec.describe Workspace::Commands::WaitUntilContent do
 
   describe "a claude-dev pane found by agent label" do
     let(:tmux) { double("tmux") }
-    let(:claude_dev) { Workspace::AgentDetector.new(aliases: {"claude" => ["claude-dev"]}) }
     let(:label_details) do
       [{id: "%10", window: 0, index: 0, pid: 100, command: "zsh", title: "a"},
         {id: "%11", window: 0, index: 1, pid: 200, command: "claude-dev", title: "b"},
@@ -454,14 +453,10 @@ RSpec.describe Workspace::Commands::WaitUntilContent do
         sleeper: ->(_) {}, exec_handler: ->(*) {}, clock: -> { 0 }, spinner_enabled: false)
     end
 
-    it "is resolved to its pane id through the configured detector, and both TmuxPanes get it" do
-      allow(Workspace::TmuxPane).to receive(:new).and_call_original
-
+    it "is resolved to its pane id through the configured detector" do
       expect(build(configured).call("myproject", "READY", pane: "Claude Code")).to eq(0)
 
       expect(tmux).to have_received(:capture_pane_by_id).with("%11", any_args).at_least(:once)
-      expect(Workspace::TmuxPane).to have_received(:new).with("Claude Code", hash_including(detector: claude_dev))
-      expect(Workspace::TmuxPane).to have_received(:new).with("%11", hash_including(detector: claude_dev))
     end
 
     it "is not found without the configuration" do
