@@ -35,6 +35,10 @@ module Workspace
 
     ERRORS = [WRONG_WORKSPACE, UNKNOWN_TYPE, MALFORMED_MESSAGE, INTERNAL_ERROR].freeze
 
+    # Default of +inject+'s +expected_token:+: the key is left out. Passing nil
+    # writes "expected_token":null, as `pipeline advance` does with no token.
+    NO_TOKEN = Object.new.freeze
+
     # Seconds to wait for the daemon's answer to `restart_agent`: a little
     # over the two minutes the daemon itself waits for a busy pane.
     RESTART_REPLY_TIMEOUT = 150
@@ -52,18 +56,23 @@ module Workspace
     end
 
     def self.command(work_item_ref:, dispatch_id:, body:, workspace: nil)
-      build(COMMAND, workspace, "work_item_ref" => work_item_ref, "dispatch_id" => dispatch_id, "body" => body)
+      build(COMMAND, workspace, {"work_item_ref" => work_item_ref, "dispatch_id" => dispatch_id, "body" => body},
+        keep: %w[work_item_ref dispatch_id body])
     end
 
-    # @param expected_token [String, nil] the stage token a pipeline advance aims at
-    def self.inject(work_item_ref:, interrupt:, body:, workspace: nil, expected_token: nil)
-      build(INJECT, workspace, "work_item_ref" => work_item_ref, "interrupt" => interrupt,
-        "expected_token" => expected_token, "body" => body)
+    # @param expected_token [String, nil] the stage token a pipeline advance aims at;
+    #   left out unless given, and nil given is written as null
+    def self.inject(work_item_ref:, interrupt:, body:, workspace: nil, expected_token: NO_TOKEN)
+      fields = {"work_item_ref" => work_item_ref, "interrupt" => interrupt}
+      fields["expected_token"] = expected_token unless expected_token.equal?(NO_TOKEN)
+      fields["body"] = body
+      build(INJECT, workspace, fields, keep: %w[work_item_ref interrupt expected_token body])
     end
 
     def self.restart_agent(pane:, prompt:, force:, wait:, workspace: nil, timeout: nil, run_id: nil)
-      build(RESTART_AGENT, workspace, "pane" => pane, "prompt" => prompt, "force" => force, "wait" => wait,
-        "timeout" => timeout, "run_id" => run_id)
+      build(RESTART_AGENT, workspace, {"pane" => pane, "prompt" => prompt, "force" => force, "wait" => wait,
+        "timeout" => timeout, "run_id" => run_id},
+        keep: %w[pane prompt force wait])
     end
 
     # @param fields [Hash{String=>Object}] the tool, session and sub-agent fields,
@@ -77,17 +86,18 @@ module Workspace
     end
 
     def self.handoff_watch(pane_id:, sent_at:, interval:, max:, text:, sent_text:, workspace: nil)
-      build(HANDOFF_WATCH, workspace, "pane_id" => pane_id, "sent_at" => sent_at, "interval" => interval,
-        "max" => max, "text" => text, "sent_text" => sent_text)
+      build(HANDOFF_WATCH, workspace, {"pane_id" => pane_id, "sent_at" => sent_at, "interval" => interval,
+        "max" => max, "text" => text, "sent_text" => sent_text},
+        keep: %w[pane_id sent_at interval max text sent_text])
     end
 
     def self.status_request(pane_id:, workspace: nil)
-      build(STATUS_REQUEST, workspace, "pane_id" => pane_id)
+      build(STATUS_REQUEST, workspace, {"pane_id" => pane_id}, keep: %w[pane_id])
     end
 
     def self.status_post(pane_id:, summary:, workspace: nil, task: nil, progress: nil, reply_to: nil)
-      build(STATUS_POST, workspace, "pane_id" => pane_id, "summary" => summary, "task" => task, "progress" => progress,
-        "reply_to" => reply_to)
+      build(STATUS_POST, workspace, {"pane_id" => pane_id, "summary" => summary, "task" => task, "progress" => progress,
+        "reply_to" => reply_to}, keep: %w[pane_id summary])
     end
 
     # @param clear_first [Boolean, nil] true adds "clear_first" and "when_idle"
@@ -98,11 +108,11 @@ module Workspace
         fields["clear_first"] = true
         fields["when_idle"] = when_idle
       end
-      build(PROMPT_SEND, workspace, fields)
+      build(PROMPT_SEND, workspace, fields, keep: %w[pane_id text when_idle])
     end
 
     def self.prompt_interrupt_send(pane_id:, text:, workspace: nil)
-      build(PROMPT_INTERRUPT_SEND, workspace, "pane_id" => pane_id, "text" => text)
+      build(PROMPT_INTERRUPT_SEND, workspace, {"pane_id" => pane_id, "text" => text}, keep: %w[pane_id text])
     end
 
     def self.sessions(workspace: nil)
@@ -131,10 +141,11 @@ module Workspace
       reply.merge(extra.transform_keys(&:to_s)).freeze
     end
 
-    def self.build(type, workspace, fields)
+    # @param keep [Array<String>] keys the old clients always wrote, so nil stays on the wire as null
+    def self.build(type, workspace, fields, keep: [])
       message = {"type" => type}
       message["workspace"] = workspace unless workspace.nil?
-      fields.each { |key, value| message[key] = value unless value.nil? }
+      fields.each { |key, value| message[key] = value unless value.nil? && !keep.include?(key) }
       message.freeze
     end
     private_class_method :build

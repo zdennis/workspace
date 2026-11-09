@@ -51,6 +51,24 @@ RSpec.describe Workspace::AgentProtocol do
         .to eq(%w[type work_item_ref interrupt body])
     end
 
+    it "writes the keys the old clients always wrote as null when nil" do
+      expect(JSON.generate(described_class.inject(work_item_ref: "W", interrupt: true, expected_token: nil, body: "b")))
+        .to eq('{"type":"inject","work_item_ref":"W","interrupt":true,"expected_token":null,"body":"b"}')
+      expect(JSON.generate(described_class.handoff_watch(workspace: "pf", pane_id: "%1", sent_at: "t", interval: nil, max: 3,
+        text: "x", sent_text: "y")))
+        .to eq('{"type":"handoff_watch","workspace":"pf","pane_id":"%1","sent_at":"t","interval":null,"max":3,"text":"x","sent_text":"y"}')
+      expect(JSON.generate(described_class.command(work_item_ref: nil, dispatch_id: "d", body: "b")))
+        .to eq('{"type":"command","work_item_ref":null,"dispatch_id":"d","body":"b"}')
+      expect(JSON.generate(described_class.restart_agent(pane: "%1", prompt: nil, force: false, wait: false)))
+        .to eq('{"type":"restart_agent","pane":"%1","prompt":null,"force":false,"wait":false}')
+      expect(JSON.generate(described_class.status_post(pane_id: "%1", summary: nil)))
+        .to eq('{"type":"status_post","pane_id":"%1","summary":null}')
+      expect(JSON.generate(described_class.status_request(pane_id: nil))).to eq('{"type":"status_request","pane_id":null}')
+      expect(JSON.generate(described_class.prompt_send(pane_id: "%1", text: nil))).to eq('{"type":"prompt_send","pane_id":"%1","text":null}')
+      expect(JSON.generate(described_class.prompt_interrupt_send(pane_id: nil, text: "t")))
+        .to eq('{"type":"prompt_interrupt_send","pane_id":null,"text":"t"}')
+    end
+
     it "keeps false values" do
       message = described_class.prompt_send(pane_id: "%1", text: "t", clear_first: true, when_idle: false)
       expect(message).to include("when_idle" => false)
