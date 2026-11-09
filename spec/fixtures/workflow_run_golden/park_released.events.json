@@ -1,0 +1,41 @@
+{
+  "ts": "2026-10-04T12:00:00Z",
+  "type": "run_started",
+  "workflow": "flow",
+  "workspace": "app.worktree-x"
+}
+{
+  "ts": "2026-10-04T12:00:00Z",
+  "type": "step_dispatching",
+  "step": "build",
+  "attempt": 1,
+  "pane": "%5"
+}
+{
+  "ts": "2026-10-04T12:00:00Z",
+  "type": "step_dispatched",
+  "step": "build",
+  "attempt": 1,
+  "pane": "%5",
+  "delivered": true
+}
+{
+  "ts": "2026-10-04T12:00:00Z",
+  "type": "resume_parked",
+  "step": "build",
+  "pane": "%5",
+  "from": null,
+  "has_note": false
+}
+{
+  "ts": "2026-10-04T12:00:05Z",
+  "type": "run_resumed",
+  "step": "build",
+  "state": "running"
+}
+{
+  "ts": "2026-10-04T12:00:05Z",
+  "type": "resume_parked_ended",
+  "step": "build",
+  "how": "released"
+}
