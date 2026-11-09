@@ -25,22 +25,14 @@ RSpec.describe Workspace::HandoffWatcher do
   # A paste shows in the input line and Enter empties it again.
   let(:tmux) do
     Class.new do
-      attr_accessor :details, :screen, :scripted, :statuses, :on_paste
-      attr_reader :delivered, :detail_calls
+      attr_accessor :screen, :scripted, :statuses, :on_paste
+      attr_reader :delivered
 
       def initialize(screen)
-        @details = [{id: "%5", window: 0, index: 1, pid: 100}, {id: "%6", window: 0, index: 2, pid: 200}]
         @screen = screen
         @empty = screen
         @delivered = []
         @statuses = []
-        @detail_calls = 0
-      end
-
-      def pane_details(_session, window: "0")
-        raise ArgumentError, "expected every window" unless window.nil?
-        @detail_calls += 1
-        @details
       end
 
       def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
@@ -87,6 +79,17 @@ RSpec.describe Workspace::HandoffWatcher do
     end
   end
   let(:restarting) { [] }
+  let(:rows) { [{id: "%5", window: 0, index: 1, pid: 100}, {id: "%6", window: 0, index: 2, pid: 200}] }
+  let(:factory) do
+    Class.new(FakePaneFactory) do
+      attr_reader :lookups
+
+      def call(pane_id)
+        @lookups = lookups.to_i + 1
+        super
+      end
+    end.new(panes: rows.map { |row| FakePane.new(id: row[:id], session_name: "ws", tmux: tmux, row: row) })
+  end
   let(:paused) { [false] }
   let(:lock_wait) { [] }
 
@@ -94,7 +97,7 @@ RSpec.describe Workspace::HandoffWatcher do
   let(:delivery_lock) do
     scheduled_lock_class.new(lock_wait)
   end
-  let(:typer) { Workspace::PromptTyper.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "ws"), session_monitor: monitor) }
+  let(:typer) { Workspace::PromptTyper.new(panes: factory, session_monitor: monitor) }
   # Each sleep the watcher's thread starts, so a spec can wait for the thread to reach one.
   let(:sleeping) { Queue.new }
 
@@ -102,7 +105,7 @@ RSpec.describe Workspace::HandoffWatcher do
   let(:poll_every) { described_class::POLL_EVERY }
 
   let(:watcher) do
-    described_class.new(tick: tick_seconds, poll_every: poll_every, tmux: tmux, session_name: "ws", workspace: "ws", session_monitor: monitor, typer: typer,
+    described_class.new(tick: tick_seconds, poll_every: poll_every, panes: factory, session_name: "ws", workspace: "ws", session_monitor: monitor, typer: typer,
       delivery_lock: delivery_lock, restarting: ->(id) { restarting.include?(id) }, plan_paused: -> { paused.first },
       event_log: event_log, clock: -> { now.first }, sleeper: ->(seconds) { sleeping.push(seconds) && sleep(seconds) })
   end
@@ -200,7 +203,7 @@ RSpec.describe Workspace::HandoffWatcher do
         arm(max: 2)
         tick(30)
         facts[field] = value
-        tmux.details.first[:pid] = value if field == :pane_pid
+        rows.first[:pid] = value if field == :pane_pid
         expect(arm(sent_at: now.first, max: 2, text: "New text", sent_text: "New prompt")).to eq({watching: true, reason: nil})
         expect(ends).to eq([{"pane_id" => "%5", "reason" => reason, "tries" => 1}])
         expect(events.count { |type, _, _| type == "handoff_watch_started" }).to eq(2)
@@ -214,7 +217,7 @@ RSpec.describe Workspace::HandoffWatcher do
         arm(max: 1)
         tick(30)
         facts[field] = value
-        tmux.details.first[:pid] = value if field == :pane_pid
+        rows.first[:pid] = value if field == :pane_pid
         arm(sent_at: now.first, max: 1)
         tmux.delivered.clear
 
@@ -710,7 +713,7 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "makes no tmux call with no watches" do
       tick(60)
-      expect(tmux.detail_calls).to eq(0)
+      expect(factory.lookups).to be_nil
       expect(monitor).not_to have_received(:followup_facts)
     end
   end
@@ -941,7 +944,7 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "ends pane_gone and types nothing when the pane has no target" do
       arm
-      tmux.details = []
+      factory.panes.clear
       tick(30)
       expect(tmux.delivered).to be_empty
       expect_end("pane_gone")
@@ -949,7 +952,7 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "ends pane_gone and types nothing when the target's pid changed" do
       arm
-      tmux.details = [{id: "%5", window: 0, index: 1, pid: 999}]
+      factory.panes.replace([FakePane.new(id: "%5", session_name: "ws", tmux: tmux, row: {id: "%5", window: 0, index: 1, pid: 999})])
       tick(30)
       expect(tmux.delivered).to be_empty
       expect_end("pane_gone")

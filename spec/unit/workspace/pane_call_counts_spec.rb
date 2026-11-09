@@ -126,4 +126,40 @@ RSpec.describe "tmux calls of the pane desks" do
       ])
     end
   end
+  describe Workspace::HandoffWatcher do
+    let(:t0) { Time.utc(2026, 10, 19, 12, 0, 0) }
+    let(:now) { [t0] }
+    let(:facts) do
+      {kind: "claude", pane_pid: 100, agent_pid: 101, session_id: "s1", hooks: true, last_activity_at: t0 - 100,
+       open_tools: 0, agents_running: 0}
+    end
+    let(:monitor) do
+      double("monitor").tap do |m|
+        allow(m).to receive(:followup_facts) { facts }
+        allow(m).to receive(:typing_facts) { {kind: "claude", state: "idle", open_tools: []} }
+      end
+    end
+    subject(:watcher) do
+      described_class.new(panes: factory, session_name: "api", workspace: "api", session_monitor: monitor,
+        typer: Workspace::PromptTyper.new(panes: factory, session_monitor: monitor), delivery_lock: Mutex.new,
+        clock: -> { now.first })
+    end
+
+    it "makes no call to arm or to poll before a follow-up is due" do
+      watcher.arm(pane_id: "%5", sent_at: t0, interval: 30, max: 3, text: "go", sent_text: "sent")
+      watcher.poll
+
+      expect(tmux.calls).to eq([])
+    end
+
+    it "lists the panes once for the follow-up, then reads and types with no list" do
+      tmux.screens = [empty_prompt, "────────\n❯ go\n────────\n"]
+      tmux.styled_screens = tmux.screens.dup
+      watcher.arm(pane_id: "%5", sent_at: t0, interval: 30, max: 3, text: "go", sent_text: "sent")
+      now[0] += 30
+      watcher.poll
+
+      expect(tmux.calls).to eq([:pane_details, :capture_screen_styled, :deliver, :capture_screen_styled, :deliver])
+    end
+  end
 end

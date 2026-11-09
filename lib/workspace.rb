@@ -897,7 +897,7 @@ module Workspace
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
       handoff_watcher_factory: ->(workspace:, session_monitor:, session_name:, **rest) {
-        HandoffWatcher.new(tmux: tmux, session_name: session_name, workspace: workspace, session_monitor: session_monitor, logger: logger,
+        HandoffWatcher.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor, logger: logger,
           plan_paused: PlanPaused.new(workspace: workspace, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }),
           typer: PromptTyper.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_monitor: session_monitor, logger: logger), **rest)
       },

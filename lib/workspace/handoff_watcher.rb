@@ -55,7 +55,7 @@ module Workspace
       :tries, :last_sent_at, :held_at, :agent_changed_at, keyword_init: true)
     private_constant :Watch
 
-    # @param tmux [Workspace::Tmux] pane lookups
+    # @param panes [Workspace::PaneFactory] looks a watched pane up for its row; a pane it cannot give reads as gone
     # @param session_name [String] the workspace's tmux session
     # @param workspace [String] the workspace the daemon serves
     # @param session_monitor [Workspace::SessionMonitor] pane facts and the stall alert
@@ -69,10 +69,10 @@ module Workspace
     # @param logger [Workspace::Logger] debug logger
     # @param tick [Numeric] seconds between the thread's ticks
     # @param poll_every [Numeric] seconds between polls
-    def initialize(tmux:, session_name:, workspace:, session_monitor:, typer:, delivery_lock:,
+    def initialize(panes:, session_name:, workspace:, session_monitor:, typer:, delivery_lock:,
       restarting: ->(_pane_id) { false }, plan_paused: -> { false }, event_log: nil, clock: -> { Time.now },
       sleeper: ->(seconds) { sleep(seconds) }, logger: Workspace::Logger.new, tick: TICK, poll_every: POLL_EVERY)
-      @tmux = tmux
+      @panes = panes
       @session_name = session_name
       @workspace = workspace
       @session_monitor = session_monitor
@@ -345,7 +345,8 @@ module Workspace
     end
 
     def pane_detail(pane_id)
-      @tmux.pane_details(@session_name, window: nil).find { |d| d[:id] == pane_id }
+      pane = @panes.call(pane_id)
+      pane.details unless pane.is_a?(Symbol)
     end
 
     # Only the caller that takes the watch out writes the event and sends the

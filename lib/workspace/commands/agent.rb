@@ -1275,7 +1275,7 @@ module Workspace
       end
 
       def build_handoff_watcher(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:)
-        HandoffWatcher.new(tmux: @tmux, session_name: session_name, workspace: workspace, session_monitor: session_monitor,
+        HandoffWatcher.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor,
           typer: PromptTyper.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), session_monitor: session_monitor, logger: @logger),
           delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: @logger)
       end

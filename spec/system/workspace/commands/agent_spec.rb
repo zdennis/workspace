@@ -2520,7 +2520,7 @@ RSpec.describe Workspace::Commands::Agent do
             sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
             clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { real_monitor },
             handoff_watcher_factory: ->(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:) {
-              Workspace::HandoffWatcher.new(tmux: tmux, session_name: session_name, workspace: workspace, session_monitor: session_monitor,
+              Workspace::HandoffWatcher.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor,
                 typer: nil, delivery_lock: delivery_lock, restarting: restarting)
             },
             output: output, error_output: error_output
