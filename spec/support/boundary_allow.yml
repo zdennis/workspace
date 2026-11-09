@@ -1,0 +1,6 @@
+# Written by script/boundary-baseline. Delete a line when its violation is fixed;
+# the spec fails on an entry that no longer matches.
+core_references_nothing|lib/workspace/core/config_schema.rb|ByteSize:
+  reason: baseline
+core_references_nothing|lib/workspace/core/workspace_name.rb|Workspace::Error:
+  reason: baseline
