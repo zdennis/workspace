@@ -834,7 +834,7 @@ module CLITestHelpers
       @row = {"workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1", "state" => "running"}}
     end
 
-    %i[show validate status events files attempts advance step_status].each do |name|
+    %i[show list validate install status events files attempts advance step_status].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error
