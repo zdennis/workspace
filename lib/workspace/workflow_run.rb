@@ -35,10 +35,10 @@ module Workspace
       end
     end
 
-    # @param hash [Hash{String=>Object}, nil] a run as parsed from its file; a missing or non-Hash value reads as an empty run
+    # @param hash [Hash{String=>Object}, WorkflowRun, nil] a run as parsed from its file (a WorkflowRun is returned as it is); a missing or non-Hash value reads as an empty run
     # @return [WorkflowRun]
     def self.from_h(hash)
-      new(hash)
+      hash.is_a?(WorkflowRun) ? hash : new(hash)
     end
 
     # @return [Hash{String=>Object}] the frozen Hash this run holds, as the run file has it

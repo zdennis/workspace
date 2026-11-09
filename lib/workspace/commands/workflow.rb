@@ -454,7 +454,7 @@ module Workspace
       # @raise [Workspace::Error] code `unknown_run`, or `unknown_step` for a +step+ the run doesn't have
       def attempts(run:, step: nil, json: false)
         raise Workspace::Error, "workflow attempts is not available: no attempts reader was wired" unless @attempts
-        result = @attempts.read(@store.run(run).to_h, step: step)
+        result = @attempts.read(@store.run(run), step: step)
         return document("run" => run, "attempts" => result["attempts"], "unowned_reasons" => result["unowned_reasons"]) if json
         @output.puts "No attempts recorded for #{run}#{" step #{TerminalText.escape(step)}" if step}." if result["attempts"].empty?
         unless result["attempts"].empty?
