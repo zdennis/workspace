@@ -203,6 +203,9 @@ module Workspace
         data = File.exist?(path) ? YAML.safe_load_file(path) : nil
         data = DEFAULT_GLOBAL_CONFIG.dup unless data.is_a?(Hash)
         workflows = data["workflows"].is_a?(Hash) ? data["workflows"] : {}
+        unless workflows.empty? || data["workflows"].nil?
+          @error_output.puts "  warn    workflows in #{path} was not a mapping; its value is replaced to add workflows.sources"
+        end
         current = ConfigSchema.parse("workflows.sources", workflows["sources"] || [])
 
         accepted = wanted.select do |entry|
@@ -251,7 +254,7 @@ module Workspace
           else
             @output.puts "  install source:#{position} #{row["workflows"].join(", ")} (#{row["path"]})"
           end
-        rescue Workspace::Error => e
+        rescue Workspace::Error, SystemCallError => e
           @error_output.puts "  warn    source:#{position} not installed: #{e.message}"
         end
         @output.puts "  re-run `workspace workflow install` to add, change or remove workflows from the sources."
