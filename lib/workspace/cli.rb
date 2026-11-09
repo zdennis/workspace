@@ -3652,13 +3652,8 @@ module Workspace
     # Builds the "command" message shared by `agent run` and
     # `agent-run command`.
     def build_command_message(name:, work_item:, body:, dispatch_prefix: "debug-")
-      {
-        "type" => "command",
-        "workspace" => name,
-        "work_item_ref" => work_item,
-        "dispatch_id" => "#{dispatch_prefix}#{SecureRandom.hex(4)}",
-        "body" => jsonl_body(body || "Begin work.")
-      }
+      AgentProtocol.command(workspace: name, work_item_ref: work_item,
+        dispatch_id: "#{dispatch_prefix}#{SecureRandom.hex(4)}", body: jsonl_body(body || "Begin work."))
     end
 
     def cmd_agent_run_inject(args)
@@ -3683,13 +3678,7 @@ module Workspace
       raise UsageError, "Missing --work-item.\n\n#{agent_run_help}" if work_item.nil?
       raise UsageError, "Missing --body.\n\n#{agent_run_help}" if body.nil?
 
-      message = {
-        "type" => "inject",
-        "workspace" => name,
-        "work_item_ref" => work_item,
-        "interrupt" => interrupt,
-        "body" => jsonl_body(body)
-      }
+      message = AgentProtocol.inject(workspace: name, work_item_ref: work_item, interrupt: interrupt, body: jsonl_body(body))
       agent_run_send(name, message, dry_run: dry_run)
     end
 
@@ -3965,58 +3954,32 @@ module Workspace
         {
           label: "command — check GitHub CI status (safe, read-only)",
           cli: "workspace agent-run command --work-item WC-42 --body \"What is the current status of GitHub CI for this branch?\"",
-          message: {
-            "type" => "command",
-            "workspace" => name,
-            "work_item_ref" => "WC-42",
-            "dispatch_id" => "debug-abcd1234",
-            "body" => "What is the current status of GitHub CI for this branch?"
-          }
+          message: AgentProtocol.command(workspace: name, work_item_ref: "WC-42", dispatch_id: "debug-abcd1234",
+            body: "What is the current status of GitHub CI for this branch?")
         },
         {
           label: "command — run the linter (safe, re-runnable)",
           cli: "workspace agent-run command --work-item WC-42 --body \"Run the linter and report any issues.\"",
-          message: {
-            "type" => "command",
-            "workspace" => name,
-            "work_item_ref" => "WC-42",
-            "dispatch_id" => "debug-abcd1234",
-            "body" => "Run the linter and report any issues."
-          }
+          message: AgentProtocol.command(workspace: name, work_item_ref: "WC-42", dispatch_id: "debug-abcd1234",
+            body: "Run the linter and report any issues.")
         },
         {
           label: "inject — queue a steer for the next pipeline stage",
           cli: "workspace agent-run inject --work-item WC-42 --body \"Focus on the failing tests, not the linter warnings.\"",
-          message: {
-            "type" => "inject",
-            "workspace" => name,
-            "work_item_ref" => "WC-42",
-            "interrupt" => false,
-            "body" => "Focus on the failing tests, not the linter warnings."
-          }
+          message: AgentProtocol.inject(workspace: name, work_item_ref: "WC-42", interrupt: false,
+            body: "Focus on the failing tests, not the linter warnings.")
         },
         {
           label: "inject --interrupt — urgent steer: stop current stage and redirect",
           cli: "workspace agent-run inject --interrupt --work-item WC-42 --body \"Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.\"",
-          message: {
-            "type" => "inject",
-            "workspace" => name,
-            "work_item_ref" => "WC-42",
-            "interrupt" => true,
-            "body" => "Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first."
-          }
+          message: AgentProtocol.inject(workspace: name, work_item_ref: "WC-42", interrupt: true,
+            body: "Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.")
         },
         {
           label: "restart — clear the coding agent in one pane and hand it a fresh prompt",
           cli: "workspace agent-run restart --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait",
-          message: {
-            "type" => "restart_agent",
-            "workspace" => name,
-            "pane" => "0.1",
-            "prompt" => "Read HANDOFF.md and follow it.",
-            "force" => false,
-            "wait" => true
-          }
+          message: AgentProtocol.restart_agent(workspace: name, pane: "0.1", prompt: "Read HANDOFF.md and follow it.",
+            force: false, wait: true)
         }
       ]
 
@@ -4114,9 +4077,8 @@ module Workspace
 
       run_action("pipeline start", json: json) do
         reply = send_to_agent(project,
-          "type" => "command", "workspace" => project, "work_item_ref" => work_item,
-          "dispatch_id" => "manual-#{SecureRandom.hex(4)}",
-          "body" => body || "Begin work on #{work_item}.")
+          AgentProtocol.command(workspace: project, work_item_ref: work_item,
+            dispatch_id: "manual-#{SecureRandom.hex(4)}", body: body || "Begin work on #{work_item}."))
         raise Error, "The agent for #{project} refused the work item: #{reply["error"]}" unless reply["ok"]
         @output.puts "Sent #{work_item} into #{project}'s pipeline"
         {results: json ? [action_row(project, "started", work_item_ref: work_item)] : [], warnings: [PIPELINE_DEPRECATION]}
@@ -4138,8 +4100,8 @@ module Workspace
         # The body reaches a live shell, so it is escaped rather than interpolated.
         sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
         reply = send_to_agent(project,
-          "type" => "inject", "workspace" => project, "work_item_ref" => work_item,
-          "interrupt" => true, "expected_token" => token, "body" => "echo #{Shellwords.escape(sentinel)}")
+          AgentProtocol.inject(workspace: project, work_item_ref: work_item, interrupt: true, expected_token: token,
+            body: "echo #{Shellwords.escape(sentinel)}"))
         unless reply["ok"]
           raise Error.new("The stage moved on before the advance landed; run 'workspace pipeline advance' again", code: "stale_token") if reply["error"] == "stale_token"
           raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"

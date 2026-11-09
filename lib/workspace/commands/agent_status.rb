@@ -57,7 +57,7 @@ module Workspace
       # @raise [Workspace::Error] when the daemon refused, or couldn't be asked
       def request(name:, pane:, json: false)
         detail = @locator.locate(name, pane)
-        reply = send_message(name, {"type" => "status_request", "pane_id" => detail[:id]}, REQUEST_TIMEOUT)
+        reply = send_message(name, AgentProtocol.status_request(pane_id: detail[:id]), REQUEST_TIMEOUT)
         fail_with(reply, name) unless reply["ok"]
 
         if json
@@ -87,10 +87,7 @@ module Workspace
         name = session && @workspace_for_session.call(session)
         raise Workspace::Error.new("Pane #{pane_id} is in no tmux session workspace knows.", code: "not_in_workspace") unless name
 
-        message = {"type" => "status_post", "pane_id" => pane_id, "summary" => summary}
-        message["task"] = task if task
-        message["progress"] = progress if progress
-        message["reply_to"] = reply_to if reply_to
+        message = AgentProtocol.status_post(pane_id: pane_id, summary: summary, task: task, progress: progress, reply_to: reply_to)
         reply = send_message(name, message, POST_TIMEOUT)
         fail_with(reply, name) unless reply["ok"]
 

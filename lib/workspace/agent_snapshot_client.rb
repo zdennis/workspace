@@ -45,7 +45,7 @@ module Workspace
     # @raise [Unavailable] if no daemon is listening or it doesn't answer in time
     # @raise [Workspace::Error] if the daemon closes the connection or sends a malformed reply
     def fetch(name, timeout: nil)
-      snapshot = exchange(name, "sessions", timeout || @timeout)
+      snapshot = exchange(name, AgentProtocol.sessions, timeout || @timeout)
       raise Workspace::Error, "Malformed reply from session monitor for '#{name}'." unless snapshot.is_a?(Hash)
       snapshot
     end
@@ -59,7 +59,7 @@ module Workspace
     # @raise [Unavailable] if no daemon is listening or it doesn't answer in time
     # @raise [Workspace::Error] if the daemon closes the connection
     def version(name, timeout: nil)
-      reply = exchange(name, "version", timeout || @timeout)
+      reply = exchange(name, AgentProtocol.version, timeout || @timeout)
       version = reply.is_a?(Hash) && reply["version"]
       version.is_a?(String) ? version : nil
     end
@@ -78,8 +78,7 @@ module Workspace
 
     private
 
-    def exchange(name, type_or_message, limit)
-      message = type_or_message.is_a?(Hash) ? type_or_message : {"type" => type_or_message}
+    def exchange(name, message, limit)
       deadline = @clock.call + limit
       socket = @connector.call(@config.agent_socket_path(name))
       begin

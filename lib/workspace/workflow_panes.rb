@@ -14,7 +14,7 @@ module Workspace
   class WorkflowPanes
     # Seconds to wait for the daemon's answer to `restart_agent`: a little
     # over the two minutes the daemon itself waits for a busy pane.
-    REPLY_TIMEOUT = 150
+    REPLY_TIMEOUT = AgentProtocol::RESTART_REPLY_TIMEOUT
 
     # Seconds to wait for the daemon when asking whether a pane is idle.
     IDLE_TIMEOUT = 1.0
@@ -414,8 +414,7 @@ module Workspace
     end
 
     def restart(workspace, pane, text, run_id)
-      message = {"type" => "restart_agent", "workspace" => workspace, "pane" => pane, "prompt" => text, "force" => false, "wait" => true}
-      message["run_id"] = run_id if run_id
+      message = AgentProtocol.restart_agent(workspace: workspace, pane: pane, prompt: text, force: false, wait: true, run_id: run_id)
       reply = request(workspace, message)
       return {ok: true, warning: reply["warning"]}.compact if reply["ok"]
       {ok: false, code: reply["error"].to_s, message: [reply["message"], reply["fix"]].compact.join(" "), reason: reply["reason"],
