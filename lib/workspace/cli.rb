@@ -5086,7 +5086,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove install run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[list show validate add update remove install run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5192,7 +5192,7 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, install, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
@@ -5250,6 +5250,7 @@ module Workspace
       end
 
       case subcommand
+      when "list" then @workflow_command.list(json: options[:json], project: workflow_project(options))
       when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source], project: workflow_project(options))
       when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json], project: workflow_project(options))
       when "render"

@@ -283,9 +283,24 @@ module Workspace
     EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
 
     WORKFLOW = {
+      "list" => {
+        usage: ["workflow list [--json]"],
+        summary: "List the workflow definitions in a table (id, source, description)",
+        about: [
+          "One row per definition, in the order the ids resolve: the description: key, else the title,",
+          "with the source naming where the file was found (project, global, source:N or builtin). A",
+          "definition that can't be read says INVALID with its first problem. See docs/README.workflow.md."
+        ],
+        options: [name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
+        examples: [
+          ["workspace workflow list", "the workflows you can run, with what each is for"],
+          ["workspace workflow list --json", "every definition as one document, for a script"],
+          ["workspace workflow list --name app", "the definitions the app workspace's project reads first"]
+        ]
+      },
       "show" => {
         usage: ["workflow show [ID] [--source] [--json]"],
-        summary: "List the workflow definitions, or print one (inputs, steps)",
+        summary: "Print one workflow (its inputs and steps)",
         about: [
           "--source gives the file's text, its sha256 and its problems even when it is invalid (exit 0), for",
           "an editor.",
@@ -304,7 +319,6 @@ module Workspace
         options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"],
           name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
         examples: [
-          ["workspace workflow show", "list the workflows you can run"],
           ["workspace workflow show rpiv", "see the inputs and steps of one before running it"],
           ["workspace workflow show rpiv --source", "read the file's text, to start your own copy"],
           ["workspace workflow show rpiv --source --json", "the text and its sha256 as one document, for a script"],

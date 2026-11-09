@@ -92,7 +92,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] code `unknown_workflow`; without +source:+ also `invalid_workflow`
       def show(id: nil, json: false, source: false, project: nil)
-        return list(json, project) unless id
+        return list(json: json, project: project) unless id
         return show_source(id, json, project) if source
         definition = @catalog.find(id, project: project)
         data = definition.to_h
@@ -108,6 +108,32 @@ module Workspace
         data["inputs"].each { |name, spec| @output.puts "  #{name}#{" (required)" if spec["required"]}#{": #{spec["description"]}" if spec["description"]}" }
         @output.puts "Steps:"
         data["steps"].each { |step| @output.puts "  #{step["id"].ljust(12)} #{step_traits(step)}".rstrip }
+      end
+
+      LIST_HEADER = ["ID", "SOURCE", "DESCRIPTION"].freeze
+
+      # Lists every workflow definition the catalog can find, as a table of id, source
+      # (project, global, source:N or builtin) and description (the definition's
+      # `description:`, else its title). An unusable definition's description names its
+      # first problem instead.
+      #
+      # @param json [Boolean]
+      # @param project [String, nil] the project whose definitions come first
+      # @return [void]
+      def list(json: false, project: nil)
+        entries = @catalog.list(project: project)
+        return document("workflows" => entries) if json
+        return @output.puts "No workflows." if entries.empty?
+
+        rows = entries.map do |entry|
+          description = if entry["problems"].any?
+            "INVALID: #{entry["problems"].first}"
+          else
+            entry["description"] || entry["title"] || ""
+          end
+          [entry["id"], entry["source"], description]
+        end
+        print_grid(LIST_HEADER, rows)
       end
 
       # Checks a definition's text with the checks a definition on disk gets, and
@@ -1109,10 +1135,17 @@ module Workspace
           facts = row["facts"]
           state = row["finished"] ? run["state"] : "#{run["state"]} (#{run.dig("current", "step")})"
           [run["id"], state, run["workspace"], workspace_status_text(facts), *[facts["config"], facts["tmux_session"], row["worktree"], facts["state_dir"]].map { |value| yes_no(value) }]
-            .map { |cell| TerminalText.escape(cell) }
         end
-        widths = TABLE_HEADER.each_index.map { |i| ([TABLE_HEADER[i]] + lines.map { |line| line[i] }).map(&:length).max }
-        ([TABLE_HEADER] + lines).each { |line| @output.puts line.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
+        print_grid(TABLE_HEADER, lines)
+      end
+
+      # One grid: the header, then one row per line, each column as wide as its widest
+      # cell. Every cell goes through TerminalText.escape.
+      def print_grid(header, lines)
+        widths = header.each_index.map { |i| ([header[i]] + lines.map { |line| line[i].to_s }).map { |cell| TerminalText.escape(cell).length }.max }
+        ([header] + lines).each do |line|
+          @output.puts line.each_with_index.map { |cell, i| TerminalText.escape(cell.to_s).ljust(widths[i]) }.join("  ").rstrip
+        end
       end
 
       def workspace_status_text(facts)
@@ -1257,16 +1290,6 @@ module Workspace
         return document("workflow" => data) if json
         @output.print found["text"] if found["text"]
         found["problems"].each { |problem| @error_output.puts TerminalText.escape("#{id}: #{problem}") }
-      end
-
-      def list(json, project)
-        entries = @catalog.list(project: project)
-        return document("workflows" => entries) if json
-        @output.puts "No workflows." if entries.empty?
-        entries.each do |entry|
-          problems = entry["problems"].any? ? "  INVALID: #{entry["problems"].first}" : ""
-          @output.puts TerminalText.escape("#{entry["id"].ljust(16)} #{entry["source"].ljust(8)} #{entry["title"]}#{problems}")
-        end
       end
 
       def step_traits(step)

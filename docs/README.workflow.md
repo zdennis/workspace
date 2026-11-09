@@ -5,6 +5,7 @@ Run a workflow in a workspace: an ordered list of steps, each done by the agent 
 ## Usage
 
 ```sh
+workspace workflow list [--json]
 workspace workflow show [ID] [--source] [--json]
 workspace workflow validate PATH|- [--id ID] [--json]
 workspace workflow add ID PATH|- [--dry-run] [--json]
@@ -524,9 +525,13 @@ Under the exclusive lock `add` and `update` take, `remove` checks that the file 
 
 `remove` writes no event-log line.
 
+### Listing the workflows
+
+`workflow list [--json]` prints one row per definition the lookup finds — id, where it came from (project, global, `source:N` or builtin) and its `description:` (else its title). A definition that can't be read says `INVALID` with its first problem. `--json` is the same list as one document.
+
 ### Installing from sources
 
-`workflow install [--source N] [--json]` reads each entry of the global `workflows.sources` config key and makes its `.yml` definitions available to every command, below your own files and above the presets. An entry is a local directory (absolute or `~/`) or a GitHub directory (`https://github.com/OWNER/REPO/tree/REF/PATH` or `owner/repo/path`, read with `gh`, so `gh` must be installed and logged in; without it the source fails with `workflow_source_gh_missing`). Set the list with `workspace config set workflows.sources`, or with [`init --workflow-sources`](README.init.md#workflow-sources). `install` is a global command: there is no `--name`.
+`workflow install [--source N] [--json]` reads each entry of the global `workflows.sources` config key and makes its `.yml` definitions available to every command, below your own files and above the presets. An entry is a local directory (absolute or `~/`) or a GitHub directory (`https://github.com/OWNER/REPO/tree/REF/PATH` or `owner/repo/path`, read with `gh`, so `gh` must be installed and logged in; without it the source fails with `workflow_source_gh_missing`). Set the list with `workspace config set workflows.sources`, or with [`init --workflow-sources`](README.init.md#workflow-sources), which also installs the sources it adds. `install` is a global command: there is no `--name`.
 
 Each file of each source is checked through the same lookup a run uses, so an `extends:` finds a preset or a sibling as it will later. A file that sets `prompt_file:` is refused (`workflow_source_prompt_file`): use `prompt:` instead. One bad file refuses its whole source, and the report lists each problem with its file; the cache keeps that source's previous version, and the other sources still install. A GitHub source is first staged beside its cache and swapped in only when everything passed, so a source is replaced whole or not at all. A local source is checked where it is and never copied. `install` writes only the cache and never `~/.config/workspace/workflows/`.
 

@@ -79,30 +79,53 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
-  describe "#show" do
-    it "lists the definitions, marking one that is not valid" do
+  describe "#list" do
+    it "lists the definitions in a table of id, source and description, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([
         {"id" => "bad", "title" => "bad", "source" => "global", "path" => "/defs/bad.yml", "problems" => ["steps must be a mapping"]},
         {"id" => "rpiv", "title" => "Research, Plan, Implement, Verify", "source" => "builtin", "path" => "/lib/rpiv.yml", "problems" => []}
       ])
 
-      command.show
+      command.list
 
       expect(output.string).to eq(
-        "bad              global   bad  INVALID: steps must be a mapping\n" \
-        "rpiv             builtin  Research, Plan, Implement, Verify\n"
+        "ID    SOURCE   DESCRIPTION\n" \
+        "bad   global   INVALID: steps must be a mapping\n" \
+        "rpiv  builtin  Research, Plan, Implement, Verify\n"
       )
+    end
+
+    it "prefers the description over the title" do
+      allow(catalog).to receive(:list).and_return([
+        {"id" => "rpiv", "title" => "RPIV", "description" => "One feature end to end.", "source" => "builtin", "path" => "/lib/rpiv.yml", "problems" => []}
+      ])
+
+      command.list
+
+      expect(output.string).to include("rpiv")
+      expect(output.string).to include("One feature end to end.")
+      expect(output.string).not_to include("RPIV")
     end
 
     it "lists the definitions as one document" do
       entries = [{"id" => "rpiv", "title" => "RPIV", "source" => "builtin", "path" => "/lib/rpiv.yml", "problems" => []}]
       allow(catalog).to receive(:list).and_return(entries)
 
-      command.show(json: true)
+      command.list(json: true)
 
       expect(json).to eq("schema_version" => 1, "ok" => true, "workflows" => entries)
     end
 
+    it "says so when there are none" do
+      allow(catalog).to receive(:list).and_return([])
+
+      command.list
+
+      expect(output.string).to eq("No workflows.\n")
+    end
+  end
+
+  describe "#show" do
     it "prints use_when and applies_to of one definition" do
       data = Workspace::WorkflowDefinition.parse("use_when: Feedback to act on.\napplies_to: [github_pr, branch]\nsteps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
       allow(catalog).to receive(:find).with("flow", project: anything).and_return(data)
@@ -357,7 +380,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.show
 
-      expect(output.string).to eq("mine             global   mine  INVALID: /defs/mine.yml is a link to a file that is not there\n")
+      expect(output.string).to eq("ID    SOURCE  DESCRIPTION\nmine  global  INVALID: /defs/mine.yml is a link to a file that is not there\n")
     end
   end
 

@@ -53,7 +53,7 @@ module HelpExamplesSpec
     "ticket", "ticket show", "ticket list", "tile", "tmux", "tmux show",
     "ui", "ui open", "ui open task", "ui open notes", "ui open inbox", "ui status",
     "wait-until-content", "whereis",
-    "workflow", "workflow show", "workflow validate", "workflow add", "workflow update", "workflow remove", "workflow install",
+    "workflow", "workflow list", "workflow show", "workflow validate", "workflow add", "workflow update", "workflow remove", "workflow install",
     "workflow run", "workflow render", "workflow check", "workflow simulate", "workflow start", "workflow status", "workflow events", "workflow files", "workflow attempts", "workflow audit", "workflow stats", "workflow compare", "workflow sweep", "workflow resume",
     "workflow cancel", "workflow approve", "workflow reject", "workflow advance"
   ].freeze
