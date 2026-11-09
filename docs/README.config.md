@@ -127,6 +127,12 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 workspace config set dev.up 'FOO="bar baz" ./start-dev'
 ```
 
+`workflows.sources` is split on commas and newlines, and quotes do not protect either, so an entry whose path holds a comma or a newline can't be listed: a comma would make two entries and a newline would end the entry. Use a path without them, or point a symlink without them at the directory. Separate several entries with a comma or put one per line:
+
+```sh
+workspace config set workflows.sources 'acme/workflows/presets, ~/workflows'
+```
+
 A client that wants to know where to keep notes for a workspace reads `notes.dir`; a worktree reads only its own value, and the main checkout reads the project's:
 
 ```sh
