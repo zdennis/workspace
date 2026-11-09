@@ -430,7 +430,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] code `unknown_run`
       def files(run:, json: false)
-        record = @store.run(run).to_h
+        record = @store.run(run)
         rows = @run_files.list(record)
         return document("run" => run, "artifacts_dir" => @run_files.artifacts_dir(record), "files" => rows) if json
         @output.puts "No files recorded for #{run}." if rows.empty?
@@ -896,7 +896,7 @@ module Workspace
 
       def scope_filter(scope)
         if scope&.workspace
-          ->(run) { run["workspace"] == scope.workspace }
+          ->(run) { run.workspace == scope.workspace }
         elsif scope&.project
           ->(run) { @status.in_project?(run, scope.project) }
         end

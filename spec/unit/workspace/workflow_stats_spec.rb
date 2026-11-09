@@ -172,7 +172,7 @@ RSpec.describe Workspace::WorkflowStats do
     it "narrows with the include callable" do
       put("wr_1", workspace: "app", steps: {"plan" => [attempt(1, "passed")]})
       put("wr_2", workspace: "lib", steps: {"plan" => [attempt(1, "failed")]})
-      result = stats.read(workflow: "rpiv", include: ->(run) { run["workspace"] == "lib" })
+      result = stats.read(workflow: "rpiv", include: ->(run) { run.workspace == "lib" })
       expect(row(result, "plan")).to include("passed" => 0, "failed" => 1)
     end
 
@@ -264,9 +264,9 @@ RSpec.describe Workspace::WorkflowStats do
           @error = error
         end
 
-        def active = @runs
+        def going = @runs.map { |run| Workspace::WorkflowRun.from_h(run) }
 
-        def archived = []
+        def finished = []
 
         def unreadable(archived: false) = []
 

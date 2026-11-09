@@ -5,7 +5,7 @@ module Workspace
   # and never followed, so its target's size and contents are never touched.
   # A path outside the run's artifacts directory is left out.
   class WorkflowRunFiles
-    # @param run [Hash] a run as {WorkflowRunStore#find} returns it
+    # @param run [WorkflowRun, Hash] a run as {WorkflowRunStore#run} returns it
     # @return [Array<Hash>] rows with "path" (absolute), "kind" (`prompt`,
     #   `check_log`, `proof_log` or `produces`), "step", "attempt" (nil for `produces`),
     #   "exists", "bytes" (nil when missing, a link or not a regular file)
@@ -13,17 +13,18 @@ module Workspace
     #   (the {WorkflowProduced} rule it breaks, else nil, always nil for a run
     #   started before the rules)
     def list(run)
+      run = WorkflowRun.from_h(run)
       dir = artifacts_dir(run)
       return [] unless dir
       artifacts = File.expand_path(dir)
       rows = []
-      strict = WorkflowProduced.strict?(run["definition"])
-      Array(run.dig("definition", "steps")).each do |step|
+      strict = WorkflowProduced.strict?(run.definition)
+      Array(run.definition&.dig("steps")).each do |step|
         id = step["id"]
-        Array(run.dig("steps", id, "attempts")).each do |attempt|
-          rows << row(artifacts, attempt["prompt_file"], "prompt", id, attempt["n"])
-          rows << row(artifacts, attempt.dig("check", "log"), "check_log", id, attempt["n"])
-          Array(attempt["proofs"]).each { |proof| rows << row(artifacts, proof["log"], "proof_log", id, attempt["n"]) }
+        (run.step(id)&.attempts || []).each do |attempt|
+          rows << row(artifacts, attempt.prompt_file, "prompt", id, attempt.n)
+          rows << row(artifacts, attempt.check&.dig("log"), "check_log", id, attempt.n)
+          Array(attempt.proofs).each { |proof| rows << row(artifacts, proof["log"], "proof_log", id, attempt.n) }
         end
         Array(step["produces"]).each { |file| rows << row(artifacts, File.join(artifacts, file.to_s), "produces", id, nil, strict: strict) }
       end
@@ -32,8 +33,9 @@ module Workspace
 
     # @return [String, nil] the run's artifacts directory, `<worktree>/.workflow/<id>` for an older run without one; nil when it has neither
     def artifacts_dir(run)
-      return run["artifacts_dir"] if run["artifacts_dir"]
-      File.join(run["worktree"], ".workflow", run["id"].to_s) if run["worktree"].is_a?(String) && !run["worktree"].empty?
+      run = WorkflowRun.from_h(run)
+      return run.artifacts_dir if run.artifacts_dir
+      File.join(run.worktree, ".workflow", run.id.to_s) if run.worktree.is_a?(String) && !run.worktree.empty?
     end
 
     private

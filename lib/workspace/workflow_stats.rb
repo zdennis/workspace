@@ -54,7 +54,7 @@ module Workspace
         run = WorkflowRun.from_h(stored)
         row_ids = step_ids(run)
         found = tally(run)
-        resumes = @loader.resumes(run.to_h)
+        resumes = @loader.resumes(run)
       rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
         malformed += 1
       else
@@ -155,7 +155,7 @@ module Workspace
     # ended without an outcome too (a cancel or `resume --from`), but not the one still going. A redelivered attempt
     # did no work and is also left out.
     def tokens_count?(run, id, attempts, attempt, kind)
-      return false unless WorkflowBudget.counted_attempt?(attempt.to_h) && kind != :not_delivered
+      return false unless WorkflowBudget.counted_attempt?(attempt) && kind != :not_delivered
       going = !WorkflowRunStore::TERMINAL_STATES.include?(run.state) && id == run.current && attempt.equal?(attempts.last) && attempt.outcome.nil?
       !going
     end
