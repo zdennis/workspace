@@ -35,7 +35,7 @@ RSpec.describe "workflow install over a real cache directory" do
   let(:source_dirs) { Workspace::WorkflowSourceDirs.new(config_resolver: resolver, state_dir: state, home: @dir) }
   let(:installer) do
     Workspace::WorkflowSourceInstaller.new(config: config, source_dirs: source_dirs, state_dir: state,
-      fetcher: Workspace::WorkflowSourceFetcher.new(state_dir: state, runner: runner, home: @dir, clock: -> { Time.utc(2026, 11, 9) }))
+      fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir, clock: -> { Time.utc(2026, 11, 9) }))
   end
   let(:command) do
     Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double, files: double,
@@ -144,6 +144,14 @@ RSpec.describe "workflow install over a real cache directory" do
 
       expect(problems.map { |p| p["code"] }).to eq(["workflow_source_prompt_file"])
     end
+
+    it "refuses a prompt_file a replace step would merge in over a preset" do
+      write(local("src"), "ship", "extends: rpiv\ntitle: T\nreplace:\n  a:\n    prompt_file: p.md\n")
+
+      problems = command.install["sources"].first["problems"]
+
+      expect(problems.map { |p| p["code"] }).to eq(["workflow_source_prompt_file"])
+    end
   end
 
   describe "a GitHub source" do
@@ -208,6 +216,57 @@ RSpec.describe "workflow install over a real cache directory" do
 
       expect(Dir.exist?(cache)).to be(false)
       expect(Dir.children(File.dirname(cache))).to eq([])
+    end
+
+    it "keeps the previous cache when the fetch itself fails mid-source" do
+      command.install
+      before = File.read(File.join(cache, "ship.yml"))
+      responses[:listing] = [{"type" => "file", "name" => "ship.yml", "path" => "wf/ship.yml", "sha" => "s2"},
+        {"type" => "file", "name" => "gone.yml", "path" => "wf/gone.yml", "sha" => "g1"}]
+      responses[:files] = {"ship.yml" => step_yaml, "gone.yml" => ""}
+      runner2 = ->(argv, chdir:, timeout:) do
+        next [JSON.generate([{"type" => "file", "name" => "ship.yml", "path" => "wf/ship.yml", "sha" => "s2"}]), "", true] unless argv.include?("-H")
+        ["", "HTTP 500", false]
+      end
+      failing = Workspace::WorkflowSourceInstaller.new(config: config, source_dirs: source_dirs, state_dir: state,
+        fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner2, home: @dir))
+
+      expect { failing.install }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workflow_source_failed") }
+
+      expect(File.read(File.join(cache, "ship.yml"))).to eq(before)
+      expect(Dir.children(File.dirname(cache))).to eq([File.basename(cache)])
+    end
+
+    it "installs the first position once when the entry is listed twice" do
+      @duplicate_entries = ["acme/widgets/wf", "acme/widgets/wf"]
+      dup_resolver = double(view: double(raw: @duplicate_entries.join(",")))
+      dup_installer = Workspace::WorkflowSourceInstaller.new(config: config, state_dir: state,
+        source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: dup_resolver, state_dir: state, home: @dir),
+        fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir, clock: -> { Time.utc(2026, 11, 9) }))
+      dup_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
+        files: double, run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: dup_installer, output: out, error_output: err)
+
+      row = dup_command.install
+
+      expect(row["sources"].map { |s| s["index"] }).to eq([1])
+      expect(Dir.children(cache).sort).to eq(%w[extra.yml manifest.json ship.yml])
+    end
+
+    it "installs the good source when another source is refused" do
+      @two_entries = ["acme/widgets/wf", local("bad")]
+      write(local("bad"), "broken", "steps: nope\n")
+      two_resolver = double(view: double(raw: @two_entries.join(",")))
+      two_installer = Workspace::WorkflowSourceInstaller.new(config: config, state_dir: state,
+        source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: two_resolver, state_dir: state, home: @dir),
+        fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir, clock: -> { Time.utc(2026, 11, 9) }))
+      two_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
+        files: double, run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: two_installer, output: out, error_output: err)
+
+      row = two_command.install
+
+      expect(row["outcome"]).to eq("failed")
+      expect(row["sources"].map { |s| [s["index"], s["outcome"]] }).to eq([[1, "installed"], [2, "refused"]])
+      expect(Dir.children(cache).sort).to eq(%w[extra.yml manifest.json ship.yml])
     end
   end
 

@@ -8,8 +8,9 @@ module Workspace
   # Gets the files of one `workflows.sources` entry. A local entry is checked and
   # answered in place: nothing is copied. A GitHub entry is read with `gh api`
   # (one directory listing, then one raw fetch per `.yml` file) and written, with
-  # a `manifest.json`, into its cache directory
-  # (`<state_dir>/.workflows-sources/<sha256-of-entry>/`). Credentials stay with
+  # a `manifest.json`, into the directory the caller gives (`into:`; the installer
+  # stages there and owns the swap into the cache directory
+  # `<state_dir>/.workflows-sources/<sha256-of-entry>/`). Credentials stay with
   # `gh`; none is read here.
   class WorkflowSourceFetcher
     # Seconds one `gh` call may take.
@@ -36,13 +37,11 @@ module Workspace
       TimedProcess.run(argv, chdir: chdir, timeout: timeout)
     end
 
-    # @param state_dir [String] the state root the cache lives under
     # @param runner [#call] `(argv, chdir:, timeout:)` returning `[stdout, stderr, success]`
     # @param home [String, nil] what a leading `~` stands for
     # @param timeout [Numeric] seconds one `gh` call may take
     # @param clock [#call] returns the time `installed_at` records
-    def initialize(state_dir:, runner: self.class.method(:run), home: ENV["HOME"], timeout: DEFAULT_TIMEOUT, clock: -> { Time.now })
-      @state_dir = state_dir
+    def initialize(runner: self.class.method(:run), home: ENV["HOME"], timeout: DEFAULT_TIMEOUT, clock: -> { Time.now })
       @runner = runner
       @home = home
       @timeout = timeout
@@ -50,17 +49,16 @@ module Workspace
     end
 
     # @param entry [String] one `workflows.sources` entry
-    # @param into [String, nil] a directory to write a remote source into (the caller owns it,
-    #   for staging); nil writes the source's cache directory, replacing what was there only
-    #   once every file has arrived
+    # @param into [String] a directory to write a remote source into (the caller owns it,
+    #   for staging); a local source ignores it and answers its own directory
     # @return [Result]
     # @raise [Workspace::Error] `workflow_source_invalid`, `workflow_source_local_missing`,
     #   `workflow_source_gh_missing` or `workflow_source_failed`
-    def fetch(entry, into: nil)
+    def fetch(entry, into:)
       parsed = parse(entry)
       return local(parsed) if parsed.kind == :local
 
-      into ? remote(entry, parsed, into) : cached(entry, parsed)
+      remote(entry, parsed, into)
     end
 
     private
@@ -77,22 +75,6 @@ module Workspace
           code: "workflow_source_local_missing", details: {"source" => parsed.path})
       end
       Result.new(dir: parsed.path, local: true, manifest: nil)
-    end
-
-    def cached(entry, parsed)
-      target = WorkflowSourceDirs.cache_dir(@state_dir, entry)
-      FileUtils.mkdir_p(File.dirname(target))
-      staging = "#{target}.staging-#{Process.pid}"
-      FileUtils.rm_rf(staging)
-      FileUtils.mkdir_p(staging)
-      begin
-        result = remote(entry, parsed, staging)
-        FileUtils.rm_rf(target)
-        File.rename(staging, target)
-        Result.new(dir: target, local: false, manifest: result.manifest)
-      ensure
-        FileUtils.rm_rf(staging)
-      end
     end
 
     def remote(entry, parsed, dir)
@@ -113,10 +95,14 @@ module Workspace
       unless doc.is_a?(Array)
         raise failed(entry, "#{parsed.path} is not a directory in #{parsed.owner}/#{parsed.repo}", nil)
       end
-      doc.select { |item| item.is_a?(Hash) && item["type"] == "file" && item["name"].to_s.end_with?(".yml") && item["name"] !~ %r{[/\\]} && item["path"].is_a?(String) }
-        .sort_by { |item| item["name"] }
+      doc.select { |item| usable_file?(item) }.sort_by { |item| item["name"] }
     rescue JSON::ParserError
       raise failed(entry, "gh returned an unreadable directory listing", nil)
+    end
+
+    def usable_file?(item)
+      item.is_a?(Hash) && item["type"] == "file" && item["name"].to_s.end_with?(".yml") &&
+        item["name"] !~ %r{[/\\]} && !item["name"].start_with?(".") && item["path"].is_a?(String)
     end
 
     def endpoint(parsed, path)

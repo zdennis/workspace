@@ -199,7 +199,7 @@ RSpec.describe "gh callers" do
 
     it "lists the directory, then fetches each yml raw, with ?ref= when the source names a ref" do
       Dir.mktmpdir do |dir|
-        described_class.new(state_dir: dir, runner: runner).fetch("https://github.com/acme/widgets/tree/v1/wf")
+        described_class.new(runner: runner).fetch("https://github.com/acme/widgets/tree/v1/wf", into: dir)
 
         expect(calls).to eq([
           %w[gh api repos/acme/widgets/contents/wf?ref=v1],
@@ -210,7 +210,7 @@ RSpec.describe "gh callers" do
 
     it "leaves ?ref= off for the default branch" do
       Dir.mktmpdir do |dir|
-        described_class.new(state_dir: dir, runner: runner).fetch("acme/widgets/wf")
+        described_class.new(runner: runner).fetch("acme/widgets/wf", into: dir)
 
         expect(calls.map(&:last)).to eq(%w[repos/acme/widgets/contents/wf repos/acme/widgets/contents/wf/a.yml])
       end

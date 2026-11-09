@@ -39,6 +39,10 @@ module Workspace
         raise Workspace::UsageError, "--source #{only} is not a position in workflows.sources (#{listed})."
       end
       targets = only ? [only] : (1..entries.size).to_a
+      # Duplicate entries share one cache directory; the first position installs it and the
+      # later ones are the same source, so they are not worked or reported again.
+      seen = {}
+      targets = targets.select { |n| seen.key?(entries[n - 1]) ? false : (seen[entries[n - 1]] = true) }
       staged = {}
       begin
         targets.each { |n| staged[n] = stage(entries[n - 1]) }
@@ -62,7 +66,13 @@ module Workspace
       target = WorkflowSourceDirs.cache_dir(@state_dir, entry)
       staging = "#{target}.staging-#{Process.pid}"
       FileUtils.rm_rf(staging)
-      result = @fetcher.fetch(entry, into: staging)
+      fetched = false
+      begin
+        result = @fetcher.fetch(entry, into: staging)
+        fetched = true
+      ensure
+        FileUtils.rm_rf(staging) unless fetched
+      end
       Staged.new(dir: result.dir, local: result.local, manifest: result.manifest, staging: staging, target: target)
     end
 
@@ -97,9 +107,18 @@ module Workspace
       {"file" => file, "code" => code, "message" => message}
     end
 
+    # Any `prompt_file:` anywhere in the file, including inside a `replace:` step a later
+    # `extends:` would merge in, refuses the source — the resolved definition a run reads
+    # must not carry one.
     def prompt_file?(text)
-      steps = YAML.safe_load(text)&.then { |doc| doc["steps"] if doc.is_a?(Hash) }
-      steps.is_a?(Hash) && steps.values.any? { |step| step.is_a?(Hash) && step.key?("prompt_file") }
+      found = ->(node) do
+        case node
+        when Hash then node.any? { |key, value| key == "prompt_file" || found.call(value) }
+        when Array then node.any? { |each| found.call(each) }
+        else false
+        end
+      end
+      found.call(YAML.safe_load(text))
     rescue Psych::Exception, ArgumentError
       false
     end
@@ -121,11 +140,23 @@ module Workspace
       row.merge("installed" => installed, "changed" => changed, "removed" => removed, "outcome" => same ? "unchanged" : "installed")
     end
 
+    # The old cache is renamed aside first and the staging directory takes its place in one
+    # rename, so a source is never without a cache; a failed rename puts the old one back.
     def swap(row, staged)
       return if staged.local || row["outcome"] == "refused"
       FileUtils.mkdir_p(File.dirname(staged.target))
-      FileUtils.rm_rf(staged.target)
-      File.rename(staged.staging, staged.target)
+      return File.rename(staged.staging, staged.target) unless File.directory?(staged.target)
+
+      aside = "#{staged.target}.replaced-#{Process.pid}"
+      FileUtils.rm_rf(aside)
+      File.rename(staged.target, aside)
+      begin
+        File.rename(staged.staging, staged.target)
+      rescue SystemCallError
+        File.rename(aside, staged.target)
+        raise
+      end
+      FileUtils.rm_rf(aside)
     end
 
     # A source file hides the preset or a later source's file of its id, unless it extends that id on purpose.
