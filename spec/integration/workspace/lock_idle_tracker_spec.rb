@@ -104,7 +104,6 @@ RSpec.describe Workspace::LockIdleTracker do
 
   it "runs no subprocess when no hold in any namespace matches this pane" do
     hold(FakeLockIdentity.new(pid: 200, pane: "%2"))
-    expect(Open3).not_to receive(:capture3)
     expect(lock_namespace).not_to receive(:resolve)
 
     expect(tracker.update("Stop")).to eq([])

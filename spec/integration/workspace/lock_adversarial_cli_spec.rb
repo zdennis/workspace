@@ -106,8 +106,9 @@ RSpec.describe "workspace lock adversarial findings" do
 
   describe "namespace resolution when git is missing or fails" do
     it "U6: raises an uncaught Errno::ENOENT instead of falling back gracefully when git is not installed" do
-      real_namespace = Workspace::LockNamespace.new(lineage: LineageSupport.lineage, config: config)
-      allow(Open3).to receive(:popen3).and_raise(Errno::ENOENT, "No such file or directory - git")
+      git_missing = FakeGit.new
+      lineage = Workspace::WorkspaceLineage.new(rev_parse: ->(dir, what) { git_missing.path_of(dir, what) })
+      real_namespace = Workspace::LockNamespace.new(lineage: lineage, config: config)
 
       expect {
         real_namespace.resolve(cwd: tmpdir)
