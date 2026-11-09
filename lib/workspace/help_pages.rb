@@ -398,6 +398,27 @@ module Workspace
           ["workspace workflow remove ship --yes --json", "delete it and report one document (--json never asks, so it needs --yes)"]
         ]
       },
+      "install" => {
+        usage: ["workflow install [--source N] [--json]"],
+        summary: "Fetch and check the workflows.sources definitions",
+        about: [
+          "Reads each entry of the workflows.sources config key (a local directory, or a GitHub repository read",
+          "with gh), checks every .yml file in it with the lookup a run will use, so an extends: finds a preset or",
+          "a sibling as it will later, and caches a GitHub source under the state directory. A local source is",
+          "checked in place and never copied. One invalid file refuses its whole source (the report lists each",
+          "problem, and the cache keeps its previous version); the other sources still install. A definition may",
+          "not set prompt_file:. The report names the workflows new, changed or gone since the cached version,",
+          "and warns when a source hides a preset. Run it again to update. Only the cache is written, never",
+          "~/.config/workspace/workflows/. To drop a source, remove it from workflows.sources and delete its",
+          "cache directory (the report prints the path)."
+        ],
+        options: [["--source N", "Install only the source at position N of workflows.sources (1 is the first); write the number after the flag"], JSON_OPT],
+        examples: [
+          ["workspace workflow install", "fetch, check and cache every listed source"],
+          ["workspace workflow install --source 2", "update only the second source"],
+          ["workspace workflow install --json", "the per-source rows (installed, changed, removed, problems) and warnings as one document, for a script"]
+        ]
+      },
       "run" => {
         usage: ["workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]"],
         summary: "Start a run of a workflow in a workspace",

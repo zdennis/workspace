@@ -317,6 +317,7 @@ require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
 require_relative "workspace/workflow_source_dirs"
 require_relative "workspace/workflow_source_fetcher"
+require_relative "workspace/workflow_source_installer"
 require_relative "workspace/focus_config"
 require_relative "workspace/workflow_defaults"
 require_relative "workspace/workflow_branch_inputs"
@@ -469,8 +470,9 @@ module Workspace
   # @param tmux [Workspace::Tmux, nil] the tmux adapter every collaborator shares; nil builds the real one
   # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
   # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
+  # @param workflow_source_runner [#call, nil] runs the `gh` calls of `workflow install`: `(argv, chdir:, timeout:)` answering `[stdout, stderr, success]`; nil runs the real one
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -710,9 +712,10 @@ module Workspace
     workflow_needs_me = WorkflowNeedsMe.new
     protected_branch = ProtectedBranch.new(git: git)
     branch_inputs = WorkflowBranchInputs.new(git: git, start_ref: start_ref, protected_branch: protected_branch, pull_request_status: PullRequestStatus.new)
-    workflow_source_fetcher = WorkflowSourceFetcher.new(state_dir: config.state_dir)
+    workflow_source_installer = WorkflowSourceInstaller.new(config: config, source_dirs: workflow_source_dirs, state_dir: config.state_dir,
+      fetcher: WorkflowSourceFetcher.new(state_dir: config.state_dir, runner: workflow_source_runner || WorkflowSourceFetcher.method(:run)))
     workflow_command = Commands::Workflow.new(
-      source_fetcher: workflow_source_fetcher,
+      source_installer: workflow_source_installer,
       branch_inputs: branch_inputs,
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),

@@ -34,12 +34,16 @@ module Workspace
       []
     end
 
-    private
-
+    # The listed `workflows.sources` entries, in list order. Unlike {#call}, a config that can't be read raises.
+    #
+    # @return [Array<String>]
+    # @raise [Workspace::ConfigParseError, ArgumentError]
     def entries
       value = @config_resolver.view(workspace: "", upto: "global").raw("workflows.sources")
       value.nil? ? [] : ConfigSchema.parse("workflows.sources", value)
     end
+
+    private
 
     def existing(entry)
       parsed = WorkflowSource.parse(entry, home: @home)

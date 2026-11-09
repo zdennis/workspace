@@ -46,7 +46,7 @@ module Workspace
     def find(id, project: nil)
       source, path = locate(id.to_s, project: project)
       raise_unknown(id, project) unless path
-      WorkflowDefinition.parse(File.read(path, encoding: Encoding::UTF_8), id: id.to_s, source: source, path: path, parent_lookup: lookup_for(project))
+      WorkflowDefinition.parse(File.read(path, encoding: Encoding::UTF_8), id: id.to_s, source: source, path: path, parent_lookup: parent_lookup(project))
     end
 
     # The file an id is read from: the project's, else a user's, else a preset.
@@ -139,6 +139,14 @@ module Workspace
       dirs(project).keys
     end
 
+    # The lookup a definition being read finds the workflow its `extends:` names with: {#parent} for a fixed project.
+    #
+    # @param project [String, nil] the project whose definitions are searched first
+    # @return [#call] `(id, below: nil)` answering what {#parent} answers
+    def parent_lookup(project = nil)
+      ->(id, below: nil) { parent(id, below: below, project: project) }
+    end
+
     # Where a user's file of this id is (or would be) written.
     #
     # @param id [String]
@@ -186,7 +194,7 @@ module Workspace
         end
         row = summary(id, source, path, project).merge("sha256" => read["sha256"], "problems" => read["problems"])
         next row unless read["problems"].empty?
-        data = WorkflowDefinition.parse(read["text"], id: id, source: source, path: path, parent_lookup: lookup_for(project)).to_h
+        data = WorkflowDefinition.parse(read["text"], id: id, source: source, path: path, parent_lookup: parent_lookup(project)).to_h
         row.merge("title" => data["title"], "description" => data["description"], "use_when" => data["use_when"], "applies_to" => data["applies_to"])
       end
     end
@@ -223,10 +231,6 @@ module Workspace
       (parsed.is_a?(Hash) && parsed["extends"].is_a?(String)) ? parsed["extends"] : nil
     rescue
       nil
-    end
-
-    def lookup_for(project)
-      ->(id, below: nil) { parent(id, below: below, project: project) }
     end
 
     def summary(id, source, path, project)
@@ -279,7 +283,7 @@ module Workspace
       text = bytes.dup.force_encoding(Encoding::UTF_8)
       text = nil unless text.valid_encoding?
       problems = begin
-        WorkflowDefinition.parse(bytes.dup.force_encoding(Encoding::UTF_8), id: id, source: source, path: path, parent_lookup: lookup_for(project))
+        WorkflowDefinition.parse(bytes.dup.force_encoding(Encoding::UTF_8), id: id, source: source, path: path, parent_lookup: parent_lookup(project))
         []
       rescue Workspace::Error => e
         e.details["problems"] || [e.message]

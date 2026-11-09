@@ -37,6 +37,7 @@ module Workspace
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
       # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
+      # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -46,7 +47,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_fetcher: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -66,7 +67,7 @@ module Workspace
         @compare = compare
         @step_check = step_check
         @simulator = simulator
-        @source_fetcher = source_fetcher
+        @source_installer = source_installer
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -295,6 +296,43 @@ module Workspace
         message = "#{dry_run ? "Would update" : "Updated"} workflow #{id} at #{written["path"]}#{note}."
         @output.puts message
         {"workspace" => nil, "outcome" => dry_run ? "dry_run" : "updated", "reason" => nil, "message" => message, "workflow" => id}.merge(written).merge(extended_by(id))
+      end
+
+      # Fetches the `workflows.sources` entries, checks every definition in each against the
+      # lookup a run will use, and caches the GitHub ones under the state directory (a local
+      # source is checked in place and never copied). A source with one invalid file is
+      # refused whole and its cache keeps the version it had; the others still install.
+      # Re-running updates: it reports what is new, changed or gone since the cached version.
+      # Writes nothing to the user's workflows directory. To drop a source, unset it from
+      # `workflows.sources` and delete its cache directory (the report prints the hint).
+      #
+      # @param source [Integer, nil] the 1-based position in `workflows.sources` of the one source to install; nil installs all
+      # @return [Hash{String=>Object}] the action row: outcome "installed", "unchanged" or "failed" (a source was refused),
+      #   with "sources" (a row each) and "warnings"
+      # @raise [Workspace::UsageError] when +source+ is not a position in the list
+      # @raise [Workspace::Error] code `workflow_source_invalid`, `workflow_source_local_missing`, `workflow_source_gh_missing`, `workflow_source_failed`
+      def install(source: nil)
+        raise Workspace::Error, "workflow install is not available: no source installer was wired" unless @source_installer
+        result = @source_installer.install(only: source)
+        rows = result["sources"]
+        outcome = if result["failed"]
+          "failed"
+        elsif rows.any? { |row| row["outcome"] == "installed" }
+          "installed"
+        else
+          "unchanged"
+        end
+        if rows.empty?
+          message = "No workflows.sources are set; add one with `workspace config set workflows.sources`."
+          @output.puts message
+        else
+          rows.each { |row| print_install_row(row) }
+          cached = rows.reject { |row| row["kind"] == "local" }.map { |row| row["path"] }
+          @output.puts "To stop using a source, remove it from workflows.sources (`workspace config set workflows.sources`) and delete #{cached.map { |each| TerminalText.escape(each) }.join(", ")}." if cached.any?
+          message = "#{rows.count { |row| row["outcome"] != "refused" }} of #{rows.size} workflow sources installed."
+        end
+        result["warnings"].each { |warning| @error_output.puts "warning: #{TerminalText.escape(warning["message"])}" }
+        {"workspace" => nil, "outcome" => outcome, "reason" => nil, "message" => message, "sources" => rows, "warnings" => result["warnings"]}
       end
 
       # Refuses, before anyone is asked anything, an id that has no file of the user's.
@@ -1162,6 +1200,19 @@ module Workspace
         return [base, nil] unless installed
         lookup = ->(parent_id, below: nil) { (parent_id == id && below.nil?) ? {"text" => text, "path" => installed, "source" => "global"} : base.call(parent_id, below: below) }
         [lookup, [[id, installed]]]
+      end
+
+      def print_install_row(row)
+        @output.puts "source:#{row["index"]} #{TerminalText.escape(row["source"])}: #{row["outcome"]}"
+        if row["outcome"] == "refused"
+          row["problems"].each { |problem| @output.puts "  #{TerminalText.escape(problem["file"])}: #{TerminalText.escape(problem["message"])} (#{problem["code"]})" }
+          @output.puts "  nothing from this source was installed; the cache keeps its previous version."
+          return
+        end
+        {"installed" => "new", "changed" => "changed", "removed" => "removed"}.each do |key, label|
+          row[key].each { |id| @output.puts "  #{label}: #{TerminalText.escape(id)} (source:#{row["index"]})" }
+        end
+        @output.puts "  workflows: #{row["workflows"].map { |id| TerminalText.escape(id) }.join(", ")}" if row["workflows"].any? && row["outcome"] != "installed"
       end
 
       # Warns on stderr of the definitions that extend +id+, which a change to it reaches, and answers the row field naming them (empty when none).
