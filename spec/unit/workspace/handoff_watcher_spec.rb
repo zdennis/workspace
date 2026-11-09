@@ -94,7 +94,7 @@ RSpec.describe Workspace::HandoffWatcher do
   let(:delivery_lock) do
     scheduled_lock_class.new(lock_wait)
   end
-  let(:typer) { Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor) }
+  let(:typer) { Workspace::PromptTyper.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "ws"), session_monitor: monitor) }
   # Each sleep the watcher's thread starts, so a spec can wait for the thread to reach one.
   let(:sleeping) { Queue.new }
 
@@ -276,7 +276,7 @@ RSpec.describe Workspace::HandoffWatcher do
     it "sends one follow-up after the interval and another one interval later" do
       arm
       tick(30)
-      expect(tmux.delivered).to eq([["ws", "0.1", text, false], ["ws", "0.1", "", true]])
+      expect(tmux.delivered).to eq([["ws", "%5", text, false], ["ws", "%5", "", true]])
       expect(followups).to eq([{"pane_id" => "%5", "attempt" => 1, "outcome" => "submitted"}])
 
       tick(29)
@@ -705,7 +705,7 @@ RSpec.describe Workspace::HandoffWatcher do
         panes[id]
       end
       expect { tick(30) }.not_to raise_error
-      expect(tmux.delivered.map { |d| d[1] }.uniq).to eq(["0.2"])
+      expect(tmux.delivered.map { |d| d[1] }.uniq).to eq(["%6"])
     end
 
     it "makes no tmux call with no watches" do
@@ -1019,7 +1019,7 @@ RSpec.describe Workspace::HandoffWatcher do
         watcher.start
         Timeout.timeout(5) { Thread.pass until tmux.delivered.size == 2 }
         watcher.stop
-        expect(tmux.delivered).to eq([["ws", "0.1", text, false], ["ws", "0.1", "", true]])
+        expect(tmux.delivered).to eq([["ws", "%5", text, false], ["ws", "%5", "", true]])
       end
     end
 
@@ -1048,7 +1048,7 @@ RSpec.describe Workspace::HandoffWatcher do
           stopper.join
         end
 
-        expect(tmux.delivered).to eq([["ws", "0.1", text, false], ["ws", "0.1", "", true]])
+        expect(tmux.delivered).to eq([["ws", "%5", text, false], ["ws", "%5", "", true]])
       end
     end
   end

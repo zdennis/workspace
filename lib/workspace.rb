@@ -896,10 +896,10 @@ module Workspace
       pane_bindings: pane_bindings,
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
-      handoff_watcher_factory: ->(workspace:, session_monitor:, **rest) {
-        HandoffWatcher.new(tmux: tmux, workspace: workspace, session_monitor: session_monitor, logger: logger,
+      handoff_watcher_factory: ->(workspace:, session_monitor:, session_name:, **rest) {
+        HandoffWatcher.new(tmux: tmux, session_name: session_name, workspace: workspace, session_monitor: session_monitor, logger: logger,
           plan_paused: PlanPaused.new(workspace: workspace, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }),
-          typer: PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger), **rest)
+          typer: PromptTyper.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_monitor: session_monitor, logger: logger), **rest)
       },
       spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },

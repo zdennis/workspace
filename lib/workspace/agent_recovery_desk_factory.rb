@@ -50,7 +50,7 @@ module Workspace
         store: AgentRecoveryStore.new(path: @config.agent_recovery_path(workspace)), transcript: @transcript,
         stopper: @stopper, detector: @agent_commands.detector(workspace),
         process_tree: @process_tree, ledger: @ledger, resume_command: @resume_command,
-        prompt_typer: PromptTyper.new(tmux: @tmux, session_monitor: session_monitor, logger: @logger),
+        prompt_typer: PromptTyper.new(panes: PaneFactory.new(tmux: @tmux, session_name: given.fetch(:session_name)), session_monitor: session_monitor, logger: @logger),
         readiness: @readiness, marker: @marker,
         inbox: -> { InboxStore.new(path: @config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: @error_output) },
         logger: @logger, **given.slice(*DAEMON_PARTS))

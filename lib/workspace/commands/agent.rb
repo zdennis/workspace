@@ -1263,7 +1263,7 @@ module Workspace
       end
 
       def build_agent_status_desk(workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:, restarting:)
-        AgentStatusDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+        AgentStatusDesk.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
           hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting, logger: @logger)
       end
 
@@ -1276,13 +1276,13 @@ module Workspace
 
       def build_handoff_watcher(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:)
         HandoffWatcher.new(tmux: @tmux, session_name: session_name, workspace: workspace, session_monitor: session_monitor,
-          typer: PromptTyper.new(tmux: @tmux, session_monitor: session_monitor, logger: @logger),
+          typer: PromptTyper.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), session_monitor: session_monitor, logger: @logger),
           delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: @logger)
       end
 
       def build_prompt_queue_desk(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:,
         claim_restart:, release_restart:, recovering: ->(_pane_id) { false })
-        PromptQueueDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+        PromptQueueDesk.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
           store: PromptQueueStore.new(path: @config.prompt_queue_path(workspace)), delivery_lock: delivery_lock,
           restarting: restarting, claim_restart: claim_restart, release_restart: release_restart,
           recovering: recovering, event_log: @event_log, logger: @logger)

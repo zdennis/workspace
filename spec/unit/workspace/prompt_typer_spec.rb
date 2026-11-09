@@ -3,35 +3,24 @@ require "spec_helper"
 RSpec.describe Workspace::PromptTyper do
   let(:empty_prompt) { "────────\n❯ \n" }
 
-  let(:fake_tmux_class) do
-    Class.new do
-      attr_accessor :screens, :statuses
-      attr_reader :delivered
-
-      def initialize(screen)
-        @screens = [screen]
-        @statuses = []
-        @delivered = []
-      end
-
-      def capture_screen(_pane_id) = (@screens.size > 1) ? @screens.shift : @screens.first
-
-      def capture_screen_styled(pane_id) = capture_screen(pane_id)
-
-      def deliver(session, target, text, enter: true)
-        @delivered << [session, target, text, enter]
-        status = @statuses.shift || (enter ? :submitted : :pasted)
-        Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
-      end
+  # A paste is answered :pasted and Enter :submitted, unless `tmux.statuses` says otherwise.
+  let(:tmux) do
+    Interceptable.subclass(FakeTmux, :deliver).new(screens: [empty_prompt]).tap do |t|
+      t.on(:deliver) { |original, *args, **kw| answer(original, *args, **kw) }
     end
   end
+  let(:pane) { FakePane.new(id: "%5", tmux: tmux, row: {id: "%5", window: 0, index: 1, pid: 100}) }
+  let(:factory) { FakePaneFactory.new(panes: [pane]) }
 
-  let(:tmux) { Interceptable.subclass(fake_tmux_class, :deliver).new(empty_prompt) }
+  def answer(original, *args, enter: true, **kw)
+    tmux.statuses << (enter ? :submitted : :pasted) if tmux.statuses.empty?
+    original.call(*args, enter: enter, **kw)
+  end
 
   let(:facts) { {kind: "claude", state: "idle", open_tools: []} }
   let(:monitor) { double("monitor").tap { |m| allow(m).to receive(:typing_facts) { facts } } }
 
-  subject(:typer) { described_class.new(tmux: tmux, session_monitor: monitor) }
+  subject(:typer) { described_class.new(panes: factory, session_monitor: monitor) }
 
   def type(text = "run the specs", **opts)
     typer.type(session_name: "api", target: "0.1", pane_id: "%5", text: text, **opts)
@@ -45,7 +34,7 @@ RSpec.describe Workspace::PromptTyper do
     expect(result.outcome).to eq(:submitted)
     expect(result.delivery.status).to eq(:submitted)
     expect(result).to be_landed
-    expect(tmux.delivered).to eq([["api", "0.1", "run the specs", false], ["api", "0.1", "", true]])
+    expect(pane.deliveries).to eq([{text: "run the specs", enter: false}, {text: "", enter: true}])
   end
 
   it "reads one styled capture, so a suggestion reads as an empty input and a draft does not" do
@@ -74,7 +63,7 @@ RSpec.describe Workspace::PromptTyper do
 
     expect(result.to_h).to include(outcome: :refused, code: "pane_not_ready", reason: "waiting")
     expect(result).not_to be_landed
-    expect(tmux.delivered).to be_empty
+    expect(pane.deliveries).to be_empty
   end
 
   describe "before_enter" do
@@ -85,12 +74,12 @@ RSpec.describe Workspace::PromptTyper do
 
       expect(result.outcome).to eq(:not_submitted)
       expect(result).to be_landed
-      expect(tmux.delivered).to eq([["api", "0.1", "run the specs", false]])
+      expect(pane.deliveries).to eq([{text: "run the specs", enter: false}])
     end
 
     it "presses Enter when it says yes" do
       expect(type(before_enter: -> { true }).outcome).to eq(:submitted)
-      expect(tmux.delivered.last).to eq(["api", "0.1", "", true])
+      expect(pane.deliveries.last).to eq({text: "", enter: true})
     end
 
     it "is called after the last check and before Enter" do
@@ -98,7 +87,7 @@ RSpec.describe Workspace::PromptTyper do
       allow(monitor).to receive(:typing_facts) { order << :check && facts }
       tmux.on(:deliver) do |original, *args, **opts|
         order << (opts[:enter] ? :enter : :paste)
-        original.call(*args, **opts)
+        answer(original, *args, **opts)
       end
       type(before_enter: -> { (order << :before_enter) && true })
 
@@ -118,7 +107,7 @@ RSpec.describe Workspace::PromptTyper do
     result = type(before_paste: -> { false })
 
     expect(result.outcome).to eq(:aborted)
-    expect(tmux.delivered).to be_empty
+    expect(pane.deliveries).to be_empty
   end
 
   it "calls before_paste after the first check and before the paste" do
@@ -138,7 +127,7 @@ RSpec.describe Workspace::PromptTyper do
 
     expect(result.outcome).to eq(:not_landed)
     expect(result).not_to be_landed
-    expect(tmux.delivered.size).to eq(1)
+    expect(pane.deliveries.size).to eq(1)
   end
 
   it "reports a tmux failure on the paste as safe to type again" do
@@ -158,7 +147,7 @@ RSpec.describe Workspace::PromptTyper do
     expect(result.outcome).to eq(:not_submitted)
     expect(result).to be_landed
     expect(result.message).to include("Enter was not pressed")
-    expect(tmux.delivered.size).to eq(1)
+    expect(pane.deliveries.size).to eq(1)
   end
 
   it "doesn't press Enter when the input line no longer holds the text" do
@@ -167,7 +156,7 @@ RSpec.describe Workspace::PromptTyper do
     result = type
 
     expect(result.to_h).to include(outcome: :not_submitted, reason: "input_changed")
-    expect(tmux.delivered.size).to eq(1)
+    expect(pane.deliveries.size).to eq(1)
   end
 
   it "checks for the whole text with exact:, where pasted: takes the same text or one placeholder" do

@@ -4,55 +4,36 @@ require "tmpdir"
 RSpec.describe Workspace::PromptQueueDesk do
   let(:empty_prompt) { "────────\n❯ \n" }
 
-  # One tmux for the desk and the typer: a paste shows in the input line and
-  # Enter empties it again, unless screens are scripted.
-  let(:fake_tmux_class) do
-    Class.new do
-      attr_accessor :details, :server_pid, :screen, :scripted, :statuses
-      attr_reader :delivered
+  # One pane for the desk and the typer: a paste shows in the input line and Enter empties it
+  # again, unless screens are scripted through `state`.
+  let(:state) { {screen: empty_prompt, scripted: nil, key_ok: true} }
+  let(:log) { [] }
+  let(:row) { {id: "%5", window: 0, index: 1, pid: 100} }
 
-      def initialize(screen)
-        @details = [{id: "%5", window: 0, index: 1, pid: 100}]
-        @server_pid = "77"
-        @screen = screen
-        @empty = screen
-        @delivered = []
-        @statuses = []
+  let(:tmux) do
+    Interceptable.subclass(FakeTmux, :deliver, :send_key, :capture_pane).new(details: [row], server_pid: "77").tap do |t|
+      t.screen_script = -> { state[:scripted] ? state[:scripted].call : state[:screen] }
+      t.on(:deliver) { |original, *args, **kw| echo_deliver(original, *args, **kw) }
+      t.on(:send_key) do |original, *args|
+        log << [:key, args.last]
+        state[:key_ok] && original.call(*args)
       end
-
-      def pane_details(_session, window: "0")
-        raise ArgumentError, "expected every window" unless window.nil?
-        @details
-      end
-
-      def server_pid_for_pane(_pane_id) = @server_pid
-
-      def capture_screen(_pane_id) = @scripted ? @scripted.call : @screen
-
-      def capture_screen_styled(pane_id) = capture_screen(pane_id)
-
-      def log = (@log ||= [])
-
-      def key_ok = @key_ok != false
-
-      attr_writer :key_ok
-
-      def send_key(_session, _pane, key)
-        log << [:key, key]
-        key_ok
-      end
-
-      def deliver(session, target, text, enter: true)
-        log << [:deliver, text, enter]
-        @delivered << [session, target, text, enter]
-        @screen = enter ? @empty : @screen.sub(/❯ \n\z/, "❯ #{text}\n────────\n")
-        status = @statuses.shift || (enter ? :submitted : :pasted)
-        Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
-      end
+      t.on(:capture_pane) { |_original, *_args, **_kw| state[:screen] }
     end
   end
+  let(:pane) { FakePane.new(id: "%5", tmux: tmux, row: row) }
+  let(:factory) { FakePaneFactory.new(panes: [pane]) }
 
-  let(:tmux) { Interceptable.subclass(fake_tmux_class, :deliver, :send_key).new(empty_prompt) }
+  def echo_deliver(original, session, target, text, enter: true)
+    log << [:deliver, text, enter]
+    state[:screen] = enter ? empty_prompt : state[:screen].sub(/❯ \n\z/, "❯ #{text}\n────────\n")
+    tmux.statuses << (enter ? :submitted : :pasted) if tmux.statuses.empty?
+    original.call(session, target, text, enter: enter)
+  end
+
+  def list(*rows)
+    factory.panes.replace(rows.map { |listed| FakePane.new(id: listed[:id], tmux: tmux, row: listed) })
+  end
 
   let(:t0) { Time.utc(2026, 10, 19, 12, 0, 0) }
   let(:now) { [t0] }
@@ -87,11 +68,11 @@ RSpec.describe Workspace::PromptQueueDesk do
   let(:recovering) { [] }
   let(:refuse_claim) { [false] }
   let(:on_sleep) { [] }
-  let(:typer) { Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor) }
+  let(:typer) { Workspace::PromptTyper.new(panes: factory, session_monitor: monitor) }
   let(:pane_locks) { Workspace::PaneLocks.new }
 
   subject(:desk) do
-    described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
+    described_class.new(panes: factory, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
       delivery_lock: Mutex.new, restarting: ->(id) { restarting.include?(id) }, recovering: ->(id) { recovering.include?(id) },
       claim_restart: ->(id) { (restarting.include?(id) || refuse_claim[0]) ? nil : (restarting << id) && :claim },
       release_restart: ->(id, token) { restarting.delete(id) if token == :claim },
@@ -109,7 +90,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
   def stop_hook = desk.session_event("pane_id" => "%5", "event" => "stop", "session_id" => "s1")
 
-  def typed = tmux.delivered.select { |_, _, text, enter| !enter }.map { |_, _, text, _| text }
+  def typed = pane.deliveries.reject { |sent| sent[:enter] }.map { |sent| sent[:text] }
 
   def last_delivered = JSON.parse(File.read(File.join(dir, "prompt-queue.json")))["panes"].dig("%5", "last_delivered_at")
 
@@ -128,7 +109,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
       expect(reply).to eq("ok" => true, "delivered" => true, "submitted" => true, "id" => "0000000000000001",
         "pane" => "0.1", "pane_id" => "%5")
-      expect(tmux.delivered).to eq([["api", "0.1", "run the specs", false], ["api", "0.1", "", true]])
+      expect(pane.deliveries).to eq([{text: "run the specs", enter: false}, {text: "", enter: true}])
       expect(store.entries).to eq([])
       expect(last_delivered).not_to be_nil
       expect(events).to eq([])
@@ -136,7 +117,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
     it "waits for the screen to stay unchanged before typing" do
       screens = ["a", "b", "b", "b", "b", "b", "b", "b", "b", "b", "b"].map { |s| "#{s}\n#{empty_prompt}" }
-      tmux.scripted = -> { (screens.size > 1) ? screens.shift : tmux.screen }
+      state[:scripted] = -> { (screens.size > 1) ? screens.shift : state[:screen] }
 
       send_prompt
 
@@ -156,7 +137,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
     it "types into a pane that shows only Claude Code's suggestion" do
       suggestion = "────────\n\e[39m❯ \e[2msend %45 the reply when it's done\e[0m\n────────\n"
-      tmux.scripted = -> { typed.empty? ? suggestion : "────────\n❯ run the specs\n────────\n" }
+      state[:scripted] = -> { typed.empty? ? suggestion : "────────\n❯ run the specs\n────────\n" }
 
       reply = send_prompt
 
@@ -165,7 +146,7 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
 
     it "queues instead of typing over a draft in the input line" do
-      tmux.screen = "────────\n❯ half a thought\n"
+      state[:screen] = "────────\n❯ half a thought\n"
 
       reply = send_prompt
 
@@ -180,7 +161,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
     def refused_events = events.select { |type, _, _| type == "prompt_refused" }.map(&:last)
 
-    def draft_screen! = (tmux.screen = "────────\n❯ half a thought\n")
+    def draft_screen! = (state[:screen] = "────────\n❯ half a thought\n")
 
     it "stores why the entry waits and writes one prompt_refused for ten refusals" do
       send_prompt
@@ -206,7 +187,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       draft_screen!
       turn_ends!(t0 + 30)
       stop_hook
-      tmux.screen = "────────\n❯ \n"
+      state[:screen] = "────────\n❯ \n"
       typing_refusal = Workspace::PromptTyper::Result.new(outcome: :refused, code: "not_ready", reason: "dialog_open", message: "a dialog is open")
       allow(typer).to receive(:type).and_return(typing_refusal)
       turn_ends!(t0 + 60)
@@ -223,7 +204,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       draft_screen!
       turn_ends!(t0 + 30)
       stop_hook
-      tmux.screen = empty_prompt
+      state[:screen] = empty_prompt
       turn_ends!(t0 + 60)
       desk.deliver_next("%5")
 
@@ -388,19 +369,19 @@ RSpec.describe Workspace::PromptQueueDesk do
     def dropped_reason = events.last.last.values_at("outcome", "reason")
 
     it "drops an entry whose pane was replaced" do
-      tmux.details = [{id: "%5", window: 0, index: 1, pid: 999}]
+      list({id: "%5", window: 0, index: 1, pid: 999})
       desk.scan
       expect(dropped_reason).to eq(["dropped", "pane_gone"])
     end
 
     it "drops an entry whose pane is gone" do
-      tmux.details = [{id: "%6", window: 0, index: 2, pid: 200}]
+      list({id: "%6", window: 0, index: 2, pid: 200})
       desk.scan
       expect(dropped_reason).to eq(["dropped", "pane_gone"])
     end
 
     it "drops nothing, and types nothing, when tmux lists no pane at all (it failed)" do
-      tmux.details = []
+      list
       desk.scan
       expect(store.entries.size).to eq(1)
       expect(typed).to eq([])
@@ -496,7 +477,7 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
 
     it "costs no tmux call for a pane still at work" do
-      expect(tmux).not_to receive(:pane_details)
+      expect(factory).not_to receive(:call)
       desk.scan
     end
 
@@ -516,7 +497,7 @@ RSpec.describe Workspace::PromptQueueDesk do
     send_prompt
     turn_ends!(t0 + 30)
     n = 0
-    tmux.scripted = -> { "#{n += 1}\n#{empty_prompt}" }
+    state[:scripted] = -> { "#{n += 1}\n#{empty_prompt}" }
 
     stop_hook
 
@@ -530,8 +511,8 @@ RSpec.describe Workspace::PromptQueueDesk do
     send_prompt(text)
     turn_ends!(t0 + 30)
     tmux.on(:deliver) do |original, session, target, body, enter: true|
-      result = original.call(session, target, body, enter: enter)
-      tmux.screen = "────────\n❯ [Pasted text #1 +40 lines]\n────────\n" unless enter
+      result = echo_deliver(original, session, target, body, enter: enter)
+      state[:screen] = "────────\n❯ [Pasted text #1 +40 lines]\n────────\n" unless enter
       result
     end
 
@@ -607,16 +588,16 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
 
     it "refuses a pane the monitor hasn't scanned, and one tmux doesn't have" do
-      tmux.details << {id: "%6", window: 0, index: 2, pid: 200}
+      list(row, {id: "%6", window: 0, index: 2, pid: 200})
       expect(send_prompt(pane_id: "%6")).to include("error" => "pane_not_ready", "reason" => "unknown")
       expect(send_prompt(pane_id: "%9")).to include("error" => "no_such_pane")
     end
 
     it "refuses while tmux can't list the panes, or the tmux server or agent pid can't be read" do
-      tmux.details = []
+      list
       expect(send_prompt).to include("error" => "pane_not_ready", "reason" => "unknown")
 
-      tmux.details = [{id: "%5", window: 0, index: 1, pid: 100}]
+      list({id: "%5", window: 0, index: 1, pid: 100})
       tmux.server_pid = nil
       expect(send_prompt).to include("error" => "pane_not_ready", "reason" => "unknown")
 
@@ -660,8 +641,7 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
 
     before do
-      allow(tmux).to receive(:pane_details).and_return([{id: "%5", window: 0, index: 1, pid: 100, command: "node", cwd: "/p", title: "c"}])
-      allow(tmux).to receive(:capture_pane) { tmux.screen }
+      tmux.details = [{id: "%5", window: 0, index: 1, pid: 100, command: "node", cwd: "/p", title: "c"}]
       allow(process_tree).to receive(:snapshot).and_return(tree)
       allow(tree).to receive(:find_descendant).and_return({pid: 101, command: "claude", args: "claude"})
     end
@@ -766,7 +746,7 @@ RSpec.describe Workspace::PromptQueueDesk do
     it "does not make the recovering call on the hook's thread" do
       blocks = []
       calls = []
-      deferred = described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
+      deferred = described_class.new(panes: factory, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
         delivery_lock: Mutex.new, recovering: ->(id) { calls << id && false }, event_log: event_log, clock: clock,
         spawn: ->(&block) { blocks << block })
 
@@ -804,8 +784,8 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
 
     def clear_entered?
-      index = tmux.delivered.index { |_, _, text, enter| text == "/clear" && !enter }
-      index && tmux.delivered[index + 1]&.last == true
+      index = pane.deliveries.index { |sent| sent[:text] == "/clear" && !sent[:enter] }
+      index && pane.deliveries[index + 1]&.fetch(:enter) == true
     end
 
     def send_clear_first(text = "run the specs", when_idle: true)
@@ -882,7 +862,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       end
 
       it "drops the entry with the identity reason when the pane is replaced during the wait" do
-        after_clear << -> { tmux.details = [{id: "%5", window: 0, index: 1, pid: 999}] }
+        after_clear << -> { list({id: "%5", window: 0, index: 1, pid: 999}) }
 
         reply = send_clear_first
 
@@ -893,7 +873,7 @@ RSpec.describe Workspace::PromptQueueDesk do
 
       it "drops the entry when the screen doesn't settle after the clear" do
         frames = (1..1000).map { |n| "frame #{n}\n#{empty_prompt}" }
-        after_clear << -> { tmux.scripted = -> { frames.shift } }
+        after_clear << -> { state[:scripted] = -> { frames.shift } }
 
         reply = send_clear_first
 
@@ -928,7 +908,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       end
 
       it "types nothing and keeps the entry queued when the clear isn't pasted" do
-        tmux.screen = "────────\n❯ half a thought\n"
+        state[:screen] = "────────\n❯ half a thought\n"
 
         expect(send_clear_first).to include("queued" => true)
         expect(typed).to eq([])
@@ -1086,29 +1066,29 @@ RSpec.describe Workspace::PromptQueueDesk do
     it "presses the interrupt keys, waits for the prompt to settle, then types the text and Enter, in that order" do
       captures = 0
       busy = "✻ Working… (esc to interrupt)\n❯ \n"
-      tmux.scripted = lambda do
+      state[:scripted] = lambda do
         captures += 1
-        tmux.log << [:capture]
-        (captures <= 2) ? busy + "x" * captures : tmux.screen
+        log << [:capture]
+        (captures <= 2) ? busy + "x" * captures : state[:screen]
       end
 
       reply = interrupt_send
 
       expect(reply).to include("ok" => true, "interrupted" => true, "keys" => ["Escape"], "delivered" => true,
         "submitted" => true, "pane" => "0.1", "pane_id" => "%5")
-      expect(tmux.log.first).to eq([:key, "Escape"])
-      captures_before_paste = tmux.log.take_while { |entry| entry[0] != :deliver }.count { |entry| entry[0] == :capture }
+      expect(log.first).to eq([:key, "Escape"])
+      captures_before_paste = log.take_while { |entry| entry[0] != :deliver }.count { |entry| entry[0] == :capture }
       expect(captures_before_paste).to be > 3
-      expect(tmux.log.select { |entry| entry[0] == :deliver }).to eq([[:deliver, "do this instead", false], [:deliver, "", true]])
+      expect(log.select { |entry| entry[0] == :deliver }).to eq([[:deliver, "do this instead", false], [:deliver, "", true]])
     end
 
     it "holds the delivery lock from the keys to Enter" do
       lock = Mutex.new
       held = []
-      locked_desk = described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
+      locked_desk = described_class.new(panes: factory, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
         delivery_lock: lock, clock: clock, sleeper: ->(seconds) { now[0] += seconds }, spawn: ->(&block) { block.call })
       tmux.on(:send_key) { |m, *a| held << lock.owned? && m.call(*a) }
-      tmux.on(:deliver) { |m, *a, **kw| held << lock.owned? && m.call(*a, **kw) }
+      tmux.on(:deliver) { |m, *a, **kw| held << lock.owned? && echo_deliver(m, *a, **kw) }
 
       locked_desk.interrupt_send("pane_id" => "%5", "text" => "go")
 
@@ -1117,34 +1097,34 @@ RSpec.describe Workspace::PromptQueueDesk do
 
     it "does not type, and says not_ready, when the prompt never comes back" do
       tick = 0
-      tmux.scripted = -> { "✻ Working… #{tick += 1}\n❯ \n" }
+      state[:scripted] = -> { "✻ Working… #{tick += 1}\n❯ \n" }
 
       reply = interrupt_send
 
       expect(reply).to include("ok" => false, "error" => "not_ready", "interrupted" => true, "keys" => ["Escape"], "reason" => "busy")
-      expect(tmux.delivered).to eq([])
+      expect(pane.deliveries).to eq([])
       expect(now[0] - t0).to be >= described_class::INTERRUPT_TIMEOUT
     end
 
     it "does not type, and says not_ready, when the input line holds a draft" do
-      tmux.screen = "────────\n❯ half a thought\n"
+      state[:screen] = "────────\n❯ half a thought\n"
 
       reply = interrupt_send
 
       expect(reply).to include("error" => "not_ready", "reason" => "input_not_empty")
-      expect(tmux.delivered).to eq([])
+      expect(pane.deliveries).to eq([])
     end
 
     it "refuses a pane whose agent has no interrupt keys before pressing anything" do
       provider = Workspace::AgentProvider.find("claude")
       bare = instance_double(Workspace::AgentProvider, key: "claude", label: "Claude Code", interrupt_keys: [], ready_pattern: provider.ready_pattern)
-      bare_desk = described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
+      bare_desk = described_class.new(panes: factory, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
         delivery_lock: Mutex.new, providers: [bare], clock: clock, sleeper: ->(s) { now[0] += s })
 
       reply = bare_desk.interrupt_send("pane_id" => "%5", "text" => "go")
 
       expect(reply).to include("error" => "no_interrupt_key", "kind" => "claude")
-      expect(tmux.log).to eq([])
+      expect(log).to eq([])
     end
 
     it "refuses a shell, an agent with no checkable screen, a waiting pane and a held pane without pressing anything" do
@@ -1158,7 +1138,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       typing[:state] = "idle"
       restarting << "%5"
       expect(interrupt_send).to include("error" => "pane_busy", "reason" => "restarting")
-      expect(tmux.log).to eq([])
+      expect(log).to eq([])
     end
 
     it "rescans a pane read as a shell once before refusing it" do
@@ -1172,10 +1152,10 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
 
     it "stops, typing nothing, when a key press fails" do
-      tmux.key_ok = false
+      state[:key_ok] = false
 
       expect(interrupt_send).to include("error" => "not_delivered", "keys_sent" => 0, "interrupted" => false)
-      expect(tmux.delivered).to eq([])
+      expect(pane.deliveries).to eq([])
     end
 
     it "answers not_submitted when the paste landed but Enter did not take" do
@@ -1190,7 +1170,7 @@ RSpec.describe Workspace::PromptQueueDesk do
       allow(monitor).to receive(:delivery_facts).and_return(facts)
       typing[:open_tools] = ["AskUserQuestion"]
       expect(interrupt_send).to include("error" => "pane_waiting", "reason" => "question_open")
-      expect(tmux.log).to eq([])
+      expect(log).to eq([])
     end
 
     it "answers not_delivered when the paste never lands" do

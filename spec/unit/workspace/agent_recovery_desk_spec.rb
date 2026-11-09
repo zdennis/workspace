@@ -86,7 +86,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     double("tmuxinator_report", show: {"windows" => [{"panes" => [{"kind" => "claude", "flags" => []}]}]})
   end
   let(:resume_command) { Workspace::AgentResumeCommand.new(tmuxinator_report: report) }
-  let(:typer) { RecordingPromptTyper.new(Workspace::PromptTyper.new(tmux: tmux, session_monitor: monitor)) }
+  let(:typer) { RecordingPromptTyper.new(Workspace::PromptTyper.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "api"), session_monitor: monitor)) }
   let(:events) { [] }
   let(:event_log) do
     double("event_log").tap do |log|
@@ -1981,7 +1981,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   describe "through the prompt queue" do
     let(:queue_store) { Workspace::PromptQueueStore.new(path: File.join(dir, "prompt-queue.json"), clock: clock) }
     let(:queue) do
-      Workspace::PromptQueueDesk.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: queue_store,
+      Workspace::PromptQueueDesk.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "api"), session_name: "api", workspace: "api", session_monitor: monitor, store: queue_store,
         delivery_lock: Mutex.new, recovering: ->(id) { desk.holding?(id) }, event_log: event_log, typer: typer, clock: clock,
         sleeper: ->(seconds) { now[0] += seconds }, spawn: ->(&block) { block.call })
     end
