@@ -73,6 +73,19 @@ To check on or read the log of a running agent without holding a terminal, use [
 
 **Scan concurrency** — each agent's session monitor polls its tmux session on its configured interval, spawning a handful of processes per poll (`tmux list-panes`, a `ps` snapshot, one `tmux capture-pane` per pane). `WORKSPACE_SCAN_CONCURRENCY` bounds how many agents' monitors may scan at once, machine-wide (default `1`, capped at `64`), shared through slot files under `~/.local/state/workspace/scan-slots`. A monitor that can't take a slot skips that tick; it never waits. Values that are not a positive integer fall back to the default. The limit is read once, when the daemon starts, so changing it takes a daemon restart; under contention a monitor's effective interval averages out longer, roughly `interval × daemons ÷ limit`. Scrape-mode context reads share the same slot pool: each `sessions` request takes one slot per pane capture, and a read that can't take one falls back to that pane's last successful reading while it is no more than 30 seconds old, reporting the pane's usage as undetermined (`couldn't scrape the pane (every scan slot busy) and no fresh reading is cached`) past that.
 
+**Panes and Tmux (for contributors)** — the seven things that act on one pane (`PromptTyper`, `PromptQueueDesk`, `AgentStatusDesk`, `AgentRecoveryDesk`, `HandoffWatcher`, `AgentRestart` and `RestartRunner`) take a `PaneFactory` as `panes:` and never the whole `Tmux`. A `Pane` offers `capture`, `capture_styled`, `deliver`, `send_key`, `details`, `server_pid`, `start_command` and `session_gone?`. `PaneFactory#call(id)` lists the session's panes first and answers `:gone` (not a pane id, or not in the list) or `:unlisted` (tmux listed nothing); `#for(id, row:)` builds the `Pane` with no tmux call and is used wherever the code went straight to an id, so each path makes the tmux calls it made before panes (pinned in `spec/unit/workspace/pane_call_counts_spec.rb`). Everything session-wide stays on `Tmux` on purpose:
+
+| Where | Method | Why it stays |
+| --- | --- | --- |
+| `session_monitor.rb:536`, `:211`, `:858`, `:913` | `perform_scan`, `rescan_pane`, `question_capture`, `refresh_activity` | the scan reads the whole session, and each capture is one of its per-pane reads |
+| `session_monitor_builder.rb:57` | `call` | names the session for a new monitor |
+| `commands/agent.rb:775`, `:404`, `:547`, `:745` | `serve_workspace`, `pane_alive?`, `handle_handoff_watch`, `resolve_restart_pane` | session name and pane lists, read before a pane is chosen |
+| `commands/agent.rb:828`, `:829`, `:873`, `:896`, `:1087`, `:1128` | `deliver_urgent_steer`, `handle_command`, `advance_state`, `deliver_queued_steers` | pipeline stage delivery by pane index, out of S4b's scope (pipeline is deprecated) |
+| `commands/agent.rb:1077` | `advance_state` | whole-pane scrollback capture for a pipeline stage |
+| `workflow_panes.rb:198`, `:232`, `:249`, `:272`, `:328`, `:351`, `:400`, `:411` | `parkable?`, `session_live?`, `pane_gone?`, `same_pane?`, `stale?`, `screen_refusal`, `type` | runs in the `workflow advance` process, not the daemon's desks; session lookups by workspace or pane, out of S4b's scope |
+| `context_reader.rb:186`, `:190` | `scrape_pane` | a plain screen read for the `sessions` request, under the shared scan slots |
+| `agent_readiness.rb:95`, `:139` | `wait`, `find_agent_pane` | polls a session until an agent pane is ready, used by `launch` and `start` as well |
+
 **Pipeline** (deprecated, see [`pipeline`](README.pipeline.md)) — a project's stages come from `pipeline.panes` in `~/.config/workspace/projects/<name>.yml`. Each entry's position is its pane index:
 
 ```yaml
