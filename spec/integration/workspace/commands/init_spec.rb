@@ -389,4 +389,77 @@ RSpec.describe Workspace::Commands::Init do
       end
     end
   end
+
+  describe "workflow sources" do
+    let(:config_path) { File.join(workspace_config_dir, "config.yml") }
+
+    before { create_source_templates }
+
+    def stored_sources
+      YAML.safe_load_file(config_path).dig("workflows", "sources")
+    end
+
+    def seed(sources)
+      FileUtils.mkdir_p(workspace_config_dir)
+      File.write(config_path, YAML.dump("hooks" => {}, "workflows" => {"sources" => sources}))
+    end
+
+    it "writes the list into a new global config" do
+      command.call(hooks: false, workflow_sources: ["acme/workflows/presets"])
+
+      expect(stored_sources).to eq("acme/workflows/presets")
+      expect(output.string).to include("update  workflows.sources -> acme/workflows/presets")
+    end
+
+    it "appends to an existing list and takes several entries from one value" do
+      seed("acme/workflows/presets")
+
+      command.call(hooks: false, workflow_sources: ["/abs/dir, ~/more", "other/repo/sub"])
+
+      expect(stored_sources).to eq("acme/workflows/presets, /abs/dir, ~/more, other/repo/sub")
+      expect(YAML.safe_load_file(config_path)["hooks"]).to eq({})
+    end
+
+    it "does not list an entry twice" do
+      seed("acme/workflows/presets")
+
+      command.call(hooks: false, workflow_sources: ["acme/workflows/presets", "/abs/dir", "/abs/dir"])
+
+      expect(stored_sources).to eq("acme/workflows/presets, /abs/dir")
+    end
+
+    it "skips when every entry is already listed" do
+      seed("acme/workflows/presets")
+
+      command.call(hooks: false, workflow_sources: ["acme/workflows/presets"])
+
+      expect(output.string).to include("skip    workflows.sources (already lists acme/workflows/presets)")
+      expect(stored_sources).to eq("acme/workflows/presets")
+    end
+
+    it "reports under --dry-run without writing" do
+      seed("acme/workflows/presets")
+
+      command.call(dry_run: true, hooks: false, workflow_sources: ["/abs/dir"])
+
+      expect(output.string).to include("update  workflows.sources -> acme/workflows/presets, /abs/dir")
+      expect(stored_sources).to eq("acme/workflows/presets")
+    end
+
+    it "refuses a relative path and leaves the config untouched" do
+      seed("acme/workflows/presets")
+
+      command.call(hooks: false, workflow_sources: ["sub/dir"])
+
+      expect(error_output.string).to match(/error   workflows\.sources: .*sub\/dir/)
+      expect(stored_sources).to eq("acme/workflows/presets")
+    end
+
+    it "still adds the good entries beside a refused one" do
+      command.call(hooks: false, workflow_sources: ["sub/dir", "/abs/dir"])
+
+      expect(error_output.string).to include("sub/dir")
+      expect(stored_sources).to eq("/abs/dir")
+    end
+  end
 end

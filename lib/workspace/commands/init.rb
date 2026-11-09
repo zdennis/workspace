@@ -34,8 +34,10 @@ module Workspace
       # @param project_root [String] project whose agent settings receive hooks
       # @param hooks [Boolean, nil] true installs without asking, false skips the
       #   phase entirely, nil (the default) prompts
+      # @param workflow_sources [Array<String>] `workflows.sources` entries to append to the global config;
+      #   each value may hold several, separated by commas or newlines
       # @return [void]
-      def call(dry_run: false, force: false, project_root: Dir.pwd, hooks: nil)
+      def call(dry_run: false, force: false, project_root: Dir.pwd, hooks: nil, workflow_sources: [])
         @output.puts "workspace init#{" (dry run)" if dry_run}"
         @output.puts ""
 
@@ -43,6 +45,7 @@ module Workspace
         install_templates(dry_run, force)
         ensure_workspace_config_dir(dry_run)
         install_global_config(dry_run)
+        add_workflow_sources(dry_run, workflow_sources)
         install_agent_hooks(dry_run, project_root, hooks)
 
         @output.puts ""
@@ -179,6 +182,40 @@ module Workspace
           File.write(path, YAML.dump(DEFAULT_GLOBAL_CONFIG))
           @output.puts "  create  config.yml -> #{path}"
         end
+      end
+
+      # Appends the given entries to the global `workflows.sources`, skipping ones already listed. An entry
+      # `WorkflowSource` refuses is reported and left out; the rest still go in.
+      def add_workflow_sources(dry_run, values)
+        wanted = Array(values).flat_map { |value| value.to_s.split(/[\n,]+/) }.map(&:strip).reject(&:empty?).uniq
+        return if wanted.empty?
+
+        path = File.join(@config.workspace_config_dir, "config.yml")
+        data = File.exist?(path) ? YAML.safe_load_file(path) : nil
+        data = DEFAULT_GLOBAL_CONFIG.dup unless data.is_a?(Hash)
+        current = ConfigSchema.parse("workflows.sources", data.dig("workflows", "sources") || [])
+
+        accepted = wanted.select do |entry|
+          WorkflowSource.parse(entry)
+          true
+        rescue Workspace::UsageError => e
+          @error_output.puts "  error   workflows.sources: #{e.message}"
+          false
+        end
+        added = accepted - current
+        return @output.puts "  skip    workflows.sources (already lists #{accepted.join(", ")})" if added.empty? && accepted.any?
+        return if added.empty?
+
+        combined = current + added
+        ConfigSchema.parse("workflows.sources", combined)
+        unless dry_run
+          data["workflows"] = {} unless data["workflows"].is_a?(Hash)
+          data["workflows"]["sources"] = combined.join(", ")
+          File.write(path, YAML.dump(data))
+        end
+        @output.puts "  update  workflows.sources -> #{combined.join(", ")}"
+      rescue ArgumentError, Workspace::ConfigParseError, Psych::Exception => e
+        @error_output.puts "  error   workflows.sources: #{e.message}"
       end
 
       def install_template(src, dest, template, dry_run, force)

@@ -4406,6 +4406,7 @@ module Workspace
       dry_run = false
       force = false
       hooks = nil
+      workflow_sources = []
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace init [options]"
         opts.separator ""
@@ -4425,6 +4426,9 @@ module Workspace
         opts.on("--no-install-hooks", "Skip the agent session hooks step") do
           hooks = false
         end
+        opts.on("--workflow-sources VALUE", "Add workflows.sources entries to the global config (repeatable; commas or newlines separate several)") do |value|
+          workflow_sources << value
+        end
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace init    # install templates and create the config directory"
@@ -4432,10 +4436,11 @@ module Workspace
         opts.separator "  workspace init --force    # overwrite modified templates"
         opts.separator "  workspace init --install-hooks    # install agent session hooks without prompting"
         opts.separator "  workspace init --no-install-hooks    # skip the hooks step entirely"
+        opts.separator "  workspace init --workflow-sources acme/workflows/presets    # list a workflow source in the global config"
       end
       parser.parse!(args)
 
-      @init_command.call(dry_run: dry_run, force: force, hooks: hooks)
+      @init_command.call(dry_run: dry_run, force: force, hooks: hooks, workflow_sources: workflow_sources)
     end
 
     def cmd_sessions(args)
