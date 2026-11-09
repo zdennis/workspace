@@ -787,7 +787,7 @@ module Workspace
       end
 
       def build_restart_runner(session_monitor)
-        RestartRunner.new(restart_factory: @agent_restart_factory, registry: @restarts, tmux: @tmux,
+        RestartRunner.new(restart_factory: @agent_restart_factory, registry: @restarts, panes: PaneFactory.new(tmux: @tmux, session_name: @tmux_session),
           session_name: @tmux_session, delivery_lock: @delivery_lock, pipeline_ref: method(:pipeline_ref_on),
           monitor: session_monitor, idle_prompt_check: @idle_prompt_check,
           transcript_summary: @transcript_summary, pane_bindings: @pane_bindings,

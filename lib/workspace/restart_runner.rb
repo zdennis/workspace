@@ -13,7 +13,7 @@ module Workspace
   class RestartRunner
     # @param restart_factory [#call] builds the {Workspace::AgentRestart} (keyword arguments)
     # @param registry [Workspace::RestartRegistry] releases the pane's claim when the run ends
-    # @param tmux [#capture_screen_styled]
+    # @param panes [Workspace::PaneFactory] builds the pane whose styled screen the restart reads
     # @param session_name [String] the tmux session the pane is in
     # @param delivery_lock [Mutex]
     # @param pipeline_ref [#call] pane index to the work item running on it, or nil
@@ -23,11 +23,11 @@ module Workspace
     # @param pane_bindings [Workspace::PaneBindings, nil]
     # @param error_output [IO]
     # @param logger [#debug]
-    def initialize(restart_factory:, registry:, tmux:, session_name:, delivery_lock:, pipeline_ref:, monitor:,
+    def initialize(restart_factory:, registry:, panes:, session_name:, delivery_lock:, pipeline_ref:, monitor:,
       idle_prompt_check:, transcript_summary:, pane_bindings:, error_output:, logger: Workspace::Logger.new)
       @restart_factory = restart_factory
       @registry = registry
-      @tmux = tmux
+      @panes = panes
       @session_name = session_name
       @delivery_lock = delivery_lock
       @pipeline_ref = pipeline_ref
@@ -60,7 +60,7 @@ module Workspace
           pane_kind: ->(id) { @monitor&.pane_kind(id) },
           delivery_facts: ->(id) { @monitor&.delivery_facts(id) },
           turn_over: method(:main_turn_missing),
-          screen_ready: ->(id) { @idle_prompt_check.refusal(@monitor&.typing_facts(id), @tmux.capture_screen_styled(id)) },
+          screen_ready: ->(id) { @idle_prompt_check.refusal(@monitor&.typing_facts(id), styled_screen(id)) },
           subagents_running: ->(id) { @monitor&.background_subagents(id) },
           run_bound: method(:pane_bound_to_run?)
         )
@@ -96,6 +96,11 @@ module Workspace
 
       found = @transcript_summary.main_activity_after?(evidence[:transcript_path], evidence[:since])
       found && "transcript_activity:#{found}"
+    end
+
+    def styled_screen(pane_id)
+      pane = @panes.for(pane_id)
+      pane.capture_styled unless pane.is_a?(Symbol)
     end
 
     def pane_bound_to_run?(pane_id, run_id)

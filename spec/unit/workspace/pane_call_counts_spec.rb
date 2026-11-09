@@ -162,4 +162,18 @@ RSpec.describe "tmux calls of the pane desks" do
       expect(tmux.calls).to eq([:pane_details, :capture_screen_styled, :deliver, :capture_screen_styled, :deliver])
     end
   end
+
+  describe Workspace::RestartRunner do
+    it "reads the styled screen with no pane list" do
+      wired = nil
+      described_class.new(restart_factory: ->(**kw) { (wired = kw) && ScriptedCall.new { |**| {"ok" => true} } },
+        registry: Workspace::RestartRegistry.new, panes: factory, session_name: "api", delivery_lock: Mutex.new,
+        pipeline_ref: ->(_index) {}, monitor: nil, idle_prompt_check: Workspace::IdlePromptCheck.new,
+        transcript_summary: Workspace::TranscriptSummary.new, pane_bindings: nil, error_output: StringIO.new)
+        .run({"pane" => "0.1", "pane_id" => "%5"}, "go", false, 5, nil)
+      wired[:screen_ready].call("%5")
+
+      expect(tmux.calls).to eq([:capture_screen_styled])
+    end
+  end
 end

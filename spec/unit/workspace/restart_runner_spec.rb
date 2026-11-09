@@ -14,8 +14,11 @@ RSpec.describe Workspace::RestartRunner do
     ScriptedCall.new { |**kwargs| results << kwargs and result }
   end
 
+  let(:pane) { FakePane.new(id: "%18", styled_screens: ["screen"]) }
+  let(:panes) { FakePaneFactory.new(panes: [pane]) }
+
   def runner(factory: ->(**) { restart })
-    described_class.new(restart_factory: factory, registry: registry, tmux: nil, session_name: "workspace-myapp",
+    described_class.new(restart_factory: factory, registry: registry, panes: panes, session_name: "workspace-myapp",
       delivery_lock: Mutex.new, pipeline_ref: ->(_index) {}, monitor: nil,
       idle_prompt_check: Workspace::IdlePromptCheck.new, transcript_summary: Workspace::TranscriptSummary.new,
       pane_bindings: nil, error_output: error_output)
@@ -56,6 +59,18 @@ RSpec.describe Workspace::RestartRunner do
 
       expect(error_output.string).to include("restart_agent for pane 0.1: usage did not drop")
     end
+  end
+
+  it "reads the styled screen through the pane's Pane, and none for an id that is no pane" do
+    wired = nil
+    check = Class.new { def refusal(_facts, screen) = screen }.new
+    described_class.new(restart_factory: ->(**kw) { (wired = kw) && restart }, registry: registry, panes: panes,
+      session_name: "s", delivery_lock: Mutex.new, pipeline_ref: ->(_index) {}, monitor: nil, idle_prompt_check: check,
+      transcript_summary: Workspace::TranscriptSummary.new, pane_bindings: nil, error_output: error_output)
+      .run(started, "go", false, 5, nil)
+
+    expect(wired[:screen_ready].call("%18")).to eq("screen")
+    expect(wired[:screen_ready].call("five")).to be_nil
   end
 
   it "answers internal_error when the restart raises" do
