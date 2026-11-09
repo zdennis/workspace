@@ -461,5 +461,56 @@ RSpec.describe Workspace::Commands::Init do
       expect(error_output.string).to include("sub/dir")
       expect(stored_sources).to eq("/abs/dir")
     end
+
+    context "with an installer wired" do
+      let(:installer) { double(install: {}) }
+
+      subject(:command) do
+        described_class.new(config: config, hook_installer: hook_installer, workflow_installer: installer, which: which,
+          output: output, error_output: error_output, input: input)
+      end
+
+      it "installs the workflows of the sources it just added, by position" do
+        seed("acme/first/wf")
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir", local_source("second")])
+
+        expect(installer).to have_received(:install).with(only: 2).once
+        expect(output.string).to include("re-run `workspace workflow install`")
+      end
+
+      it "installs nothing when every entry is already listed" do
+        seed("acme/first/wf")
+
+        command.call(hooks: false, workflow_sources: ["acme/first/wf"])
+
+        expect(installer).not_to have_received(:install)
+        expect(output.string).not_to include("re-run `workspace workflow install`")
+      end
+
+      it "warns and keeps going when a source can't be installed" do
+        seed("acme/first/wf")
+        allow(installer).to receive(:install).and_raise(Workspace::Error.new("gh is missing", code: "workflow_source_gh_missing"))
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(error_output.string).to include("warn    source:2 not installed: gh is missing")
+        expect(stored_sources).to eq("acme/first/wf, /abs/dir")
+        expect(output.string).to include("Done!")
+      end
+
+      it "does not install under --dry-run" do
+        command.call(dry_run: true, hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(installer).not_to have_received(:install)
+        expect(output.string).to include("would install workflows from source 1")
+      end
+
+      def local_source(name)
+        dir = File.join(tmpdir, name)
+        FileUtils.mkdir_p(dir)
+        dir
+      end
+    end
   end
 end

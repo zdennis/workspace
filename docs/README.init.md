@@ -43,7 +43,9 @@ Codex's hooks are user-level: they go into `$CODEX_HOME/hooks.json` (default `~/
 
 ### Workflow sources
 
-`--workflow-sources VALUE` appends to the global `workflows.sources` ([the directories `workflow install` reads](README.workflow.md#installing-from-sources)). Repeat the flag, or separate several entries in one value with commas or newlines. Entries are appended in the order given and deduplicated against what is already listed, so re-running is safe. An entry that is not a usable source (for example a bare `owner/repo`) is reported as an error and left out; the rest still go in. `--dry-run` reports without writing. It fetches nothing: run `workspace workflow install` afterwards.
+`--workflow-sources VALUE` appends to the global `workflows.sources` ([the directories `workflow install` reads](README.workflow.md#installing-from-sources)). Repeat the flag, or separate several entries in one value with commas or newlines. Entries are appended in the order given and deduplicated against what is already listed, so re-running is safe. An entry that is not a usable source (for example a bare `owner/repo`) is reported as an error and left out; the rest still go in. `--dry-run` reports without writing.
+
+The workflows of the sources it just added are installed right away, the way `workspace workflow install` does them (local sources are checked in place; GitHub sources are fetched and cached). A source that can't be installed — no `gh`, no network, a refused definition — is a warning; the entry stays listed and `workspace workflow install` can be re-run later. Entries already listed are not fetched again.
 
 ## Examples
 
