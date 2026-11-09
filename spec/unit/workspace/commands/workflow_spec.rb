@@ -854,7 +854,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     before do
       allow(status).to receive(:run).with("wr_1").and_return("runs" => [shown], "warnings" => [])
-      allow(store).to receive(:find).with("wr_1") { stored }
+      allow(store).to receive(:run).with("wr_1") { Workspace::WorkflowRun.from_h(stored) }
       allow(panes).to receive_messages(alive?: true, pane_of: "%5", idle?: false, parkable?: false)
       allow(engine).to receive(:refuse_resume)
       allow(engine).to receive(:resume).and_return("id" => "wr_1", "workspace" => "app")
@@ -1547,7 +1547,7 @@ RSpec.describe Workspace::Commands::Workflow do
       end
 
       it "leaves a run the store doesn't have to the engine's own refusal" do
-        allow(store).to receive(:find).with("wr_9").and_raise(Workspace::Error.new("no run", code: "unknown_run"))
+        allow(store).to receive(:run).with("wr_9").and_raise(Workspace::Error.new("no run", code: "unknown_run"))
 
         command.advance(run: "wr_9", turn_ended: true, caller_pane: "%5")
 
@@ -1566,7 +1566,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
   describe "#advance" do
     it "tells the engine a turn ended in a pane, or takes the timer's look" do
-      allow(store).to receive(:find).with("wr_1").and_return("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]})
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}))
       allow(engine).to receive(:turn_ended)
       allow(engine).to receive(:tick)
 
@@ -1581,7 +1581,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "passes the background tasks to the engine, and [] for nil from the nudger" do
-      allow(store).to receive(:find).with("wr_1").and_return("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]})
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}))
       allow(engine).to receive(:turn_ended)
       tasks = [{"id" => "k12345678", "type" => "MCP task"}]
 
@@ -1599,7 +1599,7 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(engine).to receive(:report).with("wr_1", status: "fail", summary: "Two specs red.", code: nil)
         .and_return("run_id" => "wr_1", "step" => "verify", "attempt" => 2,
           "reported" => {"status" => "fail", "summary" => "Two specs red.", "at" => "2026-10-04T12:00:00Z"})
-      allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
 
       row = command.step_done(pane: "%5", status: "fail", summary: "Two specs red.")
 
@@ -1613,7 +1613,7 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(engine).to receive(:report).with("wr_1", status: "fail", summary: nil, code: "not_reproduced")
         .and_return("run_id" => "wr_1", "step" => "reproduce", "attempt" => 1,
           "reported" => {"status" => "fail", "summary" => nil, "code" => "not_reproduced", "at" => "t"})
-      allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
 
       row = command.step_done(pane: "%5", status: "fail", code: "not_reproduced")
 
@@ -1636,7 +1636,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "accepts a code of 40 characters" do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
       allow(engine).to receive(:report).and_return("run_id" => "wr_1", "step" => "s", "attempt" => 1, "reported" => {"status" => "fail", "summary" => nil})
-      allow(store).to receive(:find).with("wr_1").and_return("workspace" => "app")
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
 
       expect { command.step_done(pane: "%5", status: "fail", code: "a" * 40) }.not_to raise_error
     end
@@ -1674,7 +1674,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     before do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
-      allow(store).to receive(:find).with("wr_1").and_return(run)
+      allow(store).to receive(:run).with("wr_1") { Workspace::WorkflowRun.from_h(run) }
     end
 
     it "prints the step this pane is on, and whether the files it must leave exist" do
@@ -1713,7 +1713,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "says a symlink and a directory are not regular files" do
       strict = run.merge("definition" => definition.to_h.merge("produces_check" => "strict"))
-      allow(store).to receive(:find).with("wr_1").and_return(strict)
+      allow(store).to receive(:run).with("wr_1") { Workspace::WorkflowRun.from_h(strict) }
       File.write(File.join(@dir, "real.md"), "x")
       File.symlink(File.join(@dir, "real.md"), File.join(@dir, "plan.md"))
 

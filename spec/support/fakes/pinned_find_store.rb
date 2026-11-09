@@ -17,4 +17,8 @@ class PinnedFindStore < SimpleDelegator
   def find(id)
     @pinned.fetch(id) { super }
   end
+
+  def run(id)
+    Workspace::WorkflowRun.from_h(find(id))
+  end
 end
