@@ -641,19 +641,18 @@ module Workspace
       def run_stamp(run_id, item_scope)
         return {} unless @run_store
         run = begin
-          @run_store.find(run_id)
+          @run_store.run(run_id).summary
         rescue Workspace::Error
           nil
         end
-        going = run && !WorkflowRunStore::TERMINAL_STATES.include?(run["state"]) && item_scope["kind"] == "workspace" && run["workspace"] == item_scope["key"]
+        going = run && !WorkflowRunStore::TERMINAL_STATES.include?(run.state) && item_scope["kind"] == "workspace" && run.workspace == item_scope["key"]
         unless going
           @error_output.puts((item_scope["kind"] == "workspace") ?
             "Run #{escape(run_id)} is not going in this workspace, so this item is not tied to a step." :
             "Run links need a workspace-scoped item, so this item is not tied to a step.")
           return {"step" => nil, "attempt" => nil}
         end
-        step = run["current"]
-        {"step" => step, "attempt" => run.dig("steps", step, "attempts")&.last&.fetch("n", nil)}
+        {"step" => run.step, "attempt" => run.attempt}
       end
 
       def checked_links(links)

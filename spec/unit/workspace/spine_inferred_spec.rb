@@ -182,7 +182,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     before do
-      allow(store).to receive(:active).and_return([stored_run, stored_run.merge("id" => "wr_2", "workspace" => "web")])
+      allow(store).to receive(:going).and_return([stored_run, stored_run.merge("id" => "wr_2", "workspace" => "web")].map { |each| Workspace::WorkflowRun.from_h(each) })
       allow(panes).to receive(:pane_of).with("wr_1").and_return("%7")
       allow(git).to receive(:checkout_layout).with("/src/api").and_return({toplevel: "/src/api", common_dir: "/src/.git", linked: true})
     end
@@ -208,7 +208,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "treats a broken checkout as a main checkout" do
-      allow(store).to receive(:active).and_return([])
+      allow(store).to receive(:going).and_return([])
       allow(git).to receive(:checkout_layout).and_return({toplevel: "/src/api", common_dir: nil, linked: true, broken: true})
 
       stages = inferred.infer(workspace: "api", checkout: "/src/api", result: result(plan: :missing))
@@ -217,7 +217,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "derives the plan's state from the owner pane, so a working owner starts Implement" do
-      allow(store).to receive(:active).and_return([])
+      allow(store).to receive(:going).and_return([])
       plan = Workspace::PlanFile.parse("---\nowner_pane: \"%3\"\n---\n## Tasks\n- [ ] T1 One\n- [ ] T2 Two\n")
 
       idle = inferred.infer(workspace: "api", checkout: "/src/api", result: result(plan: plan, panes: [{"pane_id" => "%3", "state" => "idle"}]))
@@ -228,7 +228,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "reads unknown stages when the plan file could not be read" do
-      allow(store).to receive(:active).and_return([])
+      allow(store).to receive(:going).and_return([])
 
       stages = inferred.infer(workspace: "api", checkout: "/src/api", result: result(plan: nil))
 
@@ -236,7 +236,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "is ready for review only when the agent is done and the branch is ahead" do
-      allow(store).to receive(:active).and_return([])
+      allow(store).to receive(:going).and_return([])
       done = Workspace::SpineEvaluator::ReviewFact.new(agent_done: true, changes_requested: false)
       review = ->(res) { inferred.infer(workspace: "api", checkout: "/src/api", result: res).find { |s| s["id"] == "review" }["status"] }
 
@@ -246,7 +246,7 @@ RSpec.describe Workspace::SpineInferred do
     end
 
     it "reads no runs when the run store can't be read" do
-      allow(store).to receive(:active).and_raise(Errno::EACCES)
+      allow(store).to receive(:going).and_raise(Errno::EACCES)
 
       stages = inferred.infer(workspace: "api", checkout: "/src/api", result: result(plan: :missing))
 
@@ -255,7 +255,7 @@ RSpec.describe Workspace::SpineInferred do
 
     describe "#current_stage" do
       it "gives the current stage as a goal stage, marked inferred" do
-        allow(store).to receive(:active).and_return([])
+        allow(store).to receive(:going).and_return([])
 
         stage = inferred.current_stage(workspace: "api", checkout: "/src/api", result: result(plan: :missing))
 

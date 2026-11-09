@@ -108,14 +108,14 @@ module Workspace
     # @param state [Workspace::State] the state file whose keys are checked; the caller has loaded it
     # @param notes [Workspace::Commands::Notes] the notes directory now, and the rule's inputs
     # @param notes_dir [Workspace::NotesDir] the rule that places notes
-    # @param workflow_engine [Workspace::WorkflowEngine] says whether a run is going on the checkout
+    # @param run_store [Workspace::WorkflowRunStore] says whether a run is going on the checkout
     # @param dev_lock [#call] `(checkout_path)` to whether the checkout holds the `devenv` lock
     # @param journal [#call] `(workspace)` to the journal of a half-done rename of that workspace, a Hash
     #   with `"new_branch"` and the first run's `"path"`, `"new_workspace"`, `"session"`, `"new_session"` and
     #   `"notes"`, or nil
     # @param transcripts [#call] `(checkout_path)` to whether Claude Code keeps conversations for it
     # @param device [#call] `(path)` to the device number of the volume the path itself is on
-    def initialize(git:, project_config:, config:, tmux:, state:, notes:, notes_dir:, workflow_engine:,
+    def initialize(git:, project_config:, config:, tmux:, state:, notes:, notes_dir:, run_store:,
       dev_lock: ->(_path) { false }, journal: ->(_workspace) {}, transcripts: ->(path) { self.class.transcripts?(path) },
       device: ->(path) { File.lstat(path).dev })
       @git = git
@@ -125,7 +125,7 @@ module Workspace
       @state = state
       @notes = notes
       @notes_dir = notes_dir
-      @workflow_engine = workflow_engine
+      @run_store = run_store
       @dev_lock = dev_lock
       @journal = journal
       @transcripts = transcripts
@@ -260,9 +260,9 @@ module Workspace
       if @config.agent_running?(workspace)
         raise refusal("workspace_running", "The agent daemon of '#{workspace}' is running. Run `#{stop}` first.", "workspace" => workspace, "session" => session, "reason" => "agent", "fix" => stop)
       end
-      run = @workflow_engine.run_on_checkout(checkout)
+      run = @run_store.on_checkout(checkout)&.summary
       if run
-        raise refusal("run_active", "Workflow run #{run["id"]} is still going on this checkout; its files hold the path. Let it finish or cancel it first.", "run_id" => run["id"], "path" => checkout)
+        raise refusal("run_active", "Workflow run #{run.id} is still going on this checkout; its files hold the path. Let it finish or cancel it first.", "run_id" => run.id, "path" => checkout)
       end
       if @dev_lock.call(checkout)
         down = "workspace dev down #{Shellwords.escape(workspace)}"

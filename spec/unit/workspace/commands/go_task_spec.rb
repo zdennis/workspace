@@ -16,17 +16,21 @@ RSpec.describe Workspace::Commands::GoTask do
   let(:access) { Workspace::PlanAccess.new(notes: notes, tmux: tmux, event_log: event_log) }
   let(:plan_task) { Workspace::Commands::PlanTask.new(access: access, output: output) }
   let(:tmux) { instance_spy(Workspace::Tmux) }
-  let(:engine) { instance_double(Workspace::WorkflowEngine) }
+  let(:run_store) { instance_double(Workspace::WorkflowRunStore) }
   let(:checkout) { Workspace::Commands::WorkflowStart::Here.new(workspace: "app.worktree-x", path: "/src/app/.worktrees/x", caller_pane: nil) }
   let(:definition) { Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "#{workflow}.yml")), id: workflow, source: "preset", path: "/defs/#{workflow}.yml").to_h }
   let(:workflow) { "rpiv" }
   let(:step) { "plan" }
-  let(:run) { {"id" => "wr_1", "workflow" => workflow, "current" => step, "state" => "running", "worktree" => checkout.path, "definition" => definition} }
+  let(:stored) { {"id" => "wr_1", "workflow" => workflow, "current" => step, "state" => "running", "worktree" => checkout.path, "definition" => definition} }
+  let(:run) do
+    allow(run_store).to receive(:on_checkout).with(checkout.path).and_return(Workspace::WorkflowRun.from_h(stored))
+    task.run_for(checkout)
+  end
   let(:plan_text) { "---\nstatus: #{status}\n---\n## Tasks\n- [x] T7 Seven\n- [x] T8 Eight\n## Task details\n" }
   let(:status) { "active" }
   let(:flags) { {workflow: nil, inputs: {}} }
 
-  subject(:task) { described_class.new(engine: engine, plan_task: plan_task, access: access, output: output) }
+  subject(:task) { described_class.new(run_store: run_store, plan_task: plan_task, access: access, output: output) }
 
   before { allow(notes).to receive(:info) { |name:, create: false| {"workspace" => name, "dir" => @dir} } }
 
@@ -40,10 +44,16 @@ RSpec.describe Workspace::Commands::GoTask do
   end
 
   describe "#run_for" do
-    it "asks the engine for the run on the checkout's path" do
-      allow(engine).to receive(:run_on_checkout).with(checkout.path).and_return(run)
+    it "asks the run store for the run on the checkout's path and answers its summary" do
+      allow(run_store).to receive(:on_checkout).with(checkout.path).and_return(Workspace::WorkflowRun.from_h(stored))
 
-      expect(task.run_for(checkout)).to eq(run)
+      expect(task.run_for(checkout)).to eq(Workspace::WorkflowRun.from_h(stored).summary(reads_plan_again: true))
+    end
+
+    it "answers nil when no run is going there" do
+      allow(run_store).to receive(:on_checkout).and_return(nil)
+
+      expect(task.run_for(checkout)).to be_nil
     end
   end
 
@@ -63,7 +73,7 @@ RSpec.describe Workspace::Commands::GoTask do
     end
 
     it "adds to a run on implement" do
-      run["current"] = "implement"
+      stored["current"] = "implement"
 
       expect(task.add(run, "also this", checkout, flags: flags, dry_run: false)["task"]).to eq("T9")
       lines = File.readlines(plan_path)
@@ -108,14 +118,14 @@ RSpec.describe Workspace::Commands::GoTask do
     end
 
     it "refuses a dry run as the real call does" do
-      run["current"] = "verify"
+      stored["current"] = "verify"
 
       expect { task.add(run, "also this", checkout, flags: flags, dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("checkout_has_run") }
       expect(File.read(plan_path)).to eq(plan_text)
     end
 
     it "refuses an rpiv run on verify with checkout_has_run and the run's details" do
-      run["current"] = "verify"
+      stored["current"] = "verify"
       error = refusal
 
       expect(error.code).to eq("checkout_has_run")

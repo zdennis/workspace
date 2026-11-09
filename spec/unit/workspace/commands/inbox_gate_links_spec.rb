@@ -20,7 +20,7 @@ RSpec.describe Workspace::Commands::Inbox, "gate links" do
   let(:run_store) do
     table = runs
     Class.new do
-      define_method(:find) { |id| table.fetch(id) { raise Workspace::Error.new("No run", code: "unknown_run") } }
+      define_method(:run) { |id| Workspace::WorkflowRun.from_h(table.fetch(id) { raise Workspace::Error.new("No run", code: "unknown_run") }) }
     end.new
   end
   let(:gate_rows) { [gate_row("wr_1", "triage", 2)] }

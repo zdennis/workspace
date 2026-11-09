@@ -194,9 +194,8 @@ module Workspace
 
     # The store reads only whole runs: every defined step has its state.
     def runs_of(workspace)
-      @workflow_store.active.select { |run| run["workspace"] == workspace }.map do |run|
-        steps = run["definition"]["steps"].map { |step| {"id" => step["id"], "state" => run["steps"].fetch(step["id"])["state"]} }
-        {"step" => run["current"], "pane" => @workflow_panes.pane_of(run["id"]) || run["pane"], "steps" => steps}
+      @workflow_store.going.map(&:summary).select { |run| run.workspace == workspace }.map do |run|
+        {"step" => run.step, "pane" => @workflow_panes.pane_of(run.id) || run.pane, "steps" => run.step_states}
       end
     rescue Workspace::Error, SystemCallError
       []

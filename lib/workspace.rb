@@ -775,7 +775,7 @@ module Workspace
       real = CheckoutMove.real_path(path)
       project_config.available_projects.find { |name| (root = project_config.project_root_for(name)) && CheckoutMove.real_path(File.expand_path(root)) == real }
     end
-    go_task = Commands::GoTask.new(engine: workflow_engine, plan_task: plan_task_command, access: plan_access, output: output)
+    go_task = Commands::GoTask.new(run_store: workflow_store, plan_task: plan_task_command, access: plan_access, output: output)
     namer_value = lambda do |key|
       lambda do |workspace|
         view = workspace ? config_resolver.view(workspace: workspace, upto: "project") : config_resolver.view(workspace: "global", upto: "global")
@@ -923,7 +923,7 @@ module Workspace
 
     rename_journal = RenameJournal.new(config: config)
     rename_plan = RenamePlan.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes_command,
-      notes_dir: NotesDir.new(git: git), workflow_engine: workflow_engine, dev_lock: ->(path) { dev_command.lock_held_by?(path) },
+      notes_dir: NotesDir.new(git: git), run_store: workflow_store, dev_lock: ->(path) { dev_command.lock_held_by?(path) },
       journal: rename_journal.method(:read))
     rename_command = Commands::Rename.new(plan: rename_plan, journal: rename_journal, git: git, config: config, project_config: project_config,
       project_settings: project_settings, tmux: tmux, state: state, notes: notes_command, name_migration: name_migration, task_store: task_store,

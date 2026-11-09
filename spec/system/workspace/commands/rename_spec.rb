@@ -25,7 +25,7 @@ RSpec.describe Workspace::Commands::Rename do
   let(:pane_bindings) { Interceptable.subclass(Workspace::PaneBindings, :rename_workspace).new(path: config.pane_bindings_path, error_output: StringIO.new) }
   let(:git_exclude) { Interceptable.subclass(Workspace::GitExclude, :add).new(git: git) }
   let(:journal) { Interceptable.subclass(Workspace::RenameJournal, :write, :delete).new(config: config) }
-  let(:engine) { instance_double(Workspace::WorkflowEngine, run_on_checkout: nil) }
+  let(:engine) { instance_double(Workspace::WorkflowRunStore, on_checkout: nil) }
   let(:inbox_failures) { [] }
   let(:inbox_store_factory) do
     failures = inbox_failures
@@ -82,7 +82,7 @@ RSpec.describe Workspace::Commands::Rename do
 
   def plan_over(project_config, notes)
     Workspace::RenamePlan.new(git: git, project_config: project_config, config: config, tmux: tmux, state: state, notes: notes,
-      notes_dir: Workspace::NotesDir.new(git: git, home: home), workflow_engine: engine, journal: ->(name) { journal.read(name) }, transcripts: ->(_path) { false })
+      notes_dir: Workspace::NotesDir.new(git: git, home: home), run_store: engine, journal: ->(name) { journal.read(name) }, transcripts: ->(_path) { false })
   end
 
   def command
