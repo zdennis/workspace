@@ -12,11 +12,12 @@ class FakeTmux
   CONTROL_METHODS = %i[
     sent_keys sent_key_names captured_output captured_output= pane_indexes pane_indexes= delivery_status delivery_status=
     delivered texts details details= screens screens= screen_script screen_script= on_deliver on_deliver= on_details
-    on_details= statuses statuses= capture_calls sessions_calls sessions_strict_args
+    on_details= statuses statuses= capture_calls sessions_calls sessions_strict_args styled_screens styled_screens=
+    server_pid server_pid= start_commands start_commands= session_gone session_gone=
   ].freeze
 
   attr_reader :sent_keys, :sent_key_names, :capture_calls, :sessions_calls, :sessions_strict_args
-  attr_accessor :captured_output, :pane_indexes, :delivery_status, :details, :screens, :screen_script, :on_deliver,
+  attr_accessor :styled_screens, :server_pid, :start_commands, :session_gone, :captured_output, :pane_indexes, :delivery_status, :details, :screens, :screen_script, :on_deliver,
     :on_details, :statuses
 
   # @param sessions [Array<String>] what `sessions` lists
@@ -27,9 +28,13 @@ class FakeTmux
   # @param details [Array<Hash>, nil] what `pane_details` lists (`window: nil` lists all, else one window); nil lists none
   # @param strict_windows [Boolean] `pane_details` refuses a call that does not ask for every window
   # @param screens [Array<String>] the screens `capture_screen` shows in turn, the last one repeating
+  # @param styled_screens [Array<String>, nil] the answers of `capture_screen_styled` in turn, the last repeating (default: `screens`)
+  # @param server_pid [String, nil] what `server_pid_for_pane` answers
+  # @param start_commands [Array<Hash>] what `pane_start_commands` lists
+  # @param session_gone [Boolean] what `session_gone?` answers
   # @param captures [Array<String>, nil] the answers of `capture_pane` in turn, the last repeating (default: `captured_output`)
   def initialize(sessions: [], sessions_error: nil, session_name: nil, session_names: {}, sockets: {}, details: nil,
-    strict_windows: false, screens: [""], captures: nil)
+    strict_windows: false, screens: [""], captures: nil, styled_screens: nil, server_pid: "4242", start_commands: [], session_gone: false)
     @sessions = sessions
     @sessions_error = sessions_error
     @session_name = session_name
@@ -39,6 +44,10 @@ class FakeTmux
     @strict_windows = strict_windows
     @screens = screens.dup
     @captures = captures&.dup
+    @styled_screens = styled_screens&.dup
+    @server_pid = server_pid
+    @start_commands = start_commands
+    @session_gone = session_gone
     @sent_keys = []
     @sent_key_names = []
     @captured_output = ""
@@ -90,6 +99,18 @@ class FakeTmux
 
     (@screens.size > 1) ? @screens.shift : @screens.first
   end
+
+  def capture_screen_styled(target)
+    return capture_screen(target) unless @styled_screens
+
+    (@styled_screens.size > 1) ? @styled_screens.shift : @styled_screens.first
+  end
+
+  def server_pid_for_pane(_pane_id, timeout: nil) = @server_pid
+
+  def pane_start_commands(_session) = @start_commands
+
+  def session_gone?(_name) = @session_gone
 
   def send_keys(session, pane, text, enter: true)
     deliver(session, pane, text, enter: enter).ok?

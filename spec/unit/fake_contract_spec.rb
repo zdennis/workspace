@@ -51,6 +51,18 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe FakePane do
+    it "accepts every call Workspace::Pane accepts" do
+      expect(FakeContract.problems(described_class, Workspace::Pane, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe FakePaneFactory do
+    it "accepts every call Workspace::PaneFactory accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PaneFactory, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
   describe FakeGit do
     it "accepts every call Workspace::Git accepts" do
       expect(FakeContract.problems(described_class, Workspace::Git, control: described_class::CONTROL_METHODS)).to be_empty
