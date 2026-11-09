@@ -316,6 +316,7 @@ require_relative "workspace/hooks_config"
 require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
 require_relative "workspace/workflow_source_dirs"
+require_relative "workspace/workflow_source_fetcher"
 require_relative "workspace/focus_config"
 require_relative "workspace/workflow_defaults"
 require_relative "workspace/workflow_branch_inputs"
@@ -709,7 +710,9 @@ module Workspace
     workflow_needs_me = WorkflowNeedsMe.new
     protected_branch = ProtectedBranch.new(git: git)
     branch_inputs = WorkflowBranchInputs.new(git: git, start_ref: start_ref, protected_branch: protected_branch, pull_request_status: PullRequestStatus.new)
+    workflow_source_fetcher = WorkflowSourceFetcher.new(state_dir: config.state_dir)
     workflow_command = Commands::Workflow.new(
+      source_fetcher: workflow_source_fetcher,
       branch_inputs: branch_inputs,
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),

@@ -47,6 +47,7 @@ module BoundaryRules
       lib/workspace/pull_request_feedback.rb
       lib/workspace/commands/pull_request.rb
       lib/workspace/ticket_source.rb
+      lib/workspace/workflow_source_fetcher.rb
     ]
   }.freeze
 

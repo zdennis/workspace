@@ -46,7 +46,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_fetcher: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -66,6 +66,7 @@ module Workspace
         @compare = compare
         @step_check = step_check
         @simulator = simulator
+        @source_fetcher = source_fetcher
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts

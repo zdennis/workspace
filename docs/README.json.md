@@ -422,6 +422,10 @@ The plan (`rename --dry-run --json`, from `RenamePlan::Plan#to_h`) has these fie
 | `ask_not_answered` | `ask deliver` named a question with no recorded answer (still open or withdrawn). `details.id`, `details.status`. |
 | `use_ask_answer` | `inbox ack` or `inbox snooze` named an `ask:` id; answer the question with `ask answer` (or close it with `ask withdraw`) instead. `details.id`. |
 | `invalid_cursor` | `events --since` was given something that isn't a cursor an `events` line printed. |
+| `workflow_source_invalid` | `workflow install`: a `workflows.sources` entry is not a usable source (a non-github.com URL, no owner and repository, or an empty path). `details.source`. |
+| `workflow_source_local_missing` | `workflow install`: a local `workflows.sources` entry is not a readable directory. `details.source`. |
+| `workflow_source_gh_missing` | `workflow install`: a GitHub `workflows.sources` entry needs `gh`, which is not installed; install it with `brew install gh`. `details.source`, `details.install`. |
+| `workflow_source_failed` | `workflow install`: `gh` could not read a GitHub `workflows.sources` entry (not found, no access, not a directory, an unreadable reply or a timeout). `details.source`, `details.stderr` (what `gh` said), `details.timed_out` on a timeout. |
 | `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |
 | `invalid_script` | `workflow simulate` refused its script: not YAML, over 64 KiB, an unknown key, a step, input, file or proof the workflow does not have, or a bad value. `details.script`, `details.workflow`, `details.problems` (every one, up to 50), `details.count`. |
 | `invalid_input` | A workflow input's value doesn't match the `pattern:` its definition declares, before any run exists. `details.workflow`, `details.input`, `details.pattern`; never the value. |
