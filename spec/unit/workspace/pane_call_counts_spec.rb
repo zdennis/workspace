@@ -212,4 +212,66 @@ RSpec.describe "tmux calls of the pane desks" do
       expect(tmux.call_runs).to eq([:capture_screen, :pane_details, :deliver, :pane_details, :deliver])
     end
   end
+
+  describe Workspace::AgentRecoveryDesk do
+    let(:dir) { Dir.mktmpdir }
+    let(:t0) { Time.utc(2026, 10, 30, 12, 0, 0) }
+    let(:sid) { "11111111-1111-4111-8111-111111111111" }
+    let(:transcript_path) { File.join(dir, "session.jsonl") }
+    let(:started) { "Mon Oct 26 10:00:00 2026" }
+    let(:processes) do
+      [10, 20].zip([[1, "-zsh"], [10, "claude --resume"]]).map do |pid, (ppid, args)|
+        {pid: pid, ppid: ppid, lstart: started, command: args.split.first, args: args}
+      end
+    end
+    let(:process_tree) { instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new(processes)) }
+    let(:store) { Workspace::AgentRecoveryStore.new(path: File.join(dir, "agent-recovery.json"), clock: -> { t0 }) }
+    let(:ledger) { Workspace::SessionLedger.new(path: File.join(dir, "ledger.jsonl"), clock: -> { t0 }, logger: Workspace::Logger.new) }
+    let(:report) { double("tmuxinator_report", show: {"windows" => [{"panes" => [{"kind" => "claude", "flags" => []}]}]}) }
+    let(:desk_monitor) do
+      double("monitor").tap do |m|
+        allow(m).to receive(:typing_facts) { {kind: "claude", state: "idle", open_tools: []} }
+        allow(m).to receive(:delivery_facts).and_return({})
+        allow(m).to receive(:running_subagents).and_return(0)
+      end
+    end
+    let(:desk) do
+      described_class.new(panes: factory, workspace: "api", session_name: "api", session_monitor: desk_monitor, store: store,
+        transcript: Workspace::TranscriptSummary.new, stopper: Workspace::AgentStopper.new(process_tree: process_tree, group_reader: ->(_pid) { [10, 10] }),
+        detector: Workspace::AgentDetector.new, process_tree: process_tree, ledger: ledger,
+        resume_command: Workspace::AgentResumeCommand.new(tmuxinator_report: report),
+        prompt_typer: Workspace::PromptTyper.new(panes: factory, session_monitor: desk_monitor),
+        readiness: double("readiness"), marker: Workspace::RecoveryStopMarker.new(state_dir: dir, clock: -> { t0 }),
+        inbox: -> { Workspace::InboxStore.new(path: File.join(dir, "inbox.json"), clock: -> { t0 }) },
+        delivery_lock: Mutex.new, clock: double("clock", now: t0 + 61), sleeper: ->(_seconds) {})
+    end
+
+    before do
+      File.write(transcript_path, JSON.generate("type" => "assistant", "isApiErrorMessage" => true, "isSidechain" => false, "uuid" => "u-err") + "\n")
+      ledger.record("event" => "session_start", "session_id" => sid, "pane_id" => "%5", "tmux_server" => "77", "cwd" => "/work")
+      store.put("%5", {"session_id" => sid, "transcript_path" => transcript_path, "cwd" => "/work", "error" => "server_error",
+                       "attempts" => 1, "phase" => "waiting", "stopped" => false, "failed_at" => Workspace::AgentRecoveryStore.stamp(t0),
+                       "next_attempt_at" => Workspace::AgentRecoveryStore.stamp(t0 + 60), "agent_pid" => 20,
+                       "agent_started" => started, "agent_flags" => [], "last_turn_uuid" => "u-err"})
+      tmux.details = [{id: "%5", window: 0, index: 1, pid: 10, command: "claude"}]
+      tmux.start_commands = [{window: 0, index: 1, id: "%5", start_command: nil}]
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "lists the panes once to check a pane, then reads the typed-in screen, the screen twice and the server pid" do
+      verdict = desk.check("%5", store.get("%5"))
+
+      expect(verdict).to have_attributes(answer: :go, mode: :restart)
+      expect(tmux.call_runs).to eq([:pane_details, :capture_screen_styled, :capture_screen, :server_pid_for_pane])
+    end
+
+    it "lists the panes once, and reads nothing else, when tmux lists none" do
+      tmux.details = []
+
+      desk.check("%5", store.get("%5"))
+
+      expect(tmux.calls).to eq([:pane_details])
+    end
+  end
 end

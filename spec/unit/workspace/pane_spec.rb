@@ -57,7 +57,7 @@ RSpec.describe Workspace::Pane do
     expect(pane.server_pid).to eq("900")
     expect(pane.start_command).to eq("claude --x")
     expect(described_class.new(tmux: tmux, session_name: "app", id: "%6").start_command).to be_nil
-    expect(described_class.new(tmux: tmux, session_name: "app", id: "%7").start_command).to be_nil
+    expect(described_class.new(tmux: tmux, session_name: "app", id: "%7").start_command).to eq(:gone)
     expect(pane.session_gone?).to be(false)
     tmux.session_gone = true
     expect(pane.session_gone?).to be(true)

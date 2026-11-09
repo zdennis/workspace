@@ -40,7 +40,10 @@ class FakePane
 
   def server_pid = @tmux.server_pid_for_pane(@id)
 
-  def start_command = @tmux.pane_start_commands(@session_name).find { |row| row[:id] == @id }&.fetch(:start_command)
+  def start_command
+    row = @tmux.pane_start_commands(@session_name).find { |candidate| candidate[:id] == @id }
+    row ? row[:start_command] : :gone
+  end
 
   def session_gone? = @tmux.session_gone?(@session_name)
 end

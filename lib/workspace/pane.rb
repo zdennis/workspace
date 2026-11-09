@@ -60,9 +60,11 @@ module Workspace
       @tmux.server_pid_for_pane(@id)
     end
 
-    # @return [String, nil] the command the pane was started with
+    # @return [String, nil, Symbol] the command the pane was started with, nil when it had none,
+    #   +:gone+ when tmux's list of start commands has no row for it
     def start_command
-      @tmux.pane_start_commands(@session_name).find { |row| row[:id] == @id }&.fetch(:start_command)
+      row = @tmux.pane_start_commands(@session_name).find { |candidate| candidate[:id] == @id }
+      row ? row[:start_command] : :gone
     end
 
     # @return [Boolean] whether tmux says the pane's session no longer exists

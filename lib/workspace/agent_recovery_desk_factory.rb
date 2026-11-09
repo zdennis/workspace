@@ -46,11 +46,12 @@ module Workspace
       workspace = given.fetch(:workspace)
       return nil unless @recovery_config.enabled?(workspace) && @agent_commands.kind(workspace) == "claude"
       session_monitor = given.fetch(:session_monitor)
-      @desk_class.new(tmux: @tmux, workspace: workspace, session_name: given.fetch(:session_name), session_monitor: session_monitor,
+      panes = PaneFactory.new(tmux: @tmux, session_name: given.fetch(:session_name))
+      @desk_class.new(panes: panes, workspace: workspace, session_name: given.fetch(:session_name), session_monitor: session_monitor,
         store: AgentRecoveryStore.new(path: @config.agent_recovery_path(workspace)), transcript: @transcript,
         stopper: @stopper, detector: @agent_commands.detector(workspace),
         process_tree: @process_tree, ledger: @ledger, resume_command: @resume_command,
-        prompt_typer: PromptTyper.new(panes: PaneFactory.new(tmux: @tmux, session_name: given.fetch(:session_name)), session_monitor: session_monitor, logger: @logger),
+        prompt_typer: PromptTyper.new(panes: panes, session_monitor: session_monitor, logger: @logger),
         readiness: @readiness, marker: @marker,
         inbox: -> { InboxStore.new(path: @config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: @error_output) },
         logger: @logger, **given.slice(*DAEMON_PARTS))

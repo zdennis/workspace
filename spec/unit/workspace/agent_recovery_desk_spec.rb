@@ -7,7 +7,12 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   let(:started) { "Mon Oct 26 10:00:00 2026" }
   let(:empty_prompt) { "────────\n❯ \n" }
 
-  let(:tmux) { Interceptable.subclass(RecoveryDeskFakeTmux, :deliver, :send_key).new(empty_prompt) }
+  let(:tmux) do
+    Interceptable.subclass(FakeTmux, :deliver, :send_key).new(screens: [empty_prompt], typing: true, strict_windows: true,
+      details: [{id: "%5", window: 0, index: 1, pid: 10, command: "claude"}], server_pid: "77",
+      start_commands: [{window: 0, index: 1, id: "%5", start_command: nil}])
+  end
+  let(:panes) { Workspace::PaneFactory.new(tmux: tmux, session_name: "api") }
 
   # The real transcript reader, calling hooks[:transcript] after each read.
   let(:transcript) { RecordingTranscript.new(Workspace::TranscriptSummary.new) { hooks[:transcript]&.call } }
@@ -86,7 +91,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     double("tmuxinator_report", show: {"windows" => [{"panes" => [{"kind" => "claude", "flags" => []}]}]})
   end
   let(:resume_command) { Workspace::AgentResumeCommand.new(tmuxinator_report: report) }
-  let(:typer) { RecordingPromptTyper.new(Workspace::PromptTyper.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "api"), session_monitor: monitor)) }
+  let(:typer) { RecordingPromptTyper.new(Workspace::PromptTyper.new(panes: panes, session_monitor: monitor)) }
   let(:events) { [] }
   let(:event_log) do
     double("event_log").tap do |log|
@@ -106,7 +111,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       hooks[:deliver]&.call if text.include?("--resume")
       hooks[:enter]&.call if text.empty?
     }
-    described_class.new(tmux: tmux, workspace: "api", session_name: "api", session_monitor: monitor, store: store,
+    described_class.new(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: store,
       transcript: transcript, stopper: stopper, detector: Workspace::AgentDetector.new,
       process_tree: process_tree, ledger: ledger, resume_command: resume_command, prompt_typer: typer,
       readiness: readiness, marker: marker, inbox: -> { inbox }, event_log: event_log, delivery_lock: delivery_lock,
@@ -215,7 +220,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     it "does no store or process call on the caller's thread, and works the queue in order" do
       blocks = []
       worker_store = spy("store")
-      worker_desk = described_class.new(tmux: tmux, workspace: "api", session_name: "api", session_monitor: monitor, store: worker_store,
+      worker_desk = described_class.new(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: worker_store,
         transcript: nil, stopper: spy("stopper"), detector: nil, process_tree: spy("tree"), ledger: nil, resume_command: nil,
         prompt_typer: nil, readiness: nil, marker: nil, inbox: nil, delivery_lock: Mutex.new, clock: clock,
         spawn: ->(&block) { blocks << block })
@@ -240,7 +245,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       allow(logger).to receive(:debug).and_raise(RuntimeError, "log closed")
       failing = FailingStore.new(store)
       failing.fail_next_update("disk gone")
-      worker_desk = described_class.new(tmux: tmux, workspace: "api", session_name: "api", session_monitor: monitor, store: failing,
+      worker_desk = described_class.new(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: failing,
         transcript: Workspace::TranscriptSummary.new, stopper: stopper, detector: Workspace::AgentDetector.new, process_tree: process_tree,
         ledger: ledger, resume_command: resume_command, prompt_typer: typer, readiness: nil, marker: marker, inbox: -> { inbox },
         delivery_lock: Mutex.new, clock: clock, logger: logger,
@@ -1335,7 +1340,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         due_entry(phase: "attempting", attempts: 3, stopped: false)
         marker.mark(sid)
         tmux.details = []
-        tmux.gone = true
+        tmux.session_gone = true
         desk.scan
 
         expect(entry).to include("stopped" => false)
@@ -1348,7 +1353,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "finishes when the session went with its last pane" do
         due_entry(phase: "attempting", attempts: 3, stopped: true)
         tmux.details = []
-        tmux.gone = true
+        tmux.session_gone = true
         desk.scan
 
         expect(entry).to include("phase" => "waiting", "stopped" => true)
@@ -1491,10 +1496,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       case name
       when "a wait" then typing[:state] = "waiting"
       when "a question tool" then typing[:open_tools] = ["AskUserQuestion"]
-      when "a draft in the input line" then tmux.screen = "────────\n❯ half a thought\n"
-      when "a dialog in place of the prompt" then tmux.screen = "Allow this tool?\n"
-      when "Retrying in on screen" then tmux.screen = "Retrying in 5s · attempt 2\n❯ \n"
-      when "esc to interrupt on screen" then tmux.screen = "esc to interrupt\n❯ \n"
+      when "a draft in the input line" then tmux.screens = ["────────\n❯ half a thought\n"]
+      when "a dialog in place of the prompt" then tmux.screens = ["Allow this tool?\n"]
+      when "Retrying in on screen" then tmux.screens = ["Retrying in 5s · attempt 2\n❯ \n"]
+      when "esc to interrupt on screen" then tmux.screens = ["esc to interrupt\n❯ \n"]
       when "a prompt newer than the failure" then facts[:last_user_prompt_at] = t0 + 10
       when "a pane not scanned yet" then allow(monitor).to receive(:delivery_facts).and_return(nil)
       when "sub-agents that can't be read" then subagents[0] = nil
@@ -1563,7 +1568,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     it "defers on a screen that keeps changing" do
       due_entry
       frames = (1..4).map { |n| "frame #{n}\n❯ \n" }
-      tmux.scripted = -> { frames.shift || "last\n❯ \n" }
+      tmux.screen_script = -> { frames.shift || "last\n❯ \n" }
 
       expect(answer).to eq(:defer)
     end
@@ -1639,42 +1644,42 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
     it "accepts our own text left in the input line" do
       due_entry(draft_text: "An API error stopped your last turn")
-      tmux.screen = "────────\n❯ An API error stopped your last turn\n"
+      tmux.screens = ["────────\n❯ An API error stopped your last turn\n"]
 
       expect(answer).to eq(:go)
     end
 
     it "defers on a person's draft that only starts with our text" do
       due_entry(draft_text: "An API error stopped your last turn")
-      tmux.screen = "────────\n❯ An API error stopped your last turn and I want more\n"
+      tmux.screens = ["────────\n❯ An API error stopped your last turn and I want more\n"]
 
       expect(answer).to eq(:defer)
     end
 
     it "defers on a paste placeholder, which can't be told from a person's paste" do
       due_entry(draft_text: "An API error stopped your last turn")
-      tmux.screen = "────────\n❯ [Pasted text #1 +40 lines]\n"
+      tmux.screens = ["────────\n❯ [Pasted text #1 +40 lines]\n"]
 
       expect(answer).to eq(:defer)
     end
 
     it "accepts our own text wrapped over two lines" do
       due_entry(draft_text: "An API error stopped your last turn")
-      tmux.screen = "────────\n❯ An API error stopped\n  your last turn\n────────\n  status\n"
+      tmux.screens = ["────────\n❯ An API error stopped\n  your last turn\n────────\n  status\n"]
 
       expect(answer).to eq(:go)
     end
 
     it "goes ahead on a suggestion: the stored draft does not match it, then the plain check passes" do
       due_entry(draft_text: "An API error stopped your last turn")
-      tmux.screen = "────────\n\e[39m❯ \e[2msend %45 the reply when it's done\e[0m\n────────\n"
+      tmux.screens = ["────────\n\e[39m❯ \e[2msend %45 the reply when it's done\e[0m\n────────\n"]
 
       expect(answer).to eq(:go)
     end
 
     it "defers on a draft that isn't our text" do
       due_entry(draft_text: "An API error stopped your last turn")
-      tmux.screen = "────────\n❯ something a person wrote\n"
+      tmux.screens = ["────────\n❯ something a person wrote\n"]
 
       expect(answer).to eq(:defer)
     end
@@ -1851,7 +1856,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
     it "defers on a screen that isn't quiet" do
       frames = ["a\n", "b\n"]
-      tmux.scripted = -> { frames.shift || "c\n" }
+      tmux.screen_script = -> { frames.shift || "c\n" }
 
       expect(answer).to eq(:defer)
     end
@@ -1981,7 +1986,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   describe "through the prompt queue" do
     let(:queue_store) { Workspace::PromptQueueStore.new(path: File.join(dir, "prompt-queue.json"), clock: clock) }
     let(:queue) do
-      Workspace::PromptQueueDesk.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: "api"), session_name: "api", workspace: "api", session_monitor: monitor, store: queue_store,
+      Workspace::PromptQueueDesk.new(panes: panes, session_name: "api", workspace: "api", session_monitor: monitor, store: queue_store,
         delivery_lock: Mutex.new, recovering: ->(id) { desk.holding?(id) }, event_log: event_log, typer: typer, clock: clock,
         sleeper: ->(seconds) { now[0] += seconds }, spawn: ->(&block) { block.call })
     end
@@ -2213,7 +2218,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "is no_response with the screen changing and no hook, never watching" do
         due_entry
         resume_swallows_enter
-        hooks[:enter] = -> { tmux.screen = "#{empty_prompt}status line redrawn\n" }
+        hooks[:enter] = -> { tmux.screens = ["#{empty_prompt}status line redrawn\n"] }
         desk.scan
 
         expect(outcomes).to eq(["no_response"])
@@ -2287,11 +2292,11 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         resume_swallows_enter
         desk.scan
         typed = messages.first
-        tmux.screen = "#{rule_prompt}#{typed}\n"
+        tmux.screens = ["#{rule_prompt}#{typed}\n"]
 
         hooks[:signal] = -> { agent_leaves(21) }
         hooks[:deliver] = lambda {
-          tmux.screen = empty_prompt
+          tmux.screens = [empty_prompt]
           agent_resumes(pid: 22)
         }
         next_attempt
@@ -2314,10 +2319,10 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect_rescheduled(3)
 
         typed = messages.first
-        tmux.screen = "#{rule_prompt}#{typed}\n"
+        tmux.screens = ["#{rule_prompt}#{typed}\n"]
         hooks[:signal] = -> { agent_leaves(21) }
         hooks[:deliver] = lambda {
-          tmux.screen = empty_prompt
+          tmux.screens = [empty_prompt]
           agent_resumes(pid: 22)
         }
         next_attempt
@@ -2331,7 +2336,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         resume_swallows_enter
         desk.scan
         store.update("%5") { |current| current["last_turn_uuid"] = "u-err" }
-        tmux.screen = "#{rule_prompt}a person's draft\n"
+        tmux.screens = ["#{rule_prompt}a person's draft\n"]
 
         expect(answer).to eq(:defer)
       end
@@ -2342,7 +2347,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         hooks[:sleep] = lambda {
           next if messages.empty?
           hooks.delete(:sleep)
-          tmux.screen = "#{rule_prompt}#{messages.first}\n"
+          tmux.screens = ["#{rule_prompt}#{messages.first}\n"]
           raise "killed"
         }
         desk.scan
@@ -3210,7 +3215,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         hooks[:details] = lambda {
           next unless restarting.include?("%5")
           hooks.delete(:details)
-          tmux.screen = "#{empty_prompt}moved\n"
+          tmux.screens = ["#{empty_prompt}moved\n"]
         }
         desk.scan
 
@@ -3627,7 +3632,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "presses Enter once on :not_submitted and never retypes" do
         allow(typer).to receive(:type) do |text:, **|
-          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
+          tmux.screens = ["#{rule_prompt}#{text}\n────────\n"]
           Workspace::PromptTyper::Result.new(outcome: :not_submitted)
         end
         desk.scan
@@ -3676,7 +3681,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "doesn't press Enter on :not_submitted once the shell holds the terminal" do
         allow(typer).to receive(:type) do |text:, **|
-          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
+          tmux.screens = ["#{rule_prompt}#{text}\n────────\n"]
           allow(stopper).to receive(:foreground?).and_return(false)
           Workspace::PromptTyper::Result.new(outcome: :not_submitted)
         end
@@ -3690,7 +3695,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         typed = nil
         allow(typer).to receive(:type) do |text:, **|
           typed = text
-          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
+          tmux.screens = ["#{rule_prompt}#{text}\n────────\n"]
           allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :failed, message: "no"))
           Workspace::PromptTyper::Result.new(outcome: :not_submitted)
         end
@@ -4056,7 +4061,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       end
 
       it "defers at no cost when the screen turns busy" do
-        after_the_scan_check { tmux.screen = "esc to interrupt\n#{empty_prompt}" }
+        after_the_scan_check { tmux.screens = ["esc to interrupt\n#{empty_prompt}"] }
         desk.scan
 
         expect_nothing_counted
@@ -4297,7 +4302,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         agent_appears(pid: 31)
         start_session(sid)
         event("session_start", source: "resume")
-        tmux.screen = empty_prompt
+        tmux.screens = [empty_prompt]
         now[0] += 3600
         desk.scan
 
@@ -4327,7 +4332,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "recognises a :not_landed paste that renders late" do
         allow(typer).to receive(:type) do |text:, **|
-          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
+          tmux.screens = ["#{rule_prompt}#{text}\n────────\n"]
           Workspace::PromptTyper::Result.new(outcome: :not_landed)
         end
         desk.scan
@@ -4340,7 +4345,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       it "recognises text left by a kill between the paste and Enter" do
         hooks[:enter] = lambda {
           hooks.delete(:enter)
-          tmux.screen = "#{rule_prompt}#{message}\n"
+          tmux.screens = ["#{rule_prompt}#{message}\n"]
           raise "killed"
         }
         desk.scan
@@ -4428,7 +4433,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "presses no Enter on :not_submitted once the shell holds the terminal" do
         allow(typer).to receive(:type) do |text:, **|
-          tmux.screen = "#{rule_prompt}#{text}\n────────\n"
+          tmux.screens = ["#{rule_prompt}#{text}\n────────\n"]
           allow(stopper).to receive(:foreground?).and_return(false)
           Workspace::PromptTyper::Result.new(outcome: :not_submitted)
         end
@@ -4467,7 +4472,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         end
 
         it "doesn't read a person's longer draft as ours" do
-          tmux.screen = "#{rule_prompt}#{message} and then\n"
+          tmux.screens = ["#{rule_prompt}#{message} and then\n"]
 
           expect(answer).to eq(:defer)
         end
@@ -4497,7 +4502,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "answers :go with our text in the input and the error still the last record" do
         store.update("%5") { |current| current["last_turn_uuid"] = "u-err" }
-        tmux.screen = "#{rule_prompt}#{message}\n"
+        tmux.screens = ["#{rule_prompt}#{message}\n"]
 
         expect(answer).to eq(:go)
       end
@@ -4512,7 +4517,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
       it "defers while the agent is working" do
         store.update("%5") { |current| current["last_turn_uuid"] = "u-err" }
-        tmux.screen = "esc to interrupt\n#{empty_prompt}"
+        tmux.screens = ["esc to interrupt\n#{empty_prompt}"]
         desk.scan
 
         expect(entry).to include("phase" => "waiting", "defer_since" => stamp(now[0]))
@@ -4661,13 +4666,13 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       after_each.call(2)
       expect(entry).to include("agent_pid" => 21, "draft_text" => a_string_matching(/workspace restarted Claude Code/))
 
-      tmux.screen = "#{rule_prompt}#{entry["draft_text"]}\n"
+      tmux.screens = ["#{rule_prompt}#{entry["draft_text"]}\n"]
       hooks[:signal] = lambda {
         processes.reject! { |process| process[:pid] == 21 }
         agent_exits
       }
       hooks[:deliver] = lambda {
-        tmux.screen = empty_prompt
+        tmux.screens = [empty_prompt]
         agent_resumes(pid: 22)
       }
       next_attempt

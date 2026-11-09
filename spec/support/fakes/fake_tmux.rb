@@ -32,9 +32,14 @@ class FakeTmux
   # @param server_pid [String, nil] what `server_pid_for_pane` answers
   # @param start_commands [Array<Hash>] what `pane_start_commands` lists
   # @param session_gone [Boolean] what `session_gone?` answers
+  # @param typing [Boolean] the pane shows what is typed: a delivery with Enter puts the first screen back (the input
+  #   line empties), one without Enter fills the empty input line of the screen shown with the text, and the
+  #   outcome is `:submitted` or `:pasted` (unless `statuses` says otherwise)
   # @param captures [Array<String>, nil] the answers of `capture_pane` in turn, the last repeating (default: `captured_output`)
   def initialize(sessions: [], sessions_error: nil, session_name: nil, session_names: {}, sockets: {}, details: nil,
-    strict_windows: false, screens: [""], captures: nil, styled_screens: nil, server_pid: "4242", start_commands: [], session_gone: false)
+    strict_windows: false, screens: [""], captures: nil, styled_screens: nil, server_pid: "4242", start_commands: [], session_gone: false, typing: false)
+    @typing = typing
+    @blank = screens.first
     @sessions = sessions
     @sessions_error = sessions_error
     @session_name = session_name
@@ -118,9 +123,10 @@ class FakeTmux
 
   # Records the send; the outcome is the next of `statuses`, else `delivery_status`.
   def deliver(session, pane, text, enter: true)
+    type_into_screen(text, enter) if @typing
     sent_keys << {session: session, pane: pane, text: text, enter: enter}
     @on_deliver&.call(text)
-    status = @statuses.shift || delivery_status
+    status = @statuses.shift || ((@typing && !enter) ? :pasted : delivery_status)
     Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
   end
 
@@ -151,5 +157,11 @@ class FakeTmux
 
   def reattach_or_start(session, start)
     "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}"
+  end
+
+  private
+
+  def type_into_screen(text, enter)
+    @screens = [enter ? @blank : @screens.first.sub(/❯ \n\z/, "❯ #{text}\n────────\n")]
   end
 end
