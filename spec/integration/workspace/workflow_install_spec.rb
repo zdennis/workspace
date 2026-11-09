@@ -320,12 +320,28 @@ RSpec.describe "workflow install over a real cache directory" do
       expect(row["outcome"]).to eq("dry_run")
       expect(Dir.exist?(cache)).to be(true)
       expect(row["sources"].first["outcome"]).to eq("dry_run")
+      expect(out.string).to include("Would remove 1 of 2 source caches")
     end
 
-    it "removes nothing when the stored list can't be parsed, as the catalog reads none of it" do
+    it "removes a duplicate entry's cache once" do
+      dup_resolver = double(view: double(raw: ["acme/widgets/wf", "acme/widgets/wf"].join(",")))
+      dup_installer = Workspace::WorkflowSourceInstaller.new(config: config, state_dir: state, home: @dir,
+        source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: dup_resolver, state_dir: state, home: @dir),
+        fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir))
+      dup_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
+        files: double, run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: dup_installer, output: out, error_output: err)
+
+      row = dup_command.uninstall(dry_run: true)
+
+      expect(row["sources"].map { |s| s["index"] }).to eq([1])
+      expect(out.string).to include("Would remove 1 of 1 source caches")
+      expect(Dir.exist?(cache)).to be(true)
+    end
+
+    it "says the list is unreadable instead of empty when the config can't be parsed" do
       FileUtils.rm_rf(local("src"))
       bad_resolver = double(view: double(raw: "relative/path, acme/widgets/wf"))
-      bad_installer = Workspace::WorkflowSourceInstaller.new(config: config, state_dir: state,
+      bad_installer = Workspace::WorkflowSourceInstaller.new(config: config, state_dir: state, home: @dir,
         source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: bad_resolver, state_dir: state, home: @dir),
         fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir))
       bad_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
@@ -334,6 +350,7 @@ RSpec.describe "workflow install over a real cache directory" do
       row = bad_command.uninstall(yes: true)
 
       expect(row["outcome"]).to eq("unchanged")
+      expect(out.string).to include("workflows.sources can't be read")
       expect(Dir.exist?(cache)).to be(true)
     end
   end

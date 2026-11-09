@@ -18,11 +18,13 @@ module Workspace
     # @param source_dirs [Workspace::WorkflowSourceDirs] lists the entries and the directories they are read from now
     # @param fetcher [Workspace::WorkflowSourceFetcher]
     # @param state_dir [String] the state root the cache lives under
-    def initialize(config:, source_dirs:, fetcher:, state_dir:)
+    # @param home [String, nil] what a leading `~` stands for
+    def initialize(config:, source_dirs:, fetcher:, state_dir:, home: ENV["HOME"])
       @config = config
       @source_dirs = source_dirs
       @fetcher = fetcher
       @state_dir = state_dir
+      @home = home
     end
 
     # @param only [Integer, nil] the 1-based position of the one source to install; nil installs every one
@@ -72,10 +74,15 @@ module Workspace
       rescue Workspace::ConfigParseError, ArgumentError
         # A stored list the schema refuses is one the catalog reads as nothing, so
         # there is nothing installed from a source to remove.
-        return {"sources" => [], "removed" => 0}
+        return {"sources" => [], "removed" => 0, "unreadable" => true}
       end
-      rows = entries.each_with_index.map do |entry, i|
-        parsed = WorkflowSource.parse(entry)
+      # A duplicate entry shares one cache directory; the first position removes it and the
+      # later ones are the same source, so they are not reported again.
+      seen = {}
+      rows = entries.each_with_index.filter_map do |entry, i|
+        next nil if seen.key?(entry)
+        seen[entry] = true
+        parsed = WorkflowSource.parse(entry, home: @home)
         row = {"index" => i + 1, "source" => entry, "kind" => parsed.kind.to_s, "path" => nil, "outcome" => nil}
         if parsed.kind == :local
           row.merge("outcome" => "local", "path" => parsed.path)

@@ -383,6 +383,7 @@ module Workspace
         result = @source_installer.uninstall(dry_run: dry_run)
         rows = result["sources"]
         removed = result["removed"]
+        effective = dry_run ? rows.count { |row| row["outcome"] == "dry_run" } : removed
         outcome = if dry_run
           "dry_run"
         elsif removed.zero?
@@ -390,10 +391,12 @@ module Workspace
         else
           "uninstalled"
         end
-        message = if rows.empty?
+        message = if result["unreadable"]
+          "workflows.sources can't be read, so nothing was removed; fix the list with `workspace config set workflows.sources`."
+        elsif rows.empty?
           "No workflows.sources are set; nothing is installed from a source."
-        elsif removed.positive?
-          "#{dry_run ? "Would remove" : "Removed"} #{removed} of #{rows.size} source caches. The entries stay in workflows.sources; unset them with `workspace config unset workflows.sources`."
+        elsif effective.positive?
+          "#{dry_run ? "Would remove" : "Removed"} #{effective} of #{rows.size} source caches. The entries stay in workflows.sources; unset them with `workspace config unset workflows.sources`."
         else
           suffix = dry_run ? " (dry run)" : ""
           "Nothing to remove#{suffix}: no GitHub source has a cache."
