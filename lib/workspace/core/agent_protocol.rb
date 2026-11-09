@@ -79,10 +79,10 @@ module Workspace
     #   merged after the base keys; a nil value anywhere is left out
     def self.session_event(event:, agent_kind:, pane_id:, session_id:, cwd:, transcript_path:, agent_id:, agent:,
       message:, notification_type:, prompt:, stop_reason:, error:, background_tasks:, workspace: nil, fields: {})
-      build(SESSION_EVENT, workspace, "event" => event, "agent_kind" => agent_kind, "pane_id" => pane_id,
+      build(SESSION_EVENT, workspace, {"event" => event, "agent_kind" => agent_kind, "pane_id" => pane_id,
         "session_id" => session_id, "cwd" => cwd, "transcript_path" => transcript_path, "agent_id" => agent_id,
         "agent" => agent, "message" => message, "notification_type" => notification_type, "prompt" => prompt,
-        "stop_reason" => stop_reason, "error" => error, "background_tasks" => background_tasks).merge(fields).compact.freeze
+        "stop_reason" => stop_reason, "error" => error, "background_tasks" => background_tasks}).merge(fields).compact.freeze
     end
 
     def self.handoff_watch(pane_id:, sent_at:, interval:, max:, text:, sent_text:, workspace: nil)
