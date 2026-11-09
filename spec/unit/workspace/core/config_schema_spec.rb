@@ -5,7 +5,28 @@ RSpec.describe Workspace::ConfigSchema do
 
   it "lists the settable keys in the order `config set` has always reported them" do
     expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt events.rotate_size codex.hooks.install])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.sources workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt events.rotate_size codex.hooks.install])
+  end
+
+  describe "workflows.sources" do
+    let(:parse) { described_class.key("workflows.sources").parser }
+
+    it "accepts a URL, a shorthand and local paths, from a string or an Array" do
+      expect(parse.call("https://github.com/o/r/tree/main/w, o/r/workflows\n/abs/dir, ~/dir")).to eq(%w[https://github.com/o/r/tree/main/w o/r/workflows /abs/dir ~/dir])
+      expect(parse.call(["o/r/w"])).to eq(["o/r/w"])
+    end
+
+    it "drops empty entries" do
+      expect(parse.call(" o/r/w ,, \n")).to eq(["o/r/w"])
+      expect(parse.call("")).to eq([])
+    end
+
+    it "refuses a bare owner/repo and relative paths, naming the entry" do
+      ["o/r", "sub", "./a/b/c", "../a/b/c", ".hidden/a/b", "~a/b/c", "o//r/w"].each do |bad|
+        expect { parse.call("o/r/w, #{bad}") }.to raise_error(ArgumentError, /#{Regexp.escape(bad.inspect)}/)
+      end
+      expect { parse.call("sub/dir") }.to raise_error(ArgumentError, /"sub\/dir"/)
+    end
   end
 
   it "has a workflows.by_ref key for each ref kind, and one for a prompt" do
@@ -387,7 +408,8 @@ RSpec.describe Workspace::ConfigSchema, "layers and limits" do
     legacy = {global: %i[global], parent: %i[project], own_then_parent: %i[project worktree], own: %i[project worktree], merge: %i[project worktree], none: []}
     expect(described_class.all.reject { |key| key.resolve == :layered }).to all(satisfy { |key| key.overridable_in == legacy.fetch(key.resolve) })
     layered = described_class.all.select { |key| key.resolve == :layered }
-    expect(layered).to all(satisfy { |key| key.overridable_in.size > 1 })
+    expect(layered.reject { |key| key.name == "workflows.sources" }).to all(satisfy { |key| key.overridable_in.size > 1 })
+    expect(described_class.key("workflows.sources").overridable_in).to eq(%i[global])
     multi = described_class.all.select { |key| key.overridable_in.size > 1 }
     expect(multi.reject { |key| key.resolve == :layered }.map(&:name)).to match_array(%w[notes.dir hooks layouts layouts pipeline])
     expect(described_class.key("notes.dir").overridable_in).to eq(%i[project worktree])

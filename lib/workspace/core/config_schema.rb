@@ -355,6 +355,25 @@ module Workspace
     end
     private_constant :PACK_LIST
 
+    # `workflows.sources`: directories of workflow definitions to install from. Checks the shape of each
+    # entry only (the meaning of an entry is `WorkflowSource`'s): a `https://github.com/` URL, an
+    # `owner/repo/path` shorthand (three or more segments, so a bare `owner/repo` and a relative path
+    # such as `sub/dir` are refused), or an absolute or `~/` local path.
+    WORKFLOW_SOURCES = lambda do |value|
+      entries = value.is_a?(Array) ? value : value.to_s.split(/[\n,]+/)
+      entries = entries.map { |entry| entry.is_a?(String) ? entry.strip : entry }.reject { |entry| entry.is_a?(String) && entry.empty? }
+      entries.each do |entry|
+        ok = entry.is_a?(String) && (
+          entry.match?(%r{\Ahttps://github\.com/\S+\z}) ||
+          entry.match?(%r{\A(?:/|~/)\S+\z}) ||
+          entry.match?(%r{\A[^/~.\s][^/\s]*(?:/[^/\s]+){2,}\z})
+        )
+        raise ArgumentError, "#{entry.inspect} is not a workflow source: use a https://github.com/ URL, owner/repo/path, or an absolute or ~/ path" unless ok
+      end
+      entries
+    end
+    private_constant :WORKFLOW_SOURCES
+
     # `start.copy_files`: files copied from the main checkout into a new worktree at `start`.
     # Stricter than INSTALL_DIR: a trailing `/` names a directory, not a file, and the copy
     # step needs one unambiguous relative path per entry.
@@ -589,6 +608,8 @@ module Workspace
       Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["binding, commits"], default: DEFAULT_PACKS, parser: PACK_LIST,
         doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \
           "as names separated by commas (default `binding, orchestrator, commits`)"),
+      Key.new(name: "workflows.sources", scope: :global, resolve: :layered, overridable_in: [:global], type: :text, settable: true, examples: ["acme/workflows/presets", "https://github.com/acme/workflows/tree/main/presets", "~/workflows"], default: [], restart: false, parser: WORKFLOW_SOURCES,
+        doc: "Directories of workflow definitions to install from, separated by commas or newlines: a `https://github.com/` URL, `owner/repo/path` or an absolute or `~/` local path (none by default). A bare `owner/repo` and other relative paths are refused"),
       Key.new(name: "workflows.default", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["rpiv"], parser: WORKFLOW_ID,
         doc: "Id of the workflow `workflow start` runs when it is given no id and no `workflows.by_ref.*` key matches the reference (no default)"),
       *WORKFLOW_REF_KINDS.map do |kind|
