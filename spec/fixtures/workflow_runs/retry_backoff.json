@@ -1,0 +1,214 @@
+{
+  "id": "wr_simulated",
+  "schema_version": 1,
+  "workflow": "demo",
+  "title": "Demo",
+  "definition": {
+    "id": "demo",
+    "title": "Demo",
+    "description": null,
+    "use_when": null,
+    "applies_to": [],
+    "inputs": {},
+    "include": [],
+    "instructions": null,
+    "max_attempts": 20,
+    "stall": null,
+    "redeliver": 3,
+    "deny": [],
+    "steps": [
+      {
+        "id": "build",
+        "title": "build",
+        "prompt": "build it",
+        "include": [],
+        "produces": [
+          "build.md"
+        ],
+        "status": null,
+        "gate": "approve",
+        "guard": null,
+        "require": [],
+        "uses": [],
+        "on_fail": null,
+        "context": "fresh",
+        "timeout": null,
+        "on_timeout": "warn"
+      },
+      {
+        "id": "test",
+        "title": "test",
+        "prompt": "test it",
+        "include": [],
+        "produces": [
+          "test.md"
+        ],
+        "status": {
+          "run": "true",
+          "timeout": 1200
+        },
+        "gate": null,
+        "guard": null,
+        "require": [],
+        "uses": [],
+        "on_fail": {
+          "goto": "build",
+          "max": 3,
+          "backoff": 120.0,
+          "context": null
+        },
+        "context": "fresh",
+        "timeout": null,
+        "on_timeout": "warn"
+      }
+    ],
+    "produces_check": "strict"
+  },
+  "definition_source": "file",
+  "definition_path": null,
+  "definition_sha256": "8624f8c93314202c390e6e2a3ba12da97c1ccd3a90d27841b0147347c7930393",
+  "workspace": "simulation",
+  "project": "simulation",
+  "worktree": "/tmp/workspace-simulate/checkout",
+  "base_sha": null,
+  "base_guard": null,
+  "task": null,
+  "inputs": {},
+  "note": null,
+  "state": "waiting",
+  "created_at": "2026-01-01T00:00:00Z",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": null,
+  "current": "test",
+  "pane": "%sim",
+  "loops": {
+    "test->build": 1
+  },
+  "pending_context": [],
+  "reason": {
+    "code": "retry_backoff",
+    "since": "2026-01-01T00:00:02Z",
+    "details": {
+      "step": "test",
+      "attempt": 1,
+      "to": "build",
+      "until": "2026-01-01T00:02:02Z",
+      "seconds": 120.0,
+      "loops": {
+        "test->build": 1
+      }
+    }
+  },
+  "steps": {
+    "build": {
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "started_at": "2026-01-01T00:00:00.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/build.1.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "8624f8c93314202c390e6e2a3ba12da97c1ccd3a90d27841b0147347c7930393",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "ended_at": "2026-01-01T00:00:01Z",
+          "outcome": "passed",
+          "outputs": [
+            {
+              "file": "build.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          },
+          "reasons": [
+            {
+              "code": "waiting_you",
+              "since": "2026-01-01T00:00:01Z",
+              "until": "2026-01-01T00:00:01Z"
+            }
+          ]
+        }
+      ],
+      "gate": {
+        "state": "approved",
+        "since": "2026-01-01T00:00:01Z",
+        "at": "2026-01-01T00:00:01Z",
+        "note": null
+      }
+    },
+    "test": {
+      "state": "failed",
+      "attempts": [
+        {
+          "n": 1,
+          "started_at": "2026-01-01T00:00:01.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/test.1.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "8624f8c93314202c390e6e2a3ba12da97c1ccd3a90d27841b0147347c7930393",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "check": {
+            "started_at": "2026-01-01T00:00:02Z",
+            "log": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/test.1.check.log",
+            "command": "true",
+            "ended_at": "2026-01-01T00:00:02Z",
+            "exit_code": 1,
+            "timed_out": false
+          },
+          "ended_at": "2026-01-01T00:00:02Z",
+          "outcome": "failed",
+          "code": "check_failed",
+          "outputs": [
+            {
+              "file": "test.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          },
+          "reasons": [
+            {
+              "code": "retry_backoff",
+              "since": "2026-01-01T00:00:02Z",
+              "until": null
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "artifacts_dir": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated",
+  "reasons": [
+    {
+      "code": "waiting_you",
+      "since": "2026-01-01T00:00:00Z",
+      "until": "2026-01-01T00:00:00Z",
+      "step": "build"
+    }
+  ],
+  "backoff": {
+    "until": "2026-01-01T00:02:02Z",
+    "to": "build",
+    "text": "The test step failed and sent the run back to this step (time 1 of 3): its check exited 1 (log: /tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/test.1.check.log). Its files are in /tmp/workspace-simulate/checkout/.workflow/wr_simulated. Fix what it found.",
+    "pane": "%sim"
+  }
+}

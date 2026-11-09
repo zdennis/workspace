@@ -1,0 +1,128 @@
+{
+  "id": "wr_simulated",
+  "schema_version": 1,
+  "workflow": "demo",
+  "title": "Demo",
+  "definition": {
+    "id": "demo",
+    "title": "Demo",
+    "description": null,
+    "use_when": null,
+    "applies_to": [],
+    "inputs": {},
+    "include": [],
+    "instructions": null,
+    "max_attempts": 20,
+    "stall": null,
+    "redeliver": 3,
+    "deny": [],
+    "steps": [
+      {
+        "id": "build",
+        "title": "build",
+        "prompt": "build it",
+        "include": [],
+        "produces": [
+          "build.md"
+        ],
+        "status": null,
+        "gate": "approve",
+        "guard": null,
+        "require": [],
+        "uses": [],
+        "on_fail": null,
+        "context": "fresh",
+        "timeout": null,
+        "on_timeout": "warn"
+      },
+      {
+        "id": "test",
+        "title": "test",
+        "prompt": "test it",
+        "include": [],
+        "produces": [
+          "test.md"
+        ],
+        "status": {
+          "run": "true",
+          "timeout": 1200
+        },
+        "gate": null,
+        "guard": null,
+        "require": [],
+        "uses": [],
+        "on_fail": {
+          "goto": "build",
+          "max": 3,
+          "context": null
+        },
+        "context": "fresh",
+        "timeout": null,
+        "on_timeout": "warn"
+      }
+    ],
+    "produces_check": "strict"
+  },
+  "definition_source": "file",
+  "definition_path": null,
+  "definition_sha256": "4af1730b51060622d08bbbfb4dfe2edfcf17a71c584504330e735bc481722aef",
+  "workspace": "simulation",
+  "project": "simulation",
+  "worktree": "/tmp/workspace-simulate/checkout",
+  "base_sha": null,
+  "base_guard": null,
+  "task": null,
+  "inputs": {},
+  "note": null,
+  "state": "running",
+  "created_at": "2026-01-01T00:00:00Z",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": null,
+  "current": "build",
+  "pane": "%sim",
+  "loops": {},
+  "pending_context": [],
+  "reason": null,
+  "steps": {
+    "build": {
+      "state": "running",
+      "attempts": [
+        {
+          "n": 1,
+          "started_at": "2026-01-01T00:00:00.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/build.1.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "4af1730b51060622d08bbbfb4dfe2edfcf17a71c584504330e735bc481722aef",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": []
+        }
+      ]
+    },
+    "test": {
+      "state": "pending",
+      "attempts": []
+    }
+  },
+  "artifacts_dir": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated",
+  "reasons": [
+    {
+      "code": "waiting_you",
+      "since": "2026-01-01T00:00:00Z",
+      "until": "2026-01-01T00:00:00Z",
+      "step": "build"
+    }
+  ],
+  "sweep": {
+    "step": "build",
+    "attempt": 1,
+    "stalled": {
+      "idle": "2026-01-01T00:20:00Z"
+    },
+    "recovered": {}
+  },
+  "guard_config_seen": "0123456789abcdef"
+}

@@ -1,0 +1,203 @@
+module Workspace
+  # One stored workflow run, as a frozen value over the Hash the run file holds.
+  #
+  # Readers return the stored value as it is (an absent key reads nil, an Integer stays an
+  # Integer), and {#to_h} gives back the Hash it was made from, every key in its order, the ones
+  # this class has no reader for too, so a run file written by an older or newer workspace
+  # survives a round trip byte for byte. {.from_h} never raises on a Hash with keys missing.
+  class WorkflowRun
+    # Keys the engine and the outside readers name; each is a reader that returns the stored value.
+    KEYS = %w[
+      id schema_version workflow title definition definition_source definition_path definition_sha256
+      workspace project worktree base_sha base_guard task inputs note state created_at started_at ended_at
+      current pane loops pending_context reason reasons artifacts_dir parked backoff budget_hold sweep
+      extra_tokens extra_attempts guard_config_seen cancelled_by
+    ].freeze
+
+    # A frozen deep copy of a parsed value, or the value itself when it is already frozen all the way down.
+    #
+    # @param value [Object] a parsed JSON value
+    # @return [Object]
+    def self.deep_freeze(value)
+      case value
+      when Hash
+        pairs = value.map { |key, each| [deep_freeze(key), deep_freeze(each)] }
+        return value if value.frozen? && pairs.zip(value.to_a).all? { |(key, each), (old_key, old)| key.equal?(old_key) && each.equal?(old) }
+        pairs.to_h.freeze
+      when Array
+        items = value.map { |each| deep_freeze(each) }
+        return value if value.frozen? && items.zip(value).all? { |each, old| each.equal?(old) }
+        items.freeze
+      when String
+        value.frozen? ? value : value.dup.freeze
+      else
+        value
+      end
+    end
+
+    # @param hash [Hash{String=>Object}, nil] a run as parsed from its file; a missing or non-Hash value reads as an empty run
+    # @return [WorkflowRun]
+    def self.from_h(hash)
+      new(hash)
+    end
+
+    # @return [Hash{String=>Object}] the frozen Hash this run holds, as the run file has it
+    attr_reader :to_h
+
+    # @return [Hash{String=>Step}] each step by id, in the run's order; empty when the run has no steps
+    attr_reader :steps
+
+    # @param hash [Hash{String=>Object}, nil]
+    def initialize(hash)
+      @to_h = self.class.deep_freeze(hash.is_a?(Hash) ? hash : {})
+      steps = @to_h["steps"].is_a?(Hash) ? @to_h["steps"] : {}
+      @steps = steps.to_h { |id, each| [id, Step.from_h(each)] }.freeze
+      freeze
+    end
+
+    KEYS.each do |key|
+      define_method(key) { to_h[key] }
+    end
+
+    # @param id [String] a step id
+    # @return [Step, nil]
+    def step(id)
+      steps[id]
+    end
+
+    # @return [Step, nil] the step the run is at; nil when it has none or names one it lacks
+    def current_step
+      step(current)
+    end
+
+    # @param reads_plan_again [Boolean, nil] whether a step still to run reads the plan (the caller knows the definition's rules)
+    # @return [Summary] what a file outside workflow may know of this run
+    def summary(reads_plan_again: nil)
+      last = current_step&.last_attempt
+      step_states = definition_steps.map { |each| {"id" => each["id"], "state" => step(each["id"])&.state} }
+      Summary.new(id: id, workflow: workflow, title: title, workspace: workspace, worktree: worktree, state: state,
+        step: current, attempt: last&.n, pane: pane, step_states: step_states.freeze, reads_plan_again: reads_plan_again)
+    end
+
+    # @return [Boolean]
+    def ==(other)
+      other.is_a?(WorkflowRun) && to_h == other.to_h
+    end
+    alias_method :eql?, :==
+
+    # @return [Integer]
+    def hash
+      [WorkflowRun, to_h].hash
+    end
+
+    # One step of a run: its state, its attempts and its gate.
+    class Step
+      # @param hash [Hash{String=>Object}, nil]
+      # @return [Step]
+      def self.from_h(hash)
+        new(hash)
+      end
+
+      # @return [Hash{String=>Object}] the frozen Hash this step holds
+      attr_reader :to_h
+
+      # @return [Array<Attempt>] the attempts in order; empty when the step has none
+      attr_reader :attempts
+
+      # @param hash [Hash{String=>Object}, nil]
+      def initialize(hash)
+        @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
+        list = @to_h["attempts"].is_a?(Array) ? @to_h["attempts"] : []
+        @attempts = list.map { |each| Attempt.from_h(each) }.freeze
+        freeze
+      end
+
+      # @return [String, nil] pending, running, checking, passed, failed ...
+      def state
+        to_h["state"]
+      end
+
+      # @return [Hash, nil] the gate's state, when the step has one
+      def gate
+        to_h["gate"]
+      end
+
+      # @return [Object, nil]
+      def redelivery_pending
+        to_h["redelivery_pending"]
+      end
+
+      # @return [Attempt, nil]
+      def last_attempt
+        attempts.last
+      end
+
+      # @return [Boolean] whether the step's gate waits for a person
+      def gate_waiting?
+        gate.is_a?(Hash) && gate["state"] == "waiting"
+      end
+
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(Step) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [Step, to_h].hash
+      end
+    end
+
+    # One attempt at a step; each reader returns the stored value, nil when the attempt lacks the key.
+    class Attempt
+      # Keys of an attempt, as the engine, the attempt record and the evidence copy write them.
+      KEYS = %w[
+        n started_at ended_at outcome context prompt_file head definition_sha256 prompt_sha256 packs outputs
+        agent session usage reasons check code proofs reported evidence remote warnings redelivered redelivery
+        delivery after_park
+      ].freeze
+
+      # @param hash [Hash{String=>Object}, nil]
+      # @return [Attempt]
+      def self.from_h(hash)
+        new(hash)
+      end
+
+      # @return [Hash{String=>Object}] the frozen Hash this attempt holds
+      attr_reader :to_h
+
+      # @param hash [Hash{String=>Object}, nil]
+      def initialize(hash)
+        @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
+        freeze
+      end
+
+      KEYS.each do |key|
+        define_method(key) { to_h[key] }
+      end
+
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(Attempt) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [Attempt, to_h].hash
+      end
+    end
+
+    # What a file outside workflow may know of a run. +step_states+ lists the definition's steps in order as
+    # +{"id" => ..., "state" => ...}+.
+    Summary = Data.define(:id, :workflow, :title, :workspace, :worktree, :state, :step, :attempt, :pane, :step_states, :reads_plan_again)
+
+    private
+
+    def definition_steps
+      list = definition.is_a?(Hash) ? definition["steps"] : nil
+      list.is_a?(Array) ? list.select { |each| each.is_a?(Hash) } : []
+    end
+  end
+end
