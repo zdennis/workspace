@@ -117,13 +117,14 @@ module Workspace
     end
 
     # @param worktree [String] a checkout
-    # @param base [Hash{String=>Object}] {#base}'s answer, or a run, which holds the same keys
+    # @param base [WorkflowRun, Hash{String=>Object}] {#base}'s answer, or a run, which holds the same keys
     # @param scope [String] "unchanged" (everything) or "config" (hooks and hidden flags only)
     # @return [Hash{String=>Object}, nil] nil when the checkout passes; else "code" (see {CODES}),
     #   "paths" (up to {MAX_PATHS}, for `tracked_changed`; empty for the other codes), and
     #   "base_sha"/"head" for `head_moved`
     def check(worktree, base, scope)
-      base_sha = base["base_sha"]
+      base = WorkflowRun.from_h(base)
+      base_sha = base.base_sha
       current = head(worktree)
       return failure("no_commit") if base_sha.nil? || current.nil?
       if scope == "unchanged"
@@ -132,7 +133,7 @@ module Workspace
       end
       %w[hooks hidden].each do |part|
         now = snapshot_part(worktree, part)
-        return failure("#{part}_changed") if now.nil? || now != base.dig("base_guard", "#{part}_sha256")
+        return failure("#{part}_changed") if now.nil? || now != base.base_guard&.dig("#{part}_sha256")
       end
       return nil unless scope == "unchanged"
       paths = dirty_paths(worktree, base: base)
@@ -144,7 +145,7 @@ module Workspace
     # config is a change too, and a config back at the base's reading is none. Never raises.
     #
     # @param worktree [String] a checkout
-    # @param base [Hash{String=>Object}] {#base}'s answer, or a run, which holds the same keys
+    # @param base [WorkflowRun, Hash{String=>Object}] {#base}'s answer, or a run, which holds the same keys
     # @param seen [String, nil] the "reading" of the last warning; nil for none, which compares with the base
     # @return [Hash{String=>Object}, nil] nil when nothing changed; else "code" ({CONFIG_CHANGED}, or nil when the config
     #   came back to the base's reading, which is no warning: drop `seen`), "reading" (the digest or {UNREADABLE}, to pass
@@ -152,7 +153,7 @@ module Workspace
     #   so the difference may be no change at all)
     def config_change(worktree, base, seen: nil)
       reading = config_digest(worktree) || UNREADABLE
-      stored = base["base_guard"] || {}
+      stored = WorkflowRun.from_h(base).base_guard || {}
       return nil if reading == seen
       return (seen ? {"code" => nil, "reading" => reading} : nil) if reading == stored["config_sha256"]
       {"code" => CONFIG_CHANGED, "reading" => reading, "old_format" => seen.nil? && stored["config_format"] != CONFIG_FORMAT}
@@ -413,7 +414,7 @@ module Workspace
     #
     # @return [Array<String>, nil] the options for the status; nil when a changed filter can't be turned off
     def filter_options(worktree, base)
-      stored = base.dig("base_guard", "filter_sha256")
+      stored = WorkflowRun.from_h(base).base_guard&.dig("filter_sha256")
       return [] unless stored
       entries = filter_entries(worktree)
       return [] if entries.nil? || filter_digest(entries) == stored
