@@ -49,15 +49,15 @@ module Workspace
     private
 
     def orphaned_runs(warnings)
-      @store.active.filter_map do |run|
-        worktree = run["worktree"]
+      @store.going.filter_map do |run|
+        worktree = run.worktree
         why = if !worktree.is_a?(String) || worktree.empty?
           "it records no checkout"
         elsif !File.directory?(worktree)
           "its checkout #{worktree} is missing or unmounted"
         end
         next unless why
-        Orphan.new(id: run["id"], workflow: run["workflow"], workspace: run["workspace"], state: run["state"], worktree: worktree, why: why)
+        Orphan.new(id: run.id, workflow: run.workflow, workspace: run.workspace, state: run.state, worktree: worktree, why: why)
       end
     rescue SystemCallError, Workspace::Error => e
       warnings << "could not list the workflow runs (#{e.class})"
