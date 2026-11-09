@@ -103,5 +103,60 @@ RSpec.describe "dependency direction" do
 
       expect(violations_in(files)).to eq([])
     end
+    it "check 5: fails when a file other than Git starts a git process" do
+      source = "module Workspace\n  class Foo\n    def go = Open3.capture3(\"git\", \"status\")\n  end\nend\n"
+
+      found = violations_in(base.merge("lib/workspace/foo.rb" => source))
+
+      expect(found.map(&:key)).to eq(["process_outside_adapter|lib/workspace/foo.rb|git"])
+      expect(found.first.line).to eq(3)
+    end
+
+    it "fails on the other ways of starting git or tmux" do
+      forms = {
+        "system \"tmux\", \"kill-server\"" => "tmux",
+        "Open3.popen3({\"A\" => \"1\"}, \"git\", \"log\") { }" => "git",
+        "Process.spawn(\"tmux\", *args)" => "tmux",
+        "IO.popen([\"git\", \"log\"])" => "git",
+        "`git status`" => "git"
+      }
+
+      forms.each do |code, tool|
+        source = "module Workspace\n  class Foo\n    def go = #{code}\n  end\nend\n"
+
+        expect(violations_in(base.merge("lib/workspace/foo.rb" => source)).map(&:key))
+          .to eq(["process_outside_adapter|lib/workspace/foo.rb|#{tool}"]), code
+      end
+    end
+
+    it "lets Git run git and gh and Tmux run tmux" do
+      git = "module Workspace\n  class Git\n    def go = [Open3.capture3(\"git\", \"x\"), Open3.capture3(\"gh\", \"x\")]\n  end\nend\n"
+      tmux = "module Workspace\n  class Tmux\n    def go = system(\"tmux\", \"x\")\n  end\nend\n"
+
+      expect(violations_in(base.merge("lib/workspace/git.rb" => git, "lib/workspace/tmux.rb" => tmux))).to eq([])
+    end
+
+    it "does not count a git word in a comment, a message, a lookup argument or an index" do
+      source = "module Workspace\n  class Foo\n    # system \"git\", \"x\"\n    def go(h) = [h[\"git\"], h.dig(\"git\", \"b\"), Open3.capture3(\"which\", \"git\"), \"run git\"]\n  end\nend\n"
+
+      expect(violations_in(base.merge("lib/workspace/foo.rb" => source))).to eq([])
+    end
+
+    it "check 6: fails on a gh literal opening an array or a call outside the gh callers" do
+      array = "module Workspace\n  class Foo\n    def go = run([\"gh\", \"pr\", \"view\"])\n  end\nend\n"
+      call = "module Workspace\n  class Bar\n    def go = @runner.call(\"gh\", \"auth\", \"status\")\n  end\nend\n"
+      files = base.merge("lib/workspace/foo.rb" => array, "lib/workspace/bar.rb" => call)
+
+      expect(violations_in(files).map(&:key)).to eq(
+        ["process_outside_adapter|lib/workspace/bar.rb|gh", "process_outside_adapter|lib/workspace/foo.rb|gh"]
+      )
+    end
+
+    it "lets each listed gh caller keep its gh literal" do
+      source = "module Workspace\n  class Caller\n    def go = @runner.call(\"gh\", \"auth\", \"status\")\n  end\nend\n"
+      files = BoundaryRules::PROCESS_ADAPTERS["gh"].to_h { |path| [path, source] }
+
+      expect(violations_in(files)).to eq([])
+    end
   end
 end

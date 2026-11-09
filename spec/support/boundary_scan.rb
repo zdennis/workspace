@@ -157,3 +157,113 @@ class BoundaryScan
     end
   end
 end
+
+# The process scan: where source text names git, tmux or gh as the program of a
+# process. Strings matter here, so it reads Ripper's tokens, not the stripped
+# source; comments and heredoc text are never tokens of code and never count.
+class BoundaryScan
+  PROCESS_TOOLS = %w[git tmux gh].freeze
+  SPAWN_RECEIVERS = {"Open3" => nil, "Process" => %w[spawn], "IO" => %w[popen], "PTY" => %w[spawn]}.freeze
+  SPAWN_FUNCTIONS = %w[system spawn exec].freeze
+  INDEXABLE = %i[on_ident on_const on_ivar on_gvar on_cvar on_rbracket on_rbrace].freeze
+  IGNORED_TOKENS = %i[on_sp on_ignored_nl on_comment on_embdoc_beg on_embdoc on_embdoc_end].freeze
+
+  ProcessLiteral = Struct.new(:line, :tool, :form, keyword_init: true)
+
+  # Each literal "git", "tmux" or "gh" that is
+  #   :spawn     one of the first two arguments of Open3.*, Process.spawn, IO.popen,
+  #              PTY.spawn, system, spawn or exec (the first may be an env Hash,
+  #              so the second counts only after a non-string first),
+  #   :array     the first element of an array literal (not an index),
+  #   :call      for gh only, the first argument of any call,
+  #   :backtick  the first word of a backtick or %x command.
+  # A call that only looks a program up (which, command -v) is the caller's to judge.
+  def self.process_literals(source)
+    tokens = Ripper.lex(source).reject { |(_pos, type, _text, _state)| IGNORED_TOKENS.include?(type) }
+    found = []
+    tokens.each_index do |i|
+      found.concat(literal_at(tokens, i))
+      found.concat(spawn_args_at(tokens, i))
+    end
+    found.uniq { |l| [l.line, l.tool, l.form] }
+  end
+
+  def self.literal_at(tokens, i)
+    (_, type, text) = tokens[i]
+    if type == :on_backtick
+      content = tokens[i + 1]
+      word = content && content[1] == :on_tstring_content && content[2][/\A\s*(\S+)/, 1]
+      return PROCESS_TOOLS.include?(word) ? [ProcessLiteral.new(line: tokens[i][0][0], tool: word, form: :backtick)] : []
+    end
+    return [] unless type == :on_tstring_beg && %w[" '].include?(text) && i.positive?
+
+    tool = plain_string_at(tokens, i)
+    return [] unless tool
+
+    before = tokens[i - 1]
+    form = if before[1] == :on_lbracket
+      :array if i < 2 || !INDEXABLE.include?(tokens[i - 2][1]) && tokens[i - 2][2] != ")"
+    elsif before[1] == :on_lparen && tool == "gh"
+      :call
+    end
+    form ? [ProcessLiteral.new(line: tokens[i][0][0], tool: tool, form: form)] : []
+  end
+
+  # The tool when tokens[i..] is exactly a quoted git/tmux/gh, else nil.
+  def self.plain_string_at(tokens, i)
+    content, close = tokens[i + 1], tokens[i + 2]
+    return nil unless content && close && content[1] == :on_tstring_content && close[1] == :on_tstring_end
+
+    PROCESS_TOOLS.include?(content[2]) ? content[2] : nil
+  end
+
+  def self.spawn_args_at(tokens, i)
+    j = spawn_args_start(tokens, i)
+    return [] unless j
+
+    parens = tokens[j] && tokens[j][1] == :on_lparen
+    j += 1 if parens
+    depth = 0
+    arg = 0
+    found = []
+    first_is_string = tokens[j] && tokens[j][1] == :on_tstring_beg
+    while j < tokens.size && arg < (first_is_string ? 1 : 2)
+      (_, type, text) = tokens[j]
+      if depth.zero? && (type == :on_nl || text == ";" || (!parens && type == :on_kw && %w[do if unless and or].include?(text)))
+        break
+      elsif %i[on_lparen on_lbracket on_lbrace on_tlambeg].include?(type)
+        depth += 1
+      elsif %i[on_rparen on_rbracket on_rbrace].include?(type)
+        break if depth.zero?
+
+        depth -= 1
+      elsif type == :on_comma && depth.zero?
+        arg += 1
+      elsif type == :on_tstring_beg && depth.zero? && (tool = plain_string_at(tokens, j))
+        after = tokens[j + 3]
+        if after.nil? || %i[on_comma on_rparen on_nl].include?(after[1])
+          found << ProcessLiteral.new(line: tokens[j][0][0], tool: tool, form: :spawn)
+        end
+      end
+      j += 1
+    end
+    found
+  end
+
+  # Index of the token after a process-starting call's name, or nil when
+  # tokens[i] does not start one.
+  def self.spawn_args_start(tokens, i)
+    (_, type, text) = tokens[i]
+    if type == :on_ident && SPAWN_FUNCTIONS.include?(text)
+      previous = i.positive? ? tokens[i - 1] : nil
+      return nil if previous && (%w[. def :].include?(previous[2]) || previous[1] == :on_symbeg)
+
+      i + 1
+    elsif type == :on_const && SPAWN_RECEIVERS.key?(text) && tokens[i + 1] && tokens[i + 1][2] == "." && tokens[i + 2]
+      allowed = SPAWN_RECEIVERS[text]
+      method = tokens[i + 2][2]
+      starts = allowed ? allowed.include?(method) : method.start_with?("capture", "popen", "pipeline")
+      starts ? i + 3 : nil
+    end
+  end
+end

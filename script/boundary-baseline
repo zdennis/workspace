@@ -8,13 +8,15 @@
 #   script/boundary-baseline
 #
 # Run it only to start or to regenerate the baseline at a planned task. A later
-# commit that removes a violation deletes that entry by hand.
+# commit that removes a violation deletes that entry by hand. An entry already in
+# the file keeps its reason.
 
 require "yaml"
 require_relative "../spec/support/boundary_rules"
 
 root = File.expand_path("..", __dir__)
 violations = BoundaryRules.violations(root)
-entries = violations.to_h { |v| [v.key, {"reason" => "baseline"}] }
+kept = BoundaryRules.allow_list(File.join(root, BoundaryRules::ALLOW_FILE))
+entries = violations.to_h { |v| [v.key, kept[v.key] || {"reason" => "baseline"}] }
 File.write(File.join(root, BoundaryRules::ALLOW_FILE), "# Written by script/boundary-baseline. Delete a line when its violation is fixed;\n# the spec fails on an entry that no longer matches.\n" + entries.to_yaml.sub(/\A---\s*\n/, "").then { |y| entries.empty? ? "{}\n" : y })
 puts "#{entries.size} entries written to #{BoundaryRules::ALLOW_FILE}"

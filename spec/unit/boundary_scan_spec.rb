@@ -134,4 +134,28 @@ RSpec.describe BoundaryScan do
       expect(scan.references.select { |r| r.file == "lib/workspace/commands/inbox.rb" }).to eq([])
     end
   end
+
+  describe ".process_literals" do
+    def found(source) = BoundaryScan.process_literals(source).map { |l| [l.line, l.tool, l.form] }
+
+    it "finds git, tmux and gh as the program of a spawn call, with or without an env Hash" do
+      source = "Open3.capture3(\"git\", \"x\")\nOpen3.popen3(env, \"tmux\", *a) { }\nsystem \"gh\", \"b\"\nProcess.spawn(env, \"git\")\n"
+
+      expect(found(source)).to eq([[1, "git", :spawn], [2, "tmux", :spawn], [3, "gh", :spawn], [4, "git", :spawn]])
+    end
+
+    it "finds an array opening with the tool, and a backtick command" do
+      expect(found("x = [\"tmux\", \"a\"]\n`git status`\n")).to eq([[1, "tmux", :array], [2, "git", :backtick]])
+    end
+
+    it "finds a gh literal opening any call, but not git or tmux there" do
+      expect(found("a.call(\"gh\", 1)\nb.call(\"git\", 1)\nc(\"tmux\")\n")).to eq([[1, "gh", :call]])
+    end
+
+    it "skips comments, other programs, an index, a later argument and a method named spawn" do
+      source = "# system \"git\"\nOpen3.capture3(\"which\", \"git\")\nh[\"git\"]\nfoo(1, \"gh\")\ndef spawn(x) = x\nputs \"git status\"\n"
+
+      expect(found(source)).to eq([])
+    end
+  end
 end

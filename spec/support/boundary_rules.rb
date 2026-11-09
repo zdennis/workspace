@@ -12,8 +12,16 @@ require_relative "boundary_scan"
 #                            builds every command object and is exempt
 #   run_file_parse           a file other than the run store and run_liveness
 #                            parses JSON and names a workflow run directory
+#   process_outside_adapter  a file other than the tool's adapter names git, tmux
+#                            or gh as the program of a process (BoundaryScan.process_literals:
+#                            the first words of Open3, Process.spawn, IO.popen, system,
+#                            spawn, exec and backticks, an array whose first element is the
+#                            tool, and for gh any call whose first argument is "gh").
+#                            git: only git.rb; tmux: only tmux.rb; gh: only the files that
+#                            run it through their injected runner. WorkflowGuard takes its
+#                            git program as git_path:, a variable, so it is not seen.
 #
-# Layers, entry lists and the process rule come in later tasks (T55c, T57).
+# Layers and entry lists come in a later task (T57).
 module BoundaryRules
   Violation = Struct.new(:rule, :file, :line, :constant, :message, keyword_init: true) do
     def key
@@ -29,6 +37,19 @@ module BoundaryRules
   RUN_DIR_PATTERN = /workflow_runs_dir|workflow_archive_dir|"\.workflows"/
   JSON_PARSE_PATTERN = /\bJSON\.(?:parse|load)\b/
 
+  PROCESS_ADAPTERS = {
+    "git" => %w[lib/workspace/git.rb],
+    "tmux" => %w[lib/workspace/tmux.rb],
+    "gh" => %w[
+      lib/workspace/git.rb
+      lib/workspace/gh_pull_requests.rb
+      lib/workspace/pull_request_status.rb
+      lib/workspace/pull_request_feedback.rb
+      lib/workspace/commands/pull_request.rb
+      lib/workspace/ticket_source.rb
+    ]
+  }.freeze
+
   ALLOW_FILE = "spec/support/boundary_allow.yml"
 
   # root: repo root. paths: repo-relative files (default lib/**/*.rb).
@@ -36,7 +57,8 @@ module BoundaryRules
   def self.violations(root, paths: nil)
     paths ||= Dir.glob("lib/**/*.rb", base: root).sort
     scan = BoundaryScan.new(root, paths: paths)
-    all = core_references_nothing(scan) + commands_below_commands(scan) + run_file_parse(root, paths)
+    all = core_references_nothing(scan) + commands_below_commands(scan) + run_file_parse(root, paths) +
+      process_outside_adapter(root, paths)
     all.uniq(&:key).sort_by(&:key)
   end
 
@@ -81,6 +103,18 @@ module BoundaryRules
 
       Violation.new(rule: "run_file_parse", file: file, line: index + 1, constant: "JSON.parse",
         message: "parses JSON in a file that names a workflow run directory; only the run store and run_liveness read run files")
+    end
+  end
+
+  def self.process_outside_adapter(root, paths)
+    paths.flat_map do |file|
+      literals = BoundaryScan.process_literals(File.read(File.join(root, file), encoding: "UTF-8"))
+      literals.filter_map do |literal|
+        next if PROCESS_ADAPTERS.fetch(literal.tool).include?(file)
+
+        Violation.new(rule: "process_outside_adapter", file: file, line: literal.line, constant: literal.tool,
+          message: "runs #{literal.tool} outside #{PROCESS_ADAPTERS.fetch(literal.tool).join(", ")} (#{literal.form} form)")
+      end
     end
   end
 
