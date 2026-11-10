@@ -2852,14 +2852,9 @@ RSpec.describe Workspace::Commands::Agent do
   it "closes the server off the thread the TERM handler runs on" do
     closes = []
     server_spy = Class.new(UNIXServer)
-    server_spy.define_singleton_method(:new) do |path|
-      instance = super(path)
-      original = instance.method(:close)
-      instance.define_singleton_method(:close) do |*args, &block|
-        closes << Thread.current
-        original.call(*args, &block)
-      end
-      instance
+    server_spy.define_method(:close) do
+      closes << Thread.current
+      super()
     end
     stub_const("Workspace::Commands::Agent::UNIXServer", server_spy)
 
