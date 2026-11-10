@@ -203,7 +203,8 @@ module Workspace
         data = File.exist?(path) ? YAML.safe_load_file(path) : nil
         data = DEFAULT_GLOBAL_CONFIG.dup unless data.is_a?(Hash)
         workflows = data["workflows"].is_a?(Hash) ? data["workflows"] : {}
-        unless workflows.empty? || data["workflows"].nil?
+        # A scalar `workflows:` value is replaced whole by the write below.
+        if !data["workflows"].nil? && !data["workflows"].is_a?(Hash)
           @error_output.puts "  warn    workflows in #{path} was not a mapping; its value is replaced to add workflows.sources"
         end
         current = ConfigSchema.parse("workflows.sources", workflows["sources"] || [])
@@ -212,7 +213,7 @@ module Workspace
           ConfigSchema.parse("workflows.sources", [entry])
           true
         rescue ArgumentError => e
-          @error_output.puts "  error   workflows.sources: #{e.message}"
+          @error_output.puts "  error   workflows.sources: #{TerminalText.escape(e.message)}"
           false
         end
         added = accepted - current
@@ -229,10 +230,10 @@ module Workspace
           data["workflows"]["sources"] = combined.join(", ")
           AtomicFile.write(path, YAML.dump(data))
         end
-        @output.puts "  update  workflows.sources -> #{combined.join(", ")}"
+        @output.puts "  update  workflows.sources -> #{TerminalText.escape(combined.join(", "))}"
         ((current.size + 1)..combined.size).to_a
       rescue ArgumentError, Workspace::ConfigParseError, Psych::Exception => e
-        @error_output.puts "  error   workflows.sources: #{e.message}"
+        @error_output.puts "  error   workflows.sources: #{TerminalText.escape(e.message)}"
         []
       end
 
@@ -250,12 +251,13 @@ module Workspace
           row = (result["sources"] || []).find { |each| each["index"] == position }
           next unless row
           if (row["problems"] || []).any?
-            row["problems"].each { |problem| @error_output.puts "  error   source:#{position} #{problem["file"]}: #{problem["message"]} (#{problem["code"]})" }
+            # The problems come from the source's own files, so their text is escaped.
+            row["problems"].each { |problem| @error_output.puts "  warn    source:#{position} #{TerminalText.escape(problem["file"])}: #{TerminalText.escape(problem["message"])} (#{TerminalText.escape(problem["code"])})" }
           else
-            @output.puts "  install source:#{position} #{row["workflows"].join(", ")} (#{row["path"]})"
+            @output.puts "  install source:#{position} #{TerminalText.escape(row["workflows"].join(", "))} (#{TerminalText.escape(row["path"])})"
           end
         rescue Workspace::Error, SystemCallError => e
-          @error_output.puts "  warn    source:#{position} not installed: #{e.message}"
+          @error_output.puts "  warn    source:#{position} not installed: #{TerminalText.escape(e.message)}"
         end
         @output.puts "  re-run `workspace workflow install` to add, change or remove workflows from the sources."
       end

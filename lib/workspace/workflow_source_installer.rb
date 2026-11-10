@@ -67,7 +67,8 @@ module Workspace
     #
     # @param dry_run [Boolean]
     # @return [Hash{String=>Object}] "sources" (a row per entry: "index", "source", "kind",
-    #   "outcome" `removed`, `absent` or `local`, "path") and "removed" (the count)
+    #   "outcome" `removed`, `absent`, `failed` (the directory survived the delete attempt) or
+    #   `local`, "path") and "removed" (the count)
     def uninstall(dry_run: false)
       entries = begin
         @source_dirs.entries
@@ -90,10 +91,16 @@ module Workspace
           target = WorkflowSourceDirs.cache_dir(@state_dir, entry)
           present = File.directory?(target)
           FileUtils.rm_rf(target) if present && !dry_run
-          outcome = if present
-            dry_run ? "dry_run" : "removed"
-          else
+          # rm_rf swallows a failure (permissions), so a "removed" is only reported once
+          # the directory is really gone.
+          outcome = if !present
             "absent"
+          elsif dry_run
+            "dry_run"
+          elsif File.directory?(target)
+            "failed"
+          else
+            "removed"
           end
           row.merge("outcome" => outcome, "path" => target)
         end

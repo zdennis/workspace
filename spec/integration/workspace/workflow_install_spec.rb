@@ -291,7 +291,7 @@ RSpec.describe "workflow install over a real cache directory" do
       expect(Dir.exist?(cache)).to be(false)
       expect(File.exist?(File.join(local("src"), "ship.yml"))).to be(true)
       expect(row["sources"].map { |s| [s["index"], s["outcome"]] }).to eq([[1, "removed"], [2, "local"]])
-      expect(out.string).to include("Removed 1 of 2 source caches")
+      expect(out.string).to include("Removed 1 of 1 source caches")
       expect(out.string).to include("config unset workflows.sources")
     end
 
@@ -320,7 +320,7 @@ RSpec.describe "workflow install over a real cache directory" do
       expect(row["outcome"]).to eq("dry_run")
       expect(Dir.exist?(cache)).to be(true)
       expect(row["sources"].first["outcome"]).to eq("dry_run")
-      expect(out.string).to include("Would remove 1 of 2 source caches")
+      expect(out.string).to include("Would remove 1 of 1 source caches")
     end
 
     it "removes a duplicate entry's cache once" do
@@ -336,6 +336,12 @@ RSpec.describe "workflow install over a real cache directory" do
       expect(row["sources"].map { |s| s["index"] }).to eq([1])
       expect(out.string).to include("Would remove 1 of 1 source caches")
       expect(Dir.exist?(cache)).to be(true)
+
+      removed = dup_command.uninstall(yes: true)
+
+      expect(removed["outcome"]).to eq("uninstalled")
+      expect(removed["sources"].map { |s| s["index"] }).to eq([1])
+      expect(Dir.exist?(cache)).to be(false)
     end
 
     it "says the list is unreadable instead of empty when the config can't be parsed" do
@@ -349,7 +355,8 @@ RSpec.describe "workflow install over a real cache directory" do
 
       row = bad_command.uninstall(yes: true)
 
-      expect(row["outcome"]).to eq("unchanged")
+      expect(row["outcome"]).to eq("failed")
+      expect(row["reason"]).to eq("workflows_sources_unreadable")
       expect(out.string).to include("workflows.sources can't be read")
       expect(Dir.exist?(cache)).to be(true)
     end

@@ -2843,4 +2843,43 @@ RSpec.describe Workspace::Commands::Agent do
       expect(pane_for_command(build_agent(nil))).to eq("0.1")
     end
   end
+
+  # IO#close raises ThreadError in real trap context, so the TERM handler must not
+  # close @server on the thread the handler runs on. The fake trapper runs the
+  # handler on an ordinary thread (the closest a spec gets to trap context); the
+  # server spy records which thread closed it, so a regression to a direct close
+  # in the handler fails here.
+  it "closes the server off the thread the TERM handler runs on" do
+    closes = []
+    server_spy = Class.new(UNIXServer)
+    server_spy.define_singleton_method(:new) do |path|
+      instance = super(path)
+      original = instance.method(:close)
+      instance.define_singleton_method(:close) do |*args, &block|
+        closes << Thread.current
+        original.call(*args, &block)
+      end
+      instance
+    end
+    stub_const("Workspace::Commands::Agent::UNIXServer", server_spy)
+
+    thread = Thread.new { agent.call(name: "myapp") }
+    output.wait_ready
+
+    handler_thread = nil
+    trap_thread = Thread.new do
+      handler_thread = Thread.current
+      signal_trapper.handlers["TERM"].call
+    end
+    trap_thread.join(2)
+    thread.join(2)
+
+    expect(trap_thread).not_to be_alive
+    expect(thread).not_to be_alive
+    expect(closes).not_to be_empty
+    expect(closes.first).not_to eq(handler_thread)
+  ensure
+    thread&.kill
+    thread&.join(1)
+  end
 end

@@ -842,6 +842,13 @@ module CLITestHelpers
       end
     end
 
+    # Answers nil when the prompt was declined, like the real uninstall does.
+    def uninstall(**kw)
+      @calls << [:uninstall, kw]
+      raise @error if @error
+      (kw[:yes] || kw[:dry_run]) ? @row : nil
+    end
+
     def check(**kw)
       @calls << [:check, kw]
       {exit_code: 0}

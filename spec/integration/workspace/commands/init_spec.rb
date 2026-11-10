@@ -506,6 +506,44 @@ RSpec.describe Workspace::Commands::Init do
         expect(output.string).to include("would install workflows from source 1")
       end
 
+      it "prints the success row's workflows and path" do
+        seed("acme/first/wf")
+        allow(installer).to receive(:install)
+          .and_return({"sources" => [{"index" => 2, "source" => "/abs/dir", "kind" => "local", "path" => "/abs/dir", "workflows" => ["ship", "plan"], "outcome" => "installed"}], "warnings" => [], "failed" => false})
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(output.string).to include("install source:2 ship, plan (/abs/dir)")
+        expect(error_output.string).not_to include("warn")
+      end
+
+      it "warns, not errors, on a refused source's problems, with the text escaped" do
+        seed("acme/first/wf")
+        allow(installer).to receive(:install)
+          .and_return({"sources" => [{"index" => 2, "source" => "acme/bad/wf", "kind" => "local", "path" => "/abs/dir",
+                                      "workflows" => ["bad\x1B[31m"], "installed" => [], "changed" => [], "removed" => [],
+                                      "problems" => [{"file" => "bad\x07.yml", "code" => "invalid_workflow", "message" => "is not valid"}],
+                                      "outcome" => "refused"}], "warnings" => [], "failed" => true})
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(error_output.string).to include("warn    source:2 bad\\u0007.yml: is not valid (invalid_workflow)")
+        expect(error_output.string).not_to match(/^  error /)
+        expect(stored_sources).to eq("acme/first/wf, /abs/dir")
+        expect(output.string).to include("Done!")
+      end
+
+      it "warns when the workflows key it replaces is not a mapping" do
+        FileUtils.mkdir_p(workspace_config_dir)
+        File.write(config_path, YAML.dump("hooks" => {}, "workflows" => "not a mapping"))
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(error_output.string).to include("workflows in #{config_path} was not a mapping")
+        expect(stored_sources).to eq("/abs/dir")
+        expect(YAML.safe_load_file(config_path)["workflows"]["sources"]).to eq("/abs/dir")
+      end
+
       def local_source(name)
         dir = File.join(tmpdir, name)
         FileUtils.mkdir_p(dir)

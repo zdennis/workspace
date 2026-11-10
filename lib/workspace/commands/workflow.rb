@@ -371,7 +371,9 @@ module Workspace
       # @param dry_run [Boolean] report and delete nothing; needs no +yes+
       # @param json [Boolean]
       # @return [Hash{String=>Object}, nil] the action row: outcome "uninstalled",
-      #   "dry_run" or "unchanged", with "sources" (a row each); nil when the prompt was declined
+      #   "dry_run", "unchanged" or "failed" (the config can't be read, or a cache directory
+      #   could not be deleted; the reason names it), with "sources" (a row each); nil when the
+      #   prompt was declined
       def uninstall(yes: false, dry_run: false, json: false)
         unless yes || dry_run
           answer = Prompt.ask(@input, @output, "Uninstall every workflow installed from workflows.sources? [y/N] ", retry_flags: ["--yes"], destructive: true)
@@ -384,29 +386,40 @@ module Workspace
         rows = result["sources"]
         removed = result["removed"]
         effective = dry_run ? rows.count { |row| row["outcome"] == "dry_run" } : removed
-        outcome = if dry_run
+        outcome = if result["unreadable"] || rows.any? { |row| row["outcome"] == "failed" }
+          "failed"
+        elsif dry_run
           "dry_run"
         elsif removed.zero?
           "unchanged"
         else
           "uninstalled"
         end
+        caches = rows.count { |row| row["kind"] == "github" }
+        stuck = rows.count { |row| row["outcome"] == "failed" }
         message = if result["unreadable"]
           "workflows.sources can't be read, so nothing was removed; fix the list with `workspace config set workflows.sources`."
         elsif rows.empty?
           "No workflows.sources are set; nothing is installed from a source."
+        elsif stuck.positive?
+          "#{stuck} of #{caches} source caches could not be removed; check the directory's permissions."
         elsif effective.positive?
-          "#{dry_run ? "Would remove" : "Removed"} #{effective} of #{rows.size} source caches. The entries stay in workflows.sources; unset them with `workspace config unset workflows.sources`."
+          "#{dry_run ? "Would remove" : "Removed"} #{effective} of #{caches} source caches. The entries stay in workflows.sources; unset them with `workspace config unset workflows.sources`."
         else
           suffix = dry_run ? " (dry run)" : ""
           "Nothing to remove#{suffix}: no GitHub source has a cache."
         end
         @output.puts message
         rows.each do |row|
-          note = {"local" => "read in place; nothing to remove", "absent" => "no cache", "invalid" => "not a usable source", "dry_run" => "would remove", "removed" => "removed"}.fetch(row["outcome"], row["outcome"])
+          note = {"local" => "read in place; nothing to remove", "absent" => "no cache", "invalid" => "not a usable source", "dry_run" => "would remove", "removed" => "removed", "failed" => "could not be removed"}.fetch(row["outcome"], row["outcome"])
           @output.puts "  source:#{row["index"]} #{TerminalText.escape(row["source"])}: #{note}"
         end
-        {"workspace" => nil, "outcome" => outcome, "reason" => nil, "message" => message, "sources" => rows}
+        reason = if result["unreadable"]
+          "workflows_sources_unreadable"
+        elsif stuck.positive?
+          "cache_not_removed"
+        end
+        {"workspace" => nil, "outcome" => outcome, "reason" => reason, "message" => message, "sources" => rows}
       end
 
       # Refuses, before anyone is asked anything, an id that has no file of the user's.

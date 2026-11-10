@@ -1546,7 +1546,8 @@ module Workspace
             # IO#close cannot run in trap context (Ruby raises ThreadError), so the
             # unblocking close runs on its own thread: the accept loop then reads
             # IOError and @shutting_down, and the ensure block tears the rest down.
-            Thread.new { @server.close }
+            # A TERM before the server exists closes nothing.
+            Thread.new { @server&.close }
           end
         end
       end
