@@ -169,6 +169,7 @@ module Workspace
         @queued_steers = {}
         @pending_reports = []
         @buffering_announced = false
+        @re_register_warned = false
         @coordinator_unavailable = false
         @shutting_down = false
         @shutdown_signal = Queue.new
@@ -1379,6 +1380,10 @@ module Workspace
         end
       end
 
+      # Retries are quiet after the first warning, and a registration that
+      # lands after one says so once, so a coordinator left down does not
+      # spam the pane.
+      #
       # @return [Boolean] true when the coordinator accepted the registration
       def re_register
         reply = status_client.register(
@@ -1388,13 +1393,26 @@ module Workspace
           epoch: @epoch_generator.call,
           in_flight: @pipeline_state.in_flight
         )
-        return true if reply["ok"]
+        return registered_after_outage if reply["ok"]
 
-        Warn.puts(@error_output, "workspace agent: work-coordinator refused re-registration: #{reply["error"]}")
+        warn_once("workspace agent: work-coordinator refused re-registration: #{reply["error"]}; will keep retrying")
         false
       rescue Workspace::Error => e
-        Warn.puts(@error_output, "workspace agent: could not re-register with work-coordinator: #{e.message}")
+        warn_once("workspace agent: could not re-register with work-coordinator: #{e.message}; will keep retrying")
         false
+      end
+
+      def warn_once(message)
+        return if @re_register_warned
+
+        @re_register_warned = true
+        Warn.puts(@error_output, message)
+      end
+
+      def registered_after_outage
+        @error_output.puts "workspace agent: re-registered with work-coordinator" if @re_register_warned
+        @re_register_warned = false
+        true
       end
 
       # Replays everything the coordinator missed, in the order it was reported.
