@@ -1,6 +1,6 @@
 ---
 name: finish-branch
-description: Finish a topic branch: rebase onto origin/main, run the full gate, merge to main with --no-ff, push, and release a minor version. Use when the person says the branch is done and should ship.
+description: Finish a topic branch: rebase onto origin/main, run the gate, merge to main with --no-ff, push, and release a minor version. Use when the person says the branch is done and should ship.
 argument-hint: (none)
 ---
 
@@ -48,16 +48,22 @@ Verify each resolution before `git rebase --continue`:
 
 After `git rebase --continue`, resolve any further conflicts the same way, then go to step 4.
 
-### 4. Full gate
+### 4. Gate
 
-Run both, serial, and both must be green:
+Run lint plus the specs the branch can reach, serial, and all must be green:
 
 ```
-bundle exec rspec
 bundle exec standardrb lib/ spec/
+bundle exec rspec <picked spec files>
 ```
 
-Serial is the gate, not `script/parallel-spec`.
+Pick the specs from the branch's diff (`git diff --name-only origin/main...HEAD`):
+
+1. The spec files changed on the branch, and the spec files covering every `lib/` file it changed.
+2. The immediate neighbours: specs for the callers of the classes and methods changed, and any unit or integration specs whose collaborators the branch touches (shared fakes, helpers, or fixtures under `spec/support/` and `spec/fixtures/` count here).
+3. Anything else the diff would obviously impact.
+
+Serial is the gate, not `script/parallel-spec`. Run the whole serial suite only when the person asks for it.
 
 On a failure, find out whether the rebase caused it: in a throwaway worktree on `origin/main` (`git worktree add --detach <tmp-dir> origin/main`, removed after with `git worktree remove --force`), run the failing example. If it fails there too, stop and tell the person. If not, fix it in a new commit and run the gate again.
 
