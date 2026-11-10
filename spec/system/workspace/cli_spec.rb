@@ -12986,9 +12986,9 @@ RSpec.describe Workspace::CLI do
         expect(hooks.runs.map { |r| r[:event] }).to eq(["post_focus"])
       end
 
-      it "names focus.chain and the way to plain focus in its help" do
+      it "names focus.chain and how to get centering and a dim in its help" do
         cli, = action_cli
-        help = a_string_including("focus.chain", "workspace config set focus.chain focus", "a warning, not an error")
+        help = a_string_including("focus.chain", "focus + center + dim --opacity 0.5 --duration 3", "a warning, not an error")
 
         expect { cli.run(["focus", "--help"]) }.to raise_error(SystemExit).and output(help).to_stdout
       end
@@ -13105,6 +13105,9 @@ RSpec.describe Workspace::CLI do
             SH
             File.chmod(0o755, tool)
             File.write(File.join(dir, ".workspace-state.json"), JSON.generate("api" => {"unique_id" => "u", "iterm_window_id" => 77}))
+            config_dir = File.join(dir, ".config", "workspace")
+            FileUtils.mkdir_p(config_dir)
+            File.write(File.join(config_dir, "config.yml"), "focus:\n  chain: \"focus + center + dim --opacity 0.5 --duration 3\"\n")
             saved = ENV.to_h
             raw = StringIO.new
             err = StringIO.new

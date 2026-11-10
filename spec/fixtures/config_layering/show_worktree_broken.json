@@ -1708,8 +1708,8 @@
       "type": "text",
       "value": null,
       "masked": false,
-      "default": "focus + center + dim --opacity 0.5 --duration 3",
-      "effective": "focus + center + dim --opacity 0.5 --duration 3",
+      "default": "focus",
+      "effective": "focus",
       "source": "default",
       "source_file": null,
       "line": null,
@@ -1728,7 +1728,7 @@
         "global"
       ],
       "layers": [],
-      "doc": "The window-tool steps `focus` runs on the window, joined by `+` (default `focus + center + dim --opacity 0.5 --duration 3`). The first step is a bare `focus`; the others are `center`, `dim`, `highlight`, `flash`, `shake`, `snap` or `maximize` with their options. `dim` and `highlight` run in the background, so they must be last. `workspace config set focus.chain focus` gives plain focus",
+      "doc": "The window-tool steps `focus` runs on the window, joined by `+` (default `focus`, no extra steps). The first step is a bare `focus`; the others are `center`, `dim`, `highlight`, `flash`, `shake`, `snap` or `maximize` with their options. `dim` and `highlight` run in the background, so they must be last. Set `focus + center + dim --opacity 0.5 --duration 3` to also center the window and dim the others for three seconds",
       "problems": []
     },
     {
