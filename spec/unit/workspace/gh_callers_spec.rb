@@ -181,6 +181,48 @@ RSpec.describe "gh callers" do
     end
   end
 
+  describe Workspace::WorkflowSourceFetcher do
+    let(:runner) do
+      ->(argv, chdir:, timeout:) do
+        calls << argv
+        if argv.include?("-H")
+          ["name: x\n", "", true]
+        else
+          [JSON.generate([{"type" => "file", "name" => "a.yml", "path" => "wf/a.yml", "sha" => "s1"}]), "", true]
+        end
+      end
+    end
+
+    it "takes an optional runner: keyword" do
+      expect(runner_keyword(described_class, :runner)).to eq([:key, :runner])
+    end
+
+    it "lists the directory, then fetches each yml raw, with ?ref= when the source names a ref" do
+      Dir.mktmpdir do |dir|
+        described_class.new(runner: runner).fetch("https://github.com/acme/widgets/tree/v1/wf", into: dir)
+
+        expect(calls).to eq([
+          %w[gh api repos/acme/widgets/contents/wf?ref=v1],
+          ["gh", "api", "-H", "Accept: application/vnd.github.raw", "repos/acme/widgets/contents/wf/a.yml?ref=v1"]
+        ])
+      end
+    end
+
+    it "leaves ?ref= off for the default branch" do
+      Dir.mktmpdir do |dir|
+        described_class.new(runner: runner).fetch("acme/widgets/wf", into: dir)
+
+        expect(calls.map(&:last)).to eq(%w[repos/acme/widgets/contents/wf repos/acme/widgets/contents/wf/a.yml])
+      end
+    end
+
+    it "defaults to TimedProcess.run" do
+      expect(Workspace::TimedProcess).to receive(:run).with(%w[gh api x], chdir: "/c", timeout: 5).and_return(["", "", true])
+
+      described_class.run(%w[gh api x], chdir: "/c", timeout: 5)
+    end
+  end
+
   describe Workspace::TicketSource do
     let(:which) { ->(_program) { true } }
     let(:runner) do

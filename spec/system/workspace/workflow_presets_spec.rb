@@ -97,7 +97,7 @@ RSpec.describe "the shipped workflow presets" do
       %w[rpiv rpiv-auto-approve].each do |id|
         verify = catalog.find(id).to_h["steps"].find { |step| step["id"] == "verify" }
         expect(verify["require"]).to eq([{"command" => "lint", "optional" => true}])
-        expect(verify["prompt"]).to include("lint command, when it has one, must pass")
+        expect(verify["prompt"].gsub(/\s+/, " ")).to include("lint command, when it has one, must pass")
       end
     end
 

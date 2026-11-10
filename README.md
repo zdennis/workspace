@@ -145,7 +145,7 @@ workspace <subcommand> [options]
 | version | [README](docs/README.version.md) | Print the workspace version |
 | wait-until-content | [README](docs/README.wait-until-content.md) | Block until a pane shows content, then exec a command |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
-| workflow | [README](docs/README.workflow.md) | Run a workflow (ordered steps, e.g. `rpiv`) in a workspace's agent pane: `show`, `validate`, `add`, `update`, `remove`, `run`, `start` (from a ticket, a ref or a prompt; the ID may come from `workflows.default`), `render`, `check`, `simulate`, `status`, `events`, `files`, `attempts`, `audit`, `stats`, `compare`, `sweep`, `resume`, `cancel`, `approve`, `reject` |
+| workflow | [README](docs/README.workflow.md) | Run a workflow (ordered steps, e.g. `rpiv`) in a workspace's agent pane: `show`, `validate`, `add`, `update`, `remove`, `install` (fetch and check the definitions listed in `workflows.sources`), `run`, `start` (from a ticket, a ref or a prompt; the ID may come from `workflows.default`), `render`, `check`, `simulate`, `status`, `events`, `files`, `attempts`, `audit`, `stats`, `compare`, `sweep`, `resume`, `cancel`, `approve`, `reject` |
 
 Run `workspace <subcommand> --help` for subcommand-specific help. Scripts and agents: every `--json` result is one object with `schema_version` and `ok`, and failures carry a stable `code`; see [`--json` output](docs/README.json.md).
 

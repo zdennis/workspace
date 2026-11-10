@@ -389,4 +389,166 @@ RSpec.describe Workspace::Commands::Init do
       end
     end
   end
+
+  describe "workflow sources" do
+    let(:config_path) { File.join(workspace_config_dir, "config.yml") }
+
+    before { create_source_templates }
+
+    def stored_sources
+      YAML.safe_load_file(config_path).dig("workflows", "sources")
+    end
+
+    def seed(sources)
+      FileUtils.mkdir_p(workspace_config_dir)
+      File.write(config_path, YAML.dump("hooks" => {}, "workflows" => {"sources" => sources}))
+    end
+
+    it "writes the list into a new global config" do
+      command.call(hooks: false, workflow_sources: ["acme/workflows/presets"])
+
+      expect(stored_sources).to eq("acme/workflows/presets")
+      expect(output.string).to include("update  workflows.sources -> acme/workflows/presets")
+    end
+
+    it "appends to an existing list and takes several entries from one value" do
+      seed("acme/workflows/presets")
+
+      command.call(hooks: false, workflow_sources: ["/abs/dir, ~/more", "other/repo/sub"])
+
+      expect(stored_sources).to eq("acme/workflows/presets, /abs/dir, ~/more, other/repo/sub")
+      expect(YAML.safe_load_file(config_path)["hooks"]).to eq({})
+    end
+
+    it "does not list an entry twice" do
+      seed("acme/workflows/presets")
+
+      command.call(hooks: false, workflow_sources: ["acme/workflows/presets", "/abs/dir", "/abs/dir"])
+
+      expect(stored_sources).to eq("acme/workflows/presets, /abs/dir")
+    end
+
+    it "skips when every entry is already listed" do
+      seed("acme/workflows/presets")
+
+      command.call(hooks: false, workflow_sources: ["acme/workflows/presets"])
+
+      expect(output.string).to include("skip    workflows.sources (already lists acme/workflows/presets)")
+      expect(stored_sources).to eq("acme/workflows/presets")
+    end
+
+    it "reports under --dry-run without writing" do
+      seed("acme/workflows/presets")
+
+      command.call(dry_run: true, hooks: false, workflow_sources: ["/abs/dir"])
+
+      expect(output.string).to include("update  workflows.sources -> acme/workflows/presets, /abs/dir")
+      expect(stored_sources).to eq("acme/workflows/presets")
+    end
+
+    it "refuses a relative path and leaves the config untouched" do
+      seed("acme/workflows/presets")
+
+      command.call(hooks: false, workflow_sources: ["sub/dir"])
+
+      expect(error_output.string).to match(/error   workflows\.sources: .*sub\/dir/)
+      expect(stored_sources).to eq("acme/workflows/presets")
+    end
+
+    it "still adds the good entries beside a refused one" do
+      command.call(hooks: false, workflow_sources: ["sub/dir", "/abs/dir"])
+
+      expect(error_output.string).to include("sub/dir")
+      expect(stored_sources).to eq("/abs/dir")
+    end
+
+    context "with an installer wired" do
+      let(:installer) { double(install: {}) }
+
+      subject(:command) do
+        described_class.new(config: config, hook_installer: hook_installer, workflow_installer: installer, which: which,
+          output: output, error_output: error_output, input: input)
+      end
+
+      it "installs the workflows of the sources it just added, by position" do
+        seed("acme/first/wf")
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir", local_source("second")])
+
+        expect(installer).to have_received(:install).with(only: 2).once
+        expect(output.string).to include("re-run `workspace workflow install`")
+      end
+
+      it "installs nothing when every entry is already listed" do
+        seed("acme/first/wf")
+
+        command.call(hooks: false, workflow_sources: ["acme/first/wf"])
+
+        expect(installer).not_to have_received(:install)
+        expect(output.string).not_to include("re-run `workspace workflow install`")
+      end
+
+      it "warns and keeps going when a source can't be installed" do
+        seed("acme/first/wf")
+        allow(installer).to receive(:install).and_raise(Workspace::Error.new("gh is missing", code: "workflow_source_gh_missing"))
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(error_output.string).to include("warn    source:2 not installed: gh is missing")
+        expect(stored_sources).to eq("acme/first/wf, /abs/dir")
+        expect(output.string).to include("Done!")
+      end
+
+      it "does not install under --dry-run" do
+        command.call(dry_run: true, hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(installer).not_to have_received(:install)
+        expect(output.string).to include("would install workflows from source 1")
+      end
+
+      it "prints the success row's workflows and path" do
+        seed("acme/first/wf")
+        allow(installer).to receive(:install)
+          .and_return({"sources" => [{"index" => 2, "source" => "/abs/dir", "kind" => "local", "path" => "/abs/dir", "workflows" => ["ship", "plan"], "outcome" => "installed"}], "warnings" => [], "failed" => false})
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(output.string).to include("install source:2 ship, plan (/abs/dir)")
+        expect(error_output.string).not_to include("warn")
+      end
+
+      it "warns, not errors, on a refused source's problems, with the text escaped" do
+        seed("acme/first/wf")
+        allow(installer).to receive(:install)
+          .and_return({"sources" => [{"index" => 2, "source" => "acme/bad/wf", "kind" => "local", "path" => "/abs/dir",
+                                      "workflows" => ["bad\x1B[31m"], "installed" => [], "changed" => [], "removed" => [],
+                                      "problems" => [{"file" => "bad\x07.yml", "code" => "invalid_workflow", "message" => "is not valid"}],
+                                      "outcome" => "refused"}], "warnings" => [], "failed" => true})
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(error_output.string).to include("warn    source:2 bad\\u0007.yml: is not valid (invalid_workflow)")
+        expect(error_output.string).not_to match(/^  error /)
+        expect(stored_sources).to eq("acme/first/wf, /abs/dir")
+        expect(output.string).to include("Done!")
+      end
+
+      it "warns when the workflows key it replaces is not a mapping" do
+        FileUtils.mkdir_p(workspace_config_dir)
+        File.write(config_path, YAML.dump("hooks" => {}, "workflows" => "not a mapping"))
+
+        command.call(hooks: false, workflow_sources: ["/abs/dir"])
+
+        expect(error_output.string).to include("workflows in #{config_path} was not a mapping")
+        expect(stored_sources).to eq("/abs/dir")
+        expect(YAML.safe_load_file(config_path)["workflows"]["sources"]).to eq("/abs/dir")
+      end
+
+      def local_source(name)
+        dir = File.join(tmpdir, name)
+        FileUtils.mkdir_p(dir)
+        dir
+      end
+    end
+  end
 end

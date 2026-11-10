@@ -834,12 +834,19 @@ module CLITestHelpers
       @row = {"workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1", "state" => "running"}}
     end
 
-    %i[show validate status events files attempts advance step_status].each do |name|
+    %i[show list validate install status events files attempts advance step_status].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error
         (name == :status) ? @status_result : nil
       end
+    end
+
+    # Answers nil when the prompt was declined, like the real uninstall does.
+    def uninstall(**kw)
+      @calls << [:uninstall, kw]
+      raise @error if @error
+      (kw[:yes] || kw[:dry_run]) ? @row : nil
     end
 
     def check(**kw)

@@ -102,6 +102,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `launch.window_width_percent` | global | Global. Width of a window `launch` tiles, as a percent of the active screen's width, 1 to 100 (default `22`). Tiled windows overlap when they don't all fit side by side. A window put back at its saved position keeps its saved size; see [`launch`](README.launch.md#window-position) | `22`, `66` |
 | `focus.chain` | global | Global. The window-tool steps `focus` runs on the window, joined by `+` (default `focus + center + dim --opacity 0.5 --duration 3`). The first step is a bare `focus`; the others are `center`, `dim`, `highlight`, `flash`, `shake`, `snap` or `maximize` with their options. `dim` and `highlight` run in the background, so they must be last. `workspace config set focus.chain focus` gives plain focus | `focus`, `focus + center + highlight --color red` |
 | `workflows.defaults.include` | global, project, worktree | Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, as names separated by commas (default `binding, orchestrator, commits`) | `binding, commits` |
+| `workflows.sources` | global | Global. Directories of workflow definitions to install from, separated by commas or newlines: a `https://github.com/` URL, `owner/repo/path` or an absolute or `~/` local path (none by default). A bare `owner/repo` and other relative paths are refused | `acme/workflows/presets`, `https://github.com/acme/workflows/tree/main/presets`, `~/workflows` |
 | `workflows.default` | global, project, worktree | Id of the workflow `workflow start` runs when it is given no id and no `workflows.by_ref.*` key matches the reference (no default) | `rpiv` |
 | `workflows.by_ref.jira` | global, project, worktree | Id of the workflow `workflow start` runs when it is given no id and the reference is a Jira ticket; it wins over `workflows.default` (no default) | `rpiv` |
 | `workflows.by_ref.github_pr` | global, project, worktree | Id of the workflow `workflow start` runs when it is given no id and the reference is a GitHub pull request; it wins over `workflows.default` (no default) | `rpiv` |
@@ -124,6 +125,12 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 
 ```sh
 workspace config set dev.up 'FOO="bar baz" ./start-dev'
+```
+
+`workflows.sources` is split on commas and newlines, and quotes do not protect either, so an entry whose path holds a comma or a newline can't be listed: a comma would make two entries and a newline would end the entry. Use a path without them, or point a symlink without them at the directory. Separate several entries with a comma or put one per line:
+
+```sh
+workspace config set workflows.sources 'acme/workflows/presets, ~/workflows'
 ```
 
 A client that wants to know where to keep notes for a workspace reads `notes.dir`; a worktree reads only its own value, and the main checkout reads the project's:

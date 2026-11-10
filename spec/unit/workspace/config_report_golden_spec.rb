@@ -57,6 +57,7 @@ RSpec.describe Workspace::ConfigReport, "golden documents" do
           agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi
           handoff.followup_interval handoff.followup_max handoff.followup_prompt focus.chain
           workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt
+          workflows.sources
           go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command]
         now = now.merge("keys" => now["keys"].reject { |k| since_v1.include?(k["key"]) })
 

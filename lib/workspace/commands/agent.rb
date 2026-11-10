@@ -1543,7 +1543,11 @@ module Workspace
         %w[TERM INT].each do |signal|
           @signal_trapper.trap(signal) do
             begin_shutdown
-            @server.close
+            # IO#close cannot run in trap context (Ruby raises ThreadError), so the
+            # unblocking close runs on its own thread: the accept loop then reads
+            # IOError and @shutting_down, and the ensure block tears the rest down.
+            # A TERM before the server exists closes nothing.
+            Thread.new { @server&.close }
           end
         end
       end

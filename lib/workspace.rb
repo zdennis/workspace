@@ -315,6 +315,9 @@ require_relative "workspace/handoff_watcher"
 require_relative "workspace/hooks_config"
 require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
+require_relative "workspace/workflow_source_dirs"
+require_relative "workspace/workflow_source_fetcher"
+require_relative "workspace/workflow_source_installer"
 require_relative "workspace/focus_config"
 require_relative "workspace/workflow_defaults"
 require_relative "workspace/workflow_branch_inputs"
@@ -326,6 +329,7 @@ require_relative "workspace/workflow_argv"
 require_relative "workspace/workflow_exec_program"
 require_relative "workspace/workflow_lint"
 require_relative "workspace/workflow_catalog"
+require_relative "workspace/workflow_source"
 require_relative "workspace/workflow_router"
 require_relative "workspace/workflow_files"
 require_relative "workspace/workflow_project"
@@ -466,8 +470,9 @@ module Workspace
   # @param tmux [Workspace::Tmux, nil] the tmux adapter every collaborator shares; nil builds the real one
   # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
   # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
+  # @param workflow_source_runner [#call, nil] runs the `gh` calls of `workflow install`: `(argv, chdir:, timeout:)` answering `[stdout, stderr, success]`; nil runs the real one
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -545,7 +550,11 @@ module Workspace
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
-    init_command = Commands::Init.new(config: config, hook_installer: hook_installer, agent_commands: agent_commands, output: output, error_output: error_output, input: input)
+    workflow_source_dirs = WorkflowSourceDirs.new(config_resolver: config_resolver, state_dir: config.state_dir)
+    workflow_source_installer = WorkflowSourceInstaller.new(config: config, source_dirs: workflow_source_dirs, state_dir: config.state_dir,
+      fetcher: WorkflowSourceFetcher.new(runner: workflow_source_runner || WorkflowSourceFetcher.method(:run)))
+    init_command = Commands::Init.new(config: config, hook_installer: hook_installer, workflow_installer: workflow_source_installer,
+      agent_commands: agent_commands, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), output: output, input: input)
@@ -701,12 +710,13 @@ module Workspace
         [e.message, nil]
       end,
       source: skill_source, ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
-    workflow_catalog = WorkflowCatalog.new(config: config)
+    workflow_catalog = WorkflowCatalog.new(config: config, sources: workflow_source_dirs)
     workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
     workflow_needs_me = WorkflowNeedsMe.new
     protected_branch = ProtectedBranch.new(git: git)
     branch_inputs = WorkflowBranchInputs.new(git: git, start_ref: start_ref, protected_branch: protected_branch, pull_request_status: PullRequestStatus.new)
     workflow_command = Commands::Workflow.new(
+      source_installer: workflow_source_installer,
       branch_inputs: branch_inputs,
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),

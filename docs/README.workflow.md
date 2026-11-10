@@ -5,11 +5,14 @@ Run a workflow in a workspace: an ordered list of steps, each done by the agent 
 ## Usage
 
 ```sh
+workspace workflow list [--json]
 workspace workflow show [ID] [--source] [--json]
 workspace workflow validate PATH|- [--id ID] [--json]
 workspace workflow add ID PATH|- [--dry-run] [--json]
 workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
 workspace workflow remove ID [--yes] [--dry-run] [--json]
+workspace workflow install [--source N] [--json]
+workspace workflow uninstall [--yes] [--dry-run] [--json]
 workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow render ID STEP [--name WORKSPACE] [--input KEY=VALUE]... [--json]
 workspace workflow check ID STEP [--artifacts DIR] [--name WORKSPACE] [--json]
@@ -305,11 +308,12 @@ workspace workflow start '#123' --dry-run              # pr-feedback, from workf
 
 ## Definitions
 
-A definition is a YAML file named for its id. Three places are searched, in this order, and the first file with the id is the one every command reads:
+A definition is a YAML file named for its id. These places are searched, in this order, and the first file with the id is the one every command reads:
 
 1. The project's own, `~/.config/workspace/projects/NAME/workflows/<id>.yml`, for the project the command works for.
 2. The user's, `~/.config/workspace/workflows/<id>.yml`.
-3. The presets that ship with workspace.
+3. The directories listed in the `workflows.sources` config key, in list order (see [Installing from sources](#installing-from-sources)).
+4. The presets that ship with workspace.
 
 So copying a preset into either directory and editing it replaces it, for that project or for every project. Each row of `workflow show` and each `show ID` says which place the definition came from (`project`, `global` or `builtin`).
 
@@ -521,6 +525,22 @@ Under the exclusive lock `add` and `update` take, `remove` checks that the file 
 - `unknown_workflow` when nothing has the id.
 
 `remove` writes no event-log line.
+
+### Listing the workflows
+
+`workflow list [--json]` prints one row per definition the lookup finds — id, where it came from (project, global, `source:N` or builtin) and its `description:` (else its title). A definition that can't be read says `INVALID` with its first problem. `--json` is the same list as one document.
+
+### Installing from sources
+
+`workflow install [--source N] [--json]` reads each entry of the global `workflows.sources` config key and makes its `.yml` definitions available to every command, below your own files and above the presets. An entry is a local directory (absolute or `~/`) or a GitHub directory (`https://github.com/OWNER/REPO/tree/REF/PATH` or `owner/repo/path`, read with `gh`, so `gh` must be installed and logged in; without it the source fails with `workflow_source_gh_missing`). Set the list with `workspace config set workflows.sources`, or with [`init --workflow-sources`](README.init.md#workflow-sources), which also installs the sources it adds. `install` is a global command: there is no `--name`.
+
+Each file of each source is checked through the same lookup a run uses, so an `extends:` finds a preset or a sibling as it will later. A file that sets `prompt_file:` is refused (`workflow_source_prompt_file`): use `prompt:` instead. One bad file refuses its whole source, and the report lists each problem with its file; the cache keeps that source's previous version, and the other sources still install. A GitHub source is first staged beside its cache and swapped in only when everything passed, so a source is replaced whole or not at all. A local source is checked where it is and never copied. `install` writes only the cache and never `~/.config/workspace/workflows/`.
+
+Run it again to update. The report names, per source, the workflows that are new (`installed`), `changed` or `removed` since the cached version, and warns (`shadowed`) when a source's definition hides a preset or an earlier source's definition of the same id, or is itself hidden by one of yours. Each definition shows its provenance in `workflow show` as `source:N`, the position in `workflows.sources`. `--source N` installs only the source at position N (1 is the first); write the number after the flag. With nothing listed, `install` says so and exits 0. `--json` prints one document: `outcome` (`installed`, `unchanged` or `failed`), a `sources` row each (`index`, `source`, `kind`, `path`, `outcome`, `installed`, `changed`, `removed`, `workflows`, `problems`) and `warnings`. A refused source makes the outcome `failed` and the exit code 1.
+
+To stop using a source, remove it from `workflows.sources` and delete its cache directory, `<state>/.workflows-sources/<sha256-of-source>/`; the report prints that path for each GitHub source. `workflow uninstall [--yes] [--dry-run] [--json]` does the cache half in one move: it deletes every GitHub source's cache directory (so the presets and your own files in `~/.config/workspace/workflows/` are all that is found again), reports a local source without touching it (it is read in place, so there is nothing to remove), and never edits `workflows.sources` — the report says to unset the entries with `workspace config unset workflows.sources`. It asks before it deletes; `--yes` skips the question, `--dry-run` removes nothing and asks nothing. `--json` is one document with `outcome` (`uninstalled`, `dry_run`, `unchanged` or `failed`) and a `sources` row each. The outcome is `failed` (exit 1) when `workflows.sources` can't be read (`reason` `workflows_sources_unreadable`) or a cache directory survived the delete (`reason` `cache_not_removed`).
+
+Other codes: `workflow_source_invalid` (an entry is not a usable source), `workflow_source_local_missing` (a local directory is not readable), `workflow_source_failed` (`gh` could not read the directory, or timed out).
 
 ### Reading a run's events
 

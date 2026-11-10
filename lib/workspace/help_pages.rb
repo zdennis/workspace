@@ -283,18 +283,53 @@ module Workspace
     EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
 
     WORKFLOW = {
+      "list" => {
+        usage: ["workflow list [--json]"],
+        summary: "List the workflow definitions in a table (id, source, description)",
+        about: [
+          "One row per definition, in the order the ids resolve: the description: key, else the title,",
+          "with the source naming where the file was found (project, global, source:N or builtin). A",
+          "definition that can't be read says INVALID with its first problem. See docs/README.workflow.md."
+        ],
+        options: [name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
+        examples: [
+          ["workspace workflow list", "the workflows you can run, with what each is for"],
+          ["workspace workflow list --json", "every definition as one document, for a script"],
+          ["workspace workflow list --name app", "the definitions the app workspace's project reads first"]
+        ]
+      },
+      "uninstall" => {
+        usage: ["workflow uninstall [--yes] [--dry-run] [--json]"],
+        summary: "Remove every workflow installed from the workflows.sources entries",
+        about: [
+          "Deletes the cache directory of each GitHub source, so its workflows are no longer found",
+          "(the presets and your own files in ~/.config/workspace/workflows/ are never touched). A local",
+          "source is read where it is, so there is nothing to remove and it is only reported. The",
+          "entries stay listed in workflows.sources; unset them with `workspace config unset",
+          "workflows.sources` (the report says so). Asks before it deletes; --yes skips the question.",
+          "See docs/README.workflow.md."
+        ],
+        options: [["--yes", "Do not ask before deleting"],
+          ["--dry-run", "Report what would be removed and delete nothing; asks nothing"], JSON_OPT],
+        examples: [
+          ["workspace workflow uninstall", "ask, then remove every source's installed workflows"],
+          ["workspace workflow uninstall --dry-run", "see which sources have a cache, and remove nothing"],
+          ["workspace workflow uninstall --yes --json", "remove without asking, as one document, for a script"]
+        ]
+      },
       "show" => {
         usage: ["workflow show [ID] [--source] [--json]"],
-        summary: "List the workflow definitions, or print one (inputs, steps)",
+        summary: "Print one workflow (its inputs and steps)",
         about: [
           "--source gives the file's text, its sha256 and its problems even when it is invalid (exit 0), for",
           "an editor.",
           "",
           "Definitions are YAML files, found in this order: ~/.config/workspace/projects/NAME/workflows/ID.yml (the",
           "project of the current workspace or --name; a worktree reads its parent project's), then",
-          "~/.config/workspace/workflows/ID.yml, then the presets that ship with workspace (rpiv, rpiv-auto-approve,",
+          "~/.config/workspace/workflows/ID.yml, then each directory of the workflows.sources config key in list order",
+          "(source:1, source:2, ...), then the presets that ship with workspace (rpiv, rpiv-auto-approve,",
           "pr-feedback, investigate, explore). A file in an earlier place hides the same id in a later one; each row",
-          "says which (project, global or builtin). Nothing is read from a repository. See docs/README.workflow.md.",
+          "says which (project, global, source:N or builtin). Nothing is read from a repository. See docs/README.workflow.md.",
           "",
           "A definition with extends: ID starts from another workflow's steps; show prints the result, with an",
           "\"Extends:\" line for each parent (source and path). --json adds \"extends\" and \"resolved_sha256\", the digest",
@@ -303,7 +338,6 @@ module Workspace
         options: [["--source", "The file's text, sha256 of its bytes and problems, valid or not (needs ID)"],
           name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
         examples: [
-          ["workspace workflow show", "list the workflows you can run"],
           ["workspace workflow show rpiv", "see the inputs and steps of one before running it"],
           ["workspace workflow show rpiv --source", "read the file's text, to start your own copy"],
           ["workspace workflow show rpiv --source --json", "the text and its sha256 as one document, for a script"],
@@ -395,6 +429,27 @@ module Workspace
           ["workspace workflow remove ship --dry-run", "see which file would be deleted, deleting nothing"],
           ["workspace workflow remove ship --yes", "delete it without asking, for a script"],
           ["workspace workflow remove ship --yes --json", "delete it and report one document (--json never asks, so it needs --yes)"]
+        ]
+      },
+      "install" => {
+        usage: ["workflow install [--source N] [--json]"],
+        summary: "Fetch and check the workflows.sources definitions",
+        about: [
+          "Reads each entry of the workflows.sources config key (a local directory, or a GitHub repository read",
+          "with gh), checks every .yml file in it with the lookup a run will use, so an extends: finds a preset or",
+          "a sibling as it will later, and caches a GitHub source under the state directory. A local source is",
+          "checked in place and never copied. One invalid file refuses its whole source (the report lists each",
+          "problem, and the cache keeps its previous version); the other sources still install. A definition may",
+          "not set prompt_file:. The report names the workflows new, changed or gone since the cached version,",
+          "and warns when a source hides a preset. Run it again to update. Only the cache is written, never",
+          "~/.config/workspace/workflows/. To drop a source, remove it from workflows.sources and delete its",
+          "cache directory (the report prints the path)."
+        ],
+        options: [["--source N", "Install only the source at position N of workflows.sources (1 is the first); write the number after the flag"], JSON_OPT],
+        examples: [
+          ["workspace workflow install", "fetch, check and cache every listed source"],
+          ["workspace workflow install --source 2", "update only the second source"],
+          ["workspace workflow install --json", "the per-source rows (installed, changed, removed, problems) and warnings as one document, for a script"]
         ]
       },
       "run" => {

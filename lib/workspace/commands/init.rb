@@ -1,5 +1,7 @@
 require "yaml"
 
+require_relative "../core/atomic_file"
+
 module Workspace
   module Commands
     # Sets up workspace by installing tmuxinator templates and creating
@@ -12,14 +14,18 @@ module Workspace
 
       # @param config [Workspace::Config] configuration for path lookups
       # @param hook_installer [Workspace::HookInstaller] installs agent hooks
+      # @param workflow_installer [Workspace::WorkflowSourceInstaller, nil] installs the
+      #   workflows of the sources `--workflow-sources` adds; nil reports the entries
+      #   without installing them
       # @param which [#call] returns true when an executable is on PATH
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       # @param input [IO] input stream for interactive confirmation
-      def initialize(config:, hook_installer:, which: nil, agent_commands: nil,
+      def initialize(config:, hook_installer:, workflow_installer: nil, which: nil, agent_commands: nil,
         output: $stdout, error_output: $stderr, input: $stdin)
         @config = config
         @hook_installer = hook_installer
+        @workflow_installer = workflow_installer
         @agent_commands = agent_commands
         @which = which || ->(exe) { system("command", "-v", exe, out: File::NULL, err: File::NULL) }
         @output = output
@@ -34,8 +40,10 @@ module Workspace
       # @param project_root [String] project whose agent settings receive hooks
       # @param hooks [Boolean, nil] true installs without asking, false skips the
       #   phase entirely, nil (the default) prompts
+      # @param workflow_sources [Array<String>] `workflows.sources` entries to append to the global config;
+      #   each value may hold several, separated by commas or newlines
       # @return [void]
-      def call(dry_run: false, force: false, project_root: Dir.pwd, hooks: nil)
+      def call(dry_run: false, force: false, project_root: Dir.pwd, hooks: nil, workflow_sources: [])
         @output.puts "workspace init#{" (dry run)" if dry_run}"
         @output.puts ""
 
@@ -43,6 +51,7 @@ module Workspace
         install_templates(dry_run, force)
         ensure_workspace_config_dir(dry_run)
         install_global_config(dry_run)
+        install_workflow_sources(dry_run, add_workflow_sources(dry_run, workflow_sources))
         install_agent_hooks(dry_run, project_root, hooks)
 
         @output.puts ""
@@ -176,9 +185,81 @@ module Workspace
         elsif dry_run
           @output.puts "  create  config.yml -> #{path}"
         else
-          File.write(path, YAML.dump(DEFAULT_GLOBAL_CONFIG))
+          AtomicFile.write(path, YAML.dump(DEFAULT_GLOBAL_CONFIG))
           @output.puts "  create  config.yml -> #{path}"
         end
+      end
+
+      # Appends the given entries to the global `workflows.sources`, skipping ones already listed. An
+      # entry the schema refuses is reported and left out; the rest still go in.
+      #
+      # @return [Array<Integer>] the 1-based positions in the combined list of the entries it just added,
+      #   the ones {#install_workflow_sources} installs; empty when nothing was added
+      def add_workflow_sources(dry_run, values)
+        wanted = Array(values).flat_map { |value| value.to_s.split(/[\n,]+/) }.map(&:strip).reject(&:empty?).uniq
+        return [] if wanted.empty?
+
+        path = File.join(@config.workspace_config_dir, "config.yml")
+        data = File.exist?(path) ? YAML.safe_load_file(path) : nil
+        data = DEFAULT_GLOBAL_CONFIG.dup unless data.is_a?(Hash)
+        workflows = data["workflows"].is_a?(Hash) ? data["workflows"] : {}
+        # A scalar `workflows:` value is replaced whole by the write below.
+        if !data["workflows"].nil? && !data["workflows"].is_a?(Hash)
+          @error_output.puts "  warn    workflows in #{path} was not a mapping; its value is replaced to add workflows.sources"
+        end
+        current = ConfigSchema.parse("workflows.sources", workflows["sources"] || [])
+
+        accepted = wanted.select do |entry|
+          ConfigSchema.parse("workflows.sources", [entry])
+          true
+        rescue ArgumentError => e
+          @error_output.puts "  error   workflows.sources: #{TerminalText.escape(e.message)}"
+          false
+        end
+        added = accepted - current
+        if added.empty? && accepted.any?
+          @output.puts "  skip    workflows.sources (already lists #{accepted.join(", ")})"
+          return []
+        end
+        return [] if added.empty?
+
+        combined = current + added
+        ConfigSchema.parse("workflows.sources", combined)
+        unless dry_run
+          data["workflows"] = workflows
+          data["workflows"]["sources"] = combined.join(", ")
+          AtomicFile.write(path, YAML.dump(data))
+        end
+        @output.puts "  update  workflows.sources -> #{TerminalText.escape(combined.join(", "))}"
+        ((current.size + 1)..combined.size).to_a
+      rescue ArgumentError, Workspace::ConfigParseError, Psych::Exception => e
+        @error_output.puts "  error   workflows.sources: #{TerminalText.escape(e.message)}"
+        []
+      end
+
+      # Installs the workflows of the sources just added, one `workflow install` source at a time.
+      # A source that can't be installed (no `gh`, no network, a refused definition) is a warning;
+      # init still succeeds and the entries stay listed, so `workspace workflow install` can be
+      # re-run later.
+      def install_workflow_sources(dry_run, positions)
+        return if positions.empty?
+        return @output.puts "  would install workflows from source #{positions.join(", ")} (run `workspace workflow install` after init)" if dry_run
+        return @output.puts "  skip    workflows.sources install (installer not wired)" unless @workflow_installer
+
+        positions.each do |position|
+          result = @workflow_installer.install(only: position)
+          row = (result["sources"] || []).find { |each| each["index"] == position }
+          next unless row
+          if (row["problems"] || []).any?
+            # The problems come from the source's own files, so their text is escaped.
+            row["problems"].each { |problem| @error_output.puts "  warn    source:#{position} #{TerminalText.escape(problem["file"])}: #{TerminalText.escape(problem["message"])} (#{TerminalText.escape(problem["code"])})" }
+          else
+            @output.puts "  install source:#{position} #{TerminalText.escape(row["workflows"].join(", "))} (#{TerminalText.escape(row["path"])})"
+          end
+        rescue Workspace::Error, SystemCallError => e
+          @error_output.puts "  warn    source:#{position} not installed: #{TerminalText.escape(e.message)}"
+        end
+        @output.puts "  re-run `workspace workflow install` to add, change or remove workflows from the sources."
       end
 
       def install_template(src, dest, template, dry_run, force)

@@ -79,30 +79,53 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
-  describe "#show" do
-    it "lists the definitions, marking one that is not valid" do
+  describe "#list" do
+    it "lists the definitions in a table of id, source and description, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([
         {"id" => "bad", "title" => "bad", "source" => "global", "path" => "/defs/bad.yml", "problems" => ["steps must be a mapping"]},
         {"id" => "rpiv", "title" => "Research, Plan, Implement, Verify", "source" => "builtin", "path" => "/lib/rpiv.yml", "problems" => []}
       ])
 
-      command.show
+      command.list
 
       expect(output.string).to eq(
-        "bad              global   bad  INVALID: steps must be a mapping\n" \
-        "rpiv             builtin  Research, Plan, Implement, Verify\n"
+        "ID    SOURCE   DESCRIPTION\n" \
+        "bad   global   INVALID: steps must be a mapping\n" \
+        "rpiv  builtin  Research, Plan, Implement, Verify\n"
       )
+    end
+
+    it "prefers the description over the title" do
+      allow(catalog).to receive(:list).and_return([
+        {"id" => "rpiv", "title" => "RPIV", "description" => "One feature end to end.", "source" => "builtin", "path" => "/lib/rpiv.yml", "problems" => []}
+      ])
+
+      command.list
+
+      expect(output.string).to include("rpiv")
+      expect(output.string).to include("One feature end to end.")
+      expect(output.string).not_to include("RPIV")
     end
 
     it "lists the definitions as one document" do
       entries = [{"id" => "rpiv", "title" => "RPIV", "source" => "builtin", "path" => "/lib/rpiv.yml", "problems" => []}]
       allow(catalog).to receive(:list).and_return(entries)
 
-      command.show(json: true)
+      command.list(json: true)
 
       expect(json).to eq("schema_version" => 1, "ok" => true, "workflows" => entries)
     end
 
+    it "says so when there are none" do
+      allow(catalog).to receive(:list).and_return([])
+
+      command.list
+
+      expect(output.string).to eq("No workflows.\n")
+    end
+  end
+
+  describe "#show" do
     it "prints use_when and applies_to of one definition" do
       data = Workspace::WorkflowDefinition.parse("use_when: Feedback to act on.\napplies_to: [github_pr, branch]\nsteps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
       allow(catalog).to receive(:find).with("flow", project: anything).and_return(data)
@@ -357,7 +380,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.show
 
-      expect(output.string).to eq("mine             global   mine  INVALID: /defs/mine.yml is a link to a file that is not there\n")
+      expect(output.string).to eq("ID    SOURCE  DESCRIPTION\nmine  global  INVALID: /defs/mine.yml is a link to a file that is not there\n")
     end
   end
 
@@ -3077,6 +3100,60 @@ RSpec.describe Workspace::Commands::Workflow do
       store.update("wr_1") { |run| run.delete("sweep") && run.delete("reasons") }
       command.status(scope: scope)
       expect(lines.size).to eq(2)
+    end
+  end
+
+  describe "#uninstall" do
+    let(:uninstall_output) { StringIO.new }
+    let(:source_installer) { instance_double(Workspace::WorkflowSourceInstaller) }
+    subject(:command) do
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: nil, store: store, panes: panes, files: nil, run_files: nil,
+        tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
+        clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: uninstall_output, source_installer: source_installer)
+    end
+
+    def row(index, source, kind, outcome)
+      {"index" => index, "source" => source, "kind" => kind, "path" => "/cache/#{index}", "outcome" => outcome}
+    end
+
+    def stub_uninstall(rows, unreadable: false)
+      allow(source_installer).to receive(:uninstall).with(dry_run: false)
+        .and_return({"sources" => rows, "removed" => rows.count { |r| r["outcome"] == "removed" }, "unreadable" => unreadable})
+    end
+
+    it "asks first and returns nil, with Cancelled. printed, when declined" do
+      allow(Workspace::Prompt).to receive(:ask).and_return("n")
+
+      expect(command.uninstall).to be_nil
+      expect(uninstall_output.string).to include("Cancelled.")
+    end
+
+    it "reports an unreadable workflows.sources as outcome failed, with the reason naming it" do
+      stub_uninstall([], unreadable: true)
+
+      row = command.uninstall(yes: true)
+      expect(row["outcome"]).to eq("failed")
+      expect(row["reason"]).to eq("workflows_sources_unreadable")
+      expect(uninstall_output.string).to include("can't be read")
+    end
+
+    it "counts only GitHub sources as the source caches in the report" do
+      stub_uninstall([row(1, "acme/widgets/wf", "github", "removed"), row(2, "/tmp/defs", "local", "local"), row(3, "no/owner", "invalid", "invalid")])
+
+      row = command.uninstall(yes: true)
+
+      expect(row["outcome"]).to eq("uninstalled")
+      expect(uninstall_output.string).to include("Removed 1 of 1 source caches")
+    end
+
+    it "reports a cache that could not be deleted as outcome failed" do
+      stub_uninstall([row(1, "acme/widgets/wf", "github", "failed")])
+
+      row = command.uninstall(yes: true)
+
+      expect(row["outcome"]).to eq("failed")
+      expect(row["reason"]).to eq("cache_not_removed")
+      expect(uninstall_output.string).to include("could not be removed")
     end
   end
 end

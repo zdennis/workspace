@@ -1767,6 +1767,35 @@
       "problems": []
     },
     {
+      "key": "workflows.sources",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": [],
+      "effective": [],
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a",
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Directories of workflow definitions to install from, separated by commas or newlines: a `https://github.com/` URL, `owner/repo/path` or an absolute or `~/` local path (none by default). A bare `owner/repo` and other relative paths are refused",
+      "problems": []
+    },
+    {
       "key": "workflows.default",
       "scope": "global",
       "type": "text",

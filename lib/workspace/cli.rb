@@ -4406,6 +4406,7 @@ module Workspace
       dry_run = false
       force = false
       hooks = nil
+      workflow_sources = []
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace init [options]"
         opts.separator ""
@@ -4425,6 +4426,9 @@ module Workspace
         opts.on("--no-install-hooks", "Skip the agent session hooks step") do
           hooks = false
         end
+        opts.on("--workflow-sources VALUE", "Add workflows.sources entries to the global config (repeatable; commas or newlines separate several)") do |value|
+          workflow_sources << value
+        end
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace init    # install templates and create the config directory"
@@ -4432,10 +4436,11 @@ module Workspace
         opts.separator "  workspace init --force    # overwrite modified templates"
         opts.separator "  workspace init --install-hooks    # install agent session hooks without prompting"
         opts.separator "  workspace init --no-install-hooks    # skip the hooks step entirely"
+        opts.separator "  workspace init --workflow-sources acme/workflows/presets    # list a workflow source in the global config"
       end
       parser.parse!(args)
 
-      @init_command.call(dry_run: dry_run, force: force, hooks: hooks)
+      @init_command.call(dry_run: dry_run, force: force, hooks: hooks, workflow_sources: workflow_sources)
     end
 
     def cmd_sessions(args)
@@ -5081,7 +5086,7 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[show validate add update remove run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
+    WORKFLOW_SUBCOMMANDS = %w[list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
 
     def workflow_parser(options)
       OptionParser.new do |opts|
@@ -5096,7 +5101,7 @@ module Workspace
         opts.separator "gate: approve waits for `workflow approve`. Resources a step uses: are locks the run"
         opts.separator "holds, in the same queue as `lock acquire` and `dev up`."
         opts.separator ""
-        opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml (a project's own, in #{File.join(@config.workspace_projects_dir, "NAME", "workflows")}/ID.yml, are found first; never read from a repository), then the presets that"
+        opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml (a project's own, in #{File.join(@config.workspace_projects_dir, "NAME", "workflows")}/ID.yml, are found first; never read from a repository), then the directories of the workflows.sources config key in list order (source:1, source:2, ...), then the presets that"
         opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix; explore: read-only research, a gate, then a report note). See docs/README.workflow.md."
         opts.separator ""
         HelpPages.overview_verbs(HelpPages::WORKFLOW).each { |line| opts.separator line }
@@ -5126,7 +5131,7 @@ module Workspace
         opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
         opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
         opts.on("--script FILE", "simulate: the YAML script of what the fake agent does on each attempt and how each check comes out") { |v| options[:script] = v }
-        opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not") { options[:source] = true }
+        opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not; install: only the source at position N of workflows.sources (a whole number from 1, written after the flag)") { options[:source] = true }
         opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
         opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
         opts.on("--last DURATION", "stats, compare: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
@@ -5142,7 +5147,7 @@ module Workspace
         opts.on("--install", "sweep: install the launchd entry that runs the sweep every 5 minutes (a per-user LaunchAgent; opt-in)") { options[:schedule_flags] << :install }
         opts.on("--uninstall", "sweep: unload and remove that launchd entry") { options[:schedule_flags] << :uninstall }
         opts.on("--installed", "sweep: say whether that launchd entry is installed and loaded") { options[:schedule_flags] << :status }
-        opts.on("--yes", "remove: do not ask before deleting the file") { options[:yes] = true }
+        opts.on("--yes", "remove, uninstall: do not ask before deleting") { options[:yes] = true }
         opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
         opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
         opts.on("--branch BRANCH", "start: the branch for a --prompt (default: the prompt's words); refused with a REF") { |v| options[:branch] = v }
@@ -5187,7 +5192,7 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: show, validate, add, update, remove, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+        raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
       end
       raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
       subject = args.shift
@@ -5218,8 +5223,13 @@ module Workspace
       raise UsageError, "--needs-me lists runs still going and takes no RUN or --table." if options[:needs_me] && (subject || options[:table])
       raise UsageError, "workflow check runs a status: command, which takes no inputs: --input is for run, start and render." if subcommand == "check" && options[:inputs].any?
       raise UsageError, "--artifacts is for `workflow check ID STEP`." if options[:artifacts] && subcommand != "check"
-      raise UsageError, "--source is for `workflow show ID`." if options[:source] && subcommand != "show"
-      raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subject.nil?
+      raise UsageError, "--source is for `workflow show ID` and `workflow install`." if options[:source] && !%w[show install].include?(subcommand)
+      raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subcommand == "show" && subject.nil?
+      raise UsageError, "workflow install --source needs N, the position in workflows.sources (1 is the first)." if subcommand == "install" && options[:source] && subject.nil?
+      raise UsageError, "workflow install takes no argument; --source N installs only the Nth source." if subcommand == "install" && subject && !options[:source]
+      raise UsageError, "--source N is not a position: use a whole number from 1." if subcommand == "install" && subject && !subject.match?(/\A[1-9][0-9]{0,5}\z/)
+      raise UsageError, "--dry-run does not apply to `workflow install`." if subcommand == "install" && options[:dry_run]
+      raise UsageError, "workflow uninstall takes no argument." if subcommand == "uninstall" && subject
       gate_options = workflow_gate_options(subcommand, options)
       extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
       extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
@@ -5241,7 +5251,9 @@ module Workspace
       end
 
       case subcommand
+      when "list" then @workflow_command.list(json: options[:json], project: workflow_project(options))
       when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source], project: workflow_project(options))
+      when "uninstall" then workflow_action("workflow uninstall", options) { @workflow_command.uninstall(yes: options[:yes], dry_run: options[:dry_run], json: options[:json]) }
       when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json], project: workflow_project(options))
       when "render"
         name = workflow_workspace(options)
@@ -5266,6 +5278,7 @@ module Workspace
       when "update"
         raise UsageError, "workflow update needs --if-sha256 SHA (the sha256 from `workflow show ID --source`)." if options[:if_sha256].to_s.empty?
         workflow_action("workflow update", options) { @workflow_command.update(id: subject, path: source_path, if_sha256: options[:if_sha256], dry_run: options[:dry_run], project: workflow_project(options)) }
+      when "install" then workflow_action("workflow install", options) { @workflow_command.install(source: subject && Integer(subject, 10)) }
       when "remove"
         project = workflow_project(options)
         @workflow_command.check_removable(id: subject, project: project)

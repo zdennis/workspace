@@ -16,6 +16,7 @@ workspace init [options]
 | `-f`, `--force` | Overwrite existing templates even if they differ |
 | `--install-hooks` | Install agent session hooks without asking |
 | `--no-install-hooks` | Skip the agent session hooks step |
+| `--workflow-sources VALUE` | Add `workflows.sources` entries to the global config (repeatable) |
 
 ## Details
 
@@ -40,6 +41,12 @@ Claude Code's hooks include `StopFailure`, which the agent daemon needs to [reco
 
 Codex's hooks are user-level: they go into `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) once, for every project, and run `if [ -n "$TMUX_PANE" ]; then workspace session-event --agent codex; else cat >/dev/null; fi`, so a Codex session outside tmux never starts Ruby. An install made before the guard is upgraded in place by the next `init`, `start` or `doctor --fix`, with no duplicate. Your own entries in that file are kept, and workspace's are added after them. Codex skips new or changed hooks until you trust them, so after an install `init` prints a note: run `/hooks` in Codex and trust the `workspace session-event --agent codex` entries, or take them out with `workspace hooks uninstall --agent codex` (see [`hooks`](README.hooks.md)). Until then a Codex pane is watched by pane activity only (`hook_mode: "scrape"` in [`sessions --json`](README.sessions.md#hook-mode), which also has a table of what each agent's hooks report).
 
+### Workflow sources
+
+`--workflow-sources VALUE` appends to the global `workflows.sources` ([the directories `workflow install` reads](README.workflow.md#installing-from-sources)). Repeat the flag, or separate several entries in one value with commas or newlines. Entries are appended in the order given and deduplicated against what is already listed, so re-running is safe. An entry that is not a usable source (for example a bare `owner/repo`) is reported as an error and left out; the rest still go in. `--dry-run` reports without writing.
+
+The workflows of the sources it just added are installed right away, the way `workspace workflow install` does them (local sources are checked in place; GitHub sources are fetched and cached). A source that can't be installed — no `gh`, no network, a refused definition — is a warning; the entry stays listed and `workspace workflow install` can be re-run later. Entries already listed are not fetched again.
+
 ## Examples
 
 ```sh
@@ -57,4 +64,7 @@ workspace init --install-hooks
 
 # Skip the hooks step entirely
 workspace init --no-install-hooks
+
+# List a workflow source in the global config
+workspace init --workflow-sources acme/workflows/presets
 ```

@@ -13,7 +13,9 @@ module Workspace
   # a branch or a fork run code on the developer's machine. Every reader takes the
   # `project:` it works for, or nil for the user directory and presets alone.
   class WorkflowCatalog
-    # Where a definition can come from, in the order they are searched.
+    # Where a definition can come from, in the order they are searched. Each
+    # `workflows.sources` entry is its own layer, "source:N" (N the 1-based position in
+    # the list), between "global" and "builtin"; see {#ordered_sources}.
     SOURCES = %w[project global builtin].freeze
 
     # The project a workspace's definitions come from: the parent project of a worktree
@@ -28,9 +30,11 @@ module Workspace
     end
 
     # @param config [Workspace::Config] names the directories
+    # @param sources [#call, nil] answers an Array with a directory per `workflows.sources` entry, in list order, nil for one not there; nil adds no source layer
     # @param globber [#call] lists the paths matching a glob pattern, as +Dir.glob+ does
-    def initialize(config:, globber: Dir.method(:glob))
+    def initialize(config:, sources: nil, globber: Dir.method(:glob))
       @config = config
+      @sources = sources
       @globber = globber
     end
 
@@ -42,14 +46,14 @@ module Workspace
     def find(id, project: nil)
       source, path = locate(id.to_s, project: project)
       raise_unknown(id, project) unless path
-      WorkflowDefinition.parse(File.read(path, encoding: Encoding::UTF_8), id: id.to_s, source: source, path: path, parent_lookup: lookup_for(project))
+      WorkflowDefinition.parse(File.read(path, encoding: Encoding::UTF_8), id: id.to_s, source: source, path: path, parent_lookup: parent_lookup(project))
     end
 
     # The file an id is read from: the project's, else a user's, else a preset.
     #
     # @param id [String]
     # @param project [String, nil]
-    # @return [Array(String, String), nil] "project", "global" or "builtin" and the path, or nil when no file has that id
+    # @return [Array(String, String), nil] "project", "global", "source:N" or "builtin" and the path, or nil when no file has that id
     #   (including an id that could not be a file name)
     def locate(id, project: nil)
       return nil unless IdPatterns::WORKFLOW_ID.match?(id)
@@ -126,6 +130,23 @@ module Workspace
       dirs(project).find { |_, each| File.expand_path(each) == dir }&.first
     end
 
+    # The names of the layers searched, first to last: "project" (when the project has a directory), "global",
+    # "source:1", "source:2", ... and "builtin".
+    #
+    # @param project [String, nil]
+    # @return [Array<String>]
+    def ordered_sources(project = nil)
+      dirs(project).keys
+    end
+
+    # The lookup a definition being read finds the workflow its `extends:` names with: {#parent} for a fixed project.
+    #
+    # @param project [String, nil] the project whose definitions are searched first
+    # @return [#call] `(id, below: nil)` answering what {#parent} answers
+    def parent_lookup(project = nil)
+      ->(id, below: nil) { parent(id, below: below, project: project) }
+    end
+
     # Where a user's file of this id is (or would be) written.
     #
     # @param id [String]
@@ -173,7 +194,7 @@ module Workspace
         end
         row = summary(id, source, path, project).merge("sha256" => read["sha256"], "problems" => read["problems"])
         next row unless read["problems"].empty?
-        data = WorkflowDefinition.parse(read["text"], id: id, source: source, path: path, parent_lookup: lookup_for(project)).to_h
+        data = WorkflowDefinition.parse(read["text"], id: id, source: source, path: path, parent_lookup: parent_lookup(project)).to_h
         row.merge("title" => data["title"], "description" => data["description"], "use_when" => data["use_when"], "applies_to" => data["applies_to"])
       end
     end
@@ -212,10 +233,6 @@ module Workspace
       nil
     end
 
-    def lookup_for(project)
-      ->(id, below: nil) { parent(id, below: below, project: project) }
-    end
-
     def summary(id, source, path, project)
       {"id" => id, "title" => id, "description" => nil, "use_when" => nil, "applies_to" => [], "source" => source, "project" => (source == "project") ? project : nil, "path" => path, "sha256" => nil, "problems" => []}
     end
@@ -240,7 +257,13 @@ module Workspace
     # under the config (see {Workspace::Config#project_workflows_dir}) has no directory.
     def dirs(project = nil)
       own = project && @config.project_workflows_dir(project)
-      (own ? {"project" => own} : {}).merge("global" => @config.workflows_dir, "builtin" => @config.builtin_workflows_dir)
+      (own ? {"project" => own} : {}).merge("global" => @config.workflows_dir).merge(source_dirs).merge("builtin" => @config.builtin_workflows_dir)
+    end
+
+    # "source:N" => directory, for each listed source whose directory exists, N counting the listed ones.
+    def source_dirs
+      return {} unless @sources
+      @sources.call.each_with_index.filter_map { |dir, index| ["source:#{index + 1}", dir] if dir }.to_h
     end
 
     def ids(project = nil)
@@ -260,7 +283,7 @@ module Workspace
       text = bytes.dup.force_encoding(Encoding::UTF_8)
       text = nil unless text.valid_encoding?
       problems = begin
-        WorkflowDefinition.parse(bytes.dup.force_encoding(Encoding::UTF_8), id: id, source: source, path: path, parent_lookup: lookup_for(project))
+        WorkflowDefinition.parse(bytes.dup.force_encoding(Encoding::UTF_8), id: id, source: source, path: path, parent_lookup: parent_lookup(project))
         []
       rescue Workspace::Error => e
         e.details["problems"] || [e.message]
