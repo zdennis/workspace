@@ -408,8 +408,8 @@ module Workspace
     # What `focus` sets itself or what makes window-tool do nothing, so a step may not carry it.
     FOCUS_CHAIN_FORBIDDEN = /\A(?:id=|title=|--(?:app|json|exact|first|verbose|keep-going|help)(?:=|\z)|-h\z)/
 
-    # The `focus.chain` default: bring the window forward, center it, then dim the others for three seconds.
-    DEFAULT_FOCUS_CHAIN = "focus + center + dim --opacity 0.5 --duration 3"
+    # The `focus.chain` default: a bare `focus`, with no extra window-tool steps.
+    DEFAULT_FOCUS_CHAIN = "focus"
 
     FOCUS_CHAIN = lambda do |value|
       unless value.is_a?(String) || value.is_a?(Array)
@@ -601,9 +601,10 @@ module Workspace
       Key.new(name: "launch.window_width_percent", scope: :global, type: :percent, settable: true, examples: ["22", "66"], default: 22, min: 1, max: 100, parser: PERCENT,
         doc: "Width of a window `launch` tiles, as a percent of the active screen's width, 1 to 100 (default `22`). Tiled windows overlap when they don't all fit side by side. A window put back at its saved position keeps its saved size; see [`launch`](README.launch.md#window-position)"),
       Key.new(name: "focus.chain", scope: :global, type: :text, settable: true, examples: ["focus", "focus + center + highlight --color red"], default: DEFAULT_FOCUS_CHAIN, parser: FOCUS_CHAIN,
-        doc: "The window-tool steps `focus` runs on the window, joined by `+` (default `focus + center + dim --opacity 0.5 --duration 3`). " \
+        doc: "The window-tool steps `focus` runs on the window, joined by `+` (default `focus`, no extra steps). " \
           "The first step is a bare `focus`; the others are `center`, `dim`, `highlight`, `flash`, `shake`, `snap` or `maximize` with their options. " \
-          "`dim` and `highlight` run in the background, so they must be last. `workspace config set focus.chain focus` gives plain focus"),
+          "`dim` and `highlight` run in the background, so they must be last. " \
+          "Set `focus + center + dim --opacity 0.5 --duration 3` to also center the window and dim the others for three seconds"),
       # Packs suit projects differently, and compose already knows the cwd.
       Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["binding, commits"], default: DEFAULT_PACKS, parser: PACK_LIST,
         doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \

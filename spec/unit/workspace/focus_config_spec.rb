@@ -5,7 +5,7 @@ RSpec.describe Workspace::FocusConfig do
   let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: global) }
   subject(:config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
 
-  let(:default_steps) { [["center"], %w[dim --opacity 0.5 --duration 3]] }
+  let(:default_steps) { [] }
 
   def parse(value) = Workspace::ConfigSchema.parse("focus.chain", value)
 
@@ -16,8 +16,8 @@ RSpec.describe Workspace::FocusConfig do
 
   describe "the focus.chain parser" do
     it "accepts the default and gives back one line" do
-      expect(parse(Workspace::ConfigSchema::DEFAULT_FOCUS_CHAIN)).to eq("focus + center + dim --opacity 0.5 --duration 3")
-      expect(Workspace::ConfigSchema.default("focus.chain")).to eq("focus + center + dim --opacity 0.5 --duration 3")
+      expect(parse(Workspace::ConfigSchema::DEFAULT_FOCUS_CHAIN)).to eq("focus")
+      expect(Workspace::ConfigSchema.default("focus.chain")).to eq("focus")
     end
 
     {
@@ -102,7 +102,7 @@ RSpec.describe Workspace::FocusConfig do
     end
 
     it "reads a hand-edited list with numbers" do
-      expect(chain(["focus", "+", "center", "+", "dim", "--opacity", 0.5, "--duration", 3]).steps).to eq(default_steps)
+      expect(chain(["focus", "+", "center", "+", "dim", "--opacity", 0.5, "--duration", 3]).steps).to eq([["center"], %w[dim --opacity 0.5 --duration 3]])
     end
 
     it "falls back to the default with a warning for a value config set would refuse" do

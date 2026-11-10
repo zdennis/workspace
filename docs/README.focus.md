@@ -40,10 +40,10 @@ Auto-detects the project from the current directory if not specified, using `.wo
 The global config key `focus.chain` lists the window-tool steps `focus` runs after the window is in front. Steps are joined by `+`. The default is:
 
 ```
-focus + center + dim --opacity 0.5 --duration 3
+focus
 ```
 
-So a plain `workspace focus` brings the window forward, centers it on its screen, and dims everything else at half opacity for 3 seconds. `focus` does not wait for the dim: it returns first, and the dim ends on its own.
+So a plain `workspace focus` brings the window forward and does nothing else. Set a chain such as `focus + center + dim --opacity 0.5 --duration 3` to also center the window and dim everything else at half opacity for 3 seconds. `focus` does not wait for the dim: it returns first, and the dim ends on its own.
 
 `workspace focus` passes `id=<window>` to every step itself, so a step is written without it.
 
@@ -58,13 +58,13 @@ So a plain `workspace focus` brings the window forward, centers it on its screen
 `workspace config set focus.chain` checks all of this and refuses a bad value. The key is global only, because `focus --cycle` has no workspace to read a project file from. See [`config`](README.config.md).
 
 ```sh
-# Plain focus: no centering, no dim
-workspace config set focus.chain focus
-
 # Center, then highlight in red
 workspace config set focus.chain "focus + center + highlight --color red"
 
-# Back to the default
+# Center, then dim the others for three seconds
+workspace config set focus.chain "focus + center + dim --opacity 0.5 --duration 3"
+
+# Back to the default (plain focus, no centering, no dim)
 workspace config unset focus.chain
 ```
 
