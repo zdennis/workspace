@@ -80,7 +80,8 @@ module Workspace
     def remote(entry, parsed, dir)
       FileUtils.mkdir_p(dir)
       files = {}
-      listing(entry, parsed).each do |item|
+      parsed, items = resolve(entry, parsed)
+      items.each do |item|
         text = gh(entry, ["gh", "api", "-H", RAW_ACCEPT, endpoint(parsed, item["path"])])
         AtomicFile.write(File.join(dir, item["name"]), text, perm: 0o644)
         files[item["name"]] = item["sha"]
@@ -88,6 +89,27 @@ module Workspace
       manifest = {"source" => entry, "ref" => parsed.ref, "files" => files, "installed_at" => @clock.call.utc.iso8601}
       AtomicFile.write(File.join(dir, MANIFEST), JSON.pretty_generate(manifest) + "\n", perm: 0o644)
       Result.new(dir: dir, local: false, manifest: manifest)
+    end
+
+    # GitHub's answer when a ref names no branch, tag or commit.
+    UNKNOWN_REF = /No commit found for the ref/
+
+    # Lists the source's directory, trying each `[ref, path]` split of a `/tree/` URL in turn
+    # (shortest ref first) while GitHub says the ref does not exist. Git can't hold both `a` and
+    # `a/b` as refs, so at most one split names a real one; any other failure stops at once.
+    #
+    # @return [Array(WorkflowSource::Parsed, Array<Hash>)] the split that worked and its listing
+    def resolve(entry, parsed)
+      splits = parsed.splits || [[parsed.ref, parsed.path]]
+      splits.each_with_index do |(ref, path), i|
+        candidate = parsed.to_h.merge(ref: ref, path: path)
+        candidate = WorkflowSource::Parsed.new(**candidate).freeze
+        begin
+          return [candidate, listing(entry, candidate)]
+        rescue Workspace::Error => e
+          raise unless i < splits.size - 1 && e.details.to_h["stderr"].to_s.match?(UNKNOWN_REF)
+        end
+      end
     end
 
     def listing(entry, parsed)

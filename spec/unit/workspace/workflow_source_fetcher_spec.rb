@@ -49,6 +49,35 @@ RSpec.describe Workspace::WorkflowSourceFetcher do
         "installed_at" => "2026-11-09T12:00:00Z")
     end
 
+    it "finds a ref holding slashes by trying longer refs while GitHub says the ref is unknown" do
+      url = "https://github.com/acme/widgets/tree/me/topic/wf"
+      responses["repos/acme/widgets/contents/topic/wf?ref=me"] = ["", "gh: No commit found for the ref me (HTTP 404)", false]
+      result = fetcher.fetch(url, into: stage)
+
+      manifest = JSON.parse(File.read(File.join(stage, "manifest.json")))
+      expect(manifest["ref"]).to eq("me/topic")
+      expect(calls.map(&:last)).to include("repos/acme/widgets/contents/wf?ref=me%2Ftopic",
+        "repos/acme/widgets/contents/wf/a.yml?ref=me%2Ftopic")
+      expect(result.dir).to eq(stage)
+    end
+
+    it "stops at the first split when the failure is not an unknown ref" do
+      url = "https://github.com/acme/widgets/tree/me/topic/wf"
+      responses["repos/acme/widgets/contents/topic/wf?ref=me"] = ["", "gh: Bad credentials (HTTP 401)", false]
+
+      expect { fetcher.fetch(url, into: stage) }.to raise_error(Workspace::Error, /Bad credentials/)
+      expect(calls.size).to eq(1)
+    end
+
+    it "reports the last split's failure when no split names a ref" do
+      url = "https://github.com/acme/widgets/tree/no/such/wf"
+      responses["repos/acme/widgets/contents/such/wf?ref=no"] = ["", "gh: No commit found for the ref no (HTTP 404)", false]
+      responses["repos/acme/widgets/contents/wf?ref=no%2Fsuch"] = ["", "gh: No commit found for the ref no/such (HTTP 404)", false]
+
+      expect { fetcher.fetch(url, into: stage) }.to raise_error(Workspace::Error, %r{ref no/such})
+      expect(calls.size).to eq(2)
+    end
+
     it "asks for the raw body with the Accept header on every file" do
       fetcher.fetch(entry, into: stage)
 

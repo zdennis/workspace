@@ -10,7 +10,10 @@ module Workspace
     # @!attribute repo [String, nil] GitHub repository (github only)
     # @!attribute ref [String, nil] branch, tag or sha; nil means the default branch (github only)
     # @!attribute path [String] directory inside the repository, or the local directory with `~` expanded
-    Parsed = Struct.new(:kind, :owner, :repo, :ref, :path, keyword_init: true)
+    # @!attribute splits [Array<Array(String, String)>, nil] for a `/tree/` URL, every way to read the rest
+    #   as `[ref, path]`, shortest ref first (the first is +ref+ and +path+). A ref may hold slashes
+    #   (`tree/zdennis/topic/dir`), which only GitHub can settle, so the fetcher tries them in order; nil otherwise
+    Parsed = Struct.new(:kind, :owner, :repo, :ref, :path, :splits, keyword_init: true)
 
     GITHUB_HOSTS = %w[github.com www.github.com].freeze
     URL = %r{\A(?<scheme>[a-z][a-z0-9+.-]*)://(?<host>[^/]+)(?<rest>/.*)?\z}i
@@ -54,16 +57,20 @@ module Workspace
       owner, repo, *rest = parts
       raise UsageError, "workflow source #{text.inspect} needs an owner and repository (owner/repo/path)" if owner.nil? || repo.nil?
 
-      ref = nil
-      if url && rest.first == "tree"
-        ref = rest[1]
-        rest = rest.drop(2)
-        raise UsageError, "workflow source #{text.inspect} has /tree/ but no ref" if ref.nil?
-      end
-      raise UsageError, "workflow source #{text.inspect} has an empty path" if rest.empty?
       raise UsageError, "workflow source #{text.inspect} must not contain .. segments" if rest.include?("..")
 
-      Parsed.new(kind: :github, owner: owner, repo: repo, ref: ref, path: rest.join("/")).freeze
+      if url && rest.first == "tree"
+        tail = rest.drop(1)
+        raise UsageError, "workflow source #{text.inspect} has /tree/ but no ref" if tail.empty?
+        raise UsageError, "workflow source #{text.inspect} has an empty path" if tail.size < 2
+
+        splits = (1...tail.size).map { |i| [tail.take(i).join("/").freeze, tail.drop(i).join("/").freeze].freeze }.freeze
+        ref, path = splits.first
+        return Parsed.new(kind: :github, owner: owner, repo: repo, ref: ref, path: path, splits: splits).freeze
+      end
+      raise UsageError, "workflow source #{text.inspect} has an empty path" if rest.empty?
+
+      Parsed.new(kind: :github, owner: owner, repo: repo, ref: nil, path: rest.join("/")).freeze
     end
     private_class_method :from_segments
   end

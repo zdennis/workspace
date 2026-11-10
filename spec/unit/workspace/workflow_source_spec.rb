@@ -9,6 +9,16 @@ RSpec.describe Workspace::WorkflowSource do
     expect(s).to be_frozen
   end
 
+  it "lists every ref/path split of a tree URL, shortest ref first" do
+    s = parse("https://github.com/acme/flows/tree/me/topic/team/workflows")
+    expect([s.ref, s.path]).to eq(["me", "topic/team/workflows"])
+    expect(s.splits).to eq([["me", "topic/team/workflows"], ["me/topic", "team/workflows"], ["me/topic/team", "workflows"]])
+  end
+
+  it "has no splits outside a tree URL" do
+    expect(parse("acme/flows/a/b").splits).to be_nil
+  end
+
   it "reads a URL without tree as the default branch" do
     s = parse("https://github.com/acme/flows/workflows")
     expect([s.kind, s.owner, s.repo, s.ref, s.path]).to eq([:github, "acme", "flows", nil, "workflows"])
