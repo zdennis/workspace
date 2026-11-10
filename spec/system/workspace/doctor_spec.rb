@@ -818,6 +818,14 @@ RSpec.describe Workspace::Doctor do
       expect(rows.find { |r| r[:id] == "iterm2" }).to include(status: "fail")
     end
 
+    it "suggests the tap install command when window-tool is missing" do
+      probe = ->(name, _flag) { (name == "window-tool") ? nil : "9.0" }
+      rows = build_doctor(command_probe: probe, app_probe: ->(_id) { true }).report(headless: false)[:rows]
+
+      row = rows.find { |r| r[:id] == "window-tool" }
+      expect(row).to include(status: "fail", fix_command: "brew install zdennis/bin/window-tool")
+    end
+
     it "passes the iTerm2 bundle id to the app probe" do
       ids = []
       build_doctor(app_probe: ->(id) { ids << id }).report(headless: false)

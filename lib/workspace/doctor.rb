@@ -203,7 +203,7 @@ module Workspace
         {id: "iterm2", name: "iTerm2", gui: true,
          check: -> { check_app("iTerm2", bundle_id: "com.googlecode.iterm2", install_hint: "https://iterm2.com/") }},
         {id: "window-tool", name: "window-tool", gui: true,
-         check: -> { check_command("window-tool", version_flag: nil, install_hint: "https://github.com/zdennis/window-tool") }},
+         check: -> { check_command("window-tool", version_flag: nil, install_hint: "https://github.com/zdennis/window-tool", install_command: "brew install zdennis/bin/window-tool") }},
         {id: "git", name: "git",
          check: -> { check_command("git", version_pattern: /(\d+)/, min_major: 2, install_hint: "brew install git", install_command: "brew install git") }},
         {id: "gh", name: "gh",

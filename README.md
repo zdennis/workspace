@@ -25,10 +25,12 @@ A [headless](docs/README.launch.md#headless) launch needs only Ruby, tmux, tmuxi
 - **[iTerm2](https://iterm2.com/)** — terminal emulator
 - **[tmux](https://github.com/tmux/tmux)** — terminal multiplexer
 - **[tmuxinator](https://github.com/tmuxinator/tmuxinator)** — tmux session manager
-- **[window-tool](https://github.com/zdennis/window-tool)** — fast window management via Accessibility API (must be on PATH)
-- **[gh](https://cli.github.com/)** — GitHub CLI (for `workspace start` with PR URLs and `#n` refs; needs a version with `gh pr checkout --worktree`)
+- **[window-tool](https://github.com/zdennis/window-tool)** — fast window management via Accessibility API (must be on PATH): `brew install zdennis/bin/window-tool`
+- **[gh](https://cli.github.com/)** — GitHub CLI (for `workspace start` with PR URLs and `#n` refs; needs a version with `gh pr checkout --worktree`): `brew install gh`
 - **git** — version control
-- **[ascii-banner](https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md)** — terminal banner display (optional, used in tmuxinator templates)
+- **[ascii-banner](https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md)** — terminal banner display (optional, used in tmuxinator templates): `brew install zdennis/bin/ascii-banner`
+
+`window-tool` and `ascii-banner` ship in the [zdennis/homebrew-bin](https://github.com/zdennis/homebrew-bin) tap.
 
 ## Installation
 
@@ -58,6 +60,21 @@ workspace doctor
 ```
 
 This checks for all required tools and provides install instructions for anything missing.
+
+### iTerm2 permissions
+
+Workspace drives iTerm2 through AppleScript and positions windows through window-tool (the Accessibility API). Project panes attach through tmux control mode (`tmux -CC`), which iTerm2 renders as its own windows and panes, so no iTerm2 preference settings are needed for normal use. macOS asks for two one-time permissions:
+
+- **Automation** — the first AppleScript call asks whether your terminal "wants to control iTerm2": click **OK**. If you denied it earlier, re-enable under System Settings → Privacy & Security → Automation → your terminal app → iTerm2.
+- **Accessibility** — grant your terminal app (and `window-tool`) access under System Settings → Privacy & Security → Accessibility. Without it, `workspace launch` and `focus` fail to find or position windows.
+
+One iTerm2 setting you may want: attaching uses `tmux -CC`, which may pop an iTerm dialog. To suppress it, set iTerm → Settings → General → tmux → "When attaching, restore windows" to "Always" (see [launch](docs/README.launch.md#notes)).
+
+No environment variables are required. To run without iTerm2 entirely, see [headless mode](docs/README.launch.md#headless).
+
+### Claude Code hooks
+
+Nothing to set up by hand: `workspace init` and `start` install workspace's session hooks into each project's `.claude/settings.json`, backing the file up first (Codex's user-level `~/.codex/hooks.json` is installed by `init`/`start`/`doctor --fix`). The hooks let the agent daemon watch panes — session start/end, question and permission dialogs, and API-error recovery. `workspace init --no-install-hooks` skips the install, `workspace hooks uninstall --agent claude` removes them, and `workspace doctor` reports a project whose hooks are missing or stale. See [hooks](docs/README.hooks.md).
 
 ## Usage
 
