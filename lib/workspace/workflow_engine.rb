@@ -136,10 +136,9 @@ module Workspace
       @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
         commands_config: commands_config, checker: checker)
       @log_tail = log_tail || WorkflowLogTail.new
-      @alerts = alerts
       @inbox_for = inbox_for
       @clock = clock
-      @delivery = nil
+      @change = WorkflowRunChange.new(store: store, attempt_record: @attempt_record, deliver: method(:deliver), alerts: alerts, event_log: event_log)
     end
 
     BACKGROUND_HOLD = WorkflowTransitions::BACKGROUND_HOLD
@@ -283,8 +282,8 @@ module Workspace
         check_checkout(worktree)
       }) { |created| created["artifacts_dir"] = artifacts_dir(worktree, created["id"]) }
       event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
-      return transition(run["id"]) { |_stored| } unless dispatch
-      transition(run["id"]) { |stored| dispatch(stored) }
+      return @change.call(run["id"]) { |_stored| } unless dispatch
+      @change.call(run["id"]) { |stored, ctx| dispatch(stored, ctx: ctx) }
     end
 
     # The agent's turn ended in the run's pane: decides whether the current
@@ -307,14 +306,15 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def turn_ended(run_id, pane: nil, turn_started: nil, stopped_at: nil, background: [])
       check = nil
-      run = transition(run_id) do |stored|
+      run = @change.call(run_id) do |stored, ctx|
         next if stored["parked"]
         state = step_state(stored)
         next unless state["state"] == "running"
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
-        check = evaluate(stored, turn_started: turn_started, background: background)
+        evaluate(stored, ctx: ctx, turn_started: turn_started, background: background)
+        check = ctx.check
       end
       check ? finish_check(run_id, check) : run
     end
@@ -331,7 +331,7 @@ module Workspace
     # @raise [Workspace::Error] code `step_not_running` when the run's step is not being worked on
     def report(run_id, status:, summary: nil, code: nil)
       result = nil
-      transition(run_id) do |stored|
+      @change.call(run_id) do |stored|
         state = step_state(stored)
         unless %w[running checking].include?(state["state"])
           raise Workspace::Error.new("Step #{stored["current"]} of run #{run_id} is #{state["state"]}, so there is nothing to report on.",
@@ -364,7 +364,7 @@ module Workspace
     #   `gate_note_unreadable` when the named note can't be read, or when +note_sha256+ is given
     #   and the gate names no note; and what +guard+ raises
     def approve(run_id, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
-      transition(run_id) do |stored|
+      @change.call(run_id) do |stored, ctx|
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         file = gate_file(stored, note_sha256)
@@ -373,7 +373,7 @@ module Workspace
         event(stored, "gate_approved", with_note({"step" => stored["current"]}, note).merge(file ? {"sha256" => file["sha256"]} : {}))
         stored["pending_context"] << "The #{stored["current"]} step was approved with this note: #{note}" if note
         stored["pending_context"] << "The approved note is #{file["path"]}, sha256 #{file["sha256"]}." if file
-        advance(stored)
+        advance(stored, ctx: ctx)
       end
     end
 
@@ -392,7 +392,7 @@ module Workspace
     #   attempts and +extra_attempts+ is not given; `budget_spent` when the token budget is used up and +extra_tokens+ does not cover it; `usage` when `to` is not the gated step or
     #   one before it; and what +guard+ raises
     def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil)
-      transition(run_id) do |stored|
+      @change.call(run_id) do |stored, ctx|
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         target = to || stored["current"]
@@ -407,7 +407,7 @@ module Workspace
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
         stored["current"] = target
-        dispatch(stored)
+        dispatch(stored, ctx: ctx)
       end
     end
 
@@ -437,8 +437,9 @@ module Workspace
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       check = nil
       unchanged = nil
-      run = transition(run_id) do |stored|
-        check, unchanged = resume_step(stored, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
+      run = @change.call(run_id) do |stored, ctx|
+        unchanged = resume_step(stored, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
+        check = ctx.check
       end
       run = finish_check(run_id, check) if check
       unchanged ? run.merge("unchanged" => unchanged) : run
@@ -462,7 +463,7 @@ module Workspace
     #   `attempts_spent` as {#resume}
     def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       unchanged = nil
-      run = transition(run_id) do |stored|
+      run = @change.call(run_id) do |stored|
         refuse_resume(stored, from: from)
         if self.class.parked(stored, @clock.call) == :waiting
           unchanged = "a resume is already parked for pane #{park_target(stored)}"
@@ -492,17 +493,18 @@ module Workspace
     def release_park(run_id, id)
       check = nil
       unchanged = nil
-      run = transition(run_id) do |stored|
+      run = @change.call(run_id) do |stored, ctx|
         parked = stored["parked"]
         next unless parked && parked["id"] == id
         stored.delete("parked")
-        check, unchanged = resume_step(stored, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"], extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"],
+        unchanged = resume_step(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"], extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"],
           budget: parked["retries"].to_i.zero?)
+        check = ctx.check
         add_resume_note(stored, parked["note"]) if unchanged
         event(stored, "resume_parked_ended", {"step" => stored["current"], "how" => unchanged ? "unchanged" : "released"}
           .merge(unchanged ? {"detail" => unchanged} : {}))
-        next unless @delivery
-        step_state(stored)["attempts"].last["after_park"] = {"expires_at" => parked["expires_at"], "pane" => @delivery["pane"], "retries" => parked["retries"]}
+        next unless ctx.delivery
+        step_state(stored)["attempts"].last["after_park"] = {"expires_at" => parked["expires_at"], "pane" => ctx.delivery["pane"], "retries" => parked["retries"]}
       end
       run = finish_check(run_id, check) if check
       unchanged ? run.merge("unchanged" => unchanged) : run
@@ -522,7 +524,7 @@ module Workspace
     # @return [Hash{String=>Object}] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def park_failed(run_id, id, code:, message:)
-      transition(run_id) do |stored|
+      @change.call(run_id) do |stored|
         next unless stored.dig("parked", "id") == id
         if step_state(stored).dig("gate", "state") == "waiting"
           drop_park(stored, "failed", "error" => code, "message" => message)
@@ -565,7 +567,7 @@ module Workspace
     # @return [Hash{String=>Object}] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, cause: "cancel")
-      transition(run_id) do |stored|
+      @change.call(run_id) do |stored|
         @attempt_record.abandon(stored)
         finish(stored, "cancelled")
         stored["cancelled_by"] = cause
@@ -605,21 +607,22 @@ module Workspace
     def tick(run_id)
       check = nil
       acted = false
-      run = transition(run_id, nonblocking: true) do |stored|
+      run = @change.call(run_id, nonblocking: true) do |stored, ctx|
         case self.class.wakeable?(stored, @clock.call)
         when :backoff
           acted = true
-          start_retry(stored)
+          start_retry(stored, ctx: ctx)
         when :lock
           acted = true
-          dispatch(stored)
+          dispatch(stored, ctx: ctx)
         when :background
           acted = true
           expire_background(stored)
         when :check
           acted = true
-          check = evaluate(stored)
+          evaluate(stored, ctx: ctx)
         end
+        check = ctx.check
       end
       return nil unless run && acted
       check ? finish_check(run_id, check) : run
@@ -644,7 +647,7 @@ module Workspace
     #   is elsewhere now) or :busy (another process is changing the run)
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def note_stall(run_id, step:, attempt:, cause:, data: {})
-      sweep_change(run_id, step: step, attempt: attempt, running: false) { |stored| [mark_stall(stored, cause, data) ? :recorded : :repeat, nil] }
+      sweep_change(run_id, step: step, attempt: attempt, running: false) { |stored| mark_stall(stored, cause, data) ? :recorded : :repeat }
     end
 
     # Records that the sweep put right a stall it noted, once for each attempt and cause, and only for a cause
@@ -658,8 +661,8 @@ module Workspace
     # @return [Symbol] :recorded, :repeat, :moved_on
     def note_recovery(run_id, step:, attempt:, cause:, action:)
       sweep_change(run_id, step: step, attempt: attempt, running: false, blocking: true) do |stored|
-        next [:repeat, nil] unless self.class.sweep_marks(stored).dig("stalled", cause)
-        [mark_recovery(stored, cause, action) ? :recorded : :repeat, nil]
+        next :repeat unless self.class.sweep_marks(stored).dig("stalled", cause)
+        mark_recovery(stored, cause, action) ? :recorded : :repeat
       end
     end
 
@@ -675,13 +678,13 @@ module Workspace
     #   when the decision is a `turn_ended_incomplete` stop, the step is failed with `step_timed_out` instead
     # @return [Symbol] :evaluated, :timed_out, :moved_on or :busy
     def recover(run_id, turn_over:, cause:, data: {}, fail_if_incomplete: nil)
-      sweep_change(run_id, step: turn_over["step"], attempt: turn_over["attempt"], running: true) do |stored|
+      sweep_change(run_id, step: turn_over["step"], attempt: turn_over["attempt"], running: true) do |stored, ctx|
         mark_stall(stored, cause, data)
         mark_recovery(stored, cause, "evaluated")
-        check = evaluate(stored)
-        next [:evaluated, check] unless fail_if_incomplete && stored.dig("reason", "code") == "turn_ended_incomplete"
-        fail_timed_out(stored, fail_if_incomplete["elapsed"], fail_if_incomplete["timeout"])
-        [:timed_out, nil]
+        evaluate(stored, ctx: ctx)
+        next :evaluated unless fail_if_incomplete && stored.dig("reason", "code") == "turn_ended_incomplete"
+        fail_timed_out(stored, fail_if_incomplete["elapsed"], fail_if_incomplete["timeout"], ctx: ctx)
+        :timed_out
       end
     end
 
@@ -696,9 +699,9 @@ module Workspace
     # @param timeout [Numeric] the step's `timeout:`
     # @return [Symbol] :timed_out or :moved_on
     def time_out(run_id, step:, attempt:, elapsed:, timeout:)
-      sweep_change(run_id, step: step, attempt: attempt, running: :or_incomplete, blocking: true) do |stored|
-        fail_timed_out(stored, elapsed, timeout)
-        [:timed_out, nil]
+      sweep_change(run_id, step: step, attempt: attempt, running: :or_incomplete, blocking: true) do |stored, ctx|
+        fail_timed_out(stored, elapsed, timeout, ctx: ctx)
+        :timed_out
       end
     end
 
@@ -715,7 +718,7 @@ module Workspace
     def redeliver(run_id, step:, attempt:)
       outcome = :moved_on
       info = nil
-      run = transition(run_id, nonblocking: true) do |stored|
+      run = @change.call(run_id, nonblocking: true) do |stored, ctx|
         next unless sweep_target?(stored, step, attempt, false)
         info = self.class.redelivery(stored, @clock.call)
         next unless info && info[:state] == :due
@@ -723,7 +726,7 @@ module Workspace
         step_state(stored)["attempts"].last["redelivered"] = true
         # Stamped on the next attempt by {#dispatch}, which may be one `tick` starts after a lock wait.
         step_state(stored)["redelivery_pending"] = info[:retries] + 1
-        dispatch(stored, budgeted: false)
+        dispatch(stored, ctx: ctx, budgeted: false)
         outcome = :started
       end
       return :busy unless run
@@ -747,10 +750,10 @@ module Workspace
     # @return [Symbol] :retried, :blocked (the pane is no longer the run's; the run waits for a person, nothing is spent), :held (the token budget is used; the run waits for a person), :moved_on or :busy
     def retry_backoff(run_id, step:, attempt:)
       outcome = :moved_on
-      run = transition(run_id, nonblocking: true) do |stored|
+      run = @change.call(run_id, nonblocking: true) do |stored, ctx|
         next unless sweep_target?(stored, step, attempt, false)
         next unless self.class.backoff(stored, @clock.call)&.fetch(:state) == :due
-        start_retry(stored)
+        start_retry(stored, ctx: ctx)
         outcome = if stored.dig("backoff", "blocked") then :blocked
         elsif stored["budget_hold"] then :held
         else :retried
@@ -773,11 +776,11 @@ module Workspace
       at = nil
       outcome = sweep_change(run_id, step: step, attempt: attempt, running: true) do |stored|
         marks = sweep_marks_for(stored)
-        next [:repeat, nil] if interrupt_held?(marks["interrupt"])
+        next :repeat if interrupt_held?(marks["interrupt"])
         at = now_iso
         marks["interrupt"] = {"state" => "pending", "at" => at}
         mark_stall(stored, "timed_out", {"elapsed" => elapsed.round, "timeout" => timeout})
-        [:claimed, nil]
+        :claimed
       end
       (outcome == :claimed) ? [:claimed, at] : outcome
     end
@@ -795,14 +798,14 @@ module Workspace
     def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true)
       sweep_change(run_id, step: step, attempt: attempt, running: false, blocking: true) do |stored|
         marks = sweep_marks_for(stored)
-        next [:taken_over, nil] unless marks.dig("interrupt", "at") == claim_at
+        next :taken_over unless marks.dig("interrupt", "at") == claim_at
         unless sent
           marks.delete("interrupt")
-          next [:released, nil]
+          next :released
         end
         marks["interrupt"] = {"state" => "sent", "at" => now_iso}
         mark_recovery(stored, "timed_out", "interrupted") if record
-        [:recorded, nil]
+        :recorded
       end
     end
 
@@ -825,16 +828,18 @@ module Workspace
 
     private
 
-    # One change the sweep makes under the run's lock. The block returns [outcome, check], and is run only for
+    # One change the sweep makes under the run's lock. The block returns the outcome (a check it registers on its
+    # context is run after the lock is given up), and is run only for
     # the step and attempt the sweep saw (and, with +running+, only while that step reads `running` with no
     # park and no line still on its way, and no reason: +running+ `:or_incomplete` allows a
     # `turn_ended_incomplete` stop). Without +blocking+ a run another process is changing is :busy.
     def sweep_change(run_id, step:, attempt:, running:, blocking: false)
       outcome = :moved_on
       check = nil
-      run = transition(run_id, nonblocking: !blocking) do |stored|
+      run = @change.call(run_id, nonblocking: !blocking) do |stored, ctx|
         next unless sweep_target?(stored, step, attempt, running)
-        outcome, check = yield stored
+        outcome = yield stored, ctx
+        check = ctx.check
       end
       return :busy unless run
       finish_check(run_id, check) if check
@@ -874,10 +879,10 @@ module Workspace
       true
     end
 
-    def fail_timed_out(run, elapsed, timeout)
+    def fail_timed_out(run, elapsed, timeout, ctx:)
       mark_stall(run, "timed_out", {"elapsed" => elapsed.round, "timeout" => timeout})
       mark_recovery(run, "timed_out", "failed")
-      fail_step(run, {"cause" => "timeout", "timeout" => timeout, "elapsed" => elapsed.round}.merge(code_for("step_timed_out", nil)))
+      fail_step(run, {"cause" => "timeout", "timeout" => timeout, "elapsed" => elapsed.round}.merge(code_for("step_timed_out", nil)), ctx: ctx)
     end
 
     def sweep_event(run, data)
@@ -886,17 +891,17 @@ module Workspace
 
     # The body of {#resume}, inside a transition.
     #
-    # @return [Array] the check to run, or nil; and why nothing was done, or nil
-    def resume_step(stored, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, budget: true)
+    # @return [String, nil] why nothing was done, or nil; a check to run is registered on +ctx+
+    def resume_step(stored, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, budget: true)
       # Refusals come first, so a refused resume leaves the run and its pane as they were.
       refuse_resume(stored, from: from)
       state = step_state(stored)
       # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
       unchanged = (from || stored["budget_hold"]) ? nil : left_alone(stored, state, pane, turn_over)
-      return [nil, unchanged] if unchanged
+      return unchanged if unchanged
       # A wait whose pane would not take the retry is held before anything is written: no rebind, note, event or reset.
       held = held_by_pane(stored, pane, from)
-      return [nil, held] if held
+      return held if held
       # A pane another run has is refused first, so a refusal after this point logs nothing.
       check_pane(pane, run_id: stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
       # Only a resume that starts an attempt is held to the budget (not a parked one typed again after a
@@ -914,8 +919,8 @@ module Workspace
       if held && !from
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
         stored["reason"] = nil
-        dispatch(stored, context: held["context"], budgeted: budget)
-        return [nil, nil]
+        dispatch(stored, ctx: ctx, context: held["context"], budgeted: budget)
+        return nil
       end
       # A resume skips the wait of a retry; `--from` goes elsewhere and drops it.
       waiting_retry = stored.delete("backoff")
@@ -923,31 +928,30 @@ module Workspace
       waiting_retry = nil unless waiting_retry.is_a?(Hash) && waiting_retry["to"].is_a?(String)
       if waiting_retry && !from
         event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"], "backoff" => "skipped")
-        start_retry(stored, waiting_retry, proven: !pane.nil?, budgeted: budget)
-        return [nil, held_retry_sentence(stored)]
+        start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget)
+        return held_retry_sentence(stored)
       end
       if from
         event(stored, "run_resumed", "from" => from)
         stored["current"] = from
-        dispatch(stored, budgeted: budget)
-        return [nil, nil]
+        dispatch(stored, ctx: ctx, budgeted: budget)
+        return nil
       end
       event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"])
       stored["pending_context"].unshift(last_failure(stored)) if state["state"] == "failed" && stored.dig("reason", "code") == "failed_check"
-      check = nil
       case state["state"]
       when "running"
         if pane
-          dispatch(stored, budgeted: budget)
+          dispatch(stored, ctx: ctx, budgeted: budget)
         else
           stored["reason"] = nil
-          check = evaluate(stored)
+          evaluate(stored, ctx: ctx)
         end
-      when "checking" then check = evaluate(stored)
-      when "passed" then advance(stored)
-      else dispatch(stored, budgeted: budget)
+      when "checking" then evaluate(stored, ctx: ctx)
+      when "passed" then advance(stored, ctx: ctx)
+      else dispatch(stored, ctx: ctx, budgeted: budget)
       end
-      [check, nil]
+      nil
     end
 
     # `--from` goes elsewhere: the text that told the held step why it was sent back is not for the step named.
@@ -1093,42 +1097,7 @@ module Workspace
         event_data: {"pane" => after["pane"], "retry" => true})
     end
 
-    # Runs one change to a run under its lock and announces it, then types
-    # the line of a step the change started, once the lock is given up.
-    def transition(run_id, nonblocking: false)
-      before = nil
-      alert_before = nil
-      # The one step line this change started, if any; taken before {#deliver} runs a transition of its own.
-      @delivery = nil
-      run = @store.update(run_id, nonblocking: nonblocking) do |stored|
-        before = fingerprint(stored)
-        alert_before = @alerts&.marks(stored)
-        was_open = @attempt_record.open_attempt(stored)
-        @attempt_record.reasons(run: stored)
-        yield stored
-        @attempt_record.reasons(run: stored, was_open: was_open)
-        stored
-      end
-      delivery, @delivery = @delivery, nil
-      return nil unless run
-      changed(run) unless before == fingerprint(run)
-      @alerts&.fire(alert_before, run)
-      delivery ? deliver(run_id, delivery) : run
-    end
-
-    def fingerprint(run) = WorkflowTransitions.fingerprint(run)
-
-    def hold?(reason) = WorkflowTransitions.hold?(reason)
-
-    def changed(run)
-      @event_log&.record(type: "workflow_changed", project: run["workspace"],
-        data: {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "state" => hold?(run["reason"]) ? "running" : run["state"],
-               "step" => run["current"], "reason" => run["parked"] ? nil : run.dig("reason", "code")})
-    end
-
-    def event(run, type, data = {})
-      @store.record_event(run["id"], type, data)
-    end
+    def event(run, type, data = {}) = @change.event(run, type, data)
 
     # A gate event carries the person's note only when one was given.
     def with_note(data, note)
@@ -1335,7 +1304,7 @@ module Workspace
     # starts it, as the loop would have without a backoff.
     # +proven+ is a pane the person named: that is their proof it is the right pane, so its identity is not compared
     # (it must still exist and not belong to another run).
-    def start_retry(run, stored = run.delete("backoff"), proven: false, budgeted: true)
+    def start_retry(run, stored = run.delete("backoff"), ctx:, proven: false, budgeted: true)
       problem = retry_pane_problem(run, stored, proven: proven)
       return hold_retry(run, stored, problem) if problem
       to = stored["to"]
@@ -1343,7 +1312,7 @@ module Workspace
       event(run, "step_retry_started", "from" => run["current"], "to" => to)
       run["current"] = to
       run["reason"] = nil
-      dispatch(run, context: stored["context"], budgeted: budgeted, retry_of: stored.slice("pane", "identity", "text"))
+      dispatch(run, ctx: ctx, context: stored["context"], budgeted: budgeted, retry_of: stored.slice("pane", "identity", "text"))
     end
 
     # Why the pane a waiting retry would type into is no longer the run's: another run took it, or tmux no longer has it.
@@ -1388,7 +1357,7 @@ module Workspace
     # line that points the agent at the instructions is typed by {#deliver}
     # after the run's lock is given up, so a process that dies while the
     # daemon answers leaves an attempt a turn's end can decide.
-    def dispatch(run, context: nil, budgeted: true, retry_of: nil)
+    def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
       drop_park(run, "moved_on")
       step = step_def(run)
       state = step_state(run)
@@ -1423,9 +1392,9 @@ module Workspace
       run["state"] = "running"
       run["reason"] = nil
       event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane)
-      @delivery = {"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
+      ctx.deliver({"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
                    "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
-                   "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"]}
+                   "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"]})
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
@@ -1446,7 +1415,7 @@ module Workspace
       end
       @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
         "pane" => delivery["pane"], "delivered" => kick[:ok], **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
-      transition(run_id) do |stored|
+      @change.call(run_id) do |stored|
         state = stored["steps"].fetch(delivery["step"])
         attempt = state["attempts"].last
         after = (attempt["n"] == delivery["attempt"]) ? attempt.delete("after_park") : nil
@@ -1468,7 +1437,7 @@ module Workspace
     # leaves an attempt with no reading, which that proof fails as unproven.
     def record_remote(run_id, delivery)
       reading = @guard.remote_head(delivery["worktree"])
-      transition(run_id) do |stored|
+      @change.call(run_id) do |stored|
         attempt = stored["steps"].fetch(delivery["step"])["attempts"].last
         attempt["remote"] = reading if stored["current"] == delivery["step"] && attempt["n"] == delivery["attempt"]
       end
@@ -1619,12 +1588,12 @@ module Workspace
       [path, composed]
     end
 
-    # Decides a step whose turn ended. Returns the check to run, when the
+    # Decides a step whose turn ended. Registers the check to run on +ctx+, when the
     # step has one and nothing else already decided it.
     # A stop the daemon sees again (the same code, step and attempt) keeps its `since`, so a
     # repeat raises no second notice; a turn that began after the stop was recorded is a new stop.
     # The stored `since` is whole seconds, so a turn that began in the same second is the same stop.
-    def evaluate(run, turn_started: nil, background: [])
+    def evaluate(run, ctx:, turn_started: nil, background: [])
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
@@ -1633,14 +1602,14 @@ module Workspace
       attempt.delete("proofs")
       reported = attempt["reported"]
       if reported && reported["status"] == "fail"
-        fail_step(run, {"cause" => "reported", "summary" => reported["summary"]}.merge(code_for("reported", reported["code"])))
-        return nil
+        fail_step(run, {"cause" => "reported", "summary" => reported["summary"]}.merge(code_for("reported", reported["code"])), ctx: ctx)
+        return
       end
       if step["guard"]
         found = guard_check(run, step)
         if found
-          fail_step(run, found)
-          return nil
+          fail_step(run, found, ctx: ctx)
+          return
         end
       end
       files = step["produces"].map { |file| File.join(run["artifacts_dir"], file) }
@@ -1662,14 +1631,14 @@ module Workspace
         else
           stop_reason(run["reason"], turn_started, "turn_ended_incomplete", details)
         end
-        return nil
+        return
       end
-      require_and_status(run, step, state, attempt)
+      require_and_status(run, step, state, attempt, ctx: ctx)
     end
 
     # What comes after the step's files: its `require:` entries from +from+ in order, then its `status:`
-    # check. Returns the next thing to run outside the lock (a proof or the check); nil once the step is decided.
-    def require_and_status(run, step, state, attempt, from: 0)
+    # check. Registers the next thing to run outside the lock (a proof or the check) on +ctx+; none once the step is decided.
+    def require_and_status(run, step, state, attempt, ctx:, from: 0)
       if step["require"].to_a.any?
         unmet = @require_check.check(run: run, step: step, attempt: attempt, from: from)
         while unmet&.key?("skipped")
@@ -1678,15 +1647,18 @@ module Workspace
           attempt["proofs"] << skipped.merge("started_at" => now_iso, "ended_at" => now_iso)
           unmet = @require_check.check(run: run, step: step, attempt: attempt, from: skipped["index"] + 1)
         end
-        return start_proof(run, step, state, attempt, unmet["outside"]) if unmet&.key?("outside")
+        if unmet&.key?("outside")
+          ctx.check(start_proof(run, step, state, attempt, unmet["outside"]))
+          return
+        end
         if unmet
-          fail_step(run, require_failure(unmet))
-          return nil
+          fail_step(run, require_failure(unmet), ctx: ctx)
+          return
         end
       end
       unless step["status"]
-        pass_step(run)
-        return nil
+        pass_step(run, ctx: ctx)
+        return
       end
 
       command = step["status"]["run"] || @commands_config.for_project(run["project"])[step["status"]["command"].to_sym]
@@ -1696,8 +1668,8 @@ module Workspace
       state["state"] = "checking"
       run["state"] = "running"
       run["reason"] = nil
-      {"step" => step["id"], "attempt" => attempt["n"], "command" => command, "timeout" => step["status"]["timeout"], "log" => log,
-       "cwd" => run["worktree"], "role" => step["status"]["command"]}
+      ctx.check({"step" => step["id"], "attempt" => attempt["n"], "command" => command, "timeout" => step["status"]["timeout"], "log" => log,
+                 "cwd" => run["worktree"], "role" => step["status"]["command"]})
     end
 
     # A proof takes the step to `checking` like a `status:` check, so a resume, a cancel, a tick and {#wanted?}
@@ -1792,21 +1764,22 @@ module Workspace
     # @return [Array] the run afterwards, and what to run next outside the lock, or nil
     def apply_check(run_id, check, result)
       following = nil
-      run = transition(run_id) do |stored|
+      run = @change.call(run_id) do |stored, ctx|
         next if stored["parked"]
         state = step_state(stored)
         attempt = state["attempts"].last
         # The run moved on while the check ran (a resume, a reject): its result decides nothing.
         next unless stored["current"] == check["step"] && state["state"] == "checking" && attempt["n"] == check["attempt"]
         if check["proof"]
-          following = apply_proof(stored, attempt, check, result)
+          apply_proof(stored, attempt, check, result, ctx: ctx)
+          following = ctx.check
           next
         end
         attempt["check"].merge!("ended_at" => now_iso, "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
           "error" => result[:error]).compact!
         event(stored, "check_finished", "step" => check["step"], "attempt" => check["attempt"], "exit_code" => result[:exit_code])
         if result[:exit_code] == 0
-          pass_step(stored)
+          pass_step(stored, ctx: ctx)
         else
           code = if result[:timed_out]
             "check_timed_out"
@@ -1818,7 +1791,7 @@ module Workspace
           if code == "check_failed"
             failure = failure.merge(reported_check_code(step_def(stored)["status"], check["log"]) || {})
           end
-          fail_step(stored, failure)
+          fail_step(stored, failure, ctx: ctx)
         end
       end
       [run, following]
@@ -1826,30 +1799,30 @@ module Workspace
 
     # Records a proof's result; a passed one goes on to the next `require:` entry. A proof run again (a tick or a
     # resume took it for lost) has a new token, so a late result of the old run matches nothing and is dropped.
-    def apply_proof(run, attempt, check, result)
+    def apply_proof(run, attempt, check, result, ctx:)
       record = open_proof(attempt, check)
-      return nil unless record
+      return unless record
       record.merge!(result["record"].merge("ended_at" => now_iso))
       unmet = result["unmet"]
       event(run, "proof_finished", "step" => check["step"], "attempt" => check["attempt"], "proof" => record["proof"], "passed" => unmet.nil?)
       if unmet
-        fail_step(run, require_failure(unmet))
-        return nil
+        fail_step(run, require_failure(unmet), ctx: ctx)
+        return
       end
-      require_and_status(run, step_def(run), step_state(run), attempt, from: check["proof"]["index"] + 1)
+      require_and_status(run, step_def(run), step_state(run), attempt, ctx: ctx, from: check["proof"]["index"] + 1)
     end
 
     def open_proof(attempt, check)
       Array(attempt["proofs"]).find { |each| each["token"] == check["proof"]["token"] && !each.key?("ended_at") }
     end
 
-    def pass_step(run)
+    def pass_step(run, ctx:)
       state = step_state(run)
       state["attempts"].last.merge!("ended_at" => now_iso, "outcome" => "passed")
       @attempt_record.finish(run: run, step: step_def(run), attempt: state["attempts"].last)
       state["state"] = "passed"
       event(run, "step_passed", "step" => run["current"], "attempt" => state["attempts"].last["n"])
-      return advance(run) unless step_def(run)["gate"]
+      return advance(run, ctx: ctx) unless step_def(run)["gate"]
 
       release(run)
       state["gate"] = {"state" => "waiting", "since" => now_iso}
@@ -1860,12 +1833,12 @@ module Workspace
       true
     end
 
-    def advance(run)
+    def advance(run, ctx:)
       ids = step_ids(run)
       following = ids[ids.index(run["current"]) + 1]
       return complete(run) unless following
       run["current"] = following
-      dispatch(run)
+      dispatch(run, ctx: ctx)
       true
     end
 
@@ -1888,7 +1861,7 @@ module Workspace
 
     # A failed step goes back along its `on_fail` while it has loops left and
     # the run has attempts left; otherwise the run stops and waits for a person.
-    def fail_step(run, failure)
+    def fail_step(run, failure, ctx:)
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
@@ -1915,7 +1888,7 @@ module Workspace
         return wait_to_retry(run, step, on_fail, text, wait, attempt) if wait
         run["pending_context"] << text
         run["current"] = on_fail["goto"]
-        return dispatch(run, context: on_fail["context"], retry_of: {"text" => text})
+        return dispatch(run, ctx: ctx, context: on_fail["context"], retry_of: {"text" => text})
       end
       release(run)
       run["state"] = "waiting"

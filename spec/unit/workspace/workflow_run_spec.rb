@@ -168,6 +168,17 @@ RSpec.describe Workspace::WorkflowRun do
       expect(given["steps"]["a"]["attempts"].first).not_to be_frozen
     end
 
+    it "gives an unfrozen deep copy through #to_mutable_h, equal to #to_h and sharing nothing with it" do
+      given = run("attempt_detail")
+      copy = given.to_mutable_h
+
+      expect(copy).to eq(given.to_h)
+      expect(copy.keys).to eq(given.to_h.keys)
+      expect([copy, copy["steps"], copy["steps"]["build"]["attempts"], copy["steps"]["build"]["attempts"].last, copy["state"]]).to all(satisfy { |each| !each.frozen? })
+      copy["steps"]["build"]["attempts"].last["outcome"] = "changed"
+      expect(given.step("build").last_attempt.to_h["outcome"]).not_to eq("changed")
+    end
+
     it "reuses a Hash that is already frozen all the way down" do
       parsed = JSON.parse(text("parked"), freeze: true)
 

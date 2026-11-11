@@ -44,6 +44,26 @@ module Workspace
     # @return [Hash{String=>Object}] the frozen Hash this run holds, as the run file has it
     attr_reader :to_h
 
+    # A deep, unfrozen copy of {#to_h}, for code that still changes a run Hash in place.
+    #
+    # @return [Hash{String=>Object}]
+    def to_mutable_h
+      self.class.deep_thaw(to_h)
+    end
+
+    # An unfrozen deep copy of a parsed value, the counterpart of {.deep_freeze}.
+    #
+    # @param value [Object] a parsed JSON value
+    # @return [Object]
+    def self.deep_thaw(value)
+      case value
+      when Hash then value.to_h { |key, each| [key, deep_thaw(each)] }
+      when Array then value.map { |each| deep_thaw(each) }
+      when String then value.dup
+      else value
+      end
+    end
+
     # @return [Hash{String=>Step}] each step by id, in the run's order; empty when the run has no steps
     attr_reader :steps
 
