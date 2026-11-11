@@ -122,4 +122,10 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::WorkflowAttemptRecord, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingLogTail do
+    it "accepts every call Workspace::WorkflowLogTail accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowLogTail, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

@@ -180,7 +180,8 @@ class RecordingWorkflowPrompt
 end
 
 # Fake of Workspace::WorkflowDispatch for the phases above it: +dispatch+ registers a line naming the run's step on
-# +ctx+ and returns the run as it was given; +check_pane+ refuses the panes it was told are busy.
+# +ctx+ and returns the run as it was given; +check_pane+ refuses the panes it was told are busy; +release+ records
+# the run's id; +drop_park+ returns the run without its park.
 class RecordingDispatch
   CONTROL_METHODS = %i[calls].freeze
 
@@ -202,6 +203,16 @@ class RecordingDispatch
   def check_pane(pane, run_id: nil)
     @calls << [:check_pane, pane, {run_id: run_id}]
     raise Workspace::Error.new("Pane #{pane} is busy.", code: "pane_has_run", details: {"pane" => pane}) if @busy.include?(pane)
+  end
+
+  def release(run)
+    @calls << [:release, Workspace::WorkflowRun.from_h(run).id]
+  end
+
+  def drop_park(run, how, extra = {})
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:drop_park, run.id, how, extra]
+    run.drop_park
   end
 end
 
@@ -231,8 +242,8 @@ class RecordingRunResources
   end
 end
 
-# Fake of the Workspace::WorkflowPanes calls the dispatch makes: bindings and pane runs as scripted, a +kick+ that
-# answers what it was given, and the calls that change or ask about a pane kept in +calls+.
+# Fake of the Workspace::WorkflowPanes calls the phases make: bindings, pane runs and gone panes as scripted, a +kick+
+# that answers what it was given, and the calls that change or ask about a pane kept in +calls+.
 class RecordingWorkflowPanes
   CONTROL_METHODS = %i[calls].freeze
 
@@ -243,10 +254,12 @@ class RecordingWorkflowPanes
   # @param dead [Array<String>] run ids whose binding was made for another pane
   # @param kick [Hash] what +kick+ answers
   # @param same [Boolean] what +same_pane?+ answers
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true)
+  # @param gone [Array<String>] the panes tmux no longer has
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [])
     @bound = bound
     @runs_on = runs_on
     @dead = dead
+    @gone = gone
     @kick = kick
     @same = same
     @calls = []
@@ -257,6 +270,8 @@ class RecordingWorkflowPanes
   def run_on(pane) = @runs_on[pane]
 
   def alive?(run_id) = !@dead.include?(run_id)
+
+  def pane_gone?(pane) = @gone.include?(pane)
 
   def identity(run_id) = "identity-of-#{run_id}"
 
@@ -270,13 +285,19 @@ class RecordingWorkflowPanes
     true
   end
 
+  def unbind(run_id)
+    @calls << [:unbind, run_id]
+    true
+  end
+
   def kick(workspace:, pane:, text:, fresh:, run_id: nil)
     @calls << [:kick, {workspace: workspace, pane: pane, text: text, fresh: fresh, run_id: run_id}]
     @kick
   end
 end
 
-# Fake of Workspace::WorkflowAttemptRecord#start: the attempt as given, with a stand-in hash of the composed text.
+# Fake of Workspace::WorkflowAttemptRecord#start and #finish: the attempt as given, with a stand-in hash of the
+# composed text at its start and an empty +outputs+ at its end.
 class RecordingAttemptRecord
   CONTROL_METHODS = %i[calls].freeze
 
@@ -289,5 +310,26 @@ class RecordingAttemptRecord
   def start(run:, attempt:, composed:)
     @calls << [:start, Workspace::WorkflowRun.from_h(run).id, attempt["n"]]
     Workspace::WorkflowRun::Attempt.from_h(attempt.merge("prompt_sha256" => "sha256-of-#{composed["text"]}"))
+  end
+
+  def finish(run:, step:, attempt:)
+    @calls << [:finish, Workspace::WorkflowRun.from_h(run).id, step["id"], attempt["n"]]
+    Workspace::WorkflowRun::Attempt.from_h(attempt.merge("outputs" => []))
+  end
+end
+
+# Fake of Workspace::WorkflowLogTail: a block naming the log and the line count it was asked for.
+class RecordingLogTail
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize
+    @calls = []
+  end
+
+  def block(path, lines:)
+    @calls << [:block, path, {lines: lines}]
+    "the last #{lines} lines of #{path}"
   end
 end

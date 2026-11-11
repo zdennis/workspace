@@ -125,7 +125,6 @@ module Workspace
       @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard, clock: clock)
       @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
         commands_config: commands_config, checker: checker)
-      @log_tail = log_tail || WorkflowLogTail.new
       @inbox_for = inbox_for
       prompt = WorkflowPrompt.new(composer: composer, git: git, excludes: excludes, prompt_writer: prompt_writer)
       @clock = clock
@@ -134,6 +133,8 @@ module Workspace
         alerts: alerts, event_log: event_log)
       @dispatch = WorkflowDispatch.new(change: @change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: @attempt_record,
         guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
+      @progress = WorkflowProgress.new(change: @change, store: store, dispatch: @dispatch, attempt_record: @attempt_record, panes: panes,
+        log_tail: log_tail || WorkflowLogTail.new, clock: clock)
       @starter = WorkflowStarter.new(change: @change, store: store, prompt: prompt, dispatch: @dispatch,
         lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
     end
@@ -966,8 +967,6 @@ module Workspace
     # +run_id+ is the run asking, which a park of its own can't refuse; see {WorkflowDispatch#check_pane}.
     def check_pane(pane, run_id: nil) = @dispatch.check_pane(pane, run_id: run_id)
 
-    def active?(run_id) = @store.going?(run_id)
-
     # The waiting gate of the run's step; with +step+ (and +attempt+), only when the
     # run is at that step (and attempt), so a stale button can't pass a later gate.
     def waiting_gate(run, step: nil, attempt: nil)
@@ -1015,50 +1014,17 @@ module Workspace
     # Why {#resume} does nothing for the step as it stands; nil when it acts.
     def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) })
 
-    # Ends an `on_fail` retry's wait: tells the target step what failed (the text kept when the step failed) and
-    # starts it, as the loop would have without a backoff.
-    # +proven+ is a pane the person named: that is their proof it is the right pane, so its identity is not compared
-    # (it must still exist and not belong to another run).
-    def start_retry(run, stored = run.delete("backoff"), ctx:, proven: false, budgeted: true)
-      problem = retry_pane_problem(run, stored, proven: proven)
-      return hold_retry(run, stored, problem) if problem
-      to = stored["to"]
-      run["pending_context"] << stored["text"] if stored["text"].is_a?(String)
-      event(run, "step_retry_started", "from" => run["current"], "to" => to)
-      run["current"] = to
-      run["reason"] = nil
-      dispatch(run, ctx: ctx, context: stored["context"], budgeted: budgeted, retry_of: stored.slice("pane", "identity", "text"))
+    # Ends an `on_fail` retry's wait; see {WorkflowProgress#start_retry}.
+    def start_retry(run, waiting = nil, ctx:, **options)
+      run.replace(@progress.start_retry(run, waiting, ctx: ctx, **options).to_mutable_h)
     end
 
-    # Why the pane a waiting retry would type into is no longer the run's: another run took it, or tmux no longer has it.
-    def retry_pane_problem(run, stored, proven: false, pane: nil)
-      pane ||= bound_pane(run)
-      return nil unless pane
-      other = @panes.run_on(pane)
-      if other && other != run["id"] && active?(other)
-        return {code: "pane_has_run", message: "pane #{pane} is now running workflow run #{other}. Name another agent pane with `workflow resume --pane PANE`"}
-      end
-      return {code: "pane_gone", message: "pane #{pane} is gone. Name another agent pane with `workflow resume --pane PANE`"} if @panes.pane_gone?(pane)
-      # A pane a person named for the resume was checked then; the wait's facts are about the pane it began in.
-      return nil if proven || (stored["pane"] && stored["pane"] != pane)
-      return nil if @panes.same_pane?(pane, stored["identity"])
-      reason = stored["identity"] ? "does not look like the pane the run was in (a tmux restart reuses pane ids, and closing a pane beside it renumbers it; it may be fine)" : "can't be shown to be the pane the run was in (it may be fine)"
-      {code: "pane_changed", message: "pane #{pane} #{reason}. Name it with `--pane #{pane}` to resume in it"}
-    end
+    # Why the pane a waiting retry would type into is no longer the run's; see {WorkflowProgress#retry_pane_problem}.
+    def retry_pane_problem(run, waiting, **options) = @progress.retry_pane_problem(run, waiting, **options)
 
-    # The retry is not started and not spent: the wait is kept, marked `blocked` so a tick or the sweep leaves it,
-    # and the run waits for a person. A resume (with `--pane` for another pane) starts the retry.
-    def hold_retry(run, stored, problem, pane: bound_pane(run))
-      # The same hold again (same code, same pane) changes nothing: no new reason, no event.
-      held = run["backoff"]
-      same = held.is_a?(Hash) && held["blocked"] == problem[:code] && run.dig("reason", "details", "pane") == pane &&
-        run.dig("reason", "details", "error") == problem[:code]
-      return if same
-      run["backoff"] = stored.merge("blocked" => problem[:code])
-      run["reason"] = reason((problem[:code] == "pane_gone") ? "pane_gone" : "waiting_you",
-        {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"], "error" => problem[:code],
-         "message" => "the retry of step #{stored["to"]} was not started: #{problem[:message]}. Or cancel the run."})
-      event(run, "step_retry_blocked", "from" => run["current"], "to" => stored["to"], "code" => problem[:code])
+    # Keeps a retry from starting without spending it; see {WorkflowProgress#hold_retry}.
+    def hold_retry(run, waiting, problem, pane: nil)
+      run.replace(@progress.hold_retry(run, waiting, problem, pane: pane).to_mutable_h)
     end
 
     # Why a resume that skipped the wait still started nothing; nil when the retry started.
@@ -1279,107 +1245,14 @@ module Workspace
       Array(attempt["proofs"]).find { |each| each["token"] == check["proof"]["token"] && !each.key?("ended_at") }
     end
 
-    def pass_step(run, ctx:)
-      state = step_state(run)
-      state["attempts"].last.merge!("ended_at" => now_iso, "outcome" => "passed")
-      state["attempts"].last.replace(@attempt_record.finish(run: run, step: step_def(run), attempt: state["attempts"].last).to_mutable_h)
-      state["state"] = "passed"
-      event(run, "step_passed", "step" => run["current"], "attempt" => state["attempts"].last["n"])
-      return advance(run, ctx: ctx) unless step_def(run)["gate"]
+    # What follows a step's outcome; see {WorkflowProgress}.
+    def pass_step(run, ctx:) = run.replace(@progress.pass_step(run, ctx: ctx).to_mutable_h)
 
-      release(run)
-      state["gate"] = {"state" => "waiting", "since" => now_iso}
-      run["state"] = "waiting"
-      run["reason"] = reason("waiting_you", "kind" => "gate", "step" => run["current"],
-        "artifacts" => step_def(run)["produces"].map { |file| File.join(run["artifacts_dir"], file) })
-      event(run, "gate_waiting", "step" => run["current"])
-      true
-    end
+    def advance(run, ctx:) = run.replace(@progress.advance(run, ctx: ctx).to_mutable_h)
 
-    def advance(run, ctx:)
-      ids = step_ids(run)
-      following = ids[ids.index(run["current"]) + 1]
-      return complete(run) unless following
-      run["current"] = following
-      dispatch(run, ctx: ctx)
-      true
-    end
+    def finish(run, state) = run.replace(@progress.finish(run, state).to_mutable_h)
 
-    def complete(run)
-      finish(run, "completed")
-      event(run, "run_completed")
-      true
-    end
-
-    def finish(run, state)
-      drop_park(run, "ended")
-      run.delete("backoff")
-      run.delete("budget_hold")
-      release(run)
-      @panes.unbind(run["id"])
-      run["state"] = state
-      run["reason"] = nil
-      run["ended_at"] = now_iso
-    end
-
-    # A failed step goes back along its `on_fail` while it has loops left and
-    # the run has attempts left; otherwise the run stops and waits for a person.
-    def fail_step(run, failure, ctx:)
-      step = step_def(run)
-      state = step_state(run)
-      attempt = state["attempts"].last
-      attempt["ended_at"] = now_iso
-      attempt["outcome"] = "failed"
-      attempt["code"] = failure["code"] if failure["code"].is_a?(String)
-      attempt.replace(@attempt_record.finish(run: run, step: step, attempt: attempt).to_mutable_h)
-      state["state"] = "failed"
-      event(run, "step_failed", {"step" => step["id"], "attempt" => attempt["n"]}.merge(failure.slice("cause", "exit_code")))
-      on_fail = step["on_fail"]
-      edge = on_fail && "#{step["id"]}->#{on_fail["goto"]}"
-      attempts = attempts_made(run)
-      spent = attempts >= attempt_allowance(run)
-      # An `on_fail` `except:` code or cause never loops: the failure falls through to the stop below,
-      # so a run cannot be sent into a step that cannot pass against the same facts (a stale plan's
-      # revision into `plan`, a guard failure into a step guarded the same way).
-      except = Array(on_fail && on_fail["except"])
-      excepted = except.any? { |name| name == failure["code"] || name == failure["cause"] }
-      if on_fail && !excepted && run["loops"].fetch(edge, 0) < on_fail["max"] && !spent
-        run["loops"][edge] = run["loops"].fetch(edge, 0) + 1
-        text = loop_context(run, step, on_fail, failure, run["loops"][edge])
-        wait = WorkflowDefinition.backoff(on_fail)
-        event(run, "step_looped", {"from" => step["id"], "to" => on_fail["goto"], "count" => run["loops"][edge]}.merge(wait ? {"backoff" => wait} : {}))
-        return wait_to_retry(run, step, on_fail, text, wait, attempt) if wait
-        run["pending_context"] << text
-        run["current"] = on_fail["goto"]
-        return dispatch(run, ctx: ctx, context: on_fail["context"], retry_of: {"text" => text})
-      end
-      release(run)
-      run["state"] = "waiting"
-      run["reason"] = reason("failed_check", {"step" => step["id"], "attempt" => attempt["n"], "loops" => run["loops"],
-                                              "attempts" => attempts, "max_attempts" => attempt_allowance(run)}.merge(failure))
-    end
-
-    # No attempt, pane binding or lock is held while the retry waits: the run reads `waiting` with the reason
-    # `retry_backoff`, and the step stays `failed` until {#start_retry}.
-    def wait_to_retry(run, step, on_fail, text, wait, attempt)
-      release(run)
-      pane = bound_pane(run)
-      identity = @panes.identity(run["id"])
-      @panes.unbind(run["id"])
-      time = (@clock.call + wait).utc.iso8601
-      run["backoff"] = {"until" => time, "to" => on_fail["goto"], "context" => on_fail["context"], "text" => text, "pane" => pane, "identity" => identity}.compact
-      run["state"] = "waiting"
-      run["reason"] = reason("retry_backoff", {"step" => step["id"], "attempt" => attempt["n"], "to" => on_fail["goto"], "until" => time,
-                                               "seconds" => wait, "loops" => run["loops"]})
-    end
-
-    def loop_context(run, step, on_fail, failure, count)
-      text = "The #{step["id"]} step failed and sent the run back to this step (time #{count} of #{on_fail["max"]}): #{failure_text(failure)}. " \
-        "Its files are in #{run["artifacts_dir"]}. Fix what it found."
-      lines = WorkflowDefinition.log_tail(on_fail)
-      tail = (lines && failure["log"].is_a?(String)) ? @log_tail.block(failure["log"], lines: lines) : nil
-      tail ? "#{text}\n\n#{tail}" : text
-    end
+    def fail_step(run, failure, ctx:) = run.replace(@progress.fail_step(run, failure, ctx: ctx).to_mutable_h)
 
     def require_failure(unmet) = WorkflowTransitions.require_failure(unmet)
 
