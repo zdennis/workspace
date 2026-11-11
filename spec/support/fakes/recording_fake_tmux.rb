@@ -9,7 +9,7 @@ require_relative "fake_tmux"
 #   tmux.calls  # => [:pane_details, :server_pid_for_pane, :capture_screen_styled]
 class RecordingFakeTmux < FakeTmux
   CONTROL_METHODS = (FakeTmux::CONTROL_METHODS + %i[calls calls=]).freeze
-  RECORDED = %i[pane_details server_pid_for_pane capture_screen capture_screen_styled capture_pane deliver send_key].freeze
+  RECORDED = %i[pane_details server_pid_for_pane capture_screen capture_screen_styled capture_pane capture_pane_by_id open_window review_windows kill_window deliver send_key].freeze
 
   attr_accessor :calls
 

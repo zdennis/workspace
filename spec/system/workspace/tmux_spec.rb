@@ -575,12 +575,22 @@ RSpec.describe Workspace::Tmux do
     let(:ok) { instance_double(Process::Status, success?: true) }
 
     it "lists every window in the session when window is nil" do
-      allow(Open3).to receive(:capture3).and_return(["%7\t2\t1\t700\tclaude\t/src\tClaude Code\n", "", ok])
+      allow(Open3).to receive(:capture3).and_return(["%7\t2\t1\t700\tclaude\t/src\tmain\t\tClaude Code\n", "", ok])
 
       details = tmux.pane_details("proj", window: nil)
 
-      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-s", "-t", "=proj:", "-F", anything)
-      expect(details).to eq([{id: "%7", window: 2, index: 1, pid: 700, command: "claude", cwd: "/src", title: "Claude Code"}])
+      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-s", "-t", "=proj:", "-F",
+        "\#{pane_id}\t\#{window_index}\t\#{pane_index}\t\#{pane_pid}\t\#{pane_current_command}\t\#{pane_current_path}\t\#{window_name}\t\#{#{described_class::REVIEW_OPTION}}\t\#{pane_title}")
+      expect(details).to eq([{id: "%7", window: 2, index: 1, pid: 700, command: "claude", cwd: "/src", window_name: "main",
+                              review: nil, title: "Claude Code"}])
+    end
+
+    it "reads the review mark, and a tab in the title stays in the title" do
+      allow(Open3).to receive(:capture3).and_return(["%8\t1\t0\t800\tclaude\t/src\treview\trun:step:1\ta\tb\n", "", ok])
+
+      detail = tmux.pane_details("proj", window: nil).first
+
+      expect(detail).to include(window_name: "review", review: "run:step:1", title: "a\tb")
     end
 
     it "lists one window by default" do
@@ -1153,6 +1163,113 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#open_window" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:ok) { instance_double(Process::Status, success?: true) }
+    let(:failed) { instance_double(Process::Status, success?: false) }
+
+    it "opens the window and sets the mark in one tmux invocation, returning pid, pane and window" do
+      allow(Open3).to receive(:capture3).and_return(["321 %9 @4\n", "", ok], ["wr_1:review:1\n", "", ok])
+
+      opened = tmux.open_window("app", name: "review", cwd: "/w/app", command: ["claude", "--x"],
+        env: {"WORKSPACE_REVIEW_RUN" => "wr_1"}, option: "wr_1:review:1")
+
+      expect(Open3).to have_received(:capture3).with(
+        "tmux", "new-window", "-d", "-a", "-P", "-F", "\#{pane_pid} \#{pane_id} \#{window_id}", "-t", "=app:{end}",
+        "-n", "review", "-c", "/w/app", "-e", "WORKSPACE_REVIEW_RUN=wr_1", "--", "claude", "--x",
+        ";", "set-option", "-w", "-t", "=app:{end}", "@workspace-review", "wr_1:review:1"
+      )
+      expect(Open3).to have_received(:capture3).with("tmux", "show-options", "-wqv", "-t", "@4", "@workspace-review")
+      expect(opened).to eq(pid: 321, pane: "%9", window: "@4")
+    end
+
+    it "sets no mark, and reads none back, when no option is given" do
+      allow(Open3).to receive(:capture3).and_return(["321 %9 @4\n", "", ok])
+
+      tmux.open_window("app", name: "review", cwd: "/w", command: ["true"])
+
+      expect(Open3).to have_received(:capture3).once.with("tmux", "new-window", "-d", "-a", "-P", "-F", anything, "-t", "=app:{end}",
+        "-n", "review", "-c", "/w", "--", "true")
+    end
+
+    it "sends an argument that ends in a semicolon as an escaped one, so it does not end the command" do
+      allow(Open3).to receive(:capture3).and_return(["321 %9 @4\n", "", ok], ["o;\n", "", ok])
+
+      tmux.open_window("app", name: "n;", cwd: "/w;", command: ["echo", "a;", ";"], env: {"K" => "v;"}, option: "o;")
+
+      expect(Open3).to have_received(:capture3).with(
+        "tmux", "new-window", "-d", "-a", "-P", "-F", anything, "-t", "=app:{end}",
+        "-n", "n\\;", "-c", "/w\\;", "-e", "K=v\\;", "--", "echo", "a\\;", "\\;",
+        ";", "set-option", "-w", "-t", "=app:{end}", "@workspace-review", "o\\;"
+      )
+    end
+
+    it "doubles # in the name and directory, which tmux reads as formats" do
+      allow(Open3).to receive(:capture3).and_return(["321 %9 @4\n", "", ok])
+
+      tmux.open_window("app", name: "\#{session_name}#(id)", cwd: "/w/\#{x}", command: ["true"])
+
+      expect(Open3).to have_received(:capture3).with(
+        "tmux", "new-window", "-d", "-a", "-P", "-F", anything, "-t", "=app:{end}",
+        "-n", "#\#{session_name}##(id)", "-c", "/w/#\#{x}", "--", "true"
+      )
+    end
+
+    it "closes the window and answers nil when the mark read back is not the one set" do
+      allow(Open3).to receive(:capture3).and_return(["321 %9 @4\n", "", ok], ["other\n", "", ok], ["", "", ok])
+
+      expect(tmux.open_window("app", name: "review", cwd: "/w", command: ["true"], option: "mine")).to be_nil
+      expect(Open3).to have_received(:capture3).with("tmux", "kill-window", "-t", "@4")
+    end
+
+    it "is nil when tmux fails" do
+      allow(Open3).to receive(:capture3).and_return(["", "can't find session: gone", failed])
+
+      expect(tmux.open_window("gone", name: "review", cwd: "/w", command: ["true"], option: "x")).to be_nil
+    end
+  end
+
+  describe "#review_windows" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:ok) { instance_double(Process::Status, success?: true) }
+
+    it "lists only the marked windows, from one list-windows" do
+      allow(Open3).to receive(:capture3).and_return(["@1\tmain\t%3\t300\t\n@2\treview\t%12\t4321\trun:step:1\n", "", ok])
+
+      windows = tmux.review_windows("app")
+
+      expect(Open3).to have_received(:capture3).once.with("tmux", "list-windows", "-t", "=app:", "-F",
+        "\#{window_id}\t\#{window_name}\t\#{pane_id}\t\#{pane_pid}\t\#{#{described_class::REVIEW_OPTION}}")
+      expect(windows).to eq([{window: "@2", name: "review", review: "run:step:1", pane: "%12", pid: 4321}])
+    end
+
+    it "is empty when tmux fails" do
+      allow(Open3).to receive(:capture3).and_return(["", "no server", instance_double(Process::Status, success?: false)])
+
+      expect(tmux.review_windows("gone")).to eq([])
+    end
+  end
+
+  describe "#kill_window" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "kills the window by id and says whether tmux did" do
+      allow(Open3).to receive(:capture3).and_return(["", "", instance_double(Process::Status, success?: true)],
+        ["", "can't find window", instance_double(Process::Status, success?: false)])
+
+      expect(tmux.kill_window("@4")).to be true
+      expect(Open3).to have_received(:capture3).with("tmux", "kill-window", "-t", "@4")
+      expect(tmux.kill_window("@5")).to be false
+    end
+
+    it "refuses anything that is not a window id, running nothing" do
+      allow(Open3).to receive(:capture3)
+
+      ["app:0", "%3", "@", "@4 x", "-a", "", nil].each { |target| expect(tmux.kill_window(target)).to be false }
+      expect(Open3).not_to have_received(:capture3)
+    end
+  end
+
   describe "#close_dead_windows" do
     let(:tmux) { described_class.new(config: config) }
 
@@ -1628,6 +1745,39 @@ RSpec.describe Workspace::Tmux do
         Open3.capture3(private_env, "tmux", "kill-server")
         FileUtils.remove_entry(socket_dir)
       end
+    end
+
+    it "opens a marked review window, finds it, captures it by id and kills it" do
+      opened = tmux.open_window(name, name: "review", cwd: "/tmp", command: ["sh", "-c", "echo review-ready; sleep 30"],
+        env: {"WORKSPACE_REVIEW_RUN" => "wr_1"}, option: "wr_1:review:1")
+
+      expect(opened).to include(pid: a_kind_of(Integer), pane: /\A%\d+\z/, window: /\A@\d+\z/)
+      expect(tmux.review_windows(name)).to eq([{window: opened[:window], name: "review", review: "wr_1:review:1", pane: opened[:pane], pid: opened[:pid]}])
+      found = tmux.pane_details(name, window: nil).find { |d| d[:id] == opened[:pane] }
+      expect(found).to include(window_name: "review", review: "wr_1:review:1")
+      expect(tmux.pane_details(name, window: nil).reject { |d| d[:id] == opened[:pane] }.map { |d| d[:review] }).to all(be_nil)
+      Timeout.timeout(5) { sleep 0.05 until tmux.capture_pane_by_id(opened[:pane]).to_s.include?("review-ready") }
+
+      expect(tmux.kill_window(opened[:window])).to be true
+      expect(tmux.review_windows(name)).to eq([])
+      expect(pane_ids(name)).not_to include(opened[:pane])
+    end
+
+    it "carries awkward arguments through to the window and its command" do
+      out = File.join(socket_dir, "argv")
+      opened = tmux.open_window(name, name: "a#\{session_name};", cwd: socket_dir, env: {"K" => "v;"}, option: "o;",
+        command: ["sh", "-c", "printf '%s|%s' \"$K\" \"$0\" > #{out}; sleep 30", "x;"])
+
+      Timeout.timeout(5) { sleep 0.05 until File.exist?(out) && !File.zero?(out) }
+      expect(File.read(out)).to eq("v;|x;")
+      expect(tmux.review_windows(name)).to eq([{window: opened[:window], name: "a\#{session_name};", review: "o;", pane: opened[:pane], pid: opened[:pid]}])
+    end
+
+    it "marks the window even when the session has a gap in its window numbers" do
+      private_tmux("new-window", "-d", "-t", "=#{name}:7")
+      opened = tmux.open_window(name, name: "review", cwd: "/tmp", command: ["sleep", "30"], option: "m")
+
+      expect(tmux.review_windows(name).map { |w| w[:window] }).to eq([opened[:window]])
     end
 
     it "lists only the named session's panes when its name starts another session's" do

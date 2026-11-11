@@ -14,9 +14,12 @@ class FakeTmux
     delivered texts details details= screens screens= screen_script screen_script= on_deliver on_deliver= on_details
     on_details= statuses statuses= capture_calls sessions_calls sessions_strict_args styled_screens styled_screens=
     server_pid server_pid= start_commands start_commands= session_gone session_gone=
+    opened_windows killed_windows review_window_list review_window_list=
   ].freeze
 
-  attr_reader :sent_keys, :sent_key_names, :capture_calls, :sessions_calls, :sessions_strict_args
+  attr_reader :sent_keys, :sent_key_names, :capture_calls, :sessions_calls, :sessions_strict_args, :opened_windows, :killed_windows
+  # @return [Array<Hash>] what `review_windows` lists
+  attr_accessor :review_window_list
   attr_accessor :styled_screens, :server_pid, :start_commands, :session_gone, :captured_output, :pane_indexes, :delivery_status, :details, :screens, :screen_script, :on_deliver,
     :on_details, :statuses
 
@@ -59,6 +62,9 @@ class FakeTmux
     @start_commands = start_commands
     @session_gone = session_gone
     @sent_keys = []
+    @opened_windows = []
+    @killed_windows = []
+    @review_window_list = []
     @sent_key_names = []
     @captured_output = ""
     @pane_indexes = [0, 1, 2]
@@ -102,6 +108,32 @@ class FakeTmux
       next @captured_output unless @captures
       (@captures.size > 1) ? @captures.shift : @captures.first
     end
+  end
+
+  def capture_pane_by_id(pane_id, lines: 100, all: false, join: false)
+    capture_pane(nil, pane_id, lines: lines, all: all, join: join)
+  end
+
+  # Records the window and answers with the next ids (`%100`, `@100`, ...), pid 4242.
+  def open_window(session, name:, cwd:, command:, env: {}, option: nil)
+    number = 100 + @opened_windows.size
+    opened = {pid: 4242, pane: "%#{number}", window: "@#{number}"}
+    @opened_windows << opened.merge(session: session, name: name, cwd: cwd, command: command, env: env, option: option)
+    if option
+      @review_window_list << {window: opened[:window], name: name, review: option, pane: opened[:pane], pid: opened[:pid]}
+    end
+    opened
+  end
+
+  def review_windows(_session) = @review_window_list
+
+  # False for a window it never opened or listed.
+  def kill_window(target)
+    known = @opened_windows.any? { |opened| opened[:window] == target } || @review_window_list.any? { |w| w[:window] == target }
+    return false unless known
+    @killed_windows << target
+    @review_window_list.reject! { |w| w[:window] == target }
+    true
   end
 
   def capture_screen(_target)
