@@ -1482,4 +1482,258 @@ RSpec.describe Workspace::WorkflowEngine do
       }
     end
   end
+
+  describe "waiting for a lock" do
+    let(:locked) { definition("steps:\n  verify:\n    prompt: P\n    uses: [test-db]\n") }
+
+    before do
+      start(locked, inputs: {}, pane: "%5", workspace: "app.worktree-a")
+      now[0] += 10
+    end
+
+    it "queues the run behind the holder, types nothing, and says who it waits for" do
+      run = start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["steps"]["verify"]).to eq("state" => "waiting", "attempts" => [])
+      expect(run["reason"]).to eq("code" => "waiting_lock", "since" => "2026-10-04T12:00:10Z", "details" => {
+        "resource" => "test-db", "step" => "verify", "position" => 1, "total" => 2,
+        "holder" => {"run_id" => "wr_1", "step" => "verify", "workspace" => "app.worktree-a", "worktree" => "#{worktree}-5-app.worktree-a", "kind" => "run"}
+      })
+      expect(panes.kicks.size).to eq(1)
+      expect(events.last(2).map(&:first)).to eq(%w[lock_wait_started workflow_changed])
+      expect(events[-2]).to eq(["lock_wait_started", "app", {"lock" => "test-db", "run_id" => "wr_2", "step" => "verify",
+                                                             "workspace" => "app.worktree-b", "position" => 1,
+                                                             "holder" => {"pane" => "%5", "worktree" => "#{worktree}-5-app.worktree-a", "run_id" => "wr_1", "step" => "verify"}}])
+    end
+
+    it "does nothing on a tick while the lock is still held, and records the wait once" do
+      start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+      events.clear
+      now[0] += 5
+
+      run = engine.tick("wr_2")
+
+      expect(run["reason"]).to include("code" => "waiting_lock", "since" => "2026-10-04T12:00:10Z")
+      expect(events).to eq([])
+    end
+
+    it "starts the step on the tick after the lock is free, and records how long it waited" do
+      start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+      engine.cancel("wr_1")
+      events.clear
+      now[0] += 30
+
+      run = engine.tick("wr_2")
+
+      expect(run).to include("state" => "running", "reason" => nil)
+      expect(lock_holder("test-db")).to include("run_id" => "wr_2")
+      expect(panes.kicks.last).to include(pane: "%6")
+      expect(events.first).to eq(["lock_acquired", "app", {"lock" => "test-db", "run_id" => "wr_2", "step" => "verify",
+                                                           "workspace" => "app.worktree-b", "waited_seconds" => 30}])
+    end
+
+    it "says who holds the lock when it is an agent, by pid" do
+      engine.cancel("wr_1")
+      Workspace::LockStore.new(dir: lock_dir, liveness: liveness, clock: -> { now.first.to_i })
+        .acquire("test-db", identity: {kind: "agent", pid: 4242, started: "start-4242", worktree: "/src/other", pane: "%2"}, waiter_pid: 4242, waiter_started: "start-4242")
+
+      run = start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+
+      expect(run["reason"]["details"]["holder"]).to eq("worktree" => "/src/other", "pid" => 4242, "kind" => "agent")
+    end
+
+    it "does nothing on a tick for a run that waits for nothing" do
+      expect(engine.tick("wr_1")).to be_nil
+    end
+  end
+
+  describe "a lock given up while the run's dev environment still runs" do
+    it "has that environment stopped, so nobody queues behind one no step uses" do
+      two = definition("steps:\n  a:\n    prompt: P\n    uses: [devenv]\n  b:\n    prompt: P\n")
+      start(two, inputs: {})
+      Workspace::LockStore.new(dir: lock_dir, liveness: liveness)
+        .delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 500, started: "start-500", pgid: 500})
+
+      engine.turn_ended("wr_1")
+
+      expect(stopped).to eq([{run_id: "wr_1", worktree: worktree}])
+      expect(lock_holder("devenv")).to include("kind" => "process", "pid" => 500)
+    end
+
+    it "starts the next step all the same when the environment can't be stopped" do
+      failing = engine_with(env_stopper: ->(**) { raise Workspace::Error, "Could not read the lock store" })
+      two = definition("steps:\n  a:\n    prompt: P\n    uses: [devenv]\n  b:\n    prompt: P\n")
+      failing.start(definition: two, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      Workspace::LockStore.new(dir: lock_dir, liveness: liveness)
+        .delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 500, started: "start-500", pgid: 500})
+
+      run = failing.turn_ended("wr_1")
+
+      expect(run).to include("current" => "b", "state" => "running", "reason" => nil)
+      expect(panes.kicks.size).to eq(2)
+    end
+  end
+
+  describe "a step's line typed outside the run's lock" do
+    it "stores the attempt as running and delivering before the line is typed, and clears the mark once it is" do
+      seen = nil
+      allow(panes).to receive(:kick) do |**args|
+        seen = store.find("wr_1")
+        panes.kicks << args
+        {ok: true}
+      end
+
+      run = start
+
+      expect(seen).to include("state" => "running", "reason" => nil)
+      expect(seen["steps"]["plan"]).to include("state" => "running")
+      expect(seen["steps"]["plan"]["attempts"].last).to include("n" => 1, "delivery" => "delivering")
+      expect(run["steps"]["plan"]["attempts"].last).not_to have_key("delivery")
+      expect(panes.bound["%5"]).to include(run_id: "wr_1", step: "plan", attempt: 1)
+    end
+
+    it "leaves a running attempt when the process dies while the daemon answers, which a turn's end then decides" do
+      panes.kick_error = Interrupt
+      expect { start }.to raise_error(Interrupt)
+      left = store.find("wr_1")
+      expect(left).to include("state" => "running", "reason" => nil)
+      expect(left["steps"]["plan"]["attempts"].last).to include("n" => 1, "delivery" => "delivering")
+
+      artifact("plan.md")
+      run = engine.turn_ended("wr_1", pane: "%5", turn_started: now.first + 5)
+
+      expect(run["steps"]["plan"]).to include("state" => "passed")
+      expect(run["steps"]["plan"]["attempts"].last).to include("outcome" => "passed").and(satisfy { |attempt| !attempt.key?("delivery") })
+      expect(run["reason"]).to include("code" => "waiting_you")
+      expect(run["reason"]["details"]).to include("kind" => "gate")
+    end
+
+    it "does not type the line again for a resume while another process is still delivering it" do
+      resumed = nil
+      allow(panes).to receive(:kick) do |**args|
+        panes.kicks << args
+        resumed = engine.resume("wr_1", turn_over: {"step" => "plan", "attempt" => 1})
+        {ok: true}
+      end
+
+      start
+
+      expect(panes.kicks.size).to eq(1)
+      expect(resumed["unchanged"]).to eq("step plan's line is still being delivered to pane %5")
+      expect(store.find("wr_1")["steps"]["plan"]["attempts"].size).to eq(1)
+    end
+
+    it "decides a step left delivering past the delivery window when its pane's turn is over, without typing again" do
+      panes.kick_error = Interrupt
+      expect { start }.to raise_error(Interrupt)
+      panes.kick_error = nil
+      now[0] += Workspace::WorkflowEngine::DELIVERY_WINDOW + 1
+
+      expect(engine.resume("wr_1")["unchanged"]).to eq("an agent is working on step plan")
+      run = engine.resume("wr_1", turn_over: {"step" => "plan", "attempt" => 1})
+
+      expect(panes.kicks).to be_empty
+      expect(run["reason"]).to include("code" => "turn_ended_incomplete")
+      expect(run["steps"]["plan"]["attempts"].last).not_to have_key("delivery")
+    end
+
+    it "types the line again in a new attempt only when asked to, with --from" do
+      panes.kick_error = Interrupt
+      expect { start }.to raise_error(Interrupt)
+      panes.kick_error = nil
+
+      run = engine.resume("wr_1", from: "plan")
+
+      expect(panes.kicks.size).to eq(1)
+      expect(run["steps"]["plan"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2])
+      expect(run["steps"]["plan"]["attempts"].last).not_to have_key("delivery")
+    end
+
+    it "lets a cancel made while the line is on its way stand" do
+      allow(panes).to receive(:kick) do |**args|
+        panes.kicks << args
+        engine.cancel("wr_1")
+        {ok: false, code: "not_delivered", message: "nope"}
+      end
+
+      run = start
+
+      expect(run).to include("state" => "cancelled", "cancelled_by" => "cancel")
+      expect(panes.bound).to be_empty
+      expect(history).to include("run_cancelled", "step_dispatched")
+    end
+
+    it "changes nothing when the answer comes for an attempt a turn's end already settled" do
+      allow(panes).to receive(:kick) do |**args|
+        panes.kicks << args
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+        {ok: false, code: "connection_failed", message: "late"}
+      end
+
+      run = start
+
+      expect(run["steps"]["plan"]).to include("state" => "passed")
+      expect(run["reason"]["details"]).to include("kind" => "gate")
+    end
+
+    it "makes the run wait with the error when the line could not be typed" do
+      panes.kick_result = {ok: false, code: "pane_busy", message: "the agent in pane %5 is in the middle of a turn"}
+
+      run = start
+
+      expect(run).to include("state" => "waiting")
+      expect(run["reason"]).to include("code" => "waiting_you")
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "pane_busy", "message" => "the agent in pane %5 is in the middle of a turn")
+      expect(run["steps"]["plan"]).to include("state" => "waiting")
+      expect(run["steps"]["plan"]["attempts"].last).to include("outcome" => "not_delivered").and(satisfy { |attempt| !attempt.key?("delivery") })
+      expect(history.last(2)).to eq(%w[step_dispatching step_dispatched])
+    end
+
+    it "records the daemon's answer once, with whether the line landed" do
+      panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+      start
+      panes.kick_result = {ok: true}
+      engine.resume("wr_1")
+
+      dispatched = File.readlines(store.events_path("wr_1")).map { |line| JSON.parse(line) }.select { |each| each["type"] == "step_dispatched" }
+      expect(dispatched.map { |each| each.slice("attempt", "delivered") }).to eq([{"attempt" => 1, "delivered" => false}, {"attempt" => 2, "delivered" => true}])
+    end
+
+    it "delivers the next step's line outside the lock when a gate is approved" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      seen = nil
+      allow(panes).to receive(:kick) do |**args|
+        seen = store.find("wr_1")
+        {ok: true}
+      end
+
+      run = engine.approve("wr_1")
+
+      expect(seen["current"]).to eq("build")
+      expect(seen["steps"]["build"]["attempts"].last).to include("delivery" => "delivering")
+      expect(run["steps"]["build"]["attempts"].last).not_to have_key("delivery")
+      expect(run).to include("state" => "running", "reason" => nil)
+    end
+
+    it "makes the run wait, never leaving the mark, when the kick raises something unexpected" do
+      allow(panes).to receive(:kick).and_raise(IOError, "closed stream")
+
+      run = start
+
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "error", "message" => "closed stream")
+      expect(run["steps"]["plan"]["attempts"].last).not_to have_key("delivery")
+    end
+
+    it "makes the run wait with the error when the kick raises" do
+      allow(panes).to receive(:kick).and_raise(Workspace::Error.new("socket gone", code: "no_daemon"))
+
+      run = start
+
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "no_daemon", "message" => "socket gone")
+    end
+  end
 end
