@@ -355,6 +355,7 @@ require_relative "workspace/workflow_branch_inputs"
 require_relative "workspace/workflow_seed"
 require_relative "workspace/workflow_log_tail"
 require_relative "workspace/workflow_extends"
+require_relative "workspace/review_round_path"
 require_relative "workspace/workflow_review_spec"
 require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_argv"
@@ -368,7 +369,6 @@ require_relative "workspace/workflow_project"
 require_relative "workspace/workflow_run"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_deny"
-require_relative "workspace/review_round_path"
 require_relative "workspace/review_write_guard"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
@@ -376,6 +376,8 @@ require_relative "workspace/workflow_step_check"
 require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_require"
 require_relative "workspace/workflow_produced"
+require_relative "workspace/review_verdict_proof"
+require_relative "workspace/workflow_review_tally"
 require_relative "workspace/workflow_attempt_record"
 require_relative "workspace/workflow_budget"
 require_relative "workspace/workflow_deadline"
@@ -551,7 +553,8 @@ module Workspace
   # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
   # @param review_round [#call, nil] runs a review round a change registered, given the run id and the round, with the lock given up
   #   (default: none runs, so a reviewed step waits in `reviewing`)
-  # @param review_tally [#call, nil] decides a review round, given `run:`, `step:` and `round:` (default: {WorkflowEvaluation::NoReviewTally})
+  # @param review_tally [#call, #open_round, nil] makes each round's directory as it starts and decides the round, given `run:`, `step:`
+  #   and `round:` ({WorkflowReviewTally}; default: {WorkflowEvaluation::NoReviewTally}, and no directory is made)
   # @param review_closer [#call, nil] closes an ended round's review window, given the run id and the round's "step", "round" and "pane",
   #   with the lock given up (default: none, so the window stays open)
   # @param clock [#call] returns the current Time
@@ -570,7 +573,7 @@ module Workspace
     dispatch = WorkflowDispatch.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
       guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
     progress = WorkflowProgress.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes,
-      log_tail: log_tail || WorkflowLogTail.new, clock: clock)
+      log_tail: log_tail || WorkflowLogTail.new, review_tally: review_tally, clock: clock)
     evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
       guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
@@ -1031,6 +1034,7 @@ module Workspace
         commands_config: commands_config, checker: workflow_checker,
         inbox_for: workflow_inbox_for),
       inbox_for: workflow_inbox_for,
+      review_tally: WorkflowReviewTally.new(proof: ReviewVerdictProof.new(hook_dir: config.hook_events_dir)),
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },

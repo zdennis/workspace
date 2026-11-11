@@ -16,7 +16,8 @@ module Workspace
     # What {#report} recorded: the run, its step and attempt, and the stored report ("status", "summary", "code", "at").
     Reported = Data.define(:run_id, :step, :attempt, :reported)
 
-    # The tally used when none is given: it reads no verdicts, so every round it is asked about is incomplete.
+    # The tally used when none is given (an engine built without one, as a spec's or the simulator's; `build_cli` gives
+    # {WorkflowReviewTally}): it reads no verdicts, so every round it is asked about is incomplete.
     class NoReviewTally
       # @param run [WorkflowRun] the run, on a step being reviewed
       # @param step [Hash{String=>Object}] the step's definition
@@ -37,7 +38,8 @@ module Workspace
     # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
     # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
     # @param review_round [#call, nil] given the run id and the review round a change registered, runs it with the lock given up and answers the run afterwards (default: nothing runs)
-    # @param review_tally [#call, nil] given `run:`, `step:` and `round:`, the round's outcome and the reviews it read (default: {NoReviewTally})
+    # @param review_tally [#call, nil] given `run:`, `step:` and `round:`, the round's outcome and the reviews it read ({WorkflowReviewTally};
+    #   default: {NoReviewTally})
     # @param review_closer [#call, nil] given the run id and an ended round's "step", "round" and "pane", closes its review
     #   window with the lock given up; it must not raise (default: none, so the window stays open)
     # @param clock [#call] returns the current Time

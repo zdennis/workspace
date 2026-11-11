@@ -5743,6 +5743,79 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(rounds.map { |_id, review| review["round"] }).to eq([1, 2])
     end
 
+    describe "with the verdict tally" do
+      let(:hook_dir) { File.join(@dir, "events") }
+      let(:round_dir) { File.join(worktree, ".workflow", "wr_1", "reviews", "plan.1.r1") }
+      # The round's delivery as T30's runner will record it: the review pane and the revision delivered.
+      let(:round_runner) do
+        lambda do |run_id, review|
+          rounds << [run_id, review]
+          store.change(run_id) do |run|
+            hash = run.thawed
+            hash["steps"][hash["current"]]["review"].merge!("pane" => "%9", "delivery" => nil, "revision" => "rev1")
+            Workspace::WorkflowRun.from_h(hash)
+          end
+        end
+      end
+
+      def tallied_engine
+        build_engine(review_round: round_runner, review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)))
+      end
+
+      # The skeptic's sub-agent writes its verdict in the review pane, and the daemon logs the write with the file's hash.
+      def review_written(verdict, pane: "%9")
+        FileUtils.mkdir_p([File.join(worktree, ".git"), hook_dir])
+        text = (Workspace::WorkflowReviewTally.header_lines(reviewer: "skeptic", verdict: verdict, revision: "rev1") + ["", "Reasons."]).join("\n")
+        File.write(File.join(round_dir, "skeptic.md"), text)
+        line = {"type" => "tool_finished", "at" => "2026-11-10T12:00:00.000Z", "workspace" => "app.worktree-x", "pane_id" => pane, "boot_id" => "b", "seq" => 1,
+                "tool" => "Write", "tool_use_id" => "toolu_1", "agent_id" => "agent-1", "path" => ".workflow/wr_1/reviews/plan.1.r1/skeptic.md",
+                "sha256" => Digest::SHA256.hexdigest(text), "ok" => true}
+        File.write(Workspace::HookEventLog.path_for(hook_dir, "app.worktree-x"), JSON.generate(line) + "\n")
+      end
+
+      it "makes the round's directory, and passes the step on a proven approval" do
+        engine = tallied_engine
+        start_reviewed(engine)
+        expect(File.directory?(round_dir)).to be(true)
+        review_written("approve")
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        attempt = run["steps"]["plan"]["attempts"].last
+        expect(run["current"]).to eq("build")
+        expect(attempt["review_outcome"]).to eq("round" => 1, "approvals" => 1, "need" => 1, "must" => [], "passed" => true)
+        expect(attempt["reviews"]).to eq([{"reviewer" => "skeptic", "path" => "reviews/plan.1.r1/skeptic.md", "verdict" => "approve", "revision" => "rev1",
+                                           "agent_id" => "agent-1", "sha256" => Digest::SHA256.file(File.join(round_dir, "skeptic.md")).hexdigest, "counted" => true, "problem" => nil}])
+      end
+
+      it "stops review_incomplete for a verdict another pane wrote, never rejecting" do
+        engine = tallied_engine
+        start_reviewed(engine)
+        review_written("approve", pane: "%5")
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        expect(run["reason"]).to include("code" => "review_incomplete")
+        expect(run["reason"]["details"]["problem"]).to eq("no counted verdict from skeptic (other_pane)")
+        expect(run["steps"]["plan"]["state"]).to eq("reviewing")
+      end
+
+      it "stops review_tampered when the round's directory was there before the round began" do
+        FileUtils.mkdir_p(round_dir)
+        engine = tallied_engine
+        engine.start(definition: definition(reviewed_yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        artifact("plan.md")
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]).to include("code" => "review_tampered")
+        expect(run["steps"]["plan"]["state"]).to eq("reviewing")
+        expect(rounds).to be_empty
+      end
+    end
+
     it "ends the round and closes its window on resume --from, keeping review_rounds" do
       closed = []
       engine = build_engine(review_round: round_runner, review_tally: RecordingReviewTally.new(outcome: :incomplete), review_closer: ->(run_id, found) { closed << [run_id, found] })

@@ -18,14 +18,17 @@ module Workspace
     # @param attempt_record [Workspace::WorkflowAttemptRecord] records what each attempt ended with
     # @param panes [Workspace::WorkflowPanes] finds, compares and unbinds the run's pane
     # @param log_tail [Workspace::WorkflowLogTail] reads the end of a failed check's log for `on_fail`'s `log_tail`
+    # @param review_tally [#open_round, nil] makes each round's directory as the round starts ({WorkflowReviewTally#open_round});
+    #   nil makes none
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, dispatch:, attempt_record:, panes:, log_tail:, clock: -> { Time.now })
+    def initialize(change:, store:, dispatch:, attempt_record:, panes:, log_tail:, review_tally: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @dispatch = dispatch
       @attempt_record = attempt_record
       @panes = panes
       @log_tail = log_tail
+      @review_tally = review_tally
       @clock = clock
     end
 
@@ -209,7 +212,21 @@ module Workspace
       run["reason"] = nil
       attempt = state["attempts"].last["n"]
       event(run, "review_started", "step" => run["current"], "attempt" => attempt, "round" => round)
+      opened = @review_tally&.open_round(run: run, round: round)
+      return refuse_round(run, opened) if opened
       ctx.review({"step" => run["current"], "attempt" => attempt, "round" => round})
+    end
+
+    # A round whose directory could not be made for it (`review_tampered`: something was already there) never runs:
+    # it is spent and ended, with its record, and the run stops for a person, whose resume starts a fresh round.
+    def refuse_round(run, opened)
+      state = step_state(run)
+      ended = state["review"].merge("delivery" => nil, "ended_at" => now_iso)
+      add_round_record(run, ended, opened[:code])
+      state["review"] = ended.merge("recorded" => true)
+      details = {"step" => run["current"], "attempt" => state["attempts"].last["n"], "round" => ended["round"]}
+      event(run, "review_ended", details.merge("outcome" => opened[:code]))
+      stop_review(run, opened[:code], details.merge("problem" => opened[:problem]))
     end
 
     # A held round has no delivery and no start: its release goes through {#begin_round} for the same round.

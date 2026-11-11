@@ -488,8 +488,8 @@ class RecordingProgress
   end
 end
 
-# Fake of a review round's tally (Workspace::WorkflowEvaluation::NoReviewTally until the real one): answers the
-# outcome it was given and records the step and round it was asked about.
+# Fake of Workspace::WorkflowReviewTally#call and #open_round: answers the outcome it was given and records the step
+# and round it was asked about; +open_round+ answers +opened+ (nil: the directory was made).
 class RecordingReviewTally
   CONTROL_METHODS = %i[calls].freeze
 
@@ -498,9 +498,16 @@ class RecordingReviewTally
   # @param outcome [Symbol] :approved, :rejected or :incomplete
   # @param reviews [Array<Hash>] the review rows it answers
   # @param problem [String, nil] why an incomplete round is incomplete
-  def initialize(outcome: :approved, reviews: [], problem: nil)
+  # @param opened [Hash, nil] what +open_round+ answers (:code and :problem when the directory could not be made for the round)
+  def initialize(outcome: :approved, reviews: [], problem: nil, opened: nil)
     @answer = {outcome: outcome, reviews: reviews, problem: problem}.compact
+    @opened = opened
     @calls = []
+  end
+
+  def open_round(run:, round:)
+    @calls << [:open_round, Workspace::WorkflowRun.from_h(run).id, round]
+    @opened
   end
 
   def call(run:, step:, round:)

@@ -12,6 +12,8 @@ module Workspace
     # What a top-level `reviewers:` entry may hold, and what a step's `review:` mapping may hold.
     REVIEWER_KEYS = %w[title prompt prompt_file include parallel].freeze
     REVIEW_KEYS = %w[from need must subject revision max_rounds timeout uses context notify].freeze
+    # Reviewer names whose verdict file is the engine's own: `summary.md` in the round directory ({ReviewRoundPath::SUMMARY}).
+    RESERVED_NAMES = [File.basename(ReviewRoundPath::SUMMARY, ".md")].freeze
 
     # Review rounds a step gets when its `review:` names no `max_rounds`, and seconds a whole review turn gets.
     DEFAULT_MAX_ROUNDS = 6
@@ -57,6 +59,7 @@ module Workspace
         name = name.to_s
         where = "reviewer #{name}"
         problem "reviewer name #{name.inspect[0, 40]} must be lowercase letters, digits and '_', starting with a letter" unless @name_pattern.match?(name)
+        problem "reviewer name #{name} is reserved: its verdict file would be the engine's #{ReviewRoundPath::SUMMARY}" if RESERVED_NAMES.include?(name)
         unless spec.is_a?(Hash)
           problem "#{where} must be a mapping with prompt or prompt_file"
           spec = {}

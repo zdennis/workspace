@@ -1004,6 +1004,11 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(problems("reviewers:\n  a: {prompt: x, parallel: ~}\n#{minimal}")).to include(a_string_matching(/parallel must be true or false, got nothing/))
     end
 
+    it "refuses the reviewer name summary, which would be the engine's summary.md" do
+      expect(problems("reviewers:\n  summary: {prompt: x}\n#{minimal}")).to include("reviewer name summary is reserved: its verdict file would be the engine's summary.md")
+      expect { parse("reviewers:\n  summary: {prompt: x}\n#{minimal}") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
     it "refuses a reviewer whose prompt is null" do
       expect(problems("reviewers:\n  a: {prompt: ~}\n#{minimal}")).to include("reviewer a: prompt must be text, got nothing")
       expect(problems("reviewers:\n  a: {prompt: ~, prompt_file: ~}\n#{minimal}")).not_to be_empty

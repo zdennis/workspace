@@ -287,6 +287,58 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.step("plan").review["round"]).to eq(3)
     end
 
+    describe "the round's directory" do
+      it "is made by the tally as the round starts, before the round is registered" do
+        tally = RecordingReviewTally.new
+        context = ctx
+
+        progress = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          review_tally: tally, clock: -> { now })
+        progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: context)
+
+        expect(tally.calls).to eq([[:open_round, "wr_1", 1]])
+        expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
+      end
+
+      it "already there stops the run review_tampered, the round spent and recorded, and a resume starts a fresh one" do
+        tally = RecordingReviewTally.new(opened: {code: "review_tampered", problem: "it was there"})
+        progress = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          review_tally: tally, clock: -> { now })
+        context = ctx
+
+        run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: context)
+
+        state = run.step("plan")
+        expect(context.review).to be_nil
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to include("code" => "review_tampered", "details" => {"step" => "plan", "attempt" => 1, "round" => 1, "problem" => "it was there"})
+        expect(state.state).to eq("reviewing")
+        expect(state.review_rounds).to eq(1)
+        expect(state.review).to include("round" => 1, "delivery" => nil, "recorded" => true, "ended_at" => "2026-11-10T12:00:00Z")
+        expect(state.last_attempt.to_h["rounds"].map { |each| each.slice("round", "ended") }).to eq([{"round" => 1, "ended" => "review_tampered"}])
+        expect(change.events.last).to eq(["wr_1", "review_ended", {"step" => "plan", "attempt" => 1, "round" => 1, "outcome" => "review_tampered"}])
+
+        resumed = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          review_tally: RecordingReviewTally.new, clock: -> { now })
+        again = ctx
+        after = resumed.restart_review(run, ctx: again)
+
+        expect(after.step("plan").review_rounds).to eq(2)
+        expect(after.step("plan").last_attempt.to_h["rounds"].size).to eq(1)
+        expect(again.review).to eq("step" => "plan", "attempt" => 1, "round" => 2)
+      end
+
+      it "is not made for a held round" do
+        tally = RecordingReviewTally.new
+        progress = described_class.new(change: change, store: store, dispatch: RecordingDispatch.new(holds: "budget_spent"), attempt_record: attempt_record,
+          panes: panes, log_tail: log_tail, review_tally: tally, clock: -> { now })
+
+        progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+
+        expect(tally.calls).to be_empty
+      end
+    end
+
     it "passes an attempt a round already decided without reviewing it again" do
       given = run_hash(definition_steps: steps("review" => review))
       given["steps"]["plan"]["attempts"][0]["review_outcome"] = {"round" => 1, "passed" => true}

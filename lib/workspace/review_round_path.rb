@@ -16,6 +16,15 @@ module Workspace
         entry["attempt"].is_a?(Integer) && entry["round"].is_a?(Integer)
     end
 
+    # @param artifacts [String] the run's directory
+    # @param step [String] the reviewed step's id
+    # @param attempt [Integer] the reviewed attempt's n
+    # @param round [Integer] the round
+    # @return [String] the round's directory, `<artifacts>/reviews/<step>.<attempt>.r<round>`
+    def self.round_dir(artifacts, step, attempt, round)
+      File.join(artifacts, "reviews", "#{step}.#{attempt}.r#{round}")
+    end
+
     # The path a tool call names, when it is a file under the round's directory
     # with no link on the way down. A part that does not exist yet is not a link,
     # so a file about to be created is accepted.
@@ -28,7 +37,6 @@ module Workspace
     # @return [String, nil] the absolute path, or nil for anything else
     def self.verdict_path(entry, raw, cwd, direct: false)
       return nil unless cwd.is_a?(String) && !cwd.empty? && raw.is_a?(String) && !raw.empty? && !raw.match?(/[[:cntrl:]]/)
-      round = "reviews/#{entry["step"]}.#{entry["attempt"]}.r#{entry["round"]}"
       # The binding's `artifacts` is the run's directory. T30 records it on the reviewer
       # binding; until then (no value) the checkout found above the hook's cwd stands in.
       artifacts = entry["artifacts"]
@@ -41,7 +49,7 @@ module Workspace
         base = File.join(root, ".workflow", entry["id"])
         linked = []
       end
-      dir = File.join(base, round)
+      dir = round_dir(base, entry["step"], entry["attempt"], entry["round"])
       path = File.expand_path(raw, cwd)
       return nil unless path.start_with?("#{dir}/")
       return nil if direct && (path.delete_prefix("#{dir}/").include?("/") || File.basename(path) == SUMMARY)
