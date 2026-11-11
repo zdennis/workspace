@@ -165,22 +165,16 @@ module Workspace
       state["state"] = "failed"
       event(run, "step_failed", {"step" => step["id"], "attempt" => attempt["n"]}.merge(failure.slice("cause", "exit_code")))
       on_fail = step["on_fail"]
-      edge = on_fail && "#{step["id"]}->#{on_fail["goto"]}"
       attempts = WorkflowTransitions.attempts_made(run)
-      spent = attempts >= WorkflowTransitions.attempt_allowance(run)
-      # An `on_fail` `except:` code or cause never loops: the failure falls through to the stop below,
-      # so a run cannot be sent into a step that cannot pass against the same facts (a stale plan's
-      # revision into `plan`, a guard failure into a step guarded the same way).
-      except = Array(on_fail && on_fail["except"])
-      excepted = except.any? { |name| name == failure["code"] || name == failure["cause"] }
-      if on_fail && !excepted && run["loops"].fetch(edge, 0) < on_fail["max"] && !spent
-        run["loops"][edge] = run["loops"].fetch(edge, 0) + 1
-        text = loop_context(run, step, on_fail, failure, run["loops"][edge])
-        wait = WorkflowDefinition.backoff(on_fail)
-        event(run, "step_looped", {"from" => step["id"], "to" => on_fail["goto"], "count" => run["loops"][edge]}.merge(wait ? {"backoff" => wait} : {}))
+      next_move = WorkflowTransitions.after_failure(run, failure)
+      if next_move[:kind] == :loop
+        run["loops"][next_move[:edge]] = next_move[:count]
+        text = loop_context(run, step, on_fail, failure, next_move[:count])
+        wait = next_move[:wait]
+        event(run, "step_looped", {"from" => step["id"], "to" => next_move[:to], "count" => next_move[:count]}.merge(wait ? {"backoff" => wait} : {}))
         return wait_to_retry(run, step, on_fail, text, wait, attempt) if wait
         run["pending_context"] << text
-        run["current"] = on_fail["goto"]
+        run["current"] = next_move[:to]
         return dispatch(run, ctx, {context: on_fail["context"], retry_of: {"text" => text}})
       end
       @dispatch.release(run)

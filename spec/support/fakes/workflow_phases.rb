@@ -333,3 +333,139 @@ class RecordingLogTail
     "the last #{lines} lines of #{path}"
   end
 end
+
+# Fake of Workspace::WorkflowProgress#pass_step and #fail_step for the evaluation phase: records the step and the
+# failure, and returns the run with the current step marked passed or failed (nothing else happens to it).
+class RecordingProgress
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize
+    @calls = []
+  end
+
+  def pass_step(run, ctx:)
+    @calls << [:pass_step, Workspace::WorkflowRun.from_h(run).current]
+    marked(run, "passed")
+  end
+
+  def fail_step(run, failure, ctx:)
+    @calls << [:fail_step, Workspace::WorkflowRun.from_h(run).current, failure]
+    marked(run, "failed")
+  end
+
+  private
+
+  def marked(run, state)
+    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    hash["steps"][hash["current"]]["state"] = state
+    Workspace::WorkflowRun.from_h(hash)
+  end
+end
+
+# Fake of Workspace::WorkflowCheck#call: answers the result it was given, after asking +stop_when+ once (kept in
+# +stop_answers+), and records the command it was asked to run.
+class RecordingChecker
+  CONTROL_METHODS = %i[calls stop_answers].freeze
+
+  attr_reader :calls, :stop_answers
+
+  # @param result [Hash] what +call+ answers (`exit_code:`, `timed_out:`, `error:`)
+  def initialize(result: {exit_code: 0, timed_out: false, error: nil})
+    @result = result
+    @calls = []
+    @stop_answers = []
+  end
+
+  def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {})
+    @calls << [:call, {command: command, cwd: cwd, timeout: timeout, log: log, env: env}]
+    @stop_answers << stop_when&.call
+    @result
+  end
+end
+
+# Fake of Workspace::WorkflowRequire#check and #run_outside: +check+ answers the scripted results in order (nil once
+# they run out), +run_outside+ the one it was given.
+class RecordingRequire
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param checks [Array<Hash, nil>] what each +check+ call answers
+  # @param outside [Hash] what +run_outside+ answers ("record" and "unmet")
+  def initialize(checks: [], outside: {"record" => {}, "unmet" => nil})
+    @checks = checks.dup
+    @outside = outside
+    @calls = []
+  end
+
+  def check(run:, step:, attempt:, from: 0)
+    @calls << [:check, step["id"], attempt["n"], {from: from}]
+    @checks.shift
+  end
+
+  def run_outside(pending, cwd:, env: {}, stop_when: nil)
+    @calls << [:run_outside, pending, {cwd: cwd}]
+    @outside
+  end
+end
+
+# Fake of Workspace::WorkflowGuard#check and #config_change: answers what it was given.
+class RecordingGuard
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param found [Hash, nil] what +check+ answers
+  # @param config [Hash, nil] what +config_change+ answers
+  def initialize(found: nil, config: nil)
+    @found = found
+    @config = config
+    @calls = []
+  end
+
+  def check(worktree, base, scope)
+    @calls << [:check, worktree, scope]
+    @found
+  end
+
+  def config_change(worktree, base, seen: nil)
+    @calls << [:config_change, worktree, {seen: seen}]
+    @config
+  end
+end
+
+# Fake of Workspace::CommandsConfig#for_project: the project's commands as given.
+class RecordingCommandsConfig
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param commands [Hash{Symbol=>String}] e.g. `{test: "rake"}`
+  def initialize(commands = {})
+    @commands = commands
+    @calls = []
+  end
+
+  def for_project(workspace)
+    @calls << [:for_project, workspace]
+    @commands
+  end
+end
+
+# Fake of Workspace::InboxStore#upsert: keeps each record and its +reopen+ in +calls+.
+class RecordingInbox
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize
+    @calls = []
+  end
+
+  def upsert(record, reopen: false)
+    @calls << [:upsert, record, {reopen: reopen}]
+    record
+  end
+end

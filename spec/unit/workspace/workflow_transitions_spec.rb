@@ -240,6 +240,42 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe ".after_failure" do
+    let(:failure) { {"cause" => "check", "code" => "check_failed"} }
+
+    def failed_run(on_fail, loops: {}, attempts: 1)
+      run_with(steps: {"verify" => step("failed", *Array.new(attempts) { |index| {"n" => index + 1} })}).merge("loops" => loops).tap do |run|
+        run["definition"]["steps"].first["on_fail"] = on_fail if on_fail
+      end
+    end
+
+    it "stops a step with no on_fail" do
+      expect(described_class.after_failure(failed_run(nil), failure)).to eq(kind: :stop)
+    end
+
+    it "loops back at once, counting the edge, while loops and attempts last" do
+      run = failed_run({"goto" => "verify", "max" => 2}, loops: {"verify->verify" => 1})
+
+      expect(described_class.after_failure(run, failure)).to eq(kind: :loop, edge: "verify->verify", to: "verify", count: 2, wait: nil)
+    end
+
+    it "carries the on_fail backoff as the wait" do
+      run = failed_run({"goto" => "verify", "max" => 2, "backoff" => 30})
+
+      expect(described_class.after_failure(run, failure)).to include(kind: :loop, wait: 30)
+    end
+
+    it "stops once the edge's loops are used up, or the run's attempts" do
+      expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 1}, loops: {"verify->verify" => 1}), failure)).to eq(kind: :stop)
+      expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 5}, attempts: 3), failure)).to eq(kind: :stop)
+    end
+
+    it "stops on a code or cause on_fail excepts" do
+      expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check_failed"]}), failure)).to eq(kind: :stop)
+      expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check"]}), failure)).to eq(kind: :stop)
+    end
+  end
+
   describe "failure words and codes" do
     it "takes an agent's code, else the engine's" do
       expect(described_class.code_for("reported", "oops")).to eq("code" => "oops", "code_source" => "agent")

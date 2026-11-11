@@ -320,6 +320,25 @@ module Workspace
       fresh.merge("since" => stored["since"])
     end
 
+    # Where a failed step goes, read once its failed attempt is stored: back along its `on_fail` (`to` its goto,
+    # `count` the edge's loop count after this one, `wait` the backoff seconds or nil), or `:stop` for a person when it has
+    # none, its loops or the run's attempts are used up, or the failure's code or cause is one of its `except:`
+    # (so a run is never sent into a step that cannot pass against the same facts).
+    #
+    # @param run [Hash{String=>Object}] a stored run at the failed step
+    # @param failure [Hash{String=>Object}] its "cause" and "code"
+    # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait:}` or `{kind: :stop}`
+    def self.after_failure(run, failure)
+      step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
+      on_fail = step["on_fail"]
+      return {kind: :stop} unless on_fail
+      edge = "#{step["id"]}->#{on_fail["goto"]}"
+      count = run["loops"].fetch(edge, 0)
+      excepted = Array(on_fail["except"]).any? { |name| name == failure["code"] || name == failure["cause"] }
+      return {kind: :stop} if excepted || count >= on_fail["max"] || attempts_made(run) >= attempt_allowance(run)
+      {kind: :loop, edge: edge, to: on_fail["goto"], count: count + 1, wait: WorkflowDefinition.backoff(on_fail)}
+    end
+
     # The `details` of a `budget_spent` refusal or hold.
     #
     # @param run [Hash] a stored run
