@@ -126,7 +126,7 @@ RSpec.describe Workspace::WorkflowSweep do
       stalled = events.find { |each| each["type"] == "step_stalled" }
       expect(stalled).to include("step" => "build", "attempt" => 1, "cause" => "idle_turn_over", "idle_for" => 1500)
       expect(events.find { |each| each["type"] == "step_recovered" }).to include("step" => "build", "attempt" => 1, "action" => "evaluated")
-      expect(store.find("wr_1")).to include("current" => "verify", "state" => "running")
+      expect(stored_run(store, "wr_1")).to include("current" => "verify", "state" => "running")
     end
 
     it "does nothing a second time, and writes no second event" do
@@ -143,26 +143,26 @@ RSpec.describe Workspace::WorkflowSweep do
     it "leaves a step whose files are missing held, and a second pass leaves the hold alone" do
       row = only_row(sweep.call)
       expect(row["outcome"]).to eq("evaluated")
-      expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_incomplete")
       before = events
-      held = store.find("wr_1")["reason"]
+      held = stored_run(store, "wr_1")["reason"]
 
       second = only_row(sweep.call)
 
       expect(second).to include("outcome" => "nothing", "reason" => "held")
       expect(events).to eq(before)
-      expect(store.find("wr_1")["reason"]).to eq(held)
+      expect(stored_run(store, "wr_1")["reason"]).to eq(held)
     end
 
     it "treats a file that is there but empty as the same kind of hold (details.invalid), not a failure" do
       artifact(content: "")
       sweep.call
 
-      reason = store.find("wr_1")["reason"]
+      reason = stored_run(store, "wr_1")["reason"]
       expect(reason).to include("code" => "turn_ended_incomplete")
       expect(reason["details"]["invalid"]).to eq([{"file" => File.join(worktree, ".workflow", "wr_1", "out.md"), "rule" => "empty"}])
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "held")
-      expect(store.find("wr_1")["steps"]["build"]["state"]).to eq("running")
+      expect(stored_run(store, "wr_1")["steps"]["build"]["state"]).to eq("running")
     end
 
     it "does nothing while the pane has been idle for less than the stall" do
@@ -197,12 +197,12 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "reports and does not change anything with dry_run" do
       artifact
-      before = [store.find("wr_1"), events]
+      before = [stored_run(store, "wr_1"), events]
 
       row = only_row(sweep.call(dry_run: true))
 
       expect(row).to include("outcome" => "dry_run", "action" => "evaluate", "cause" => "idle_turn_over")
-      expect([store.find("wr_1"), events]).to eq(before)
+      expect([stored_run(store, "wr_1"), events]).to eq(before)
     end
 
     it "leaves the run alone when the caller is its own agent" do
@@ -225,7 +225,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
       expect(row).to include("outcome" => "nothing", "reason" => "moved_on")
       expect(types).not_to include("step_stalled")
-      expect(store.find("wr_1")["steps"]["build"]["attempts"].size).to eq(2)
+      expect(stored_run(store, "wr_1")["steps"]["build"]["attempts"].size).to eq(2)
     end
 
     it "skips a run another process is changing, and looks at it on the next pass" do
@@ -255,10 +255,10 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "leaves a live park alone" do
       engine.park("wr_1", turn_over: {"step" => "build", "attempt" => 1})
-      before = [store.find("wr_1"), events]
+      before = [stored_run(store, "wr_1"), events]
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "parked")
-      expect([store.find("wr_1"), events]).to eq(before)
+      expect([stored_run(store, "wr_1"), events]).to eq(before)
     end
 
     it "leaves a step that is checking alone" do
@@ -269,7 +269,7 @@ RSpec.describe Workspace::WorkflowSweep do
       checking = Workspace::WorkflowEngine.new(store: store, resources: resources, composer: composer, panes: panes, checker: ->(**) { {exit_code: 0, timed_out: false} },
         commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
       checking.start(definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
-      store.update("wr_2") { |run| run["steps"]["build"]["state"] = "checking" }
+      edit_run(store, "wr_2") { |run| run["steps"]["build"]["state"] = "checking" }
       advance(1500)
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "checking")
@@ -294,7 +294,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "records the stall once and keeps the run as it is, however often it runs" do
       panes.stale << "wr_1"
-      before = store.find("wr_1")
+      before = stored_run(store, "wr_1")
 
       first = only_row(sweep.call)
       second = only_row(sweep.call)
@@ -303,8 +303,8 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(second).to include("outcome" => "nothing", "reason" => "already_recorded", "cause" => "pane_gone")
       expect(events.count { |each| each["type"] == "step_stalled" }).to eq(1)
       expect(events.find { |each| each["type"] == "step_stalled" }).to include("step" => "build", "attempt" => 1, "cause" => "pane_gone", "pane" => "%5")
-      expect(store.find("wr_1").except("sweep")).to eq(before)
-      expect(store.find("wr_1")["state"]).to eq("running")
+      expect(stored_run(store, "wr_1").except("sweep")).to eq(before)
+      expect(stored_run(store, "wr_1")["state"]).to eq("running")
     end
 
     it "records an agent that has left its pane as a shell" do
@@ -348,7 +348,7 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(first).to include("outcome" => "respawned")
       expect(events.select { |each| each["type"] == "step_stalled" }.map { |each| each["cause"] }).to eq(%w[daemon_down])
       expect(events.find { |each| each["type"] == "step_recovered" }).to include("action" => "daemon_respawned")
-      expect(store.find("wr_1")["current"]).to eq("build")
+      expect(stored_run(store, "wr_1")["current"]).to eq("build")
 
       expect(only_row(sweep.call)).to include("outcome" => "evaluated")
       expect(events.select { |each| each["type"] == "step_stalled" }.map { |each| each["cause"] }).to eq(%w[daemon_down idle_turn_over])
@@ -366,12 +366,12 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "does not act on a pane in the pass that started the daemon, even past an on_timeout: fail timeout" do
-      store.update("wr_1") { |run| run["definition"]["steps"][0].merge!("timeout" => 60, "on_timeout" => "fail") }
+      edit_run(store, "wr_1") { |run| run["definition"]["steps"][0].merge!("timeout" => 60, "on_timeout" => "fail") }
       pane_shows("working", idle_seconds: 0)
 
       expect(only_row(sweep.call)).to include("outcome" => "respawned")
       expect(pressed).to be_empty
-      expect(store.find("wr_1")["steps"]["build"]["attempts"].size).to eq(1)
+      expect(stored_run(store, "wr_1")["steps"]["build"]["attempts"].size).to eq(1)
     end
 
     it "writes the recovery when a start succeeds after an earlier pass failed, once" do
@@ -387,7 +387,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "starts no daemon for a workspace with no tmux session, and says so without failing" do
-      store.update("wr_1") { |run| run["steps"]["build"]["state"] = "checking" }
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["state"] = "checking" }
       panes.session = false
 
       row = only_row(sweep.call)
@@ -442,7 +442,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "starts a daemon for a run that waits for a lock, too" do
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["state"] = "waiting"
         run["steps"]["build"]["state"] = "waiting"
         run["reason"] = {"code" => "waiting_lock", "since" => "2026-10-04T12:00:00Z", "details" => {}}
@@ -465,7 +465,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "does nothing for a definition stored before on_timeout and stall existed" do
       begin_run
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["definition"].delete("stall")
         run["definition"]["steps"].each { |step| step.delete("on_timeout") }
       end
@@ -504,7 +504,7 @@ RSpec.describe Workspace::WorkflowSweep do
       row = only_row(sweep.call)
 
       expect(row).to include("outcome" => "evaluated", "cause" => "interrupted")
-      expect(store.find("wr_1")["current"]).to eq("verify")
+      expect(stored_run(store, "wr_1")["current"]).to eq("verify")
     end
 
     it "releases the claim when the keys can't be pressed, so the next pass tries again" do
@@ -532,7 +532,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
       expect(row).to include("outcome" => "timed_out", "action" => "fail", "cause" => "timed_out")
       expect(pressed.size).to eq(1)
-      run = store.find("wr_1")
+      run = stored_run(store, "wr_1")
       expect(run["steps"]["build"]["attempts"].map { |each| [each["n"], each["outcome"], each["code"]] }).to eq([[1, "failed", "step_timed_out"]])
       expect(run["current"]).to eq("plan")
       expect(run["steps"]["plan"]["attempts"].size).to eq(2)
@@ -548,7 +548,7 @@ RSpec.describe Workspace::WorkflowSweep do
       sweep.call
       second = only_row(sweep.call)
 
-      run = store.find("wr_1")
+      run = stored_run(store, "wr_1")
       expect(run["reason"]).to include("code" => "failed_check")
       expect(run["reason"]["details"]).to include("cause" => "timeout", "code" => "step_timed_out", "code_source" => "engine", "timeout" => 3600)
       expect(second).to include("outcome" => "nothing", "reason" => "not_running")
@@ -563,7 +563,7 @@ RSpec.describe Workspace::WorkflowSweep do
       pane_shows("idle", idle_seconds: 600)
 
       expect(only_row(sweep.call)).to include("outcome" => "evaluated")
-      expect(store.find("wr_1")["current"]).to eq("verify")
+      expect(stored_run(store, "wr_1")["current"]).to eq("verify")
     end
 
     it "does nothing for a step with no timeout" do
@@ -595,7 +595,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "moved_on")
       expect(pressed).to be_empty
-      expect(store.find("wr_1")["sweep"]).to be_nil
+      expect(stored_run(store, "wr_1")["sweep"]).to be_nil
     end
 
     it "presses nothing and gives the claim back when the pane changed after the claim" do
@@ -607,7 +607,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "pane_changed")
       expect(pressed).to be_empty
-      expect(store.find("wr_1")["sweep"]).not_to have_key("interrupt")
+      expect(stored_run(store, "wr_1")["sweep"]).not_to have_key("interrupt")
     end
 
     it "presses nothing when the pane is no longer this run's" do
@@ -625,7 +625,7 @@ RSpec.describe Workspace::WorkflowSweep do
       holder = nil
       interrupt = interrupter
       allow(self).to receive(:interrupter).and_return(lambda do |workspace, pane, keys|
-        holder = Thread.new { store.update("wr_1") { sleep 0.3 } }
+        holder = Thread.new { edit_run(store, "wr_1") { sleep 0.3 } }
         sleep 0.1
         interrupt.call(workspace, pane, keys)
       end)
@@ -633,27 +633,27 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call)).to include("outcome" => "interrupted")
       holder.join
       expect(events.last).to include("type" => "step_recovered", "action" => "interrupted")
-      expect(store.find("wr_1")["sweep"]["interrupt"]["state"]).to eq("sent")
+      expect(stored_run(store, "wr_1")["sweep"]["interrupt"]["state"]).to eq("sent")
     end
 
     it "leaves a claim another process took over alone when a slow process reports back" do
       claim, at = engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 3700, timeout: 3600)
       expect(claim).to eq(:claimed)
-      store.update("wr_1") { |run| run["sweep"]["interrupt"] = {"state" => "pending", "at" => "2026-10-04T13:02:00Z"} }
+      edit_run(store, "wr_1") { |run| run["sweep"]["interrupt"] = {"state" => "pending", "at" => "2026-10-04T13:02:00Z"} }
 
       expect(engine.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: at, sent: false)).to eq(:taken_over)
       expect(engine.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: at, sent: true)).to eq(:taken_over)
-      expect(store.find("wr_1")["sweep"]["interrupt"]).to eq("state" => "pending", "at" => "2026-10-04T13:02:00Z")
+      expect(stored_run(store, "wr_1")["sweep"]["interrupt"]).to eq("state" => "pending", "at" => "2026-10-04T13:02:00Z")
       expect(types).not_to include("step_recovered")
     end
 
     it "takes over a pending claim older than a minute and leaves a fresh one" do
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["sweep"] = {"step" => "build", "attempt" => 1, "stalled" => {}, "recovered" => {}, "interrupt" => {"state" => "pending", "at" => (now.first - 20).utc.iso8601}}
       end
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "already_interrupted")
 
-      store.update("wr_1") { |run| run["sweep"]["interrupt"]["at"] = (now.first - 90).utc.iso8601 }
+      edit_run(store, "wr_1") { |run| run["sweep"]["interrupt"]["at"] = (now.first - 90).utc.iso8601 }
       expect(only_row(sweep.call)).to include("outcome" => "interrupted")
       expect(pressed.size).to eq(1)
     end
@@ -705,8 +705,8 @@ RSpec.describe Workspace::WorkflowSweep do
       row = only_row(sweep.call)
 
       expect(row).to include("outcome" => "timed_out", "cause" => "idle_turn_over")
-      expect(store.find("wr_1")["steps"]["build"]["attempts"].first).to include("outcome" => "failed", "code" => "step_timed_out")
-      expect(store.find("wr_1")["current"]).to eq("plan")
+      expect(stored_run(store, "wr_1")["steps"]["build"]["attempts"].first).to include("outcome" => "failed", "code" => "step_timed_out")
+      expect(stored_run(store, "wr_1")["current"]).to eq("plan")
     end
 
     it "fails a step already held on turn_ended_incomplete, T3's invalid file included" do
@@ -714,15 +714,15 @@ RSpec.describe Workspace::WorkflowSweep do
       artifact_path = File.join(worktree, ".workflow", "wr_1", "out.md")
       File.write(artifact_path, "")
       engine.resume("wr_1", turn_over: {"step" => "build", "attempt" => 1})
-      expect(store.find("wr_1")["reason"]["details"]["invalid"]).not_to be_nil
+      expect(stored_run(store, "wr_1")["reason"]["details"]["invalid"]).not_to be_nil
 
       expect(only_row(sweep.call)).to include("outcome" => "timed_out")
-      expect(store.find("wr_1")["steps"]["build"]["attempts"].first["code"]).to eq("step_timed_out")
+      expect(stored_run(store, "wr_1")["steps"]["build"]["attempts"].first["code"]).to eq("step_timed_out")
     end
 
     it "leaves a turn_ended_background hold alone" do
       to_build
-      store.update("wr_1") { |run| run["reason"] = {"code" => "turn_ended_background", "since" => now.first.utc.iso8601, "seen_at" => now.first.utc.iso8601, "details" => {}} }
+      edit_run(store, "wr_1") { |run| run["reason"] = {"code" => "turn_ended_background", "since" => now.first.utc.iso8601, "seen_at" => now.first.utc.iso8601, "details" => {}} }
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "held")
     end
@@ -747,9 +747,9 @@ RSpec.describe Workspace::WorkflowSweep do
       to_build
       pane_shows("working", idle_seconds: 1)
       sweep.call
-      expect(store.find("wr_1")["current"]).to eq("plan")
+      expect(stored_run(store, "wr_1")["current"]).to eq("plan")
       engine.turn_ended("wr_1", pane: "%5")
-      expect(store.find("wr_1")["current"]).to eq("build")
+      expect(stored_run(store, "wr_1")["current"]).to eq("build")
       advance(3700)
       pane_shows("working", idle_seconds: 1)
 
@@ -766,7 +766,7 @@ RSpec.describe Workspace::WorkflowSweep do
     it "carries on to fail after a press that landed but whose failure did not, instead of waiting forever" do
       to_build
       pane_shows("working", idle_seconds: 1)
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["sweep"] = {"step" => "build", "attempt" => 1, "stalled" => {}, "recovered" => {}, "interrupt" => {"state" => "sent", "at" => now.first.utc.iso8601}}
       end
 
@@ -784,7 +784,7 @@ RSpec.describe Workspace::WorkflowSweep do
       pane_shows("idle", idle_seconds: 600)
     end
 
-    def attempts = store.find("wr_1")["steps"]["build"]["attempts"]
+    def attempts = stored_run(store, "wr_1")["steps"]["build"]["attempts"]
 
     it "waits out the backoff, then types the line again and marks the failed attempt" do
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "backoff")
@@ -797,7 +797,7 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(row).to include("outcome" => "redelivered", "cause" => "undelivered", "action" => "redeliver")
       expect(panes.kicks.size).to eq(2)
       expect(attempts.map { |each| each["redelivered"] }).to eq([true, nil])
-      expect(store.find("wr_1")).to include("state" => "running", "reason" => nil)
+      expect(stored_run(store, "wr_1")).to include("state" => "running", "reason" => nil)
       expect(events.find { |each| each["type"] == "step_stalled" }).to include("cause" => "undelivered", "retry" => 1, "of" => 3, "code" => "pane_busy")
       expect(events.find { |each| each["type"] == "step_recovered" }).to include("action" => "redelivered")
     end
@@ -816,7 +816,7 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(first).to include("outcome" => "recorded", "cause" => "redelivery_exhausted")
       expect(only_row(sweep.call)).to include("reason" => "already_recorded")
       expect(panes.kicks.size).to eq(4)
-      expect(store.find("wr_1")["reason"]).to include("code" => "waiting_you")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "waiting_you")
     end
 
     it "does not count retried attempts against max_attempts" do
@@ -839,13 +839,13 @@ RSpec.describe Workspace::WorkflowSweep do
       panes.kick_result = {ok: true}
       sweep.call
 
-      expect(store.find("wr_2")["steps"]["plan"]["attempts"].map { |each| each["redelivered"] }).to eq([true, nil])
+      expect(stored_run(store, "wr_2")["steps"]["plan"]["attempts"].map { |each| each["redelivered"] }).to eq([true, nil])
       engine.turn_ended("wr_2", pane: "%5")
       engine.report("wr_2", status: "fail")
       engine.turn_ended("wr_2", pane: "%5")
 
-      expect(store.find("wr_2")).to include("current" => "plan", "state" => "running")
-      expect(store.find("wr_2")["steps"]["plan"]["attempts"].size).to eq(3)
+      expect(stored_run(store, "wr_2")).to include("current" => "plan", "state" => "running")
+      expect(stored_run(store, "wr_2")["steps"]["plan"]["attempts"].size).to eq(3)
     end
 
     it "leaves a pane that is not idle alone" do
@@ -910,18 +910,18 @@ RSpec.describe Workspace::WorkflowSweep do
     it "does not retry a gone pane, a daemon's unconfirmed prompt, or a code a retry cannot help" do
       advance(61)
       %w[pane_gone run_unbound error not_delivered connection_failed unreadable_reply].each do |code|
-        store.update("wr_1") { |stored| stored["reason"]["details"]["error"] = code }
-        run = store.find("wr_1")
+        edit_run(store, "wr_1") { |stored| stored["reason"]["details"]["error"] = code }
+        run = stored_run(store, "wr_1")
         expect(Workspace::WorkflowEngine.redelivery(run, now.first)).to be_nil
       end
-      store.update("wr_1") { |stored| stored["reason"]["details"].merge!("error" => "pane_busy", "reason" => "prompt_unconfirmed") }
-      run = store.find("wr_1")
+      edit_run(store, "wr_1") { |stored| stored["reason"]["details"].merge!("error" => "pane_busy", "reason" => "prompt_unconfirmed") }
+      run = stored_run(store, "wr_1")
       expect(Workspace::WorkflowEngine.redelivery(run, now.first)).to be_nil
     end
 
     it "retries a no_daemon failure, which is raised before anything is sent" do
-      store.update("wr_1") { |stored| stored["reason"]["details"]["error"] = "no_daemon" }
-      run = store.find("wr_1")
+      edit_run(store, "wr_1") { |stored| stored["reason"]["details"]["error"] = "no_daemon" }
+      run = stored_run(store, "wr_1")
       advance(61)
 
       expect(Workspace::WorkflowEngine.redelivery(run, now.first)).to include(state: :due)
@@ -934,7 +934,7 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(row).to include("outcome" => "nothing", "reason" => "not_delivered", "action" => "redeliver")
       expect(types).not_to include("step_recovered")
       expect(attempts.map { |each| each["redelivery"] }).to eq([nil, 1])
-      expect(store.find("wr_1")["reason"]["details"]).to include("error" => "pane_busy")
+      expect(stored_run(store, "wr_1")["reason"]["details"]).to include("error" => "pane_busy")
     end
 
     it "counts again from zero after a person's resume whose line is also not delivered" do
@@ -946,7 +946,7 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call)).to include("cause" => "redelivery_exhausted")
 
       engine.resume("wr_1")
-      expect(store.find("wr_1")["reason"]["code"]).to eq("waiting_you")
+      expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("waiting_you")
       expect(attempts.last["redelivery"]).to be_nil
       advance(59)
       expect(only_row(sweep.call)).to include("reason" => "backoff")
@@ -976,7 +976,7 @@ RSpec.describe Workspace::WorkflowSweep do
         begin_run(locked)
       end
 
-      def attempts2 = store.find("wr_2")["steps"]["build"]["attempts"]
+      def attempts2 = stored_run(store, "wr_2")["steps"]["build"]["attempts"]
 
       it "reports waiting_lock without step_recovered, keeps the count for the ticked attempt, and stops at the limit" do
         [60, 300, 900].each_with_index do |wait, index|
@@ -984,12 +984,12 @@ RSpec.describe Workspace::WorkflowSweep do
           lock_busy[0] = true
           expect(only_row(sweep.call)).to include("reason" => "waiting_lock", "cause" => "undelivered")
           expect(types("wr_2")).not_to include("step_recovered")
-          expect(store.find("wr_2")["steps"]["build"]["redelivery_pending"]).to eq(index + 1)
+          expect(stored_run(store, "wr_2")["steps"]["build"]["redelivery_pending"]).to eq(index + 1)
 
           lock_busy[0] = false
           engine.tick("wr_2")
           expect(attempts2.last["redelivery"]).to eq(index + 1)
-          expect(store.find("wr_2")["steps"]["build"]).not_to have_key("redelivery_pending")
+          expect(stored_run(store, "wr_2")["steps"]["build"]).not_to have_key("redelivery_pending")
         end
 
         advance(10_000)
@@ -1003,7 +1003,7 @@ RSpec.describe Workspace::WorkflowSweep do
         sweep.call
         engine.resume("wr_2")
 
-        expect(store.find("wr_2")["steps"]["build"]).not_to have_key("redelivery_pending")
+        expect(stored_run(store, "wr_2")["steps"]["build"]).not_to have_key("redelivery_pending")
         lock_busy[0] = false
         engine.tick("wr_2")
         expect(attempts2.last["redelivery"]).to be_nil
@@ -1032,7 +1032,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "does nothing for a run stored with redeliver: 0" do
       advance(61)
-      store.update("wr_1") { |stored| stored["definition"]["redeliver"] = 0 }
+      edit_run(store, "wr_1") { |stored| stored["definition"]["redeliver"] = 0 }
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "not_running")
       expect(panes.kicks.size).to eq(1)
@@ -1040,7 +1040,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "does nothing for a run stored without the key" do
       advance(61)
-      store.update("wr_1") { |stored| stored["definition"].delete("redeliver") }
+      edit_run(store, "wr_1") { |stored| stored["definition"].delete("redeliver") }
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "not_running")
       expect(panes.kicks.size).to eq(1)
@@ -1058,7 +1058,7 @@ RSpec.describe Workspace::WorkflowSweep do
       engine.resume("wr_1", from: "build")
 
       expect(engine.time_out("wr_1", step: "build", attempt: attempt, elapsed: 4000, timeout: 3600)).to eq(:moved_on)
-      expect(store.find("wr_1")["steps"]["build"]["state"]).to eq("running")
+      expect(stored_run(store, "wr_1")["steps"]["build"]["state"]).to eq("running")
     end
 
     it "keeps claim_interrupt from claiming the new attempt" do
@@ -1090,7 +1090,7 @@ RSpec.describe Workspace::WorkflowSweep do
     before { begin_run }
 
     it "reads a run stored before the sweep, with no sweep key and no delivery mark" do
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run.delete("sweep")
         run["steps"]["build"]["attempts"].each { |each| each.delete("delivery") }
       end
@@ -1100,7 +1100,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "reports a running step with no attempt, without failing" do
-      store.update("wr_1") { |run| run["steps"]["build"]["attempts"] = [] }
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["attempts"] = [] }
       pane_shows("working", idle_seconds: 1)
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "no_attempt")
@@ -1174,7 +1174,7 @@ RSpec.describe Workspace::WorkflowSweep do
       engine.turn_ended("wr_1", pane: "%5")
       engine.report("wr_1", status: "fail", summary: "no")
       engine.turn_ended("wr_1", pane: "%5")
-      store.update("wr_1") { |run| run["steps"]["build"]["attempts"].first["usage"] = {"input_tokens" => 5000} }
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["attempts"].first["usage"] = {"input_tokens" => 5000} }
       advance(300)
     end
 
@@ -1183,7 +1183,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
       expect(row).to include("outcome" => "nothing", "reason" => "budget_spent", "cause" => "retry_backoff", "action" => "retry", "step" => "build")
       expect(row["message"]).to include("token budget is used", "--extra-tokens")
-      expect(store.find("wr_1")).to include("state" => "waiting").and(satisfy { |run| run["reason"]["code"] == "budget_spent" })
+      expect(stored_run(store, "wr_1")).to include("state" => "waiting").and(satisfy { |run| run["reason"]["code"] == "budget_spent" })
       expect(types).not_to include("step_stalled")
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "budget_spent")
       expect(types.count("budget_spent")).to eq(1)
@@ -1223,7 +1223,7 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(row).to include("outcome" => "nothing", "reason" => "backoff", "cause" => "retry_backoff", "step" => "build")
       expect(row["message"]).to include("starts again at 2026-10-04T12:05:00Z", "in 1 seconds")
       expect(types).not_to include("step_stalled")
-      expect(store.find("wr_1")).to include("current" => "build", "state" => "waiting")
+      expect(stored_run(store, "wr_1")).to include("current" => "build", "state" => "waiting")
     end
 
     it "starts the retry once the time has passed, with no daemon needed to decide, and a second pass does nothing" do
@@ -1233,43 +1233,43 @@ RSpec.describe Workspace::WorkflowSweep do
       row = only_row(sweep.call)
 
       expect(row).to include("outcome" => "retried", "cause" => "retry_backoff", "action" => "retry", "step" => "build")
-      expect(store.find("wr_1")).to include("current" => "plan", "state" => "running", "reason" => nil)
-      expect(store.find("wr_1")).not_to have_key("backoff")
+      expect(stored_run(store, "wr_1")).to include("current" => "plan", "state" => "running", "reason" => nil)
+      expect(stored_run(store, "wr_1")).not_to have_key("backoff")
       expect(types.last(3)).to eq(%w[step_retry_started step_dispatching step_dispatched])
       expect(only_row(sweep.call)["reason"]).not_to eq("backoff")
     end
 
     it "reports what it would do under --dry-run and changes nothing" do
       advance(300)
-      before = store.find("wr_1")
+      before = stored_run(store, "wr_1")
 
       row = only_row(sweep.call(dry_run: true))
 
       expect(row).to include("outcome" => "dry_run", "action" => "retry", "cause" => "retry_backoff")
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
     end
 
     it "leaves the retry alone when the caller refuses, and when a resume got there first" do
       advance(300)
       expect(only_row(sweep.call(allow: ->(_run) { "not this one" }))).to include("outcome" => "nothing", "reason" => "refused")
-      expect(store.find("wr_1")).to include("state" => "waiting")
+      expect(stored_run(store, "wr_1")).to include("state" => "waiting")
 
       engine.resume("wr_1")
       expect(only_row(sweep.call)["outcome"]).to eq("nothing")
-      expect(store.find("wr_1")["current"]).to eq("plan")
+      expect(stored_run(store, "wr_1")["current"]).to eq("plan")
       expect(panes.kicks.size).to eq(3)
     end
 
     it "starts a dead daemon first when the retry is due, spends nothing, and retries on the next pass" do
       panes.daemon = false
       advance(300)
-      before = store.find("wr_1")
+      before = stored_run(store, "wr_1")
 
       row = only_row(sweep.call)
 
       expect(row).to include("outcome" => "respawned", "cause" => "daemon_down")
       expect(panes.respawns).to eq(["app.worktree-x"])
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
       expect(types).not_to include("step_stalled")
       expect(only_row(sweep.call)).to include("outcome" => "retried", "cause" => "retry_backoff")
     end
@@ -1277,11 +1277,11 @@ RSpec.describe Workspace::WorkflowSweep do
     it "only reports the respawn under --dry-run" do
       panes.daemon = false
       advance(300)
-      before = store.find("wr_1")
+      before = stored_run(store, "wr_1")
 
       expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "dry_run", "action" => "respawn_daemon")
       expect(panes.respawns).to eq([])
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
     end
 
     it "needs no daemon before the time: the wait is read from the file" do
@@ -1298,14 +1298,14 @@ RSpec.describe Workspace::WorkflowSweep do
       pane_shows("idle", idle_seconds: 600)
 
       expect(only_row(sweep.call)).to include("outcome" => "retried")
-      expect(store.find("wr_1")).to include("current" => "plan", "state" => "waiting")
-      expect(store.find("wr_1")["reason"]["details"]).to include("kind" => "dispatch", "error" => "pane_busy")
+      expect(stored_run(store, "wr_1")).to include("current" => "plan", "state" => "waiting")
+      expect(stored_run(store, "wr_1")["reason"]["details"]).to include("kind" => "dispatch", "error" => "pane_busy")
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "backoff", "cause" => "undelivered")
 
       advance(61)
       panes.kick_result = {ok: true}
       expect(only_row(sweep.call)).to include("outcome" => "redelivered", "cause" => "undelivered")
-      expect(store.find("wr_1")).to include("current" => "plan", "state" => "running")
+      expect(stored_run(store, "wr_1")).to include("current" => "plan", "state" => "running")
     end
 
     it "says a due retry was held when the pane id was reused, as nothing and not as retried or failed" do
@@ -1316,7 +1316,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
       expect(row).to include("outcome" => "nothing", "reason" => "retry_blocked", "cause" => "retry_backoff", "action" => "retry")
       expect(row["message"]).to include("--pane")
-      expect(store.find("wr_1")["backoff"]).to include("blocked" => "pane_changed")
+      expect(stored_run(store, "wr_1")["backoff"]).to include("blocked" => "pane_changed")
       expect(panes.kicks.size).to eq(2)
       expect(types).to include("step_retry_blocked")
     end
@@ -1325,12 +1325,12 @@ RSpec.describe Workspace::WorkflowSweep do
       panes.gone << "%5"
       advance(300)
       engine.tick("wr_1")
-      held = store.find("wr_1")
+      held = stored_run(store, "wr_1")
       expect(held["backoff"]).to include("blocked" => "pane_gone")
 
       row = only_row(sweep.call)
       expect(row).to include("outcome" => "nothing", "reason" => "retry_blocked")
-      expect(store.find("wr_1")).to eq(held)
+      expect(stored_run(store, "wr_1")).to eq(held)
     end
 
     it "does nothing for a run cancelled during the wait" do
