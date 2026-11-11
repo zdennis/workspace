@@ -108,6 +108,10 @@ RSpec.describe Workspace::WorkflowEngine do
     path
   end
 
+  def engine_with(**overrides)
+    build_engine(**overrides)
+  end
+
   def lock_holder(name)
     Workspace::LockStore.new(dir: lock_dir, liveness: liveness).status(name).dig(name, "holder")
   end
@@ -593,6 +597,647 @@ RSpec.describe Workspace::WorkflowEngine do
       artifact("plan.md")
 
       expect(engine.turn_ended("wr_1", pane: "%5")["state"]).to eq("waiting")
+    end
+  end
+
+  describe "#start" do
+    it "stores the resolved definition of a workflow that extends another, so editing the parent later changes nothing in the run" do
+      defs = FileUtils.mkdir_p(File.join(@dir, "defs")).first
+      File.write(File.join(defs, "base.yml"), "steps:\n  plan:\n    prompt: Plan it.\n    produces: [plan.md]\n")
+      File.write(File.join(defs, "kid.yml"), "extends: base\nsteps:\n  more:\n    prompt: More.\n    produces: [more.md]\n")
+      catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: defs, builtin_workflows_dir: File.join(@dir, "none")))
+      kid = catalog.find("kid")
+
+      start(kid, inputs: {})
+      File.write(File.join(defs, "base.yml"), "steps:\n  plan:\n    prompt: Plan it differently.\n    produces: [plan.md]\n")
+      stored = store.find("wr_1")
+
+      expect(stored["definition"]).to eq(kid.to_h.merge("produces_check" => "strict"))
+      expect(stored["definition"]["steps"].map { |step| step["prompt"] }).to eq(["Plan it.", "More."])
+      expect(stored["definition_sha256"]).to eq(kid.resolved_sha256)
+      expect(catalog.find("kid").resolved_sha256).not_to eq(stored["definition_sha256"])
+    end
+
+    it "writes the run, the first step's instructions and the pane's binding, then types one line into the pane" do
+      run = start(note: "Keep it small.")
+      prompt = File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.prompt.md")
+
+      expect(run).to include("id" => "wr_1", "workflow" => "flow", "workspace" => "app.worktree-x", "project" => "app",
+        "worktree" => worktree, "task" => "t1", "inputs" => {"task" => "X-1"}, "state" => "running", "current" => "plan",
+        "pane" => "%5", "reason" => nil, "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"),
+        "definition_source" => "global", "definition_sha256" => three_steps.sha256)
+      expect(run["definition"]).to eq(three_steps.to_h.merge("produces_check" => "strict"))
+      expect(run["steps"]["plan"]).to include("state" => "running")
+      expect(run["steps"]["plan"]["attempts"].size).to eq(1)
+      expect(run["steps"]["plan"]["attempts"].first).to include("n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "context" => [], "prompt_file" => prompt)
+      expect(File.read(prompt)).to eq(
+        "Work on X-1 in app.worktree-x on feature/x.\n\n" \
+        "Write #{worktree}/.workflow/wr_1/plan.md for run wr_1.\n\n" \
+        "This step is finished when your turn ends and these files exist as non-empty regular files (not links), written during this attempt: #{worktree}/.workflow/wr_1/plan.md.\n\n" \
+        "Note for this run: Keep it small.\n"
+      )
+      expect(panes.bound).to eq("%5" => {workspace: "app.worktree-x", run_id: "wr_1", step: "plan", attempt: 1,
+                                         instructions: prompt, artifacts: File.join(worktree, ".workflow", "wr_1")})
+      expect(panes.kicks).to eq([{workspace: "app.worktree-x", pane: "%5", text: "Read #{prompt} and follow it.", fresh: true, run_id: "wr_1"}])
+      expect(store.find("wr_1")).to eq(run)
+      expect(history).to eq(%w[run_started step_dispatching step_dispatched])
+    end
+
+    it "composes the default packs, then the workflow's and the step's layers, for the run's checkout" do
+      start
+
+      expect(composer.calls.last).to include(packs: nil, cwd: worktree, attempt: [])
+      expect(composer.calls.last[:workflow]).to eq("name" => "flow", "include" => [], "text" => "Work on X-1 in app.worktree-x on feature/x.")
+      expect(composer.calls.last[:step]).to include("name" => "plan", "include" => [])
+    end
+
+    it "leaves the dev pack out of a step that uses devenv, which already holds the environment" do
+      start(definition("steps:\n  a:\n    prompt: P\n    uses: [dev-env]\n"), inputs: {})
+
+      expect(composer.calls.last).to include(skip: %w[dev])
+    end
+
+    it "leaves no pack out of a step that does not use devenv" do
+      start
+
+      expect(composer.calls.last).to include(skip: [])
+    end
+
+    it "hands the composer the binding the pane is about to get, to follow the binding pack" do
+      start
+
+      artifacts = File.join(worktree, ".workflow", "wr_1")
+      expect(composer.calls.last[:binding]).to eq("kind" => "run", "id" => "wr_1", "workspace" => "app.worktree-x", "step" => "plan",
+        "attempt" => 1, "instructions" => File.join(artifacts, "steps", "plan.1.prompt.md"), "artifacts" => artifacts)
+      expect(panes.bound["%5"]).to include(run_id: "wr_1", step: "plan", attempt: 1,
+        instructions: composer.calls.last[:binding]["instructions"], artifacts: artifacts)
+    end
+
+    it "announces the run on the shared event log" do
+      start
+
+      expect(events).to eq([["workflow_changed", "app.worktree-x",
+        {"run_id" => "wr_1", "workflow" => "flow", "workspace" => "app.worktree-x", "state" => "running", "step" => "plan", "reason" => nil}]])
+    end
+
+    it "refuses a missing required input, naming it, and creates nothing" do
+      expect { start(inputs: {}) }.to raise_error(Workspace::Error, "Workflow flow needs input task. Pass --input task=VALUE.") { |error|
+        expect(error.code).to eq("input_required")
+        expect(error.details).to eq("workflow" => "flow", "inputs" => [{"name" => "task", "description" => nil}])
+      }
+      expect(store.active).to eq([])
+      expect(panes.kicks).to eq([])
+    end
+
+    describe "unsafe paths" do
+      let(:gated) do
+        definition(<<~YAML)
+          steps:
+            a:
+              prompt: P
+              produces: [a.md]
+              gate: approve
+        YAML
+      end
+
+      def refusal(**args)
+        engine.preflight(definition: three_steps, workspace: "app.worktree-x", worktree: worktree, inputs: {"task" => "X-1"}, **args)
+        nil
+      rescue Workspace::Error => e
+        e
+      end
+
+      it "refuses a checkout that does not exist yet when it holds a quote" do
+        error = refusal(checkout: "/p/a'b")
+
+        expect(error.code).to eq("unsafe_checkout_path")
+        expect(error.details).to include("characters" => ["single quote"], "path_kind" => "checkout")
+        expect(error.message).not_to include("/p/a'b")
+      end
+
+      it "refuses start with an unsafe worktree" do
+        expect { engine.start(definition: three_steps, workspace: "app.worktree-x", worktree: "/p/a'b", inputs: {"task" => "X-1"}, pane: "%5") }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unsafe_checkout_path") }
+      end
+
+      it "names an invisible character" do
+        expect(refusal(checkout: "/p/a‮b").details["characters"]).to eq(["U+202E"])
+      end
+
+      it "does not refuse a missing checkout, or one equal to the worktree" do
+        expect(refusal(checkout: nil)).to be_nil
+        expect(refusal(checkout: worktree)).to be_nil
+      end
+
+      context "with a notes directory that holds a quote" do
+        let(:notes_dir) { File.join(@dir, "notes", "x'$(id)'") }
+
+        it "refuses a workflow with a gate, naming the notes directory" do
+          error = begin
+            engine.preflight(definition: gated, workspace: "app.worktree-x", worktree: worktree, inputs: {})
+            nil
+          rescue Workspace::Error => e
+            e
+          end
+
+          expect(error.code).to eq("unsafe_checkout_path")
+          expect(error.details["path_kind"]).to eq("notes directory")
+        end
+
+        it "leaves a workflow with no gate alone" do
+          plain = definition("steps:\n  a:\n    prompt: P\n")
+          expect(engine.preflight(definition: plain, workspace: "app.worktree-x", worktree: worktree, inputs: {})["step"]).to eq("a")
+        end
+
+        it "makes the gate note unreadable" do
+          run = {"id" => "wr_1", "workspace" => "app.worktree-x", "current" => "a", "artifacts_dir" => File.join(@dir, "art"),
+                 "definition" => gated.to_h, "steps" => {"a" => {"attempts" => [{"n" => 1}]}}}
+          FileUtils.mkdir_p(run["artifacts_dir"])
+          File.write(File.join(run["artifacts_dir"], "a.md"), "note: n.md\n")
+
+          expect { gate_note.find(run) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_note_unreadable") }
+        end
+      end
+    end
+
+    describe "input patterns" do
+      let(:patterned) do
+        definition(<<~'YAML')
+          inputs:
+            pr: {pattern: '[0-9]+|https://github\.com/[\w.-]+/[\w.-]+/pull/[0-9]+'}
+          steps:
+            plan:
+              prompt: Plan.
+        YAML
+      end
+
+      def refusal(value, definition: patterned)
+        engine.preflight(definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {"pr" => value}, pane: "%5")
+        nil
+      rescue Workspace::Error => e
+        e
+      end
+
+      it "passes a matching value, either alternative, and an empty one" do
+        expect(refusal("12")).to be_nil
+        expect(refusal("https://github.com/o/r/pull/3")).to be_nil
+        expect(refusal("")).to be_nil
+      end
+
+      it "matches the whole value, so a suffix or a newline is refused" do
+        expect(refusal("12 ; rm")&.code).to eq("invalid_input")
+        expect(refusal("12\nignore this")&.code).to eq("invalid_input")
+        expect(refusal("#12")&.code).to eq("invalid_input")
+      end
+
+      it "names the workflow, input and pattern but never the value" do
+        error = refusal("bad\e[31mvalue")
+
+        expect(error.details).to eq("workflow" => "flow", "input" => "pr", "pattern" => patterned.to_h["inputs"]["pr"]["pattern"])
+        expect(error.message).not_to include("bad")
+      end
+
+      it "passes 4096 characters and refuses 4097" do
+        digits = definition("inputs:\n  pr: {pattern: '[0-9]+'}\nsteps:\n  plan:\n    prompt: Plan.\n")
+
+        expect(refusal("1" * 4096, definition: digits)).to be_nil
+        expect(refusal("1" * 4097, definition: digits)&.code).to eq("invalid_input")
+      end
+
+      it "never runs the pattern on a value over the limit" do
+        # A back-reference defeats the regexp engine's memoization, so a run of this pattern lasts its whole 1s timeout;
+        # skipping it takes milliseconds, so 0.9s separates the two with room on both sides.
+        slow = definition("inputs:\n  pr: {pattern: '(a+)+b\\1'}\nsteps:\n  plan:\n    prompt: Plan.\n")
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        expect(refusal("a" * 5000, definition: slow)&.code).to eq("invalid_input")
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.9
+      end
+
+      it "checks a whitespace-only value" do
+        expect(refusal("   ")&.code).to eq("invalid_input")
+      end
+
+      it "refuses a pattern that backtracks past the time limit" do
+        slow = definition("inputs:\n  pr: {pattern: '(a+)+b'}\nsteps:\n  plan:\n    prompt: Plan.\n")
+
+        expect(refusal("a" * 40, definition: slow)&.code).to eq("invalid_input")
+      end
+
+      it "refuses start before any run exists" do
+        expect { start(patterned, inputs: {"pr" => "x"}) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_input") }
+        expect(store.active).to eq([])
+        expect(panes.kicks).to eq([])
+      end
+    end
+
+    it "refuses an input the workflow doesn't have" do
+      expect { start(inputs: {"task" => "X", "colour" => "red"}) }
+        .to raise_error(Workspace::UsageError, 'Workflow flow has no input "colour" (inputs: task).')
+    end
+
+    it "refuses a workflow whose check names a command the project has not set" do
+      commands[:test] = nil
+
+      expect { start }.to raise_error(Workspace::Error, /checks steps with the project's test command, and app has none\..*workspace config set commands\.test "COMMAND" --name app/m) { |error|
+        expect(error.code).to eq("workflow_command_unset")
+        expect(error.details).to eq("workflow" => "flow", "project" => "app", "commands" => ["test"],
+          "steps" => [{"step" => "verify", "command" => "test", "via" => "status"}])
+      }
+      expect(store.active).to eq([])
+    end
+
+    describe "a require: exec program" do
+      let(:exec_path) { File.join(@dir, "bin") }
+      let(:exec_line) { "check --flag" }
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            build:
+              prompt: Build it.
+              require:
+                - exec: #{exec_line.inspect}
+        YAML
+      end
+
+      def make_program(path, mode: 0o755)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "#!/bin/sh\n")
+        File.chmod(mode, path)
+        path
+      end
+
+      def refused(code)
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq(code)
+          yield error if block_given?
+        }
+        expect(store.active).to eq([])
+        expect(Dir.exist?(File.join(worktree, ".workflow"))).to be(false)
+      end
+
+      # Sets only PATH and HOME on the real ENV, and puts them back after the example.
+      before do
+        FileUtils.mkdir_p(worktree)
+        @saved_env = ENV.to_h.slice("PATH", "HOME")
+        ENV["PATH"] = exec_path
+        ENV["HOME"] = @dir
+      end
+
+      after { @saved_env.each { |key, value| ENV[key] = value } }
+
+      it "refuses a bare name that is not on PATH, naming the step and program" do
+        refused("workflow_program_missing") do |error|
+          expect(error.details).to include("workflow" => "flow", "program" => "check",
+            "steps" => [{"step" => "build", "program" => "check", "problem" => "is not on PATH"}])
+        end
+      end
+
+      it "starts when the bare name is on PATH" do
+        make_program(File.join(exec_path, "check"))
+        expect { start(flow, inputs: {}) }.not_to raise_error
+      end
+
+      context "with an absolute path" do
+        let(:exec_line) { File.join(@dir, "tools", "check") }
+
+        it "refuses one that is not executable" do
+          make_program(exec_line, mode: 0o644)
+          refused("workflow_program_missing") { |error| expect(error.details["steps"].first["problem"]).to match(/not executable/) }
+        end
+
+        it "refuses a directory" do
+          FileUtils.mkdir_p(exec_line)
+          refused("workflow_program_missing") { |error| expect(error.details["steps"].first["problem"]).to match(/not a file/) }
+        end
+      end
+
+      context "with a ~/ path" do
+        let(:exec_line) { "~/tools/check" }
+
+        it "starts when the file exists under HOME" do
+          make_program(File.join(@dir, "tools", "check"))
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+      end
+
+      context "with a relative path" do
+        let(:exec_line) { "script/check" }
+
+        it "refuses one missing from the checkout" do
+          refused("workflow_program_missing")
+        end
+
+        it "starts when the checkout holds it" do
+          make_program(File.join(worktree, "script", "check"))
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+
+        it "does not judge it in preflight for a checkout that is not made yet" do
+          expect { engine.preflight(definition: flow, workspace: "app", worktree: worktree, inputs: {}, tree: nil, checkout: File.join(@dir, "new")) }.not_to raise_error
+        end
+      end
+
+      context "with {{changed.tests}}" do
+        let(:exec_line) { "check -- {{changed.tests}}" }
+
+        before { make_program(File.join(exec_path, "check")) }
+
+        it "refuses when commands.test_files is empty" do
+          allow(commands_config).to receive(:test_files).with("app.worktree-x").and_return([])
+          refused("workflow_test_files_unset") { |error| expect(error.details).to include("workflow" => "flow", "workspace" => "app.worktree-x", "steps" => ["build"]) }
+        end
+
+        it "starts when commands.test_files is set" do
+          allow(commands_config).to receive(:test_files).with("app.worktree-x").and_return(["spec/**/*_spec.rb"])
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+      end
+    end
+
+    describe "a require: command" do
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            build:
+              prompt: Build it.
+              status: {command: test}
+              require:
+                - command: lint
+                  optional: #{optional}
+            ship:
+              prompt: Ship it.
+              require:
+                - command: test
+        YAML
+      end
+      let(:optional) { false }
+
+      it "refuses when only a require: command is unset, naming its step and listing the others" do
+        commands[:test] = "rake"
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error, /step build \(require: command: lint\): workspace config set commands\.lint "COMMAND" --name app/) { |error|
+          expect(error.code).to eq("workflow_command_unset")
+          expect(error.details).to include("commands" => ["lint"], "steps" => [{"step" => "build", "command" => "lint", "via" => "require"}])
+        }
+        expect(store.active).to eq([])
+      end
+
+      it "lists every unset command, each with its step" do
+        commands[:test] = nil
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.details["steps"]).to eq([
+            {"step" => "build", "command" => "test", "via" => "status"},
+            {"step" => "build", "command" => "lint", "via" => "require"},
+            {"step" => "ship", "command" => "test", "via" => "require"}
+          ])
+          expect(error.message).to include("commands.test").and include("commands.lint").and include("step ship")
+        }
+      end
+
+      it "refuses when only the status: command is unset" do
+        commands[:test] = nil
+        commands[:lint] = "standardrb"
+        expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error|
+          expect(error.details["steps"]).to include("step" => "build", "command" => "test", "via" => "status")
+          expect(error.details["commands"]).to eq(["test"])
+        }
+      end
+
+      context "with optional: true" do
+        let(:optional) { true }
+
+        it "does not count an unset optional command" do
+          commands[:test] = "rake"
+          expect { start(flow, inputs: {}) }.not_to raise_error
+        end
+
+        it "still counts the status: command" do
+          commands[:test] = nil
+          expect { start(flow, inputs: {}) }.to raise_error(Workspace::Error) { |error| expect(error.details["commands"]).to eq(["test"]) }
+        end
+      end
+    end
+
+    it "refuses a pane that already runs a workflow, and takes it once that run has ended" do
+      start
+
+      expect { start }.to raise_error(Workspace::Error, /Pane %5 is already running workflow run wr_1/) { |error|
+        expect(error.code).to eq("pane_has_run")
+        expect(error.details).to eq("pane" => "%5", "run_id" => "wr_1")
+      }
+
+      engine.cancel("wr_1")
+      expect(start["id"]).to eq("wr_2")
+    end
+
+    describe "one run per checkout" do
+      it "refuses a second run on the checkout, even from another pane, naming the holder and the cancel command" do
+        start
+
+        expect { start(pane: "%6", checkout: worktree) }.to raise_error(Workspace::Error, /Checkout .*app already has workflow run wr_1 at step/) { |error|
+          expect(error.code).to eq("checkout_has_run")
+          expect(error.details).to include("run_id" => "wr_1", "worktree" => File.realpath(worktree), "step" => "plan",
+            "state" => "running", "next" => ["workspace workflow cancel wr_1"])
+        }
+        expect(store.active.size).to eq(1)
+      end
+
+      it "matches the checkout by real path, through a symlink" do
+        start
+        link = File.join(@dir, "link-to-app")
+        File.symlink(worktree, link)
+
+        expect { engine.start(definition: three_steps, workspace: "app.worktree-x", worktree: link, inputs: {"task" => "X-1"}, pane: "%6") }
+          .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("checkout_has_run") }
+      end
+
+      it "refuses in preflight too, and takes the checkout once the run is cancelled, failed or completed" do
+        start
+
+        expect { engine.preflight(definition: three_steps, workspace: "app.worktree-x", worktree: worktree, inputs: {"task" => "X-1"}, pane: "%6") }
+          .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("checkout_has_run") }
+
+        engine.cancel("wr_1")
+        expect(start(pane: "%6", checkout: worktree)["id"]).to eq("wr_2")
+      end
+
+      it "ignores a stored run with no worktree, or one whose path is gone" do
+        store.create({"state" => "running", "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+                      "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
+        store.create({"state" => "running", "worktree" => File.join(@dir, "gone"), "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+                      "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
+
+        expect(start(pane: "%6", checkout: worktree)["id"]).to eq("wr_3")
+      end
+
+      describe "#run_on_checkout" do
+        it "returns the active run on the checkout, through a symlinked path" do
+          start
+          link = File.join(@dir, "link-to-app")
+          File.symlink(worktree, link)
+
+          expect(engine.run_on_checkout(link)["id"]).to eq("wr_1")
+          expect(engine.run_on_checkout(worktree)["id"]).to eq("wr_1")
+        end
+
+        it "skips a finished run" do
+          start
+          engine.cancel("wr_1")
+
+          expect(engine.run_on_checkout(worktree)).to be_nil
+        end
+
+        it "skips a run whose path is gone, a run with no worktree, and a path that does not exist" do
+          store.create({"state" => "running", "worktree" => File.join(@dir, "gone"), "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+                        "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
+          store.create({"state" => "running", "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+                        "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
+
+          expect(engine.run_on_checkout(worktree)).to be_nil
+          expect(engine.run_on_checkout(File.join(@dir, "nowhere"))).to be_nil
+        end
+      end
+
+      it "does not refuse a target path that does not exist, or none" do
+        start
+
+        [File.join(@dir, "nowhere"), nil].each do |tree|
+          expect(engine.preflight(definition: three_steps, workspace: "app.worktree-x", worktree: worktree, tree: tree, inputs: {"task" => "X-1"})).to include("step" => "plan")
+        end
+      end
+
+      it "is not raised by resume, which is the run itself" do
+        start
+        panes.unbind("wr_1")
+
+        expect { engine.resume("wr_1", pane: "%5") }.not_to raise_error
+      end
+    end
+
+    it "refuses a pack that can't be read before it creates the run" do
+      ghost = definition("steps:\n  a:\n    prompt: P\n    include: [ghost]\n")
+
+      expect { start(ghost, inputs: {}) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_library_entry") }
+      expect(store.active).to eq([])
+    end
+
+    it "leaves a run that waits for a person when the pane is gone, holding nothing" do
+      locked = definition("steps:\n  a:\n    prompt: P\n    uses: [test-db]\n")
+      panes.kick_result = {ok: false, code: "no_such_pane", message: "no pane %5 in tmux session app"}
+
+      run = start(locked, inputs: {})
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to eq("code" => "pane_gone", "since" => "2026-10-04T12:00:00Z",
+        "details" => {"kind" => "dispatch", "step" => "a", "pane" => "%5", "workspace" => "app.worktree-x",
+                      "error" => "no_such_pane", "message" => "no pane %5 in tmux session app"})
+      expect(run["steps"]["a"]).to include("state" => "waiting")
+      expect(run["steps"]["a"]["attempts"].last).to include("outcome" => "not_delivered")
+      expect(lock_holder("test-db")).to be_nil
+    end
+
+    it "takes a pane whose last run ended and left its binding behind" do
+      start
+      engine.cancel("wr_1")
+      panes.bind(workspace: "app.worktree-x", pane: "%5", run_id: "wr_1", step: "plan", attempt: 1, instructions: "x", artifacts: "y")
+
+      expect(start["id"]).to eq("wr_2")
+    end
+
+    it "leaves the run waiting for a person, holding nothing, when the pane can't be bound" do
+      locked = definition("steps:\n  a:\n    prompt: P\n    uses: [test-db]\n")
+      panes.bind_error = Workspace::Error.new("Pane %5 is in tmux session other, not app.", code: "wrong_session")
+
+      run = start(locked, inputs: {})
+
+      expect(run["reason"]).to include("code" => "pane_gone")
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "wrong_session", "message" => "Pane %5 is in tmux session other, not app.")
+      expect(run["steps"]["a"]).to include("state" => "waiting")
+      expect(run["steps"]["a"]["attempts"].map { |attempt| attempt["outcome"] }).to eq(["not_delivered"])
+      expect(panes.kicks).to eq([])
+      expect(lock_holder("test-db")).to be_nil
+    end
+
+    it "leaves the run waiting for a person when a later step's pack can't be read" do
+      ghost = definition("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    include: [ghost]\n    uses: [test-db]\n")
+      start(ghost, inputs: {})
+
+      run = engine.turn_ended("wr_1")
+
+      expect(run).to include("current" => "b", "state" => "waiting")
+      expect(run["reason"]).to include("code" => "waiting_you")
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "unknown_library_entry", "message" => "No library entry named ghost.")
+      expect(panes.kicks.size).to eq(1)
+      expect(lock_holder("test-db")).to be_nil
+    end
+
+    it "does not bring back a checkout that was removed: nothing is written and no lock is taken" do
+      to_build_ready = definition("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    uses: [test-db]\n")
+      start(to_build_ready, inputs: {})
+      FileUtils.rm_rf(worktree)
+
+      run = engine.turn_ended("wr_1")
+
+      expect(run["reason"]).to include("code" => "waiting_you")
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "message" => "the checkout #{worktree} is gone")
+      expect(File.exist?(worktree)).to be false
+      expect(lock_holder("test-db")).to be_nil
+    end
+
+    it "leaves the run waiting for a person when the step's instructions can't be written" do
+      start(definition("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n"), inputs: {})
+      full = lambda do |path, text, **options|
+        raise Errno::ENOSPC if path.end_with?("b.1.prompt.md")
+        File.write(path, text, **options)
+      end
+
+      run = engine_with(prompt_writer: full).turn_ended("wr_1")
+
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "error")
+      expect(run["reason"]["details"]["message"]).to match(/No space left on device/)
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "types nothing into a pane its binding no longer stands for, and takes no lock" do
+      two = definition("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    uses: [test-db]\n    context: continue\n")
+      start(two, inputs: {})
+      panes.stale << "wr_1"
+
+      run = engine.resume("wr_1", from: "b")
+
+      expect(run["reason"]).to include("code" => "pane_gone")
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "pane_gone", "pane" => "%5")
+      expect(panes.kicks.size).to eq(1)
+      expect(lock_holder("test-db")).to be_nil
+    end
+
+    it "leaves the run waiting for a person when its run file does not keep it alive to the lock store" do
+      locked = definition("steps:\n  a:\n    prompt: P\n    uses: [test-db]\n")
+      allow(liveness).to receive(:run_alive?).and_return(false)
+
+      run = start(locked, inputs: {})
+
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "message" => "run wr_1 has no run file, so it can hold no lock")
+      expect(panes.kicks).to eq([])
+    end
+
+    it "stores a message from tmux or the daemon that is not valid text without failing the run's write" do
+      panes.kick_result = {ok: false, code: "pane_busy", message: (+"pane \xFF did not go quiet").force_encoding("UTF-8")}
+
+      reason = start["reason"]
+
+      expect(reason["details"]["message"]).to eq("pane � did not go quiet")
+      expect(store.find("wr_1")["reason"]).to eq(reason)
+    end
+
+    it "says a person is needed when the line could not be typed for another reason" do
+      panes.kick_result = {ok: false, code: "pane_busy", message: "pane %5 did not go quiet"}
+
+      reason = start["reason"]
+
+      expect(reason["code"]).to eq("waiting_you")
+      expect(reason["details"]).to include("kind" => "dispatch", "error" => "pane_busy", "message" => "pane %5 did not go quiet")
     end
   end
 end
