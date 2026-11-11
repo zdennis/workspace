@@ -116,17 +116,13 @@ module Workspace
     # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
       env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
-      @prompt_writer = prompt_writer
       @store = store
       @resources = resources
-      @composer = composer
       @panes = panes
       @checker = checker
       @commands_config = commands_config
       @lineage = lineage
-      @git = git
       @guard = guard
-      @excludes = excludes
       @gate_note = gate_note
       @env_stopper = env_stopper
       @workspace_known = workspace_known
@@ -137,6 +133,7 @@ module Workspace
         commands_config: commands_config, checker: checker)
       @log_tail = log_tail || WorkflowLogTail.new
       @inbox_for = inbox_for
+      @prompt = WorkflowPrompt.new(composer: composer, git: git, excludes: excludes, prompt_writer: prompt_writer)
       @clock = clock
       @change = WorkflowRunChange.new(store: store, attempt_record: @attempt_record, deliver: method(:deliver), alerts: alerts, event_log: event_log)
     end
@@ -174,8 +171,8 @@ module Workspace
       check_pane(pane)
       check_checkout(tree)
       first = data["steps"].first
-      packs = compose({"definition" => data, "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
-                       "id" => PREVIEW_RUN_ID, "artifacts_dir" => artifacts_dir(worktree, PREVIEW_RUN_ID)}, first, [])["packs"]
+      packs = @prompt.compose({"definition" => data, "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
+                               "id" => PREVIEW_RUN_ID, "artifacts_dir" => @prompt.artifacts_dir(worktree, PREVIEW_RUN_ID)}, first, [])["packs"]
       {"workflow" => data["id"], "workspace" => workspace, "project" => project, "step" => first["id"], "pane" => pane,
        "inputs" => inputs, "packs" => packs.map { |pack| pack["ref"] }}
     end
@@ -202,9 +199,9 @@ module Workspace
       inputs = check_inputs(data, inputs)
       # A started run stores the definition with the strict marker, which words the produces line.
       run = {"definition" => data.merge(WorkflowProduced::MARKER_KEY => WorkflowProduced::STRICT), "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
-             "id" => PREVIEW_RUN_ID, "artifacts_dir" => artifacts_dir(worktree, PREVIEW_RUN_ID)}
-      path = prompt_path(run, found, 1)
-      composed = compose(run, found, [], binding: step_binding(run, found, 1, path))
+             "id" => PREVIEW_RUN_ID, "artifacts_dir" => @prompt.artifacts_dir(worktree, PREVIEW_RUN_ID)}
+      path = @prompt.prompt_path(run, found, 1)
+      composed = @prompt.compose(run, found, [], binding: @prompt.step_binding(run, found, 1, path))
       {"workflow" => data["id"], "step" => found["id"], "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
        "gate" => found["gate"], "text" => composed["text"], "packs" => composed["packs"].map { |pack| pack["ref"] },
        "run" => PREVIEW_RUN_ID, "artifacts_dir" => run["artifacts_dir"], "instructions" => path,
@@ -280,7 +277,7 @@ module Workspace
       run = @store.create(attributes, -> {
         check_pane(pane)
         check_checkout(worktree)
-      }) { |created| created["artifacts_dir"] = artifacts_dir(worktree, created["id"]) }
+      }) { |created| created["artifacts_dir"] = @prompt.artifacts_dir(worktree, created["id"]) }
       event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
       return @change.call(run["id"]) { |_stored| } unless dispatch
       @change.call(run["id"]) { |stored, ctx| dispatch(stored, ctx: ctx) }
@@ -1117,10 +1114,6 @@ module Workspace
         code: "unknown_step", details: {"workflow" => data["id"], "step" => step.to_s[0, 60], "steps" => ids})
     end
 
-    def artifacts_dir(worktree, run_id)
-      File.join(worktree, ".workflow", run_id)
-    end
-
     def step_ids(run)
       run["definition"]["steps"].map { |step| step["id"] }
     end
@@ -1342,7 +1335,7 @@ module Workspace
       # A rejected gate stays marked for the first run of the step again, and no longer.
       gate = state["gate"]
       state.delete("gate") unless gate && gate["state"] == "rejected" && gate["attempt"] == state["attempts"].last&.fetch("n", nil)
-      run["artifacts_dir"] ||= artifacts_dir(run["worktree"], run["id"])
+      run["artifacts_dir"] ||= @prompt.artifacts_dir(run["worktree"], run["id"])
       # Before anything is written: a removed checkout must not come back as a directory.
       raise Workspace::Error, "the checkout #{run["worktree"]} is gone" unless File.directory?(run["worktree"])
       pane = bound_pane(run)
@@ -1359,7 +1352,7 @@ module Workspace
       pending = state.delete("redelivery_pending")
       attempt["redelivery"] = pending if pending
       run["pending_context"] = []
-      attempt["prompt_file"], composed = write_prompt(run, step, attempt)
+      attempt["prompt_file"], composed = @prompt.write(run, step, attempt["n"], attempt["context"])
       attempt.replace(@attempt_record.start(run: run, attempt: attempt, composed: composed).to_mutable_h)
       state["attempts"] << attempt
       @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
@@ -1504,66 +1497,6 @@ module Workspace
     end
 
     def stop_reason(stored, turn_started, code, details) = WorkflowTransitions.stop_reason(stored, turn_started, code, details, now_iso)
-
-    def values(run)
-      branch = begin
-        @git.worktree_branch(run["worktree"])
-      rescue Workspace::Error, SystemCallError
-        nil
-      end
-      {"workspace" => run["workspace"], "branch" => branch.to_s, "artifacts" => run["artifacts_dir"], "run" => run["id"]}
-        .merge(run["inputs"].transform_keys { |name| "inputs.#{name}" })
-    end
-
-    def compose(run, step, context, binding: nil)
-      data = run["definition"]
-      filled = values(run)
-      context = context.dup
-      context.unshift("Note for this run: #{run["note"]}") if run["note"]
-      @composer.compose(
-        packs: nil, cwd: run["worktree"], binding: binding, skip: step["uses"].to_a.include?("devenv") ? ["dev"] : [],
-        workflow: {"name" => data["id"], "include" => data["include"],
-                   "text" => data["instructions"] && WorkflowDefinition.render(data["instructions"], filled)},
-        step: {"name" => step["id"], "include" => step["include"], "text" => step_text(run, step, filled)},
-        attempt: context
-      )
-    rescue EncodingError, ArgumentError => e
-      # Text that is not UTF-8 met text that is (a pack read with no UTF-8 locale, a checkout under
-      # such a path): an encoding error, or the "invalid byte sequence" a string method raises.
-      raise unless e.is_a?(EncodingError) || e.message.include?("invalid byte sequence")
-      raise Workspace::Error, "the step's instructions could not be put together: a pack, a prompt or a path is not UTF-8 text (#{e.class})"
-    end
-
-    # The prompt, then what the runner looks at when the turn ends.
-    def step_text(run, step, filled)
-      text = WorkflowDefinition.render(step["prompt"], filled).strip
-      files = step["produces"].map { |file| File.join(run["artifacts_dir"], file) }
-      if files.any?
-        what = WorkflowProduced.strict?(run["definition"]) ? "exist as non-empty regular files (not links), written during this attempt" : "exist, written during this attempt"
-        text += "\n\nThis step is finished when your turn ends and these files #{what}: #{files.join(", ")}."
-      end
-      text += "\n\nWhen your turn ends, the runner checks the step with the project's own command; work until it would pass." if step["status"]
-      text
-    end
-
-    # Where an attempt's instructions file goes, and the binding its pane gets; {#render} asks the same two.
-    def prompt_path(run, step, attempt_number)
-      File.join(run["artifacts_dir"], "steps", "#{step["id"]}.#{attempt_number}.prompt.md")
-    end
-
-    def step_binding(run, step, attempt_number, path)
-      {"kind" => "run", "id" => run["id"], "workspace" => run["workspace"], "step" => step["id"], "attempt" => attempt_number,
-       "instructions" => path, "artifacts" => run["artifacts_dir"]}
-    end
-
-    def write_prompt(run, step, attempt)
-      FileUtils.mkdir_p(File.join(run["artifacts_dir"], "steps"))
-      @excludes.add(run["worktree"], "/.workflow/")
-      path = prompt_path(run, step, attempt["n"])
-      composed = compose(run, step, attempt["context"], binding: step_binding(run, step, attempt["n"], path))
-      @prompt_writer.call(path, composed["text"], encoding: Encoding::UTF_8)
-      [path, composed]
-    end
 
     # Decides a step whose turn ended. Registers the check to run on +ctx+, when the
     # step has one and nothing else already decided it.

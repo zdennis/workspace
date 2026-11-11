@@ -68,4 +68,16 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::Git, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingComposer do
+    it "accepts every call Workspace::InstructionComposer accepts" do
+      expect(FakeContract.problems(described_class, Workspace::InstructionComposer, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingGitExclude do
+    it "accepts every call Workspace::GitExclude accepts" do
+      expect(FakeContract.problems(described_class, Workspace::GitExclude, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end
