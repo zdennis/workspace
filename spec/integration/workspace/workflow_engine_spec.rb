@@ -30,7 +30,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:checker) do
     lambda do |stop_when:, **args|
       stop_whens << stop_when
-      check_calls << args.merge(state_during: store.find("wr_1")["steps"][store.find("wr_1")["current"]]["state"])
+      check_calls << args.merge(state_during: stored_run(store, "wr_1")["steps"][stored_run(store, "wr_1")["current"]]["state"])
       check_results.shift || {exit_code: 0, timed_out: false}
     end
   end
@@ -144,14 +144,14 @@ RSpec.describe Workspace::WorkflowEngine do
     let(:plan) { File.join(worktree, ".workflow", "wr_1", "plan.md") }
 
     def attempt
-      store.find("wr_1")["steps"]["plan"]["attempts"].last
+      stored_run(store, "wr_1")["steps"]["plan"]["attempts"].last
     end
 
     it "records the definition, the prompt, the packs and HEAD when the attempt begins" do
       start(ledger_flow, inputs: {})
 
       expect(attempt["head"]).to eq("before" => "1" * 40, "after" => nil)
-      expect(attempt["definition_sha256"]).to eq(store.find("wr_1")["definition_sha256"])
+      expect(attempt["definition_sha256"]).to eq(stored_run(store, "wr_1")["definition_sha256"])
       expect(attempt["prompt_sha256"]).to eq(Digest::SHA256.file(attempt["prompt_file"]).hexdigest)
       expect(attempt["packs"]).to eq([{"ref" => "play/binding", "sha256" => "b" * 64}])
     end
@@ -183,7 +183,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     # A run stored before the strict check passes a link; the record must not follow it.
     def link_output
-      store.update("wr_1") { |run| run["definition"].delete("produces_check") }
+      edit_run(store, "wr_1") { |run| run["definition"].delete("produces_check") }
       FileUtils.mkdir_p(File.dirname(plan))
       target = File.join(@dir, "elsewhere.md")
       File.write(target, "outside\n")
@@ -253,7 +253,7 @@ RSpec.describe Workspace::WorkflowEngine do
       allow(guard).to receive(:head).and_return(nil)
       engine.workspace_killed("app.worktree-x")
 
-      expect(store.find("wr_1")["state"]).to eq("cancelled")
+      expect(stored_run(store, "wr_1")["state"]).to eq("cancelled")
       expect(attempt["head"]).to eq("before" => "1" * 40, "after" => nil)
       expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => nil, "bytes" => nil}])
     end
@@ -277,7 +277,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "closes an attempt stored without the new fields, and leaves the other fields alone" do
       start(ledger_flow, inputs: {})
-      store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last.reject! { |key, _| %w[head packs prompt_sha256 definition_sha256].include?(key) } }
+      edit_run(store, "wr_1") { |run| run["steps"]["plan"]["attempts"].last.reject! { |key, _| %w[head packs prompt_sha256 definition_sha256].include?(key) } }
       artifact("plan.md")
       engine.turn_ended("wr_1", pane: "%5")
 
@@ -289,7 +289,7 @@ RSpec.describe Workspace::WorkflowEngine do
   describe "the history an attempt keeps" do
     # [where, code, until?] for every entry of the run, attempts in order then the run's own list.
     def entries(id = "wr_1")
-      run = store.find(id)
+      run = stored_run(store, id)
       from_attempts = run["steps"].flat_map do |step, state|
         state["attempts"].flat_map { |attempt| Array(attempt["reasons"]).map { |e| ["#{step}.#{attempt["n"]}", e["code"], e["until"]] } }
       end
@@ -318,7 +318,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       now[0] += 50
       engine.approve("wr_1")
-      expect(store.find("wr_1")["steps"]["plan"]["attempts"].first["reasons"]).to eq([{"code" => "waiting_you", "since" => "2026-10-04T12:00:05Z", "until" => "2026-10-04T12:01:00Z"}])
+      expect(stored_run(store, "wr_1")["steps"]["plan"]["attempts"].first["reasons"]).to eq([{"code" => "waiting_you", "since" => "2026-10-04T12:00:05Z", "until" => "2026-10-04T12:01:00Z"}])
     end
 
     it "closes a gate's wait on reject, and the rerun opens no entry of its own" do
@@ -401,7 +401,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(entries).to eq([["verify.1", "failed_check", "2026-10-04T12:00:05Z"], ["run:verify", "parked", nil]])
 
       now[0] += 5
-      store.update("wr_1") { |run| run.delete("parked") }
+      edit_run(store, "wr_1") { |run| run.delete("parked") }
       engine.tick("wr_1")
       engine.cancel("wr_1") if entries.none? { |_, code, finish| code == "failed_check" && finish.nil? }
       expect(entries.count { |_, code, _| code == "failed_check" }).to eq(1)
@@ -423,7 +423,7 @@ RSpec.describe Workspace::WorkflowEngine do
       start(three_steps)
       artifact("plan.md")
       engine.turn_ended("wr_1", pane: "%5")
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run.delete("reasons")
         run["steps"].each_value { |state| state["attempts"].each { |attempt| %w[session agent usage reasons].each { |key| attempt.delete(key) } } }
       end
@@ -431,7 +431,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect { engine.approve("wr_1") }.not_to raise_error
       expect { engine.report("wr_1", status: "pass", summary: "ok") }.not_to raise_error
       expect { engine.cancel("wr_1") }.not_to raise_error
-      expect(store.find("wr_1")["state"]).to eq("cancelled")
+      expect(stored_run(store, "wr_1")["state"]).to eq("cancelled")
     end
   end
 
@@ -514,7 +514,7 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.turn_ended("wr_1", pane: "%5")
       engine.turn_ended("wr_1", pane: "%5")
 
-      expect(store.find("wr_1")["reason"]["code"]).to eq("retry_backoff")
+      expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("retry_backoff")
       expect(sent).to eq([])
     end
 
@@ -552,7 +552,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "escapes values from the run file and never passes a next action" do
       start
-      store.update("wr_1") { |run| run["workspace"] = "evil\e[31m\nname" }
+      edit_run(store, "wr_1") { |run| run["workspace"] = "evil\e[31m\nname" }
       artifact("plan.md")
       engine.turn_ended("wr_1", pane: "%5")
 
@@ -583,7 +583,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "fires after the run lock is given up" do
       free = nil
-      allow(self).to receive(:spawner).and_return(->(*) { free = !store.update("wr_1", nonblocking: true) { |run| run }.nil? })
+      allow(self).to receive(:spawner).and_return(->(*) { free = !edit_run(store, "wr_1", nonblocking: true) { |run| run }.nil? })
       start
       artifact("plan.md")
       engine.turn_ended("wr_1", pane: "%5")
@@ -593,7 +593,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "keeps working for a run stored before the setting, with no sweep marks" do
       start
-      store.update("wr_1") { |run| run.delete("sweep") }
+      edit_run(store, "wr_1") { |run| run.delete("sweep") }
       artifact("plan.md")
 
       expect(engine.turn_ended("wr_1", pane: "%5")["state"]).to eq("waiting")
@@ -610,7 +610,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       start(kid, inputs: {})
       File.write(File.join(defs, "base.yml"), "steps:\n  plan:\n    prompt: Plan it differently.\n    produces: [plan.md]\n")
-      stored = store.find("wr_1")
+      stored = stored_run(store, "wr_1")
 
       expect(stored["definition"]).to eq(kid.to_h.merge("produces_check" => "strict"))
       expect(stored["definition"]["steps"].map { |step| step["prompt"] }).to eq(["Plan it.", "More."])
@@ -639,7 +639,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.bound).to eq("%5" => {workspace: "app.worktree-x", run_id: "wr_1", step: "plan", attempt: 1,
                                          instructions: prompt, artifacts: File.join(worktree, ".workflow", "wr_1")})
       expect(panes.kicks).to eq([{workspace: "app.worktree-x", pane: "%5", text: "Read #{prompt} and follow it.", fresh: true, run_id: "wr_1"}])
-      expect(store.find("wr_1")).to eq(run)
+      expect(stored_run(store, "wr_1")).to eq(run)
       expect(history).to eq(%w[run_started step_dispatching step_dispatched])
     end
 
@@ -685,7 +685,7 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(error.code).to eq("input_required")
         expect(error.details).to eq("workflow" => "flow", "inputs" => [{"name" => "task", "description" => nil}])
       }
-      expect(store.active).to eq([])
+      expect(going_runs(store)).to eq([])
       expect(panes.kicks).to eq([])
     end
 
@@ -827,7 +827,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "refuses start before any run exists" do
         expect { start(patterned, inputs: {"pr" => "x"}) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_input") }
-        expect(store.active).to eq([])
+        expect(going_runs(store)).to eq([])
         expect(panes.kicks).to eq([])
       end
     end
@@ -845,7 +845,7 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(error.details).to eq("workflow" => "flow", "project" => "app", "commands" => ["test"],
           "steps" => [{"step" => "verify", "command" => "test", "via" => "status"}])
       }
-      expect(store.active).to eq([])
+      expect(going_runs(store)).to eq([])
     end
 
     describe "a require: exec program" do
@@ -873,7 +873,7 @@ RSpec.describe Workspace::WorkflowEngine do
           expect(error.code).to eq(code)
           yield error if block_given?
         }
-        expect(store.active).to eq([])
+        expect(going_runs(store)).to eq([])
         expect(Dir.exist?(File.join(worktree, ".workflow"))).to be(false)
       end
 
@@ -980,7 +980,7 @@ RSpec.describe Workspace::WorkflowEngine do
           expect(error.code).to eq("workflow_command_unset")
           expect(error.details).to include("commands" => ["lint"], "steps" => [{"step" => "build", "command" => "lint", "via" => "require"}])
         }
-        expect(store.active).to eq([])
+        expect(going_runs(store)).to eq([])
       end
 
       it "lists every unset command, each with its step" do
@@ -1040,7 +1040,7 @@ RSpec.describe Workspace::WorkflowEngine do
           expect(error.details).to include("run_id" => "wr_1", "worktree" => File.realpath(worktree), "step" => "plan",
             "state" => "running", "next" => ["workspace workflow cancel wr_1"])
         }
-        expect(store.active.size).to eq(1)
+        expect(going_runs(store).size).to eq(1)
       end
 
       it "matches the checkout by real path, through a symlink" do
@@ -1119,7 +1119,7 @@ RSpec.describe Workspace::WorkflowEngine do
       ghost = definition("steps:\n  a:\n    prompt: P\n    include: [ghost]\n")
 
       expect { start(ghost, inputs: {}) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_library_entry") }
-      expect(store.active).to eq([])
+      expect(going_runs(store)).to eq([])
     end
 
     it "leaves a run that waits for a person when the pane is gone, holding nothing" do
@@ -1228,7 +1228,7 @@ RSpec.describe Workspace::WorkflowEngine do
       reason = start["reason"]
 
       expect(reason["details"]["message"]).to eq("pane � did not go quiet")
-      expect(store.find("wr_1")["reason"]).to eq(reason)
+      expect(stored_run(store, "wr_1")["reason"]).to eq(reason)
     end
 
     it "says a person is needed when the line could not be typed for another reason" do
@@ -1256,7 +1256,7 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(engine.resume("wr_1", note: "encore", from: "a")["steps"]["a"]["attempts"].last["context"]).to eq(["Note from the person who resumed the run: encore"])
         expect(engine.cancel("wr_1")["state"]).to eq("cancelled")
       end
-      expect(store.find("wr_1")["inputs"]).to eq("task" => "déjà vu")
+      expect(stored_run(store, "wr_1")["inputs"]).to eq("task" => "déjà vu")
     end
 
     it "starts a run and names its task, read from the real task store holding a non-ASCII title" do
@@ -1287,7 +1287,7 @@ RSpec.describe Workspace::WorkflowEngine do
         .to raise_error(Workspace::Error, /could not be put together.*\(ArgumentError\)/)
       expect { engine_with(composer: bug).start(definition: french, workspace: "app", worktree: worktree, inputs: {}, pane: "%5") }
         .to raise_error(ArgumentError, /wrong number/)
-      expect(store.active).to eq([])
+      expect(going_runs(store)).to eq([])
     end
 
     it "leaves a run waiting for a person, holding nothing, when a step's file can't be written as UTF-8" do
@@ -1301,7 +1301,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect(run["reason"]["details"]).to include("kind" => "dispatch")
       expect(lock_holder("test-db")).to be_nil
-      expect(store.find("wr_1")).to eq(run)
+      expect(stored_run(store, "wr_1")).to eq(run)
     end
 
     it "refuses to start, with a workspace error and nothing left behind, when the instructions can't be put together" do
@@ -1310,7 +1310,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect { engine_with(composer: clashing).start(definition: french, workspace: "app", worktree: worktree, inputs: {}, pane: "%5") }
         .to raise_error(Workspace::Error, /the step's instructions could not be put together: a pack, a prompt or a path is not UTF-8 text \(Encoding::CompatibilityError\)/)
-      expect(store.active).to eq([])
+      expect(going_runs(store)).to eq([])
     end
 
     it "leaves a run waiting for a person, holding nothing, when a later step's instructions can't be put together" do
@@ -1322,7 +1322,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["reason"]["details"]).to include("kind" => "dispatch")
       expect(run["reason"]["details"]["message"]).to match(/could not be put together/)
       expect(lock_holder("test-db")).to be_nil
-      expect(store.find("wr_1")).to eq(run)
+      expect(stored_run(store, "wr_1")).to eq(run)
     end
   end
 
@@ -1579,7 +1579,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "stores the attempt as running and delivering before the line is typed, and clears the mark once it is" do
       seen = nil
       allow(panes).to receive(:kick) do |**args|
-        seen = store.find("wr_1")
+        seen = stored_run(store, "wr_1")
         panes.kicks << args
         {ok: true}
       end
@@ -1596,7 +1596,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "leaves a running attempt when the process dies while the daemon answers, which a turn's end then decides" do
       panes.kick_error = Interrupt
       expect { start }.to raise_error(Interrupt)
-      left = store.find("wr_1")
+      left = stored_run(store, "wr_1")
       expect(left).to include("state" => "running", "reason" => nil)
       expect(left["steps"]["plan"]["attempts"].last).to include("n" => 1, "delivery" => "delivering")
 
@@ -1621,7 +1621,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect(panes.kicks.size).to eq(1)
       expect(resumed["unchanged"]).to eq("step plan's line is still being delivered to pane %5")
-      expect(store.find("wr_1")["steps"]["plan"]["attempts"].size).to eq(1)
+      expect(stored_run(store, "wr_1")["steps"]["plan"]["attempts"].size).to eq(1)
     end
 
     it "decides a step left delivering past the delivery window when its pane's turn is over, without typing again" do
@@ -1707,7 +1707,7 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.turn_ended("wr_1", pane: "%5")
       seen = nil
       allow(panes).to receive(:kick) do |**args|
-        seen = store.find("wr_1")
+        seen = stored_run(store, "wr_1")
         {ok: true}
       end
 
@@ -1802,7 +1802,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "counts the end of a turn that began when the step's attempt did, or after" do
-        started = Time.iso8601(store.find("wr_1")["steps"]["build"]["attempts"].last["started_at"])
+        started = Time.iso8601(stored_run(store, "wr_1")["steps"]["build"]["attempts"].last["started_at"])
 
         expect(engine.turn_ended("wr_1", pane: "%5", turn_started: started)["current"]).to eq("verify")
       end
@@ -1813,7 +1813,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "leaves a step whose own turn's end was dropped to `resume`, which decides it once the pane's agent is seen idle" do
         engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 11, 0, 0))
-        expect(store.find("wr_1")).to include("state" => "running", "reason" => nil)
+        expect(stored_run(store, "wr_1")).to include("state" => "running", "reason" => nil)
 
         run = engine.resume("wr_1", turn_over: {"step" => "build", "attempt" => 1})
 
@@ -1833,29 +1833,29 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "keeps the reason's since and announces nothing when the daemon names no turn start" do
-        before = store.find("wr_1")["reason"]
+        before = stored_run(store, "wr_1")["reason"]
 
         engine.turn_ended("wr_1", pane: "%5")
 
-        expect(store.find("wr_1")["reason"]).to eq(before)
+        expect(stored_run(store, "wr_1")["reason"]).to eq(before)
         expect(before["since"]).to eq(first_since)
         expect(events).to eq([])
       end
 
       it "keeps the since when the turn began before the stop was recorded" do
-        before = store.find("wr_1")["reason"]
+        before = stored_run(store, "wr_1")["reason"]
 
         engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 0, 30))
         engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 0, 500_000))
 
-        expect(store.find("wr_1")["reason"]).to eq(before)
+        expect(stored_run(store, "wr_1")["reason"]).to eq(before)
         expect(events).to eq([])
       end
 
       it "gives a stop after a later turn a since of its own" do
         engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 30))
 
-        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
         expect(events.map(&:first)).to eq(["workflow_changed"])
       end
 
@@ -1864,14 +1864,14 @@ RSpec.describe Workspace::WorkflowEngine do
         now[0] += 60
         engine.turn_ended("wr_1", pane: "%5")
 
-        expect(store.find("wr_1")["reason"]).to include("since" => "2026-10-04T12:03:00Z")
-        expect(store.find("wr_1")["reason"]["details"]["attempt"]).to eq(2)
+        expect(stored_run(store, "wr_1")["reason"]).to include("since" => "2026-10-04T12:03:00Z")
+        expect(stored_run(store, "wr_1")["reason"]["details"]["attempt"]).to eq(2)
       end
 
       it "gives a stop after a pane-less resume a new since" do
         engine.resume("wr_1")
 
-        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
       end
 
       it "stores a changed missing list and keeps the since" do
@@ -1879,7 +1879,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         engine.turn_ended("wr_1", pane: "%5")
 
-        reason = store.find("wr_1")["reason"]
+        reason = stored_run(store, "wr_1")["reason"]
         expect(reason["since"]).to eq(first_since)
         expect(reason["details"]).to include("missing" => [], "stale" => [File.join(worktree, ".workflow", "wr_1", "plan.md")])
       end
@@ -1941,7 +1941,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "stops the run with the code, source and what was found when no loop is left" do
-        store.update("wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
+        edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
         commit_counts[0] = 0
 
         run = engine.turn_ended("wr_1", pane: "%5")
@@ -1952,7 +1952,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "fails as unproven when the attempt has no recorded starting commit" do
-        store.update("wr_1") do |stored|
+        edit_run(store, "wr_1") do |stored|
           stored["definition"]["steps"][1]["on_fail"] = nil
           stored["steps"]["build"]["attempts"].last.delete("head")
         end
@@ -1964,7 +1964,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "fails on a dirty tracked tree with the paths" do
-        store.update("wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
+        edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
         allow(guard).to receive(:dirty_paths).and_return(["a.rb"])
 
         expect(engine.turn_ended("wr_1", pane: "%5")["reason"]["details"]).to include("code" => "require_tracked_clean", "paths" => ["a.rb"])
@@ -1987,7 +1987,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "does not apply to a run stored before require existed" do
-        store.update("wr_1") { |stored| stored["definition"]["steps"][1].delete("require") }
+        edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][1].delete("require") }
         commit_counts[0] = 0
 
         engine.turn_ended("wr_1", pane: "%5")
@@ -2005,7 +2005,7 @@ RSpec.describe Workspace::WorkflowEngine do
       let(:plan) { File.join(worktree, ".workflow", "wr_1", "plan.md") }
 
       def invalid_details
-        store.find("wr_1")["reason"]["details"]["invalid"]
+        stored_run(store, "wr_1")["reason"]["details"]["invalid"]
       end
 
       before do
@@ -2015,7 +2015,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "marks a new run strict in its stored definition" do
-        expect(store.find("wr_1")["definition"]).to include("produces_check" => "strict")
+        expect(stored_run(store, "wr_1")["definition"]).to include("produces_check" => "strict")
       end
 
       it "holds the step on an empty file, naming the rule and the file" do
@@ -2054,7 +2054,7 @@ RSpec.describe Workspace::WorkflowEngine do
         engine.turn_ended("wr_1", pane: "%5")
 
         expect(invalid_details).to eq([{"file" => plan, "rule" => "symlink"}])
-        expect(store.find("wr_1")["reason"]["details"]["missing"]).to eq([])
+        expect(stored_run(store, "wr_1")["reason"]["details"]["missing"]).to eq([])
       end
 
       it "passes once the file is a regular file with content" do
@@ -2066,7 +2066,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "keeps the exists-only check for a run stored without the marker" do
-        store.update("wr_1") { |run| run["definition"].delete("produces_check") }
+        edit_run(store, "wr_1") { |run| run["definition"].delete("produces_check") }
         File.write(plan, "")
         File.utime(now.first, now.first, plan)
 
@@ -2077,7 +2077,7 @@ RSpec.describe Workspace::WorkflowEngine do
         File.write(plan, "")
         tasks = [{"id" => "b1a2c3d4e", "type" => "shell"}]
         engine.turn_ended("wr_1", pane: "%5", background: tasks)
-        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+        expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("turn_ended_background")
         now[0] += 91 * 60
 
         run = engine.tick("wr_1")
@@ -2087,7 +2087,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "lists a missing, a stale and an invalid file once each, in the right list" do
-        store.update("wr_1") { |run| run["definition"]["steps"].find { |step| step["id"] == "plan" }["produces"] = %w[missing.md stale.md empty.md link.md] }
+        edit_run(store, "wr_1") { |run| run["definition"]["steps"].find { |step| step["id"] == "plan" }["produces"] = %w[missing.md stale.md empty.md link.md] }
         dir = File.join(worktree, ".workflow", "wr_1")
         FileUtils.mkdir_p(dir)
         old = Time.utc(2026, 10, 4, 11, 0, 0)
@@ -2114,9 +2114,9 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "holds the step as turn_ended_background with the tasks and when they were seen" do
-        expect(store.find("wr_1")["reason"]).to eq("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:01:00Z",
+        expect(stored_run(store, "wr_1")["reason"]).to eq("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:01:00Z",
           "details" => {"step" => "plan", "attempt" => 1, "missing" => [File.join(worktree, ".workflow", "wr_1", "plan.md")], "stale" => [], "tasks" => tasks})
-        expect(store.find("wr_1")["state"]).to eq("waiting")
+        expect(stored_run(store, "wr_1")["state"]).to eq("waiting")
       end
 
       it "announces one workflow_changed across three Stops that list the same tasks" do
@@ -2126,7 +2126,7 @@ RSpec.describe Workspace::WorkflowEngine do
           engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
         end
 
-        reason = store.find("wr_1")["reason"]
+        reason = stored_run(store, "wr_1")["reason"]
         expect(reason).to include("since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:03:00Z")
         expect(events).to eq([])
       end
@@ -2138,34 +2138,34 @@ RSpec.describe Workspace::WorkflowEngine do
           engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: listed)
         end
 
-        expect(store.find("wr_1")["reason"]["details"]["tasks"]).to eq(tasks)
+        expect(stored_run(store, "wr_1")["reason"]["details"]["tasks"]).to eq(tasks)
         expect(events).to eq([])
       end
 
       it "fires no event when the missing list of a hold changes" do
-        store.update("wr_1") { |run| run["reason"]["details"]["missing"] = [] }
+        edit_run(store, "wr_1") { |run| run["reason"]["details"]["missing"] = [] }
         events.clear
         now[0] += 60
         engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
 
-        expect(store.find("wr_1")["reason"]["details"]["missing"]).not_to eq([])
+        expect(stored_run(store, "wr_1")["reason"]["details"]["missing"]).not_to eq([])
         expect(events).to eq([])
       end
 
       it "announces a hold as running with the turn_ended_background reason" do
         events.clear
-        store.update("wr_1") { |run| run["reason"] = nil }
+        edit_run(store, "wr_1") { |run| run["reason"] = nil }
         now[0] += 60
         engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
 
         expect(events.map(&:last)).to include(a_hash_including("state" => "running", "reason" => "turn_ended_background"))
-        expect(store.find("wr_1")["state"]).to eq("waiting")
+        expect(stored_run(store, "wr_1")["state"]).to eq("waiting")
       end
 
       it "drops the hold on a pane-less resume and re-evaluates with nothing listed" do
         engine.resume("wr_1")
 
-        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_incomplete")
       end
 
       it "shows turn_ended_incomplete once, with a since of its own, on a Stop with no tasks" do
@@ -2174,7 +2174,7 @@ RSpec.describe Workspace::WorkflowEngine do
         engine.turn_ended("wr_1", pane: "%5", background: [])
         engine.turn_ended("wr_1", pane: "%5", background: [])
 
-        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
         expect(events.map(&:first).count("workflow_changed")).to eq(1)
       end
 
@@ -2216,8 +2216,8 @@ RSpec.describe Workspace::WorkflowEngine do
             engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: background)
           end
 
-          expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
-          expect(store.find("wr_1")["reason"]["details"]["tasks"]).to eq(background)
+          expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
+          expect(stored_run(store, "wr_1")["reason"]["details"]["tasks"]).to eq(background)
         end
 
         it "shows turn_ended_incomplete when the Stop lists an empty array" do
@@ -2225,7 +2225,7 @@ RSpec.describe Workspace::WorkflowEngine do
           engine.turn_ended("wr_1", pane: "%5", background: background)
 
           expect(background).to eq([])
-          expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+          expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
         end
       end
 
@@ -2233,14 +2233,14 @@ RSpec.describe Workspace::WorkflowEngine do
         now[0] += 60
         engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 30), background: tasks)
 
-        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
       end
 
       it "leaves a hold 89 minutes old alone" do
         now[0] += 88 * 60
 
         expect(engine.tick("wr_1")).to be_nil
-        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+        expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("turn_ended_background")
       end
 
       it "turns a hold 91 minutes old into a turn_ended_incomplete stop that shows, with the tasks" do
@@ -2255,7 +2255,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "expires a hold whose seen_at can't be read" do
-        store.update("wr_1") { |run| run["reason"]["seen_at"] = "t" }
+        edit_run(store, "wr_1") { |run| run["reason"]["seen_at"] = "t" }
 
         expect(engine.tick("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
       end
@@ -2266,7 +2266,7 @@ RSpec.describe Workspace::WorkflowEngine do
         now[0] += 11 * 60
 
         expect(engine.tick("wr_1")).to be_nil
-        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+        expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("turn_ended_background")
 
         now[0] += 80 * 60
         expect(engine.tick("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
@@ -2278,7 +2278,7 @@ RSpec.describe Workspace::WorkflowEngine do
         now[0] += 60
         engine.turn_ended("wr_1", pane: "%5", background: tasks)
 
-        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T13:33:00Z")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T13:33:00Z")
       end
 
       it "passes the step when its files exist, whatever is listed" do
@@ -2368,7 +2368,7 @@ RSpec.describe Workspace::WorkflowEngine do
     let(:checker) do
       lambda do |stop_when:, **args|
         stop_whens << stop_when
-        check_calls << args.merge(state_during: store.find("wr_1")["steps"]["build"]["state"])
+        check_calls << args.merge(state_during: stored_run(store, "wr_1")["steps"]["build"]["state"])
         during.shift&.call
         check_results.shift || {exit_code: 0, timed_out: false}
       end
@@ -2379,19 +2379,19 @@ RSpec.describe Workspace::WorkflowEngine do
       allow(guard).to receive(:operation_in_progress?).and_return(false)
       allow(guard).to receive(:commits_since).and_return(1)
       allow(guard).to receive(:remote_head) do
-        seen << store.find("wr_1")["steps"]["build"]["state"] if store.active.any?
+        seen << stored_run(store, "wr_1")["steps"]["build"]["state"] if going_runs(store).any?
         readings.shift
       end
     end
 
     def attempt
-      store.find("wr_1")["steps"]["build"]["attempts"].last
+      stored_run(store, "wr_1")["steps"]["build"]["attempts"].last
     end
 
     it "takes the baseline with the lock given up, before the line is typed" do
       held = nil
       allow(guard).to receive(:remote_head) do
-        held = store.update("wr_1", nonblocking: true) { |run| run }.nil?
+        held = edit_run(store, "wr_1", nonblocking: true) { |run| run }.nil?
         expect(panes.kicks).to be_empty
         baseline
       end
@@ -2419,7 +2419,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
       start(flow, inputs: {})
       expect(panes.kicks).to be_empty
-      expect(store.find("wr_1")["state"]).to eq("cancelled")
+      expect(stored_run(store, "wr_1")["state"]).to eq("cancelled")
     end
 
     it "runs the command, then the proofs after it, then the status check, in order" do
@@ -2483,7 +2483,7 @@ RSpec.describe Workspace::WorkflowEngine do
       it "behaves as before for a run stored without the optional key" do
         commands[:lint] = nil
         start(flow, inputs: {})
-        store.update("wr_1") { |stored| stored["definition"]["steps"][0]["require"][0].delete("optional") }
+        edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][0]["require"][0].delete("optional") }
         run = engine.turn_ended("wr_1", pane: "%5")
 
         expect(run["reason"]["details"]).to include("code" => "require_command", "unproven" => true)
@@ -2493,7 +2493,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "does not hold the run's lock while the command runs" do
       start(flow, inputs: {})
       free = nil
-      during << -> { free = !store.update("wr_1", nonblocking: true) { |run| run }.nil? }
+      during << -> { free = !edit_run(store, "wr_1", nonblocking: true) { |run| run }.nil? }
       engine.turn_ended("wr_1", pane: "%5")
       expect(free).to be(true)
     end
@@ -2554,7 +2554,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "runs the proofs again on a tick when the process running one died, after that proof's limit and not before" do
       start(flow, inputs: {})
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["state"] = "running"
         run["steps"]["build"]["state"] = "checking"
         run["steps"]["build"]["attempts"].last["proofs"] = [{"proof" => "remote_unchanged", "index" => 3, "timeout" => 30, "started_at" => "2026-10-04T12:00:00Z"}]
@@ -2571,7 +2571,7 @@ RSpec.describe Workspace::WorkflowEngine do
       told_to_stop = nil
       # A resume or a tick took this run for lost and started the proof over.
       during << lambda do
-        store.update("wr_1") { |run| run["steps"]["build"]["attempts"].last["proofs"] = [{"proof" => "command", "token" => "newer", "index" => 1, "timeout" => 300, "started_at" => "2026-10-04T12:00:00Z"}] }
+        edit_run(store, "wr_1") { |run| run["steps"]["build"]["attempts"].last["proofs"] = [{"proof" => "command", "token" => "newer", "index" => 1, "timeout" => 300, "started_at" => "2026-10-04T12:00:00Z"}] }
         told_to_stop = stop_whens.last.call
       end
       check_results << {exit_code: 3, timed_out: false}
@@ -2608,7 +2608,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "leaves a run stored before proofs existed to its status check, through a tick" do
       start(definition(%(steps:\n  build:\n    prompt: Build it.\n    status: {run: "true"}\n)), inputs: {})
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["state"] = "running"
         run["steps"]["build"]["state"] = "checking"
         run["steps"]["build"]["attempts"].last["check"] = {"started_at" => "2026-10-04T12:00:00Z"}
@@ -2669,7 +2669,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "runs a lost exec proof again on a tick only after its own timeout, 60 seconds and the time its git reads may take" do
         start(flow, inputs: {})
-        store.update("wr_1") do |run|
+        edit_run(store, "wr_1") do |run|
           run["state"] = "running"
           run["steps"]["build"]["state"] = "checking"
           run["steps"]["build"]["attempts"].last["proofs"] = [{"proof" => "exec", "index" => 0, "token" => "old", "program" => "bin/check", "timeout" => 30, "started_at" => "2026-10-04T12:00:00Z"}]
@@ -2684,7 +2684,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "fails an attempt stored with no remote reading as unproven, running no remote read" do
       start(flow, inputs: {})
-      store.update("wr_1") { |run| run["steps"]["build"]["attempts"].last.delete("remote") }
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["attempts"].last.delete("remote") }
       readings.clear
       run = engine.turn_ended("wr_1", pane: "%5")
       expect(run["reason"]["details"]).to include("code" => "require_remote_unchanged", "unproven" => true)
@@ -2694,7 +2694,7 @@ RSpec.describe Workspace::WorkflowEngine do
   describe "#tick for a check that never reported back" do
     it "runs it again once it is past its time limit, and not before" do
       to_verify
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["steps"]["verify"]["state"] = "checking"
         run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T12:00:00Z"}
       end
@@ -2713,7 +2713,7 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.turn_ended("wr_1", pane: "%5")
       stop_when = stop_whens.last
       to_checking = lambda do |attempt: 1|
-        store.update("wr_2") do |run|
+        edit_run(store, "wr_2") do |run|
           run["current"] = "verify"
           run["steps"]["verify"] = {"state" => "checking", "attempts" => [{"n" => attempt, "started_at" => "2026-10-04T12:00:00Z"}]}
         end
@@ -2724,7 +2724,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       start(pane: "%6")
       # A check that never reported back is run again by a tick once past its limit: the public way into finishing a check.
-      store.update("wr_2") do |run|
+      edit_run(store, "wr_2") do |run|
         run["current"] = "verify"
         run["steps"]["verify"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:00:00Z", "check" => {"started_at" => "2026-10-04T12:00:00Z"}}]}
       end
@@ -2740,7 +2740,7 @@ RSpec.describe Workspace::WorkflowEngine do
       to_checking.call(attempt: 2)
       expect(wanted.call).to be true
       to_checking.call
-      store.update("wr_2") { |run| run["current"] = "build" }
+      edit_run(store, "wr_2") { |run| run["current"] = "build" }
       expect(wanted.call).to be true
     end
 
@@ -2757,7 +2757,7 @@ RSpec.describe Workspace::WorkflowEngine do
       engine_with(checker: cancelling).turn_ended("wr_1", pane: "%5")
 
       expect(asked).to eq([false, true])
-      expect(store.find("wr_1")["steps"]["verify"]).to include("state" => "checking")
+      expect(stored_run(store, "wr_1")["steps"]["verify"]).to include("state" => "checking")
     end
 
     it "is not stopped for a run file that can't be read just then" do
@@ -2781,7 +2781,7 @@ RSpec.describe Workspace::WorkflowEngine do
         # A tick that waited for the lock would wait for this spec, for good.
         expect(Timeout.timeout(5) { engine.tick("wr_2") }).to be_nil
       end
-      expect(store.find("wr_2")["reason"]["code"]).to eq("waiting_lock")
+      expect(stored_run(store, "wr_2")["reason"]["code"]).to eq("waiting_lock")
     end
   end
 
@@ -2794,15 +2794,15 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect(result).to eq("run_id" => "wr_1", "step" => "plan", "attempt" => 1,
         "reported" => {"status" => "pass", "summary" => "Plan written.", "at" => "2026-10-04T12:00:00Z"})
-      expect(store.find("wr_1")["steps"]["plan"]["attempts"].last["reported"])
+      expect(stored_run(store, "wr_1")["steps"]["plan"]["attempts"].last["reported"])
         .to eq("status" => "pass", "summary" => "Plan written.", "at" => "2026-10-04T12:00:00Z")
-      expect(store.find("wr_1")["steps"]["plan"]["state"]).to eq("running")
+      expect(stored_run(store, "wr_1")["steps"]["plan"]["state"]).to eq("running")
       expect(events).to eq([])
     end
 
     it "takes a report while the step's check runs" do
       to_verify
-      store.update("wr_1") { |run| run["steps"]["verify"]["state"] = "checking" }
+      edit_run(store, "wr_1") { |run| run["steps"]["verify"]["state"] = "checking" }
 
       expect(engine.report("wr_1", status: "pass")).to include("step" => "verify")
     end
@@ -2900,7 +2900,7 @@ RSpec.describe Workspace::WorkflowEngine do
       now[0] += 119
 
       expect(engine.tick("wr_1")).to be_nil
-      expect(store.find("wr_1")["current"]).to eq("verify")
+      expect(stored_run(store, "wr_1")["current"]).to eq("verify")
 
       now[0] += 1
       run = engine.tick("wr_1")
@@ -2922,10 +2922,10 @@ RSpec.describe Workspace::WorkflowEngine do
     it "is not woken by wakeable? before its time, and is after" do
       to_failed_verify
 
-      expect(described_class.wakeable?(store.find("wr_1"), now.first)).to be_nil
-      expect(described_class.backoff(store.find("wr_1"), now.first)).to include(state: :waiting, wait: 120, to: "build")
-      expect(described_class.wakeable?(store.find("wr_1"), now.first + 120)).to eq(:backoff)
-      expect(described_class.backoff(store.find("wr_1"), now.first + 120)).to include(state: :due, wait: 0)
+      expect(described_class.wakeable?(stored_run(store, "wr_1"), now.first)).to be_nil
+      expect(described_class.backoff(stored_run(store, "wr_1"), now.first)).to include(state: :waiting, wait: 120, to: "build")
+      expect(described_class.wakeable?(stored_run(store, "wr_1"), now.first + 120)).to eq(:backoff)
+      expect(described_class.backoff(stored_run(store, "wr_1"), now.first + 120)).to include(state: :due, wait: 0)
     end
 
     it "lets a resume during the wait start the retry at once, with the same tail" do
@@ -2968,7 +2968,7 @@ RSpec.describe Workspace::WorkflowEngine do
       to_failed_verify
 
       expect(engine.workspace_killed("app.worktree-x")).to eq("cancelled" => ["wr_1"], "failed" => [])
-      expect(store.find("wr_1")).not_to have_key("backoff")
+      expect(stored_run(store, "wr_1")).not_to have_key("backoff")
     end
 
     it "leaves a gate's approve and reject alone: nothing is waiting at one" do
@@ -2976,9 +2976,9 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect { engine.approve("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("gate_not_waiting") }
       expect { engine.reject("wr_1", note: "no") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("gate_not_waiting") }
-      expect(store.find("wr_1")["backoff"]).not_to be_nil
-      expect(store.find("wr_1")).to include("state" => "waiting")
-      expect(store.find("wr_1")["reason"]).to include("code" => "retry_backoff")
+      expect(stored_run(store, "wr_1")["backoff"]).not_to be_nil
+      expect(stored_run(store, "wr_1")).to include("state" => "waiting")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "retry_backoff")
     end
 
     it "retries once through #retry_backoff when due, and only for the step and attempt the sweep saw" do
@@ -2989,7 +2989,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(engine.retry_backoff("wr_1", step: "verify", attempt: 9)).to eq(:moved_on)
       expect(engine.retry_backoff("wr_1", step: "verify", attempt: 1)).to eq(:retried)
       expect(engine.retry_backoff("wr_1", step: "verify", attempt: 1)).to eq(:moved_on)
-      expect(store.find("wr_1")).to include("current" => "build", "state" => "running")
+      expect(stored_run(store, "wr_1")).to include("current" => "build", "state" => "running")
     end
 
     it "does not count the wait as an attempt: the retry is attempt 2 of build and the budget is unchanged" do
@@ -2997,7 +2997,7 @@ RSpec.describe Workspace::WorkflowEngine do
       now[0] += 120
       engine.tick("wr_1")
 
-      run = store.find("wr_1")
+      run = stored_run(store, "wr_1")
       expect(run["steps"].values.sum { |each| each["attempts"].size }).to eq(3)
       expect(run["loops"]).to eq("verify->build" => 1)
     end
@@ -3048,7 +3048,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "retries at once, with no tail, when the stored definition has neither key (a run stored before them)" do
       start(retrying, inputs: {})
-      store.update("wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"].delete_if { |key, _| %w[backoff log_tail].include?(key) } }
+      edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"].delete_if { |key, _| %w[backoff log_tail].include?(key) } }
       engine.turn_ended("wr_1", pane: "%5")
       run = engine.turn_ended("wr_1", pane: "%5")
 
@@ -3105,7 +3105,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         expect(engine.tick("wr_1")).to include("state" => "waiting", "current" => "verify")
 
-        run = store.find("wr_1")
+        run = stored_run(store, "wr_1")
         expect(run["backoff"]).to include("to" => "build", "blocked" => "pane_has_run")
         expect(run["reason"]).to include("code" => "waiting_you")
         expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "pane_has_run", "pane" => "%5")
@@ -3123,7 +3123,7 @@ RSpec.describe Workspace::WorkflowEngine do
         now[0] += 120
         engine.tick("wr_1")
 
-        run = store.find("wr_1")
+        run = stored_run(store, "wr_1")
         expect(run["reason"]).to include("code" => "pane_gone")
         expect(run["backoff"]).to include("blocked" => "pane_gone")
 
@@ -3149,7 +3149,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         engine.tick("wr_1")
 
-        run = store.find("wr_1")
+        run = stored_run(store, "wr_1")
         expect(run["backoff"]).to include("blocked" => "pane_changed")
         expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "pane_changed")
         expect(run["reason"]["details"]["message"]).to include("tmux restart")
@@ -3166,13 +3166,13 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "does not type into a pane when a stored wait has no identity to compare" do
         to_failed_verify
-        store.update("wr_1") { |stored| stored["backoff"].delete("identity") }
+        edit_run(store, "wr_1") { |stored| stored["backoff"].delete("identity") }
         now[0] += 120
 
         engine.tick("wr_1")
 
-        expect(store.find("wr_1")["backoff"]).to include("blocked" => "pane_changed")
-        expect(store.find("wr_1")["reason"]["details"]["message"]).to include("can't be shown")
+        expect(stored_run(store, "wr_1")["backoff"]).to include("blocked" => "pane_changed")
+        expect(stored_run(store, "wr_1")["reason"]["details"]["message"]).to include("can't be shown")
         expect(panes.kicks.size).to eq(2)
       end
 
@@ -3199,7 +3199,7 @@ RSpec.describe Workspace::WorkflowEngine do
         panes.bound["%5"] = panes.bound.delete("%6")
         now[0] += 120
         engine.tick("wr_1")
-        expect(store.find("wr_1")["backoff"]).to include("blocked" => "pane_has_run")
+        expect(stored_run(store, "wr_1")["backoff"]).to include("blocked" => "pane_has_run")
 
         resumed = engine.resume("wr_1", pane: "%7")
 
@@ -3214,7 +3214,7 @@ RSpec.describe Workspace::WorkflowEngine do
         now[0] += 120
         engine.tick("wr_1")
 
-        expect(store.find("wr_1")["reason"]["details"]["message"]).to include("it may be fine", "--pane %5")
+        expect(stored_run(store, "wr_1")["reason"]["details"]["message"]).to include("it may be fine", "--pane %5")
       end
 
       it "takes a pane the person names, the same id included, as proof, and still needs it to exist" do
@@ -3272,7 +3272,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "gives every kind of hold a hint to name another pane" do
         hold_with_changed_pane
-        expect(store.find("wr_1")["reason"]["details"]["message"]).to include("--pane %5")
+        expect(stored_run(store, "wr_1")["reason"]["details"]["message"]).to include("--pane %5")
       end
 
       it "hints at `workflow resume --pane` when the pane is gone or taken" do
@@ -3280,14 +3280,14 @@ RSpec.describe Workspace::WorkflowEngine do
         panes.gone << "%5"
         now[0] += 120
         engine.tick("wr_1")
-        expect(store.find("wr_1")["reason"]["details"]["message"]).to include("pane %5 is gone", "workflow resume --pane PANE")
+        expect(stored_run(store, "wr_1")["reason"]["details"]["message"]).to include("pane %5 is gone", "workflow resume --pane PANE")
 
-        store.update("wr_1") { |stored| stored.delete("backoff").tap { |wait| stored["backoff"] = wait.except("blocked") } }
+        edit_run(store, "wr_1") { |stored| stored.delete("backoff").tap { |wait| stored["backoff"] = wait.except("blocked") } }
         panes.gone.clear
         start(definition("steps:\n  work:\n    prompt: P\n"), inputs: {}, pane: "%6")
         panes.bound["%5"] = panes.bound.delete("%6")
         engine.resume("wr_1")
-        expect(store.find("wr_1")["reason"]["details"]["message"]).to include("is now running workflow run wr_2", "workflow resume --pane PANE")
+        expect(stored_run(store, "wr_1")["reason"]["details"]["message"]).to include("is now running workflow run wr_2", "workflow resume --pane PANE")
       end
 
       it "writes no resume, rebind or note when a resume is held, and records a changed cause once" do
@@ -3297,7 +3297,7 @@ RSpec.describe Workspace::WorkflowEngine do
         2.times { expect(engine.resume("wr_1", note: "X", pane: "%9")["unchanged"]).to include("pane %9 is gone") }
         3.times { expect(engine.resume("wr_1", note: "X")["unchanged"]).to include("pane %5") }
 
-        run = store.find("wr_1")
+        run = stored_run(store, "wr_1")
         expect(run["pending_context"]).to eq([])
         expect(run["pane"]).to eq("%5")
         expect(history).not_to include("run_resumed")
@@ -3334,7 +3334,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         before do
           allow(shown_status).to receive(:run) do
-            run = store.find("wr_1")
+            run = stored_run(store, "wr_1")
             {"runs" => [{"id" => "wr_1", "workflow" => "flow", "workspace" => run["workspace"], "state" => run["state"],
                          "current" => {"step" => run["current"], "attempt" => 1, "state" => "failed", "flags" => [],
                                        "reason" => run["reason"].merge("actions" => [])}}]}
@@ -3371,19 +3371,19 @@ RSpec.describe Workspace::WorkflowEngine do
     describe "a stored backoff that can't be read" do
       it "treats an unreadable time as over, so the wait is never longer than what could be measured" do
         to_failed_verify
-        store.update("wr_1") { |stored| stored["backoff"]["until"] = "soon" }
+        edit_run(store, "wr_1") { |stored| stored["backoff"]["until"] = "soon" }
 
-        expect(described_class.backoff(store.find("wr_1"), now.first)).to include(state: :due)
+        expect(described_class.backoff(stored_run(store, "wr_1"), now.first)).to include(state: :due)
         expect(engine.tick("wr_1")).to include("state" => "running", "current" => "build")
       end
 
       it "ignores a wait whose target is not a step name: nothing wakes it, and a resume runs the failed step as it stands" do
         to_failed_verify
-        store.update("wr_1") { |stored| stored["backoff"]["to"] = 7 }
+        edit_run(store, "wr_1") { |stored| stored["backoff"]["to"] = 7 }
         now[0] += 600
 
-        expect(described_class.backoff(store.find("wr_1"), now.first)).to be_nil
-        expect(described_class.wakeable?(store.find("wr_1"), now.first)).to be_nil
+        expect(described_class.backoff(stored_run(store, "wr_1"), now.first)).to be_nil
+        expect(described_class.wakeable?(stored_run(store, "wr_1"), now.first)).to be_nil
         expect(engine.tick("wr_1")).to be_nil
         resumed = engine.resume("wr_1")
         expect(resumed).to include("current" => "verify")
@@ -3392,7 +3392,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "starts the retry without a text that is not a string" do
         to_failed_verify
-        store.update("wr_1") { |stored| stored["backoff"]["text"] = {"x" => 1} }
+        edit_run(store, "wr_1") { |stored| stored["backoff"]["text"] = {"x" => 1} }
         now[0] += 120
 
         expect(engine.tick("wr_1")["steps"]["build"]["attempts"].last["context"]).to eq([])
@@ -3413,10 +3413,10 @@ RSpec.describe Workspace::WorkflowEngine do
     let(:checked) { definition("steps:\n  work:\n    prompt: P\n    status: {command: test}\n") }
     let(:locked) { definition("steps:\n  verify:\n    prompt: P\n    uses: [test-db]\n") }
 
-    def parked(id = "wr_1") = store.find(id)["parked"]
+    def parked(id = "wr_1") = stored_run(store, id)["parked"]
 
     def attempts(id = "wr_1")
-      store.find(id)["steps"].values.sum { |state| state["attempts"].size }
+      stored_run(store, id)["steps"].values.sum { |state| state["attempts"].size }
     end
 
     def event_of(type, id = "wr_1")
@@ -3447,7 +3447,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     def checking_run(started_at: now.first.iso8601)
       to_verify
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["steps"]["verify"]["state"] = "checking"
         run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => started_at}
       end
@@ -3469,7 +3469,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "keeps what a running step has: its attempt, binding and locks" do
         to_build
-        store.update("wr_1") { |run| run["reason"] = {"code" => "turn_ended_incomplete", "since" => "t", "details" => {}} }
+        edit_run(store, "wr_1") { |run| run["reason"] = {"code" => "turn_ended_incomplete", "since" => "t", "details" => {}} }
         kicks = panes.kicks.size
 
         engine.park("wr_1")
@@ -3587,22 +3587,22 @@ RSpec.describe Workspace::WorkflowEngine do
         it "decides nothing on a Stop on a #{name} run" do
           send(setup)
           engine.park("wr_1")
-          before = store.find("wr_1")
+          before = stored_run(store, "wr_1")
 
           engine.turn_ended("wr_1", pane: "%5")
 
-          expect(store.find("wr_1").except("updated_at")).to eq(before.except("updated_at"))
+          expect(stored_run(store, "wr_1").except("updated_at")).to eq(before.except("updated_at"))
         end
       end
 
       it "decides nothing on a Stop on a waiting_lock run" do
         lock_waiting_run
         engine.park("wr_2")
-        before = store.find("wr_2")
+        before = stored_run(store, "wr_2")
 
         engine.turn_ended("wr_2", pane: "%6")
 
-        expect(store.find("wr_2").except("updated_at")).to eq(before.except("updated_at"))
+        expect(stored_run(store, "wr_2").except("updated_at")).to eq(before.except("updated_at"))
       end
 
       it "dispatches nothing on a tick of a lock-waiting run, even with the lock free" do
@@ -3655,7 +3655,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         expect(stops).to eq([false, true])
         expect(history).not_to include("check_finished")
-        expect(store.find("wr_1")["steps"]["verify"]["state"]).to eq("checking")
+        expect(stored_run(store, "wr_1")["steps"]["verify"]["state"]).to eq("checking")
         expect(parked).to include("from" => "build")
       end
 
@@ -3683,12 +3683,12 @@ RSpec.describe Workspace::WorkflowEngine do
       it "does nothing for a stale id" do
         undelivered
         engine.park("wr_1")
-        before = store.find("wr_1")
+        before = stored_run(store, "wr_1")
 
         run = engine.release_park("wr_1", "stale")
 
         expect(run).not_to have_key("unchanged")
-        expect(store.find("wr_1").except("updated_at")).to eq(before.except("updated_at"))
+        expect(stored_run(store, "wr_1").except("updated_at")).to eq(before.except("updated_at"))
         expect(panes.kicks.size).to eq(1)
       end
 
@@ -3738,7 +3738,7 @@ RSpec.describe Workspace::WorkflowEngine do
         start(single, inputs: {})
         artifact("out.md")
         id = engine.park("wr_1", from: "work", note: "keep me")["parked"]["id"]
-        store.update("wr_1") { |run| run["parked"]["from"] = nil }
+        edit_run(store, "wr_1") { |run| run["parked"]["from"] = nil }
 
         run = engine.release_park("wr_1", id)
 
@@ -3751,7 +3751,7 @@ RSpec.describe Workspace::WorkflowEngine do
       it "leaves the park when the resume is refused" do
         undelivered
         id = engine.park("wr_1", from: "work")["parked"]["id"]
-        store.update("wr_1") { |run| run["parked"]["from"] = "nope" }
+        edit_run(store, "wr_1") { |run| run["parked"]["from"] = "nope" }
 
         expect { engine.release_park("wr_1", id) }.to raise_error(Workspace::UsageError)
 
@@ -3773,7 +3773,7 @@ RSpec.describe Workspace::WorkflowEngine do
         id = engine.park("wr_1", pane: "%5")["parked"]["id"]
         seen = nil
         allow(panes).to receive(:kick) do
-          seen = store.find("wr_1")["steps"]["work"]["attempts"].last
+          seen = stored_run(store, "wr_1")["steps"]["work"]["attempts"].last
           {ok: true}
         end
 
@@ -3910,7 +3910,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         engine.workspace_killed("app.worktree-x")
 
-        expect(store.find("wr_1")).to include("state" => "cancelled").and(satisfy { |run| !run.key?("parked") })
+        expect(stored_run(store, "wr_1")).to include("state" => "cancelled").and(satisfy { |run| !run.key?("parked") })
       end
     end
 
@@ -3918,16 +3918,16 @@ RSpec.describe Workspace::WorkflowEngine do
       it "does nothing for a stale id" do
         undelivered
         engine.park("wr_1")
-        before = store.find("wr_1")
+        before = stored_run(store, "wr_1")
 
         engine.park_failed("wr_1", "stale", code: "pane_gone", message: "gone")
 
-        expect(store.find("wr_1").except("updated_at")).to eq(before.except("updated_at"))
+        expect(stored_run(store, "wr_1").except("updated_at")).to eq(before.except("updated_at"))
       end
 
       it "leaves a running step and its attempt to be decided as usual" do
         to_build
-        store.update("wr_1") { |run| run["reason"] = {"code" => "turn_ended_incomplete", "since" => "t", "details" => {}} }
+        edit_run(store, "wr_1") { |run| run["reason"] = {"code" => "turn_ended_incomplete", "since" => "t", "details" => {}} }
         id = engine.park("wr_1", note: "keep me")["parked"]["id"]
 
         run = engine.park_failed("wr_1", id, code: "parked_timeout", message: "too long")
@@ -3960,7 +3960,7 @@ RSpec.describe Workspace::WorkflowEngine do
         start
         artifact("plan.md")
         engine.turn_ended("wr_1", pane: "%5")
-        before = store.find("wr_1")["reason"]
+        before = stored_run(store, "wr_1")["reason"]
         id = engine.park("wr_1", from: "plan", pane: "%9")["parked"]["id"]
 
         run = engine.park_failed("wr_1", id, code: "parked_timeout", message: "too long")
@@ -4020,9 +4020,9 @@ RSpec.describe Workspace::WorkflowEngine do
       it "refuses a pane a park names, for a rebind by another run" do
         undelivered
         engine.park("wr_1", pane: "%8")
-        store.update("wr_1") { |run| run["pane"] = "%5" }
+        edit_run(store, "wr_1") { |run| run["pane"] = "%5" }
         start(single, inputs: {}, pane: "%6")
-        store.update("wr_2") { |run| run["reason"] = {"code" => "pane_gone", "since" => "t", "details" => {}} }
+        edit_run(store, "wr_2") { |run| run["reason"] = {"code" => "pane_gone", "since" => "t", "details" => {}} }
 
         expect { engine.resume("wr_2", pane: "%8") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
       end
@@ -4056,7 +4056,7 @@ RSpec.describe Workspace::WorkflowEngine do
         engine.park_failed("wr_1", id, code: "parked_timeout", message: described_class.park_timeout_message("%5", checking: true))
 
         expect(engine.tick("wr_1")).to be_nil
-        expect(store.find("wr_1")["reason"]["details"]).to include("error" => "parked_timeout")
+        expect(stored_run(store, "wr_1")["reason"]["details"]).to include("error" => "parked_timeout")
 
         run = engine.resume("wr_1")
 
@@ -4153,7 +4153,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect { engine.reject("wr_1", note: "no", to: "build") }
         .to raise_error(Workspace::UsageError, '--to must be plan or a step before it (plan), got "build".')
-      expect(store.find("wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
+      expect(stored_run(store, "wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
     end
   end
 
@@ -4206,7 +4206,7 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.reject("wr_1", note: "Again.", step: "plan", attempt: 1)
       artifact("plan.md")
       engine.turn_ended("wr_1", pane: "%5")
-      expect(store.find("wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
+      expect(stored_run(store, "wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
 
       unchanged do
         expect { engine.approve("wr_1", step: "plan", attempt: 1) }.to raise_error(Workspace::Error) { |error|
@@ -4358,7 +4358,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect { engine.resume("wr_1", pane: "%8", from: "deploy") }.to raise_error(Workspace::UsageError)
 
       expect(panes.bound.keys).to eq(["%5"])
-      expect(store.find("wr_1")).to include("pane" => "%5", "pending_context" => [])
+      expect(stored_run(store, "wr_1")).to include("pane" => "%5", "pending_context" => [])
     end
 
     it "runs a failed step again, with the note" do
@@ -4423,7 +4423,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.kicks.size).to eq(1)
       expect(events).to eq([])
       expect(history).to eq(before)
-      expect(store.find("wr_1")).not_to have_key("unchanged")
+      expect(stored_run(store, "wr_1")).not_to have_key("unchanged")
     end
 
     describe "a step that reads running while its pane's agent is idle (the turn ended unseen)" do
@@ -4466,7 +4466,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "leaves a check that is still running alone, and starts no second one" do
       to_verify
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["steps"]["verify"]["state"] = "checking"
         run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T12:00:00Z"}
       end
@@ -4481,23 +4481,23 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "moves no pane and keeps no note when it does nothing" do
       to_verify
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["steps"]["verify"]["state"] = "checking"
         run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T12:00:00Z"}
       end
 
       expect(engine.resume("wr_1", pane: "%9", note: "hello")["unchanged"]).to eq("the check of step verify is still running")
-      expect(store.find("wr_1")).to include("pane" => "%5", "pending_context" => [])
+      expect(stored_run(store, "wr_1")).to include("pane" => "%5", "pending_context" => [])
       expect(panes.bound.keys).to eq(["%5"])
 
-      store.update("wr_1") { |run| run["steps"]["verify"]["state"] = "running" }
+      edit_run(store, "wr_1") { |run| run["steps"]["verify"]["state"] = "running" }
       expect(engine.resume("wr_1", note: "hello")["unchanged"]).to eq("an agent is working on step verify")
-      expect(store.find("wr_1")["pending_context"]).to eq([])
+      expect(stored_run(store, "wr_1")["pending_context"]).to eq([])
     end
 
     it "goes on from a step that passed and never got its next step started" do
       to_build
-      store.update("wr_1") { |run| run["steps"]["build"]["state"] = "passed" }
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["state"] = "passed" }
 
       expect(engine.resume("wr_1")).to include("current" => "verify", "state" => "running")
     end
@@ -4513,7 +4513,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "starts a run whose `workflow run` was interrupted before its first step was under way" do
       panes.bind_error = Interrupt
       expect { start }.to raise_error(Interrupt)
-      left = store.find("wr_1")
+      left = stored_run(store, "wr_1")
       expect(left).to include("state" => "waiting", "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"))
       expect(left["reason"]).to include("code" => "waiting_you")
       expect(left["reason"]["details"]).to include("kind" => "dispatch", "error" => "not_started")
@@ -4527,7 +4527,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "starts a run whose file has no artifacts directory, as an older interrupted start left it" do
       start
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run.delete("artifacts_dir")
         run["steps"]["plan"] = {"state" => "pending", "attempts" => []}
       end
@@ -4578,7 +4578,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "runs a check again whose result never came back" do
       to_verify
-      store.update("wr_1") do |run|
+      edit_run(store, "wr_1") do |run|
         run["steps"]["verify"]["state"] = "checking"
         run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T11:00:00Z"}
       end
@@ -4598,7 +4598,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "refuses a resume that would start an attempt once max_attempts is spent, and changes nothing" do
       failed_run
-      before = store.find("wr_1")
+      before = stored_run(store, "wr_1")
       lines = history_lines.size
 
       expect { engine.resume("wr_1", note: "again") }.to raise_error(Workspace::Error, /spent max_attempts \(1 of 1\)\. Pass --extra-attempts 1 to continue/) { |error|
@@ -4606,7 +4606,7 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(error.details).to eq("run_id" => "wr_1", "attempts" => 1, "max_attempts" => 1, "step" => "a", "needed" => 1)
       }
 
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
       expect(history_lines.size).to eq(lines)
     end
 
@@ -4649,7 +4649,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "does not count an attempt the sweep typed again" do
       failed_run
-      store.update("wr_1") { |stored| stored["steps"]["a"]["attempts"].last["redelivered"] = true }
+      edit_run(store, "wr_1") { |stored| stored["steps"]["a"]["attempts"].last["redelivered"] = true }
 
       expect(engine.resume("wr_1")).to include("state" => "running")
     end
@@ -4678,10 +4678,10 @@ RSpec.describe Workspace::WorkflowEngine do
       start(gated, inputs: {})
       artifact("plan.md")
       engine.turn_ended("wr_1", pane: "%5")
-      before = store.find("wr_1")
+      before = stored_run(store, "wr_1")
 
       expect { engine.reject("wr_1", note: "no") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
 
       run = engine.reject("wr_1", note: "no", extra_attempts: 1)
 
@@ -4691,19 +4691,19 @@ RSpec.describe Workspace::WorkflowEngine do
     def two_attempts = definition("max_attempts: 2\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n")
 
     def add_attempts(count)
-      store.update("wr_1") { |stored| count.times { |n| stored["steps"]["a"]["attempts"] << {"n" => 10 + n, "outcome" => "failed"} } }
+      edit_run(store, "wr_1") { |stored| count.times { |n| stored["steps"]["a"]["attempts"] << {"n" => 10 + n, "outcome" => "failed"} } }
     end
 
     it "keeps no extra_attempts key on a first attempt or an old run, which is still refused when spent" do
       start(one_attempt, inputs: {})
-      expect(store.find("wr_1")).not_to have_key("extra_attempts")
-      expect(store.find("wr_1")["steps"]["a"]["attempts"].size).to eq(1)
+      expect(stored_run(store, "wr_1")).not_to have_key("extra_attempts")
+      expect(stored_run(store, "wr_1")["steps"]["a"]["attempts"].size).to eq(1)
 
       check_results << {exit_code: 1, timed_out: false}
       engine.turn_ended("wr_1")
 
-      expect(store.find("wr_1")).not_to have_key("extra_attempts")
-      expect(described_class.attempts_spent?(store.find("wr_1"))).to be(true)
+      expect(stored_run(store, "wr_1")).not_to have_key("extra_attempts")
+      expect(described_class.attempts_spent?(stored_run(store, "wr_1"))).to be(true)
       expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
       expect(described_class.attempts_spent?({"definition" => {}, "steps" => {}})).to be(false)
     end
@@ -4715,7 +4715,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect { engine.resume("wr_1", extra_attempts: 2) }.to raise_error(Workspace::Error, /\(3 of 1\)\. Pass --extra-attempts 3 to continue/) { |error|
         expect(error.details).to include("needed" => 3)
       }
-      expect(store.find("wr_1")).not_to have_key("extra_attempts")
+      expect(stored_run(store, "wr_1")).not_to have_key("extra_attempts")
       expect(engine.resume("wr_1", extra_attempts: 3)).to include("extra_attempts" => 3)
     end
 
@@ -4726,7 +4726,7 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.turn_ended("wr_1")
       add_attempts(2)
       # made 4 of an allowance of 2 (1 plus 1 stored): at least 3 more is needed
-      expect(described_class.extra_attempts_needed(store.find("wr_1"))).to eq(3)
+      expect(described_class.extra_attempts_needed(stored_run(store, "wr_1"))).to eq(3)
 
       expect { engine.resume("wr_1", extra_attempts: 2) }.to raise_error(Workspace::Error) { |error| expect(error.details).to include("needed" => 3, "max_attempts" => 2) }
       expect(engine.resume("wr_1", extra_attempts: 3)).to include("extra_attempts" => 4)
@@ -4741,12 +4741,12 @@ RSpec.describe Workspace::WorkflowEngine do
     it "logs and changes nothing when the named pane belongs to another run" do
       failed_run
       start(one_attempt, inputs: {}, pane: "%8", workspace: "app.worktree-b")
-      before = store.find("wr_1")
+      before = stored_run(store, "wr_1")
       lines = history_lines.size
 
       expect { engine.resume("wr_1", pane: "%8", extra_attempts: 1) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
 
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
       expect(history_lines.size).to eq(lines)
     end
 
@@ -4756,12 +4756,12 @@ RSpec.describe Workspace::WorkflowEngine do
       check_results << {exit_code: 1, timed_out: false}
       engine.turn_ended("wr_1", pane: "%5")
       engine.turn_ended("wr_1", pane: "%5")
-      expect(store.find("wr_1")["reason"]["code"]).to eq("retry_backoff")
-      store.update("wr_1") { |stored| stored["definition"]["max_attempts"] = 2 }
-      before = store.find("wr_1")
+      expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("retry_backoff")
+      edit_run(store, "wr_1") { |stored| stored["definition"]["max_attempts"] = 2 }
+      before = stored_run(store, "wr_1")
 
       expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
 
       run = engine.resume("wr_1", extra_attempts: 1)
 
@@ -4830,7 +4830,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         expect { engine.release_park("wr_1", id) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
 
-        expect(store.find("wr_1")["parked"]["id"]).to eq(id)
+        expect(stored_run(store, "wr_1")["parked"]["id"]).to eq(id)
       end
     end
 
@@ -4864,7 +4864,7 @@ RSpec.describe Workspace::WorkflowEngine do
     let(:copies) { File.join(evidence_dir, "wr_1") }
 
     def attempts(step)
-      store.find("wr_1")["steps"][step]["attempts"]
+      stored_run(store, "wr_1")["steps"][step]["attempts"]
     end
 
     it "keeps the prompt of an attempt that was not delivered, and nothing else" do
@@ -4918,7 +4918,7 @@ RSpec.describe Workspace::WorkflowEngine do
       FileUtils.rm_rf(File.join(worktree, ".workflow"))
 
       expect { engine.workspace_killed("app.worktree-x") }.not_to raise_error
-      expect(store.find("wr_1")["state"]).to eq("cancelled")
+      expect(stored_run(store, "wr_1")["state"]).to eq("cancelled")
       expect(attempts("plan").last["evidence"].map { |e| e["problem"] }.compact).to eq(%w[missing])
     end
   end
@@ -4931,8 +4931,8 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect(engine.workspace_killed("app.worktree-a")).to eq("cancelled" => ["wr_1"], "failed" => [])
 
-      expect(store.find("wr_1")).to include("state" => "cancelled", "cancelled_by" => "kill")
-      expect(store.find("wr_2")["state"]).to eq("running")
+      expect(stored_run(store, "wr_1")).to include("state" => "cancelled", "cancelled_by" => "kill")
+      expect(stored_run(store, "wr_2")["state"]).to eq("running")
       expect(liveness.run_alive?("wr_1")).to be false
     end
 
@@ -4951,7 +4951,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       expect(engine.workspace_killed("app.worktree-a")).to eq("cancelled" => ["wr_2"], "failed" => ["wr_1"])
-      expect(store.find("wr_2")["state"]).to eq("cancelled")
+      expect(stored_run(store, "wr_2")["state"]).to eq("cancelled")
     end
 
     it "leaves alone a run whose file can't be read as a run: the lock store still counts it as going" do
@@ -4999,12 +4999,12 @@ RSpec.describe Workspace::WorkflowEngine do
       to_second_gate
       engine.reject("wr_1", note: "No.")
 
-      expect(store.find("wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected", "attempt" => 1)
+      expect(stored_run(store, "wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected", "attempt" => 1)
       engine.report("wr_1", status: "fail", summary: "x")
       engine.turn_ended("wr_1", pane: "%5")
       engine.resume("wr_1")
 
-      expect(store.find("wr_1")["steps"]["second"]).not_to have_key("gate")
+      expect(stored_run(store, "wr_1")["steps"]["second"]).not_to have_key("gate")
     end
 
     it "is replaced by a waiting gate when the rerun passes" do
@@ -5013,17 +5013,17 @@ RSpec.describe Workspace::WorkflowEngine do
 
       engine.turn_ended("wr_1", pane: "%5")
 
-      expect(store.find("wr_1")["steps"]["second"]["gate"]).to include("state" => "waiting")
+      expect(stored_run(store, "wr_1")["steps"]["second"]["gate"]).to include("state" => "waiting")
     end
 
     it "stays on the gated step after `reject --to` an earlier step, until that step runs again twice" do
       to_second_gate
       engine.reject("wr_1", note: "Redo.", to: "first")
 
-      expect(store.find("wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected", "attempt" => 1)
+      expect(stored_run(store, "wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected", "attempt" => 1)
       engine.turn_ended("wr_1", pane: "%5")
-      expect(store.find("wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected")
-      expect(store.find("wr_1")["steps"]["second"]["attempts"].size).to eq(2)
+      expect(stored_run(store, "wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected")
+      expect(stored_run(store, "wr_1")["steps"]["second"]["attempts"].size).to eq(2)
     end
   end
 
@@ -5050,7 +5050,7 @@ RSpec.describe Workspace::WorkflowEngine do
     def tokens(count) = {"input_tokens" => count, "output_tokens" => 0}
 
     def respend(count, step: "a")
-      store.update("wr_1") { |stored| stored["steps"][step]["attempts"].first["usage"] = tokens(count) }
+      edit_run(store, "wr_1") { |stored| stored["steps"][step]["attempts"].first["usage"] = tokens(count) }
     end
 
     def fail_check = (check_results << {exit_code: 1, timed_out: false})
@@ -5089,14 +5089,14 @@ RSpec.describe Workspace::WorkflowEngine do
       usages << tokens(9_000_000)
       start(unbudgeted, inputs: {}, pane: "%6", workspace: "app.worktree-y")
       engine.turn_ended("wr_2", pane: "%6")
-      expect(store.find("wr_2")).to include("state" => "running", "current" => "b").and(satisfy { |run| !run.key?("budget_hold") })
+      expect(stored_run(store, "wr_2")).to include("state" => "running", "current" => "b").and(satisfy { |run| !run.key?("budget_hold") })
     end
 
     it "refuses a resume until --extra-tokens covers the overrun, then starts the held step" do
       usages << tokens(1200)
       start(two_steps, inputs: {})
       engine.turn_ended("wr_1", pane: "%5")
-      before = store.find("wr_1")
+      before = stored_run(store, "wr_1")
       lines = history_lines.size
 
       expect { engine.resume("wr_1") }.to raise_error(Workspace::Error, /used its token budget \(1200 of 1000 tokens\)\. Pass --extra-tokens 100000 to continue \(201 is the least\)/) { |error|
@@ -5104,7 +5104,7 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(error.details).to include("run_id" => "wr_1", "step" => "b", "used" => 1200, "allowance" => 1000, "needed" => 201, "suggested" => 100_000, "tokens" => 1000, "extra_tokens" => 0)
       }
       expect { engine.resume("wr_1", extra_tokens: 200) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
       expect(history_lines.size).to eq(lines)
 
       run = engine.resume("wr_1", extra_tokens: 201)
@@ -5130,7 +5130,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["pending_context"].join).to include("The verify step failed")
       expect(panes.kicks.size).to eq(2)
       expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
-      expect(store.find("wr_1")["budget_hold"]).to include("context" => "fresh")
+      expect(stored_run(store, "wr_1")["budget_hold"]).to include("context" => "fresh")
 
       resumed = engine.resume("wr_1", extra_tokens: 601)
 
@@ -5147,7 +5147,7 @@ RSpec.describe Workspace::WorkflowEngine do
         engine.turn_ended("wr_1", pane: "%5")
         fail_check
         engine.turn_ended("wr_1", pane: "%5")
-        expect(store.find("wr_1")["reason"]["code"]).to eq("retry_backoff")
+        expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("retry_backoff")
         now[0] += 121
       end
 
@@ -5165,7 +5165,7 @@ RSpec.describe Workspace::WorkflowEngine do
       it "is held when the sweep's #retry_backoff starts it" do
         expect(engine.retry_backoff("wr_1", step: "verify", attempt: 1)).to eq(:held)
 
-        expect(store.find("wr_1")["reason"]["code"]).to eq("budget_spent")
+        expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("budget_spent")
         expect(panes.kicks.size).to eq(2)
       end
 
@@ -5181,12 +5181,12 @@ RSpec.describe Workspace::WorkflowEngine do
       it "is not released into a pane tmux reused for another pane, until the person names the pane" do
         engine.tick("wr_1")
         panes.changed << "%5"
-        before = store.find("wr_1")
+        before = stored_run(store, "wr_1")
 
         resumed = engine.resume("wr_1", extra_tokens: 601)
 
         expect(resumed["unchanged"]).to include("tmux restart")
-        expect(store.find("wr_1")).to eq(before)
+        expect(stored_run(store, "wr_1")).to eq(before)
         expect(panes.kicks.size).to eq(2)
         expect(engine.resume("wr_1", pane: "%5", extra_tokens: 601)).to include("state" => "running", "current" => "build", "extra_tokens" => 601)
       end
@@ -5194,18 +5194,18 @@ RSpec.describe Workspace::WorkflowEngine do
       it "holds a resume --from over a reused pane or a pane another run took, as a plain resume is held" do
         engine.tick("wr_1")
         panes.changed << "%5"
-        before = store.find("wr_1")
+        before = stored_run(store, "wr_1")
 
         expect(engine.resume("wr_1", from: "build", extra_tokens: 601)["unchanged"]).to include("tmux restart")
-        expect(store.find("wr_1")).to eq(before)
+        expect(stored_run(store, "wr_1")).to eq(before)
 
         start(waiting_loop, inputs: {}, pane: "%5", workspace: "app.worktree-b")
         panes.changed.clear
         kicks = panes.kicks.size
-        before = store.find("wr_1")
+        before = stored_run(store, "wr_1")
 
         expect(engine.resume("wr_1", from: "build", extra_tokens: 601)["unchanged"]).to include("wr_2")
-        expect(store.find("wr_1")).to eq(before)
+        expect(stored_run(store, "wr_1")).to eq(before)
         expect(panes.kicks.size).to eq(kicks)
       end
 
@@ -5237,12 +5237,12 @@ RSpec.describe Workspace::WorkflowEngine do
         start(waiting_loop, inputs: {}, pane: "%5", workspace: "app.worktree-b")
         panes.changed.clear
         kicks = panes.kicks.size
-        before = store.find("wr_1")
+        before = stored_run(store, "wr_1")
 
         resumed = engine.resume("wr_1", extra_tokens: 601)
 
         expect(resumed["unchanged"]).to include("wr_2")
-        expect(store.find("wr_1")).to eq(before)
+        expect(stored_run(store, "wr_1")).to eq(before)
         expect(panes.kicks.size).to eq(kicks)
       end
 
@@ -5264,10 +5264,10 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "is refused to a resume that skips the wait, until --extra-tokens covers it" do
         now[0] -= 121
-        before = store.find("wr_1")
+        before = stored_run(store, "wr_1")
 
         expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
-        expect(store.find("wr_1")).to eq(before)
+        expect(stored_run(store, "wr_1")).to eq(before)
 
         expect(engine.resume("wr_1", extra_tokens: 601)).to include("state" => "running", "current" => "build", "extra_tokens" => 601)
       end
@@ -5292,7 +5292,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect(engine.redeliver("wr_1", step: "b", attempt: 1)).to eq(:redelivered)
 
-      run = store.find("wr_1")
+      run = stored_run(store, "wr_1")
       expect(run).to include("state" => "running")
       expect(run).not_to have_key("budget_hold")
       expect(run["steps"]["b"]["attempts"].last).to include("n" => 2, "redelivery" => 1)
@@ -5303,8 +5303,8 @@ RSpec.describe Workspace::WorkflowEngine do
       locked = definition("budget: {tokens: 1000}\nsteps:\n  verify:\n    prompt: P\n    uses: [test-db]\n")
       start(locked, inputs: {}, pane: "%5", workspace: "app.worktree-a")
       start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
-      store.update("wr_2") { |stored| stored["steps"]["verify"]["attempts"] << {"n" => 1, "outcome" => "failed", "ended_at" => now.first.iso8601, "usage" => tokens(5000)} }
-      expect(Workspace::WorkflowBudget.reading(store.find("wr_2"))["spent"]).to be(true)
+      edit_run(store, "wr_2") { |stored| stored["steps"]["verify"]["attempts"] << {"n" => 1, "outcome" => "failed", "ended_at" => now.first.iso8601, "usage" => tokens(5000)} }
+      expect(Workspace::WorkflowBudget.reading(stored_run(store, "wr_2"))["spent"]).to be(true)
       engine.cancel("wr_1")
       now[0] += 30
 
@@ -5321,7 +5321,7 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.turn_ended("wr_1", pane: "%5")
       fail_check
       engine.turn_ended("wr_1", pane: "%5")
-      expect(store.find("wr_1")["pending_context"].join).to include("sent the run back")
+      expect(stored_run(store, "wr_1")["pending_context"].join).to include("sent the run back")
 
       run = engine.resume("wr_1", from: "verify", extra_tokens: 601)
 
@@ -5337,7 +5337,7 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.turn_ended("wr_1", pane: "%5")
       now[0] += 121
       engine.tick("wr_1")
-      expect(store.find("wr_1")["pending_context"].join).to include("sent the run back")
+      expect(stored_run(store, "wr_1")["pending_context"].join).to include("sent the run back")
 
       run = engine.resume("wr_1", from: "verify", extra_tokens: 601)
 
@@ -5348,7 +5348,7 @@ RSpec.describe Workspace::WorkflowEngine do
       def spent_passed_a
         usages << tokens(1500)
         start(two_steps, inputs: {})
-        store.update("wr_1") do |run|
+        edit_run(store, "wr_1") do |run|
           attempt = run["steps"]["a"]["attempts"].first
           attempt.merge!("outcome" => "passed", "ended_at" => now.first.iso8601, "usage" => tokens(1500))
           run["steps"]["a"]["state"] = "passed"
@@ -5374,7 +5374,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "looks at a check that never reported without a refusal, and ignores --extra-tokens" do
         spent_passed_a
-        store.update("wr_1") do |run|
+        edit_run(store, "wr_1") do |run|
           run["steps"]["a"]["state"] = "checking"
           run["steps"]["a"]["attempts"].first["check"] = {"started_at" => "2026-10-04T10:00:00Z"}
           run["steps"]["a"]["attempts"].first.delete("outcome")
@@ -5390,7 +5390,7 @@ RSpec.describe Workspace::WorkflowEngine do
         locked = definition("budget: {tokens: 1000}\nsteps:\n  verify:\n    prompt: P\n    uses: [test-db]\n")
         start(locked, inputs: {}, pane: "%5", workspace: "app.worktree-a")
         start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
-        store.update("wr_2") { |run| run["steps"]["verify"]["attempts"] << {"n" => 1, "outcome" => "failed", "usage" => tokens(5000)} }
+        edit_run(store, "wr_2") { |run| run["steps"]["verify"]["attempts"] << {"n" => 1, "outcome" => "failed", "usage" => tokens(5000)} }
 
         run = engine.resume("wr_2", extra_tokens: 5)
 
@@ -5402,14 +5402,14 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "counts the attempt a --pane resume replaces, which has tokens and no outcome, so it cannot slip past the budget" do
       start(two_steps, inputs: {})
-      store.update("wr_1") { |run| run["steps"]["a"]["attempts"].first["usage"] = tokens(1500) }
-      before = store.find("wr_1")
+      edit_run(store, "wr_1") { |run| run["steps"]["a"]["attempts"].first["usage"] = tokens(1500) }
+      before = stored_run(store, "wr_1")
 
       expect { engine.resume("wr_1", pane: "%5") }.to raise_error(Workspace::Error) { |error|
         expect(error.code).to eq("budget_spent")
         expect(error.details).to include("used" => 1500, "uncounted" => 0)
       }
-      expect(store.find("wr_1")).to eq(before)
+      expect(stored_run(store, "wr_1")).to eq(before)
 
       run = engine.resume("wr_1", pane: "%5", extra_tokens: 501)
 
@@ -5422,7 +5422,7 @@ RSpec.describe Workspace::WorkflowEngine do
       start(two_steps, inputs: {})
       fail_check
       engine.turn_ended("wr_1", pane: "%5")
-      expect(store.find("wr_1")["reason"]["code"]).to eq("failed_check")
+      expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("failed_check")
 
       expect { engine.resume("wr_1", from: "a") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
       expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
@@ -5435,10 +5435,10 @@ RSpec.describe Workspace::WorkflowEngine do
       start(gated, inputs: {})
       artifact("plan.md")
       engine.turn_ended("wr_1", pane: "%5")
-      expect(store.find("wr_1")["reason"]).to include("code" => "waiting_you")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "waiting_you")
 
       expect { engine.reject("wr_1", note: "again") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
-      expect(store.find("wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
+      expect(stored_run(store, "wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
 
       approved = engine.approve("wr_1")
 
@@ -5464,7 +5464,7 @@ RSpec.describe Workspace::WorkflowEngine do
         respend(5000)
 
         expect { engine.park("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
-        expect(store.find("wr_1")).not_to have_key("parked")
+        expect(stored_run(store, "wr_1")).not_to have_key("parked")
 
         parked = engine.park("wr_1", extra_tokens: 4001)
 
@@ -5481,7 +5481,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         expect { engine.release_park("wr_1", id) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
 
-        expect(store.find("wr_1")["parked"]["id"]).to eq(id)
+        expect(stored_run(store, "wr_1")["parked"]["id"]).to eq(id)
       end
 
       it "is not charged or held again when the line could not be typed and the park is made again" do
