@@ -38,8 +38,10 @@ module Workspace
     # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
     # @param review_round [#call, nil] given the run id and the review round a change registered, runs it with the lock given up and answers the run afterwards (default: nothing runs)
     # @param review_tally [#call, nil] given `run:`, `step:` and `round:`, the round's outcome and the reviews it read (default: {NoReviewTally})
+    # @param review_closer [#call, nil] given the run id and an ended round's "step", "round" and "pane", closes its review
+    #   window with the lock given up; it must not raise (default: none, so the window stays open)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, review_round: nil, review_tally: nil, clock: -> { Time.now })
+    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -51,6 +53,7 @@ module Workspace
       @inbox_for = inbox_for
       @review_round = review_round
       @review_tally = review_tally || NoReviewTally.new
+      @review_closer = review_closer
       @clock = clock
     end
 
@@ -144,8 +147,9 @@ module Workspace
       @progress.decide_review(read, tally, ctx: ctx)
     end
 
-    # The one place a change's follow-ups run, once its lock is given up: the check or proof it registered, then the
-    # review round it registered. Every caller of {WorkflowRunChange#call} whose block can register one ends with it.
+    # The one place a change's follow-ups run, once its lock is given up: the review window of an ended round it
+    # registered is closed first, then the check or proof it registered runs, then the review round it registered.
+    # Every caller of {WorkflowRunChange#call} whose block can register one ends with it.
     #
     # @param run_id [String]
     # @param ctx [WorkflowRunChange::Context, nil] the change's context; nil when the change did not run
@@ -153,6 +157,7 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def finish_follow_ups(run_id, ctx, run)
       return run unless ctx
+      @review_closer.call(run_id, ctx.close_review) if ctx.close_review && @review_closer
       run = finish_check(run_id, ctx.check) if ctx.check
       review = ctx.review
       run = @review_round.call(run_id, review) || run if review && @review_round

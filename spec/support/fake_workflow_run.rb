@@ -75,8 +75,9 @@ class FakeWorkflowPanes
     @bound[pane] = fields.merge(workspace: workspace)
   end
 
-  def unbind(run_id)
-    @bound.delete(pane_of(run_id))
+  # +role+ "reviewer" or "author" removes only that role's bindings (one bound with no role is the author's); nil removes all.
+  def unbind(run_id, role: nil)
+    @bound.delete_if { |_, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) }
   end
 
   def kick(**args)

@@ -223,20 +223,58 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(dispatch.calls).to be_empty
     end
 
-    it "leaves a live review round alone, and never starts the author again on a step being reviewed" do
-      live = run_hash(state: "reviewing")
-      live["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "started_at" => "2026-11-10T11:50:00.000Z"}
-      stored(live)
+    def reviewing_run(reason: nil)
+      run = run_hash(state: "reviewing", extra: reason ? {"state" => "waiting"} : {})
+      run["reason"] = reason
+      run["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:50:00Z", "outcome" => "checks_passed")
+      run["steps"]["plan"]["review_rounds"] = 1
+      run["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "started_at" => "2026-11-10T11:50:00.000Z", "pane" => "%7"}
+      run
+    end
 
-      expect(decisions.resume("wr_1").unchanged).to eq("the review round of step plan is still running")
+    def review_incomplete = {"code" => "review_incomplete", "since" => "2026-11-10T11:55:00Z", "details" => {}}
 
-      stopped = deep_copy(live).merge("state" => "waiting", "reason" => {"code" => "review_incomplete", "since" => "2026-11-10T11:55:00Z", "details" => {}})
-      stored(stopped)
-      decisions.resume("wr_1")
+    it "leaves a live review round alone" do
+      before = deep_copy(stored(reviewing_run))
 
-      expect(dispatch.calls).to be_empty
-      expect(evaluation.calls).to be_empty
+      resumed = decisions.resume("wr_1")
+
+      expect(resumed.unchanged).to eq("the review round of step plan is still running")
+      expect(resumed.run.to_h).to eq(before)
       expect(progress.calls).to be_empty
+      expect(evaluation.calls).to be_empty
+    end
+
+    it "restarts a stopped round and never starts the author again, nor asks the attempt allowance" do
+      stored(reviewing_run(reason: review_incomplete).merge("definition" => run_hash(max_attempts: 1)["definition"]))
+
+      resumed = decisions.resume("wr_1")
+
+      expect(resumed.unchanged).to be_nil
+      expect(progress.calls).to eq([[:restart_review, "plan"]])
+      expect(dispatch.calls).to be_empty
+      expect(evaluation.calls).to eq([[:review_round, "wr_1", {"step" => "plan"}]])
+      expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "reviewing"}]])
+    end
+
+    it "ends the round with its window closed before --from starts the step named, keeping review_rounds" do
+      stored(reviewing_run(reason: review_incomplete))
+
+      resumed = decisions.resume("wr_1", from: "plan")
+
+      expect(progress.calls).to eq([[:end_round, "plan", {how: "from", close: true}]])
+      expect(dispatch.calls.map(&:first)).to eq([:dispatch])
+      expect(resumed.run.steps["plan"].to_h).not_to have_key("review")
+      expect(resumed.run.steps["plan"].to_h["review_rounds"]).to eq(1)
+      expect(evaluation.calls).to eq([[:close_review, "wr_1", {"step" => "plan", "round" => 1}]])
+    end
+
+    it "ends a live round too when --from goes elsewhere" do
+      stored(reviewing_run)
+
+      decisions.resume("wr_1", from: "plan")
+
+      expect(progress.calls).to eq([[:end_round, "plan", {how: "from", close: true}]])
     end
 
     it "runs a failed step again, telling it what failed" do
@@ -405,6 +443,22 @@ RSpec.describe Workspace::WorkflowDecisions do
 
   describe "#park" do
     def park_of(at, pane: "%5") = {"id" => "p0", "pane" => pane, "requested_at" => "2026-11-10T11:00:00Z", "expires_at" => at, "retries" => 0}
+
+    it "refuses a step being reviewed, with --from too, and stores nothing" do
+      run = run_hash(state: "reviewing", extra: {"state" => "waiting", "reason" => {"code" => "review_incomplete", "since" => "2026-11-10T11:55:00Z", "details" => {}}})
+      run["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "started_at" => "2026-11-10T11:50:00.000Z"}
+      before = deep_copy(stored(run))
+
+      [nil, "plan"].each do |from|
+        error = error_for { decisions.park("wr_1", from: from) }
+
+        expect(error.code).to eq("step_reviewing")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "plan")
+        expect(error.message).to include("Run `workspace workflow resume wr_1#{" --from plan" if from}` from another terminal.")
+      end
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+    end
 
     it "stores the resume on the run for later, as a frozen Resumed, and types nothing" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"}))
@@ -729,6 +783,20 @@ RSpec.describe Workspace::WorkflowDecisions do
       decisions.cancel("wr_1")
 
       expect(progress.finished.map { |run| run.steps["plan"].last_attempt.outcome }).to eq(["abandoned"])
+    end
+
+    it "ends a step's review round before the run: the round's usage recorded, the reviewer unbound and the window closed" do
+      run = run_hash(state: "reviewing")
+      run["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:50:00Z", "outcome" => "checks_passed")
+      run["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "started_at" => "2026-11-10T11:50:00.000Z", "pane" => "%7"}
+      stored(run)
+
+      cancelled = decisions.cancel("wr_1")
+
+      expect(progress.calls).to eq([[:end_round, "plan", {how: "cancelled", close: true}], [:finish, "wr_1", "cancelled"]])
+      expect(progress.finished.first.steps["plan"].to_h).not_to have_key("review")
+      expect(cancelled.steps["plan"].last_attempt.outcome).to eq("checks_passed")
+      expect(evaluation.calls).to eq([[:close_review, "wr_1", {"step" => "plan", "round" => 1}]])
     end
 
     it "ends a run with no open attempt" do

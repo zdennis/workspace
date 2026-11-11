@@ -423,6 +423,22 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
       expect(order).to eq(%i[check review])
     end
+
+    it "closes a registered review window first, keeping the run, and closes nothing without a closer" do
+      stored
+      order = []
+      context = ctx
+      context.close_review({"step" => "plan", "round" => 1, "pane" => "%9"})
+      context.review({"round" => 2})
+      closer = ->(run_id, found) { order << [:close, run_id, found] && :ignored }
+      given = Workspace::WorkflowRun.from_h(run_hash)
+
+      result = evaluation(review_closer: closer, review_round: ->(*) { order << :review && nil }).finish_follow_ups("wr_1", context, given)
+
+      expect(order).to eq([[:close, "wr_1", {"step" => "plan", "round" => 1, "pane" => "%9"}], :review])
+      expect(result).to equal(given)
+      expect(evaluation.finish_follow_ups("wr_1", context, given)).to equal(given)
+    end
   end
 
   describe "#finish_check" do

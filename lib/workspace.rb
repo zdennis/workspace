@@ -552,11 +552,13 @@ module Workspace
   # @param review_round [#call, nil] runs a review round a change registered, given the run id and the round, with the lock given up
   #   (default: none runs, so a reviewed step waits in `reviewing`)
   # @param review_tally [#call, nil] decides a review round, given `run:`, `step:` and `round:` (default: {WorkflowEvaluation::NoReviewTally})
+  # @param review_closer [#call, nil] closes an ended round's review window, given the run id and the round's "step", "round" and "pane",
+  #   with the lock given up (default: none, so the window stays open)
   # @param clock [#call] returns the current Time
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-    env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, review_round: nil, review_tally: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
+    env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -570,7 +572,7 @@ module Workspace
     progress = WorkflowProgress.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes,
       log_tail: log_tail || WorkflowLogTail.new, clock: clock)
     evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
-      guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, clock: clock)
+      guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
       lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
     decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,

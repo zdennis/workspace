@@ -143,12 +143,14 @@ module Workspace
     # @param extra_seconds [Integer, nil] see {#resume}; applied when the park is released
     # @return [Resumed] the run afterwards, and why nothing was stored when nothing was
     # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has;
-    #   `attempts_spent` or `budget_spent` as {#resume}
+    #   `attempts_spent` or `budget_spent` as {#resume}; `step_reviewing` for a step being reviewed (a park
+    #   would hold back the review pane's turn end, which decides the round)
     def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
       unchanged = nil
       run = @change.call(run_id) do |read|
         stored = read.thawed
         refuse_resume(stored, from: from)
+        refuse_reviewing_park(stored, from)
         if WorkflowTransitions.parked(stored, @clock.call) == :waiting
           unchanged = "a resume is already parked for pane #{park_target(stored)}"
           next
@@ -242,18 +244,24 @@ module Workspace
         code: "gate_waiting", details: {"run_id" => run["id"], "step" => run["current"]})
     end
 
-    # Ends a run: closes its open attempt, gives up its resources and frees its pane.
+    # Ends a run: closes its open attempt, gives up its resources and frees its pane. A step being reviewed has no
+    # open attempt; its round is ended instead ({WorkflowProgress#end_round}: its usage and the verdicts it read
+    # recorded on the reviewed attempt), and its review window is closed once the lock is given up.
     #
     # @param cause [String] who ended it: "cancel", or "kill" when its workspace was killed
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, cause: "cancel")
-      @change.call(run_id) do |read|
+      follow = nil
+      run = @change.call(run_id) do |read, ctx|
+        follow = ctx
+        read = @progress.end_round(read, how: "cancelled", ctx: ctx) if read.current_step&.state == "reviewing"
         ended = @progress.finish(@attempt_record.abandon(read), "cancelled").thawed
         ended["cancelled_by"] = cause
         event(ended, "run_cancelled", "cause" => cause)
         WorkflowRun.from_h(ended)
       end
+      @evaluation.finish_follow_ups(run_id, follow, run)
     end
 
     # Ends every run of a workspace that was killed, so none goes on holding a lock for a checkout that is gone.
@@ -276,6 +284,15 @@ module Workspace
     private
 
     def adopt(run, changed) = run.replace(changed.thawed)
+
+    # A park is refused on a step being reviewed: while one stands, the review pane's turn end decides nothing.
+    def refuse_reviewing_park(run, from)
+      return unless step_state(run)["state"] == "reviewing"
+      command = "workspace workflow resume #{run["id"]}#{" --from #{from}" if from}"
+      raise Workspace::Error.new("Run #{run["id"]} is reviewing step #{run["current"]}, so a resume can't be parked for later from this pane. " \
+        "Run `#{command}` from another terminal.",
+        code: "step_reviewing", details: {"run_id" => run["id"], "step" => run["current"]})
+    end
 
     # The body of {#resume}, inside a change the caller holds (a released park is one). Refusals come first, so a
     # refused resume leaves the run and its pane as they were. A check to run outside the lock is registered on +ctx+.
@@ -360,6 +377,8 @@ module Workspace
         return held_retry_sentence(stored)
       end
       if from
+        # The round under way ends first, its window closed, so no reviewer goes on judging work the run left.
+        stored.replace(@progress.end_round(stored, how: "from", ctx: ctx).thawed) if state["state"] == "reviewing"
         event(stored, "run_resumed", "from" => from)
         stored["current"] = from
         dispatch(stored, ctx, budgeted: budget)
@@ -376,8 +395,8 @@ module Workspace
           evaluate(stored, ctx)
         end
       when "checking" then evaluate(stored, ctx)
-      # A round is not an attempt: a resume never starts the author again on a step being reviewed.
-      when "reviewing" then nil
+      # A round is not an attempt: a resume never starts the author again on a step being reviewed, only its round.
+      when "reviewing" then stored.replace(@progress.restart_review(stored, ctx: ctx).thawed)
       when "passed" then adopt(stored, @progress.advance(stored, ctx: ctx))
       else dispatch(stored, ctx, budgeted: budget)
       end

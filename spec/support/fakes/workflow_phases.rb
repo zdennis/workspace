@@ -46,12 +46,13 @@ end
 
 # Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored run
 # as a frozen WorkflowRun and a real Context, writes the run the block returns (the one read for nil) back into the Hash,
-# keeps the line a block registered in +deliveries+ (it types nothing) and the review round in +reviews+ and returns the run;
+# keeps the line a block registered in +deliveries+ (it types nothing), the review round in +reviews+ and the window to close in
+# +closes+, and returns the run;
 # a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
-  CONTROL_METHODS = %i[calls events deliveries reviews].freeze
+  CONTROL_METHODS = %i[calls events deliveries reviews closes].freeze
 
-  attr_reader :calls, :events, :deliveries, :reviews
+  attr_reader :calls, :events, :deliveries, :reviews, :closes
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
@@ -65,6 +66,7 @@ class RecordingRunChange
     @events = []
     @deliveries = []
     @reviews = []
+    @closes = []
   end
 
   def call(run_id, nonblocking: false)
@@ -79,6 +81,7 @@ class RecordingRunChange
     stored.replace(changed.thawed)
     @deliveries << ctx.delivery if ctx.delivery
     @reviews << ctx.review if ctx.review
+    @closes << ctx.close_review if ctx.close_review
     changed
   end
 
@@ -316,7 +319,7 @@ class RecordingWorkflowPanes
   end
 
   def unbind(run_id, role: nil)
-    @calls << [:unbind, run_id]
+    @calls << (role ? [:unbind, run_id, {role: role}] : [:unbind, run_id])
     true
   end
 
@@ -326,15 +329,18 @@ class RecordingWorkflowPanes
   end
 end
 
-# Fake of Workspace::WorkflowAttemptRecord#start, #finish and #abandon: the attempt as given, with a stand-in hash of the
+# Fake of Workspace::WorkflowAttemptRecord#start, #finish, #abandon and #finish_round: the attempt as given, with a stand-in hash of the
 # composed text at its start and an empty +outputs+ at its end; +abandon+ marks the current step's last attempt
-# `abandoned`.
+# `abandoned` when it is still open (no `ended_at`); +finish_round+ answers the round's number, pane and times with
+# the usage it was given.
 class RecordingAttemptRecord
   CONTROL_METHODS = %i[calls].freeze
 
   attr_reader :calls
 
-  def initialize
+  # @param round_usage [Hash, nil] the usage +finish_round+ records
+  def initialize(round_usage: nil)
+    @round_usage = round_usage
     @calls = []
   end
 
@@ -351,8 +357,15 @@ class RecordingAttemptRecord
   def abandon(run)
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:abandon, hash["id"]]
-    hash["steps"][hash["current"]]["attempts"].last&.merge!("outcome" => "abandoned")
+    last = hash["steps"][hash["current"]]["attempts"].last
+    last["outcome"] = "abandoned" if last && !last["ended_at"]
     Workspace::WorkflowRun.from_h(hash)
+  end
+
+  def finish_round(run:, round:)
+    @calls << [:finish_round, Workspace::WorkflowRun.from_h(run).id, round["round"]]
+    {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00Z",
+     "session" => nil, "agent" => nil, "usage" => @round_usage}
   end
 end
 
@@ -374,7 +387,8 @@ end
 
 # Fake of Workspace::WorkflowProgress for the evaluation and decision phases: +pass_step+ and +fail_step+ mark the
 # current step passed or failed, +decide_review+ marks it with the tally's outcome, +advance+ answers the run as given, +finish+ sets the run's end state,
-# +start_retry+ moves the run to the wait's step, +hold_retry+ marks the wait blocked with the problem's message as
+# +restart_review+ marks the step's round restarted, +end_round+ takes the step's round off (registering the window to
+# close on +ctx+ when +close+), +start_retry+ moves the run to the wait's step, +hold_retry+ marks the wait blocked with the problem's message as
 # the reason, and +retry_pane_problem+ answers the problem it was given. Each records its call; +finished+ keeps
 # each run +finish+ was given, as a WorkflowRun.
 class RecordingProgress
@@ -410,6 +424,22 @@ class RecordingProgress
   def advance(run, ctx:)
     @calls << [:advance, Workspace::WorkflowRun.from_h(run).current]
     Workspace::WorkflowRun.from_h(run)
+  end
+
+  def restart_review(run, ctx:)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:restart_review, hash["current"]]
+    ctx.review({"step" => hash["current"]})
+    hash["steps"][hash["current"]]["review"] = {"restarted" => true}
+    Workspace::WorkflowRun.from_h(hash.merge("reason" => nil))
+  end
+
+  def end_round(run, how:, ctx:, close: true)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:end_round, hash["current"], {how: how, close: close}]
+    round = hash["steps"][hash["current"]].delete("review")
+    ctx.close_review({"step" => hash["current"], "round" => round&.fetch("round", nil)}) if close
+    Workspace::WorkflowRun.from_h(hash)
   end
 
   def finish(run, state)
@@ -577,7 +607,7 @@ end
 # Fake of Workspace::WorkflowEvaluation#evaluate, #finish_check and #finish_follow_ups for the decision and recovery phases: +evaluate+
 # registers the check it was given on +ctx+ and answers the run as given (with the reason it was given, when one
 # was); +finish_check+ answers the stored run; +finish_follow_ups+ runs the check registered on a context through +finish_check+
-# and keeps a registered review in the calls as +:review_round+.
+# and keeps a registered window close and review in the calls as +:close_review+ and +:review_round+.
 class RecordingEvaluation
   CONTROL_METHODS = %i[calls].freeze
 
@@ -610,6 +640,7 @@ class RecordingEvaluation
 
   def finish_follow_ups(run_id, ctx, run)
     return run unless ctx
+    @calls << [:close_review, run_id, ctx.close_review] if ctx.close_review
     run = finish_check(run_id, ctx.check) if ctx.check
     @calls << [:review_round, run_id, ctx.review] if ctx.review
     run

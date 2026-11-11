@@ -1068,6 +1068,17 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(engine).to have_received(:park).with("wr_1", from: nil, note: nil, pane: "%5", turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
       end
 
+      it "resumes at once on a step being reviewed, which types only into the review pane, and parks --from there" do
+        stored["steps"]["plan"]["state"] = "reviewing"
+
+        command.resume(run: "wr_1", caller_pane: "%5")
+        expect(engine).to have_received(:resume).with("wr_1", from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+        expect(engine).not_to have_received(:park)
+
+        command.resume(run: "wr_1", from: "plan", caller_pane: "%5")
+        expect(engine).to have_received(:park).with("wr_1", from: "plan", note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+      end
+
       it "keeps today's path when the pane cannot be parked on" do
         allow(panes).to receive(:parkable?).and_return(false)
 
@@ -2040,7 +2051,17 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(doc["attempts"][0]).to include("step" => "implement", "attempt" => 1, "outcome" => "failed", "code" => "require_commits",
         "check" => {"command" => "bin/test", "log" => "/x.log", "exit_code" => 1}, "usage" => {"input_tokens" => 412000, "output_tokens" => 18300},
         "reasons" => [{"code" => "turn_ended_incomplete", "since" => "a", "until" => "b"}])
-      expect(doc["attempts"][1]).to include("attempt" => 2, "outcome" => nil, "code" => nil, "agent" => nil, "session" => nil, "head" => nil, "packs" => nil, "outputs" => nil, "usage" => nil, "evidence" => nil, "reasons" => nil)
+      expect(doc["attempts"][1]).to include("attempt" => 2, "outcome" => nil, "code" => nil, "agent" => nil, "session" => nil, "head" => nil, "packs" => nil, "outputs" => nil, "usage" => nil, "evidence" => nil, "reasons" => nil, "rounds" => nil)
+    end
+
+    it "carries a reviewed attempt's review rounds as stored" do
+      rounds = [{"round" => 1, "pane" => "%9", "started_at" => "s", "ended_at" => "e", "session" => nil, "agent" => nil, "usage" => {"input_tokens" => 40}, "ended" => "incomplete", "reviews" => []}]
+      create_run
+      edit_run(real_store, "wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][0].merge!("outcome" => "checks_passed", "rounds" => rounds) }
+
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["attempts"][0]["rounds"]).to eq(rounds)
     end
 
     it "reads a run that finished and was archived" do

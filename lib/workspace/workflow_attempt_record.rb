@@ -150,7 +150,9 @@ module Workspace
     end
 
     # Closes the current step's attempt for a run that is cancelled or whose workspace was killed, if it is
-    # still open (no `ended_at`). Never raises; a checkout that is gone gives a nil `head.after`.
+    # still open (no `ended_at`). Never raises; a checkout that is gone gives a nil `head.after`. A step being
+    # reviewed has no open attempt (it ended `checks_passed`), so nothing is closed here: its round is ended by
+    # {WorkflowProgress#end_round}, which records it through {#finish_round}.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] left as it is
     # @return [WorkflowRun] the run with that attempt closed; the run given, unchanged, when there was none
@@ -163,6 +165,24 @@ module Workspace
       value.with_attempt(value.current, finish(run: value, step: step, attempt: attempt))
     rescue
       WorkflowRun.from_h(run)
+    end
+
+    # What an ended review round records about itself: its pane, the session that ran in that pane during the
+    # round, and that session's usage over the round's time (main thread and sub-agents, by {#finish}'s rules).
+    # Never raises: what can't be told is nil, and a round that never recorded a pane has no session or usage.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] left as it is
+    # @param round [Hash{String=>Object}] the step's `review` ("round", "pane", "started_at", ...)
+    # @return [Hash{String=>Object}] "round", "pane", "started_at", "ended_at", "session", "agent" and "usage"
+    def finish_round(run:, round:)
+      ended_at = round["ended_at"] || @clock.call.utc.iso8601
+      record = {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at}
+      pane = round["pane"]
+      facts = (pane.is_a?(String) && !pane.empty?) ? agent_facts(WorkflowRun.from_h(run).to_h, record, pane: pane) : {}
+      record.merge("session" => facts["session"], "agent" => facts["agent"], "usage" => facts["usage"])
+    rescue
+      {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at,
+       "session" => nil, "agent" => nil, "usage" => nil}
     end
 
     private
@@ -215,19 +235,19 @@ module Workspace
 
     # The agent, session and usage of the attempt that is ending. Every part is nil when it can't be told.
     #
-    # The session that counts is the latest one started in the run's pane (this workspace's, on this tmux
+    # The session that counts is the latest one started in the pane (the run's, or a review round's; this workspace's, on this tmux
     # server) at or before the attempt ended, unless it ended before the attempt began. A fresh-conversation
     # restart (and a `/clear`) starts a session after the attempt's record is made, so the last one is the
     # conversation that did the attempt's work. One that began before the attempt and never ended is chosen
     # only when its transcript has a line inside the attempt's window, since a pane id can outlive its tmux
     # server. Tokens are the main thread's, summed from transcript lines inside the attempt's own time
     # window, so a resumed attempt in the same session does not count earlier attempts.
-    def agent_facts(run, attempt)
+    def agent_facts(run, attempt, pane: run["pane"])
       none = {"agent" => nil, "session" => nil, "usage" => nil}
       started = Time.iso8601(attempt["started_at"].to_s)
       ended = attempt["ended_at"] ? Time.iso8601(attempt["ended_at"].to_s) : @clock.call
-      server = @server_for.call(run["pane"])
-      entry, ended_session = session_entry(run, started, ended, server)
+      server = @server_for.call(pane)
+      entry, ended_session = session_entry(run, pane, started, ended, server)
       return none unless entry
       kind = entry["kind"].nil? ? "claude" : entry["kind"]
       kind = nil unless kind.is_a?(String) && KIND.match?(kind)
@@ -248,8 +268,7 @@ module Workspace
     end
 
     # @return [Array(Hash, Boolean), nil] the chosen SessionStart entry and whether a SessionEnd for it was seen
-    def session_entry(run, started, ended, server)
-      pane = run["pane"]
+    def session_entry(run, pane, started, ended, server)
       return nil unless @ledger && pane.is_a?(String) && !pane.empty?
       names = Array(@session_names.call(run["workspace"])).select { |name| name.is_a?(String) && !name.empty? }
       entries = @ledger.recent_entries(max_bytes: MAX_LEDGER_BYTES, matching: pane)

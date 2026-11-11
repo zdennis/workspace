@@ -5725,5 +5725,76 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(rounds.size).to eq(1)
       end
     end
+
+    it "starts a fresh round on a resume of a stopped one, spending a round and starting no author attempt" do
+      engine = reviewed_engine(:incomplete)
+      start_reviewed(engine)
+      now[0] += 60
+      expect(engine.turn_ended("wr_1", pane: "%9")["reason"]["code"]).to eq("review_incomplete")
+
+      run = engine.resume("wr_1")
+
+      plan = run["steps"]["plan"]
+      expect(run["state"]).to eq("running")
+      expect(plan["state"]).to eq("reviewing")
+      expect(plan["review_rounds"]).to eq(2)
+      expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
+      expect(plan["attempts"].last["rounds"].map { |each| each.slice("round", "pane", "ended") }).to eq([{"round" => 1, "pane" => "%9", "ended" => "incomplete"}])
+      expect(rounds.map { |_id, review| review["round"] }).to eq([1, 2])
+    end
+
+    it "ends the round and closes its window on resume --from, keeping review_rounds" do
+      closed = []
+      engine = build_engine(review_round: round_runner, review_tally: RecordingReviewTally.new(outcome: :incomplete), review_closer: ->(run_id, found) { closed << [run_id, found] })
+      start_reviewed(engine)
+      now[0] += 60
+      engine.turn_ended("wr_1", pane: "%9")
+
+      run = engine.resume("wr_1", from: "plan")
+
+      plan = run["steps"]["plan"]
+      expect(plan["state"]).to eq("running")
+      expect(plan["review_rounds"]).to eq(1)
+      expect(plan).not_to have_key("review")
+      expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed", nil])
+      expect(closed).to eq([["wr_1", {"step" => "plan", "round" => 1, "pane" => "%9"}]])
+    end
+
+    describe "cancel of a run being reviewed (spec/fixtures/workflow_runs/reviewing.json)" do
+      let(:transcript) { File.join(@dir, "s1.jsonl") }
+      let(:ledger_path) { File.join(@dir, "ledger.jsonl") }
+      let(:ledger) { Workspace::SessionLedger.new(path: ledger_path) }
+
+      before do
+        fixture = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/reviewing.json")))
+        fixture["worktree"] = worktree
+        fixture["steps"]["build"]["review"]["pane"] = "%9"
+        FileUtils.mkdir_p(runs_dir)
+        File.write(File.join(runs_dir, "wr_simulated.json"), JSON.generate(fixture))
+        File.write(ledger_path, JSON.generate("workspace" => "simulation", "at" => "2026-01-01T00:00:01Z", "event" => "session_start", "pane_id" => "%9",
+          "session_id" => "s1", "transcript_path" => transcript) + "\n")
+        File.write(transcript, JSON.generate("type" => "assistant", "timestamp" => "2026-01-01T00:01:00Z",
+          "message" => {"id" => "m1", "model" => "claude-opus-5-5", "usage" => {"input_tokens" => 300, "output_tokens" => 20}}) + "\n")
+      end
+
+      it "leaves no open attempt, records the round's usage once and closes its window" do
+        closed = []
+        record = Workspace::WorkflowAttemptRecord.new(guard: guard, ledger: ledger, clock: -> { now.first })
+        engine = build_engine(attempt_record: record, review_closer: ->(run_id, found) { closed << [run_id, found] })
+
+        run = engine.cancel("wr_simulated")
+
+        build = run["steps"]["build"]
+        expect(run["state"]).to eq("cancelled")
+        expect(build["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
+        expect(build["attempts"].all? { |each| each["ended_at"] }).to be(true)
+        expect(build).not_to have_key("review")
+        expect(build["attempts"].last["rounds"].size).to eq(1)
+        expect(build["attempts"].last["rounds"].first).to include("round" => 1, "pane" => "%9", "ended" => "cancelled",
+          "session" => {"id" => "s1", "transcript" => transcript}, "usage" => {"input_tokens" => 300, "output_tokens" => 20})
+        expect(closed).to eq([["wr_simulated", {"step" => "build", "round" => 1, "pane" => "%9"}]])
+        expect(history("wr_simulated")).to include("review_ended", "run_cancelled")
+      end
+    end
   end
 end

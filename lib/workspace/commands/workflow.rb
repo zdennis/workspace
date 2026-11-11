@@ -750,7 +750,9 @@ module Workspace
           end
         end
         target = pane_id || @panes.pane_of(run) || stored.pane
-        if !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && caller_in_pane?(stored.workspace, caller_pane, target) &&
+        # A round is delivered to the review pane, so a resume of it types nothing into the caller's pane and needs no park.
+        reviewing = from.nil? && stored.current_step&.state == "reviewing"
+        if !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && !reviewing && caller_in_pane?(stored.workspace, caller_pane, target) &&
             @panes.parkable?(stored.workspace, target)
           return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         end

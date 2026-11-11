@@ -761,5 +761,30 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         expect(closed["usage"]).to eq("input_tokens" => 5030, "output_tokens" => 512)
       end
     end
+
+    describe "#finish_round" do
+      let(:round) { {"round" => 2, "pane" => "%5", "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z", "pending" => []} }
+
+      it "reads the review pane's session and its usage over the round's own window, not the run's pane" do
+        run["pane"] = "%3"
+
+        found = record.finish_round(run: run, round: round)
+
+        expect(found).to eq("round" => 2, "pane" => "%5", "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z",
+          "session" => {"id" => "s1", "transcript" => transcript}, "agent" => {"kind" => "claude", "version" => "2.4.1", "model" => "claude-opus-5-5"},
+          "usage" => {"input_tokens" => 30, "output_tokens" => 12})
+      end
+
+      it "ends a round still running now, and records no session for a round that never recorded a pane" do
+        expect(record.finish_round(run: run, round: round.except("ended_at"))["ended_at"]).to eq("2026-10-04T12:10:00Z")
+        expect(record.finish_round(run: run, round: round.except("pane"))).to include("pane" => nil, "session" => nil, "agent" => nil, "usage" => nil)
+      end
+
+      it "is not an attempt: a reviewed step's ended attempt is left as it is by #abandon" do
+        run["steps"]["plan"]["attempts"] = [{"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:01:00Z", "outcome" => "checks_passed"}]
+
+        expect(record.abandon(run).to_h).to eq(run)
+      end
+    end
   end
 end

@@ -212,7 +212,7 @@ module Workspace
       KEYS = %w[
         n started_at ended_at outcome context prompt_file head definition_sha256 prompt_sha256 packs outputs
         agent session usage reasons check code proofs reported evidence remote warnings redelivered redelivery
-        delivery after_park reviews review_outcome retry_of
+        delivery after_park reviews review_outcome retry_of rounds
       ].freeze
 
       # @param hash [Hash{String=>Object}, nil]

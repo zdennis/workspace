@@ -870,6 +870,11 @@ module Workspace
           "after the upgrade (workspace daemon restart) and a pane in window 0. With a draft in a Claude pane's",
           "input box nothing is typed and the draft stays (pane_busy, input_not_empty).",
           "",
+          "On a step being reviewed (reviewing) it never runs the author again: a round still running is left",
+          "alone, a round stopped for a person starts again as a fresh round (spending one of the step's",
+          "rounds), and --from ends the round and closes its review window first. It is not parked then, and",
+          "--from from the run's own pane is refused (step_reviewing).",
+          "",
           "A resume that would start an attempt is refused (attempts_spent) when the run has made all its",
           "max_attempts, or (step_attempts_spent) when the step it would run has made all its own max_attempts;",
           "--extra-attempts N adds N to the run's allowance and to that step's, and goes on. N must cover the overrun",
@@ -895,7 +900,8 @@ module Workspace
       "cancel" => {
         usage: ["workflow cancel RUN [--json]"],
         summary: "End a run and release the locks it holds",
-        about: [RUN_ID, "", "It does not type into the pane: the agent there is left as it is. A run that has ended is refused."],
+        about: [RUN_ID, "", "It does not type into the pane: the agent there is left as it is. A run that has ended is refused.",
+          "A step being reviewed has its round ended (the round's usage recorded) and its review window closed."],
         options: [JSON_OPT],
         examples: [
           ["workspace workflow cancel RUN", "give up on a run that is going wrong; its locks are released"],
