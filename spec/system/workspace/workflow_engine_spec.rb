@@ -197,7 +197,6 @@ RSpec.describe Workspace::WorkflowEngine do
   end
 
   describe "#turn_ended" do
-
     context "with the real guard" do
       let(:guard) { Workspace::WorkflowGuard.new }
 
