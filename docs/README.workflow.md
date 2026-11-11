@@ -330,7 +330,7 @@ A project's definition can `extends:` a user's or a preset's, and be extended by
 A project's file hides the same id everywhere else for that project, in every command: `show`, `validate`, `run`, `render`, `start` and `--ref` routing (where it also counts as a fit or, when broken, as a definition that might fit; see [routing](#routing-a-ref-to-a-workflow)). A run keeps a copy of the definition it started with, so `status`, `events`, `attempts`, `audit` and `compare` read that copy. `stats ID` counts the runs of one id together: two projects with their own `team.yml` are mixed unless `--name` or `--project` narrows it; with a scope, `--json` `definition` and a text line (for a project file) say where that project's definition of the id is found now.
 
 ```yaml
-schema_version: 1
+schema_version: 0.1
 id: ship
 title: Plan, build, verify
 description: A small change with a plan gate.
@@ -362,7 +362,7 @@ Top-level keys:
 
 | Key | Meaning |
 |---|---|
-| `schema_version` | `1`, or left out |
+| `schema_version` | `0.1`, the current version, or left out, which reads as `0.1`; `1` is still accepted as the earlier spelling of `0.1`. The version is compared as written, so `0.10` is not `0.1`. Later versions will be added beside it, and a value that names none of them is refused with the list of versions supported |
 | `id` | The file's name without `.yml`, or left out |
 | `title`, `description` | For `workflow show` |
 | `inputs` | Input name to `description`, `required` (default false) and `pattern` (a Ruby regexp source, at most 300 characters, matched against the whole value as `\A(?:PATTERN)\z`; it must compile, else `invalid_workflow`). `run --input NAME=VALUE` supplies them; one that is not required and not given is empty. A set value that doesn't match, or (for an input with a pattern) is over 4096 characters, is refused with `invalid_input` (details `workflow`, `input`, `pattern`, never the value) before any run exists, also under `run --dry-run` and `start`, seeded values included; only a truly empty value skips the check (whitespace is checked). `.` does not match a newline, so prefer explicit character classes such as `[0-9]+` or `[\w.-]+`; the match is cut off after 1 second on Ruby 3.2 and later |

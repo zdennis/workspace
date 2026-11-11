@@ -9,8 +9,14 @@ module Workspace
   # Every problem in a file is collected and reported at once, with code
   # `invalid_workflow`, so a definition is fixed in one pass.
   class WorkflowDefinition
-    # The only `schema_version` a definition may name.
-    SCHEMA_VERSION = 1
+    # The current `schema_version`, and the one a definition without the key gets.
+    SCHEMA_VERSION = "0.1"
+
+    # Every `schema_version` a definition may name.
+    SCHEMA_VERSIONS = %w[0.1].freeze
+
+    # Old integer `schema_version` values, as written, read as the version they became.
+    LEGACY_SCHEMA_VERSIONS = {"1" => "0.1"}.freeze
 
     # What `step done --code` accepts.
     CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
@@ -361,6 +367,7 @@ module Workspace
         return {}
       end
       parsed = YAML.safe_load(text)
+      @schema_version_text = top_scalar_text(text, "schema_version") if parsed.is_a?(Hash)
       return parsed if parsed.is_a?(Hash)
       problem "the file must be a YAML mapping"
       {}
@@ -374,10 +381,30 @@ module Workspace
       nil
     end
 
+    # A top-level key's value as written in the file, so a version such as `0.10` is never read as the Float 0.1.
+    def top_scalar_text(text, key)
+      root = Psych.parse(text)&.root
+      return nil unless root.is_a?(Psych::Nodes::Mapping)
+      found = root.children.each_slice(2).select { |k, v| k.is_a?(Psych::Nodes::Scalar) && k.value == key && v.is_a?(Psych::Nodes::Scalar) }
+      found.last&.last&.value
+    end
+
+    def schema_version_from(raw)
+      return SCHEMA_VERSION unless raw.key?("schema_version")
+      value = raw["schema_version"]
+      written = (value.is_a?(Numeric) && @schema_version_text) || value.inspect
+      version = case value
+      when String then value
+      when Float then @schema_version_text
+      when Integer then LEGACY_SCHEMA_VERSIONS[@schema_version_text]
+      end
+      return version if SCHEMA_VERSIONS.include?(version)
+      problem "schema_version must be one of #{SCHEMA_VERSIONS.join(", ")}, got #{written}"
+    end
+
     def build(raw)
       unknown_keys(raw, TOP_KEYS, "the workflow")
-      version = raw.fetch("schema_version", SCHEMA_VERSION)
-      problem "schema_version must be #{SCHEMA_VERSION}, got #{version.inspect}" unless version == SCHEMA_VERSION
+      schema_version_from(raw)
       problem "id must be #{id.inspect}, the name of its file, got #{raw["id"].inspect}" if raw.key?("id") && raw["id"] != id
       problem "the workflow id #{id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(id)
       inputs = inputs_from(raw["inputs"])

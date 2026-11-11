@@ -444,6 +444,52 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "schema_version" do
+    def versioned(line)
+      <<~YAML
+        #{line}
+        title: Demo
+        inputs:
+          task: {description: What to build, required: true}
+        steps:
+          plan:
+            prompt: Plan {{inputs.task}}.
+            produces: [plan.md]
+            gate: approve
+          build:
+            prompt: Build it.
+      YAML
+    end
+
+    it "reads 0.1 as the same definition as no key and as the legacy 1" do
+      current = parse(versioned("schema_version: 0.1"))
+
+      expect(current.to_h).to eq(parse(versioned("")).to_h)
+      expect(current.to_h).to eq(parse(versioned("schema_version: 1")).to_h)
+      expect(current.to_h).not_to have_key("schema_version")
+    end
+
+    it "reads a quoted \"0.1\"" do
+      expect(parse(versioned('schema_version: "0.1"')).to_h).to eq(parse(versioned("")).to_h)
+    end
+
+    it "takes the last of duplicate keys, as written" do
+      expect(problems(versioned("schema_version: 0.1\nschema_version: 0.10"))).to eq(["schema_version must be one of 0.1, got 0.10"])
+      expect(problems(versioned("schema_version: 0.10\nschema_version: 0.1"))).to eq([])
+    end
+
+    it "refuses a version it can't read as written, such as one from a merge key" do
+      expect(problems(versioned("<<: {schema_version: 0.10}"))).to eq(["schema_version must be one of 0.1, got 0.1"])
+    end
+
+    {"2" => "2", "0.2" => "0.2", '"1.0"' => '"1.0"', "1.0" => "1.0", '"1"' => '"1"', "true" => "true", "" => "nil",
+     "0.10" => "0.10", '"0.10"' => '"0.10"', ".1" => ".1", "01" => "01", "0x1" => "0x1"}.each do |written, shown|
+      it "refuses schema_version #{written}" do
+        expect(problems(versioned("schema_version: #{written}"))).to eq(["schema_version must be one of 0.1, got #{shown}"])
+      end
+    end
+  end
+
   it "reports every problem in a file at once" do
     found = problems(<<~YAML)
       schema_version: 2
@@ -472,7 +518,7 @@ RSpec.describe Workspace::WorkflowDefinition do
 
     expect(found).to include(
       "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
-      "schema_version must be 1, got 2",
+      "schema_version must be one of 0.1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
       "input name \"Task\" must be lowercase letters, digits and '_', starting with a letter",

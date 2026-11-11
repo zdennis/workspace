@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 0.1
 id: rpiv-auto-approve
 title: Research, Plan, Implement, Verify (auto-approve)
 description: One feature end to end with no person, three isolated reviewer conversations the engine dispatches on the plan, and a test-backed verify loop.

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 0.1
 id: explore
 title: Explore and report
 description: Read-only research into a question, a gate on the findings, then a report note. Changes no code.
