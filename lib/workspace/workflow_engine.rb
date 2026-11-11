@@ -816,14 +816,7 @@ module Workspace
     # @param path [String] the checkout's path
     # @return [Hash{String=>Object}, nil] the stored run, or nil
     def run_on_checkout(path)
-      target = File.realpath(path)
-      @store.active.find do |run|
-        run["worktree"].is_a?(String) && File.realpath(run["worktree"]) == target
-      rescue SystemCallError
-        false
-      end
-    rescue SystemCallError
-      nil
+      @store.on_checkout(path)&.to_h
     end
 
     private
@@ -1218,40 +1211,24 @@ module Workspace
     # never comes here: it is the run itself.
     def check_checkout(path)
       return unless path
-      holder = run_on_checkout(path)
+      holder = @store.on_checkout(path)
       return unless holder
       target = File.realpath(path)
-      raise Workspace::Error.new("Checkout #{target} already has workflow run #{holder["id"]} at step #{holder["current"]}. " \
-        "Cancel it with `workspace workflow cancel #{holder["id"]}`, or use another worktree.",
-        code: "checkout_has_run", details: {"worktree" => target, "run_id" => holder["id"], "step" => holder["current"],
-                                            "state" => holder["state"], "next" => ["workspace workflow cancel #{holder["id"]}"]})
+      raise Workspace::Error.new("Checkout #{target} already has workflow run #{holder.id} at step #{holder.current}. " \
+        "Cancel it with `workspace workflow cancel #{holder.id}`, or use another worktree.",
+        code: "checkout_has_run", details: {"worktree" => target, "run_id" => holder.id, "step" => holder.current,
+                                            "state" => holder.state, "next" => ["workspace workflow cancel #{holder.id}"]})
     rescue SystemCallError
       nil
     end
 
-    # Another run waiting to start in +pane+: a run parked by `workflow run` has no binding yet.
-    def parked_on(pane, run_id)
-      now = @clock.call
-      @store.active.find do |run|
-        run["id"] != run_id && self.class.parked(run, now) == :waiting && (run["parked"]["pane"] || run["pane"]) == pane
-      end&.fetch("id")
-    end
+    # Another run waiting to start in +pane+ (a run parked by `workflow run` has no binding yet).
+    def parked_on(pane, run_id) = @store.parked_on(pane, except: run_id, now: @clock.call)&.id
 
-    # Another run whose `on_fail` retry waits for +pane+, or that a token budget holds before an attempt in it: the wait unbinds the pane but the retry types into it. The wait
-    # holds the pane only while it is still the pane the wait began in (a dead or reused id holds nothing).
-    def backoff_on(pane, run_id)
-      @store.active.find do |run|
-        waiting = run["backoff"] || run["budget_hold"]
-        run["id"] != run_id && run["state"] == "waiting" && waiting.is_a?(Hash) && !waiting["blocked"] &&
-          (waiting["pane"] || run["pane"]) == pane && @panes.same_pane?(pane, waiting["identity"])
-      end&.fetch("id")
-    end
+    # Another run whose `on_fail` retry or token budget hold waits for +pane+ (a dead or reused id holds nothing).
+    def backoff_on(pane, run_id) = @store.backoff_on(pane, except: run_id, same_pane: ->(each, identity) { @panes.same_pane?(each, identity) })&.id
 
-    def active?(run_id)
-      !WorkflowRunStore::TERMINAL_STATES.include?(@store.find(run_id)["state"])
-    rescue Workspace::Error
-      false
-    end
+    def active?(run_id) = @store.going?(run_id)
 
     # The waiting gate of the run's step; with +step+ (and +attempt+), only when the
     # run is at that step (and attempt), so a stale button can't pass a later gate.

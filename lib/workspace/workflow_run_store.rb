@@ -165,6 +165,41 @@ module Workspace
       nil
     end
 
+    # @param id [String] a run id
+    # @return [Boolean] whether the run exists and has not finished; false for a run that can't be read
+    def going?(id)
+      !TERMINAL_STATES.include?(run(id).state)
+    rescue Workspace::Error
+      false
+    end
+
+    # A run parked by `workflow run` has no binding yet, so its park names the pane it waits for.
+    #
+    # @param pane [String] a pane id
+    # @param except [String, nil] the run asking, which a park of its own can't hold
+    # @param now [Time] the time a park's expiry is compared with
+    # @return [WorkflowRun, nil] the first run going, oldest first, whose resume is parked and waiting for +pane+
+    def parked_on(pane, except:, now:)
+      going.find do |run|
+        run.id != except && WorkflowTransitions.parked(run.to_h, now) == :waiting && (run.parked["pane"] || run.pane) == pane
+      end
+    end
+
+    # A run whose `on_fail` retry waits, or that a token budget holds before an attempt: the wait unbinds the pane,
+    # but the retry types into it. The wait holds the pane only while it is still the pane the wait began in.
+    #
+    # @param pane [String] a pane id
+    # @param except [String, nil] the run asking
+    # @param same_pane [#call] given the pane and the identity the wait recorded, true while that pane is still the one
+    # @return [WorkflowRun, nil] the first run going, oldest first, whose unblocked wait holds +pane+
+    def backoff_on(pane, except:, same_pane:)
+      going.find do |run|
+        waiting = run.backoff || run.budget_hold
+        run.id != except && run.state == "waiting" && waiting.is_a?(Hash) && !waiting["blocked"] &&
+          (waiting["pane"] || run.pane) == pane && same_pane.call(pane, waiting["identity"])
+      end
+    end
+
     # Changes one run as {#update} does (same lock, errors, retried archive and
     # archive of a run the block finished), with the run as a frozen value.
     #

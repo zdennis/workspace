@@ -529,6 +529,46 @@ RSpec.describe Workspace::WorkflowRunStore do
       expect(store.on_checkout(File.join(@dir, "missing"))).to be_nil
     end
 
+    it "says whether a run is going, false for a finished or unknown one" do
+      create
+      create
+      store.update("wr_2") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+
+      expect(store.going?("wr_1")).to be true
+      expect(store.going?("wr_2")).to be false
+      expect(store.going?("wr_nope")).to be false
+    end
+
+    it "finds the other run whose parked resume still waits for a pane" do
+      later = (now.first + 60).utc.iso8601
+      earlier = (now.first - 60).utc.iso8601
+      create("pane" => "%1", "parked" => {"expires_at" => later})
+      create("pane" => "%9", "parked" => {"expires_at" => later, "pane" => "%2"})
+      create("pane" => "%3", "parked" => {"expires_at" => earlier})
+
+      expect(store.parked_on("%1", except: nil, now: now.first).id).to eq("wr_1")
+      expect(store.parked_on("%2", except: nil, now: now.first).id).to eq("wr_2")
+      expect(store.parked_on("%9", except: nil, now: now.first)).to be_nil
+      expect(store.parked_on("%1", except: "wr_1", now: now.first)).to be_nil
+      expect(store.parked_on("%3", except: nil, now: now.first)).to be_nil
+    end
+
+    it "finds the other waiting run whose retry or budget hold keeps a pane while it is the same pane" do
+      create("state" => "waiting", "pane" => "%1", "backoff" => {"identity" => "a"})
+      create("state" => "waiting", "pane" => "%9", "budget_hold" => {"pane" => "%2", "identity" => "b"})
+      create("state" => "waiting", "pane" => "%3", "backoff" => {"blocked" => "pane_busy"})
+      create("state" => "running", "pane" => "%4", "backoff" => {})
+      asked = []
+      same = ->(pane, identity) { (asked << [pane, identity]) && identity != "b" }
+
+      expect(store.backoff_on("%1", except: nil, same_pane: same).id).to eq("wr_1")
+      expect(store.backoff_on("%2", except: nil, same_pane: same)).to be_nil
+      expect(store.backoff_on("%1", except: "wr_1", same_pane: same)).to be_nil
+      expect(store.backoff_on("%3", except: nil, same_pane: same)).to be_nil
+      expect(store.backoff_on("%4", except: nil, same_pane: same)).to be_nil
+      expect(asked).to eq([["%1", "a"], ["%2", "b"]])
+    end
+
     it "reads through the Hash methods" do
       create
       calls = []

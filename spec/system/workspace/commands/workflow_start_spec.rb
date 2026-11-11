@@ -70,7 +70,10 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   def real_engine(active: [])
-    build_engine(store: instance_double(Workspace::WorkflowRunStore, active: active))
+    runs = active.map { |run| Workspace::WorkflowRun.from_h(run) }
+    store = instance_double(Workspace::WorkflowRunStore, active: active)
+    allow(store).to receive(:on_checkout) { |path| runs.find { |run| File.realpath(run.worktree) == File.realpath(path) } }
+    build_engine(store: store)
   end
 
   before do
