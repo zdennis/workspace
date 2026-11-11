@@ -515,6 +515,143 @@ RSpec.describe Workspace::Commands::SessionEvent do
       end
     end
 
+    describe "verdict hashes" do
+      let(:checkout) { File.join(tmpdir, "repo") }
+      let(:round_dir) { File.join(checkout, ".workflow", "wr_1", "reviews", "review.1.r2") }
+      let(:bindings) { Workspace::PaneBindings.new(path: File.join(tmpdir, "bindings.json")) }
+      let(:verdict) { File.join(round_dir, "skeptic.md") }
+
+      before do
+        FileUtils.mkdir_p(round_dir)
+        FileUtils.mkdir_p(File.join(checkout, ".git"))
+        bindings.bind("%2", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "step" => "review", "attempt" => 1, "round" => 2,
+          "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+      end
+
+      def finish(tool, path, hook: "PostToolUse", cwd: checkout, response: {})
+        payload = {"hook_event_name" => hook, "tool_name" => tool, "cwd" => cwd, "tool_input" => {"file_path" => path}, "tool_response" => response}
+        File.unlink(socket_path) if File.exist?(socket_path)
+        server = UNIXServer.new(socket_path)
+        received = nil
+        listener = Thread.new do
+          client = server.accept
+          received = JSON.parse(client.gets)
+          client.puts(JSON.generate("ok" => true))
+          client.close
+        end
+        described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)), env: env, pane_bindings: bindings).call
+        listener.join(2)
+        received
+      ensure
+        server&.close
+      end
+
+      it "hashes the file on disk after a Write, an Edit and a MultiEdit" do
+        File.write(verdict, "verdict: approve\n")
+        expected = Digest::SHA256.hexdigest("verdict: approve\n")
+
+        %w[Write Edit MultiEdit].each do |tool|
+          expect(finish(tool, verdict)["sha256"]).to eq(expected)
+        end
+      end
+
+      it "takes the path relative to the hook's cwd" do
+        File.write(verdict, "x")
+
+        expect(finish("Write", "reviews/review.1.r2/skeptic.md", cwd: File.join(checkout, ".workflow", "wr_1"))["sha256"]).to eq(Digest::SHA256.hexdigest("x"))
+      end
+
+      it "gives none for a Read, a PreToolUse or a failed tool" do
+        File.write(verdict, "x")
+
+        expect(finish("Read", verdict)).not_to have_key("sha256")
+        expect(finish("Write", verdict, hook: "PreToolUse")).not_to have_key("sha256")
+        expect(finish("Write", verdict, response: {"is_error" => true})).not_to have_key("sha256")
+      end
+
+      it "gives none for a link, a file outside the round directory, a missing file or one over the cap" do
+        File.write(File.join(tmpdir, "real"), "x")
+        File.symlink(File.join(tmpdir, "real"), verdict)
+        expect(finish("Write", verdict)).not_to have_key("sha256")
+
+        File.write(File.join(checkout, "other.md"), "x")
+        expect(finish("Write", File.join(checkout, "other.md"))).not_to have_key("sha256")
+
+        other_round = File.join(checkout, ".workflow", "wr_1", "reviews", "review.1.r1")
+        FileUtils.mkdir_p(other_round)
+        File.write(File.join(other_round, "a.md"), "x")
+        expect(finish("Write", File.join(other_round, "a.md"))).not_to have_key("sha256")
+
+        expect(finish("Write", File.join(round_dir, "missing.md"))).not_to have_key("sha256")
+
+        File.delete(verdict)
+        File.write(verdict, "x" * (described_class::VERDICT_MAX_BYTES + 1))
+        expect(finish("Write", verdict)).not_to have_key("sha256")
+      end
+
+      it "gives none when a directory on the way is a link" do
+        elsewhere = File.join(tmpdir, "elsewhere")
+        FileUtils.mkdir_p(elsewhere)
+        File.write(File.join(elsewhere, "a.md"), "x")
+        File.symlink(elsewhere, File.join(round_dir, "sub"))
+
+        expect(finish("Write", File.join(round_dir, "sub", "a.md"))).not_to have_key("sha256")
+      end
+
+      context "with the binding's artifacts directory" do
+        let(:artifacts) { File.join(checkout, ".workflow", "wr_1") }
+
+        before do
+          bindings.bind("%2", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "step" => "review", "attempt" => 1, "round" => 2,
+            "artifacts" => artifacts, "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+        end
+
+        it "hashes a verdict when the hook's cwd is in a nested repository" do
+          nested = File.join(checkout, "vendor", "lib")
+          FileUtils.mkdir_p(File.join(nested, ".git"))
+          File.write(verdict, "x")
+
+          expect(finish("Write", verdict, cwd: nested)["sha256"]).to eq(Digest::SHA256.hexdigest("x"))
+        end
+
+        it "gives none when reviews/, the run directory or the artifacts directory is a link" do
+          File.write(verdict, "x")
+          moved = File.join(tmpdir, "moved")
+          FileUtils.mv(File.join(artifacts, "reviews"), moved)
+          File.symlink(moved, File.join(artifacts, "reviews"))
+          expect(finish("Write", verdict)).not_to have_key("sha256")
+
+          File.unlink(File.join(artifacts, "reviews"))
+          FileUtils.mv(artifacts, File.join(tmpdir, "run"))
+          File.symlink(File.join(tmpdir, "run"), artifacts)
+          expect(finish("Write", verdict)).not_to have_key("sha256")
+        end
+      end
+
+      it "gives none when the run directory is a link, with no artifacts recorded" do
+        File.write(verdict, "x")
+        FileUtils.mv(File.join(checkout, ".workflow", "wr_1"), File.join(tmpdir, "run"))
+        File.symlink(File.join(tmpdir, "run"), File.join(checkout, ".workflow", "wr_1"))
+
+        expect(finish("Write", verdict)).not_to have_key("sha256")
+      end
+
+      it "never raises on a corrupt bindings file" do
+        File.write(File.join(tmpdir, "bindings.json"), "{not json")
+        allow(bindings).to receive(:binding_for).and_raise(JSON::ParserError)
+
+        expect(finish("Write", verdict)).to include("event" => "tool_use")
+      end
+
+      it "gives none for a pane that is not a reviewer's" do
+        bindings.bind("%2", "kind" => "run", "id" => "wr_1", "step" => "review", "attempt" => 1, "round" => 2,
+          "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+        File.write(verdict, "x")
+
+        expect(finish("Write", verdict)).not_to have_key("sha256")
+      end
+    end
+
     describe "tool uses" do
       let(:checkout) { File.join(tmpdir, "repo") }
 

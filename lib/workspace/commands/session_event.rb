@@ -96,6 +96,12 @@ module Workspace
       # since a cut path names a different file.
       MAX_PATH_LENGTH = 1024
 
+      # The tools whose PostToolUse is hashed when they write a review round's verdict file.
+      VERDICT_TOOLS = %w[Write Edit MultiEdit].freeze
+
+      # The most a verdict file may hold for its hash to be taken.
+      VERDICT_MAX_BYTES = 1_048_576
+
       # Longest sub-agent description forwarded.
       MAX_DESCRIPTION_LENGTH = 120
 
@@ -380,11 +386,61 @@ module Workspace
           duration = payload["duration_ms"]
           fields["duration_ms"] = duration.round if duration.is_a?(Numeric) && duration >= 0
         end
+        if hook == "PostToolUse" && fields["ok"]
+          sha = verdict_sha256(payload)
+          fields["sha256"] = sha if sha
+        end
         if claude? && SUBAGENT_TOOLS.include?(fields["tool"]) && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
           fields["description"] = clean(payload["tool_input"]["description"], MAX_DESCRIPTION_LENGTH)
           fields["subagent_type"] = clean(payload["tool_input"]["subagent_type"], MAX_NAME_LENGTH)
         end
         fields
+      end
+
+      # The sha256 of a verdict file a review pane's Write, Edit or MultiEdit just
+      # wrote, read from the disk and not from the tool's input (an Edit has no
+      # whole content). Only a regular file, not a link, directly in or under the
+      # pane's round directory (`.workflow/<run>/reviews/<step>.<attempt>.r<round>/`
+      # in its checkout, from the reviewer binding) of at most VERDICT_MAX_BYTES;
+      # anything else, or any trouble reading, gives nil.
+      def verdict_sha256(payload)
+        return nil unless VERDICT_TOOLS.include?(payload["tool_name"]) && @pane_bindings
+        entry = @pane_bindings.binding_for(@env["TMUX_PANE"].to_s)
+        return nil unless entry.is_a?(Hash) && entry["kind"] == "run" && entry["role"] == "reviewer"
+        return nil unless entry["id"].is_a?(String) && entry["step"].is_a?(String) && entry["attempt"].is_a?(Integer) && entry["round"].is_a?(Integer)
+        input = payload["tool_input"]
+        cwd = text_field(payload, "cwd")
+        raw = input.is_a?(Hash) ? input["file_path"] : nil
+        return nil unless cwd && raw.is_a?(String) && !raw.empty? && !raw.match?(/[[:cntrl:]]/)
+        round = "reviews/#{entry["step"]}.#{entry["attempt"]}.r#{entry["round"]}"
+        # The binding's `artifacts` is the run's directory. T30 records it on the reviewer
+        # binding; until then (no value) the checkout found above the hook's cwd stands in.
+        artifacts = entry["artifacts"]
+        if artifacts.is_a?(String) && artifacts.start_with?("/") && !artifacts.match?(/[[:cntrl:]]/)
+          base = File.expand_path(artifacts)
+          linked = [base]
+        else
+          root = checkout_root(File.expand_path(cwd))
+          return nil unless root
+          base = File.join(root, ".workflow", entry["id"])
+          linked = []
+        end
+        dir = File.join(base, round)
+        path = File.expand_path(raw, cwd)
+        return nil unless path.start_with?("#{dir}/")
+        # No link on the way from the run's directory (or the checkout) down to the file, or
+        # the write would land elsewhere. The checkout's own path may hold links.
+        start = linked.empty? ? File.dirname(File.dirname(base)) : File.dirname(base)
+        walked = linked.empty? ? start : base
+        walk = (linked.empty? ? path.delete_prefix("#{start}/") : path.delete_prefix("#{base}/")).split("/")
+        linked.each { |own| return nil if File.lstat(own).symlink? }
+        walk.each do |part|
+          walked = File.join(walked, part)
+          return nil if File.lstat(walked).symlink?
+        end
+        WorkflowProduced.digest(path, max_bytes: VERDICT_MAX_BYTES)&.sha256
+      rescue
+        nil
       end
 
       def permission_fields(payload)
