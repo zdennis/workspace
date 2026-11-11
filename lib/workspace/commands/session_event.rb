@@ -274,7 +274,8 @@ module Workspace
 
         entry = @pane_bindings.binding_for(pane_id)
         return unless entry
-        return if @pane_bindings.stale?(entry, session: @tmux.session_name_for_pane(pane_id), pane_slot: @tmux.pane_slot(pane_id))
+        return if @pane_bindings.stale?(entry, session: @tmux.session_name_for_pane(pane_id), pane_slot: @tmux.pane_slot(pane_id),
+          server_pid: -> { @tmux.server_pid_for_pane(pane_id) })
 
         @output.puts JSON.generate("hookSpecificOutput" => {
           "hookEventName" => "SessionStart",

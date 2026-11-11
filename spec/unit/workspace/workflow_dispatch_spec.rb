@@ -226,6 +226,15 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect { dispatch.check_pane(nil) }.not_to raise_error
     end
 
+    it "refuses a review pane of a run still going, for any run, so an agent is never started in it" do
+      panes = RecordingWorkflowPanes.new(reviewing: {"%7" => "wr_9"})
+      going << "wr_9"
+      dispatch = described_class.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
+        guard: guard, clock: -> { now })
+
+      expect { dispatch.check_pane("%7", run_id: "wr_9") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("pane_has_run") }
+    end
+
     it "refuses a pane a parked run waits for, but not to the run that parked" do
       parked_on["%3"] = run_hash("id" => "wr_7")
 

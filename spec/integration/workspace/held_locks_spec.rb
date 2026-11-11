@@ -7,7 +7,7 @@ RSpec.describe Workspace::HeldLocks do
   let(:store) { Workspace::LockStore.new(dir: tmpdir, liveness: liveness) }
   let(:lock_namespace) { instance_double(Workspace::LockNamespace, resolve: {key: "k", display: "app", dir: tmpdir}) }
   let(:lock_holder) { instance_double(Workspace::LockHolder, current: current) }
-  let(:bound_run) { instance_double(Workspace::BoundRun, run_id: run_id) }
+  let(:bound_run) { instance_double(Workspace::BoundRun, author_run_id: run_id) }
   let(:me) { agent(100, pane: "%1") }
   let(:current) { me }
   let(:run_id) { nil }

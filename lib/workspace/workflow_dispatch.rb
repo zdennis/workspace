@@ -97,7 +97,7 @@ module Workspace
     # @raise [Workspace::Error] code `pane_has_run`
     def check_pane(pane, run_id: nil)
       return unless pane
-      bound = @panes.run_on(pane)
+      bound = @panes.bound_on(pane)&.fetch(:run_id)
       other = (bound && @store.going?(bound)) ? bound : (parked_on(pane, run_id) || backoff_on(pane, run_id))
       return unless other
       raise Workspace::Error.new("Pane #{pane} is already running workflow run #{other}. Cancel it, or pass --pane for another agent pane.",

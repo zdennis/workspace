@@ -318,7 +318,7 @@ RSpec.describe Workspace::Commands::Dev do
       end
 
       it "fires both hooks when up --queue runs from the pane bound to the run, which starts at once" do
-        bound_run = instance_double(Workspace::BoundRun, run_id: "wr_1")
+        bound_run = instance_double(Workspace::BoundRun, author_run_id: "wr_1")
         store = Workspace::LockStore.new(dir: lock_dir, liveness: Workspace::LockHolder.new)
         store.acquire_run(["devenv"], run: {run_id: "wr_1", step: "implement", worktree: login, pane: "%1"})
 
@@ -329,7 +329,7 @@ RSpec.describe Workspace::Commands::Dev do
       end
 
       it "fires both hooks when up starts the environment as a run's delegate, and neither when the delegate is already running" do
-        bound_run = instance_double(Workspace::BoundRun, run_id: "wr_1")
+        bound_run = instance_double(Workspace::BoundRun, author_run_id: "wr_1")
         store = Workspace::LockStore.new(dir: lock_dir, liveness: Workspace::LockHolder.new)
         store.acquire_run(["devenv"], run: {run_id: "wr_1", step: "implement", worktree: login, pane: "%1"})
 
@@ -828,7 +828,7 @@ RSpec.describe Workspace::Commands::Dev do
     end
   end
   describe "under a workflow run that holds the devenv lock" do
-    let(:bound_run) { instance_double(Workspace::BoundRun, run_id: "wr_1") }
+    let(:bound_run) { instance_double(Workspace::BoundRun, author_run_id: "wr_1") }
     let(:store) { Workspace::LockStore.new(dir: lock_dir, liveness: Workspace::LockHolder.new) }
 
     before { store.acquire_run(["devenv"], run: {run_id: "wr_1", step: "implement", worktree: login, pane: "%1"}) }
@@ -864,7 +864,7 @@ RSpec.describe Workspace::Commands::Dev do
     it "refuses `down` from another worktree whose pane is not bound to the run, naming the run, unless forced" do
       dev(bound_run: bound_run).up(working_dir: login)
       wrapper = spawned.last
-      stranger = instance_double(Workspace::BoundRun, run_id: nil)
+      stranger = instance_double(Workspace::BoundRun, author_run_id: nil)
 
       expect { dev(bound_run: stranger).down(working_dir: main) }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("dev_held_by")
@@ -1880,9 +1880,9 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   end
 
   describe "under a workflow run that holds the devenv lock" do
-    let(:bound_run) { instance_double(Workspace::BoundRun, run_id: "wr_1") }
-    let(:other_run) { instance_double(Workspace::BoundRun, run_id: "wr_2") }
-    let(:unbound) { instance_double(Workspace::BoundRun, run_id: nil) }
+    let(:bound_run) { instance_double(Workspace::BoundRun, author_run_id: "wr_1") }
+    let(:other_run) { instance_double(Workspace::BoundRun, author_run_id: "wr_2") }
+    let(:unbound) { instance_double(Workspace::BoundRun, author_run_id: nil) }
     let(:run) { {run_id: "wr_1", step: "implement", workflow: "rpiv", workspace: "app.worktree-a", worktree: worktree, pane: "%1"} }
 
     before { store.acquire_run(["devenv"], run: run) }

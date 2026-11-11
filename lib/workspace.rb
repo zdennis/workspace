@@ -991,7 +991,7 @@ module Workspace
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence)
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
-      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new)
+      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new, error_output: error_output)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_guard = WorkflowGuard.new(git_path: Which.path("git") || "git")
     workflow_checker = WorkflowCheck.new

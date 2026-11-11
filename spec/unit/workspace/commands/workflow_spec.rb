@@ -9,6 +9,9 @@ RSpec.describe Workspace::Commands::Workflow do
   let(:status) { instance_double(Workspace::WorkflowStatus) }
   let(:store) { instance_double(Workspace::WorkflowRunStore) }
   let(:panes) { instance_double(Workspace::WorkflowPanes) }
+
+  # An author's pane is bound_on's answer wherever a spec stubs run_on.
+  before { allow(panes).to receive(:bound_on) { |pane| (run = panes.run_on(pane)) && {run_id: run, role: "author"} } }
   let(:output) { StringIO.new }
   let(:tmux) { instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []) }
   let(:process_tree) { instance_double(Workspace::ProcessTree) }
@@ -1191,6 +1194,17 @@ RSpec.describe Workspace::Commands::Workflow do
         }
       expect { command.reject(run: "wr_1", note: "No.", caller_pane: "%5") }
         .to raise_error(Workspace::Error, /so `workflow reject` is refused here/) { |error| expect(error.code).to eq("bound_pane") }
+    end
+
+    it "refuses approve and reject from a review pane of the run, as from its author's pane" do
+      allow(panes).to receive(:run_on).with("%9").and_return(nil)
+      allow(panes).to receive(:bound_on).with("%9").and_return(run_id: "wr_1", role: "reviewer")
+      guarded(:approve)
+
+      expect { command.approve(run: "wr_1", caller_pane: "%9") }.to raise_error(Workspace::Error) { |error|
+        expect(error.code).to eq("bound_pane")
+        expect(error.details).to eq("pane" => "%9", "run_id" => "wr_1")
+      }
     end
 
     it "refuses approve and reject from a process under the run's pane, with TMUX_PANE unset or another pane's, naming the agent" do

@@ -185,6 +185,104 @@ RSpec.describe Workspace::PaneBindings do
     end
   end
 
+  describe "role and round" do
+    it "stores a reviewer's role and round and rejects a bad one" do
+      entry = store.bind("%5", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 2)
+
+      expect(entry).to include("role" => "reviewer", "round" => 2)
+      expect(store.bind("%6", "kind" => "run", "id" => "wr_1", "role" => "author")).to include("role" => "author")
+      expect(store.bind("%7", "kind" => "run", "id" => "wr_1")).not_to have_key("role")
+      expect { store.bind("%8", "kind" => "run", "id" => "wr_1", "role" => "review") }.to raise_error(Workspace::UsageError, /role/)
+      expect { store.bind("%8", "kind" => "run", "id" => "wr_1", "round" => 0) }.to raise_error(Workspace::UsageError, /round/)
+      expect { store.bind("%8", "kind" => "run", "id" => "wr_1", "round" => "1") }.to raise_error(Workspace::UsageError, /round/)
+    end
+
+    it "finds the author by default and the reviewer by role, in either binding order" do
+      [%w[%5 %6], %w[%6 %5]].each do |order|
+        order.each { |pane| store.bind(pane, "kind" => "run", "id" => "wr_1", **((pane == "%6") ? {"role" => "reviewer", "round" => 1} : {})) }
+
+        expect(store.pane_for("run", "wr_1")).to eq("%5")
+        expect(store.pane_for("run", "wr_1", role: "author")).to eq("%5")
+        expect(store.pane_for("run", "wr_1", role: "reviewer")).to eq("%6")
+        FileUtils.rm_f(path)
+      end
+    end
+
+    it "removes only one role's bindings with a role, and both without" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1")
+      store.bind("%6", "kind" => "run", "id" => "wr_1", "role" => "reviewer")
+
+      expect(store.unbind_all("run", "wr_1", role: "reviewer")).to eq(["%6"])
+      expect(store.binding_for("%5")).not_to be_nil
+      store.bind("%6", "kind" => "run", "id" => "wr_1", "role" => "reviewer")
+      expect(store.unbind_all("run", "wr_1", role: "author")).to eq(["%5"])
+      expect(store.binding_for("%6")).not_to be_nil
+      expect(store.unbind_all("run", "wr_1")).to eq(["%6"])
+    end
+
+    it "judges a reviewer binding by session alone" do
+      entry = {"kind" => "run", "id" => "wr_1", "role" => "reviewer", "session" => "app", "pane_slot" => "app:3.0"}
+
+      expect(store.stale?(entry, session: "app", pane_slot: "app:2.0")).to be false
+      expect(store.stale?(entry, session: "app", pane_slot: nil)).to be false
+      expect(store.stale?(entry, session: "other", pane_slot: "app:3.0")).to be true
+      expect(store.stale?(entry, session: nil, pane_slot: nil)).to be true
+      expect(store.stale?(entry.merge("role" => "author"), session: "app", pane_slot: "app:2.0")).to be true
+    end
+
+    it "judges a reviewer binding that recorded its tmux server by that server too, reading it only when needed" do
+      entry = {"kind" => "run", "id" => "wr_1", "role" => "reviewer", "session" => "app", "pane_slot" => "app:3.0", "server_pid" => "4242"}
+      reads = []
+
+      expect(store.stale?(entry, session: "app", pane_slot: "app:9.9", server_pid: -> { "4242" })).to be false
+      expect(store.stale?(entry, session: "app", pane_slot: "app:3.0", server_pid: -> { "5555" })).to be true
+      expect(store.stale?(entry, session: "app", pane_slot: "app:3.0", server_pid: -> {})).to be true
+      expect(store.stale?(entry, session: "app", pane_slot: "app:3.0", server_pid: "4242")).to be false
+      store.stale?(entry.merge("role" => "author"), session: "app", pane_slot: "app:3.0", server_pid: -> { reads << 1 })
+      store.stale?(entry.merge("server_pid" => nil), session: "app", pane_slot: "app:3.0", server_pid: -> { reads << 1 })
+      expect(reads).to be_empty
+    end
+
+    it "stores the tmux server pid of a binding" do
+      expect(store.bind("%5", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "server_pid" => "4242")["server_pid"]).to eq("4242")
+    end
+
+    it "tells a review pane its round and prompt file, never the author's instructions" do
+      text = store.context_for("kind" => "run", "id" => "wr_1", "workspace" => "api", "step" => "plan", "attempt" => 2,
+        "role" => "reviewer", "round" => 3, "instructions" => ".workflow/wr_1/reviews/plan.2.3.prompt.md", "focus" => "ignored")
+
+      expect(text).to eq(<<~TEXT.chomp)
+        This pane is a review pane for workflow run wr_1 in api.
+        Step: plan (attempt 2).
+        Round: 3.
+        Review prompt: .workflow/wr_1/reviews/plan.2.3.prompt.md. Reread it if your context was compacted.
+      TEXT
+      expect(text).not_to include("Instructions:")
+    end
+
+    it "drops reviewer bindings in a move, and moves the author's" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1", "session" => "api", "pane_slot" => "api:0.1")
+      store.bind("%6", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "session" => "api", "pane_slot" => "api:3.0")
+
+      moved = store.move([
+        {from: "%5", to: "%1", session: "api", from_slot: "api:0.1", to_slot: "api:0.1"},
+        {from: "%6", to: "%2", session: "api", from_slot: "api:3.0", to_slot: "api:3.0"}
+      ])
+
+      expect(moved.keys).to eq(["%1"])
+      expect(store.binding_for("%6")).to be_nil
+      expect(store.binding_for("%2")).to be_nil
+      expect(store.pane_for("run", "wr_1", role: "reviewer")).to be_nil
+    end
+
+    it "drops a lone reviewer binding in a move" do
+      store.bind("%6", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "session" => "api", "pane_slot" => "api:3.0")
+
+      expect(store.move([{from: "%6", to: "%2", session: "api", from_slot: "api:3.0", to_slot: "api:3.0"}])).to eq({})
+      expect(store.binding_for("%6")).to be_nil
+    end
+  end
+
   describe "#unbind_all" do
     it "removes every binding to the subject, one kept under its slot included, and leaves the others" do
       store.bind("%5", "kind" => "run", "id" => "wr_1", "session" => "app", "pane_slot" => "app:0.1")

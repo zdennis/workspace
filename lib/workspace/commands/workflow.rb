@@ -1418,7 +1418,7 @@ module Workspace
       # A gate is passed by a person. The check guards against an agent's mistake and is not
       # a boundary: an agent can clear `$TMUX_PANE`.
       def refuse_bound_pane!(caller_pane, verb, subject = "A gate is passed by a person")
-        bound = caller_pane && @panes.run_on(caller_pane)
+        bound = caller_pane && @panes.bound_on(caller_pane)&.fetch(:run_id)
         return unless bound
         raise Workspace::Error.new("#{subject}: this pane (#{caller_pane}) is bound to workflow run #{bound}, " \
           "so `#{verb}` is refused here. Run it from another terminal.",

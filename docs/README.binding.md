@@ -63,6 +63,19 @@ On `SessionStart` the hook composes the listed packs again from the library as i
 
 A binding only counts in the tmux session it was made in: a pane id from another session gets nothing. It also has to be in the pane slot (`session:window.pane`) it was made in, so a pane id reused after a tmux restart gets nothing. A binding whose pane has since moved to another slot needs a new `binding set`. `binding show` says when a binding is stale in this way: it prints a `Stale:` line after the binding, and `--json` reports `"stale": true` in the `binding` object. [`instructions compose`](README.instructions.md) leaves a stale binding out. Bindings live in `bindings.json` in workspace's state directory (`$XDG_STATE_HOME/workspace`), mode 0600, and stay until `binding clear` or a new `binding set` for the pane. A lookup that fails is skipped; it never fails the hook. If `bindings.json` can't be parsed, the next `binding set` copies it to `bindings.json.corrupt`, warns on stderr, and starts a fresh file.
 
+## Review panes
+
+A workflow run's binding can carry `role` and `round`. No `role` (or `author`) is the step's own agent. `reviewer` marks the pane a [step review](README.workflow.md) round runs in, with `round` (1 or more) its round number; `kind` stays `run` (`review` is the PR-review kind above), and a binding set by hand with `--kind run` has no role. Lookups by run (the pane a run's turn is read from, `workflow` commands, `restore`) find the author's pane and never a review pane, so the two bindings of one run do not replace each other. A review pane's reminder names its run, step, round and the round's prompt file (`instructions`, made relative to the checkout when the absolute path is over 200 characters, left out when still too long), never the author's instructions:
+
+```text
+This pane is a review pane for workflow run wr_01 in api.
+Step: plan (attempt 2).
+Round: 1.
+Review prompt: .workflow/wr_01/reviews/plan.2.1.prompt.md. Reread it if your context was compacted.
+```
+
+A reviewer binding records the tmux server's pid (`server_pid`) and is stale in another tmux session or under another tmux server (pane ids start over when tmux restarts), but not in another window slot, so `renumber-windows on` does not strand a round ([`doctor`](README.doctor.md) still warns when it is on). `restore` never carries a reviewer binding to a new pane: it is dropped. The `deny:` tripwire of the run's definition applies to the review pane; `dev up`, `lock acquire` and `promote` treat only the author's pane as the run's own. `binding show --json` reports `role`, `round` and `server_pid` in `binding` when set. A workflow step's `workflow` commands (`approve`, `reject`, `resume`) refuse to run from a review pane as from the author's, and a review pane is never taken as a pane to start a step in.
+
 ## --json
 
 ```json

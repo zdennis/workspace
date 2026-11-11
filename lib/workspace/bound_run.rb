@@ -19,14 +19,32 @@ module Workspace
     # Never raises: a pane whose binding can't be checked counts as unbound.
     #
     # @return [String, nil] the run id, or nil when this process is not in a
-    #   pane bound to a run
+    #   pane bound to a run, as its author or as its reviewer (the `deny:` tripwire covers both)
     def run_id
+      entry = live_entry
+      entry && entry["id"]
+    end
+
+    # The run only if the pane is the step's own agent's, not a review pane: a review
+    # pane holds no locks and runs no dev environment, so `dev up`, `lock acquire` and
+    # `promote` must not treat it as the run's author.
+    #
+    # @return [String, nil] the run id, or nil for an unbound pane or a reviewer's
+    def author_run_id
+      entry = live_entry
+      (entry && entry["role"] != "reviewer") ? entry["id"] : nil
+    end
+
+    private
+
+    def live_entry
       pane = @env["TMUX_PANE"]
       return nil if pane.nil? || pane.empty?
       entry = @pane_bindings.binding_for(pane)
       return nil unless entry && entry["kind"] == "run"
-      return nil if @pane_bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane))
-      entry["id"]
+      return nil if @pane_bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane),
+        server_pid: -> { @tmux.server_pid_for_pane(pane) })
+      entry
     rescue Workspace::Error, SystemCallError
       nil
     end

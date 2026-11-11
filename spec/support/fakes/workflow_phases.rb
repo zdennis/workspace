@@ -271,12 +271,14 @@ class RecordingWorkflowPanes
   attr_reader :calls
 
   # @param bound [Hash{String=>String}] the pane each run id is bound to
-  # @param runs_on [Hash{String=>String}] the run id each pane is bound to
+  # @param runs_on [Hash{String=>String}] the run id each pane is bound to as its author
+  # @param reviewing [Hash{String=>String}] the run id each review pane is bound to
   # @param dead [Array<String>] run ids whose binding was made for another pane
   # @param kick [Hash] what +kick+ answers
   # @param same [Boolean] what +same_pane?+ answers
   # @param gone [Array<String>] the panes tmux no longer has
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [])
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], reviewing: {})
+    @reviewing = reviewing
     @bound = bound
     @runs_on = runs_on
     @dead = dead
@@ -290,6 +292,11 @@ class RecordingWorkflowPanes
 
   def run_on(pane) = @runs_on[pane]
 
+  def bound_on(pane)
+    return {run_id: @runs_on[pane], role: "author"} if @runs_on[pane]
+    {run_id: @reviewing[pane], role: "reviewer"} if @reviewing[pane]
+  end
+
   def alive?(run_id) = !@dead.include?(run_id)
 
   def pane_gone?(pane) = @gone.include?(pane)
@@ -301,12 +308,12 @@ class RecordingWorkflowPanes
     @same
   end
 
-  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:)
+  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil)
     @calls << [:bind, {workspace: workspace, pane: pane, run_id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}]
     true
   end
 
-  def unbind(run_id)
+  def unbind(run_id, role: nil)
     @calls << [:unbind, run_id]
     true
   end

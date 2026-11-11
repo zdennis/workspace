@@ -28,6 +28,11 @@ class FakeWorkflowPanes
     @stale.include?(run_id) ? nil : run_id
   end
 
+  def bound_on(pane)
+    run_id = run_on(pane)
+    run_id && {run_id: run_id, role: "author"}
+  end
+
   def pane_of(run_id) = @bound.find { |_, entry| entry[:run_id] == run_id }&.first
 
   def alive?(run_id) = !pane_of(run_id).nil? && !@stale.include?(run_id)

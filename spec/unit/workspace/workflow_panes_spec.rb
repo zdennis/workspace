@@ -35,12 +35,14 @@ RSpec.describe Workspace::WorkflowPanes do
   subject(:panes) do
     described_class.new(config: config, bindings: bindings, tmux: tmux, locator: locator, binder: binder,
       snapshot_client: snapshot_client, agent_ensurer: agent_ensurer, connector: connector, clock: -> { now[0] },
+      error_output: warnings,
       sleeper: lambda { |seconds|
         sleeps << seconds
         now[0] += seconds
         on_sleep.call
       })
   end
+  let(:warnings) { StringIO.new }
   let(:now) { [Time.utc(2026, 10, 4, 12, 0, 30)] }
   let(:sleeps) { [] }
   let(:on_sleep) { -> {} }
@@ -217,6 +219,104 @@ RSpec.describe Workspace::WorkflowPanes do
       panes.unbind("wr_1")
 
       expect(JSON.parse(File.read(File.join(@dir, "bindings.json"))).keys).to eq(["%5"])
+    end
+  end
+
+  describe "a review pane's binding" do
+    let(:deep) { "/src/app/#{"deep/" * 31}.workflow/wr_1/reviews/plan.2.1.prompt.md" }
+
+    def bind_reviewer(**overrides)
+      allow(tmux).to receive(:pane_slot).with("%9").and_return("app:3.0")
+      panes.bind(workspace: "app", pane: "%9", run_id: "wr_1", step: "plan", attempt: 2, role: "reviewer", round: 1,
+        instructions: "/src/app/.workflow/wr_1/reviews/plan.2.1.prompt.md", artifacts: "/src/app/.workflow/wr_1", **overrides)
+    end
+
+    before do
+      allow(locator).to receive(:locate).with("app", "%9").and_return(id: "%9", session: "app")
+      allow(tmux).to receive(:session_name_for_pane).with("%9").and_return("app")
+      allow(tmux).to receive(:server_pid_for_pane).with("%9").and_return("4242")
+    end
+
+    it "stores role and round, and is found by review_pane_of but never by pane_of or run_on, in either binding order" do
+      [[:author, :reviewer], [:reviewer, :author]].each do |order|
+        order.each { |role| (role == :author) ? bind : bind_reviewer }
+
+        expect(bindings.binding_for("%9")).to include("role" => "reviewer", "round" => 1)
+        expect(panes.pane_of("wr_1")).to eq("%5")
+        expect(panes.review_pane_of("wr_1")).to eq("%9")
+        expect(panes.run_on("%9")).to be_nil
+        expect(panes.run_on("%5")).to eq("wr_1")
+        expect(panes.bound_on("%9")).to eq(run_id: "wr_1", role: "reviewer")
+        expect(panes.bound_on("%5")).to eq(run_id: "wr_1", role: "author")
+        FileUtils.rm_f(File.join(@dir, "bindings.json"))
+      end
+    end
+
+    it "never returns a reviewer-only run's pane from pane_of" do
+      bind_reviewer
+
+      expect(panes.pane_of("wr_1")).to be_nil
+      expect(panes.review_pane_of("wr_1")).to eq("%9")
+    end
+
+    it "stays bound when the window index changed, but not in another session" do
+      bind_reviewer
+      allow(tmux).to receive(:pane_slot).with("%9").and_return("app:1.0")
+
+      expect(panes.bound_on("%9")).to eq(run_id: "wr_1", role: "reviewer")
+
+      allow(tmux).to receive(:session_name_for_pane).with("%9").and_return("other")
+      expect(panes.bound_on("%9")).to be_nil
+    end
+
+    it "is no review pane once tmux restarted: a pane id the new server reused reads as another pane" do
+      bind_reviewer
+      bindings.bind("%9", bindings.binding_for("%9").merge("server_pid" => "4242"))
+      allow(tmux).to receive(:server_pid_for_pane).with("%9").and_return("9999")
+
+      expect(panes.bound_on("%9")).to be_nil
+      expect(panes.review_pane_of("wr_1")).to eq("%9")
+      expect(panes.alive?("wr_1")).to be false
+    end
+
+    it "records the tmux server a review pane was bound in" do
+      expect(bind_reviewer["server_pid"]).to eq("4242")
+    end
+
+    it "unbinds one role and leaves the other" do
+      bind
+      bind_reviewer
+
+      panes.unbind("wr_1", role: "reviewer")
+      expect(bindings.binding_for("%9")).to be_nil
+      expect(bindings.binding_for("%5")).not_to be_nil
+
+      bind_reviewer
+      panes.unbind("wr_1")
+      expect(bindings.binding_for("%9")).to be_nil
+      expect(bindings.binding_for("%5")).to be_nil
+    end
+
+    it "names a prompt path too long for a field relative to the checkout" do
+      entry = bind_reviewer(instructions: deep, relative_to: "/src/app")
+
+      expect(entry["instructions"]).to eq(deep.delete_prefix("/src/app/"))
+      expect(entry["instructions"].length).to be <= Workspace::PaneBindings::MAX_FIELD_LENGTH
+    end
+
+    it "leaves out a path still too long relative to the checkout, says so, and still binds" do
+      entry = bind_reviewer(instructions: "/src/app/#{"deep/" * 60}p.md", relative_to: "/src/app")
+
+      expect(entry).not_to have_key("instructions")
+      expect(entry).to include("role" => "reviewer", "round" => 1)
+      expect(warnings.string).to match(/Warning: the instructions path of run wr_1 is longer than 200 characters/)
+    end
+
+    it "binds without a path that is nil, and without a checkout to make it relative to" do
+      entry = bind_reviewer(instructions: nil, relative_to: nil)
+
+      expect(entry).not_to have_key("instructions")
+      expect(warnings.string).to be_empty
     end
   end
 

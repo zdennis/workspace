@@ -24,6 +24,9 @@ module Workspace
     PARKED = "slot:"
     private_constant :PARKED
 
+    # Roles a run binding can have: the step's own agent, or a review pane working a review round.
+    ROLES = %w[author reviewer].freeze
+
     # Longest value stored for `id` or any text field.
     MAX_FIELD_LENGTH = 200
 
@@ -47,7 +50,8 @@ module Workspace
     # @param pane_id [String] a tmux pane id (e.g. "%5")
     # @param fields [Hash{String=>Object}] `kind` and `id` (required), `attempt`, `packs`, `plays`
     #   (names of library packs the agent was sent; stored as `[]` when absent),
-    #   and any of {TEXT_FIELDS}; plus the `workspace`, tmux `session` and `pane_slot` it was made for
+    #   `server_pid` (the tmux server's pid, recorded for a reviewer binding), `role` (one of {ROLES}; no role is the author) and `round` (a whole number of 1 or more, for a
+    #   reviewer), and any of {TEXT_FIELDS}; plus the `workspace`, tmux `session` and `pane_slot` it was made for
     # @return [Hash{String=>Object}] the stored entry
     # @raise [Workspace::UsageError] for an unknown kind, a missing or oversized id, an
     #   attempt below 1, or a field that is not one line of text
@@ -108,9 +112,11 @@ module Workspace
     #
     # @param kind [String] one of {KINDS}
     # @param id [String] the subject's id
+    # @param role [String, nil] "reviewer" for the review pane; nil or "author" for the pane of the
+    #   step's own agent (a binding with no role), so a review pane is never found by default
     # @return [String, nil] the pane id; nil when no pane is bound to it
-    def pane_for(kind, id)
-      read.find { |key, entry| !key.start_with?(PARKED) && entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id }&.first
+    def pane_for(kind, id, role: nil)
+      read.find { |key, entry| !key.start_with?(PARKED) && entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id && role_of(entry) == role_name(role) }&.first
     end
 
     # @param pane_id [String]
@@ -126,11 +132,12 @@ module Workspace
     #
     # @param kind [String] one of {KINDS}
     # @param id [String] the subject's id
+    # @param role [String, nil] "reviewer" or "author" removes only that role's bindings; nil removes both
     # @return [Array<String>] the keys removed (pane ids and slot keys)
-    def unbind_all(kind, id)
+    def unbind_all(kind, id, role: nil)
       removed = []
       update do |all|
-        removed = all.select { |_, entry| entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id }.keys
+        removed = all.select { |_, entry| entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id && (role.nil? || role_of(entry) == role_name(role)) }.keys
         removed.each { |key| all.delete(key) }
       end
       removed
@@ -151,16 +158,20 @@ module Workspace
     # that slot claims it. Only one with no recorded slot, which no move
     # could ever claim, is replaced.
     #
+    # A reviewer binding is never moved: its pane is a review window the daemon closes, which `restore`
+    # does not bring back, so one found at a move's old pane id (or slot) is dropped.
+    #
     # @param moves [Array<Hash>] `:from` and `:to` pane ids, the tmux `:session`,
     #   and the pane's `:from_slot` and `:to_slot`
     # @return [Hash{String=>Hash}] new pane id => the binding now stored for it
     # @raise [SystemCallError] if the file can't be written
     def move(moves)
       current = read
-      return {} unless moves.any? { |move| source_key(current, move) }
+      return {} unless moves.any? { |move| source_key(current, move) || reviewer_key(current, move) }
 
       moved = {}
       update do |all|
+        moves.each { |move| all.delete(reviewer_key(all, move)) if reviewer_key(all, move) }
         picked = moves.filter_map do |move|
           key = source_key(all, move)
           [move, key, all[key]] if key
@@ -182,14 +193,19 @@ module Workspace
     # A binding only counts for the tmux session and pane slot it was made in:
     # a pane id from another session, or one reused after a tmux restart, is
     # not the same pane. The SessionStart hook stays quiet for a stale binding,
-    # `binding show` marks it, and `instructions compose` leaves it out.
+    # `binding show` marks it, and `instructions compose` leaves it out. A reviewer binding
+    # is compared by session and tmux server, not slot: its window is made for one round, and a window index that
+    # shifts (tmux `renumber-windows`) must not strand the round.
     #
     # @param entry [Hash{String=>Object}] a binding
     # @param session [String, nil] the tmux session the pane is in now; nil when tmux can't find it
     # @param pane_slot [String, nil] the pane's slot now (`session:window.pane`)
+    # @param server_pid [String, #call, nil] the tmux server's pid now, or a callable that reads it (only called
+    #   for a reviewer binding that recorded one), so a pane id a restarted server reused is not taken for the review pane
     # @return [Boolean] true when the pane is in another session or slot than the binding's
-    def stale?(entry, session:, pane_slot:)
+    def stale?(entry, session:, pane_slot:, server_pid: nil)
       return true unless entry["session"] == session
+      return reviewer_server_changed?(entry, server_pid) if role_of(entry) == "reviewer"
       !entry["pane_slot"].nil? && entry["pane_slot"] != pane_slot
     end
 
@@ -201,6 +217,8 @@ module Workspace
     def context_for(entry)
       where = (" in #{entry["workspace"]}" if entry["workspace"])
       return play_context(entry, where) if entry["kind"] == "play"
+
+      return reviewer_context(entry, where) if reviewer?(entry)
 
       subject = (entry["kind"] == "review") ? "review" : "workflow run"
       lines = ["This pane is bound to #{subject} #{entry["id"]}#{where}."]
@@ -236,6 +254,44 @@ module Workspace
 
     private
 
+    # What a review pane is told: its round and the round's prompt file. Never the author's instructions.
+    def reviewer_context(entry, where)
+      lines = ["This pane is a review pane for workflow run #{entry["id"]}#{where}."]
+      lines << "Step: #{entry["step"]}#{" (attempt #{entry["attempt"]})" if entry["attempt"]}." if entry["step"]
+      lines << "Round: #{entry["round"]}." if entry["round"]
+      lines << "Review prompt: #{entry["instructions"]}. Reread it if your context was compacted." if entry["instructions"]
+      lines.join("\n")
+    end
+
+    def reviewer?(entry)
+      entry["kind"] == "run" && role_of(entry) == "reviewer"
+    end
+
+    # A binding with no role (or a hand-edited bad one) is the author's.
+    def role_of(entry)
+      (entry["role"] == "reviewer") ? "reviewer" : "author"
+    end
+
+    # A reviewer binding that recorded its tmux server is stale once the server is another one (pane ids start
+    # over when tmux restarts); one with none recorded is judged by its session alone.
+    def reviewer_server_changed?(entry, server_pid)
+      recorded = entry["server_pid"]
+      return false if recorded.nil?
+      current = server_pid.respond_to?(:call) ? server_pid.call : server_pid
+      current.to_s != recorded.to_s
+    end
+
+    def role_name(role)
+      (role == "reviewer") ? "reviewer" : "author"
+    end
+
+    def reviewer_key(all, move)
+      [move[:from], "#{PARKED}#{move[:from_slot]}"].find do |key|
+        entry = all[key]
+        entry.is_a?(Hash) && role_of(entry) == "reviewer" && entry["session"] == move[:session]
+      end
+    end
+
     # A play is a file the agent was told to read and follow; after `/clear` it
     # has to read it again to keep following it.
     def play_context(entry, where)
@@ -266,7 +322,7 @@ module Workspace
     end
 
     def movable?(entry, move)
-      entry.is_a?(Hash) && entry["session"] == move[:session] && !entry["pane_slot"].nil? && entry["pane_slot"] == move[:from_slot]
+      entry.is_a?(Hash) && role_of(entry) != "reviewer" && entry["session"] == move[:session] && !entry["pane_slot"].nil? && entry["pane_slot"] == move[:from_slot]
     end
 
     def validate(fields)
@@ -280,10 +336,20 @@ module Workspace
         raise UsageError, "attempt must be a whole number of 1 or more." unless attempt.is_a?(Integer) && attempt >= 1
         entry["attempt"] = attempt
       end
+      role = fields["role"]
+      unless role.nil?
+        raise UsageError, "role must be one of #{ROLES.join(", ")}." unless ROLES.include?(role)
+        entry["role"] = role
+      end
+      round = fields["round"]
+      unless round.nil?
+        raise UsageError, "round must be a whole number of 1 or more." unless round.is_a?(Integer) && round >= 1
+        entry["round"] = round
+      end
       TEXT_FIELDS.each { |key| entry[key] = line!(key, fields[key]) unless fields[key].nil? }
       entry["packs"] = packs!(fields["packs"])
       entry["plays"] = plays!(fields["plays"]) unless fields["plays"].nil?
-      %w[workspace session pane_slot].each { |key| entry[key] = fields[key] if fields[key] }
+      %w[workspace session pane_slot server_pid].each { |key| entry[key] = fields[key] if fields[key] }
       entry
     end
 
