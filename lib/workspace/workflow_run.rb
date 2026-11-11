@@ -44,6 +44,26 @@ module Workspace
     # @return [Hash{String=>Object}] the frozen Hash this run holds, as the run file has it
     attr_reader :to_h
 
+    # A deep, unfrozen copy of {#to_h}, for code that still changes a run Hash in place.
+    #
+    # @return [Hash{String=>Object}]
+    def to_mutable_h
+      self.class.deep_thaw(to_h)
+    end
+
+    # An unfrozen deep copy of a parsed value, the counterpart of {.deep_freeze}.
+    #
+    # @param value [Object] a parsed JSON value
+    # @return [Object]
+    def self.deep_thaw(value)
+      case value
+      when Hash then value.to_h { |key, each| [key, deep_thaw(each)] }
+      when Array then value.map { |each| deep_thaw(each) }
+      when String then value.dup
+      else value
+      end
+    end
+
     # @return [Hash{String=>Step}] each step by id, in the run's order; empty when the run has no steps
     attr_reader :steps
 
@@ -64,6 +84,36 @@ module Workspace
     def step(id)
       steps[id]
     end
+
+    # @param step_id [String]
+    # @param attempt [Attempt]
+    # @return [WorkflowRun] this run with +attempt+ in place of the step's attempt with the same n, or appended
+    #   when the step has none with that n (a retry's new attempt)
+    def with_attempt(step_id, attempt)
+      hash = to_mutable_h
+      steps = hash["steps"].is_a?(Hash) ? hash["steps"] : (hash["steps"] = {})
+      state = steps[step_id].is_a?(Hash) ? steps[step_id] : (steps[step_id] = {})
+      list = state["attempts"].is_a?(Array) ? state["attempts"] : (state["attempts"] = [])
+      index = list.index { |each| each.is_a?(Hash) && each["n"] == attempt.n }
+      index ? list[index] = attempt.to_mutable_h : list << attempt.to_mutable_h
+      self.class.new(hash)
+    end
+
+    # @return [WorkflowRun] this run with +request+ (a resume's "from", "note", "pane", "turn_over") parked as a {Park}
+    def with_park(request, id:, requested_at:, expires_at:, retries:)
+      self.class.new(to_h.merge("parked" => Park.from_h(request.merge("id" => id, "requested_at" => requested_at, "expires_at" => expires_at, "retries" => retries)).to_h))
+    end
+
+    # @return [WorkflowRun] this run with no park; a parked note moves to the pending context ({.resume_note})
+    def drop_park
+      hash = to_mutable_h
+      note = (parked = hash.delete("parked")).is_a?(Hash) ? parked["note"] : nil
+      hash["pending_context"] << self.class.resume_note(note) if note
+      self.class.new(hash)
+    end
+
+    # @return [String] the pending context line that carries a resume's +note+ to the next attempt
+    def self.resume_note(note) = "Note from the person who resumed the run: #{note}"
 
     # @return [Step, nil] the step the run is at; nil when it has none or names one it lacks
     def current_step
@@ -175,6 +225,11 @@ module Workspace
 
       KEYS.each do |key|
         define_method(key) { to_h[key] }
+      end
+
+      # @return [Hash{String=>Object}] a deep, unfrozen copy of {#to_h}
+      def to_mutable_h
+        WorkflowRun.deep_thaw(to_h)
       end
 
       # @return [Boolean]

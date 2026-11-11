@@ -7588,7 +7588,7 @@ RSpec.describe Workspace::CLI do
         row = parking.resume(run: run["id"], from: "a", note: "Again.", caller_pane: "%5")
 
         expect(row["outcome"]).to eq("parked")
-        expect(store.find(run["id"])["parked"]["note"]).to eq("Again.")
+        expect(stored_run(store, run["id"])["parked"]["note"]).to eq("Again.")
         expect(row.to_s + out.string).not_to include("Again.")
         expect(panes.kicks.size).to eq(kicks_before)
         expect(store.events(run["id"])["events"].count { |entry| entry["type"] == "step_dispatched" }).to eq(1)
@@ -7598,7 +7598,7 @@ RSpec.describe Workspace::CLI do
         nudger.turn_ended("app", "%5")
 
         expect(store.events(run["id"])["events"].count { |entry| entry["type"] == "step_dispatched" }).to eq(2)
-        expect(store.find(run["id"])).not_to include("parked")
+        expect(stored_run(store, run["id"])).not_to include("parked")
       end
 
       it "answers --json with the parked pane and expiry, exit 0" do
@@ -7641,19 +7641,19 @@ RSpec.describe Workspace::CLI do
         id = row["run"]["id"]
         expect(row["outcome"]).to eq("parked")
         expect(panes.kicks).to be_empty
-        stored = store.find(id)
+        stored = stored_run(store, id)
         expect(stored["parked"]).to include("pane" => nil)
         expect(stored["steps"]["a"]["attempts"]).to be_empty
         expect(panes.run_on("%5")).to be_nil
 
         3.times { nudger.tick("app") }
-        expect(store.find(id)["steps"]["a"]["attempts"]).to be_empty
+        expect(stored_run(store, id)["steps"]["a"]["attempts"]).to be_empty
 
         panes.turn_over << "%5"
         nudger.tick("app")
 
-        expect(store.find(id)).not_to include("parked")
-        expect(store.find(id)["steps"]["a"]["attempts"].size).to eq(1)
+        expect(stored_run(store, id)).not_to include("parked")
+        expect(stored_run(store, id)["steps"]["a"]["attempts"].size).to eq(1)
         expect(panes.kicks.size).to eq(1)
         expect(store.events(id)["events"].count { |entry| entry["type"] == "step_dispatched" }).to eq(1)
       end
@@ -7672,7 +7672,7 @@ RSpec.describe Workspace::CLI do
           .to raise_error(Workspace::Error) { |e| expect([e.code, e.details["run_id"]]).to eq(["pane_has_run", first]) }
         expect { parking.run(id: "flow", workspace: "app", worktree: @dir, pane: "%5", caller_pane: "%5") }
           .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("pane_has_run") }
-        expect(store.find(first)["parked"]).to include("pane" => nil)
+        expect(stored_run(store, first)["parked"]).to include("pane" => nil)
         expect(panes.kicks).to be_empty
       end
 
@@ -7680,7 +7680,7 @@ RSpec.describe Workspace::CLI do
         row = parking.run(id: "flow", workspace: "app", worktree: @dir, pane: "%7", caller_pane: "%5")
 
         expect(row["outcome"]).to eq("started")
-        expect(store.find(row["run"]["id"])).not_to include("parked")
+        expect(stored_run(store, row["run"]["id"])).not_to include("parked")
         expect(panes.kicks.size).to eq(1)
       end
 
@@ -7690,7 +7690,7 @@ RSpec.describe Workspace::CLI do
         row = parking.run(id: "flow", workspace: "app", worktree: @dir, pane: "%5", caller_pane: "%5")
 
         expect(row["outcome"]).to eq("started")
-        expect(store.find(row["run"]["id"])).not_to include("parked")
+        expect(stored_run(store, row["run"]["id"])).not_to include("parked")
         expect(panes.kicks.size).to eq(1)
       end
 
@@ -7705,7 +7705,7 @@ RSpec.describe Workspace::CLI do
 
         expect(row["outcome"]).to eq("parked")
         expect(panes.kicks).to be_empty
-        expect(store.find(row["run"]["id"])["parked"]).to include("pane" => nil)
+        expect(stored_run(store, row["run"]["id"])["parked"]).to include("pane" => nil)
       end
 
       it "changes nothing under --dry-run from its own pane" do
@@ -7714,7 +7714,7 @@ RSpec.describe Workspace::CLI do
         row = parking.run(id: "flow", workspace: "app", worktree: @dir, pane: "%5", caller_pane: "%5", dry_run: true)
 
         expect(row["outcome"]).to eq("dry_run")
-        expect(store.active).to be_empty
+        expect(going_runs(store)).to be_empty
         expect(panes.kicks).to be_empty
       end
 
@@ -7728,7 +7728,7 @@ RSpec.describe Workspace::CLI do
         expect(shown["flags"]).to include("parked")
         expect(shown.to_s).not_to include("not_started")
 
-        store.update(id) { |stored| stored.delete("parked") }
+        edit_run(store, id) { |stored| stored.delete("parked") }
         expect(real.run(id)["runs"].first["current"].to_s).to include("not_started")
       end
     end
@@ -7747,12 +7747,12 @@ RSpec.describe Workspace::CLI do
       it "goes from the park through a Stop to the step's line being typed" do
         expect(nudger.turn_ended("app", "%5")).to eq(run["id"])
         expect(panes.kicks.size).to eq(1)
-        expect(store.find(run["id"])).to include("parked" => anything)
+        expect(stored_run(store, run["id"])).to include("parked" => anything)
 
         panes.turn_over << "%5"
         nudger.turn_ended("app", "%5")
 
-        stored = store.find(run["id"])
+        stored = stored_run(store, run["id"])
         expect(stored).not_to include("parked")
         expect(stored["steps"]["a"]["attempts"].size).to eq(2)
         expect(stored["steps"]["a"]["attempts"].last["context"]).to eq(["Note from the person who resumed the run: Again."])
@@ -7773,12 +7773,12 @@ RSpec.describe Workspace::CLI do
       it "goes from the park to the step's line being typed on ticks alone, for a pane that saw no Stop" do
         expect(nudger.turn_ended("app", "%9")).to be_nil
         3.times { nudger.tick("app") }
-        expect(store.find(run["id"])["steps"]["a"]["attempts"].size).to eq(1)
+        expect(stored_run(store, run["id"])["steps"]["a"]["attempts"].size).to eq(1)
 
         panes.turn_over << "%5"
         expect(nudger.tick("app")).to eq([run["id"]])
 
-        expect(store.find(run["id"])).not_to include("parked")
+        expect(stored_run(store, run["id"])).not_to include("parked")
         expect(panes.kicks.size).to eq(2)
         expect(dispatched.size).to eq(2)
         expect(nudger.tick("app")).to eq([])
@@ -7790,10 +7790,10 @@ RSpec.describe Workspace::CLI do
       run = engine.start(definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5")
 
       expect(nudger.turn_ended("app", "%9")).to be_nil
-      expect(store.find(run["id"])).to include("current" => "a")
+      expect(stored_run(store, run["id"])).to include("current" => "a")
 
       expect(nudger.turn_ended("app", "%5")).to eq(run["id"])
-      expect(store.find(run["id"])).to include("current" => "b", "state" => "running")
+      expect(stored_run(store, run["id"])).to include("current" => "b", "state" => "running")
       expect(panes.kicks.map { |kick| kick[:pane] }).to eq(%w[%5 %5])
     end
   end

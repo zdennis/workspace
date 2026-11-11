@@ -25,6 +25,11 @@ RSpec.describe Workspace::WorkflowRunStore do
     store.create({"workflow" => "rpiv", "workspace" => "app", "state" => "running", "created_at" => now.first.utc.iso8601}.merge(whole).merge(fields))
   end
 
+  # The run with +fields+ set at its top level, a new WorkflowRun for a #change block to return.
+  def merged(run, fields)
+    Workspace::WorkflowRun.from_h(run.to_h.merge(fields))
+  end
+
   it "writes a new run under an id, where RunLiveness finds it alive" do
     run = create
 
@@ -32,12 +37,12 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(JSON.parse(File.read(File.join(runs_dir, "wr_1.json")))).to eq(run)
     expect(File.stat(File.join(runs_dir, "wr_1.json")).mode & 0o777).to eq(0o600)
     expect(Workspace::RunLiveness.new(dir: runs_dir).alive?("wr_1")).to be true
-    expect(store.find("wr_1")).to eq(run)
+    expect(store.run("wr_1").to_h).to eq(run)
   end
 
   it "never gives a new run the id of a run going or finished" do
     create
-    store.update("wr_1") { |run| run["state"] = "completed" }
+    store.change("wr_1") { |run| merged(run, "state" => "completed") }
     ids.unshift("wr_1")
 
     expect(create["id"]).to eq("wr_2")
@@ -50,23 +55,11 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(id).to match(Workspace::RunLiveness::ID_PATTERN)
   end
 
-  it "stores what an update's block left in the run, and returns the block's value" do
-    create
-
-    result = store.update("wr_1") do |run|
-      run["note"] = "kept"
-      :done
-    end
-
-    expect(result).to eq(:done)
-    expect(store.find("wr_1")["note"]).to eq("kept")
-  end
-
   it "stores nothing when the block raises" do
     create
 
-    expect { store.update("wr_1") { |run| run["note"] = "kept?" and raise Workspace::Error, "no" } }.to raise_error(Workspace::Error, "no")
-    expect(store.find("wr_1")).not_to have_key("note")
+    expect { store.change("wr_1") { |run| merged(run, "note" => "kept?") and raise Workspace::Error, "no" } }.to raise_error(Workspace::Error, "no")
+    expect(store.run("wr_1").to_h).not_to have_key("note")
   end
 
   describe "#events" do
@@ -159,7 +152,7 @@ RSpec.describe Workspace::WorkflowRunStore do
     it "reads the history of a run that finished" do
       create
       record("a", "b")
-      store.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T12:05:00Z") }
+      store.change("wr_1") { |run| merged(run, "state" => "completed", "ended_at" => "2026-10-04T12:05:00Z") }
 
       expect(store.events("wr_1")["events"].map { |event| event["type"] }).to eq(%w[a b])
     end
@@ -173,22 +166,22 @@ RSpec.describe Workspace::WorkflowRunStore do
     create
     store.record_event("wr_1", "run_started", "workflow" => "rpiv")
 
-    store.update("wr_1") { |run| run.merge!("state" => "cancelled", "ended_at" => "2026-10-04T12:05:00Z") }
+    store.change("wr_1") { |run| merged(run, "state" => "cancelled", "ended_at" => "2026-10-04T12:05:00Z") }
 
     expect(Dir.children(runs_dir)).to eq([])
     expect(Dir.children(archive_dir).sort).to eq(%w[wr_1.events.jsonl wr_1.json])
     expect(Workspace::RunLiveness.new(dir: runs_dir).alive?("wr_1")).to be false
-    expect(store.find("wr_1")["state"]).to eq("cancelled")
+    expect(store.run("wr_1").state).to eq("cancelled")
     expect(store.events_path("wr_1")).to eq(File.join(archive_dir, "wr_1.events.jsonl"))
-    expect(store.active).to eq([])
-    expect(store.archived.map { |run| run["id"] }).to eq(["wr_1"])
+    expect(store.going).to eq([])
+    expect(store.finished.map(&:id)).to eq(["wr_1"])
   end
 
-  it "refuses to update a finished run, with its state" do
+  it "refuses to change a finished run, with its state" do
     create
-    store.update("wr_1") { |run| run["state"] = "completed" }
+    store.change("wr_1") { |run| merged(run, "state" => "completed") }
 
-    expect { store.update("wr_1") { |run| run["state"] = "running" } }
+    expect { store.change("wr_1") { |run| merged(run, "state" => "running") } }
       .to raise_error(Workspace::Error, "Workflow run wr_1 is completed; nothing more can happen to it.") { |error|
         expect(error.code).to eq("run_not_active")
         expect(error.details).to eq("run_id" => "wr_1", "state" => "completed")
@@ -209,7 +202,7 @@ RSpec.describe Workspace::WorkflowRunStore do
     File.write(path, JSON.generate(JSON.parse(File.read(path)).merge("state" => "cancelled")))
     yielded = false
 
-    expect { store.update("wr_1") { yielded = true } }.to raise_error(Workspace::Error) { |error|
+    expect { store.change("wr_1") { (yielded = true) && nil } }.to raise_error(Workspace::Error) { |error|
       expect(error.code).to eq("run_not_active")
       expect(error.details).to eq("run_id" => "wr_1", "state" => "cancelled")
     }
@@ -237,7 +230,7 @@ RSpec.describe Workspace::WorkflowRunStore do
 
     it "is listed by path, and is not among the runs" do
       expect(store.unreadable).to eq([File.join(runs_dir, "wr_1.json"), File.join(runs_dir, "wr_2.json")])
-      expect(store.active).to eq([])
+      expect(store.going).to eq([])
     end
 
     it "includes a run without the steps every verb goes by, however it lacks them" do
@@ -259,10 +252,10 @@ RSpec.describe Workspace::WorkflowRunStore do
       broken.each do |content|
         File.write(path, JSON.generate(content))
         expect(store.unreadable).to include(path), "expected #{content.inspect[0, 80]} to be unreadable"
-        expect { store.update("wr_1") { |run| run } }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
+        expect { store.change("wr_1") { |run| run } }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
       end
       File.write(path, JSON.generate(base))
-      expect(store.find("wr_1")).to eq(base)
+      expect(store.run("wr_1").to_h).to eq(base)
     end
 
     it "does not count a run that finished between the listing and the read" do
@@ -283,8 +276,8 @@ RSpec.describe Workspace::WorkflowRunStore do
       File.chmod(0o000, path)
 
       expect(store.unreadable).to include(path, odd)
-      expect(store.active).to eq([])
-      expect { store.find("wr_3") }.to raise_error(Workspace::Error) { |error| expect(error.details).to eq("run_id" => "wr_3", "path" => path) }
+      expect(store.going).to eq([])
+      expect { store.run("wr_3") }.to raise_error(Workspace::Error) { |error| expect(error.details).to eq("run_id" => "wr_3", "path" => path) }
     ensure
       File.chmod(0o600, path) if path && File.exist?(path)
     end
@@ -293,7 +286,7 @@ RSpec.describe Workspace::WorkflowRunStore do
       %w[wr_1 wr_2].each do |id|
         path = File.join(runs_dir, "#{id}.json")
         before = File.read(path)
-        [-> { store.find(id) }, -> { store.update(id) { |run| run["state"] = "cancelled" } }].each do |call|
+        [-> { store.run(id) }, -> { store.change(id) { |run| merged(run, "state" => "cancelled") } }].each do |call|
           expect(&call).to raise_error(Workspace::Error, /The file of workflow run #{id} can't be read as a run \(#{Regexp.escape(path)}\).*workspace lock clear NAME.*delete the file/) { |error|
             expect(error.code).to eq("unknown_run")
             expect(error.details).to eq("run_id" => id, "path" => path)
@@ -308,20 +301,20 @@ RSpec.describe Workspace::WorkflowRunStore do
   describe "read by a process with no UTF-8 locale" do
     it "reads back the non-ASCII text a run holds, as UTF-8, through every way a run is read" do
       create("inputs" => {"task" => "café"})
-      store.update("wr_1") { |run| run["note"] = "naïve" }
+      store.change("wr_1") { |run| merged(run, "note" => "naïve") }
 
       without_utf8_locale do
         expect(File.read(File.join(runs_dir, "wr_1.json")).encoding).to eq(Encoding::US_ASCII)
-        run = store.find("wr_1")
+        run = store.run("wr_1").to_h
         expect(run).to include("inputs" => {"task" => "café"}, "note" => "naïve")
         expect(run["note"].encoding).to eq(Encoding::UTF_8)
-        expect(store.active.map { |each| each["id"] }).to eq(["wr_1"])
+        expect(store.going.map(&:id)).to eq(["wr_1"])
         expect(store.unreadable).to eq([])
-        expect(store.update("wr_1") { |each| each["note"] = "déjà vu" }).to eq("déjà vu")
+        expect(store.change("wr_1") { |each| merged(each, "note" => "déjà vu") }.to_h["note"]).to eq("déjà vu")
         expect(store.create(whole.merge("title" => "Über"))["id"]).to eq("wr_2")
       end
       expect(JSON.parse(File.read(File.join(runs_dir, "wr_1.json"), encoding: "UTF-8"))["note"]).to eq("déjà vu")
-      expect(store.find("wr_2")["title"]).to eq("Über")
+      expect(store.run("wr_2").to_h["title"]).to eq("Über")
     end
 
     it "calls a run file whose bytes are not UTF-8 unreadable, in any locale" do
@@ -331,7 +324,7 @@ RSpec.describe Workspace::WorkflowRunStore do
 
       [-> { without_utf8_locale { store.unreadable } }, -> { store.unreadable }].each { |call| expect(call.call).to eq([path]) }
       without_utf8_locale do
-        expect { store.find("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.details).to eq("run_id" => "wr_1", "path" => path) }
+        expect { store.run("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.details).to eq("run_id" => "wr_1", "path" => path) }
       end
     end
   end
@@ -340,18 +333,18 @@ RSpec.describe Workspace::WorkflowRunStore do
     create
     bad = (+"caf\xC3").force_encoding("UTF-8")
 
-    expect { store.update("wr_1") { |run| run["note"] = bad } }
+    expect { store.change("wr_1") { |run| merged(run, "note" => bad) } }
       .to raise_error(Workspace::Error, /Could not write the workflow run: it holds text that is not valid UTF-8/)
     expect { store.create(whole.merge("note" => bad)) }.to raise_error(Workspace::Error, /not valid UTF-8/)
-    expect(store.find("wr_1")).not_to have_key("note")
+    expect(store.run("wr_1").to_h).not_to have_key("note")
     expect(Dir.children(runs_dir).grep(/tmp/)).to eq([])
   end
 
   it "raises unknown_run for an id no run has, or one that is not an id, and leaves no lock file" do
-    expect { store.find("wr_9") }.to raise_error(Workspace::Error) { |error| expect(error.details).to eq("run_id" => "wr_9") }
+    expect { store.run("wr_9") }.to raise_error(Workspace::Error) { |error| expect(error.details).to eq("run_id" => "wr_9") }
     ["wr_9", "../wr_1", "", nil].each do |id|
-      expect { store.find(id) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
-      expect { store.update(id) { |run| run } }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
+      expect { store.run(id) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
+      expect { store.change(id) { |run| run } }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
     end
     expect(Dir.exist?(runs_dir) ? Dir.children(runs_dir) : []).to eq([])
   end
@@ -360,11 +353,11 @@ RSpec.describe Workspace::WorkflowRunStore do
     create("created_at" => "2026-10-04T12:00:02Z")
     create("created_at" => "2026-10-04T12:00:01Z")
     create("created_at" => "2026-10-04T12:00:03Z")
-    store.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:00Z") }
-    store.update("wr_3") { |run| run.merge!("state" => "cancelled", "ended_at" => "2026-10-04T14:00:00Z") }
+    store.change("wr_1") { |run| merged(run, "state" => "completed", "ended_at" => "2026-10-04T13:00:00Z") }
+    store.change("wr_3") { |run| merged(run, "state" => "cancelled", "ended_at" => "2026-10-04T14:00:00Z") }
 
-    expect(store.active.map { |run| run["id"] }).to eq(["wr_2"])
-    expect(store.archived.map { |run| run["id"] }).to eq(%w[wr_3 wr_1])
+    expect(store.going.map(&:id)).to eq(["wr_2"])
+    expect(store.finished.map(&:id)).to eq(%w[wr_3 wr_1])
   end
 
   it "skips a file that is not a run when listing" do
@@ -372,13 +365,13 @@ RSpec.describe Workspace::WorkflowRunStore do
     File.write(File.join(runs_dir, "junk.json"), "{not json")
     File.write(File.join(runs_dir, "list.json"), "[]")
 
-    expect(store.active.map { |run| run["id"] }).to eq(["wr_1"])
+    expect(store.going.map(&:id)).to eq(["wr_1"])
   end
 
   it "runs the check under a lock shared by every creator, so of two concurrent creations only one passes it" do
     checker = lambda do |store_for_child|
       lambda do
-        raise Workspace::Error.new("taken", code: "checkout_has_run") if store_for_child.active.any?
+        raise Workspace::Error.new("taken", code: "checkout_has_run") if store_for_child.going.any?
         sleep 0.2
       end
     end
@@ -404,7 +397,7 @@ RSpec.describe Workspace::WorkflowRunStore do
     end
 
     expect(outcomes.sort).to eq(%w[checkout_has_run created])
-    expect(store.active.size).to eq(1)
+    expect(store.going.size).to eq(1)
   end
 
   it "reports an unusable create lock as a store error, and runs no check" do
@@ -414,27 +407,6 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect { store.create(whole.merge("state" => "running", "created_at" => "t"), -> { called = true }) }
       .to raise_error(Workspace::Error, /Could not access the workflow run store/)
     expect(called).to be(false)
-  end
-
-  it "returns nil from a nonblocking update while another process changes the run" do
-    create
-    reader, writer = IO.pipe
-    release_reader, release_writer = IO.pipe
-    pid = fork do
-      described_class.new(dir: runs_dir, archive_dir: archive_dir).update("wr_1") do |run|
-        writer.puts "held"
-        release_reader.gets
-        run["note"] = "held"
-      end
-      exit!(0)
-    end
-    reader.gets
-
-    expect(store.update("wr_1", nonblocking: true) { |run| run["note"] = "skipped" }).to be_nil
-
-    release_writer.puts "go"
-    Process.wait(pid)
-    expect(store.find("wr_1")["note"]).to eq("held")
   end
 
   it "appends one line per event to the run's history" do
@@ -461,7 +433,7 @@ RSpec.describe Workspace::WorkflowRunStore do
       3.times do |n|
         create
         store.record_event("wr_#{n + 1}", "run_started")
-        store.update("wr_#{n + 1}") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:0#{n}Z") }
+        store.change("wr_#{n + 1}") { |run| merged(run, "state" => "completed", "ended_at" => "2026-10-04T13:00:0#{n}Z") }
       end
 
       expect(Dir.children(archive_dir).sort).to eq(%w[wr_2.events.jsonl wr_2.json wr_3.events.jsonl wr_3.json])
@@ -476,8 +448,8 @@ RSpec.describe Workspace::WorkflowRunStore do
       FileUtils.mkdir_p(File.join(@dir, "ev", "wr_#{n + 1}"))
     end
     FileUtils.mkdir_p(File.join(@dir, "ev", "wr_other"))
-    pruning.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
-    pruning.update("wr_2") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:02Z") }
+    pruning.change("wr_1") { |run| merged(run, "state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+    pruning.change("wr_2") { |run| merged(run, "state" => "completed", "ended_at" => "2026-10-04T13:00:02Z") }
 
     expect(Dir.children(File.join(@dir, "ev")).sort).to eq(%w[wr_2 wr_3 wr_other])
   end
@@ -488,7 +460,7 @@ RSpec.describe Workspace::WorkflowRunStore do
     evidence = Struct.new(:seen, :archive) { def remove(id) = seen << File.exist?(File.join(archive, "#{id}.json")) }.new(seen, archive)
     pruning = described_class.new(dir: runs_dir, archive_dir: archive_dir, id_generator: -> { ids.shift }, evidence: evidence, archive_limit: 0)
     pruning.create({"state" => "running"}.merge(whole))
-    pruning.update("wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+    pruning.change("wr_1") { |run| merged(run, "state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
 
     expect(seen).to eq([true])
   end
@@ -501,16 +473,18 @@ RSpec.describe Workspace::WorkflowRunStore do
   end
 
   describe "typed methods" do
-    it "reads a run, the runs going and the runs finished as frozen WorkflowRun values equal to the Hash reads" do
+    it "reads a run, the runs going and the runs finished as frozen WorkflowRun values equal to what their files hold" do
       create
       create
-      store.update("wr_2") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+      store.change("wr_2") { |run| merged(run, "state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+      going_file = JSON.parse(File.read(File.join(runs_dir, "wr_1.json")))
+      finished_file = JSON.parse(File.read(File.join(archive_dir, "wr_2.json")))
 
       expect(store.run("wr_1")).to be_a(Workspace::WorkflowRun).and be_frozen
-      expect(store.run("wr_1").to_h).to eq(store.find("wr_1"))
-      expect(store.run("wr_2").to_h).to eq(store.find("wr_2"))
-      expect(store.going.map(&:to_h)).to eq(store.active)
-      expect(store.finished.map(&:to_h)).to eq(store.archived)
+      expect(store.run("wr_1").to_h).to eq(going_file)
+      expect(store.run("wr_2").to_h).to eq(finished_file)
+      expect(store.going.map(&:to_h)).to eq([going_file])
+      expect(store.finished.map(&:to_h)).to eq([finished_file])
       expect(store.going.size).to eq(1)
       expect(store.finished.size).to eq(1)
       expect { store.run("wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
@@ -529,22 +503,62 @@ RSpec.describe Workspace::WorkflowRunStore do
       expect(store.on_checkout(File.join(@dir, "missing"))).to be_nil
     end
 
-    it "reads through the Hash methods" do
+    it "says whether a run is going, false for a finished or unknown one" do
+      create
+      create
+      store.change("wr_2") { |run| merged(run, "state" => "completed", "ended_at" => "2026-10-04T13:00:01Z") }
+
+      expect(store.going?("wr_1")).to be true
+      expect(store.going?("wr_2")).to be false
+      expect(store.going?("wr_nope")).to be false
+    end
+
+    it "finds the other run whose parked resume still waits for a pane" do
+      later = (now.first + 60).utc.iso8601
+      earlier = (now.first - 60).utc.iso8601
+      create("pane" => "%1", "parked" => {"expires_at" => later})
+      create("pane" => "%9", "parked" => {"expires_at" => later, "pane" => "%2"})
+      create("pane" => "%3", "parked" => {"expires_at" => earlier})
+
+      expect(store.parked_on("%1", except: nil, now: now.first).id).to eq("wr_1")
+      expect(store.parked_on("%2", except: nil, now: now.first).id).to eq("wr_2")
+      expect(store.parked_on("%9", except: nil, now: now.first)).to be_nil
+      expect(store.parked_on("%1", except: "wr_1", now: now.first)).to be_nil
+      expect(store.parked_on("%3", except: nil, now: now.first)).to be_nil
+    end
+
+    it "finds the other waiting run whose retry or budget hold keeps a pane while it is the same pane" do
+      create("state" => "waiting", "pane" => "%1", "backoff" => {"identity" => "a"})
+      create("state" => "waiting", "pane" => "%9", "budget_hold" => {"pane" => "%2", "identity" => "b"})
+      create("state" => "waiting", "pane" => "%3", "backoff" => {"blocked" => "pane_busy"})
+      create("state" => "running", "pane" => "%4", "backoff" => {})
+      asked = []
+      same = ->(pane, identity) { (asked << [pane, identity]) && identity != "b" }
+
+      expect(store.backoff_on("%1", except: nil, same_pane: same).id).to eq("wr_1")
+      expect(store.backoff_on("%2", except: nil, same_pane: same)).to be_nil
+      expect(store.backoff_on("%1", except: "wr_1", same_pane: same)).to be_nil
+      expect(store.backoff_on("%3", except: nil, same_pane: same)).to be_nil
+      expect(store.backoff_on("%4", except: nil, same_pane: same)).to be_nil
+      expect(asked).to eq([["%1", "a"], ["%2", "b"]])
+    end
+
+    it "is what the Hash methods read and write through" do
       create
       calls = []
       probe = Class.new(described_class) do
-        define_method(:find) { |id| (calls << :find) && super(id) }
-        define_method(:active) { (calls << :active) && super() }
-        define_method(:archived) { (calls << :archived) && super() }
-        define_method(:update) { |id, **kw, &block| (calls << :update) && super(id, **kw, &block) }
+        define_method(:run) { |id| (calls << :run) && super(id) }
+        define_method(:going) { (calls << :going) && super() }
+        define_method(:finished) { (calls << :finished) && super() }
+        define_method(:change) { |id, **kw, &block| (calls << :change) && super(id, **kw, &block) }
       end.new(dir: runs_dir, archive_dir: archive_dir)
 
-      probe.run("wr_1")
-      probe.going
-      probe.finished
-      probe.change("wr_1") { |run| run }
+      probe.find("wr_1")
+      probe.active
+      probe.archived
+      probe.update("wr_1") { |run| run }
 
-      expect(calls).to eq(%i[find active archived update])
+      expect(calls).to eq(%i[run going finished change])
     end
 
     it "stores the run the block returns and returns it" do
@@ -554,7 +568,7 @@ RSpec.describe Workspace::WorkflowRunStore do
 
       expect(result).to be_a(Workspace::WorkflowRun)
       expect(result.to_h["note"]).to eq("kept")
-      expect(store.find("wr_1")["note"]).to eq("kept")
+      expect(store.run("wr_1").to_h["note"]).to eq("kept")
     end
 
     it "stores the run it read when the block returns nil" do
@@ -563,7 +577,7 @@ RSpec.describe Workspace::WorkflowRunStore do
 
       result = store.change("wr_1") { |_run| nil }
 
-      expect(result.to_h).to eq(store.find("wr_1"))
+      expect(result.to_h).to eq(store.run("wr_1").to_h)
       expect(File.read(File.join(runs_dir, "wr_1.json"))).to eq(before)
     end
 
@@ -583,7 +597,7 @@ RSpec.describe Workspace::WorkflowRunStore do
       expect { store.change("wr_nope") { |run| run } }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
 
       path = File.join(runs_dir, "wr_1.json")
-      File.write(path, JSON.pretty_generate(store.find("wr_1").merge("state" => "failed", "ended_at" => "2026-10-04T13:00:01Z")))
+      File.write(path, JSON.pretty_generate(store.run("wr_1").to_h.merge("state" => "failed", "ended_at" => "2026-10-04T13:00:01Z")))
       expect { store.change("wr_1") { |run| run } }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
       expect(File.exist?(path)).to be(false)
       expect(File.exist?(File.join(archive_dir, "wr_1.json"))).to be(true)
@@ -595,10 +609,10 @@ RSpec.describe Workspace::WorkflowRunStore do
       reader, writer = IO.pipe
       release_reader, release_writer = IO.pipe
       pid = fork do
-        described_class.new(dir: runs_dir, archive_dir: archive_dir).update("wr_1") do |run|
+        described_class.new(dir: runs_dir, archive_dir: archive_dir).change("wr_1") do |run|
           writer.puts "held"
           release_reader.gets
-          run["note"] = "held"
+          merged(run, "note" => "held")
         end
         exit!(0)
       end
@@ -610,7 +624,7 @@ RSpec.describe Workspace::WorkflowRunStore do
 
       release_writer.puts "go"
       Process.wait(pid)
-      expect(store.find("wr_1")["note"]).to eq("held")
+      expect(store.run("wr_1").to_h["note"]).to eq("held")
     end
   end
 end

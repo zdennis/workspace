@@ -6,7 +6,7 @@ module Workspace
   # command, for the events named in `alerts.workflow` (`gate`, `failed`,
   # `stalled`, `finished`). With `alerts.workflow` unset nothing runs.
   #
-  # {WorkflowEngine#transition} calls {#marks} on the run inside its lock
+  # {WorkflowRunChange#call} calls {#marks} on the run inside its lock
   # before and after a change, and {#fire} once the lock is given up. An event
   # is the difference between the two marks, so it fires in the one process
   # that made the change, once for that change, however often the run is read

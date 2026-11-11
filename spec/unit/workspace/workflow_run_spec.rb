@@ -168,6 +168,17 @@ RSpec.describe Workspace::WorkflowRun do
       expect(given["steps"]["a"]["attempts"].first).not_to be_frozen
     end
 
+    it "gives an unfrozen deep copy through #to_mutable_h, equal to #to_h and sharing nothing with it" do
+      given = run("attempt_detail")
+      copy = given.to_mutable_h
+
+      expect(copy).to eq(given.to_h)
+      expect(copy.keys).to eq(given.to_h.keys)
+      expect([copy, copy["steps"], copy["steps"]["build"]["attempts"], copy["steps"]["build"]["attempts"].last, copy["state"]]).to all(satisfy { |each| !each.frozen? })
+      copy["steps"]["build"]["attempts"].last["outcome"] = "changed"
+      expect(given.step("build").last_attempt.to_h["outcome"]).not_to eq("changed")
+    end
+
     it "reuses a Hash that is already frozen all the way down" do
       parsed = JSON.parse(text("parked"), freeze: true)
 
@@ -230,6 +241,71 @@ RSpec.describe Workspace::WorkflowRun do
       expect(run("parked")).not_to eq(run("swept_stall"))
       expect(run("parked").hash).to eq(run("parked").hash)
       expect(run("parked").step("build")).to eq(run("parked").step("build"))
+    end
+  end
+
+  describe "Attempt#to_mutable_h" do
+    it "gives an unfrozen deep copy that changes nothing in the attempt" do
+      attempt = Workspace::WorkflowRun::Attempt.from_h("n" => 1, "head" => {"before" => "a"}, "packs" => [{"ref" => "x"}])
+      copy = attempt.to_mutable_h
+      copy["head"]["before"] << "b"
+      copy["packs"] << {}
+
+      expect(copy).not_to be_frozen
+      expect(attempt.to_h).to eq("n" => 1, "head" => {"before" => "a"}, "packs" => [{"ref" => "x"}])
+    end
+  end
+
+  describe "#with_attempt" do
+    let(:given) do
+      described_class.from_h("id" => "wr_1", "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1}, {"n" => 2, "outcome" => nil}]}})
+    end
+
+    it "replaces the step's attempt with the same n and leaves the run it was called on alone" do
+      changed = given.with_attempt("plan", Workspace::WorkflowRun::Attempt.from_h("n" => 2, "outcome" => "passed"))
+
+      expect(changed.to_h).to eq("id" => "wr_1", "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1}, {"n" => 2, "outcome" => "passed"}]}})
+      expect(changed).to be_frozen
+      expect(given.step("plan").last_attempt.outcome).to be_nil
+    end
+
+    it "appends a retry's new attempt to a step that already has attempts" do
+      changed = given.with_attempt("plan", Workspace::WorkflowRun::Attempt.from_h("n" => 3))
+
+      expect(changed.step("plan").attempts.map(&:n)).to eq([1, 2, 3])
+    end
+
+    it "makes the step's attempts list when the step has none" do
+      changed = given.with_attempt("build", Workspace::WorkflowRun::Attempt.from_h("n" => 1))
+
+      expect(changed.step("build").attempts.map(&:to_h)).to eq([{"n" => 1}])
+    end
+  end
+
+  describe "#with_park" do
+    it "parks the request under the id and times given, as a new run, keeping the request first" do
+      given = described_class.from_h("id" => "wr_1", "current" => "plan")
+
+      parked = given.with_park({"from" => nil, "note" => "hi", "pane" => "%3", "turn_over" => nil}, id: "p1", requested_at: "t0", expires_at: "t1", retries: 2)
+
+      expect(parked.parked).to eq("from" => nil, "note" => "hi", "pane" => "%3", "turn_over" => nil, "id" => "p1", "requested_at" => "t0", "expires_at" => "t1", "retries" => 2)
+      expect(parked.to_h.keys).to eq(%w[id current parked])
+      expect(given.parked).to be_nil
+    end
+  end
+
+  describe "#drop_park" do
+    it "takes the park off and carries its note to the pending context, leaving the run it was called on alone" do
+      given = described_class.from_h("id" => "wr_1", "parked" => {"id" => "p1", "note" => "look at the flaky spec"}, "pending_context" => ["earlier"])
+
+      dropped = given.drop_park
+
+      expect(dropped.to_h).to eq("id" => "wr_1", "pending_context" => ["earlier", "Note from the person who resumed the run: look at the flaky spec"])
+      expect(given.parked).to include("id" => "p1")
+    end
+
+    it "adds nothing for a park with no note" do
+      expect(described_class.from_h("parked" => {"id" => "p1"}, "pending_context" => []).drop_park.to_h).to eq("pending_context" => [])
     end
   end
 end

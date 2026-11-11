@@ -5,8 +5,9 @@ require "time"
 module Workspace
   # What an attempt records about itself in the run file: what it started from
   # ({#start}) and what it ended with ({#finish}, {#abandon}). It runs under the
-  # run's lock, so every read is short, and a recording problem is a nil, never
-  # an error: recording must not fail a step, a cancel or a kill.
+  # run's lock, so every read is short, and a recording problem is a nil (or the
+  # value given, unchanged), never an error: recording must not fail a step, a
+  # cancel or a kill. Each method returns a new value and changes nothing it is given.
   class WorkflowAttemptRecord
     # A produced file above this many bytes is recorded with its size and no hash.
     MAX_HASH_BYTES = 16 * 1024 * 1024
@@ -52,19 +53,21 @@ module Workspace
 
     # Records the definition, the composed prompt, each pack and HEAD when an attempt begins.
     #
-    # @param run [Hash{String=>Object}]
-    # @param attempt [Hash{String=>Object}] changed in place
+    # @param run [WorkflowRun, Hash{String=>Object}]
+    # @param attempt [WorkflowRun::Attempt, Hash{String=>Object}] left as it is
     # @param composed [Hash{String=>Object}] the composer's answer: "text" and "packs"
-    # @return [Hash{String=>Object}] the attempt
+    # @return [WorkflowRun::Attempt] the attempt with what it started from
     def start(run:, attempt:, composed:)
-      attempt["head"] = {"before" => @guard.head(run["worktree"]), "after" => nil}
-      attempt["definition_sha256"] = run["definition_sha256"]
+      run = WorkflowRun.from_h(run)
+      attempt = mutable(attempt)
+      attempt["head"] = {"before" => @guard.head(run.worktree), "after" => nil}
+      attempt["definition_sha256"] = run.definition_sha256
       attempt["prompt_sha256"] = Digest::SHA256.hexdigest(composed["text"])
       attempt["packs"] = composed["packs"].map { |pack| {"ref" => pack["ref"], "sha256" => pack["sha256"]} }
       attempt.compact!
       # The prompt is copied as it is written, before it is delivered: the agent has not seen it yet.
-      attempt["evidence"] = @evidence.prompt(run: run, step_id: run["current"], attempt: attempt) if @evidence && attempt["prompt_file"]
-      attempt
+      attempt["evidence"] = @evidence.prompt(run: run, step_id: run.current, attempt: attempt) if @evidence && attempt["prompt_file"]
+      WorkflowRun::Attempt.from_h(attempt)
     end
 
     # Records HEAD now and each declared `produces` file when an attempt passes or fails, and copies its
@@ -72,17 +75,19 @@ module Workspace
     # A check log is complete here for a passed or failed check; a cancel or kill that stops a check
     # keeps the log as it stood, and what the stopped check writes later is not copied.
     #
-    # @param run [Hash{String=>Object}]
+    # @param run [WorkflowRun, Hash{String=>Object}]
     # @param step [Hash{String=>Object}] the step's definition
-    # @param attempt [Hash{String=>Object}] changed in place
-    # @return [Hash{String=>Object}] the attempt
+    # @param attempt [WorkflowRun::Attempt, Hash{String=>Object}] left as it is
+    # @return [WorkflowRun::Attempt] the attempt with what it ended with
     def finish(run:, step:, attempt:)
-      attempt["head"] = (attempt["head"] || {"before" => nil}).merge("after" => @guard.head(run["worktree"]))
+      run = WorkflowRun.from_h(run)
+      attempt = mutable(attempt)
+      attempt["head"] = (attempt["head"] || {"before" => nil}).merge("after" => @guard.head(run.worktree))
       copies = @evidence ? @evidence.copy(run: run, step: step, attempt: attempt) : []
-      attempt["outputs"] = outputs(step, run, copies)
-      attempt.merge!(agent_facts(run, attempt))
+      attempt["outputs"] = outputs(step, run.to_h, copies)
+      attempt.merge!(agent_facts(run.to_h, attempt))
       attempt["evidence"] = Array(attempt["evidence"]).select { |each| each["kind"] == "prompt" } + copies if @evidence
-      attempt
+      WorkflowRun::Attempt.from_h(attempt)
     end
 
     # Keeps the history of a run's reason: every change of the effective reason (the stored one, or
@@ -99,33 +104,35 @@ module Workspace
     # that times out is worked out when read and never stored, so its entry stays open until a change drops
     # the park. Never raises.
     #
-    # @param run [Hash{String=>Object}] changed in place
+    # @param run [WorkflowRun, Hash{String=>Object}] left as it is
     # @param was_open [Array(String, Integer), nil] {#open_attempt} read before the change
-    # @return [nil]
+    # @return [WorkflowRun] the run with its reason history kept; the run given, unchanged, on any error
     def reasons(run:, was_open: nil)
+      given = WorkflowRun.from_h(run)
+      run = given.to_mutable_h
       current = effective_reason(run)
-      _, entry = open_entry(run)
-      return nil if entry && current && entry["code"] == current["code"] && entry["since"] == current["since"]
+      at, entry = open_entry(run)
+      return given if entry && current && entry["code"] == current["code"] && entry["since"] == current["since"]
       reopened = current && closed_entry(run, current)
       # A park replaced by a park keeps the mark, so the wait under it can still be reopened.
-      each_entry(run) { |each| each.delete("parked") unless each.equal?(entry) } unless entry && entry["code"] == "parked"
+      each_entry(run) { |place, each| each.delete("parked") unless place == at } unless entry && entry["code"] == "parked"
       if entry
         entry["until"] = @clock.call.utc.iso8601
         entry["parked"] = true if current && current["code"] == "parked"
       end
-      return nil unless current
+      return WorkflowRun.from_h(run) unless current
       # A wait that a park interrupted and the park gave back is one wait: the entry the park closed (marked
       # `parked` while the park stands) is reopened, its `until` cleared, rather than a second one opened.
       if reopened
         reopened.delete("parked")
         reopened["until"] = nil
-        return nil
+        return WorkflowRun.from_h(run)
       end
-      owner = reason_owner(run, was_open, current)
-      owner << {"code" => current["code"], "since" => current["since"], "until" => nil}.merge(owner.equal?(run["reasons"]) ? {"step" => run["current"]} : {})
-      nil
+      owner, on_run = reason_owner(run, was_open, current)
+      owner << {"code" => current["code"], "since" => current["since"], "until" => nil}.merge(on_run ? {"step" => run["current"]} : {})
+      WorkflowRun.from_h(run)
     rescue
-      nil
+      WorkflowRun.from_h(given || run)
     end
 
     # @param run [Hash{String=>Object}]
@@ -140,15 +147,17 @@ module Workspace
     # Closes the current step's attempt for a run that is cancelled or whose workspace was killed, if it is
     # still open (no `ended_at`). Never raises; a checkout that is gone gives a nil `head.after`.
     #
-    # @param run [Hash{String=>Object}]
-    # @return [Hash{String=>Object}, nil] the attempt closed; nil when there was none to close
+    # @param run [WorkflowRun, Hash{String=>Object}] left as it is
+    # @return [WorkflowRun] the run with that attempt closed; the run given, unchanged, when there was none
+    #   to close or on any error
     def abandon(run)
-      attempt = run.dig("steps", run["current"], "attempts")&.last
-      return nil if attempt.nil? || attempt["ended_at"]
-      step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
-      finish(run: run, step: step, attempt: attempt)
+      value = WorkflowRun.from_h(run)
+      attempt = value.current_step&.last_attempt
+      return value if attempt.nil? || attempt.ended_at
+      step = value.definition["steps"].find { |each| each["id"] == value.current }
+      value.with_attempt(value.current, finish(run: value, step: step, attempt: attempt))
     rescue
-      nil
+      WorkflowRun.from_h(run)
     end
 
     private
@@ -160,32 +169,38 @@ module Workspace
       (reason.is_a?(Hash) && reason["code"].is_a?(String)) ? reason : nil
     end
 
-    def each_entry(run, &block)
-      lists = [run["reasons"]] + run["steps"].to_h.values.flat_map { |state| Array(state["attempts"]).map { |attempt| attempt["reasons"] } }
-      lists.compact.each { |list| list.each(&block) }
+    # Each reason entry with its place: the list it sits in (nil for the run's own, else the step and the
+    # attempt's n) and its index there.
+    def each_entry(run)
+      lists = [[nil, run["reasons"]]] + run["steps"].to_h.flat_map { |id, state| Array(state["attempts"]).map { |attempt| [[id, attempt["n"]], attempt["reasons"]] } }
+      lists.each do |owner, list|
+        next unless list
+        list.each_with_index { |each, index| yield [owner, index], each }
+      end
     end
 
     def closed_entry(run, current)
       found = nil
-      each_entry(run) { |each| found ||= each if each["parked"] && each["code"] == current["code"] && each["since"] == current["since"] }
+      each_entry(run) { |_, each| found ||= each if each["parked"] && each["code"] == current["code"] && each["since"] == current["since"] }
       found
     end
 
     def open_entry(run)
-      lists = [run["reasons"]] + run["steps"].to_h.values.flat_map { |state| Array(state["attempts"]).map { |attempt| attempt["reasons"] } }
-      lists.compact.each do |list|
-        entry = list.find { |each| each["until"].nil? }
-        return [list, entry] if entry
-      end
+      each_entry(run) { |place, each| return [place, each] if each["until"].nil? }
       [nil, nil]
     end
 
+    # @return [Array(Array, Boolean)] the list a new entry goes in, and whether it is the run's own
     def reason_owner(run, was_open, current)
       attempt = run.dig("steps", run["current"], "attempts")&.last
       if attempt && (attempt["ended_at"].nil? || (was_open == [run["current"], attempt["n"]] && set_by_ending?(current, attempt)))
-        return (attempt["reasons"] ||= [])
+        return [attempt["reasons"] ||= [], false]
       end
-      run["reasons"] ||= []
+      [run["reasons"] ||= [], true]
+    end
+
+    def mutable(attempt)
+      attempt.is_a?(WorkflowRun::Attempt) ? attempt.to_mutable_h : WorkflowRun.deep_thaw(attempt)
     end
 
     def set_by_ending?(reason, attempt)

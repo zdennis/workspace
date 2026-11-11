@@ -17,11 +17,15 @@ class FakeGit
   # @param paths [Hash{String=>Hash{Symbol=>String}}] `path_of` answers per directory, then `:git_dir`, `:common_dir`, `:toplevel`
   # @param head_name [String, Hash, nil] `head_name` per directory
   # @param current_branch_name [String, Hash, nil] `current_branch_name` per directory
-  def initialize(remote_url: nil, paths: {}, head_name: nil, current_branch_name: nil)
+  # @param worktree_branch [String, Hash, nil] `worktree_branch` per checkout
+  # @param common_dir_from_files [String, Hash, nil] `common_dir_from_files` per checkout
+  def initialize(remote_url: nil, paths: {}, head_name: nil, current_branch_name: nil, worktree_branch: nil, common_dir_from_files: nil)
     @remote_url = remote_url
     @paths = paths
     @head_name = head_name
     @current_branch_name = current_branch_name
+    @worktree_branch = worktree_branch
+    @common_dir_from_files = common_dir_from_files
     @calls = []
   end
 
@@ -35,6 +39,10 @@ class FakeGit
   def head_name(dir) = answer(:head_name, @head_name, dir)
 
   def current_branch_name(dir) = answer(:current_branch_name, @current_branch_name, dir)
+
+  def worktree_branch(path) = answer(:worktree_branch, @worktree_branch, path)
+
+  def common_dir_from_files(path) = answer(:common_dir_from_files, @common_dir_from_files, path)
 
   private
 

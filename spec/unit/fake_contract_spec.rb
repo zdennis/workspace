@@ -68,4 +68,112 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::Git, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingComposer do
+    it "accepts every call Workspace::InstructionComposer accepts" do
+      expect(FakeContract.problems(described_class, Workspace::InstructionComposer, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingGitExclude do
+    it "accepts every call Workspace::GitExclude accepts" do
+      expect(FakeContract.problems(described_class, Workspace::GitExclude, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRunChange do
+    it "accepts every call Workspace::WorkflowRunChange accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowRunChange, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRunStore do
+    it "accepts every call Workspace::WorkflowRunStore accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowRunStore, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingWorkflowPrompt do
+    it "accepts every call Workspace::WorkflowPrompt accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowPrompt, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingDispatch do
+    it "accepts every call Workspace::WorkflowDispatch accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowDispatch, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRunResources do
+    it "accepts every call Workspace::RunResources accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RunResources, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingWorkflowPanes do
+    it "accepts every call Workspace::WorkflowPanes accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowPanes, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingAttemptRecord do
+    it "accepts every call Workspace::WorkflowAttemptRecord accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowAttemptRecord, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingLogTail do
+    it "accepts every call Workspace::WorkflowLogTail accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowLogTail, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingProgress do
+    it "accepts every call Workspace::WorkflowProgress accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowProgress, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingChecker do
+    it "accepts every call Workspace::WorkflowCheck accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowCheck, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRequire do
+    it "accepts every call Workspace::WorkflowRequire accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowRequire, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingGuard do
+    it "accepts every call Workspace::WorkflowGuard accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowGuard, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingCommandsConfig do
+    it "accepts every call Workspace::CommandsConfig accepts" do
+      expect(FakeContract.problems(described_class, Workspace::CommandsConfig, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingInbox do
+    it "accepts every call Workspace::InboxStore accepts" do
+      expect(FakeContract.problems(described_class, Workspace::InboxStore, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingEvaluation do
+    it "accepts every call Workspace::WorkflowEvaluation accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowEvaluation, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingGateNote do
+    it "accepts every call Workspace::WorkflowGateNote accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowGateNote, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

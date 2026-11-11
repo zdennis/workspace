@@ -82,7 +82,7 @@ RSpec.describe "workspace workflow attempts through build_cli" do
       @id = run["id"]
       attempt = {"n" => 1}
       Workspace::WorkflowEvidence.new(dir: config.workflow_evidence_dir).copy(run: run.merge("id" => @id), step: {"id" => "plan", "produces" => ["plan.md"]}, attempt: attempt)
-        .then { |entries| store.update(@id) { |stored| stored["steps"]["plan"]["attempts"][0]["evidence"] = entries } }
+        .then { |entries| edit_run(store, @id) { |stored| stored["steps"]["plan"]["attempts"][0]["evidence"] = entries } }
     end
 
     it "exits 0 and prints the table when every copy matches" do
@@ -101,7 +101,7 @@ RSpec.describe "workspace workflow attempts through build_cli" do
     end
 
     it "reads an archived run" do
-      Workspace::WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir).update(@id) { |run| run.merge!("state" => "completed") }
+      edit_run(Workspace::WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir), @id) { |run| run.merge!("state" => "completed") }
 
       cli.run(["workflow", "audit", @id, "--json"])
 
