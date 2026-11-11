@@ -289,6 +289,7 @@ module Workspace
       # them. A pack that can no longer be read leaves them out; the subject still prints.
       def packs_context(entry, payload)
         return nil unless @instruction_composer
+        return nil if entry["role"] == "reviewer"
         names = @pane_bindings.packs_for(entry)
         return nil if names.empty?
 

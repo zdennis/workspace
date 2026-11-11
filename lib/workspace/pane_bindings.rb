@@ -260,6 +260,7 @@ module Workspace
       lines << "Step: #{entry["step"]}#{" (attempt #{entry["attempt"]})" if entry["attempt"]}." if entry["step"]
       lines << "Round: #{entry["round"]}." if entry["round"]
       lines << "Review prompt: #{entry["instructions"]}. Reread it if your context was compacted." if entry["instructions"]
+      lines << "Do not run `workspace step done` or `workspace step status`: a step is the author\x27s. Write your verdict file for this round and end your turn."
       lines.join("\n")
     end
 

@@ -837,7 +837,7 @@ module Workspace
       # @param summary [String, nil]
       # @param code [String, nil] a word for why, matching {WorkflowDefinition::CODE_PATTERN} (`usage` otherwise)
       # @return [Hash{String=>Object}] the action row
-      # @raise [Workspace::Error] code `not_bound` outside a run's pane, `step_not_running`
+      # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane, `step_not_running`
       def step_done(pane:, status: "pass", summary: nil, code: nil)
         raise UsageError, "--status must be pass or fail, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
         raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || WorkflowDefinition::CODE_PATTERN.match?(code)
@@ -857,7 +857,7 @@ module Workspace
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
       # @param json [Boolean]
       # @return [void]
-      # @raise [Workspace::Error] code `not_bound` outside a run's pane
+      # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane
       def step_status(pane:, json: false)
         run = @store.run(bound_run!(pane))
         step = run.definition["steps"].find { |each| each["id"] == run.current }
@@ -1523,8 +1523,12 @@ module Workspace
       end
 
       def bound_run!(pane)
-        run_id = pane && !pane.empty? && @panes.run_on(pane)
-        return run_id if run_id
+        bound = pane && !pane.empty? && @panes.bound_on(pane)
+        if bound && bound[:role] == "reviewer"
+          raise Workspace::Error.new("This pane reviews run #{bound[:run_id]}; the step is the author\x27s, so a review pane has no step to report or read. Write your verdict file for this round and end your turn.",
+            code: "review_pane_bound", details: {"pane" => pane, "run_id" => bound[:run_id]})
+        end
+        return bound[:run_id] if bound
         raise Workspace::Error.new("This pane is not bound to a workflow run#{" (not inside tmux)" if pane.nil? || pane.empty?}.",
           code: "not_bound", details: {"pane" => pane})
       end

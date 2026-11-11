@@ -117,6 +117,17 @@ RSpec.describe Workspace::Commands::SessionEvent do
         expect(composer).to have_received(:compose).with(packs: %w[notes handoff], cwd: "/work/proj", binding: hash_including("id" => "play/notes")).exactly(4).times
       end
 
+      it "never composes packs into a review pane\x27s context, so the binding pack\x27s step done line stays out" do
+        store.bind("%2", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "packs" => %w[binding commits],
+          "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+
+        fire_with(composer)
+
+        expect(composer).not_to have_received(:compose)
+        expect(context).to include("review pane").and include("Do not run `workspace step done`")
+        expect(context).not_to include("Instructions you were sent")
+      end
+
       it "cuts packs that are longer than the limit" do
         allow(composer).to receive(:compose).and_return({"packs" => [], "text" => "x" * 20_000})
 

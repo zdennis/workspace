@@ -1697,6 +1697,17 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { command.step_done(pane: nil) }.to raise_error(Workspace::Error, "This pane is not bound to a workflow run (not inside tmux).")
       expect { command.step_status(pane: "") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("not_bound") }
     end
+
+    it "refuses step done and step status in a run\x27s review pane with review_pane_bound" do
+      allow(panes).to receive(:bound_on).with("%9").and_return({run_id: "wr_1", role: "reviewer"})
+
+      [-> { command.step_done(pane: "%9") }, -> { command.step_status(pane: "%9") }].each do |call|
+        expect { call.call }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq("review_pane_bound")
+          expect(error.details).to eq({"pane" => "%9", "run_id" => "wr_1"})
+        }
+      end
+    end
   end
 
   describe "#step_status" do

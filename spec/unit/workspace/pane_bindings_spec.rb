@@ -256,6 +256,7 @@ RSpec.describe Workspace::PaneBindings do
         Step: plan (attempt 2).
         Round: 3.
         Review prompt: .workflow/wr_1/reviews/plan.2.3.prompt.md. Reread it if your context was compacted.
+        Do not run `workspace step done` or `workspace step status`: a step is the author\x27s. Write your verdict file for this round and end your turn.
       TEXT
       expect(text).not_to include("Instructions:")
     end
