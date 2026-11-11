@@ -1240,4 +1240,246 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(reason["details"]).to include("kind" => "dispatch", "error" => "pane_busy", "message" => "pane %5 did not go quiet")
     end
   end
+
+  describe "run from a process with no UTF-8 locale" do
+    let(:french) { definition("instructions: Travaille sur {{inputs.task}} (café).\ninputs:\n  task: {}\nsteps:\n  a:\n    prompt: Écris {{artifacts}}/a.md.\n    produces: [a.md]\n  b:\n    prompt: Vérifie.\n") }
+
+    it "starts a run, writes its step file as UTF-8 and reads the run back, with non-ASCII text in the definition, an input and a note" do
+      without_utf8_locale do
+        run = start(french, inputs: {"task" => "déjà vu"}, note: "naïve")
+        prompt = run["steps"]["a"]["attempts"].last["prompt_file"]
+
+        expect(run).to include("state" => "running", "reason" => nil)
+        expect(File.read(prompt, encoding: "UTF-8")).to include("Travaille sur déjà vu (café).", "Écris ", "Note for this run: naïve")
+        artifact("a.md")
+        expect(engine.turn_ended("wr_1")).to include("current" => "b", "state" => "running")
+        expect(engine.resume("wr_1", note: "encore", from: "a")["steps"]["a"]["attempts"].last["context"]).to eq(["Note from the person who resumed the run: encore"])
+        expect(engine.cancel("wr_1")["state"]).to eq("cancelled")
+      end
+      expect(store.find("wr_1")["inputs"]).to eq("task" => "déjà vu")
+    end
+
+    it "starts a run and names its task, read from the real task store holding a non-ASCII title" do
+      tasks = Workspace::TaskStore.new(dir: File.join(@dir, "tasks"), error_output: StringIO.new)
+      task = tasks.start(workspace: "app.worktree-x", title: "tâche — première")
+
+      run = without_utf8_locale { engine_with(task_store: tasks, event_log: event_log).start(definition: french, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5") }
+
+      expect(run).to include("state" => "running", "task" => task["id"])
+    end
+
+    it "starts a run without a task id when the task store can't be read as text" do
+      broken = instance_double(Workspace::TaskStore)
+      allow(broken).to receive(:active_for).and_raise(Encoding::InvalidByteSequenceError, "\"\\xC3\" on US-ASCII")
+
+      run = engine_with(task_store: broken).start(definition: french, workspace: "app", worktree: worktree, inputs: {}, pane: "%5")
+
+      expect(run).to include("state" => "running", "task" => nil)
+    end
+
+    it "takes the `invalid byte sequence` a string method raises on such text as the same failure, and lets any other ArgumentError through" do
+      bytes = Object.new
+      def bytes.compose(**) = raise(ArgumentError, "invalid byte sequence in US-ASCII")
+      bug = Object.new
+      def bug.compose(**) = raise(ArgumentError, "wrong number of arguments (given 1, expected 0)")
+
+      expect { engine_with(composer: bytes).start(definition: french, workspace: "app", worktree: worktree, inputs: {}, pane: "%5") }
+        .to raise_error(Workspace::Error, /could not be put together.*\(ArgumentError\)/)
+      expect { engine_with(composer: bug).start(definition: french, workspace: "app", worktree: worktree, inputs: {}, pane: "%5") }
+        .to raise_error(ArgumentError, /wrong number/)
+      expect(store.active).to eq([])
+    end
+
+    it "leaves a run waiting for a person, holding nothing, when a step's file can't be written as UTF-8" do
+      start(definition("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    uses: [test-db]\n"), inputs: {})
+      unconvertible = lambda do |path, text, **options|
+        raise Encoding::UndefinedConversionError, "\"\\xC3\" from ASCII-8BIT to UTF-8" if path.end_with?("b.1.prompt.md")
+        File.write(path, text, **options)
+      end
+
+      run = engine_with(prompt_writer: unconvertible).turn_ended("wr_1")
+
+      expect(run["reason"]["details"]).to include("kind" => "dispatch")
+      expect(lock_holder("test-db")).to be_nil
+      expect(store.find("wr_1")).to eq(run)
+    end
+
+    it "refuses to start, with a workspace error and nothing left behind, when the instructions can't be put together" do
+      clashing = Object.new
+      def clashing.compose(**) = raise(Encoding::CompatibilityError, "incompatible character encodings: US-ASCII and UTF-8")
+
+      expect { engine_with(composer: clashing).start(definition: french, workspace: "app", worktree: worktree, inputs: {}, pane: "%5") }
+        .to raise_error(Workspace::Error, /the step's instructions could not be put together: a pack, a prompt or a path is not UTF-8 text \(Encoding::CompatibilityError\)/)
+      expect(store.active).to eq([])
+    end
+
+    it "leaves a run waiting for a person, holding nothing, when a later step's instructions can't be put together" do
+      start(definition("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    uses: [test-db]\n"), inputs: {})
+      allow(composer).to receive(:compose).and_raise(Encoding::CompatibilityError, "incompatible character encodings: US-ASCII and UTF-8")
+
+      run = engine.turn_ended("wr_1")
+
+      expect(run["reason"]["details"]).to include("kind" => "dispatch")
+      expect(run["reason"]["details"]["message"]).to match(/could not be put together/)
+      expect(lock_holder("test-db")).to be_nil
+      expect(store.find("wr_1")).to eq(run)
+    end
+  end
+
+  describe "#preflight" do
+    it "reports what a start would do and writes nothing" do
+      checked = engine.preflight(definition: three_steps, workspace: "app.worktree-x", worktree: worktree, inputs: {"task" => "X-1"}, pane: "%5")
+
+      expect(checked).to eq("workflow" => "flow", "workspace" => "app.worktree-x", "project" => "app", "step" => "plan",
+        "pane" => "%5", "inputs" => {"task" => "X-1"}, "packs" => ["play/binding"])
+      expect(Dir.exist?(runs_dir)).to be false
+      expect(Dir.exist?(File.join(worktree, ".workflow"))).to be false
+      expect(panes.kicks).to eq([])
+    end
+  end
+
+  describe "#render" do
+    def render(step = "plan", inputs: {"task" => "X-1"}, flow: three_steps)
+      engine.render(definition: flow, step: step, workspace: "app.worktree-x", worktree: worktree, inputs: inputs)
+    end
+
+    it "composes the text a delivered attempt of the step is written with, under the preview run" do
+      rendered = render("plan")
+      composer.calls.clear
+      start
+      delivered = File.read(File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.prompt.md"))
+
+      expect(rendered["text"]).to eq(delivered.gsub("wr_1", "wr_preview"))
+      expect(rendered).to include("run" => "wr_preview", "artifacts_dir" => File.join(worktree, ".workflow", "wr_preview"),
+        "instructions" => File.join(worktree, ".workflow", "wr_preview", "steps", "plan.1.prompt.md"), "gate" => "approve")
+    end
+
+    it "hands the composer what a delivery hands it, except the run's id and directory" do
+      render("verify")
+      rendered_call = composer.calls.last
+      to_verify
+      delivered_call = composer.calls.last
+
+      expect(rendered_call.except(:binding)).to eq(delivered_call.except(:binding).merge(attempt: []))
+      expect(rendered_call[:binding]).to eq(delivered_call[:binding].merge("id" => "wr_preview", "attempt" => 1,
+        "instructions" => File.join(worktree, ".workflow", "wr_preview", "steps", "verify.1.prompt.md"),
+        "artifacts" => File.join(worktree, ".workflow", "wr_preview")))
+    end
+
+    it "renders a later step, not just the first, with its packs" do
+      rendered = render("verify")
+
+      expect(rendered).to include("step" => "verify", "packs" => %w[play/binding play/review], "gate" => nil)
+      expect(rendered["text"]).to include("Verify it.", "Work on X-1")
+    end
+
+    it "writes nothing and touches no pane, run or lock" do
+      render("plan")
+
+      expect(Dir.exist?(runs_dir)).to be false
+      expect(Dir.exist?(File.join(worktree, ".workflow"))).to be false
+      expect(Dir.exist?(lock_dir)).to be false
+      expect(panes.kicks).to eq([])
+      expect(panes.bound).to eq({})
+      expect(events).to eq([])
+    end
+
+    it "refuses an unknown step, listing the steps" do
+      expect { render("nope") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_step")
+        expect(e.details).to eq("workflow" => "flow", "step" => "nope", "steps" => %w[plan build verify])
+      }
+    end
+
+    it "refuses a missing required input as a start does" do
+      expect { render("plan", inputs: {}) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("input_required") }
+    end
+
+    it "refuses an input the workflow does not have, and one that misses its pattern" do
+      expect { render("plan", inputs: {"task" => "x", "other" => "y"}) }.to raise_error(Workspace::UsageError, /no input "other"/)
+      patterned = definition("inputs:\n  task: {required: true, pattern: '[A-Z]+-[0-9]+'}\nsteps:\n  a:\n    prompt: Do {{inputs.task}}.\n")
+      expect { render("a", inputs: {"task" => "nope"}, flow: patterned) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_input") }
+    end
+
+    it "passes the composer's refusal of a pack it can't read" do
+      ghost = definition("steps:\n  a:\n    prompt: P\n    include: [ghost]\n")
+
+      expect { render("a", inputs: {}, flow: ghost) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+    end
+  end
+
+  describe "#check_plan" do
+    def plan_for(step, flow: three_steps)
+      engine.check_plan(definition: flow, step: step, worktree: worktree)
+    end
+
+    it "gives the project's command, the step's timeout as whole seconds and HEAD, and writes nothing" do
+      expect(plan_for("verify")).to include("workflow" => "flow", "step" => "verify", "command" => "bundle exec rspec", "timeout" => 300,
+        "base_sha" => "1" * 40, "run" => "wr_preview")
+      expect(plan_for("verify")["timeout"]).to be_an(Integer)
+      expect(Dir.exist?(runs_dir)).to be false
+      expect(Dir.exist?(File.join(worktree, ".workflow"))).to be false
+      expect(Dir.exist?(lock_dir)).to be false
+      expect(events).to eq([])
+    end
+
+    it "uses a run: command as it is, with the default timeout, and needs no input" do
+      flow = definition("inputs:\n  task: {required: true}\nsteps:\n  a:\n    prompt: P\n    status: {run: 'test -f x'}\n")
+
+      expect(plan_for("a", flow: flow)).to include("command" => "test -f x", "timeout" => Workspace::WorkflowDefinition::DEFAULT_CHECK_TIMEOUT)
+    end
+
+    it "reads the command for the project the lineage names, as a run does, not for the workspace given" do
+      asked = []
+      allow(commands_config).to receive(:for_project) { |name| asked << name && commands }
+      flow = definition("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    status: {command: test}\n")
+      plan_for("a", flow: flow)
+      checked = asked.dup
+      asked.clear
+      start(flow, inputs: {})
+
+      expect(checked).to eq(["app"])
+      expect(asked.uniq).to eq(checked)
+    end
+
+    it "is not in a checkout inside the .git directory" do
+      allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "app", git_common_dir: File.join(worktree, ".git")))
+      flow = definition("steps:\n  a:\n    prompt: P\n    status: {run: 'true'}\n")
+      inside = engine.check_plan(definition: flow, step: "a", worktree: File.join(worktree, ".git", "hooks"))
+
+      expect(inside["in_checkout"]).to be false
+      expect(plan_for("a", flow: flow)["in_checkout"]).to be true
+    end
+
+    it "refuses a step with no status and an unknown step" do
+      expect { plan_for("plan") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("step_without_status") }
+      expect { plan_for("nope") }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details["steps"]]).to eq(["unknown_step", %w[plan build verify]]) }
+    end
+
+    it "refuses an unset project command with start's details" do
+      lint = definition("steps:\n  a:\n    prompt: P\n    status: {command: lint}\n")
+
+      expect { plan_for("a", flow: lint) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("workflow_command_unset")
+        expect(e.details["steps"]).to eq([{"step" => "a", "command" => "lint", "via" => "status"}])
+      }
+    end
+
+    it "prints a --name command with a placeholder that fails if pasted only when the lineage project is a workspace that exists" do
+      lint = definition("steps:\n  a:\n    prompt: P\n    status: {command: lint}\n")
+      asked = []
+      known = ->(name) { (asked << name) && true }
+      named = engine_with(workspace_known: known)
+
+      expect { named.check_plan(definition: lint, step: "a", worktree: worktree) }.to raise_error(Workspace::Error) { |e|
+        expect(e.message).to include('workspace config set commands.lint "<lint command>" --name app')
+      }
+      expect(asked).to eq(["app"])
+      expect { plan_for("a", flow: lint) }.to raise_error(Workspace::Error) { |e|
+        expect(e.message).to include("Set commands.lint in this project's workspace.")
+        expect(e.message).not_to include("--name")
+        expect(e.message).not_to include("workspace add")
+      }
+    end
+  end
 end
