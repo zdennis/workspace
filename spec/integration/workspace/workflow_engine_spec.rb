@@ -5816,6 +5816,63 @@ RSpec.describe Workspace::WorkflowEngine do
       end
     end
 
+    describe "with the round's revision computed again" do
+      let(:revision) { Workspace::WorkflowReviewRevision.new(guard: RecordingGuard.new, checker: checker) }
+      # The round's delivery as T30's runner will record it: the review pane, and the revision through the same reader.
+      let(:round_runner) do
+        lambda do |run_id, review|
+          rounds << [run_id, review]
+          store.change(run_id) do |run|
+            hash = run.thawed
+            step = hash["definition"]["steps"].find { |each| each["id"] == hash["current"] }
+            hash["steps"][hash["current"]]["review"].merge!("pane" => "%9", "delivery" => nil, "revision" => revision.call(run: run, step: step)[:revision])
+            Workspace::WorkflowRun.from_h(hash)
+          end
+        end
+      end
+
+      def revised_engine(outcome = :approved)
+        build_engine(review_round: round_runner, review_tally: RecordingReviewTally.new(outcome: outcome), review_revision: revision)
+      end
+
+      it "tallies a round whose subject did not change" do
+        engine = revised_engine
+        start_reviewed(engine)
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        expect(run["current"]).to eq("build")
+        expect(run["steps"]["plan"]["state"]).to eq("passed")
+      end
+
+      it "stops review_stale when the plan file was edited between delivery and the round's end, and a resume starts a fresh round" do
+        engine = revised_engine
+        start_reviewed(engine)
+        delivered = stored_run(store, "wr_1")["steps"]["plan"]["review"]["revision"]
+        File.write(File.join(worktree, ".workflow", "wr_1", "plan.md"), "An edited plan.\n")
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        plan = run["steps"]["plan"]
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "review_stale")
+        expect(run["reason"]["details"]).to include("revision" => delivered, "revision_now" => satisfy { |now_rev| now_rev != delivered })
+        expect(run["reasons"].last).to include("code" => "review_stale", "step" => "plan")
+        expect(plan).to include("state" => "reviewing", "review_rounds" => 1)
+        expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
+        expect(rounds.size).to eq(1)
+
+        resumed = engine.resume("wr_1")
+
+        expect(resumed["steps"]["plan"]["review_rounds"]).to eq(2)
+        expect(resumed["steps"]["plan"]["attempts"].last["rounds"].map { |each| each["ended"] }).to eq(["stale"])
+        expect(rounds.map { |_id, review| review["round"] }).to eq([1, 2])
+        expect(engine.turn_ended("wr_1", pane: "%9")["current"]).to eq("build")
+      end
+    end
+
     it "ends the round and closes its window on resume --from, keeping review_rounds" do
       closed = []
       engine = build_engine(review_round: round_runner, review_tally: RecordingReviewTally.new(outcome: :incomplete), review_closer: ->(run_id, found) { closed << [run_id, found] })

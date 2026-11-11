@@ -80,6 +80,24 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(evaluation.calls).to eq([[:evaluate, "build"], [:finish_check, "wr_1", {"kind" => "status"}]])
     end
 
+    it "judges again the end of a review round whose recompute never reported back, the recompute outside the lock" do
+      round = {"round" => 1, "pane" => "%9", "recompute" => {"started_at" => "2026-11-10T11:00:00Z", "try" => 1}}
+      stored(run_hash(step_state: "reviewing").tap { |hash| hash["steps"]["build"]["review"] = round })
+
+      run = recovery.tick("wr_1")
+
+      expect(run.id).to eq("wr_1")
+      expect(evaluation.calls).to eq([[:review_ended, "build"], [:review_end, "wr_1", {"step" => "build"}]])
+    end
+
+    it "leaves a review round's recompute alone while it may still report back" do
+      round = {"round" => 1, "pane" => "%9", "recompute" => {"started_at" => "2026-11-10T11:59:00Z", "try" => 1}}
+      stored(run_hash(step_state: "reviewing").tap { |hash| hash["steps"]["build"]["review"] = round })
+
+      expect(recovery.tick("wr_1")).to be_nil
+      expect(evaluation.calls).to be_empty
+    end
+
     it "follows up a review round the tick registered, outside the lock" do
       evaluation = RecordingEvaluation.new(store.runs, review: {"round" => 1})
       stored(run_hash(step_state: "checking", attempt: {"check" => {"started_at" => "2026-11-10T11:00:00Z"}}))

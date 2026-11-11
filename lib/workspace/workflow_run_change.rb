@@ -6,7 +6,7 @@ module Workspace
   # {WorkflowEvaluation#finish_follow_ups}.
   class WorkflowRunChange
     # What one change hands out of its block: the step line to type after the lock, the check to run, the review round to
-    # run and the review window to close.
+    # run, the ended round whose revision is computed again and the review window to close.
     # A new one is made for every {WorkflowRunChange#call}, so no follow-up outlives the change that made it.
     class Context
       # @return [Hash{String=>Object}, nil] the step line registered with {#deliver}
@@ -32,6 +32,15 @@ module Workspace
       # @return [Hash{String=>Object}, nil]
       def review(found = nil)
         found ? @review = found : @review
+      end
+
+      # With an argument, registers the ended review round whose revision is computed again once the lock is given
+      # up ({WorkflowEvaluation#finish_follow_ups}); without, the one registered.
+      #
+      # @param found [Hash{String=>Object}, nil] "step", "attempt", "round" and "try" of the round's `recompute` mark
+      # @return [Hash{String=>Object}, nil]
+      def review_end(found = nil)
+        found ? @review_end = found : @review_end
       end
 
       # With an argument, registers the review window of an ended round to close once the lock is given up; without,

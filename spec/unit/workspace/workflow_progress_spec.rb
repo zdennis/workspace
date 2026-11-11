@@ -413,6 +413,20 @@ RSpec.describe Workspace::WorkflowProgress do
         "details" => {"step" => "plan", "attempt" => 1, "round" => 1, "reviews" => [], "problem" => "no verdict from tester"})
     end
 
+    it "stops a stale round with review_stale, keeping the step reviewing and registering no further round" do
+      context = ctx
+      run = progress.decide_review(reviewing_hash, {outcome: :stale, reviews: [], revision: "rev1", revision_now: "rev2"}, ctx: context)
+
+      state = run.step("plan")
+      expect(state.state).to eq("reviewing")
+      expect(state.review).to include("recorded" => true)
+      expect(state.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["stale"])
+      expect(run.reason).to eq("code" => "review_stale", "since" => "2026-11-10T12:00:00Z",
+        "details" => {"step" => "plan", "attempt" => 1, "round" => 1, "revision" => "rev1", "revision_now" => "rev2"})
+      expect(context.review).to be_nil
+      expect(context.delivery).to be_nil
+    end
+
     describe "#end_round" do
       let(:attempt_record) { RecordingAttemptRecord.new(round_usage: {"input_tokens" => 40, "output_tokens" => 2}) }
 

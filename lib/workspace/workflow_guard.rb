@@ -287,6 +287,29 @@ module Workspace
       paths.first(MAX_PATHS)
     end
 
+    # A digest of the tracked tree as it stands against HEAD: the tracked paths whose working copy differs from HEAD
+    # (staged or not; untracked files and submodules not seen), each with what is there now, read from the file
+    # itself: a regular file's mode and bytes, a link's target (never followed), or that it is gone. No patch text is
+    # hashed, so nothing that only shapes a diff (`diff.context`, `diff.orderFile`, a driver's `xfuncname`,
+    # `diff.noprefix`, ...) can move it; with `-z`, `--no-renames` and `--no-relative` the path list is fixed too.
+    # Filters are handled as in {#dirty_paths}, and decide, as they do for git, which files count as changed. Never raises.
+    #
+    # @param worktree [String] a checkout's top level
+    # @param base [WorkflowRun, Hash{String=>Object}, nil] {#base}'s answer, or a run
+    # @return [String, nil] a SHA-256; nil on an unborn branch, past {GIT_TIMEOUT} or {MAX_OUTPUT}, or when git or a file can't be read
+    def tree_digest(worktree, base: nil)
+      options = base ? filter_options(worktree, base) : []
+      return nil unless options
+      out, ok = git(worktree, *options, "diff", "--name-only", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-textconv",
+        "--ignore-submodules=all", "HEAD", "--", scrub: false)
+      return nil unless ok
+      digest = Digest::SHA256.new
+      out.b.split("\0".b).sort.each { |path| feed_working_copy(digest, worktree, path) }
+      digest.hexdigest
+    rescue SystemCallError, IOError
+      nil
+    end
+
     # Every file a step left changed against `base`: committed, staged, unstaged and untracked (not ignored) paths.
     # Deleted files are left out, a rename lists the new path only, and git output past MAX_OUTPUT (32 MiB) gives nil. Filters are handled as in
     # {#dirty_paths}, through `base_guard`'s `filter_sha256`.
@@ -427,6 +450,18 @@ module Workspace
       names = entries.filter_map { |entry| entry[/\A[^\n]*/][FILTER_KEY, 1] }.uniq
       return nil if names.any? { |name| name.include?("=") }
       names.flat_map { |name| ["-c", "filter.#{name}.clean=", "-c", "filter.#{name}.smudge=", "-c", "filter.#{name}.process=", "-c", "filter.#{name}.required=false"] }
+    end
+
+    # A path's working copy as {#tree_digest} reads it; a path that is gone is fed as such, any other read error raises.
+    def feed_working_copy(digest, worktree, path)
+      full = File.join(worktree.b, path)
+      stat = File.lstat(full)
+      if stat.symlink? then feed(digest, path, "link", File.readlink(full))
+      elsif stat.file? then feed(digest, path, "file", (stat.mode & 0o111).zero? ? "644" : "755", Digest::SHA256.file(full).hexdigest)
+      else feed(digest, path, "other")
+      end
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      feed(digest, path, "gone")
     end
 
     def feed_file(digest, path)

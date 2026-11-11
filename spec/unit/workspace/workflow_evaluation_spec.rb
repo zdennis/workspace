@@ -269,6 +269,137 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
       expect(rounds).to eq([["wr_1", {"round" => 2}]])
     end
+
+    describe "with its revision computed again" do
+      let(:round) { {"round" => 1, "delivery" => nil, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "pending" => ["skeptic"], "redeliveries" => 0, "revision" => "rev1"} }
+      let(:progress) { Workspace::WorkflowProgress.new(change: change, store: store, dispatch: RecordingDispatch.new, attempt_record: RecordingAttemptRecord.new, panes: panes, log_tail: RecordingLogTail.new, clock: -> { now }) }
+
+      def ended(revision, **overrides)
+        evaluation(review_tally: tally, review_revision: revision, **overrides).turn_ended("wr_1", pane: "%9")
+      end
+
+      it "computes it with the lock given up, and tallies an unchanged round" do
+        stored(reviewing)
+        revision = RecordingReviewRevision.new({revision: "rev1", problem: nil})
+
+        run = ended(revision)
+
+        expect(change.review_ends).to eq([{"step" => "plan", "attempt" => 1, "round" => 1, "try" => 1}])
+        expect(revision.calls).to eq([[:call, "wr_1", "plan"]])
+        expect(revision.stop_answers).to eq([false])
+        expect(tally.calls.size).to eq(1)
+        expect(run.current).to eq("plan")
+        expect(run.step("plan").state).to eq("passed")
+        expect(run.step("plan").to_h).not_to have_key("review")
+      end
+
+      it "stops a changed round as review_stale in the run's reasons, with no loop, no tally and no round spent" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review_rounds"] = 1 })
+
+        run = ended(RecordingReviewRevision.new({revision: "rev2", problem: nil}))
+
+        expect(tally.calls).to be_empty
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to include("code" => "review_stale")
+        expect(run.reason["details"]).to include("step" => "plan", "attempt" => 1, "round" => 1, "revision" => "rev1", "revision_now" => "rev2")
+        plan = run.step("plan")
+        expect(plan.state).to eq("reviewing")
+        expect(plan.review_rounds).to eq(1)
+        expect(plan.review).to include("recorded" => true).and(satisfy { |each| !each.key?("recompute") })
+        expect(plan.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["stale"])
+        expect(change.reviews).to be_empty
+        expect(change.events.map { |each| each[1] }).to include("review_ended")
+      end
+
+      it "stops review_incomplete with the problem when the revision can't be computed" do
+        stored(reviewing)
+
+        run = ended(RecordingReviewRevision.new({revision: nil, problem: "the review revision command exited 1"}))
+
+        expect(tally.calls).to be_empty
+        expect(run.reason["code"]).to eq("review_incomplete")
+        expect(run.reason["details"]["problem"]).to eq("the round's revision could not be computed again: the review revision command exited 1")
+      end
+
+      it "drops a result for a round that moved on while it was computed (wanted_round?)" do
+        stored(reviewing)
+        stale_result = Class.new(RecordingReviewRevision) do
+          attr_accessor :runs
+
+          def call(run:, step:, stop_when: nil)
+            runs["wr_1"]["steps"]["plan"]["review"]["round"] = 2
+            super
+          end
+        end.new({revision: "rev2", problem: nil})
+        stale_result.runs = store.runs
+
+        run = ended(stale_result)
+
+        expect(stale_result.stop_answers).to eq([true])
+        expect(run.reason).to be_nil
+        expect(tally.calls).to be_empty
+        expect(store.runs["wr_1"]["steps"]["plan"]["review"]).to include("round" => 2, "recompute" => include("try" => 1))
+      end
+
+      it "drops a result whose try a later recompute replaced" do
+        stored(reviewing)
+        replaced = Class.new(RecordingReviewRevision) do
+          attr_accessor :runs
+
+          def call(run:, step:, stop_when: nil)
+            runs["wr_1"]["steps"]["plan"]["review"]["recompute"]["try"] = 2
+            super
+          end
+        end.new({revision: "rev1", problem: nil})
+        replaced.runs = store.runs
+
+        ended(replaced)
+
+        expect(tally.calls).to be_empty
+      end
+
+      it "ignores the review pane's turn ending again while the recompute runs" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review"]["recompute"] = {"started_at" => "2026-11-10T11:59:00Z", "try" => 1} })
+        revision = RecordingReviewRevision.new
+
+        ended(revision)
+
+        expect(revision.calls).to be_empty
+        expect(change.review_ends).to be_empty
+      end
+
+      it "tries a lost recompute once more, then stops review_incomplete" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review"]["recompute"] = {"started_at" => "2026-11-10T11:00:00Z", "try" => 1} })
+        work = evaluation(review_revision: RecordingReviewRevision.new)
+        again = work.review_ended(store.runs["wr_1"], ctx: ctx)
+        expect(again.step("plan").review["recompute"]).to eq("started_at" => "2026-11-10T12:00:00Z", "try" => 2)
+
+        stopped = work.review_ended(again, ctx: ctx)
+
+        expect(stopped.reason["code"]).to eq("review_incomplete")
+        expect(stopped.reason["details"]["problem"]).to eq("the round's revision was computed again 2 times and none reported back")
+        expect(stopped.step("plan").review).not_to have_key("recompute")
+      end
+
+      it "answers the run as stored when it was cancelled while the revision was computed" do
+        stored(reviewing)
+        finished = RecordingRunChange.new(store.runs)
+        cancelling = Class.new(RecordingReviewRevision) do
+          attr_accessor :ids
+
+          def call(run:, step:, stop_when: nil)
+            ids << "wr_1"
+            super
+          end
+        end.new
+        cancelling.ids = finished.instance_variable_get(:@finished)
+
+        run = evaluation(change: finished, review_tally: tally, review_revision: cancelling).turn_ended("wr_1", pane: "%9")
+
+        expect(run.step("plan").review["recompute"]).to include("try" => 1)
+        expect(tally.calls).to be_empty
+      end
+    end
   end
 
   describe "#evaluate" do

@@ -47,17 +47,24 @@ module Workspace
     # @param cwd [String] the directory it runs in
     # @param timeout [Numeric] seconds it may run
     # @param log [String] the file its stdout and stderr go to
+    # @param err_log [String, nil] when given, the file its stderr goes to instead, so +log+ holds stdout alone
     # @param stop_when [#call, nil] asked every {STOP_POLL} seconds; true stops the check
     #   (its run was cancelled or moved to another step)
     # @param env [Hash{String=>String}] added to the command's environment
     # @return [Hash] :exit_code (nil when it was stopped or never started),
     #   :timed_out, and :error (why it has no exit code) when there is one
     # @raise [ArgumentError] when both or neither of command: and argv: are given, or argv: is empty
-    def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {})
+    def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {}, err_log: nil)
       raise ArgumentError, "give exactly one of command: or argv:" if command.nil? == argv.nil?
       raise ArgumentError, "argv: must be a non-empty array" if argv && (!argv.is_a?(Array) || argv.empty?)
       log_io = open_log(log)
-      opts = {chdir: cwd, pgroup: true, in: File::NULL, out: log_io, err: [:child, :out]}
+      begin
+        err_io = err_log && open_log(err_log)
+      rescue SystemCallError
+        log_io.close
+        raise
+      end
+      opts = {chdir: cwd, pgroup: true, in: File::NULL, out: log_io, err: err_io || [:child, :out]}
       pid = begin
         if argv
           Process.spawn(env, [argv[0], argv[0]], *argv[1..], **opts)
@@ -66,6 +73,7 @@ module Workspace
         end
       ensure
         log_io.close
+        err_io&.close
       end
       status = nil
       begin

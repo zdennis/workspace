@@ -82,6 +82,32 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.wakeable?(reviewing({delivery: "failed"}), started)).to be_nil
     end
 
+    describe ".lost_round?" do
+      let(:judging) { {delivery: nil, recompute: {"started_at" => started.iso8601, "try" => 1}} }
+
+      it "is true only once a recompute's mark is older than the delivery window with nothing reported back" do
+        expect(described_class.lost_round?(reviewing(judging), started + window)).to be(false)
+        expect(described_class.lost_round?(reviewing(judging), started + window + 1)).to be(true)
+      end
+
+      it "is false for a round with no recompute, a stopped round, a parked run and a step not being reviewed" do
+        late = started + window + 1
+        expect(described_class.lost_round?(reviewing({delivery: nil}), late)).to be(false)
+        expect(described_class.lost_round?(reviewing(judging, "reason" => {"code" => "review_stale"}), late)).to be(false)
+        expect(described_class.lost_round?(reviewing(judging, "parked" => {"id" => "p"}), late)).to be(false)
+        expect(described_class.lost_round?(run_with(steps: {"plan" => step("checking")}), late)).to be(false)
+      end
+
+      it "takes a mark with no readable start as lost" do
+        expect(described_class.lost_round?(reviewing({recompute: {"started_at" => "garbled", "try" => 1}}), started)).to be(true)
+      end
+
+      it "wakes the run as :round once lost, and not before" do
+        expect(described_class.wakeable?(reviewing(judging), started + window)).to be_nil
+        expect(described_class.wakeable?(reviewing(judging), started + window + 1)).to eq(:round)
+      end
+    end
+
     it "starts no attempt on a resume of a step being reviewed" do
       expect(described_class.starts_attempt?(reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"}), from: nil, pane: nil)).to be(false)
       expect(described_class.starts_attempt?(reviewing, from: "plan", pane: nil)).to be(true)

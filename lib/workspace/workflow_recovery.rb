@@ -29,8 +29,10 @@ module Workspace
 
     # The periodic look at a run nothing else will wake: one whose `on_fail` backoff is over starts its retry, one
     # waiting for a lock asks for it again, a hold for background tasks that passed
-    # {WorkflowTransitions::BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, and a check that never
-    # reported back (its process died) is run again. Does nothing while another process is changing the run.
+    # {WorkflowTransitions::BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, a check that never
+    # reported back (its process died) is run again, and so is the end of a review round whose revision was being
+    # computed again when its process died ({WorkflowTransitions.lost_round?}; {WorkflowEvaluation#review_ended},
+    # which tries it once more, then stops `review_incomplete`). Does nothing while another process is changing the run.
     #
     # @param run_id [String]
     # @return [WorkflowRun, nil] the run afterwards; nil when nothing was done
@@ -49,6 +51,9 @@ module Workspace
         when :background
           acted = true
           expire_background(stored)
+        when :round
+          acted = true
+          stored.replace(@evaluation.review_ended(stored, ctx: ctx).thawed)
         when :check
           acted = true
           evaluate(stored, ctx)

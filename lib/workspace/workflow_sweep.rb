@@ -141,6 +141,7 @@ module Workspace
       return respawn(run, pass) if daemon_needed && daemon_down?(run.workspace, pass)
       return row(run, "nothing", reason: "parked", message: "a resume is parked; it is carried out when the pane's turn ends") if run.parked
       return row(run, "nothing", reason: "checking", message: "the step's check is running") if state.state == "checking"
+      return sweep_lost_round(run, pass) if state.state == "reviewing" && WorkflowEngine.lost_round?(run.to_h, @clock.call)
       return row(run, "nothing", reason: "reviewing", message: "step #{run.current} is being reviewed") if state.state == "reviewing"
       return row(run, "nothing", reason: "not_running", message: "no agent is working on step #{run.current} (#{state.state})") unless running
       sweep_running(run, state, pass)
@@ -169,6 +170,17 @@ module Workspace
       return blocked_row(run) if outcome == :blocked
       return budget_row(run, cause: "retry_backoff", action: "retry") if outcome == :held
       engine_row(run, outcome, "retried", cause: "retry_backoff", message: message, action: "retry")
+    end
+
+    # The end of a review round was being judged and its process died before it reported back: not a stall. The
+    # judging is handed to {WorkflowEngine#tick}, which runs it once more.
+    def sweep_lost_round(run, pass)
+      message = "the end of step #{run.current}'s review round was being judged and nothing reported back"
+      return row(run, "dry_run", message: message, cause: "lost_round", action: "judge_again") if pass[:dry_run]
+      refusal = pass[:allow]&.call(run)
+      return row(run, "nothing", reason: "refused", message: refusal, cause: "lost_round") if refusal
+      outcome = @engine.tick(run.id) ? :judged : :busy
+      engine_row(run, outcome, "judged_again", cause: "lost_round", message: message, action: "judge_again")
     end
 
     # The retry's wait is over but the token budget is used: not a failure, and the sweep cannot raise the budget.

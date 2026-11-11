@@ -287,6 +287,37 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(types).not_to include("step_stalled")
     end
 
+    it "hands a round whose recompute never reported back to tick, and records no stall" do
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["build"].merge!("state" => "reviewing", "review_rounds" => 1,
+          "review" => {"round" => 1, "pane" => "%9", "delivery" => nil, "recompute" => {"started_at" => now.first.utc.iso8601, "try" => 1}})
+      end
+      advance(Workspace::WorkflowTransitions::DELIVERY_WINDOW - 1)
+      expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "nothing", "reason" => "reviewing")
+      advance(2)
+
+      expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "dry_run", "cause" => "lost_round", "action" => "judge_again")
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "judged_again", "cause" => "lost_round")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
+      expect(types).not_to include("step_stalled")
+    end
+
+    it "leaves a lost round alone when allow: refuses it" do
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["build"].merge!("state" => "reviewing", "review_rounds" => 1,
+          "review" => {"round" => 1, "pane" => "%9", "delivery" => nil, "recompute" => {"started_at" => now.first.utc.iso8601, "try" => 1}})
+      end
+      advance(Workspace::WorkflowTransitions::DELIVERY_WINDOW + 1)
+      before = stored_run(store, "wr_1")
+
+      row = only_row(sweep.call(allow: ->(_run) { "a person is looking at it" }))
+
+      expect(row).to include("outcome" => "nothing", "reason" => "refused", "cause" => "lost_round", "message" => "a person is looking at it")
+      expect(stored_run(store, "wr_1")).to eq(before)
+    end
+
     it "leaves a run waiting at a gate alone" do
       definition = Workspace::WorkflowDefinition.parse("stall: 20m\nsteps:\n  build:\n    prompt: B\n    gate: approve\n", id: "g", source: "global", path: "/d/g.yml")
       engine.cancel("wr_1")

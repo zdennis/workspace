@@ -1094,6 +1094,55 @@ RSpec.describe Workspace::WorkflowGuard do
     end
   end
 
+  describe "#tree_digest" do
+    it "stays put for an untouched tree and an untracked file, and moves for a tracked edit, staged or not" do
+      clean = guard.tree_digest(repo, base: base)
+      expect(clean).to match(/\A\h{64}\z/)
+      write("new.txt")
+      expect(guard.tree_digest(repo, base: base)).to eq(clean)
+
+      write("a.txt", "changed\n")
+      edited = guard.tree_digest(repo, base: base)
+      expect(edited).not_to eq(clean)
+      git("add", "a.txt")
+      expect(guard.tree_digest(repo, base: base)).to eq(edited)
+      write("a.txt", "one\n")
+      git("add", "a.txt")
+      expect(guard.tree_digest(repo, base: base)).to eq(clean)
+    end
+
+    it "is not moved by a config change to how a diff is shown" do
+      write("a.txt", "line\n" * 20 + "changed\n" + "line\n" * 20)
+      write("dir/b.txt", "changed too\n")
+      before = guard.tree_digest(repo)
+      git("config", "diff.noprefix", "true")
+      git("config", "diff.renames", "copies")
+      git("config", "diff.context", "10")
+      git("config", "diff.interHunkContext", "5")
+      git("config", "diff.indentHeuristic", "false")
+      git("config", "diff.suppressBlankEmpty", "true")
+      git("config", "diff.orderFile", write(".order", "dir/b.txt\na.txt\n"))
+      git("config", "diff.relative", "true")
+
+      expect(guard.tree_digest(repo)).to eq(before)
+    end
+
+    it "moves for a deleted tracked file, a mode change and a file turned into a link" do
+      clean = guard.tree_digest(repo)
+      File.chmod(0o755, File.join(repo, "a.txt"))
+      chmodded = guard.tree_digest(repo)
+      File.delete(File.join(repo, "dir/b.txt"))
+      deleted = guard.tree_digest(repo)
+      File.symlink("a.txt", File.join(repo, "dir/b.txt"))
+
+      expect([clean, chmodded, deleted, guard.tree_digest(repo)].uniq.size).to eq(4)
+    end
+
+    it "is nil when git can't answer" do
+      expect(guard.tree_digest(File.join(@dir, "gone"))).to be_nil
+    end
+  end
+
   describe "#branch" do
     it "names the checked-out branch, empty on a detached HEAD, nil where git can't say" do
       expect(guard.branch(repo)).to eq(git("symbolic-ref", "--short", "HEAD").strip)

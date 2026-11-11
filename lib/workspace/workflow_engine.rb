@@ -51,6 +51,7 @@ module Workspace
     def self.park_timeout_message(pane, checking: false) = WorkflowTransitions.park_timeout_message(pane, checking: checking)
     def self.wakeable?(run, now) = WorkflowTransitions.wakeable?(run, now)
     def self.lost_check?(run, now) = WorkflowTransitions.lost_check?(run, now)
+    def self.lost_round?(run, now) = WorkflowTransitions.lost_round?(run, now)
     def self.sweep_marks(run) = WorkflowTransitions.sweep_marks(run)
 
     # {Workspace.build_workflow_engine} builds the phases over one shared {WorkflowRunChange}.

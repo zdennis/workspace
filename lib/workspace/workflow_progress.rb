@@ -49,10 +49,13 @@ module Workspace
     # `review_outcome` (`round`, `approvals`, `need`, `must`, `passed`) and `reviews` added. Approved: the step passes, as {#pass_step} would pass it, to its gate or
     # the next step. Rejected: the attempt and step fail and the run stops for a person with `review_rejected`.
     # Incomplete: the step stays `reviewing`, the round is marked ended, and the run stops with `review_incomplete`.
+    # Stale (what the round judged changed while it ran): as incomplete, but the run stops with `review_stale`; it
+    # never loops and starts no further round, and a resume starts a fresh one on the new revision.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being reviewed; left as it is
-    # @param tally [Hash{Symbol=>Object}] the round's tally: :outcome (`:approved`, `:rejected` or `:incomplete`),
-    #   :reviews (the rows it read), :approvals, :need and :must when it counted them, and, for an incomplete one, :problem
+    # @param tally [Hash{Symbol=>Object}] the round's tally: :outcome (`:approved`, `:rejected`, `:incomplete` or `:stale`),
+    #   :reviews (the rows it read), :approvals, :need and :must when it counted them, for an incomplete one :problem,
+    #   and for a stale one :revision (the round's delivered revision) and :revision_now
     # @param ctx [Workspace::WorkflowRunChange::Context]
     # @return [WorkflowRun] the run afterwards
     def decide_review(run, tally, ctx:) = over(run) { |work| decide_in(work, tally, ctx) }
@@ -265,7 +268,11 @@ module Workspace
         state["attempts"][-1] = attempt
         # Marked recorded, so the resume or cancel that ends it later adds no second record.
         state["review"] = ended.merge("recorded" => true)
-        stop_review(run, "review_incomplete", details.merge("reviews" => reviews, "problem" => tally[:problem]).compact)
+        if outcome == :stale
+          stop_review(run, "review_stale", details.merge("revision" => tally[:revision], "revision_now" => tally[:revision_now]))
+        else
+          stop_review(run, "review_incomplete", details.merge("reviews" => reviews, "problem" => tally[:problem]).compact)
+        end
       end
     end
 

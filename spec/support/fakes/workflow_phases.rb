@@ -46,13 +46,13 @@ end
 
 # Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored run
 # as a frozen WorkflowRun and a real Context, writes the run the block returns (the one read for nil) back into the Hash,
-# keeps the line a block registered in +deliveries+ (it types nothing), the review round in +reviews+ and the window to close in
-# +closes+, and returns the run;
+# keeps the line a block registered in +deliveries+ (it types nothing), the review round in +reviews+, the ended round whose
+# revision is computed again in +review_ends+ and the window to close in +closes+, and returns the run;
 # a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
-  CONTROL_METHODS = %i[calls events deliveries reviews closes].freeze
+  CONTROL_METHODS = %i[calls events deliveries reviews review_ends closes].freeze
 
-  attr_reader :calls, :events, :deliveries, :reviews, :closes
+  attr_reader :calls, :events, :deliveries, :reviews, :review_ends, :closes
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
@@ -66,6 +66,7 @@ class RecordingRunChange
     @events = []
     @deliveries = []
     @reviews = []
+    @review_ends = []
     @closes = []
   end
 
@@ -81,6 +82,7 @@ class RecordingRunChange
     stored.replace(changed.thawed)
     @deliveries << ctx.delivery if ctx.delivery
     @reviews << ctx.review if ctx.review
+    @review_ends << ctx.review_end if ctx.review_end
     @closes << ctx.close_review if ctx.close_review
     changed
   end
@@ -516,6 +518,27 @@ class RecordingReviewTally
   end
 end
 
+# Fake of Workspace::WorkflowReviewRevision#call: answers each scripted answer in turn (the last again once they run out),
+# after asking +stop_when+ once (kept in +stop_answers+), and records the step it was asked about.
+class RecordingReviewRevision
+  CONTROL_METHODS = %i[calls stop_answers].freeze
+
+  attr_reader :calls, :stop_answers
+
+  # @param answers [Array<Hash>] what each +call+ answers (`revision:` and `problem:`)
+  def initialize(*answers)
+    @answers = answers.empty? ? [{revision: "rev1", problem: nil}] : answers
+    @calls = []
+    @stop_answers = []
+  end
+
+  def call(run:, step:, stop_when: nil)
+    @calls << [:call, Workspace::WorkflowRun.from_h(run).id, step["id"]]
+    @stop_answers << stop_when&.call
+    (@answers.size > 1) ? @answers.shift : @answers.first
+  end
+end
+
 # Fake of Workspace::WorkflowCheck#call: answers the result it was given, after asking +stop_when+ once (kept in
 # +stop_answers+), and records the command it was asked to run.
 class RecordingChecker
@@ -530,8 +553,8 @@ class RecordingChecker
     @stop_answers = []
   end
 
-  def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {})
-    @calls << [:call, {command: command, cwd: cwd, timeout: timeout, log: log, env: env}]
+  def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {}, err_log: nil)
+    @calls << [:call, {command: command, cwd: cwd, timeout: timeout, log: log, env: env}.merge(err_log ? {err_log: err_log} : {})]
     @stop_answers << stop_when&.call
     @result
   end
@@ -563,18 +586,33 @@ class RecordingRequire
   end
 end
 
-# Fake of Workspace::WorkflowGuard#check and #config_change: answers what it was given.
+# Fake of Workspace::WorkflowGuard#check, #config_change, #head and #tree_digest: answers what it was given
+# (+head+ and +tree_digest+ answer the current value of +heads+ and +trees+, which a spec may change).
 class RecordingGuard
-  CONTROL_METHODS = %i[calls].freeze
+  CONTROL_METHODS = %i[calls heads trees].freeze
 
-  attr_reader :calls
+  attr_reader :calls, :heads, :trees
 
   # @param found [Hash, nil] what +check+ answers
   # @param config [Hash, nil] what +config_change+ answers
-  def initialize(found: nil, config: nil)
+  # @param head [String, nil] what +head+ answers
+  # @param tree [String, nil] what +tree_digest+ answers
+  def initialize(found: nil, config: nil, head: "a" * 40, tree: "t" * 64)
     @found = found
     @config = config
+    @heads = [head]
+    @trees = [tree]
     @calls = []
+  end
+
+  def head(worktree)
+    @calls << [:head, worktree]
+    @heads.last
+  end
+
+  def tree_digest(worktree, base: nil)
+    @calls << [:tree_digest, worktree]
+    @trees.last
   end
 
   def check(worktree, base, scope)
@@ -622,10 +660,11 @@ class RecordingInbox
   end
 end
 
-# Fake of Workspace::WorkflowEvaluation#evaluate, #finish_check and #finish_follow_ups for the decision and recovery phases: +evaluate+
-# registers the check it was given on +ctx+ and answers the run as given (with the reason it was given, when one
-# was); +finish_check+ answers the stored run; +finish_follow_ups+ runs the check registered on a context through +finish_check+
-# and keeps a registered window close and review in the calls as +:close_review+ and +:review_round+.
+# Fake of Workspace::WorkflowEvaluation#evaluate, #review_ended, #finish_check and #finish_follow_ups for the decision and recovery
+# phases: +evaluate+ registers the check it was given on +ctx+ and answers the run as given (with the reason it was given, when one
+# was); +review_ended+ registers the round's end on +ctx+ and answers the run as given; +finish_check+ answers the stored run;
+# +finish_follow_ups+ runs the check registered on a context through +finish_check+ and keeps a registered window close, round
+# end and review in the calls as +:close_review+, +:review_end+ and +:review_round+.
 class RecordingEvaluation
   CONTROL_METHODS = %i[calls].freeze
 
@@ -651,6 +690,13 @@ class RecordingEvaluation
     @reason ? Workspace::WorkflowRun.from_h(run.thawed.merge("reason" => @reason)) : run
   end
 
+  def review_ended(run, ctx:)
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:review_ended, run.current]
+    ctx.review_end({"step" => run.current})
+    run
+  end
+
   def finish_check(run_id, check)
     @calls << [:finish_check, run_id, check]
     Workspace::WorkflowRun.from_h(@runs.fetch(run_id))
@@ -660,6 +706,7 @@ class RecordingEvaluation
     return run unless ctx
     @calls << [:close_review, run_id, ctx.close_review] if ctx.close_review
     run = finish_check(run_id, ctx.check) if ctx.check
+    @calls << [:review_end, run_id, ctx.review_end] if ctx.review_end
     @calls << [:review_round, run_id, ctx.review] if ctx.review
     run
   end

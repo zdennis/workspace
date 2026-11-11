@@ -294,11 +294,12 @@ module Workspace
     # it waits for a lock, its check was started and never reported back
     # (the process running it died), judged by the check's time limit plus a
     # minute, it has been held for background tasks longer than
-    # {BACKGROUND_HOLD}.
+    # {BACKGROUND_HOLD}, or the end of its review round was being judged and
+    # nothing reported back ({.lost_round?}).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
-    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :check, or nil
+    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :check, or nil
     def self.wakeable?(run, now)
       return :parked if run["parked"]
       return :backoff if backoff(run, now)&.fetch(:state) == :due
@@ -307,7 +308,27 @@ module Workspace
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
       # A review round due again ({.round_redelivery}) is not woken here until WorkflowRecovery#tick can redeliver it (T32);
       # woken now, every tick would start an advance that does nothing.
+      return :round if lost_round?(run, now)
       :check if run["reason"].nil? && lost_check?(run, now)
+    end
+
+    # Whether the end of the current step's review round was being judged and nothing reported back: its revision
+    # was being computed again with the lock given up (the round's `recompute` mark) and the mark is older than
+    # {DELIVERY_WINDOW}, so the process doing it died. The sibling of {.lost_check?}, which stays `checking`-only.
+    # A round stopped for a person (a stored reason) or a parked run is never lost.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Boolean]
+    def self.lost_round?(run, now)
+      return false if run["parked"] || run["reason"]
+      state = run.dig("steps", run["current"])
+      return false unless state.is_a?(Hash) && state["state"] == "reviewing"
+      mark = state["review"].is_a?(Hash) ? state["review"]["recompute"] : nil
+      return false unless mark.is_a?(Hash)
+      now - Time.iso8601(mark["started_at"].to_s) > DELIVERY_WINDOW
+    rescue ArgumentError, TypeError
+      true
     end
 
     # Whether nothing is left to report the current step's check: its process
