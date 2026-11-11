@@ -407,6 +407,15 @@ RSpec.describe Workspace::InboxDerived do
       ))
     end
 
+    it "adds a row for a run held by its timeout" do
+      run = workflow_run("r-1", workspace: "api.worktree-c", code: "run_timed_out", kind: "timeout")
+      workflow_reply["runs"] = [run]
+
+      expect(attention).to contain_exactly(a_hash_including(
+        "id" => "workflow:run_timed_out:r-1", "kind" => "workflow_run_timed_out", "title" => "Workflow Fix login: step plan was not started, the run's time limit is used"
+      ))
+    end
+
     it "keeps command text out of the title and body, and escapes run text in the title" do
       run = failed_run("r-1")
       run["title"] = "x\e[31m; rm -rf ~\nsecond"

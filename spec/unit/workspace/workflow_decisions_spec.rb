@@ -298,7 +298,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       error = error_for { decisions.resume("wr_1") }
       expect(error.code).to eq("run_timed_out")
-      expect(error.message).to include("(3600s of 1800s of machine time)", "--extra-time 2700s", "(1801s is the least)")
+      expect(error.message).to include("its time limit (1h 0m of 30m)", "--extra-time 45m", "(1801s is the least)")
       expect(error.details).to include("run_id" => "wr_1", "step" => "plan", "needed" => 1801, "suggested" => 2700, "limit" => 1800, "kind" => "timeout")
       expect(error_for { decisions.resume("wr_1", extra_seconds: 1800) }.code).to eq("run_timed_out")
       expect(change.events).to be_empty
@@ -323,7 +323,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(error.code).to eq("run_timed_out")
       error = error_for { decisions.resume("wr_1") }
       expect(error.code).to eq("budget_spent")
-      expect(error.message).to include("token budget (150 of 100 tokens) and its timeout", "--extra-tokens 100000 and --extra-time 2700s", "the least is 51 for --extra-tokens, 1801s for --extra-time")
+      expect(error.message).to include("token budget (150 of 100 tokens) and its time limit", "--extra-tokens 100000 and --extra-time 45m", "the least is 51 for --extra-tokens, 1801s for --extra-time")
       expect(error.details["run_timed_out"]).to include("needed" => 1801)
 
       resumed = decisions.resume("wr_1", extra_tokens: 51, extra_seconds: 1801)

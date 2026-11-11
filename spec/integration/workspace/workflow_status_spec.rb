@@ -759,6 +759,52 @@ RSpec.describe Workspace::WorkflowStatus do
       end
     end
 
+    describe "a run timeout" do
+      let(:timed) { {"code" => "run_timed_out", "since" => "2026-10-04T12:55:00Z", "details" => {"kind" => "timeout", "step" => "plan"}} }
+
+      def timed_run(timeout: 1200, **rest)
+        create(state: "waiting", step_state: "pending", reason: timed, bound: false,
+          definition: {"max_attempts" => 6, "timeout" => timeout, "timeout_action" => "hold", "steps" => [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}]},
+          **rest)
+      end
+
+      it "shows the deadline and offers resume only with --extra-time" do
+        timed_run
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["deadline"]).to eq("timeout" => 1200, "action" => "hold", "extra_seconds" => 0, "limit" => 1200, "used" => 1800.0, "spent" => true)
+        need = [{"name" => "extra_time", "flag" => "--extra-time", "min" => 601, "suggested" => 900}]
+        expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
+      end
+
+      it "has no deadline row without a timeout, and no need while time remains" do
+        timed_run(timeout: 7200)
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["deadline"]).to include("spent" => false, "limit" => 7200)
+        expect(row["current"]["reason"]["actions"].first["needs"]).to eq([])
+        create(state: "running")
+        expect(status.run("wr_2")["runs"].first).not_to have_key("deadline")
+      end
+
+      it "reads the time need from the deadline when the budget is spent too" do
+        timed_run(steps: {"research" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed", "usage" => {"input_tokens" => 1500}, "started_at" => "2026-10-04T12:30:00Z"}]}, "plan" => {"state" => "pending", "attempts" => []}})
+        edit_run(store, "wr_1") do |run|
+          run["definition"]["budget"] = {"tokens" => 1000, "action" => "stop"}
+          run["reason"] = {"code" => "budget_spent", "since" => "2026-10-04T12:55:00Z", "details" => {"kind" => "budget", "step" => "plan", "run_timed_out" => {"kind" => "timeout"}}}
+        end
+        needs = status.run("wr_1")["runs"].first["current"]["reason"]["actions"].first["needs"]
+
+        expect(needs.map { |each| each["name"] }).to eq(%w[extra_tokens extra_time])
+      end
+
+      it "is listed by --needs-me" do
+        timed_run
+
+        expect(Workspace::WorkflowNeedsMe.new.rows(status.run("wr_1")["runs"]).map { |row| row["code"] }).to eq(["run_timed_out"])
+      end
+    end
+
     describe "once the run has made all its attempts" do
       let(:extra) { [{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 1}] }
 

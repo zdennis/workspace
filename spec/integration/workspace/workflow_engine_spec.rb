@@ -5085,7 +5085,7 @@ RSpec.describe Workspace::WorkflowEngine do
       before = stored_run(store, "wr_1")
       lines = history_lines.size
 
-      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error, /used its timeout \(7200s of 3600s of machine time\)\. Pass --extra-time 4500s to continue \(3601s is the least\)/) { |error|
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error, /used its time limit \(2h 0m of 1h 0m\)\. Pass --extra-time 75m to continue \(3601s is the least\)/) { |error|
         expect(error.code).to eq("run_timed_out")
       }
       expect { engine.resume("wr_1", extra_seconds: 3600) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_timed_out") }

@@ -462,9 +462,9 @@ module Workspace
         least << [reading["needed"].to_s, "--extra-tokens"]
       end
       if deadline
-        used << "its timeout (#{deadline["used"].to_i}s of #{deadline["limit"].to_i}s of machine time)"
-        pass << "--extra-time #{deadline["suggested"]}s"
-        least << ["#{deadline["needed"]}s", "--extra-time"]
+        used << "its time limit (#{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)})"
+        pass << "--extra-time #{Duration.flag(deadline["suggested"])}"
+        least << [Duration.flag(deadline["needed"]), "--extra-time"]
       end
       needs = (least.size == 1) ? "(#{least[0][0]} is the least)" : "(the least is #{least.map { |amount, flag| "#{amount} for #{flag}" }.join(", ")})"
       message = "Run #{run["id"]} has used #{used.join(" and ")}. Pass #{pass.join(" and ")} to continue #{needs}."

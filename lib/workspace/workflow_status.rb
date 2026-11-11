@@ -230,7 +230,7 @@ module Workspace
         "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
         "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
         "guard_warnings" => guard_warnings(run)
-      }.merge(budget_row(run))
+      }.merge(budget_row(run)).merge(deadline_row(run))
     end
 
     # What the guard warned of on any attempt, oldest first; the run went on past each.
@@ -249,6 +249,14 @@ module Workspace
       return {} unless reading
       {"budget" => reading.slice("tokens", "action", "extra_tokens", "allowance", "used", "counted", "uncounted", "measured", "spent")
         .merge("minimum" => true)}
+    end
+
+    # The run timeout as it stands, only for a run whose definition declares one. `used` is machine time in
+    # seconds (a gate, a parked resume and a held budget cost nothing); `limit` is the timeout plus `extra_seconds`.
+    def deadline_row(run)
+      reading = WorkflowDeadline.reading(run.to_h, @clock.call)
+      return {} unless reading
+      {"deadline" => reading.slice("timeout", "action", "extra_seconds", "limit", "used", "spent")}
     end
 
     # A step that reads running with no reason but is not moving: the sweep noted a stall on this attempt and
@@ -468,6 +476,7 @@ module Workspace
       # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
       # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
       budget = WorkflowBudget.reading(run.to_h)
+      deadline = WorkflowDeadline.reading(run.to_h, @clock.call)
       # "min" is the larger of the run's shortfall and the shortfall of the step the action would start an attempt of.
       extra = lambda do |target|
         shortfalls = []
@@ -475,6 +484,7 @@ module Workspace
         shortfalls << WorkflowTransitions.step_extra_attempts_needed(run.to_h, target) if WorkflowTransitions.step_attempts_spent?(run.to_h, target)
         needs = shortfalls.empty? ? [] : [need("extra_attempts", "--extra-attempts").merge("min" => shortfalls.max)]
         needs += [need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"])] if budget && budget["spent"]
+        needs += [need("extra_time", "--extra-time").merge("min" => deadline["needed"], "suggested" => deadline["suggested"])] if deadline && deadline["spent"]
         needs
       end
       here = WorkflowTransitions.target_step(run.to_h)
@@ -506,7 +516,7 @@ module Workspace
       when "turn_ended_incomplete" then [focus, resume, cancel]
       # A resume skips the wait and starts the retry now.
       when "retry_backoff" then [resume, cancel]
-      when "budget_spent" then [resume, cancel]
+      when "budget_spent", "run_timed_out" then [resume, cancel]
       when "failed_check"
         # A moved HEAD or changed hooks can't pass again, and base_sha is never re-recorded: only a new run goes on.
         if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))

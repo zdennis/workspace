@@ -1154,6 +1154,21 @@ RSpec.describe Workspace::WorkflowSweep do
     end
   end
 
+  describe "a run held by its timeout" do
+    it "is reported as nothing with the reason run_timed_out, and names --extra-time" do
+      begin_run
+      edit_run(store, "wr_1") do |run|
+        run["state"] = "waiting"
+        run["timeout_hold"] = {}
+        run["reason"] = {"code" => "run_timed_out", "since" => "2026-10-04T12:30:00Z", "details" => {"kind" => "timeout", "step" => "build"}}
+      end
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "run_timed_out")
+      expect(row["message"]).to include("--extra-time")
+    end
+  end
+
   describe "a retry whose wait is over while the token budget is used" do
     let(:budgeted) do
       Workspace::WorkflowDefinition.parse(<<~YAML, id: "back", source: "global", path: "/defs/back.yml")

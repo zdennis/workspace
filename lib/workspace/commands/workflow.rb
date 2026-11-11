@@ -1559,11 +1559,11 @@ module Workspace
 
       def budget_sentence(details)
         minimum = details["uncounted"].to_i.positive? ? " (at least; #{details["uncounted"]} ended attempt#{"s" unless details["uncounted"] == 1} not counted)" : ""
-        "#{delimit(details["used"])} of #{delimit(details["allowance"])} tokens#{minimum}  (resume --extra-tokens #{details["suggested"]}#{" --extra-time #{details["run_timed_out"]["suggested"]}s" if details["run_timed_out"].is_a?(Hash)})"
+        "#{delimit(details["used"])} of #{delimit(details["allowance"])} tokens#{minimum}  (resume --extra-tokens #{details["suggested"]}#{" --extra-time #{Duration.flag(details["run_timed_out"]["suggested"])}" if details["run_timed_out"].is_a?(Hash)})"
       end
 
       def deadline_sentence(details)
-        "#{details["used"].to_i} of #{details["limit"].to_i} seconds of machine time  (resume --extra-time #{details["suggested"]}s)"
+        "the run has used #{Duration.humanize(details["used"].to_f)} of its #{Duration.humanize(details["limit"].to_f)} time limit  (resume --extra-time #{Duration.flag(details["suggested"])})"
       end
 
       def delimit(number)

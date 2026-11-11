@@ -47,6 +47,12 @@ RSpec.describe Workspace::WorkflowRunHealth do
       expect(health.call[:orphans]).to be_empty
     end
 
+    it "does not call a run held by its timeout orphaned while its checkout exists" do
+      File.write(File.join(runs_dir, "wr_1.json"), JSON.generate(run_hash("wr_1", state: "waiting").merge("reason" => {"code" => "run_timed_out"})))
+
+      expect(health.call[:orphans]).to be_empty
+    end
+
     %w[queued running waiting].each do |state|
       it "calls a #{state} run whose checkout is gone orphaned" do
         write_run("wr_1", state: state, worktree: File.join(root, "gone"))

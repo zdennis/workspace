@@ -16,7 +16,7 @@ module Workspace
   #
   # Per group: `runs` (all of them), `first_try`, `settled`, `pass_first_percent` (`first_try` of `settled`, nil
   # with none settled), `running` (not settled, still going), `cancelled` (stopped by a person without a miss),
-  # `stuck` (settled runs not ended: waiting on `failed_check` or `budget_spent` after a miss), `resumes`
+  # `stuck` (settled runs not ended: waiting on `failed_check`, `budget_spent` or `run_timed_out` after a miss), `resumes`
   # (all `run_resumed` events) and `resumes_per_run`.
   #
   # A step is a miss when it has more than one delivered attempt (a rejected gate or a `resume --from` reran it,
@@ -25,7 +25,7 @@ module Workspace
   # ({WorkflowStats.kind_of}), so a redelivery is not a miss. A run is a first try when it completed with no miss.
   #
   # Settled runs are the denominator: every `completed` run; a `cancelled` run, and a run `waiting` on
-  # `failed_check` or `budget_spent` (the reasons a run stops and needs a person, stored in its `reason` field
+  # `failed_check`, `budget_spent` or `run_timed_out` (the reasons a run stops and needs a person, stored in its `reason` field
   # as `workflow status` reads it), that missed. A cancelled run with no miss, and any other run still going, is
   # in neither count, so an abandoned clean run or a run in progress is never a result. A stuck run counts as a
   # miss while it waits; a later resume can only move it to a completed miss, never to a first try. No run is
@@ -35,7 +35,7 @@ module Workspace
     MIN_SETTLED = 20
 
     # Reasons a run stops and waits for a person once its attempts are spent.
-    STUCK = %w[failed_check budget_spent].freeze
+    STUCK = %w[failed_check budget_spent run_timed_out].freeze
 
     UNKNOWN = "unknown".freeze
     MIXED = "mixed".freeze
