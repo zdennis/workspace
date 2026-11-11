@@ -8,7 +8,7 @@ module Workspace
   # Each method that takes a run leaves it as it is and returns the run afterwards.
   class WorkflowEvaluation
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
-    ENGINE_CODES = (WorkflowGuard::CODES + [WorkflowGuard::CONFIG_CHANGED] + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out]).freeze
+    ENGINE_CODES = (WorkflowGuard::CODES + [WorkflowGuard::CONFIG_CHANGED] + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out review_rejected review_incomplete review_stale review_tampered review_guard review_no_change]).freeze
 
     # The most of a failed check's log the `report_code` reading looks at.
     CHECK_CODE_TAIL_BYTES = 4096

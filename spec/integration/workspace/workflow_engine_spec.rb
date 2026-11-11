@@ -1999,6 +1999,10 @@ RSpec.describe Workspace::WorkflowEngine do
       it "reserves the require codes so step done --code can't forge them" do
         expect(described_class::ENGINE_CODES).to include("require_commits", "require_nonempty", "require_plan_status", "require_tracked_clean", "require_command", "require_inbox_item", "require_remote_unchanged", "require_remote_unreachable", "require_exec")
       end
+
+      it "reserves the review codes" do
+        expect(described_class::ENGINE_CODES).to include("review_rejected", "review_incomplete", "review_stale", "review_tampered", "review_guard", "review_no_change")
+      end
     end
 
     describe "a produces file that is not a non-empty regular file" do

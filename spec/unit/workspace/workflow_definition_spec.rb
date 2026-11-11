@@ -596,7 +596,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, reviewers, steps)",
       "schema_version must be one of 0.1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
@@ -605,7 +605,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, max_attempts, after)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, max_attempts, review, after)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",
@@ -910,6 +910,135 @@ RSpec.describe Workspace::WorkflowDefinition do
 
     it "refuses a require that is not a list" do
       expect(problems("steps:\n  build:\n    prompt: B.\n    require: {commits: 1}\n")).to eq(["step build: require must be a list of proofs such as - commits: 1, got {\"commits\" => 1}"])
+    end
+  end
+
+  describe "reviewers and a step's review" do
+    let(:reviewers) { "reviewers:\n  skeptic:\n    prompt: Doubt {{review.subject}} at {{review.revision}}.\n  fan:\n    title: Fan\n    prompt: Like it.\n    include: [plan-review]\n    parallel: false\n" }
+
+    def with_review(review, extra = "")
+      "#{reviewers}#{extra}steps:\n  plan:\n    prompt: P\n#{review}"
+    end
+
+    it "parses reviewers with their defaults and a bare list as from" do
+      definition = parse(with_review("    review: [skeptic, fan]\n"))
+      expect(definition.to_h["reviewers"]).to eq(
+        "skeptic" => {"title" => "skeptic", "prompt" => "Doubt {{review.subject}} at {{review.revision}}.", "include" => [], "parallel" => true},
+        "fan" => {"title" => "Fan", "prompt" => "Like it.", "include" => ["plan-review"], "parallel" => false}
+      )
+      expect(definition.steps[0]["review"]).to eq(
+        "from" => %w[skeptic fan], "need" => 2, "must" => [], "subject" => nil, "revision" => nil, "max_rounds" => 6,
+        "timeout" => 1800, "uses" => [], "context" => "fresh", "notify" => true
+      )
+      expect(described_class.reviewers(definition.to_h).keys).to eq(%w[skeptic fan])
+      expect(described_class.review(definition.steps[0])).to eq(definition.steps[0]["review"])
+    end
+
+    it "parses a full mapping" do
+      review = "    review:\n      from: [skeptic, fan]\n      need: 1\n      must: [skeptic]\n      subject: the plan, see {{artifacts}}/research.md and round {{review.round}}\n      revision: echo hi\n      max_rounds: 3\n      timeout: 10m\n      uses: [test-db]\n      context: continue\n      notify: false\n"
+      expect(parse(with_review(review)).steps[0]["review"]).to include(
+        "need" => 1, "must" => ["skeptic"], "revision" => "echo hi", "max_rounds" => 3, "timeout" => 600, "uses" => ["test-db"], "context" => "continue", "notify" => false
+      )
+    end
+
+    it "reads absence as none, so a definition stored before the keys loads" do
+      definition = parse(minimal)
+      expect(definition.to_h).not_to have_key("reviewers")
+      expect(definition.steps[0]).not_to have_key("review")
+      expect(described_class.reviewers({"steps" => []})).to eq({})
+      expect(described_class.reviewers(nil)).to eq({})
+      expect(described_class.review({"id" => "x"})).to be_nil
+      expect(described_class.review({"review" => {"from" => []}})).to be_nil
+      stored = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/legacy_minimal.json")))
+      expect(described_class.reviewers(stored["definition"])).to eq({})
+    end
+
+    it "counts review as a proof" do
+      expect(parse(with_review("    review: [skeptic]\n")).warnings.map { |w| w["code"] }).not_to include("step_without_proof")
+      expect(parse(with_review("    review: {from: [skeptic]}\n")).warnings.map { |w| w["code"] }).not_to include("step_without_proof")
+    end
+
+    it "refuses an unknown reviewer, a repeat, and need or must that don't fit" do
+      expect(problems(with_review("    review: [skeptic, ghost]\n"))).to include(a_string_matching(/step plan: review names unknown reviewer ghost \(known: skeptic, fan\)/))
+      expect(problems("steps:\n  plan:\n    prompt: P\n    review: [a]\n")).to include(a_string_matching(/unknown reviewer a \(known: none/))
+      expect(problems(with_review("    review: [skeptic, skeptic]\n"))).to include(a_string_matching(/lists skeptic more than once/))
+      expect(problems(with_review("    review: {from: [skeptic], need: 2}\n"))).to include(a_string_matching(/need is 2, more than the 1 reviewer in from/))
+      expect(problems(with_review("    review: {from: [skeptic, fan], need: 0}\n"))).to include(a_string_matching(/need must be a whole number of 1 or more/))
+      expect(problems(with_review("    review: {from: [skeptic], must: [fan]}\n"))).to include(a_string_matching(/must lists fan, which is not in from/))
+      expect(problems(with_review("    review: {from: [skeptic, fan], need: 1, must: [skeptic, fan]}\n"))).to include(a_string_matching(/need is 1, fewer than the 2 reviewers in must/))
+    end
+
+    it "refuses a bad shape, key, value or an empty review" do
+      expect(problems(with_review("    review: {}\n"))).to include(a_string_matching(/review must be a list of reviewer names or a mapping with from/))
+      expect(problems(with_review("    review: []\n"))).to include(a_string_matching(/review must be a list/))
+      expect(problems(with_review("    review: skeptic\n"))).to include(a_string_matching(/review must be a list/))
+      expect(problems(with_review("    review: {from: [skeptic], bogus: 1}\n"))).to include(a_string_matching(/unknown key bogus/))
+      expect(problems(with_review("    review: {need: 1}\n"))).to include(a_string_matching(/review from must be a list/))
+      expect(problems(with_review("    review: {from: [skeptic], max_rounds: 0}\n"))).to include(a_string_matching(/max_rounds must be a whole number from 1 to 50/))
+      expect(problems(with_review("    review: {from: [skeptic], timeout: soon}\n"))).to include(a_string_matching(/review timeout/))
+      expect(problems(with_review("    review: {from: [skeptic], context: never}\n"))).to include(a_string_matching(/review context must be one of/))
+      expect(problems(with_review("    review: {from: [skeptic], notify: maybe}\n"))).to include(a_string_matching(/notify must be true or false/))
+      expect(problems(with_review("    review: {from: [skeptic], uses: [edit]}\n"))).to include(a_string_matching(/step plan: review: uses: edit is not a resource a run can hold; it is taken by the agent that edits/))
+    end
+
+    it "reports an invalid from once, without a bogus need problem" do
+      ["foo", "[]", "[Bad]"].each do |from|
+        found = problems(with_review("    review: {from: #{from}}\n"))
+        expect(found).to eq(["step plan: review from must be a list of reviewer names, got #{YAML.safe_load(from).inspect}"])
+      end
+      expect(problems(with_review("    review: {from: foo, need: 2}\n")).grep(/need/)).to eq([])
+    end
+
+    it "reports a repeat in must as a repeat" do
+      found = problems(with_review("    review: {from: [skeptic, fan], need: 2, must: [skeptic, skeptic]}\n"))
+      expect(found).to eq(["step plan: review must lists skeptic more than once"])
+    end
+
+    it "refuses a null on every key that has a default, and reads a null subject or revision as none" do
+      %w[need must max_rounds timeout notify context uses].each do |key|
+        found = problems(with_review("    review: {from: [skeptic], #{key}: ~}\n"))
+        expect(found).to include(a_string_matching(/review #{key} .*got nothing/)), "#{key}: #{found.inspect}"
+      end
+      review = parse(with_review("    review: {from: [skeptic], subject: ~, revision: ~}\n")).steps[0]["review"]
+      expect(review).to include("subject" => nil, "revision" => nil)
+      expect(problems("reviewers:\n  a: {prompt: x, parallel: ~}\n#{minimal}")).to include(a_string_matching(/parallel must be true or false, got nothing/))
+    end
+
+    it "refuses a reviewer whose prompt is null" do
+      expect(problems("reviewers:\n  a: {prompt: ~}\n#{minimal}")).to include("reviewer a: prompt must be text, got nothing")
+      expect(problems("reviewers:\n  a: {prompt: ~, prompt_file: ~}\n#{minimal}")).not_to be_empty
+    end
+
+    it "refuses a bad reviewers mapping" do
+      expect(problems("reviewers: [a]\n#{minimal}")).to include(a_string_matching(/reviewers must be a mapping/))
+      expect(problems("reviewers:\n  Bad-Name:\n    prompt: x\n#{minimal}")).to include(a_string_matching(/reviewer name "Bad-Name" must be lowercase/))
+      expect(problems("reviewers:\n  a: nope\n#{minimal}")).to include(a_string_matching(/reviewer a must be a mapping/))
+      expect(problems("reviewers:\n  a: {title: T}\n#{minimal}")).to include(a_string_matching(/reviewer a needs exactly one of prompt and prompt_file/))
+      expect(problems("reviewers:\n  a: {prompt: x, prompt_file: y}\n#{minimal}")).to include(a_string_matching(/exactly one of prompt and prompt_file/))
+      expect(problems("reviewers:\n  a: {prompt: x, agent: claude}\n#{minimal}")).to include(a_string_matching(/reviewer a has unknown key agent/))
+      expect(problems("reviewers:\n  a: {prompt: x, parallel: 1}\n#{minimal}")).to include(a_string_matching(/parallel must be true or false/))
+    end
+
+    it "reads a reviewer's prompt_file beside the definition" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, "skeptic.md"), "Doubt {{review.previous}}.\n")
+        definition = described_class.parse("reviewers:\n  s: {prompt_file: skeptic.md}\n#{minimal}", id: "demo", source: "global", path: File.join(dir, "demo.yml"))
+        expect(definition.to_h["reviewers"]["s"]["prompt"]).to eq("Doubt {{review.previous}}.\n")
+      end
+    end
+
+    it "allows the review placeholders only in a reviewer's prompt and a review subject" do
+      expect(problems("reviewers:\n  a: {prompt: 'x {{review.nope}}'}\n#{minimal}")).to include(a_string_matching(/reviewer a: prompt uses \{\{review.nope\}\}.*review.verdict_path/))
+      expect(problems("steps:\n  build:\n    prompt: 'see {{review.round}}'\n")).to include(a_string_matching(/step build: prompt uses \{\{review.round\}\}/))
+      expect(problems("instructions: '{{review.subject}}'\n#{minimal}")).to include(a_string_matching(/instructions uses \{\{review.subject\}\}/))
+      expect(problems(with_review("    review: {from: [skeptic], subject: 'x {{review.subject}}'}\n"))).to include(a_string_matching(/review subject uses \{\{review.subject\}\}/))
+      expect(problems(with_review("    review: {from: [skeptic], subject: 'x {{inputs.nope}}'}\n"))).to include(a_string_matching(/review subject uses \{\{inputs.nope\}\}/))
+    end
+
+    it "keeps reviewers in the stored copy" do
+      stored = JSON.parse(JSON.generate(parse(with_review("    review: [skeptic]\n")).to_h))
+      expect(stored["reviewers"].keys).to eq(%w[skeptic fan])
+      expect(stored["steps"][0]["review"]["from"]).to eq(["skeptic"])
     end
   end
 end

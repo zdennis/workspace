@@ -34,8 +34,8 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny steps].freeze
-    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts after].freeze
+    TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny reviewers steps].freeze
+    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts review after].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
     ON_TIMEOUT_ACTIONS = %w[warn interrupt fail].freeze
@@ -359,6 +359,27 @@ module Workspace
       value.is_a?(Integer) ? value : nil
     end
 
+    # The `reviewers` of a definition hash: the named reviewers a step's `review:` picks from.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Hash{String=>Hash}] name to "title", "prompt", "include" and "parallel"; empty for a definition that
+    #   declares none, one stored before the key existed, or a bad stored value
+    def self.reviewers(definition)
+      value = definition.is_a?(Hash) ? definition["reviewers"] : nil
+      return {} unless value.is_a?(Hash)
+      value.select { |name, entry| name.is_a?(String) && entry.is_a?(Hash) }
+    end
+
+    # The `review` of a step hash: who reviews the step's work before it passes.
+    #
+    # @param step [Hash] a step of {#to_h}, or of a stored run's definition
+    # @return [Hash{String=>Object}, nil] "from", "need", "must", "subject", "revision", "max_rounds", "timeout",
+    #   "uses", "context" and "notify"; nil for a step with none, one stored before the key existed, or a bad stored value
+    def self.review(step)
+      value = step.is_a?(Hash) ? step["review"] : nil
+      (value.is_a?(Hash) && value["from"].is_a?(Array) && value["from"].any?) ? value : nil
+    end
+
     private
 
     # Step caps that can't hold: the step an `on_fail` goes back to runs once and then once per
@@ -406,7 +427,7 @@ module Workspace
 
     # What makes a step's pass mean something: a file it must write, a command that must
     # pass, or a person's gate.
-    PROOF_KEYS = %w[status gate require].freeze
+    PROOF_KEYS = %w[status gate require review].freeze
 
     def proof?(step)
       step["produces"].to_a.any? || PROOF_KEYS.any? { |key| Array(step[key]).any? }
@@ -475,6 +496,9 @@ module Workspace
       timeout = capped_duration_from(raw["timeout"], "timeout", MAX_RUN_TIMEOUT)
       timeout_action = raw.fetch("timeout_action", TIMEOUT_ACTIONS.first)
       problem "timeout_action must be #{TIMEOUT_ACTIONS.join(" or ")}, got #{timeout_action.inspect[0, 40]}" unless TIMEOUT_ACTIONS.include?(timeout_action)
+      reviewers = review_spec.reviewers(raw["reviewers"], inputs)
+      steps = steps_from(raw["steps"], inputs)
+      review_spec.check(steps, reviewers)
       {
         "id" => id,
         "title" => text_or_nil(raw["title"], "title") || id,
@@ -488,10 +512,19 @@ module Workspace
         "stall" => duration_from(raw["stall"], "stall"),
         "redeliver" => redeliver,
         "deny" => deny_from(raw["deny"]),
-        "steps" => steps_from(raw["steps"], inputs)
+        "steps" => steps
       }.merge(budget ? {"budget" => budget} : {})
+        .merge(reviewers.any? ? {"reviewers" => reviewers} : {})
         .merge(timeout ? {"timeout" => timeout} : {})
         .merge(((timeout || raw.key?("timeout_action")) && TIMEOUT_ACTIONS.include?(timeout_action)) ? {"timeout_action" => timeout_action} : {})
+    end
+
+    def review_spec
+      @review_spec ||= WorkflowReviewSpec.new(
+        name_pattern: INPUT_PATTERN, report: method(:problem), prompt: method(:prompt_from),
+        placeholders: method(:placeholders), text: method(:text_or_nil), names: method(:names),
+        uses: method(:uses_from), context: method(:context_from), duration: method(:capped_duration_from)
+      )
     end
 
     def unknown_keys(mapping, allowed, where)
@@ -644,7 +677,7 @@ module Workspace
         "timeout" => duration_from(raw["timeout"], "#{where}: timeout"),
         "on_timeout" => on_timeout_from(raw.fetch("on_timeout", DEFAULT_ON_TIMEOUT), where),
         "max_attempts" => step_attempts_from(raw["max_attempts"], where)
-      }
+      }.merge(review_spec.review(raw["review"], where, inputs).then { |review| review ? {"review" => review} : {} })
     end
 
     def step_attempts_from(value, where)
@@ -669,12 +702,12 @@ module Workspace
       problem "#{where}: prompt_file #{full} can't be read (#{e.class})"
     end
 
-    def placeholders(text, inputs, where)
+    def placeholders(text, inputs, where, extra: [])
       return unless text.is_a?(String)
       text.scan(PLACEHOLDER).flatten.uniq.each do |name|
-        next if VARIABLES.include?(name)
+        next if VARIABLES.include?(name) || extra.include?(name)
         next if name.start_with?("inputs.") && inputs.key?(name.delete_prefix("inputs."))
-        known = (VARIABLES + inputs.keys.map { |input| "inputs.#{input}" }).map { |v| "{{#{v}}}" }.join(", ")
+        known = (VARIABLES + extra + inputs.keys.map { |input| "inputs.#{input}" }).map { |v| "{{#{v}}}" }.join(", ")
         problem "#{where} uses {{#{name}}}, which nothing supplies (known: #{known})"
       end
     end
