@@ -243,4 +243,42 @@ RSpec.describe Workspace::WorkflowRun do
       expect(run("parked").step("build")).to eq(run("parked").step("build"))
     end
   end
+
+  describe "Attempt#to_mutable_h" do
+    it "gives an unfrozen deep copy that changes nothing in the attempt" do
+      attempt = Workspace::WorkflowRun::Attempt.from_h("n" => 1, "head" => {"before" => "a"}, "packs" => [{"ref" => "x"}])
+      copy = attempt.to_mutable_h
+      copy["head"]["before"] << "b"
+      copy["packs"] << {}
+
+      expect(copy).not_to be_frozen
+      expect(attempt.to_h).to eq("n" => 1, "head" => {"before" => "a"}, "packs" => [{"ref" => "x"}])
+    end
+  end
+
+  describe "#with_attempt" do
+    let(:given) do
+      described_class.from_h("id" => "wr_1", "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1}, {"n" => 2, "outcome" => nil}]}})
+    end
+
+    it "replaces the step's attempt with the same n and leaves the run it was called on alone" do
+      changed = given.with_attempt("plan", Workspace::WorkflowRun::Attempt.from_h("n" => 2, "outcome" => "passed"))
+
+      expect(changed.to_h).to eq("id" => "wr_1", "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1}, {"n" => 2, "outcome" => "passed"}]}})
+      expect(changed).to be_frozen
+      expect(given.step("plan").last_attempt.outcome).to be_nil
+    end
+
+    it "appends a retry's new attempt to a step that already has attempts" do
+      changed = given.with_attempt("plan", Workspace::WorkflowRun::Attempt.from_h("n" => 3))
+
+      expect(changed.step("plan").attempts.map(&:n)).to eq([1, 2, 3])
+    end
+
+    it "makes the step's attempts list when the step has none" do
+      changed = given.with_attempt("build", Workspace::WorkflowRun::Attempt.from_h("n" => 1))
+
+      expect(changed.step("build").attempts.map(&:to_h)).to eq([{"n" => 1}])
+    end
+  end
 end

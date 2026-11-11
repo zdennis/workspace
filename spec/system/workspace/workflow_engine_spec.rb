@@ -5736,7 +5736,8 @@ RSpec.describe Workspace::WorkflowEngine do
       queue = usages
       Class.new(Workspace::WorkflowAttemptRecord) do
         define_method(:finish) do |run:, step:, attempt:|
-          super(run: run, step: step, attempt: attempt).tap { attempt["usage"] = queue.shift unless queue.empty? }
+          done = super(run: run, step: step, attempt: attempt)
+          queue.empty? ? done : Workspace::WorkflowRun::Attempt.from_h(done.to_h.merge("usage" => queue.shift))
         end
       end.new(guard: guard)
     end

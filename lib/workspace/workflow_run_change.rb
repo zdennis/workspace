@@ -55,9 +55,9 @@ module Workspace
         before = WorkflowTransitions.fingerprint(stored)
         alert_before = @alerts&.marks(stored)
         was_open = @attempt_record.open_attempt(stored)
-        @attempt_record.reasons(run: stored)
+        keep(stored, @attempt_record.reasons(run: stored))
         yield stored, ctx
-        @attempt_record.reasons(run: stored, was_open: was_open)
+        keep(stored, @attempt_record.reasons(run: stored, was_open: was_open))
         stored
       end
       return nil unless run
@@ -77,6 +77,11 @@ module Workspace
     end
 
     private
+
+    # The stored Hash stays the one the store writes, so the reason history comes back into it.
+    def keep(stored, run)
+      stored.replace(run.to_mutable_h) unless run.to_h == stored
+    end
 
     def changed(run)
       @event_log&.record(type: "workflow_changed", project: run["workspace"],

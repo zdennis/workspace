@@ -317,9 +317,9 @@ module Workspace
       end
 
       def finish(run:, step:, attempt:)
-        __getobj__.finish(run: run, step: step, attempt: attempt)
-        attempt["usage"] = {"input_tokens" => 0, "output_tokens" => @tokens.fetch([run["current"], attempt["n"]], 0)}
-        attempt
+        finished = __getobj__.finish(run: run, step: step, attempt: attempt).to_mutable_h
+        finished["usage"] = {"input_tokens" => 0, "output_tokens" => @tokens.fetch([run["current"], finished["n"]], 0)}
+        WorkflowRun::Attempt.from_h(finished)
       end
     end
 

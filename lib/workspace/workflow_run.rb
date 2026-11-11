@@ -85,6 +85,20 @@ module Workspace
       steps[id]
     end
 
+    # @param step_id [String]
+    # @param attempt [Attempt]
+    # @return [WorkflowRun] this run with +attempt+ in place of the step's attempt with the same n, or appended
+    #   when the step has none with that n (a retry's new attempt)
+    def with_attempt(step_id, attempt)
+      hash = to_mutable_h
+      steps = hash["steps"].is_a?(Hash) ? hash["steps"] : (hash["steps"] = {})
+      state = steps[step_id].is_a?(Hash) ? steps[step_id] : (steps[step_id] = {})
+      list = state["attempts"].is_a?(Array) ? state["attempts"] : (state["attempts"] = [])
+      index = list.index { |each| each.is_a?(Hash) && each["n"] == attempt.n }
+      index ? list[index] = attempt.to_mutable_h : list << attempt.to_mutable_h
+      self.class.new(hash)
+    end
+
     # @return [Step, nil] the step the run is at; nil when it has none or names one it lacks
     def current_step
       step(current)
@@ -195,6 +209,11 @@ module Workspace
 
       KEYS.each do |key|
         define_method(key) { to_h[key] }
+      end
+
+      # @return [Hash{String=>Object}] a deep, unfrozen copy of {#to_h}
+      def to_mutable_h
+        WorkflowRun.deep_thaw(to_h)
       end
 
       # @return [Boolean]

@@ -568,7 +568,7 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, cause: "cancel")
       @change.call(run_id) do |stored|
-        @attempt_record.abandon(stored)
+        stored.replace(@attempt_record.abandon(stored).to_mutable_h)
         finish(stored, "cancelled")
         stored["cancelled_by"] = cause
         event(stored, "run_cancelled", "cause" => cause)
@@ -1383,7 +1383,7 @@ module Workspace
       attempt["redelivery"] = pending if pending
       run["pending_context"] = []
       attempt["prompt_file"], composed = write_prompt(run, step, attempt)
-      @attempt_record.start(run: run, attempt: attempt, composed: composed)
+      attempt.replace(@attempt_record.start(run: run, attempt: attempt, composed: composed).to_mutable_h)
       state["attempts"] << attempt
       @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
         instructions: attempt["prompt_file"], artifacts: run["artifacts_dir"])
@@ -1819,7 +1819,7 @@ module Workspace
     def pass_step(run, ctx:)
       state = step_state(run)
       state["attempts"].last.merge!("ended_at" => now_iso, "outcome" => "passed")
-      @attempt_record.finish(run: run, step: step_def(run), attempt: state["attempts"].last)
+      state["attempts"].last.replace(@attempt_record.finish(run: run, step: step_def(run), attempt: state["attempts"].last).to_mutable_h)
       state["state"] = "passed"
       event(run, "step_passed", "step" => run["current"], "attempt" => state["attempts"].last["n"])
       return advance(run, ctx: ctx) unless step_def(run)["gate"]
@@ -1868,7 +1868,7 @@ module Workspace
       attempt["ended_at"] = now_iso
       attempt["outcome"] = "failed"
       attempt["code"] = failure["code"] if failure["code"].is_a?(String)
-      @attempt_record.finish(run: run, step: step, attempt: attempt)
+      attempt.replace(@attempt_record.finish(run: run, step: step, attempt: attempt).to_mutable_h)
       state["state"] = "failed"
       event(run, "step_failed", {"step" => step["id"], "attempt" => attempt["n"]}.merge(failure.slice("cause", "exit_code")))
       on_fail = step["on_fail"]
