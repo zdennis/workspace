@@ -68,12 +68,12 @@ module Workspace
 
     # Appends one line to the run's history at once.
     #
-    # @param run [Hash{String=>Object}] the run, for its id
+    # @param run [Hash{String=>Object}, WorkflowRun] the run, for its id
     # @param type [String]
     # @param data [Hash{String=>Object}]
     # @return [void]
     def event(run, type, data = {})
-      @store.record_event(run["id"], type, data)
+      @store.record_event(run.is_a?(WorkflowRun) ? run.id : run["id"], type, data)
     end
 
     private
