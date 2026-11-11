@@ -27,8 +27,9 @@ module Workspace
   #   `cannot_restart`.
   #
   # Whatever can't be read leaves the agent alone. That includes an agent in a
-  # pane outside window 0, which always defers, because the monitor scans
-  # window 0 only and so has no facts for it.
+  # pane the monitor has no facts for, which always defers. An agent in a marked
+  # review window is skipped outright: no failed turn of it is queued, no entry
+  # kept and nothing typed.
   #
   # An agent whose process group doesn't hold the pane's terminal gets nothing:
   # a shell that took the terminal back runs whatever is typed, even while a

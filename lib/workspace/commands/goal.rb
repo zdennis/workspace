@@ -265,7 +265,7 @@ module Workspace
       end
 
       def main_pane(panes)
-        panes.reject { |pane| %w[shell unknown].include?(pane["kind"]) }.min_by { |pane| pane["index"].to_i }
+        panes.reject { |pane| %w[shell unknown].include?(pane["kind"]) || pane["review"] }.min_by { |pane| [pane["window"].to_i, pane["index"].to_i] }
       end
 
       def turn_of(pane)

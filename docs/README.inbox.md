@@ -116,7 +116,7 @@ A project is keyed by the realpath of its git common dir, so two clones with the
 | `kind` | `id` | `fingerprint` | Counted when |
 |---|---|---|---|
 | `ask` | `ask:<workspace>:<ask id>` | `asked_at` | A `workspace ask` question is open |
-| `pane_waiting` | `pane:waiting:<workspace>:<pane id>` | the pane's `state_since` | The agent daemon reports the pane `waiting` (a permission prompt) |
+| `pane_waiting` | `pane:waiting:<workspace>:<pane id>` | the pane's `state_since` | The agent daemon reports the pane `waiting` (a permission prompt); a pane in a review window gives no row, its run's `workflow_waiting_you` row stands for it |
 | `plan_blocked`, `plan_stalled` | `plan:<state>:<workspace>` | the plan file's `updated_at`, else its current task id | `plan status` would say `blocked` or `stalled` |
 | `workflow_waiting_you` | `workflow:waiting_you:<run id>` | `<step>:<since>` | A run waits at a step's gate for `workflow approve` (a prompt or question holding a run is already its pane's or question's row) |
 | `workflow_undelivered` | `workflow:undelivered:<run id>` | `<step>:<since>` | A step's line never reached an agent: the run's reason is a `dispatch` one, `waiting_you` (`not_started`, `parked_timeout`) or a stored `pane_gone`. A dispatch that ended in `pane_busy` shows here too, with the same reason. Not while a `workflow resume` is parked (a live park shows no row), and a park that ran out at a waiting gate keeps the gate row. Body is the reason's `message`; `links.run_id`, `links.step`, `links.attempt` |

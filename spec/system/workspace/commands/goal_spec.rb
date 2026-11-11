@@ -184,6 +184,35 @@ RSpec.describe Workspace::Commands::Goal do
       end
     end
 
+    context "with a review window's pane beside the main agent pane" do
+      let(:member) do
+        member_row(panes: [pane("%9", "idle", index: 0).merge("window" => 1, "review" => "r:plan:1"), pane("%4", "idle", index: 1).merge("window" => 0)],
+          plan: {"state" => "idle"})
+      end
+
+      it "takes the main agent pane for the turn, never the review pane" do
+        write_plan("## Tasks", "- [~] T2 Two")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal["turn"]["pane"]).to eq("%4")
+      end
+    end
+
+    context "with a review pane that would sort first" do
+      let(:member) do
+        member_row(panes: [pane("%9", "idle", index: 0).merge("review" => "r:plan:1"), pane("%4", "idle", index: 1)], plan: {"state" => "idle"})
+      end
+
+      it "still takes the main agent pane, even with no window key on either row" do
+        write_plan("## Tasks", "- [~] T2 Two")
+
+        command.show("lab-wc-lab-1", json: true)
+
+        expect(goal["turn"]["pane"]).to eq("%4")
+      end
+    end
+
     context "with a plan and no run or spine" do
       let(:member) { member_row(panes: [pane("%4", "idle", index: 1), pane("%1", "idle", index: 0)], plan: {"state" => "idle"}) }
 

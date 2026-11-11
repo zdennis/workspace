@@ -2764,6 +2764,14 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(payload["holder"]).to include("agent_state" => "working", "idle_since" => nil)
     end
 
+    it "leaves a working review pane out of the holder's agent state" do
+      hold(700, worktree: worktree)
+      panes.push({"kind" => "claude", "state" => "idle", "state_since" => "2026-10-13T10:00:00Z"},
+        {"kind" => "claude", "state" => "working", "state_since" => "2026-10-13T10:05:00Z", "review" => "r:plan:1"})
+
+      expect(payload["holder"]).to include("agent_state" => "idle", "idle_since" => "2026-10-13T10:00:00Z")
+    end
+
     it "reports idle with the time the agent last stopped working" do
       hold(700, worktree: worktree)
       panes.push({"kind" => "claude", "state" => "idle", "state_since" => "2026-10-13T10:00:00Z"},

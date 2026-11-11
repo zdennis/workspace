@@ -245,7 +245,7 @@ module Workspace
       end
 
       def pane_agent_facts(panes)
-        pane_facts = Array(panes).select { |pane| pane["kind"] != "shell" }.map do |pane|
+        pane_facts = Array(panes).select { |pane| pane["kind"] != "shell" && !pane["review"] }.map do |pane|
           {"pane_id" => pane["pane_id"], "kind" => pane["kind"], "state" => pane["state"], "stop_reason" => pane["stop_reason"],
            "state_since" => pane["state_since"]}
         end

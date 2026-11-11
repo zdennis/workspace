@@ -136,7 +136,7 @@ When a Claude Code turn ends on an API error, the agent daemon gets the agent go
 - a prompt was submitted since the failure
 - the main agent has a sub-agent running (one with no event for 10 minutes stops counting, because an outage can kill a sub-agent before it reports)
 - the agent's process group doesn't hold the pane's terminal, so typed text would reach a shell
-- the pane is outside window 0 of the session, which the session monitor doesn't scan: such an agent is always deferred
+- the monitor has no facts for the pane (a window that is neither window 0 nor a review window): such an agent is always deferred
 - tmux, `ps`, the transcript or the session ledger can't be read
 - a second `claude` process sits in the pane and is listed first: the real agent is refused, and the daemon types and stops nothing
 
@@ -281,7 +281,7 @@ A `handoff_watch` message opens a follow-up watch on a pane. `workspace handoff 
 {"type": "handoff_watch", "workspace": "myapp", "pane_id": "%18", "sent_at": "2026-10-30T12:00:00.000Z", "interval": 30, "max": 10, "text": "...", "sent_text": "..."}
 ```
 
-`pane_id` is a tmux pane id, `sent_at` an ISO 8601 time, `interval` and `max` positive numbers (`max` an integer), and `text` (the follow-up) and `sent_text` (the save-state prompt as typed) 1 to 4,000 characters. The reply is `{"ok": true, "watching": true, "reason": null}`, or `"watching": false` with `reason` `not_scanned` (the pane is not in window 0, or not yet scanned), `not_claude`, `no_hooks` or `invalid`. A bad field is `{"ok": false, "error": "usage"}`, a pane running a pipeline stage `error: "pipeline_stage"` with `work_item_ref`, and anything unexpected `error: "internal_error"`. An older daemon answers `unknown_type`.
+`pane_id` is a tmux pane id, `sent_at` an ISO 8601 time, `interval` and `max` positive numbers (`max` an integer), and `text` (the follow-up) and `sent_text` (the save-state prompt as typed) 1 to 4,000 characters. The reply is `{"ok": true, "watching": true, "reason": null}`, or `"watching": false` with `reason` `not_scanned` (the pane is in no window the monitor scans, or not yet scanned), `review_pane` (a pane in a review window is never watched), `not_claude`, `no_hooks` or `invalid`. A bad field is `{"ok": false, "error": "usage"}`, a pane running a pipeline stage `error: "pipeline_stage"` with `work_item_ref`, and anything unexpected `error: "internal_error"`. An older daemon answers `unknown_type`.
 
 ### Version
 

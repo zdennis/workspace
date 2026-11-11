@@ -66,6 +66,27 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(ensured).to eq(["app"])
     end
 
+    it "skips a pane whose row carries a review mark, and one bound as the reviewer" do
+      allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [
+        {"pane_id" => "%4", "kind" => "claude", "window" => 1, "review" => "r:plan:1"},
+        {"pane_id" => "%5", "kind" => "claude", "window" => 0},
+        {"pane_id" => "%7", "kind" => "claude", "window" => 0}
+      ])
+      allow(bindings).to receive(:binding_for).and_return(nil)
+      allow(bindings).to receive(:binding_for).with("%5").and_return({"kind" => "run", "id" => "r", "role" => "reviewer"})
+
+      expect(panes.default_pane("app")).to eq("%7")
+    end
+
+    it "raises no_agent_pane when the only Claude Code pane is a review pane" do
+      allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [
+        {"pane_id" => "%4", "kind" => "claude", "window" => 1, "review" => "r:plan:1"}
+      ])
+      allow(bindings).to receive(:binding_for).and_return(nil)
+
+      expect { panes.default_pane("app") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("no_agent_pane") }
+    end
+
     it "raises no_agent_pane when no pane runs Claude Code" do
       allow(snapshot_client).to receive(:fetch).and_return("panes" => [{"pane_id" => "%4", "kind" => "shell"}])
 

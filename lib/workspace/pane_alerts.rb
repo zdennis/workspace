@@ -44,7 +44,7 @@ module Workspace
     #   panes' output, which holds back idle alerts
     # @return [Array<Due>]
     def due(pane, now, session_name:, idle_alert_after:, stale:)
-      return [] if PaneStates::NOT_AGENTS.include?(pane[:kind])
+      return [] if PaneStates::NOT_AGENTS.include?(pane[:kind]) || pane[:review]
 
       unless pane[:waits].empty?
         return pane[:waits].reject { |_, wait| wait[:alerted] }.map do |agent_id, wait|

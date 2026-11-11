@@ -73,7 +73,7 @@ module Workspace
     def agent_state(answer)
       return nil unless answer && answer["available"]
 
-      states = Array(answer["panes"]).reject { |pane| pane["kind"] == "shell" }.map { |pane| pane["state"] }
+      states = Array(answer["panes"]).reject { |pane| pane["kind"] == "shell" || pane["review"] }.map { |pane| pane["state"] }
       return "working" if states.include?("working")
       return "waiting" if states.include?("waiting")
 

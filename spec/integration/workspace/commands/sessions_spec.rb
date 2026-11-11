@@ -67,6 +67,18 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(output.string).to include("└─ eval-baseline")
     end
 
+    it "labels a pane window.index, window 0 for a row with no window" do
+      reply = {"workspace" => "proj", "panes" => [
+        {"pane_id" => "%1", "index" => 2, "kind" => "claude", "state" => "idle", "agents" => []},
+        {"pane_id" => "%9", "window" => 1, "index" => 0, "review" => "r:plan:1", "kind" => "claude", "state" => "working", "agents" => []}
+      ]}
+
+      with_daemon(reply: reply) { command.call(name: "proj") }
+
+      expect(output.string).to match(/^\s*0\.2\s+claude/)
+      expect(output.string).to match(/^\s*1\.0\s+claude/)
+    end
+
     it "emits the payload with a leading schema_version with --json" do
       with_daemon { command.call(name: "proj", json: true) }
 

@@ -297,6 +297,15 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       expect(entry["cwd"]).to be_nil
     end
 
+    it "keeps no entry for a failed turn in a review window's pane" do
+      facts[:review] = "wr_1:review:1"
+      event("turn_failed", error: "server_error", transcript_path: transcript_path)
+      event("session_end", reason: "other")
+
+      expect(store.get("%5")).to be_nil.or(eq({}))
+      expect(signals).to be_empty
+    end
+
     it "schedules every retryable kind" do
       %w[server_error overloaded rate_limit unknown].each do |kind|
         store.delete("%5")

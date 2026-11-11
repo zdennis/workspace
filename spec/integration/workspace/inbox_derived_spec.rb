@@ -210,6 +210,12 @@ RSpec.describe Workspace::InboxDerived do
         "links" => a_hash_including("pane" => "%12"))
     end
 
+    it "leaves out a waiting pane of a review window" do
+      daemon_replies["api.worktree-a"]["panes"] << pane("%9", "waiting", message: "Allow Write?").merge("window" => 1, "review" => "r:plan:1")
+
+      expect(read[:rows].select { |row| row["kind"] == "pane_waiting" }.map { |row| row["links"]["pane"] }).to eq(["%5"])
+    end
+
     it "leaves out an ask once it is withdrawn" do
       ask_store_for.call("api").withdraw(ask["id"])
 

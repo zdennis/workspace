@@ -377,8 +377,9 @@ module Workspace
     #   `:last_user_prompt_at`, `:hooks` (whether the pane's current agent
     #   has sent this monitor a hook event: `hook_mode` "hooks" in `sessions`)
     #   and `:last_session_start` (`:at`, `:source` and `:session_id` of the
-    #   last SessionStart this monitor heard from the pane, or nil); nil when
-    #   the pane hasn't been scanned yet
+    #   last SessionStart this monitor heard from the pane, or nil)
+    #   and `:review` (the review window's mark, nil for any other pane); nil
+    #   when the pane hasn't been scanned yet
     def delivery_facts(pane_id)
       now = @clock.now
       @lock.synchronize do
@@ -387,6 +388,7 @@ module Workspace
         {kind: pane[:kind], pane_pid: pane[:pid], agent_pid: pane[:agent_pid], session_id: pane[:session_id],
          state: PaneStates.reported_state(pane, now - (pane[:last_activity_at] || now), @idle_after), fresh_since: PaneStates.fresh_since(pane, now, @idle_after),
          last_user_prompt_at: pane[:last_user_prompt_at], hooks: pane[:hook_kind] == pane[:kind],
+         review: pane[:review],
          last_session_start: pane[:last_session_start]&.dup}
       end
     end
@@ -398,7 +400,7 @@ module Workspace
     #
     # @param pane_id [String] tmux pane id
     # @return [Hash, nil] `:kind`, `:pane_pid`, `:agent_pid`, `:session_id`,
-    #   `:hooks`, `:last_activity_at`, `:open_tools` (how many tool calls are
+    #   `:hooks`, `:review`, `:last_activity_at`, `:open_tools` (how many tool calls are
     #   open) and `:agents_running`; nil when the pane hasn't been scanned yet
     def followup_facts(pane_id)
       @lock.synchronize do
@@ -406,6 +408,7 @@ module Workspace
         next unless pane && pane[:pid]
         {kind: pane[:kind], pane_pid: pane[:pid], agent_pid: pane[:agent_pid], session_id: pane[:session_id],
          hooks: pane[:hook_kind] == pane[:kind], last_activity_at: pane[:last_activity_at],
+         review: pane[:review],
          open_tools: (pane[:open_tools] || {}).size,
          agents_running: pane[:agents].count { |agent| agent[:state] == "running" }}
       end

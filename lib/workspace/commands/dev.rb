@@ -452,7 +452,7 @@ module Workspace
         return none unless @snapshot_client && holder["worktree"].is_a?(String)
         lineage = @lineage.resolve(cwd: holder["worktree"])
         panes = Array(@snapshot_client.fetch(lineage.worktree || lineage.name)["panes"])
-          .select { |pane| !AGENTLESS_KINDS.include?(pane["kind"]) && AGENT_STATES.include?(pane["state"]) }
+          .select { |pane| !pane["review"] && !AGENTLESS_KINDS.include?(pane["kind"]) && AGENT_STATES.include?(pane["state"]) }
         return none if panes.empty?
         return ["working", nil] if panes.any? { |pane| pane["state"] == "working" }
         ["idle", panes.filter_map { |pane| pane["state_since"] }.max]

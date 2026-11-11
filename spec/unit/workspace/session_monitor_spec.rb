@@ -1183,14 +1183,31 @@ RSpec.describe Workspace::SessionMonitor do
           {id: "%7", window: 1, index: 0, pid: 200, command: "node", cwd: "/project", title: "review", review: "wr_1"}]
       end
 
-      it "words the alert as window.index" do
+      it "sends no waiting alert for a review pane, and still alerts for the main pane" do
         monitor.record("event" => "notification", "pane_id" => "%7", "message" => "ok?")
+        monitor.record("event" => "notification", "pane_id" => "%2", "message" => "main")
         at(4)
 
-        alert = monitor.send_alerts.first
+        expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT_PANE_ID"] }).to eq(["%2"])
+      end
 
-        expect(alert).to include("WORKSPACE_ALERT_PANE" => "1.0", "WORKSPACE_ALERT_PANE_ID" => "%7")
-        expect(alert["WORKSPACE_ALERT_TEXT"]).to start_with("proj pane 1.0 (")
+      it "sends no idle alert for a review pane" do
+        at(600)
+        monitor.scan
+
+        expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT_PANE_ID"] }).to eq(["%2"])
+      end
+
+      it "words an alert it is asked for as window.index" do
+        monitor.alert_handoff_stalled("%7", seconds: 60, followups: 2)
+
+        expect(notifier).to have_received(:notify).with(a_hash_including("WORKSPACE_ALERT_PANE" => "1.0", "WORKSPACE_ALERT_PANE_ID" => "%7"))
+      end
+
+      it "reports the review mark in the delivery and follow-up facts, and nil for the main pane" do
+        expect(monitor.delivery_facts("%7")).to include(review: "wr_1")
+        expect(monitor.followup_facts("%7")).to include(review: "wr_1")
+        expect(monitor.followup_facts("%2")).to include(review: nil)
       end
     end
 
@@ -1819,7 +1836,7 @@ RSpec.describe Workspace::SessionMonitor do
       monitor.record("pane_id" => "%2", "event" => "stop", "session_id" => "s1")
 
       expect(monitor.delivery_facts("%2")).to eq(kind: "claude", pane_pid: 200, agent_pid: 250, session_id: "s1",
-        state: "done", fresh_since: now + 9, last_user_prompt_at: now + 5, hooks: true, last_session_start: nil)
+        state: "done", fresh_since: now + 9, last_user_prompt_at: now + 5, hooks: true, review: nil, last_session_start: nil)
     end
 
     it "says hooks: false for an agent pane no hook has reached" do

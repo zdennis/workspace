@@ -59,7 +59,7 @@ RSpec.describe Workspace::RecoveryIntake do
 
       blocks.first.call
 
-      expect(calls).to eq([[:update, "%5"], [:get, "%5"], [:update, "%5"]])
+      expect(calls).to eq([[:delivery_facts, "%5"], [:update, "%5"], [:delivery_facts, "%5"], [:get, "%5"], [:update, "%5"]])
     end
 
     it "starts a new worker for an event that arrives after the queue ran dry" do
@@ -131,7 +131,7 @@ RSpec.describe Workspace::RecoveryIntake do
       expect(entry).to include("phase" => "waiting", "session_id" => sid, "attempts" => 0, "stopped" => false,
         "agent_pid" => 20, "agent_started" => "Mon", "agent_flags" => ["--model", "opus"], "failed_at" => stamp(now),
         "next_attempt_at" => stamp(now + 60), "error" => "server_error", "transcript_path" => "/t/session.jsonl")
-      expect(calls.first).to eq([:live_agent, "%5"])
+      expect(calls.first(2)).to eq([[:delivery_facts, "%5"], [:live_agent, "%5"]])
     end
 
     it "takes no session id a resume line couldn't carry, and no failure without a transcript" do

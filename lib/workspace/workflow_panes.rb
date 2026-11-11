@@ -89,6 +89,8 @@ module Workspace
     # The pane a run uses when the caller names none: the workspace's first
     # Claude Code pane, as its agent daemon sees it.
     #
+    # A review window's pane (a row with a `review` mark, or a pane bound as the reviewer) is never the answer.
+    #
     # @param workspace [String]
     # @param start_daemon [Boolean] start the daemon when none is running; false
     #   (a dry run) returns nil instead
@@ -99,7 +101,7 @@ module Workspace
       return nil unless start_daemon || @config.agent_running?(workspace)
       ensure_daemon!(workspace)
       snapshot = @snapshot_client.fetch(workspace)
-      pane = Array(snapshot["panes"]).find { |each| each["kind"] == "claude" }
+      pane = Array(snapshot["panes"]).find { |each| each["kind"] == "claude" && !review_pane?(each) }
       return pane["pane_id"] if pane
       raise Workspace::Error.new("No pane of '#{workspace}' is running Claude Code. Start it, or name the pane with --pane.",
         code: "no_agent_pane", details: {"workspace" => workspace})
@@ -323,6 +325,10 @@ module Workspace
     end
 
     private
+
+    def review_pane?(row)
+      row["review"] || @bindings.binding_for(row["pane_id"])&.dig("role") == "reviewer"
+    end
 
     def stale?(pane, entry)
       @bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane))

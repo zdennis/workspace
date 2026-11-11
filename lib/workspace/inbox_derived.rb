@@ -92,7 +92,7 @@ module Workspace
       panes = daemons.to_h do |workspace, thread|
         reply = thread.value
         if reply[:panes]
-          rows.concat(reply[:panes].select { |pane| pane["state"] == "waiting" }.map { |pane| pane_row(workspace, pane) })
+          rows.concat(reply[:panes].select { |pane| pane["state"] == "waiting" && !pane["review"] }.map { |pane| pane_row(workspace, pane) })
         else
           warnings << {"code" => "daemons_unavailable", "workspace" => workspace,
                        "message" => "The agent daemon for '#{workspace}' did not answer (#{reply[:code]}), so its waiting panes are not shown."}

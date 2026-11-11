@@ -39,6 +39,16 @@ RSpec.describe Workspace::PaneDispatch do
     end
   end
 
+  describe "#main_pane with a review window" do
+    it "never picks a pane whose row carries a review mark, even when preferred" do
+      panes = [{"pane_id" => "%8", "kind" => "claude", "review" => "r:plan:1"}, {"pane_id" => "%2", "kind" => "claude"}]
+
+      expect(dispatch.main_pane("api", panes, preferred: "%8", what: "x")["pane_id"]).to eq("%2")
+      expect { dispatch.main_pane("api", [panes.first], preferred: nil, what: "x") }
+        .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("no_agent_pane") }
+    end
+  end
+
   describe "#main_pane" do
     let(:panes) { [{"pane_id" => "%1", "kind" => "shell"}, {"pane_id" => "%2", "kind" => "claude"}, {"pane_id" => "%3", "kind" => "codex"}] }
 

@@ -411,7 +411,20 @@ RSpec.describe Workspace::Doctor do
           # Unrelated checks may fail on this machine
         end
 
-        expect(output.string).to include("✓  Codex context usage read from pane 2 (37% used)")
+        expect(output.string).to include("✓  Codex context usage read from pane 0.2 (37% used)")
+      end
+
+      it "labels a pane window.index, so a pane of another window is told apart" do
+        allow(snapshot_client).to receive(:fetch).with("myapp")
+          .and_return({"panes" => [pane("window" => 1, "index" => 0, "context_pct" => 37, "context_error" => nil)]})
+
+        begin
+          build_doctor(which: ->(exe) { exe == "codex" }, snapshot_client: snapshot_client).run
+        rescue Workspace::Error
+          # Unrelated checks may fail on this machine
+        end
+
+        expect(output.string).to include("✓  Codex context usage read from pane 1.0 (37% used)")
       end
 
       it "warns, without failing doctor, when a Codex pane's context can't be read, with the Codex fix hint" do
@@ -430,7 +443,7 @@ RSpec.describe Workspace::Doctor do
         end
 
         expect(messages.first).to eq(messages.last)
-        expect(output.string).to include("⚠  Codex context usage unreadable on pane 2 (#{Workspace::ContextReasons::PATTERN_NO_MATCH})")
+        expect(output.string).to include("⚠  Codex context usage unreadable on pane 0.2 (#{Workspace::ContextReasons::PATTERN_NO_MATCH})")
         expect(output.string).to include("context.patterns")
         expect(output.string).not_to include("route Claude's status line")
       end

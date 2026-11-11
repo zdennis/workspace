@@ -767,12 +767,12 @@ module Workspace
         panes = pairs.map(&:last)
         readable = panes.select { |pane| pane["context_error"].nil? && !pane["context_pct"].nil? }
         if readable.any?
-          detail = readable.map { |pane| "pane #{pane["index"]} (#{pane["context_pct"]}% used)" }.join(", ")
+          detail = readable.map { |pane| "pane #{pane["window"] || 0}.#{pane["index"]} (#{pane["context_pct"]}% used)" }.join(", ")
           add_row("context-#{provider.key}", "ok", "#{provider.label} context usage read from #{detail}", project: project)
         end
         panes.reject { |pane| pane["context_error"].nil? }.each do |pane|
           hint = ContextReasons.fix_hint(pane["kind"])
-          add_row("context-#{provider.key}", "warn", "#{provider.label} context usage unreadable on pane #{pane["index"]} (#{pane["context_error"]})",
+          add_row("context-#{provider.key}", "warn", "#{provider.label} context usage unreadable on pane #{pane["window"] || 0}.#{pane["index"]} (#{pane["context_error"]})",
             fix: hint, hints: [hint], project: project)
         end
       end
