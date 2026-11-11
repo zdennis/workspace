@@ -164,4 +164,16 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::InboxStore, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingEvaluation do
+    it "accepts every call Workspace::WorkflowEvaluation accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowEvaluation, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingGateNote do
+    it "accepts every call Workspace::WorkflowGateNote accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowGateNote, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

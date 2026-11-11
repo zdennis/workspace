@@ -78,8 +78,8 @@ end
 
 # Fake of the Workspace::WorkflowRunStore calls the phases make: +create+ runs the check, gives the next id and keeps
 # the run in +runs+; +on_checkout+, +parked_on+ and +backoff_on+ answer the run Hash scripted for the path or pane, as
-# a WorkflowRun (+backoff_on+ only while its +same_pane+ says so); +going?+ is true for the ids given; +record_event+
-# keeps each history line in +events+.
+# a WorkflowRun (+backoff_on+ only while its +same_pane+ says so); +going?+ is true for the ids given; +going+ answers every
+# run it holds that has not finished; +record_event+ keeps each history line in +events+.
 class RecordingRunStore
   CONTROL_METHODS = %i[calls runs events].freeze
 
@@ -109,6 +109,11 @@ class RecordingRunStore
   def going?(id)
     @calls << [:going?, id]
     @going.include?(id)
+  end
+
+  def going
+    @calls << [:going]
+    @runs.values.reject { |run| Workspace::WorkflowRunStore::TERMINAL_STATES.include?(run["state"]) }.map { |run| Workspace::WorkflowRun.from_h(run) }
   end
 
   def parked_on(pane, except:, now:)
@@ -296,8 +301,9 @@ class RecordingWorkflowPanes
   end
 end
 
-# Fake of Workspace::WorkflowAttemptRecord#start and #finish: the attempt as given, with a stand-in hash of the
-# composed text at its start and an empty +outputs+ at its end.
+# Fake of Workspace::WorkflowAttemptRecord#start, #finish and #abandon: the attempt as given, with a stand-in hash of the
+# composed text at its start and an empty +outputs+ at its end; +abandon+ marks the current step's last attempt
+# `abandoned`.
 class RecordingAttemptRecord
   CONTROL_METHODS = %i[calls].freeze
 
@@ -315,6 +321,13 @@ class RecordingAttemptRecord
   def finish(run:, step:, attempt:)
     @calls << [:finish, Workspace::WorkflowRun.from_h(run).id, step["id"], attempt["n"]]
     Workspace::WorkflowRun::Attempt.from_h(attempt.merge("outputs" => []))
+  end
+
+  def abandon(run)
+    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    @calls << [:abandon, hash["id"]]
+    hash["steps"][hash["current"]]["attempts"].last&.merge!("outcome" => "abandoned")
+    Workspace::WorkflowRun.from_h(hash)
   end
 end
 
@@ -334,14 +347,18 @@ class RecordingLogTail
   end
 end
 
-# Fake of Workspace::WorkflowProgress#pass_step and #fail_step for the evaluation phase: records the step and the
-# failure, and returns the run with the current step marked passed or failed (nothing else happens to it).
+# Fake of Workspace::WorkflowProgress for the evaluation and decision phases: +pass_step+ and +fail_step+ mark the
+# current step passed or failed, +advance+ answers the run as given, +finish+ sets the run's end state,
+# +start_retry+ moves the run to the wait's step, +hold_retry+ marks the wait blocked with the problem's message as
+# the reason, and +retry_pane_problem+ answers the problem it was given. Each records its call.
 class RecordingProgress
   CONTROL_METHODS = %i[calls].freeze
 
   attr_reader :calls
 
-  def initialize
+  # @param pane_problem [Hash{Symbol=>String}, nil] what +retry_pane_problem+ answers
+  def initialize(pane_problem: nil)
+    @pane_problem = pane_problem
     @calls = []
   end
 
@@ -353,6 +370,36 @@ class RecordingProgress
   def fail_step(run, failure, ctx:)
     @calls << [:fail_step, Workspace::WorkflowRun.from_h(run).current, failure]
     marked(run, "failed")
+  end
+
+  def advance(run, ctx:)
+    @calls << [:advance, Workspace::WorkflowRun.from_h(run).current]
+    Workspace::WorkflowRun.from_h(run)
+  end
+
+  def finish(run, state)
+    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    @calls << [:finish, hash["id"], state]
+    Workspace::WorkflowRun.from_h(hash.merge("state" => state))
+  end
+
+  def start_retry(run, waiting = nil, ctx:, proven: false, budgeted: true)
+    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    waiting ||= hash.delete("backoff")
+    @calls << [:start_retry, hash["current"], waiting, {proven: proven, budgeted: budgeted}]
+    Workspace::WorkflowRun.from_h(hash.merge("current" => waiting["to"], "reason" => nil))
+  end
+
+  def hold_retry(run, waiting, problem, pane: nil)
+    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    @calls << [:hold_retry, hash["current"], problem, {pane: pane}]
+    Workspace::WorkflowRun.from_h(hash.merge("backoff" => waiting.merge("blocked" => problem[:code]),
+      "reason" => {"code" => "waiting_you", "details" => {"message" => "#{problem[:message]}."}}))
+  end
+
+  def retry_pane_problem(run, waiting, proven: false, pane: nil)
+    @calls << [:retry_pane_problem, Workspace::WorkflowRun.from_h(run).current, {proven: proven, pane: pane}]
+    @pane_problem
   end
 
   private
@@ -467,5 +514,56 @@ class RecordingInbox
   def upsert(record, reopen: false)
     @calls << [:upsert, record, {reopen: reopen}]
     record
+  end
+end
+
+# Fake of Workspace::WorkflowEvaluation#evaluate and #finish_check for the decision phase: +evaluate+ registers the
+# check it was given on +ctx+ and answers the run as given; +finish_check+ answers the stored run.
+class RecordingEvaluation
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param runs [Hash{String=>Hash}] the stored runs by id
+  # @param check [Hash, nil] what +evaluate+ registers on its context
+  def initialize(runs, check: nil)
+    @runs = runs
+    @check = check
+    @calls = []
+  end
+
+  def evaluate(run, ctx:, turn_started: nil, background: [])
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:evaluate, run.current]
+    ctx.check(@check) if @check
+    run
+  end
+
+  def finish_check(run_id, check)
+    @calls << [:finish_check, run_id, check]
+    Workspace::WorkflowRun.from_h(@runs.fetch(run_id))
+  end
+end
+
+# Fake of Workspace::WorkflowGateNote#find and #missing: the note it was given, and the error the real one builds
+# for a gate that names none.
+class RecordingGateNote
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param found [Hash, nil] what +find+ answers ("name", "path", "sha256")
+  def initialize(found: nil)
+    @found = found
+    @calls = []
+  end
+
+  def find(run, step_id = nil)
+    @calls << [:find, Workspace::WorkflowRun.from_h(run).id]
+    @found
+  end
+
+  def missing(run, step_id = nil)
+    Workspace::Error.new("The gate names no note.", code: "gate_note_unreadable", details: {"run_id" => Workspace::WorkflowRun.from_h(run).id})
   end
 end

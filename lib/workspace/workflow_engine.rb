@@ -118,23 +118,24 @@ module Workspace
       env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
       @store = store
       @panes = panes
-      @gate_note = gate_note
-      @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard, clock: clock)
+      attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
       require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
         commands_config: commands_config, checker: checker)
       prompt = WorkflowPrompt.new(composer: composer, git: git, excludes: excludes, prompt_writer: prompt_writer)
       @clock = clock
       # The change types a step's line through Dispatch, which is built after it.
-      @change = WorkflowRunChange.new(store: store, attempt_record: @attempt_record, deliver: ->(run_id, delivery) { @dispatch.deliver(run_id, delivery)&.to_mutable_h },
+      @change = WorkflowRunChange.new(store: store, attempt_record: attempt_record, deliver: ->(run_id, delivery) { @dispatch.deliver(run_id, delivery)&.to_mutable_h },
         alerts: alerts, event_log: event_log)
-      @dispatch = WorkflowDispatch.new(change: @change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: @attempt_record,
+      @dispatch = WorkflowDispatch.new(change: @change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
         guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
-      @progress = WorkflowProgress.new(change: @change, store: store, dispatch: @dispatch, attempt_record: @attempt_record, panes: panes,
+      @progress = WorkflowProgress.new(change: @change, store: store, dispatch: @dispatch, attempt_record: attempt_record, panes: panes,
         log_tail: log_tail || WorkflowLogTail.new, clock: clock)
       @evaluation = WorkflowEvaluation.new(change: @change, store: store, progress: @progress, panes: panes, checker: checker, require_check: require_check,
         guard: guard, commands_config: commands_config, inbox_for: inbox_for, clock: clock)
       @starter = WorkflowStarter.new(change: @change, store: store, prompt: prompt, dispatch: @dispatch,
         lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
+      @decisions = WorkflowDecisions.new(change: @change, store: store, progress: @progress, dispatch: @dispatch, evaluation: @evaluation,
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: clock)
     end
 
     BACKGROUND_HOLD = WorkflowTransitions::BACKGROUND_HOLD
@@ -226,17 +227,7 @@ module Workspace
     #   `gate_note_unreadable` when the named note can't be read, or when +note_sha256+ is given
     #   and the gate names no note; and what +guard+ raises
     def approve(run_id, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
-      @change.call(run_id) do |stored, ctx|
-        gate = waiting_gate(stored, step: step, attempt: attempt)
-        guard&.call(stored)
-        file = gate_file(stored, note_sha256)
-        gate.merge!("state" => "approved", "at" => now_iso, "note" => note)
-        gate["file"] = file if file
-        event(stored, "gate_approved", with_note({"step" => stored["current"]}, note).merge(file ? {"sha256" => file["sha256"]} : {}))
-        stored["pending_context"] << "The #{stored["current"]} step was approved with this note: #{note}" if note
-        stored["pending_context"] << "The approved note is #{file["path"]}, sha256 #{file["sha256"]}." if file
-        advance(stored, ctx: ctx)
-      end
+      @decisions.approve(run_id, note: note, step: step, attempt: attempt, note_sha256: note_sha256, guard: guard).to_h
     end
 
     # Turns a gate down: the gated step, or an earlier one, runs again with the note.
@@ -254,23 +245,7 @@ module Workspace
     #   attempts and +extra_attempts+ is not given; `budget_spent` when the token budget is used up and +extra_tokens+ does not cover it; `usage` when `to` is not the gated step or
     #   one before it; and what +guard+ raises
     def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil)
-      @change.call(run_id) do |stored, ctx|
-        gate = waiting_gate(stored, step: step, attempt: attempt)
-        guard&.call(stored)
-        target = to || stored["current"]
-        ids = step_ids(stored)
-        unless ids.first(ids.index(stored["current"]) + 1).include?(target)
-          raise UsageError, "--to must be #{stored["current"]} or a step before it (#{ids.first(ids.index(stored["current"]) + 1).join(", ")}), got #{target.to_s[0, 60].inspect}."
-        end
-        # The step runs again, which is a new attempt.
-        spend_attempts(stored, extra_attempts)
-        spend_tokens(stored, extra_tokens)
-        gate.merge!("state" => "rejected", "at" => now_iso, "note" => note, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil))
-        event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
-        stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
-        stored["current"] = target
-        dispatch(stored, ctx: ctx)
-      end
+      @decisions.reject(run_id, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens).to_h
     end
 
     # Gets a run that is not moving going again: asks for its lock again,
@@ -297,14 +272,8 @@ module Workspace
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` when the resume would start
     #   an attempt the run has none left for and +extra_attempts+ is not given; `budget_spent` likewise for the token budget and +extra_tokens+
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
-      check = nil
-      unchanged = nil
-      run = @change.call(run_id) do |stored, ctx|
-        unchanged = resume_step(stored, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
-        check = ctx.check
-      end
-      run = finish_check(run_id, check) if check
-      unchanged ? run.merge("unchanged" => unchanged) : run
+      resumed = @decisions.resume(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
+      resumed.unchanged ? resumed.run.to_h.merge("unchanged" => resumed.unchanged) : resumed.run.to_h
     end
 
     # Stores a resume for later, with the same arguments as {#resume}: no
@@ -326,7 +295,7 @@ module Workspace
     def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       unchanged = nil
       run = @change.call(run_id) do |stored|
-        refuse_resume(stored, from: from)
+        @decisions.refuse_resume(stored, from: from)
         if self.class.parked(stored, @clock.call) == :waiting
           unchanged = "a resume is already parked for pane #{park_target(stored)}"
           next
@@ -335,8 +304,7 @@ module Workspace
         next if unchanged
         check_pane(pane, run_id: run_id) if pane && @panes.run_on(pane) != run_id
         if starts_attempt?(stored, from: from, pane: pane)
-          refuse_spent(stored, extra_attempts)
-          refuse_over_budget(stored, extra_tokens)
+          @decisions.refuse_budget(stored, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
         end
         drop_park(stored, "expired")
         store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}),
@@ -359,8 +327,10 @@ module Workspace
         parked = stored["parked"]
         next unless parked && parked["id"] == id
         stored.delete("parked")
-        unchanged = resume_step(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"], extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"],
-          budget: parked["retries"].to_i.zero?)
+        resumed = @decisions.apply_resume(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"],
+          extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], budget: parked["retries"].to_i.zero?)
+        stored.replace(resumed.run.to_mutable_h)
+        unchanged = resumed.unchanged
         check = ctx.check
         add_resume_note(stored, parked["note"]) if unchanged
         event(stored, "resume_parked_ended", {"step" => stored["current"], "how" => unchanged ? "unchanged" : "released"}
@@ -413,13 +383,7 @@ module Workspace
     # @raise [Workspace::Error] code `gate_waiting` for a run at a gate when no step is
     #   named (approve or reject it); `usage` for a step the workflow doesn't have
     def refuse_resume(run, from: nil)
-      if from
-        return if step_ids(run).include?(from)
-        raise UsageError, "No step #{from.to_s[0, 60].inspect} in workflow #{run["workflow"]} (#{step_ids(run).join(", ")})."
-      end
-      return unless step_state(run).dig("gate", "state") == "waiting"
-      raise Workspace::Error.new("Run #{run["id"]} is waiting at the #{run["current"]} gate. Approve or reject it, or pass --from STEP.",
-        code: "gate_waiting", details: {"run_id" => run["id"], "step" => run["current"]})
+      @decisions.refuse_resume(run, from: from)
     end
 
     # Ends a run: gives up its resources and frees its pane.
@@ -429,32 +393,16 @@ module Workspace
     # @return [Hash{String=>Object}] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, cause: "cancel")
-      @change.call(run_id) do |stored|
-        stored.replace(@attempt_record.abandon(stored).to_mutable_h)
-        finish(stored, "cancelled")
-        stored["cancelled_by"] = cause
-        event(stored, "run_cancelled", "cause" => cause)
-      end
+      @decisions.cancel(run_id, cause: cause).to_h
     end
 
-    # Ends every run of a workspace that was killed, so none of them goes on
-    # holding a lock for a checkout that is gone. Never raises: a run whose
-    # file is malformed is reported, and the others are still ended.
+    # Ends every run of a workspace that was killed. See {WorkflowDecisions#workspace_killed}.
     #
     # @param workspace [String]
     # @return [Hash{String=>Array<String>}] "cancelled", the ids of the runs ended, and
     #   "failed", the ids of the runs that could not be
     def workspace_killed(workspace)
-      result = {"cancelled" => [], "failed" => []}
-      @store.active.select { |run| run["workspace"] == workspace }.each do |run|
-        cancel(run["id"], cause: "kill")
-        result["cancelled"] << run["id"]
-      rescue
-        result["failed"] << run["id"]
-      end
-      result
-    rescue
-      result
+      @decisions.workspace_killed(workspace)
     end
 
     # The periodic look at a run nothing else will wake: one whose `on_fail`
@@ -744,149 +692,7 @@ module Workspace
       {"step" => run["current"], "attempt" => step_state(run)["attempts"].last&.fetch("n", nil)}.merge(data)
     end
 
-    # The body of {#resume}, inside a transition.
-    #
-    # @return [String, nil] why nothing was done, or nil; a check to run is registered on +ctx+
-    def resume_step(stored, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, budget: true)
-      # Refusals come first, so a refused resume leaves the run and its pane as they were.
-      refuse_resume(stored, from: from)
-      state = step_state(stored)
-      # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
-      unchanged = (from || stored["budget_hold"]) ? nil : left_alone(stored, state, pane, turn_over)
-      return unchanged if unchanged
-      # A wait whose pane would not take the retry is held before anything is written: no rebind, note, event or reset.
-      held = held_by_pane(stored, pane, from)
-      return held if held
-      # A pane another run has is refused first, so a refusal after this point logs nothing.
-      check_pane(pane, run_id: stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
-      # Only a resume that starts an attempt is held to the budget (not a parked one typed again after a
-      # busy pane: its attempt was counted then); decided before anything is written.
-      starting = budget && starts_attempt?(stored, from: from, pane: pane)
-      spend_attempts(stored, extra_attempts, needed: starting)
-      spend_tokens(stored, extra_tokens, needed: starting)
-      # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
-      stored["steps"].each_value { |each| each.delete("redelivery_pending") }
-      rebind(stored, pane) if pane
-      drop_park(stored, "taken_over")
-      # Dropping a park replaces the run's nested Hashes.
-      state = step_state(stored)
-      add_resume_note(stored, note)
-      held = stored.delete("budget_hold")
-      drop_retry_text(stored, held) if held && from
-      if held && !from
-        event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
-        stored["reason"] = nil
-        dispatch(stored, ctx: ctx, context: held["context"], budgeted: budget)
-        return nil
-      end
-      # A resume skips the wait of a retry; `--from` goes elsewhere and drops it.
-      waiting_retry = stored.delete("backoff")
-      # A stored wait that names no step to go back to is dropped; the failed step is resumed as it stands.
-      waiting_retry = nil unless waiting_retry.is_a?(Hash) && waiting_retry["to"].is_a?(String)
-      if waiting_retry && !from
-        event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"], "backoff" => "skipped")
-        start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget)
-        return held_retry_sentence(stored)
-      end
-      if from
-        event(stored, "run_resumed", "from" => from)
-        stored["current"] = from
-        dispatch(stored, ctx: ctx, budgeted: budget)
-        return nil
-      end
-      event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"])
-      stored["pending_context"].unshift(last_failure(stored)) if state["state"] == "failed" && stored.dig("reason", "code") == "failed_check"
-      case state["state"]
-      when "running"
-        if pane
-          dispatch(stored, ctx: ctx, budgeted: budget)
-        else
-          stored["reason"] = nil
-          evaluate(stored, ctx: ctx)
-        end
-      when "checking" then evaluate(stored, ctx: ctx)
-      when "passed" then advance(stored, ctx: ctx)
-      else dispatch(stored, ctx: ctx, budgeted: budget)
-      end
-      nil
-    end
-
-    # `--from` goes elsewhere: the text that told the held step why it was sent back is not for the step named.
-    def drop_retry_text(run, hold)
-      index = hold["text"].is_a?(String) ? run["pending_context"].index(hold["text"]) : nil
-      run["pending_context"].delete_at(index) if index
-    end
-
     def starts_attempt?(run, from:, pane:) = self.class.starts_attempt?(run, from: from, pane: pane)
-
-    # Attempts that count against the allowance: every one except those the sweep typed again.
-    def attempts_made(run) = self.class.attempts_made(run)
-
-    # The definition's `max_attempts` plus what people added with `--extra-attempts`.
-    def attempt_allowance(run) = self.class.attempt_allowance(run)
-
-    # Refuses with `attempts_spent` when the allowance is used up and +extra+ does not cover the overrun: the
-    # attempt about to start must fit, so +extra+ must be at least made minus allowed plus one.
-    def refuse_spent(run, extra)
-      made = attempts_made(run)
-      allowed = attempt_allowance(run)
-      needed = self.class.extra_attempts_needed(run)
-      return if made < allowed || (extra && extra >= needed)
-      raise Workspace::Error.new("Run #{run["id"]} has spent max_attempts (#{made} of #{allowed}). Pass --extra-attempts #{needed} to continue.",
-        code: "attempts_spent", details: {"run_id" => run["id"], "attempts" => made, "max_attempts" => allowed, "step" => run["current"], "needed" => needed})
-    end
-
-    # The budget step of a person's resume or reject: refused before anything changes; +extra+ is added to the
-    # run and recorded when the action goes on.
-    def spend_attempts(run, extra, needed: true)
-      return unless needed
-      refuse_spent(run, extra)
-      return unless extra
-      run["extra_attempts"] = run["extra_attempts"].to_i + extra
-      event(run, "attempts_extended", "extra" => extra, "extra_attempts" => run["extra_attempts"], "max_attempts" => attempt_allowance(run))
-    end
-
-    # Refuses with `budget_spent` when the token budget is used up and +extra+ does not cover the overrun (the least
-    # is used minus the allowance plus one). A run without a budget is never refused.
-    def refuse_over_budget(run, extra)
-      reading = WorkflowBudget.reading(run, live: false)
-      return unless reading && reading["spent"]
-      return if extra && extra >= reading["needed"]
-      raise Workspace::Error.new("Run #{run["id"]} has used its token budget (#{reading["used"]} of #{reading["allowance"]} tokens#{" at least" if reading["uncounted"].positive?}). Pass --extra-tokens #{reading["suggested"]} to continue (#{reading["needed"]} is the least).",
-        code: "budget_spent", details: WorkflowTransitions.budget_details(run, reading))
-    end
-
-    # The token step of a person's resume or reject, as {#spend_attempts} is for attempts.
-    def spend_tokens(run, extra, needed: true)
-      return unless needed
-      refuse_over_budget(run, extra)
-      return unless extra && WorkflowBudget.reading(run)
-      run["extra_tokens"] = run["extra_tokens"].to_i + extra
-      event(run, "budget_extended", "extra" => extra, "extra_tokens" => run["extra_tokens"], "allowance" => WorkflowBudget.reading(run, live: false)["allowance"])
-    end
-
-    # A run held by its budget types into the pane it had when the attempt would have started. As for a retry's wait,
-    # that pane must still be the run's (a person's +pane+ is the proof); nothing is written, so a refusal costs nothing.
-    def held_budget_pane(stored, pane)
-      hold = stored["budget_hold"]
-      check_pane(pane, run_id: stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
-      problem = retry_pane_problem(stored, hold, pane: pane || @panes.pane_of(stored["id"]) || hold["pane"], proven: !pane.nil?)
-      problem && problem[:message].sub(/\.\z/, "")
-    end
-
-    # The read-only decision of a resume over a retry's wait: the sentence saying why the retry can't start in the
-    # pane it would use (an explicit +pane+ counts as proven), after recording the hold once; nil when it can start
-    # or the run waits out no (readable) backoff.
-    def held_by_pane(stored, pane, from)
-      return held_budget_pane(stored, pane) if stored["budget_hold"].is_a?(Hash)
-      waiting = stored["backoff"]
-      return nil if from || !(waiting.is_a?(Hash) && waiting["to"].is_a?(String))
-      check_pane(pane, run_id: stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
-      problem = retry_pane_problem(stored, waiting, pane: pane, proven: !pane.nil?)
-      return nil unless problem
-      hold_retry(stored, waiting, problem, pane: pane || bound_pane(stored))
-      held_retry_sentence(stored)
-    end
 
     def add_resume_note(run, note)
       run["pending_context"] << WorkflowRun.resume_note(note) if note
@@ -914,21 +720,8 @@ module Workspace
 
     def event(run, type, data = {}) = @change.event(run, type, data)
 
-    # A gate event carries the person's note only when one was given.
-    def with_note(data, note)
-      note.to_s.strip.empty? ? data : data.merge("note" => note)
-    end
-
     def now_iso
       @clock.call.utc.iso8601
-    end
-
-    def step_ids(run)
-      run["definition"]["steps"].map { |step| step["id"] }
-    end
-
-    def step_def(run, id = run["current"])
-      run["definition"]["steps"].find { |step| step["id"] == id }
     end
 
     def step_state(run)
@@ -942,70 +735,12 @@ module Workspace
     # +run_id+ is the run asking, which a park of its own can't refuse; see {WorkflowDispatch#check_pane}.
     def check_pane(pane, run_id: nil) = @dispatch.check_pane(pane, run_id: run_id)
 
-    # The waiting gate of the run's step; with +step+ (and +attempt+), only when the
-    # run is at that step (and attempt), so a stale button can't pass a later gate.
-    def waiting_gate(run, step: nil, attempt: nil)
-      state = step_state(run)
-      gate = state["gate"]
-      current = state["attempts"].last&.fetch("n", nil)
-      waiting = gate && gate["state"] == "waiting"
-      return gate if waiting && (step.nil? || step == run["current"]) && (attempt.nil? || attempt == current)
-      message = if step
-        "Run #{run["id"]} is not waiting at the gate of step #{step.to_s[0, 60]}#{", attempt #{attempt}," if attempt} " \
-          "(step #{run["current"]}, attempt #{current.inspect}, is #{state["state"]}#{" and waits at its gate" if waiting}). " \
-          "Read `workspace workflow status #{run["id"]}` again."
-      else
-        "Run #{run["id"]} is not waiting at a gate (step #{run["current"]} is #{state["state"]})."
-      end
-      raise Workspace::Error.new(message,
-        code: "gate_not_waiting",
-        details: {"run_id" => run["id"], "step" => run["current"], "attempt" => current, "state" => state["state"],
-                  "expected_step" => step, "expected_attempt" => attempt})
-    end
-
-    # The note the approval is of, as {"path", "sha256"}: hashed once here, compared with
-    # what the caller read when it says, and recorded as read.
-    def gate_file(run, note_sha256)
-      found = @gate_note.find(run)
-      if note_sha256
-        raise @gate_note.missing(run) unless found
-        unless found["sha256"] == note_sha256
-          raise Workspace::Error.new("The note #{found["path"]} changed since that revision: its sha256 is now #{found["sha256"]}. " \
-            "Read it again before you approve.",
-            code: "stale_revision",
-            details: {"revision" => found["sha256"], "path" => found["path"], "run_id" => run["id"], "step" => run["current"],
-                      "attempt" => step_state(run)["attempts"].last&.fetch("n", nil)})
-        end
-      end
-      found&.slice("path", "sha256")
-    end
-
-    def rebind(run, pane)
-      check_pane(pane, run_id: run["id"]) unless @panes.run_on(pane) == run["id"]
-      @panes.unbind(run["id"])
-      run["pane"] = pane
-    end
-
     # Why {#resume} does nothing for the step as it stands; nil when it acts.
     def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) })
 
     # Ends an `on_fail` retry's wait; see {WorkflowProgress#start_retry}.
     def start_retry(run, waiting = nil, ctx:, **options)
       run.replace(@progress.start_retry(run, waiting, ctx: ctx, **options).to_mutable_h)
-    end
-
-    # Why the pane a waiting retry would type into is no longer the run's; see {WorkflowProgress#retry_pane_problem}.
-    def retry_pane_problem(run, waiting, **options) = @progress.retry_pane_problem(run, waiting, **options)
-
-    # Keeps a retry from starting without spending it; see {WorkflowProgress#hold_retry}.
-    def hold_retry(run, waiting, problem, pane: nil)
-      run.replace(@progress.hold_retry(run, waiting, problem, pane: pane).to_mutable_h)
-    end
-
-    # Why a resume that skipped the wait still started nothing; nil when the retry started.
-    def held_retry_sentence(run)
-      return nil unless run.dig("backoff", "blocked")
-      run.dig("reason", "details", "message").to_s.sub(/\.\z/, "")
     end
 
     # Starts the current step in the stored run; see {WorkflowDispatch#dispatch}.
@@ -1032,11 +767,6 @@ module Workspace
 
     # Runs a registered proof or check outside the lock; see {WorkflowEvaluation#finish_check}.
     def finish_check(run_id, check) = @evaluation.finish_check(run_id, check).to_h
-
-    # What follows a step's outcome; see {WorkflowProgress}.
-    def advance(run, ctx:) = run.replace(@progress.advance(run, ctx: ctx).to_mutable_h)
-
-    def finish(run, state) = run.replace(@progress.finish(run, state).to_mutable_h)
 
     def fail_step(run, failure, ctx:) = run.replace(@progress.fail_step(run, failure, ctx: ctx).to_mutable_h)
 
