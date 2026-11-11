@@ -169,6 +169,48 @@ module Workspace
       end
     end
 
+    # Whether a built step has a review.
+    #
+    # @param step [Hash] a built step
+    # @return [Boolean]
+    def self.reviewed?(step)
+      review = step.is_a?(Hash) ? step["review"] : nil
+      review.is_a?(Hash) && review["from"].is_a?(Array) && review["from"].any?
+    end
+
+    # What a step can use in one pass of an `on_fail` loop: one attempt, or one per review round it may use when reviewed
+    # (a rejection starts a new author attempt).
+    #
+    # @param step [Hash] a built step
+    # @return [Integer]
+    def self.attempt_weight(step)
+      reviewed?(step) ? step["review"]["max_rounds"] : 1
+    end
+
+    # The warnings that weigh a reviewed step's `max_rounds` against the attempt caps that would cut the rounds.
+    #
+    # @param steps [Array<Hash>] the built steps
+    # @param run_cap [Integer] the workflow's `max_attempts`
+    # @return [Array<Hash{String=>String}>] each with "code" (`review_rounds_reach_step_attempts` or `review_rounds_exceed_run_attempts`), "step" and "message"
+    def self.round_warnings(steps, run_cap)
+      others = steps.size - 1
+      steps.select { |step| reviewed?(step) }.flat_map do |step|
+        rounds = step["review"]["max_rounds"]
+        found = []
+        cap = WorkflowDefinition.step_max_attempts(step)
+        if cap && rounds >= cap
+          found << {"code" => "review_rounds_reach_step_attempts", "step" => step["id"],
+                    "message" => "step #{step["id"]} sets review max_rounds: #{rounds} and max_attempts: #{cap}, so one attempt lost to its own status: check or an undelivered line cuts the last round. Set the step's max_attempts: #{rounds + 1} or review.max_rounds: #{[cap - 1, 1].max}."}
+        end
+        left = run_cap - others
+        if rounds > left
+          found << {"code" => "review_rounds_exceed_run_attempts", "step" => step["id"],
+                    "message" => "step #{step["id"]} sets review max_rounds: #{rounds}, but max_attempts: #{run_cap} leaves #{[left, 0].max} attempt#{"s" if left != 1} for it after one for each of the other #{others} step#{"s" if others != 1}, so the run can stop before the rounds are used. Set max_attempts: #{rounds + others} or review.max_rounds: #{[left, 1].max}."}
+        end
+        found
+      end
+    end
+
     private
 
     def problem(message)

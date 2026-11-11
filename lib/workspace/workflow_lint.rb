@@ -38,25 +38,28 @@ module Workspace
     private
 
     # Every pack a step's instructions are built from: the default packs (every step), the
-    # workflow's `include:` (every step) and the step's own. +where+ says what `start` does about it.
+    # workflow's `include:` (every step) and each reviewer's and the step's own. +where+ says what `start` does about it.
     def packs(definition, cwd, project, lineage, warnings, not_checked)
       data = definition.to_h
       total = data["steps"].size
       named = defaults(project, lineage).map { |name| [nil, "workflows.defaults.include (added to every step)", name, true] }
       named += data["include"].map { |name| [nil, "the workflow", name, true] }
+      (data["reviewers"] || {}).each do |reviewer, spec|
+        spec["include"].each { |name| named << [nil, "reviewer #{reviewer}", name, false, "`start` passes, but the run would stop when a review round starts."] }
+      end
       data["steps"].each_with_index do |step, index|
         step["include"].each { |name| named << [step["id"], "step #{step["id"]}", name, index.zero?] }
       end
       # `start` composes the default packs, the workflow's and the first step's, so one of those names the pack for every step.
       refused = named.select { |entry| entry[3] }.map { |entry| entry[2] }
-      named.each do |step, where, name, first|
+      named.each do |step, where, name, first, reviewer_effect|
         next if !first && refused.include?(name)
         @library.pack(name, cwd: project ? cwd : nil)
       rescue Workspace::UsageError => e
         warnings << unknown_pack(step, "#{where} names pack #{name}, which is not a valid pack name: #{e.message.lines.first.strip}")
       rescue Workspace::Error => e
         if project
-          effect = first ? "`start` would refuse it." : "`start` passes, since it reads only the first step, but the run would stop when it reaches step #{step} (step #{data["steps"].index { |each| each["id"] == step } + 1} of #{total})."
+          effect = reviewer_effect || (first ? "`start` would refuse it." : "`start` passes, since it reads only the first step, but the run would stop when it reaches step #{step} (step #{data["steps"].index { |each| each["id"] == step } + 1} of #{total}).")
           warnings << unknown_pack(step, "#{where} includes pack #{name}, which the library can't find from #{project.name}: #{e.message.lines.first.strip} #{effect}")
         else
           not_checked << {"code" => "pack_not_checked", "step" => step,

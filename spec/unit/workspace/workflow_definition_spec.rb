@@ -1041,4 +1041,44 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(stored["steps"][0]["review"]["from"]).to eq(["skeptic"])
     end
   end
+  describe "review round warnings" do
+    def warned(yaml, code)
+      parse(yaml).warnings.select { |w| w["code"] == code }
+    end
+
+    def reviewed(run_cap: 10, cap: nil, rounds: 3, extra: "")
+      "max_attempts: #{run_cap}\nreviewers:\n  skeptic:\n    prompt: Doubt\nsteps:\n  a:\n    prompt: P\n    produces: [a.md]\n#{"    max_attempts: #{cap}\n" if cap}    review: {from: [skeptic], max_rounds: #{rounds}}\n  b:\n    prompt: Q\n    produces: [b.md]\n#{extra}"
+    end
+
+    it "warns when max_rounds reaches the step's own cap" do
+      expect(warned(reviewed(cap: 3), "review_rounds_reach_step_attempts")).to match([include("step" => "a", "message" => /max_rounds: 3.*max_attempts: 3.*Set the step.s max_attempts: 4 or review.max_rounds: 2/)])
+      expect(warned(reviewed(cap: 4), "review_rounds_reach_step_attempts")).to eq([])
+      expect(warned(reviewed, "review_rounds_reach_step_attempts")).to eq([])
+    end
+
+    it "warns when the run's cap leaves fewer attempts than max_rounds" do
+      expect(warned(reviewed(run_cap: 3), "review_rounds_exceed_run_attempts")).to match([include("step" => "a", "message" => /max_rounds: 3.*max_attempts: 3 leaves 2 attempts.*max_attempts: 4 or review.max_rounds: 2/)])
+      expect(warned(reviewed(run_cap: 4), "review_rounds_exceed_run_attempts")).to eq([])
+    end
+
+    it "counts the review rounds of a step inside an on_fail loop" do
+      loop_text = reviewed(run_cap: 7, extra: "    on_fail: {goto: a, max: 2}\n")
+      expect(warned(loop_text, "on_fail_exceeds_max_attempts")).to match([include("step" => "b", "message" => /if every review round is used.*each retry runs 4 attempts again.*Raise max_attempts to 9/)])
+      expect(warned(loop_text.sub("max_rounds: 3", "max_rounds: 1"), "on_fail_exceeds_max_attempts")).to eq([])
+    end
+    it "words an on_fail count with a reviewed step as the worst case, and counts research, a reviewed plan and implement by hand" do
+      yaml = "max_attempts: 8\nreviewers:\n  skeptic:\n    prompt: D\nsteps:\n  research:\n    prompt: R\n    produces: [r.md]\n  plan:\n    prompt: P\n    produces: [p.md]\n    review: {from: [skeptic], max_rounds: 3}\n  implement:\n    prompt: I\n    produces: [i.md]\n    on_fail: {goto: plan, max: 2}\n"
+      found = parse(yaml).warnings.select { |w| w["code"] == "on_fail_exceeds_max_attempts" }
+      expect(found).to match([include("message" => /lets only 1 of those retries start if every review round is used \(the step then fails first on attempt 5, and each retry runs 4 attempts again\).*Raise max_attempts to 10/)])
+    end
+
+    it "names the values to set for the default max_rounds and max_attempts" do
+      yaml = "reviewers:\n  skeptic:\n    prompt: D\nsteps:\n  a:\n    prompt: P\n    produces: [a.md]\n    review: [skeptic]\n  b:\n    prompt: Q\n    produces: [b.md]\n"
+      expect(parse(yaml).warnings.select { |w| w["code"] == "review_rounds_exceed_run_attempts" }).to match([include("message" => /set max_attempts: 7 or review.max_rounds: 5/i)])
+    end
+
+    it "has no extends notes, and no warning from them, for a definition that extends nothing" do
+      expect(parse("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n").warnings).to eq([])
+    end
+  end
 end

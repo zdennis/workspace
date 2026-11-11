@@ -155,9 +155,11 @@ module Workspace
       @path = path
       @sha256 = Digest::SHA256.hexdigest(text)
       @problems = []
+      @notes = []
       extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]])
       @resolved_raw = extension.resolve(load_yaml(text))
       @parents = extension.parents
+      @notes = extension.notes
       if extension.failure.any?
         # The parent can't be used, so nothing else about this file can be judged.
         @problems = extension.failure
@@ -223,7 +225,7 @@ module Workspace
       else
         []
       end
-      missing + idle + retry_warnings + step_attempt_warnings + unused_action
+      missing + idle + retry_warnings + step_attempt_warnings + WorkflowReviewSpec.round_warnings(steps, @data["max_attempts"]) + @notes + unused_action
     end
 
     # Every project command a definition checks with: each step's `status: command:` and each `require: command:` not marked optional.
@@ -408,20 +410,29 @@ module Workspace
     # delivers, so step N (1-based) fails for the first time on attempt N, and each retry
     # delivers the steps from `goto` to it again. Retry M starts only while the attempts made
     # are fewer than `max_attempts`, which happens at the earliest after N + (M - 1) * span
-    # attempts. Other steps and their loops only add attempts, so this count is a floor.
+    # attempts. Other steps and their loops only add attempts, so without reviews this count is
+    # a floor. A reviewed step counts every round it may use (`WorkflowReviewSpec.attempt_weight`,
+    # a rejection costs an attempt), which makes the count a worst case: the message then says
+    # "if every review round is used". The failing step itself fails before its review.
     def retry_warnings
       ids = steps.map { |step| step["id"] }
       steps.each_with_index.filter_map do |step, index|
         on_fail = step["on_fail"] or next
-        first = index + 1
-        span = index - ids.index(on_fail["goto"]) + 1
+        goto = ids.index(on_fail["goto"])
+        first = steps[0...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
+        span = steps[goto...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
         wanted = on_fail["max"]
+        reviewed = steps[0...index].any? { |each| WorkflowReviewSpec.reviewed?(each) }
         needed = first + (wanted - 1) * span
         allowed = @data["max_attempts"]
         next if needed < allowed
         fits = (first < allowed) ? (allowed - first - 1) / span + 1 : 0
-        {"code" => "on_fail_exceeds_max_attempts", "step" => step["id"],
-         "message" => "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the step fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."}
+        message = if reviewed
+          "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start if every review round is used (the step then fails first on attempt #{first}, and each retry runs #{span} attempt#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max or the review max_rounds."
+        else
+          "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the step fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."
+        end
+        {"code" => "on_fail_exceeds_max_attempts", "step" => step["id"], "message" => message}
       end
     end
 

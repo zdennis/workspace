@@ -382,4 +382,93 @@ RSpec.describe "workflow extends" do
         .to eq(%w[research plan review_supportive review_skeptical review_implementer plan_review implement verify])
     end
   end
+  describe "reviewers" do
+    let(:reviewed_parent) {
+      <<~YAML
+        reviewers:
+          skeptic:
+            prompt: Doubt it
+          fan:
+            prompt_file: fan.txt
+        steps:
+          one:
+            prompt: First
+            produces: [one.md]
+            review: [skeptic]
+          two:
+            prompt: Second
+            produces: [two.md]
+      YAML
+    }
+
+    before do
+      write(builtin_dir, "reviewed", reviewed_parent)
+      File.write(File.join(builtin_dir, "fan.txt"), "Like it, from the parent's directory")
+    end
+
+    it "lets a child step name a parent's reviewer" do
+      write(global_dir, "child", "extends: reviewed\nreplace:\n  two:\n    prompt: Second\n    produces: [two.md]\n    review: [fan]\n")
+
+      definition = catalog.find("child")
+
+      expect(definition.steps.last["review"]["from"]).to eq(["fan"])
+      expect(definition.warnings.map { |w| w["code"] }).not_to include("review_dropped")
+    end
+
+    it "refuses a child step that names a reviewer neither file has" do
+      write(global_dir, "child", "extends: reviewed\nreplace:\n  two:\n    prompt: Second\n    produces: [two.md]\n    review: [nobody]\n")
+
+      expect(problems_of("child")).to include(a_string_matching(/step two: review names unknown reviewer nobody \(known: skeptic, fan\)/))
+    end
+
+    it "merges reviewers by name, the child's entry replacing the parent's whole" do
+      write(global_dir, "child", "extends: reviewed\nreviewers:\n  skeptic:\n    prompt: Doubt harder\n  extra:\n    prompt: More\n")
+
+      reviewers = catalog.find("child").to_h["reviewers"]
+
+      expect(reviewers.keys).to eq(%w[skeptic fan extra])
+      expect(reviewers["skeptic"]["prompt"]).to eq("Doubt harder")
+    end
+
+    it "reads a parent's reviewer prompt_file beside the parent" do
+      write(global_dir, "child", "extends: reviewed\ntitle: C\nreviewers:\n  other:\n    prompt: Hi\n")
+
+      expect(catalog.find("child").to_h["reviewers"]["fan"]["prompt"]).to eq("Like it, from the parent's directory")
+    end
+
+    it "warns review_dropped once when a replacing step leaves out the parent step's review" do
+      write(global_dir, "child", "extends: reviewed\nreplace:\n  one:\n    prompt: First again\n    produces: [one.md]\n  two:\n    prompt: Second\n    produces: [two.md]\n")
+
+      dropped = catalog.find("child").warnings.select { |w| w["code"] == "review_dropped" }
+
+      expect(dropped).to match([include("step" => "one", "message" => /replace step one.*reviewed.*Repeat review:/)])
+    end
+
+    it "is quiet when the replacing step repeats review:" do
+      write(global_dir, "child", "extends: reviewed\nreplace:\n  one:\n    prompt: First again\n    produces: [one.md]\n    review: [skeptic]\n")
+
+      expect(catalog.find("child").warnings.map { |w| w["code"] }).not_to include("review_dropped")
+    end
+
+    it "anchors a reviewer prompt_file beside the file that wrote it, through three levels" do
+      FileUtils.mkdir_p(File.join(builtin_dir, "deep"))
+      write(File.join(builtin_dir, "deep"), "grand", "reviewers:\n  fan:\n    prompt_file: fan.txt\nsteps:\n  one:\n    prompt: P\n    produces: [o.md]\n")
+      File.write(File.join(builtin_dir, "deep", "fan.txt"), "from deep")
+      write(global_dir, "mid", "extends: grand\ntitle: Mid\n")
+      write(global_dir, "top", "extends: mid\ntitle: Top\n")
+      config_with_deep = instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: File.join(builtin_dir, "deep"), workspace_projects_dir: File.join(global_dir, "..", "no-projects"))
+
+      top = Workspace::WorkflowCatalog.new(config: config_with_deep).find("top")
+
+      expect(top.to_h["reviewers"]["fan"]["prompt"]).to eq("from deep")
+    end
+
+    it "lets a child override a parent's reviewer with its own prompt_file, read beside the child" do
+      FileUtils.mkdir_p(global_dir)
+      File.write(File.join(global_dir, "mine.txt"), "child's own")
+      write(global_dir, "child", "extends: reviewed\nreviewers:\n  fan:\n    prompt_file: mine.txt\n")
+
+      expect(catalog.find("child").to_h["reviewers"]["fan"]["prompt"]).to eq("child's own")
+    end
+  end
 end
