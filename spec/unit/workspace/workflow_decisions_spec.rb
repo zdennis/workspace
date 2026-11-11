@@ -277,6 +277,71 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(progress.calls).to eq([[:end_round, "plan", {how: "from", close: true}]])
     end
 
+    describe "a review round held by the token budget or the run's timeout" do
+      def held_round(hold, code, definition = {})
+        run = reviewing_run(reason: {"code" => code, "since" => "2026-11-10T11:55:00Z", "details" => {"review_round" => 2}})
+        run["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil}
+        run["steps"]["plan"]["attempts"][0]["usage"] = {"input_tokens" => 150}
+        run["definition"].merge!("max_attempts" => 1).merge!(definition)
+        run.merge(hold => {"review_round" => 2})
+      end
+
+      it "refuses a resume until --extra-tokens covers the budget, then starts that round, not an attempt, asking no attempt allowance" do
+        stored(held_round("budget_hold", "budget_spent", "budget" => {"tokens" => 100}))
+        before = deep_copy(store.runs["wr_1"])
+
+        expect(error_for { decisions.resume("wr_1") }.code).to eq("budget_spent")
+        expect(error_for { decisions.resume("wr_1", extra_tokens: 50) }.code).to eq("budget_spent")
+        expect(store.runs["wr_1"]).to eq(before)
+
+        resumed = decisions.resume("wr_1", extra_tokens: 51)
+
+        expect(resumed.unchanged).to be_nil
+        expect(resumed.run.budget_hold).to be_nil
+        expect(resumed.run.extra_tokens).to eq(51)
+        expect(progress.calls).to eq([[:restart_review, "plan"]])
+        expect(dispatch.calls).to be_empty
+        expect(evaluation.calls).to eq([[:review_round, "wr_1", {"step" => "plan"}]])
+        expect(change.events.map { |event| event[1] }).to eq(%w[budget_extended run_resumed])
+        expect(change.events.last).to eq(["wr_1", "run_resumed", {"step" => "plan", "budget" => "released", "review_round" => 2}])
+      end
+
+      it "refuses a resume until --extra-time covers the timeout, then starts that round" do
+        stored(held_round("timeout_hold", "run_timed_out", "timeout" => 1800))
+
+        expect(error_for { decisions.resume("wr_1") }.code).to eq("run_timed_out")
+
+        resumed = decisions.resume("wr_1", extra_seconds: 1801)
+
+        expect(resumed.run.timeout_hold).to be_nil
+        expect(resumed.run.extra_seconds).to eq(1801)
+        expect(progress.calls).to eq([[:restart_review, "plan"]])
+        expect(dispatch.calls).to be_empty
+      end
+
+      context "when the author's pane is no longer the run's" do
+        let(:progress) { RecordingProgress.new(pane_problem: {code: "pane_gone", message: "pane %3 is gone."}) }
+
+        it "starts the round anyway, since the round types into its own window" do
+          stored(held_round("budget_hold", "budget_spent", "budget" => {"tokens" => 100}))
+
+          expect(decisions.resume("wr_1", extra_tokens: 51).unchanged).to be_nil
+          expect(progress.calls).to eq([[:restart_review, "plan"]])
+        end
+      end
+
+      it "holds a fresh round after a stopped one to the budget too" do
+        stopped = reviewing_run(reason: review_incomplete)
+        stopped["steps"]["plan"]["attempts"][0]["usage"] = {"input_tokens" => 150}
+        stopped["definition"]["budget"] = {"tokens" => 100}
+        stored(stopped)
+
+        expect(error_for { decisions.resume("wr_1") }.code).to eq("budget_spent")
+        decisions.resume("wr_1", extra_tokens: 51)
+        expect(progress.calls).to eq([[:restart_review, "plan"]])
+      end
+    end
+
     it "runs a failed step again, telling it what failed" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"}))
 

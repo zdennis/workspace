@@ -87,6 +87,26 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.starts_attempt?(reviewing, from: "plan", pane: nil)).to be(true)
     end
 
+    it "starts no attempt but a round on a resume of a round the budget or timeout held" do
+      %w[budget_hold timeout_hold].each do |key|
+        held = reviewing({delivery: nil, started_at: nil}).merge(key => {"review_round" => 2}, "reason" => {"code" => "budget_spent"})
+        expect(described_class.round_hold?(held)).to be(true)
+        expect(described_class.starts_attempt?(held, from: nil, pane: "%0")).to be(false)
+        expect(described_class.starts_round?(held, from: nil)).to be(true)
+        expect(described_class.starts_round?(held, from: "plan")).to be(false)
+      end
+      attempt_hold = run_with(steps: {"plan" => step("failed")}).merge("budget_hold" => {"pane" => "%3"})
+      expect(described_class.round_hold?(attempt_hold)).to be(false)
+      expect(described_class.starts_attempt?(attempt_hold, from: nil, pane: nil)).to be(true)
+    end
+
+    it "starts a round on a resume of a stopped round, and not on a redelivery of a lapsed one or for another step" do
+      expect(described_class.starts_round?(reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"}), from: nil)).to be(true)
+      expect(described_class.starts_round?(reviewing({ended_at: "2026-10-04T12:05:00Z"}), from: nil)).to be(true)
+      expect(described_class.starts_round?(reviewing({delivery: "failed"}), from: nil)).to be(false)
+      expect(described_class.starts_round?(run_with(steps: {"plan" => step("failed")}), from: nil)).to be(false)
+    end
+
     it "leaves a live round alone and lets a stopped or lapsed one be acted on" do
       run = reviewing(delivery: nil)
       expect(described_class.left_alone(run, run["steps"]["plan"], nil, nil, started, -> { "%3" })).to eq("the review round of step plan is still running")

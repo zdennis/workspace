@@ -8,6 +8,7 @@ module Workspace
   # A step with a `review:` does not pass on its own checks: its attempt ends `checks_passed` and the step is
   # `reviewing` while a review round runs ({#pass_step}); the round's outcome decides it ({#decide_review}). A person's
   # resume starts the round again ({#restart_review}), and a cancel or `resume --from` ends it undecided ({#end_round}).
+  # Every round start is held, as an attempt start is, while the token budget or the run's timeout is used up.
   # Each method takes the stored run, leaves it as it is and returns the run afterwards; a step it starts
   # goes through {WorkflowDispatch#dispatch}.
   class WorkflowProgress
@@ -32,7 +33,8 @@ module Workspace
     # any other goes on ({#advance}). A step with a `review:` whose attempt no round has decided ends the attempt
     # `checks_passed` instead and starts a review round: the step reads `reviewing`, its `review` holds the round
     # ("round", "delivery", "started_at", "pending", "redeliveries"), and the round is registered on +ctx+ to run
-    # once the lock is given up.
+    # once the lock is given up. A spent token budget or timeout holds the round instead (`budget_spent`,
+    # `run_timed_out`): the step stays `reviewing` and its `review` names the round with no delivery.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being checked; left as it is
     # @param ctx [Workspace::WorkflowRunChange::Context] the change's context, which gets the next step's line
@@ -192,10 +194,14 @@ module Workspace
       begin_round(run, ctx)
     end
 
-    # The one start of a review round: the round is spent here, and its delivery is registered on +ctx+.
+    # The one start of a review round: the round is spent here, and its delivery is registered on +ctx+. A round is
+    # held first, as an attempt is, when the token budget or the run's timeout is used up ({WorkflowDispatch#hold_round}):
+    # the step stays `reviewing` with the round named and no delivery, the round is not spent, and nothing is registered.
     def begin_round(run, ctx)
       state = step_state(run)
       round = state["review_rounds"].to_i + 1
+      held = @dispatch.hold_round(run, round: round)
+      return hold_round(run, held, round) if held
       state["review_rounds"] = round
       state["review"] = {"round" => round, "delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3),
                          "pending" => WorkflowDefinition.review(step_def(run))["from"].dup, "redeliveries" => 0}
@@ -205,6 +211,15 @@ module Workspace
       event(run, "review_started", "step" => run["current"], "attempt" => attempt, "round" => round)
       ctx.review({"step" => run["current"], "attempt" => attempt, "round" => round})
     end
+
+    # A held round has no delivery and no start: its release goes through {#begin_round} for the same round.
+    def hold_round(run, held, round)
+      run.replace(held.thawed)
+      step_state(run)["review"] = {"round" => round, "delivery" => nil}
+    end
+
+    # A round a budget or timeout hold kept from starting: it never ran, so it has no record, usage or review_ended.
+    def held_round?(round) = round.is_a?(Hash) && round["started_at"].nil?
 
     def decide_in(run, tally, ctx)
       state = step_state(run)
@@ -240,6 +255,10 @@ module Workspace
     def restart_in(run, ctx)
       state = step_state(run)
       round = state["review"]
+      if held_round?(round)
+        state.delete("review")
+        return begin_round(run, ctx)
+      end
       unless round.is_a?(Hash) && run["reason"].nil? && round["ended_at"].nil?
         end_round_in(run, "resumed", ctx, false)
         return begin_round(run, ctx)
@@ -259,10 +278,11 @@ module Workspace
       round = state["review"]
       return unless round.is_a?(Hash)
       attempt = state["attempts"].last
-      add_round_record(run, round, how) unless round["recorded"]
+      held = held_round?(round)
+      add_round_record(run, round, how) unless round["recorded"] || held
       state.delete("review")
       # A round a tally already ended wrote its `review_ended`.
-      event(run, "review_ended", "step" => run["current"], "attempt" => attempt["n"], "round" => round["round"], "outcome" => how) unless round["ended_at"]
+      event(run, "review_ended", "step" => run["current"], "attempt" => attempt["n"], "round" => round["round"], "outcome" => how) unless round["ended_at"] || held
       return unless close
       @panes.unbind(run["id"], role: "reviewer")
       ctx.close_review({"step" => run["current"], "round" => round["round"], "pane" => round["pane"]})

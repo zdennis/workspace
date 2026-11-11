@@ -5,7 +5,8 @@ module Workspace
   # Starts a run's current step and types its line: {#dispatch} takes the step's resources, writes its
   # instructions, binds the pane and stores the attempt as `delivering` inside the run's lock; {#deliver}
   # types the line after the lock is given up and records the answer, parking a released resume again when
-  # the pane was only busy. A run whose token budget or timeout is used up is held before the attempt. {#check_pane}
+  # the pane was only busy. A run whose token budget or timeout is used up is held before the attempt, or before a
+  # review round ({#hold_round}). {#check_pane}
   # says whether another run holds a pane, through the store's occupancy queries.
   class WorkflowDispatch
     # The one line typed into the pane; the instructions themselves are in the file.
@@ -114,6 +115,25 @@ module Workspace
       @resources.release(run_id: hash["id"], worktree: hash["worktree"]).each { |name| lock_event(hash, "lock_released", name) }
     rescue Workspace::Error, SystemCallError
       nil
+    end
+
+    # Holds a review round before it starts when the run's token budget or timeout is used up, as {#dispatch} holds
+    # an attempt, with the same exemption (a round leaving a lock wait was allowed when it was reached). The hold
+    # (`budget_hold`, `timeout_hold`) records `{"review_round" => round}` and no pane, so its release starts that
+    # round, never an author attempt; the reason is `budget_spent` or `run_timed_out`, its details naming the round.
+    # The caller keeps the step `reviewing`. A redelivery of a round already started is not asked here.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, at the step whose round would start; left as it is
+    # @param round [Integer] the round about to start
+    # @return [WorkflowRun, nil] the run held; nil when the round may start
+    def hold_round(run, round:)
+      work = WorkflowRun.from_h(run).thawed
+      spent = budget_holds?(work)
+      late = time_holds?(work)
+      return nil unless spent || late
+      hold(work, {"review_round" => round}, budget: spent, time: late)
+      work["reason"]["details"]["review_round"] = round
+      WorkflowRun.from_h(work)
     end
 
     # Takes a park off the run however it ended (its note moves to the pending context, see
@@ -264,12 +284,16 @@ module Workspace
     # stores a hold of its own (`budget_hold`, `timeout_hold`); the reason is `budget_spent` when the token budget
     # is spent, else `run_timed_out`, and carries the other's details under `run_timed_out` when both are.
     def hold_attempt(run, context, retry_of, budget:, time:)
+      pane = retry_of&.fetch("pane", nil) || bound_pane(run)
+      identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
+      hold(run, {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil)}.compact, budget: budget, time: time)
+    end
+
+    # The hold itself, for an attempt or a review round: +hold+ is the record each spent limit stores.
+    def hold(run, hold, budget:, time:)
       reading = WorkflowBudget.reading(run, live: false) if budget
       deadline = WorkflowDeadline.reading(run, @clock.call) if time
       release(run)
-      pane = retry_of&.fetch("pane", nil) || bound_pane(run)
-      identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
-      hold = {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil)}.compact
       run["budget_hold"] = hold if budget
       run["timeout_hold"] = hold.dup if time
       run["state"] = "waiting"

@@ -1482,4 +1482,31 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call(run: "wr_1"))).to include("outcome" => "nothing", "reason" => "finished")
     end
   end
+
+  describe "a run held at a review round's start" do
+    def hold_round(code, hold)
+      begin_run
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["build"].merge!("state" => "reviewing", "review_rounds" => 1, "review" => {"round" => 2, "delivery" => nil})
+        run.merge!("state" => "waiting", hold => {"review_round" => 2},
+          "reason" => {"code" => code, "since" => now.first.utc.iso8601, "details" => {"step" => "build", "review_round" => 2}})
+      end
+    end
+
+    it "reports budget_spent as nothing, naming the round held" do
+      hold_round("budget_spent", "budget_hold")
+
+      row = only_row(sweep.call)
+      expect(row).to include("outcome" => "nothing", "reason" => "budget_spent")
+      expect(row["message"]).to start_with("review round 2 of step build was not started: the run's token budget is used. Resume it with --extra-tokens N")
+    end
+
+    it "reports run_timed_out as nothing, naming the round held" do
+      hold_round("run_timed_out", "timeout_hold")
+
+      row = only_row(sweep.call)
+      expect(row).to include("outcome" => "nothing", "reason" => "run_timed_out")
+      expect(row["message"]).to start_with("review round 2 of step build was not started: the run's time limit is used. Resume it with --extra-time DURATION")
+    end
+  end
 end

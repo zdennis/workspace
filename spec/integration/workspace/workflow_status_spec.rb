@@ -721,6 +721,18 @@ RSpec.describe Workspace::WorkflowStatus do
         expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
       end
 
+      it "offers resume with --extra-tokens alone for a held review round, which asks no attempt allowance" do
+        create(state: "waiting", reason: held.merge("details" => held["details"].merge("review_round" => 1)), bound: false, budget_hold: {"review_round" => 1},
+          definition: {"max_attempts" => 1, "budget" => {"tokens" => 1000, "action" => "stop"}, "steps" => steps},
+          steps: {"research" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed", "usage" => {"input_tokens" => 1500}}]},
+                  "plan" => {"state" => "reviewing", "review" => {"round" => 1, "delivery" => nil}, "attempts" => [{"n" => 1, "outcome" => "checks_passed"}]}})
+        row = status.run("wr_1")["runs"].first
+
+        need = [{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}]
+        expect(row["current"]["reason"]["code"]).to eq("budget_spent")
+        expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
+      end
+
       it "stops asking once --extra-tokens was recorded" do
         budgeted(1500, reason: held, budget_hold: {}, extra: 600)
 

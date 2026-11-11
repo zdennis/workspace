@@ -173,10 +173,12 @@ module Workspace
 
     # The retry's wait is over but the token budget is used: not a failure, and the sweep cannot raise the budget.
     def budget_row(run, **rest)
+      round = (run.budget_hold || run.timeout_hold)&.dig("review_round")
+      held = round ? "review round #{round} of step #{run.current}" : "step #{run.current}"
       if run.reason&.dig("code") == "run_timed_out"
-        return row(run, "nothing", reason: "run_timed_out", message: "step #{run.current} was not started: the run's time limit is used. Resume it with --extra-time DURATION (see `workspace workflow status #{run.id}`) or cancel it", **rest)
+        return row(run, "nothing", reason: "run_timed_out", message: "#{held} was not started: the run's time limit is used. Resume it with --extra-time DURATION (see `workspace workflow status #{run.id}`) or cancel it", **rest)
       end
-      row(run, "nothing", reason: "budget_spent", message: "step #{run.current} was not started: the run's token budget is used. Resume it with --extra-tokens N#{" and --extra-time DURATION" if run.reason&.dig("details", "run_timed_out")} (see `workspace workflow status #{run.id}`) or cancel it", **rest)
+      row(run, "nothing", reason: "budget_spent", message: "#{held} was not started: the run's token budget is used. Resume it with --extra-tokens N#{" and --extra-time DURATION" if run.reason&.dig("details", "run_timed_out")} (see `workspace workflow status #{run.id}`) or cancel it", **rest)
     end
 
     # The pane the retry would type into is no longer the run's. Not a failure: the sweep cannot fix it, and a person can.

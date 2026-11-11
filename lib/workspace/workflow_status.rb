@@ -480,18 +480,23 @@ module Workspace
       budget = WorkflowBudget.reading(run.to_h)
       deadline = WorkflowDeadline.reading(run.to_h, @clock.call)
       # "min" is the larger of the run's shortfall and the shortfall of the step the action would start an attempt of.
+      limits = lambda do
+        needs = []
+        needs << need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"]) if budget && budget["spent"]
+        needs << need("extra_time", "--extra-time").merge("min" => deadline["needed"], "suggested" => deadline["suggested"]) if deadline && deadline["spent"]
+        needs
+      end
       extra = lambda do |target|
         shortfalls = []
         shortfalls << WorkflowEngine.extra_attempts_needed(run.to_h) if WorkflowEngine.attempts_spent?(run.to_h)
         shortfalls << WorkflowTransitions.step_extra_attempts_needed(run.to_h, target) if WorkflowTransitions.step_attempts_spent?(run.to_h, target)
-        needs = shortfalls.empty? ? [] : [need("extra_attempts", "--extra-attempts").merge("min" => shortfalls.max)]
-        needs += [need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"])] if budget && budget["spent"]
-        needs += [need("extra_time", "--extra-time").merge("min" => deadline["needed"], "suggested" => deadline["suggested"])] if deadline && deadline["spent"]
-        needs
+        (shortfalls.empty? ? [] : [need("extra_attempts", "--extra-attempts").merge("min" => shortfalls.max)]) + limits.call
       end
       here = WorkflowTransitions.target_step(run.to_h)
-      plain = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: nil) ? extra.call(here) : []
-      with_pane = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: "%0") ? extra.call(here) : []
+      # A review round is not an attempt: a resume that starts one needs only the token and time limits.
+      round = WorkflowTransitions.starts_round?(run.to_h, from: nil) ? limits.call : []
+      plain = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: nil) ? extra.call(here) : round
+      with_pane = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: "%0") ? extra.call(here) : round
       resume = action("workflow resume", id, needs: plain)
       from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra.call(step.to_s)) }
       focus = action("focus", run.workspace, "--pane", pane) if pane

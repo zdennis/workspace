@@ -5760,6 +5760,96 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(closed).to eq([["wr_1", {"step" => "plan", "round" => 1, "pane" => "%9"}]])
     end
 
+    describe "a round start past the token budget or the run's timeout" do
+      # The author's attempt ends with +usage+, as its transcript would say.
+      def recorder(usage)
+        Class.new(Workspace::WorkflowAttemptRecord) do
+          define_method(:finish) do |run:, step:, attempt:|
+            Workspace::WorkflowRun::Attempt.from_h(super(run: run, step: step, attempt: attempt).to_h.merge("usage" => usage))
+          end
+        end.new(guard: guard, clock: -> { now.first })
+      end
+
+      def limited_engine(usage: {"input_tokens" => 1200, "output_tokens" => 0})
+        build_engine(review_round: round_runner, attempt_record: recorder(usage),
+          review_tally: RecordingReviewTally.new(outcome: :approved, reviews: [{"reviewer" => "skeptic", "verdict" => "approve"}]))
+      end
+
+      def start_limited(engine, limit)
+        engine.start(definition: definition("#{limit}\n#{reviewed_yaml}"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+      end
+
+      it "holds round 1 when the author's attempt spent the budget, and --extra-tokens starts that round, not an attempt" do
+        engine = limited_engine
+        run = start_limited(engine, "budget: {tokens: 1000}")
+
+        plan = run["steps"]["plan"]
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "budget_spent")
+        expect(run["reason"]["details"]).to include("step" => "plan", "used" => 1200, "allowance" => 1000, "review_round" => 1)
+        expect(run["budget_hold"]).to eq("review_round" => 1)
+        expect(plan["state"]).to eq("reviewing")
+        expect(plan["review"]).to eq("round" => 1, "delivery" => nil)
+        expect(plan).not_to have_key("review_rounds")
+        expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
+        expect(rounds).to be_empty
+        expect(history).to include("step_checks_passed", "budget_spent")
+        expect(history).not_to include("review_started")
+
+        expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
+
+        run = engine.resume("wr_1", extra_tokens: 201)
+
+        plan = run["steps"]["plan"]
+        expect(run["state"]).to eq("running")
+        expect(run).not_to have_key("budget_hold")
+        expect(plan["state"]).to eq("reviewing")
+        expect(plan["review_rounds"]).to eq(1)
+        expect(plan["review"]).to include("round" => 1, "pane" => "%9")
+        expect(plan["attempts"].size).to eq(1)
+        expect(rounds).to eq([["wr_1", {"step" => "plan", "attempt" => 1, "round" => 1}]])
+        expect(panes.kicks.size).to eq(1)
+      end
+
+      it "holds round 1 with run_timed_out once the run's time is used, and --extra-time starts it" do
+        engine = limited_engine(usage: nil)
+        engine.start(definition: definition("timeout: 1h\n#{reviewed_yaml}"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        artifact("plan.md")
+        now[0] += 2 * 3600
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]).to include("code" => "run_timed_out")
+        expect(run["timeout_hold"]).to eq("review_round" => 1)
+        expect(run["steps"]["plan"]["state"]).to eq("reviewing")
+        expect(rounds).to be_empty
+
+        run = engine.resume("wr_1", extra_seconds: 3601)
+
+        expect(run["state"]).to eq("running")
+        expect(run["steps"]["plan"]["review_rounds"]).to eq(1)
+        expect(rounds.map { |_id, review| review["round"] }).to eq([1])
+      end
+
+      it "starts round 1 while the budget lasts" do
+        start_limited(limited_engine(usage: {"input_tokens" => 10, "output_tokens" => 0}), "budget: {tokens: 1000}")
+
+        expect(rounds.size).to eq(1)
+      end
+
+      it "ends a held round on cancel with no round record" do
+        engine = limited_engine
+        start_limited(engine, "budget: {tokens: 1000}")
+
+        run = engine.cancel("wr_1")
+
+        expect(run["state"]).to eq("cancelled")
+        expect(run["steps"]["plan"]).not_to have_key("review")
+        expect(run["steps"]["plan"]["attempts"].last["rounds"]).to be_nil
+      end
+    end
+
     describe "cancel of a run being reviewed (spec/fixtures/workflow_runs/reviewing.json)" do
       let(:transcript) { File.join(@dir, "s1.jsonl") }
       let(:ledger_path) { File.join(@dir, "ledger.jsonl") }

@@ -209,10 +209,21 @@ class RecordingDispatch
 
   # @param busy [Array<String>] the panes +check_pane+ refuses with `pane_has_run`
   # @param appends [Boolean] whether +dispatch+ starts a new attempt, as a delivered line does
-  def initialize(busy: [], appends: false)
+  # @param holds [String, nil] the reason +hold_round+ holds a round with (`budget_spent` or `run_timed_out`); nil lets it start
+  def initialize(busy: [], appends: false, holds: nil)
     @busy = busy
     @appends = appends
+    @holds = holds
     @calls = []
+  end
+
+  def hold_round(run, round:)
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:hold_round, run.id, {round: round}]
+    return nil unless @holds
+    hold = (@holds == "run_timed_out") ? "timeout_hold" : "budget_hold"
+    Workspace::WorkflowRun.from_h(run.thawed.merge("state" => "waiting", hold => {"review_round" => round},
+      "reason" => {"code" => @holds, "since" => "2026-11-10T12:00:00Z", "details" => {"step" => run.current, "review_round" => round}}))
   end
 
   def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)

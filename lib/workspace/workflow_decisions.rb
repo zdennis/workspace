@@ -111,12 +111,13 @@ module Workspace
     # @param extra_attempts [Integer, nil] raises the run's attempt allowance by this much, kept in the run and
     #   recorded as `attempts_extended`; applied only when the resume starts an attempt
     # @param extra_tokens [Integer, nil] raises the run's token budget by this much, kept in the run and recorded
-    #   as `budget_extended`; applied only when the resume starts an attempt
+    #   as `budget_extended`; applied only when the resume starts an attempt or a review round
     # @param extra_seconds [Integer, nil] raises the run's timeout by this many seconds, kept in the run (`extra_seconds`)
-    #   and recorded as `time_extended`; applied only when the resume starts an attempt
+    #   and recorded as `time_extended`; applied only when the resume starts an attempt or a review round
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
-    #   start an attempt the run has no allowance left for
+    #   start an attempt the run has no allowance left for; `budget_spent` or `run_timed_out` when it would start a
+    #   review round (one a hold kept back, or a fresh one after a stopped round) past the budget or the timeout
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
       follow = nil
       unchanged = nil
@@ -348,8 +349,10 @@ module Workspace
       # Only a resume that starts an attempt is held to the budget (not a parked one typed again after a
       # busy pane: its attempt was counted then); decided before anything is written.
       starting = budget && WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
+      # A review round is not an attempt, so it asks no attempt allowance; it is held to the budget and the timeout.
+      round = budget && WorkflowTransitions.starts_round?(stored, from: from)
       spend_attempts(stored, extra_attempts, needed: starting, target: WorkflowTransitions.target_step(stored, from: from))
-      spend_limits(stored, extra_tokens, extra_seconds, needed: starting)
+      spend_limits(stored, extra_tokens, extra_seconds, needed: starting || round)
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
@@ -361,6 +364,13 @@ module Workspace
       time_held = stored.delete("timeout_hold")
       held ||= time_held
       drop_retry_text(stored, held) if held && from
+      if held&.key?("review_round") && !from
+        # The held round starts now, never the author: the release goes through the round's one start.
+        event(stored, "run_resumed", "step" => stored["current"], "budget" => "released", "review_round" => held["review_round"])
+        stored["reason"] = nil
+        stored.replace(@progress.restart_review(stored, ctx: ctx).thawed)
+        return nil
+      end
       if held && !from
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
         stored["reason"] = nil
@@ -525,6 +535,8 @@ module Workspace
     # Why a retry's wait can't start in the pane it would use (an explicit +pane+ is proven), after recording the
     # hold once; nil when it can start or the run waits out no (readable) backoff.
     def held_by_pane(stored, pane, from)
+      # A held review round types into its own review window, not the author's pane.
+      return nil if WorkflowTransitions.round_hold?(stored)
       return held_attempt_pane(stored, pane) if hold_of(stored)
       waiting = stored["backoff"]
       return nil if from || !(waiting.is_a?(Hash) && waiting["to"].is_a?(String))

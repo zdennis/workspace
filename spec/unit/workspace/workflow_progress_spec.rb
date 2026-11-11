@@ -273,7 +273,7 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
       expect(context.delivery).to be_nil
       expect(attempt_record.calls).to eq([[:finish, "wr_1", "plan", 1]])
-      expect(dispatch.calls).to be_empty
+      expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 1}]])
       expect(change.events.map { |event| event[1] }).to eq(%w[step_checks_passed review_started])
     end
 
@@ -429,7 +429,7 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 2)
         expect(context.close_review).to be_nil
         expect(panes.calls).to be_empty
-        expect(dispatch.calls).to be_empty
+        expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 2}]])
       end
 
       it "delivers a round whose delivery failed again as the same round, its redelivery count started again" do
@@ -447,6 +447,90 @@ RSpec.describe Workspace::WorkflowProgress do
                                                           "session" => nil, "agent" => nil, "usage" => nil, "ended" => "redelivered"}])
         expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
         expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 1, "again" => true}]])
+      end
+    end
+
+    describe "a round start past the token budget or the run's timeout" do
+      %w[budget_spent run_timed_out].each do |code|
+        context "held with #{code}" do
+          let(:dispatch) { RecordingDispatch.new(holds: code) }
+
+          it "keeps the step reviewing with the round named and no delivery, spends no round and registers nothing" do
+            context = ctx
+
+            run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: context)
+
+            state = run.step("plan")
+            expect(run.state).to eq("waiting")
+            expect(run.reason).to include("code" => code, "details" => include("review_round" => 1))
+            expect(run.to_h[(code == "budget_spent") ? "budget_hold" : "timeout_hold"]).to eq("review_round" => 1)
+            expect(state.state).to eq("reviewing")
+            expect(state.review).to eq("round" => 1, "delivery" => nil)
+            expect(state.review_rounds).to be_nil
+            expect(state.last_attempt.outcome).to eq("checks_passed")
+            expect(context.review).to be_nil
+            expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 1}]])
+            expect(change.events.map { |event| event[1] }).to eq(%w[step_checks_passed])
+          end
+        end
+      end
+
+      context "with a spent budget" do
+        let(:dispatch) { RecordingDispatch.new(holds: "budget_spent") }
+
+        it "holds a fresh round after a stopped one, the stopped round recorded and the next one not spent" do
+          stopped = reviewing_hash("state" => "waiting", "reason" => {"code" => "review_incomplete", "since" => "2026-11-10T11:55:00Z", "details" => {}})
+
+          run = progress.restart_review(stopped, ctx: ctx)
+
+          state = run.step("plan")
+          expect(run.reason["code"]).to eq("budget_spent")
+          expect(state.review).to eq("round" => 2, "delivery" => nil)
+          expect(state.review_rounds).to eq(1)
+          expect(state.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["resumed"])
+        end
+
+        it "delivers a round whose delivery failed again as the same round without asking the limits" do
+          given = reviewing_hash
+          given["steps"]["plan"]["review"]["delivery"] = "failed"
+          context = ctx
+
+          run = progress.restart_review(given, ctx: context)
+
+          expect(run.state).to eq("running")
+          expect(run.step("plan").review).to include("round" => 1, "delivery" => "delivering")
+          expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
+          expect(dispatch.calls).to be_empty
+        end
+      end
+
+      it "starts the held round itself on the resume that released it, spending that round" do
+        held = reviewing_hash("state" => "running", "reason" => nil)
+        held["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil}
+        context = ctx
+
+        run = progress.restart_review(held, ctx: context)
+
+        state = run.step("plan")
+        expect(state.review_rounds).to eq(2)
+        expect(state.review).to include("round" => 2, "delivery" => "delivering", "started_at" => "2026-11-10T12:00:00.000Z")
+        expect(state.last_attempt.to_h["rounds"]).to be_nil
+        expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 2)
+        expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 2}]])
+      end
+
+      it "ends a held round on cancel with no round record and no review_ended, still closing the window" do
+        held = reviewing_hash
+        held["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil}
+        context = ctx
+
+        run = progress.end_round(held, how: "cancelled", ctx: context)
+
+        expect(run.step("plan").review).to be_nil
+        expect(run.step("plan").last_attempt.to_h["rounds"]).to be_nil
+        expect(attempt_record.calls).to be_empty
+        expect(change.events).to be_empty
+        expect(context.close_review).to eq("step" => "plan", "round" => 2, "pane" => nil)
       end
     end
   end

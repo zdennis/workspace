@@ -106,9 +106,10 @@ module Workspace
       from || run.dig("backoff", "to") || run["current"]
     end
 
-    # Whether a resume would start a new attempt: `--from`, a run held for its token budget or its timeout, a retry's wait, a step that failed or never
+    # Whether a resume would start a new attempt: `--from`, a run held for its token budget or its timeout before an
+    # attempt, a retry's wait, a step that failed or never
     # got its line, or a running step given a pane. Not a check or a turn left to decide (a failure there goes
-    # through the `on_fail` budget), a review round (its attempt has ended; a round is not an attempt), a passed
+    # through the `on_fail` budget), a review round, held or not (its attempt has ended; a round is not an attempt), a passed
     # step moving on, or a lock wait (the attempt was allowed when the step was reached).
     #
     # @param run [Hash{String=>Object}] a stored run
@@ -117,6 +118,7 @@ module Workspace
     # @return [Boolean]
     def self.starts_attempt?(run, from:, pane:)
       return true if from
+      return false if round_hold?(run)
       return true if run["budget_hold"].is_a?(Hash) || run["timeout_hold"].is_a?(Hash)
       return true if run["backoff"].is_a?(Hash) && run["backoff"]["to"].is_a?(String)
       return false if run.dig("reason", "code") == "waiting_lock"
@@ -125,6 +127,32 @@ module Workspace
       when "checking", "reviewing", "passed" then false
       else true
       end
+    end
+
+    # Whether the run's token budget or timeout hold is of a review round (it records `review_round`): its release
+    # starts that round, never an author attempt.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.round_hold?(run)
+      [run["budget_hold"], run["timeout_hold"]].any? { |hold| hold.is_a?(Hash) && hold.key?("review_round") }
+    end
+
+    # Whether a resume would start a review round, which the token budget and the run's timeout are asked about as
+    # an attempt's start is: a round the budget or timeout held, or a fresh round after one that stopped for a
+    # person. Not `--from` (it starts an attempt), nor a round whose delivery failed or lapsed (delivered again as
+    # the same round, which no limit holds back).
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param from [String, nil] the step a resume would start again at
+    # @return [Boolean]
+    def self.starts_round?(run, from:)
+      return false if from
+      return true if round_hold?(run)
+      state = run["steps"].fetch(run["current"])
+      return false unless state["state"] == "reviewing"
+      round = state["review"]
+      !(round.is_a?(Hash) && run["reason"].nil? && round["ended_at"].nil?)
     end
 
     # Where the line that starts an attempt stands. An attempt is stored as

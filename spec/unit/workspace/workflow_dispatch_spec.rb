@@ -160,6 +160,58 @@ RSpec.describe Workspace::WorkflowDispatch do
     end
   end
 
+  describe "#hold_round" do
+    def reviewing(**overrides)
+      run_hash("state" => "running", "definition" => run_hash["definition"].merge(overrides),
+        "steps" => {"plan" => {"state" => "reviewing", "review_rounds" => 1,
+                               "attempts" => [{"n" => 1, "started_at" => "2026-11-10T10:00:00.000Z", "ended_at" => "2026-11-10T10:30:00Z",
+                                               "outcome" => "checks_passed", "usage" => {"input_tokens" => 150}}]}})
+    end
+
+    it "holds a round past the token budget with budget_spent, recording the round and no pane, and gives up the locks" do
+      given = reviewing("budget" => {"tokens" => 100})
+      before = deep_copy(given)
+
+      run = dispatch.hold_round(given, round: 2)
+
+      expect(given).to eq(before)
+      expect(run.budget_hold).to eq("review_round" => 2)
+      expect(run.timeout_hold).to be_nil
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to include("code" => "budget_spent")
+      expect(run.reason["details"]).to include("kind" => "budget", "step" => "plan", "used" => 150, "allowance" => 100, "review_round" => 2)
+      expect(run.step("plan").state).to eq("reviewing")
+      expect(resources.calls.map(&:first)).to eq([:release])
+      expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 150, "allowance" => 100, "counted" => 1, "uncounted" => 0, "step" => "plan"}])
+    end
+
+    it "holds a round past the run's timeout with run_timed_out" do
+      run = dispatch.hold_round(reviewing("timeout" => 3600), round: 1)
+
+      expect(run.timeout_hold).to eq("review_round" => 1)
+      expect(run.budget_hold).to be_nil
+      expect(run.reason).to include("code" => "run_timed_out")
+      expect(run.reason["details"]).to include("kind" => "timeout", "limit" => 3600, "review_round" => 1)
+    end
+
+    it "holds under both limits with the one record, naming the budget" do
+      run = dispatch.hold_round(reviewing("budget" => {"tokens" => 100}, "timeout" => 3600), round: 1)
+
+      expect(run.reason["code"]).to eq("budget_spent")
+      expect(run.budget_hold).to eq(run.timeout_hold)
+      expect(run.reason["details"]["run_timed_out"]).to include("limit" => 3600)
+    end
+
+    it "lets the round start within the limits, with no limits, and on a wake from a lock wait" do
+      expect(dispatch.hold_round(reviewing("budget" => {"tokens" => 1000}, "timeout" => 36_000), round: 1)).to be_nil
+      expect(dispatch.hold_round(reviewing, round: 1)).to be_nil
+      waited = reviewing("budget" => {"tokens" => 100}, "timeout" => 3600).merge("reason" => {"code" => "waiting_lock", "since" => "2026-11-10T11:00:00Z", "details" => {}})
+      expect(dispatch.hold_round(waited, round: 1)).to be_nil
+      expect(change.events).to be_empty
+      expect(resources.calls).to be_empty
+    end
+  end
+
   describe "#deliver" do
     let(:path) { File.join(@dir, ".workflow", "wr_1", "steps", "plan.1.prompt.md") }
     let(:delivery) { {"step" => "plan", "attempt" => 1, "workspace" => "app", "pane" => "%3", "text" => "Read #{path} and follow it.", "fresh" => false, "worktree" => @dir} }

@@ -321,10 +321,11 @@ module Workspace
       end
     end
 
-    # The attempt held back because the token budget is spent (+budget_hold+), with the retry context it keeps.
+    # The attempt held back because the token budget is spent (+budget_hold+), with the retry context it keeps; or the
+    # review round held back (+review_round+, the round its release starts).
     class BudgetHold
       # Keys the engine writes; each is a reader that returns the stored value, nil when absent.
-      KEYS = %w[context pane identity text].freeze
+      KEYS = %w[context pane identity text review_round].freeze
 
       # @param hash [Hash{String=>Object}, nil]
       # @return [BudgetHold]
