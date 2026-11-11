@@ -383,7 +383,8 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
       it "answers the run as stored when it was cancelled while the revision was computed" do
         stored(reviewing)
-        finished = RecordingRunChange.new(store.runs)
+        ended_ids = []
+        finished = RecordingRunChange.new(store.runs, finished: ended_ids)
         cancelling = Class.new(RecordingReviewRevision) do
           attr_accessor :ids
 
@@ -392,7 +393,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
             super
           end
         end.new
-        cancelling.ids = finished.instance_variable_get(:@finished)
+        cancelling.ids = ended_ids
 
         run = evaluation(change: finished, review_tally: tally, review_revision: cancelling).turn_ended("wr_1", pane: "%9")
 

@@ -126,19 +126,19 @@ RSpec.describe Workspace::WorkflowReviewTally do
     end
 
     {
-      "a link" => ["symlink", -> { File.symlink(File.join(Dir.tmpdir, "elsewhere.md"), File.join(round_dir, "skeptic.md")) }],
-      "an empty file" => ["empty", -> { File.write(File.join(round_dir, "skeptic.md"), "") }],
-      "a directory" => ["not_regular_file", -> { Dir.mkdir(File.join(round_dir, "skeptic.md")) }],
-      "a file with no header" => ["bad_header", -> { File.write(File.join(round_dir, "skeptic.md"), "I approve.\n") }],
-      "a wrong reviewer line" => ["wrong_reviewer", -> { verdict("supportive", "approve", name: "skeptic") }],
-      "a verdict naming another revision" => ["wrong_revision", -> { verdict("skeptic", "approve", revision: "rev0") }],
-      "a verdict it does not know" => ["bad_verdict", -> { File.write(File.join(round_dir, "skeptic.md"), "reviewer: skeptic\nverdict: fine\nrevision: rev1\n") }]
+      "a link" => ["symlink", ->(t) { File.symlink(File.join(Dir.tmpdir, "elsewhere.md"), File.join(t.round_dir, "skeptic.md")) }],
+      "an empty file" => ["empty", ->(t) { File.write(File.join(t.round_dir, "skeptic.md"), "") }],
+      "a directory" => ["not_regular_file", ->(t) { Dir.mkdir(File.join(t.round_dir, "skeptic.md")) }],
+      "a file with no header" => ["bad_header", ->(t) { File.write(File.join(t.round_dir, "skeptic.md"), "I approve.\n") }],
+      "a wrong reviewer line" => ["wrong_reviewer", ->(t) { t.verdict("supportive", "approve", name: "skeptic") }],
+      "a verdict naming another revision" => ["wrong_revision", ->(t) { t.verdict("skeptic", "approve", revision: "rev0") }],
+      "a verdict it does not know" => ["bad_verdict", ->(t) { File.write(File.join(t.round_dir, "skeptic.md"), "reviewer: skeptic\nverdict: fine\nrevision: rev1\n") }]
     }.each do |what, (problem, make)|
       it "does not count #{what} (#{problem})" do
         FileUtils.mkdir_p(round_dir)
         verdict("supportive", "approve")
         verdict("implementer", "approve")
-        instance_exec(&make)
+        make.call(self)
 
         result = call
 
