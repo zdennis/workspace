@@ -215,6 +215,16 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe ".budget_details" do
+    it "names the run and step and takes the reading's counts, tokens and extra tokens" do
+      reading = {"tokens" => 100, "action" => "hold", "extra_tokens" => 0, "allowance" => 100, "used" => 120, "counted" => 2, "uncounted" => 0,
+                 "measured" => true, "spent" => true, "needed" => 21, "suggested" => 100_000}
+
+      expect(described_class.budget_details({"id" => "wr_1", "current" => "plan"}, reading)).to eq("run_id" => "wr_1", "step" => "plan",
+        "used" => 120, "allowance" => 100, "counted" => 2, "uncounted" => 0, "needed" => 21, "suggested" => 100_000, "tokens" => 100, "extra_tokens" => 0)
+    end
+  end
+
   describe ".stop_reason" do
     let(:details) { {"step" => "a", "attempt" => 1} }
     let(:stored) { {"code" => "turn_ended_incomplete", "since" => "2026-10-04T11:00:00Z", "details" => details} }

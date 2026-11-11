@@ -13,10 +13,7 @@ RSpec.describe Workspace::WorkflowStarter do
   let(:occupied) { {} }
   let(:change) { RecordingRunChange.new(store.runs) }
   let(:prompt) { RecordingWorkflowPrompt.new(text: "the instructions", packs: ["play/binding", "play/commits"]) }
-  let(:dispatched) { [] }
-  let(:dispatch) { ->(stored, ctx:) { (dispatched << stored["id"]) && ctx.deliver("step" => stored["current"]) } }
-  let(:panes_asked) { [] }
-  let(:check_pane) { ->(pane) { panes_asked << pane } }
+  let(:dispatch) { RecordingDispatch.new }
   let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app", git_common_dir: File.join(@dir, ".git"))) }
   let(:commands) { {test: "rake test"} }
   let(:commands_config) { instance_double(Workspace::CommandsConfig, for_project: commands, test_files: []) }
@@ -27,7 +24,7 @@ RSpec.describe Workspace::WorkflowStarter do
   let(:clock) { -> { Time.utc(2026, 11, 10, 12, 0, 0) } }
 
   subject(:starter) do
-    described_class.new(change: change, store: store, prompt: prompt, dispatch: dispatch, check_pane: check_pane, lineage: lineage,
+    described_class.new(change: change, store: store, prompt: prompt, dispatch: dispatch, lineage: lineage,
       commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store,
       workspace_known: ->(name) { known.include?(name) }, clock: clock)
   end
@@ -53,7 +50,7 @@ RSpec.describe Workspace::WorkflowStarter do
       expect(composed[1].id).to eq(described_class::PREVIEW_RUN_ID)
       expect(composed[1].artifacts_dir).to eq(File.join(worktree, ".workflow", "wr_preview"))
       expect(composed[2..]).to eq(["plan", [], nil])
-      expect(panes_asked).to eq(["%3"])
+      expect(dispatch.calls).to eq([[:check_pane, "%3", {run_id: nil}]])
       expect(store.calls).to eq([[:on_checkout, worktree]])
       expect(store.runs).to be_empty
     end
@@ -69,8 +66,7 @@ RSpec.describe Workspace::WorkflowStarter do
     end
 
     it "lets the pane check refuse a pane another run holds" do
-      busy = ->(pane) { raise Workspace::Error.new("busy", code: "pane_has_run", details: {"pane" => pane}) }
-      starter = described_class.new(change: change, store: store, prompt: prompt, dispatch: dispatch, check_pane: busy, lineage: lineage,
+      starter = described_class.new(change: change, store: store, prompt: prompt, dispatch: RecordingDispatch.new(busy: ["%3"]), lineage: lineage,
         commands_config: commands_config, guard: guard, gate_note: gate_note)
 
       expect(refusal { starter.preflight(definition: definition, workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3") }.code).to eq("pane_has_run")
@@ -148,9 +144,9 @@ RSpec.describe Workspace::WorkflowStarter do
       expect(Workspace::WorkflowProduced.strict?(run.definition)).to be true
       expect(run.steps.transform_values(&:state)).to eq("plan" => "pending", "build" => "pending")
       expect(change.events).to eq([["wr_1", "run_started", {"workflow" => "flow", "workspace" => "app"}]])
-      expect(dispatched).to eq(["wr_1"])
+      expect(dispatch.calls.select { |call| call.first == :dispatch }.map { |call| call[1] }).to eq(["wr_1"])
       expect(change.deliveries).to eq([{"step" => "plan"}])
-      expect(panes_asked).to eq(["%3", "%3"])
+      expect(dispatch.calls.select { |call| call.first == :check_pane }.map { |call| call[1] }).to eq(["%3", "%3"])
       expect(store.calls.map(&:first)).to eq(%i[on_checkout create on_checkout])
     end
 
@@ -159,7 +155,7 @@ RSpec.describe Workspace::WorkflowStarter do
 
       expect(run.state).to eq("waiting")
       expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false}]])
-      expect(dispatched).to be_empty
+      expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
     end
 
     it "keeps a run whose task store can't be read, with no task" do

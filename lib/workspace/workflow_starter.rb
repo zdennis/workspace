@@ -4,7 +4,7 @@ module Workspace
   # What starts a workflow run: the checks `start` would refuse ({#preflight}), the preview of a step's first
   # instructions ({#render}), what `workflow check` runs for a step ({#check_plan}), and {#start}, which stores
   # the run and starts its first step through +dispatch+. Reads a pane's and a checkout's occupancy as store
-  # queries, the pane's through +check_pane+.
+  # queries, the pane's through {WorkflowDispatch#check_pane}.
   class WorkflowStarter
     # The run id {#preflight} and {#render} compose a first step under, for a run that does not exist.
     PREVIEW_RUN_ID = "wr_preview".freeze
@@ -12,8 +12,7 @@ module Workspace
     # @param change [Workspace::WorkflowRunChange] makes the run's first change and writes its history
     # @param store [Workspace::WorkflowRunStore] creates the run and says which run is on a checkout
     # @param prompt [Workspace::WorkflowPrompt] composes a step's instructions
-    # @param dispatch [#call] starts the current step of a stored run, given it and +ctx:+ (the engine's own until T32a)
-    # @param check_pane [#call] given a pane id, raises `pane_has_run` when another run holds it (the engine's own until T32a)
+    # @param dispatch [Workspace::WorkflowDispatch] starts the run's first step, and refuses a pane another run holds
     # @param lineage [Workspace::WorkspaceLineage] names a checkout's parent project
     # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
     # @param guard [Workspace::WorkflowGuard] records a run's base commit and checks a checkout is clean
@@ -21,13 +20,12 @@ module Workspace
     # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
     # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, prompt:, dispatch:, check_pane:, lineage:, commands_config:, guard:, gate_note:,
+    def initialize(change:, store:, prompt:, dispatch:, lineage:, commands_config:, guard:, gate_note:,
       task_store: nil, workspace_known: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @prompt = prompt
       @dispatch = dispatch
-      @check_pane = check_pane
       @lineage = lineage
       @commands_config = commands_config
       @guard = guard
@@ -65,7 +63,7 @@ module Workspace
       check_commands(data, project)
       check_test_files(data, workspace)
       check_exec_programs(data, tree)
-      @check_pane.call(pane)
+      @dispatch.check_pane(pane)
       check_checkout(tree)
       first = data["steps"].first
       packs = @prompt.compose({"definition" => data, "workspace" => workspace, "worktree" => worktree, "inputs" => inputs,
@@ -172,12 +170,12 @@ module Workspace
         "steps" => data["steps"].to_h { |step| [step["id"], {"state" => "pending", "attempts" => []}] }
       }
       run = WorkflowRun.from_h(@store.create(attributes, -> {
-        @check_pane.call(pane)
+        @dispatch.check_pane(pane)
         check_checkout(worktree)
       }) { |created| created["artifacts_dir"] = @prompt.artifacts_dir(worktree, created["id"]) })
       @change.event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
       return WorkflowRun.from_h(@change.call(run.id) { |_stored| }) unless dispatch
-      WorkflowRun.from_h(@change.call(run.id) { |stored, ctx| @dispatch.call(stored, ctx: ctx) })
+      WorkflowRun.from_h(@change.call(run.id) { |stored, ctx| stored.replace(@dispatch.dispatch(stored, ctx: ctx).to_mutable_h) })
     end
 
     private

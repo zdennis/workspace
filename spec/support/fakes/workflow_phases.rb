@@ -52,8 +52,10 @@ class RecordingRunChange
   attr_reader :calls, :events, :deliveries
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
-  def initialize(runs)
+  # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
+  def initialize(runs, finished: [])
     @runs = runs
+    @finished = finished
     @calls = []
     @events = []
     @deliveries = []
@@ -61,6 +63,7 @@ class RecordingRunChange
 
   def call(run_id, nonblocking: false)
     @calls << [:call, run_id, {nonblocking: nonblocking}]
+    raise Workspace::Error.new("run #{run_id} has ended", code: "run_not_active") if @finished.include?(run_id)
     stored = @runs.fetch(run_id)
     ctx = Workspace::WorkflowRunChange::Context.new
     yield stored, ctx
@@ -73,20 +76,56 @@ class RecordingRunChange
   end
 end
 
-# Fake of the Workspace::WorkflowRunStore calls a starter makes: +create+ runs the check, gives the next id and
-# keeps the run in +runs+; +on_checkout+ answers the run Hash scripted for the path, as a WorkflowRun.
+# Fake of the Workspace::WorkflowRunStore calls the phases make: +create+ runs the check, gives the next id and keeps
+# the run in +runs+; +on_checkout+, +parked_on+ and +backoff_on+ answer the run Hash scripted for the path or pane, as
+# a WorkflowRun (+backoff_on+ only while its +same_pane+ says so); +going?+ is true for the ids given; +record_event+
+# keeps each history line in +events+.
 class RecordingRunStore
-  CONTROL_METHODS = %i[calls runs].freeze
+  CONTROL_METHODS = %i[calls runs events].freeze
 
-  attr_reader :calls, :runs
+  attr_reader :calls, :runs, :events
 
   # @param on_checkout [Hash{String=>Hash}] the run going on each checkout path
   # @param ids [Array<String>] the ids +create+ hands out, in order
-  def initialize(on_checkout: {}, ids: %w[wr_1 wr_2])
+  # @param going [Array<String>] the ids of the runs still going
+  # @param parked_on [Hash{String=>Hash}] the run whose park waits for each pane
+  # @param backoff_on [Hash{String=>Hash}] the run whose retry or budget hold waits for each pane
+  def initialize(on_checkout: {}, ids: %w[wr_1 wr_2], going: [], parked_on: {}, backoff_on: {})
     @on_checkout = on_checkout
     @ids = ids.dup
+    @going = going
+    @parked_on = parked_on
+    @backoff_on = backoff_on
     @runs = {}
     @calls = []
+    @events = []
+  end
+
+  def run(id)
+    @calls << [:run, id]
+    Workspace::WorkflowRun.from_h(@runs.fetch(id))
+  end
+
+  def going?(id)
+    @calls << [:going?, id]
+    @going.include?(id)
+  end
+
+  def parked_on(pane, except:, now:)
+    @calls << [:parked_on, pane, {except: except, now: now}]
+    found = @parked_on[pane]
+    (found && found["id"] != except) ? Workspace::WorkflowRun.from_h(found) : nil
+  end
+
+  def backoff_on(pane, except:, same_pane:)
+    @calls << [:backoff_on, pane, {except: except}]
+    found = @backoff_on[pane]
+    return nil unless found && found["id"] != except
+    same_pane.call(pane, (found["backoff"] || found["budget_hold"] || {})["identity"]) ? Workspace::WorkflowRun.from_h(found) : nil
+  end
+
+  def record_event(id, type, data = {})
+    @events << [id, type, data]
   end
 
   def create(run, check = nil)
@@ -137,5 +176,118 @@ class RecordingWorkflowPrompt
     path = prompt_path(run, step, attempt_number)
     @calls << [:write, path, context]
     [path, compose(run, step, context, binding: step_binding(run, step, attempt_number, path))]
+  end
+end
+
+# Fake of Workspace::WorkflowDispatch for the phases above it: +dispatch+ registers a line naming the run's step on
+# +ctx+ and returns the run as it was given; +check_pane+ refuses the panes it was told are busy.
+class RecordingDispatch
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param busy [Array<String>] the panes +check_pane+ refuses with `pane_has_run`
+  def initialize(busy: [])
+    @busy = busy
+    @calls = []
+  end
+
+  def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:dispatch, run.id, {context: context, budgeted: budgeted, retry_of: retry_of}]
+    ctx.deliver("step" => run.current)
+    run
+  end
+
+  def check_pane(pane, run_id: nil)
+    @calls << [:check_pane, pane, {run_id: run_id}]
+    raise Workspace::Error.new("Pane #{pane} is busy.", code: "pane_has_run", details: {"pane" => pane}) if @busy.include?(pane)
+  end
+end
+
+# Fake of Workspace::RunResources: +acquire+ answers the result it was given (everything taken by default),
+# +release+ the names it was given.
+class RecordingRunResources
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param acquired [Hash] what +acquire+ answers, merged over a result that took nothing and waits for nothing
+  # @param released [Array<String>] the lock names +release+ gives up
+  def initialize(acquired: {}, released: [])
+    @acquired = {status: :ok, acquired: [], released: [], handed_over: [], waiting: nil}.merge(acquired)
+    @released = released
+    @calls = []
+  end
+
+  def acquire(run_id:, step:, uses:, worktree:, workflow: nil, workspace: nil, pane: nil)
+    @calls << [:acquire, {run_id: run_id, step: step, uses: uses, worktree: worktree, workflow: workflow, workspace: workspace, pane: pane}]
+    @acquired
+  end
+
+  def release(run_id:, worktree:, names: nil)
+    @calls << [:release, {run_id: run_id, worktree: worktree, names: names}]
+    @released
+  end
+end
+
+# Fake of the Workspace::WorkflowPanes calls the dispatch makes: bindings and pane runs as scripted, a +kick+ that
+# answers what it was given, and the calls that change or ask about a pane kept in +calls+.
+class RecordingWorkflowPanes
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param bound [Hash{String=>String}] the pane each run id is bound to
+  # @param runs_on [Hash{String=>String}] the run id each pane is bound to
+  # @param dead [Array<String>] run ids whose binding was made for another pane
+  # @param kick [Hash] what +kick+ answers
+  # @param same [Boolean] what +same_pane?+ answers
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true)
+    @bound = bound
+    @runs_on = runs_on
+    @dead = dead
+    @kick = kick
+    @same = same
+    @calls = []
+  end
+
+  def pane_of(run_id) = @bound[run_id]
+
+  def run_on(pane) = @runs_on[pane]
+
+  def alive?(run_id) = !@dead.include?(run_id)
+
+  def identity(run_id) = "identity-of-#{run_id}"
+
+  def same_pane?(pane, identity)
+    @calls << [:same_pane?, pane, identity]
+    @same
+  end
+
+  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:)
+    @calls << [:bind, {workspace: workspace, pane: pane, run_id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}]
+    true
+  end
+
+  def kick(workspace:, pane:, text:, fresh:, run_id: nil)
+    @calls << [:kick, {workspace: workspace, pane: pane, text: text, fresh: fresh, run_id: run_id}]
+    @kick
+  end
+end
+
+# Fake of Workspace::WorkflowAttemptRecord#start: the attempt as given, with a stand-in hash of the composed text.
+class RecordingAttemptRecord
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize
+    @calls = []
+  end
+
+  def start(run:, attempt:, composed:)
+    @calls << [:start, Workspace::WorkflowRun.from_h(run).id, attempt["n"]]
+    Workspace::WorkflowRun::Attempt.from_h(attempt.merge("prompt_sha256" => "sha256-of-#{composed["text"]}"))
   end
 end

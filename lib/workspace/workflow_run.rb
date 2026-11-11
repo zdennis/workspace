@@ -99,6 +99,22 @@ module Workspace
       self.class.new(hash)
     end
 
+    # @return [WorkflowRun] this run with +request+ (a resume's "from", "note", "pane", "turn_over") parked as a {Park}
+    def with_park(request, id:, requested_at:, expires_at:, retries:)
+      self.class.new(to_h.merge("parked" => Park.from_h(request.merge("id" => id, "requested_at" => requested_at, "expires_at" => expires_at, "retries" => retries)).to_h))
+    end
+
+    # @return [WorkflowRun] this run with no park; a parked note moves to the pending context ({.resume_note})
+    def drop_park
+      hash = to_mutable_h
+      note = (parked = hash.delete("parked")).is_a?(Hash) ? parked["note"] : nil
+      hash["pending_context"] << self.class.resume_note(note) if note
+      self.class.new(hash)
+    end
+
+    # @return [String] the pending context line that carries a resume's +note+ to the next attempt
+    def self.resume_note(note) = "Note from the person who resumed the run: #{note}"
+
     # @return [Step, nil] the step the run is at; nil when it has none or names one it lacks
     def current_step
       step(current)

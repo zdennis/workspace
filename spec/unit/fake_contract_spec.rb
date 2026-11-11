@@ -98,4 +98,28 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::WorkflowPrompt, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingDispatch do
+    it "accepts every call Workspace::WorkflowDispatch accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowDispatch, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRunResources do
+    it "accepts every call Workspace::RunResources accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RunResources, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingWorkflowPanes do
+    it "accepts every call Workspace::WorkflowPanes accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowPanes, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingAttemptRecord do
+    it "accepts every call Workspace::WorkflowAttemptRecord accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowAttemptRecord, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

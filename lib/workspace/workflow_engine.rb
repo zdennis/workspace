@@ -33,16 +33,16 @@ module Workspace
   # and a check's result decide nothing.
   class WorkflowEngine
     # The one line typed into the pane; the instructions themselves are in the file.
-    KICK = "Read %s and follow it."
+    KICK = WorkflowDispatch::KICK
 
     # The run id {#preflight} and {#render} compose a first step under, for a run that does not exist.
     PREVIEW_RUN_ID = WorkflowStarter::PREVIEW_RUN_ID
 
-    # Restart errors that mean there is no pane to type into.
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
     ENGINE_CODES = (WorkflowGuard::CODES + [WorkflowGuard::CONFIG_CHANGED] + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out]).freeze
 
-    PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
+    # Restart errors that mean there is no pane to type into.
+    PANE_GONE_CODES = WorkflowDispatch::PANE_GONE_CODES
 
     DELIVERY_WINDOW = WorkflowTransitions::DELIVERY_WINDOW
 
@@ -51,10 +51,10 @@ module Workspace
 
     # How many times a released resume that could not be typed is parked again.
     # Each failed delivery is an attempt, and attempts count against `max_attempts`.
-    PARK_RETRIES = 3
+    PARK_RETRIES = WorkflowDispatch::PARK_RETRIES
 
     # Delivery failures that a later try can get past.
-    PARK_AGAIN_CODES = %w[pane_busy restart_in_progress].freeze
+    PARK_AGAIN_CODES = WorkflowDispatch::PARK_AGAIN_CODES
 
     REDELIVER_BACKOFF = WorkflowTransitions::REDELIVER_BACKOFF
 
@@ -117,23 +117,24 @@ module Workspace
     def initialize(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
       env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
       @store = store
-      @resources = resources
       @panes = panes
       @checker = checker
       @commands_config = commands_config
       @guard = guard
       @gate_note = gate_note
-      @env_stopper = env_stopper
-      @event_log = event_log
       @attempt_record = attempt_record || WorkflowAttemptRecord.new(guard: guard, clock: clock)
       @require_check = require_check || WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
         commands_config: commands_config, checker: checker)
       @log_tail = log_tail || WorkflowLogTail.new
       @inbox_for = inbox_for
-      @prompt = WorkflowPrompt.new(composer: composer, git: git, excludes: excludes, prompt_writer: prompt_writer)
+      prompt = WorkflowPrompt.new(composer: composer, git: git, excludes: excludes, prompt_writer: prompt_writer)
       @clock = clock
-      @change = WorkflowRunChange.new(store: store, attempt_record: @attempt_record, deliver: method(:deliver), alerts: alerts, event_log: event_log)
-      @starter = WorkflowStarter.new(change: @change, store: store, prompt: @prompt, dispatch: method(:dispatch), check_pane: method(:check_pane),
+      # The change types a step's line through Dispatch, which is built after it.
+      @change = WorkflowRunChange.new(store: store, attempt_record: @attempt_record, deliver: ->(run_id, delivery) { @dispatch.deliver(run_id, delivery)&.to_mutable_h },
+        alerts: alerts, event_log: event_log)
+      @dispatch = WorkflowDispatch.new(change: @change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: @attempt_record,
+        guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
+      @starter = WorkflowStarter.new(change: @change, store: store, prompt: prompt, dispatch: @dispatch,
         lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
     end
 
@@ -363,7 +364,7 @@ module Workspace
         end
         drop_park(stored, "expired")
         store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}),
-          expires_at: (@clock.call + PARK_SECONDS).utc.iso8601, retries: 0)
+          expires_at: (@clock.call + PARK_SECONDS).utc.iso8601)
       end
       unchanged ? run.merge("unchanged" => unchanged) : run
     end
@@ -791,6 +792,8 @@ module Workspace
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
       drop_park(stored, "taken_over")
+      # Dropping a park replaces the run's nested Hashes.
+      state = step_state(stored)
       add_resume_note(stored, note)
       held = stored.delete("budget_hold")
       drop_retry_text(stored, held) if held && from
@@ -874,7 +877,7 @@ module Workspace
       return unless reading && reading["spent"]
       return if extra && extra >= reading["needed"]
       raise Workspace::Error.new("Run #{run["id"]} has used its token budget (#{reading["used"]} of #{reading["allowance"]} tokens#{" at least" if reading["uncounted"].positive?}). Pass --extra-tokens #{reading["suggested"]} to continue (#{reading["needed"]} is the least).",
-        code: "budget_spent", details: budget_details(run, reading))
+        code: "budget_spent", details: WorkflowTransitions.budget_details(run, reading))
     end
 
     # The token step of a person's resume or reject, as {#spend_attempts} is for attempts.
@@ -884,34 +887,6 @@ module Workspace
       return unless extra && WorkflowBudget.reading(run)
       run["extra_tokens"] = run["extra_tokens"].to_i + extra
       event(run, "budget_extended", "extra" => extra, "extra_tokens" => run["extra_tokens"], "allowance" => WorkflowBudget.reading(run, live: false)["allowance"])
-    end
-
-    def budget_details(run, reading)
-      {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "needed", "suggested"))
-        .merge("tokens" => reading["tokens"], "extra_tokens" => reading["extra_tokens"])
-    end
-
-    # Whether the attempt about to start is held: the budget is used up. Not for a lock wait that ends (the attempt
-    # was allowed when the step was reached). A run none of whose attempts could be counted has a total of 0, which is
-    # under any budget, so it is never held.
-    def budget_holds?(run)
-      return false if run.dig("reason", "code") == "waiting_lock"
-      reading = WorkflowBudget.reading(run, live: false)
-      !!(reading && reading["spent"])
-    end
-
-    # Stops the run before the attempt: nothing is held, the step is left as it was, and the run waits for a
-    # person. The resume that ends it starts the attempt, with the context the stop kept.
-    def hold_for_budget(run, context, retry_of = nil)
-      reading = WorkflowBudget.reading(run, live: false)
-      release(run)
-      pane = retry_of&.fetch("pane", nil) || bound_pane(run)
-      identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
-      run["budget_hold"] = {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil)}.compact
-      run["state"] = "waiting"
-      run["reason"] = reason("budget_spent", budget_details(run, reading).merge("kind" => "budget"))
-      event(run, "budget_spent", reading.slice("used", "allowance", "counted", "uncounted").merge("step" => run["current"]))
-      true
     end
 
     # A run held by its budget types into the pane it had when the attempt would have started. As for a retry's wait,
@@ -938,7 +913,7 @@ module Workspace
     end
 
     def add_resume_note(run, note)
-      run["pending_context"] << "Note from the person who resumed the run: #{note}" if note
+      run["pending_context"] << WorkflowRun.resume_note(note) if note
     end
 
     def last_failure(run)
@@ -950,29 +925,15 @@ module Workspace
     end
 
     # +request+ is what a resume would be given: "from", "note", "pane", "turn_over".
-    def store_park(run, request, expires_at:, retries:, event_data: {})
-      run["parked"] = request.merge("id" => SecureRandom.hex(8), "requested_at" => now_iso, "expires_at" => expires_at, "retries" => retries)
-      event(run, "resume_parked", {"step" => run["current"], "pane" => park_target(run), "from" => request["from"],
-                                   "has_note" => !request["note"].nil?}.merge(event_data))
+    def store_park(run, request, expires_at:)
+      run.replace(WorkflowRun.from_h(run).with_park(request, id: SecureRandom.hex(8), requested_at: now_iso, expires_at: expires_at, retries: 0).to_mutable_h)
+      event(run, "resume_parked", {"step" => run["current"], "pane" => request["pane"] || bound_pane(run), "from" => request["from"],
+                                   "has_note" => !request["note"].nil?})
     end
 
-    # Takes a park off the run however it ended. A note moves to the pending
-    # context, so it reaches the next attempt whichever path starts it.
+    # Takes a park off the run however it ended; see {WorkflowDispatch#drop_park}.
     def drop_park(run, how, extra = {})
-      parked = run.delete("parked")
-      return unless parked
-      add_resume_note(run, parked["note"])
-      event(run, "resume_parked_ended", {"step" => run["current"], "how" => how}.merge(extra))
-    end
-
-    # After a release's line could not be typed: the failure stands unless a
-    # later try can help. The first pass already moved the step and the pane,
-    # and {#not_delivered} put the note back, so the new park only waits.
-    def park_again(run, after, kick)
-      return unless after && PARK_AGAIN_CODES.include?(kick[:code].to_s) && after["retries"] < PARK_RETRIES
-      return unless self.class.parked({"parked" => after}, @clock.call) == :waiting
-      store_park(run, {"from" => nil, "note" => nil, "pane" => nil, "turn_over" => nil}, expires_at: after["expires_at"], retries: after["retries"] + 1,
-        event_data: {"pane" => after["pane"], "retry" => true})
+      run.replace(@dispatch.drop_park(run, how, extra).to_mutable_h) if run.key?("parked")
     end
 
     def event(run, type, data = {}) = @change.event(run, type, data)
@@ -1002,21 +963,8 @@ module Workspace
       @panes.pane_of(run["id"]) || run["pane"]
     end
 
-    # +run_id+ is the run asking, which a park of its own can't refuse.
-    def check_pane(pane, run_id: nil)
-      return unless pane
-      bound = @panes.run_on(pane)
-      other = (bound && active?(bound)) ? bound : (parked_on(pane, run_id) || backoff_on(pane, run_id))
-      return unless other
-      raise Workspace::Error.new("Pane #{pane} is already running workflow run #{other}. Cancel it, or pass --pane for another agent pane.",
-        code: "pane_has_run", details: {"pane" => pane, "run_id" => other})
-    end
-
-    # Another run waiting to start in +pane+ (a run parked by `workflow run` has no binding yet).
-    def parked_on(pane, run_id) = @store.parked_on(pane, except: run_id, now: @clock.call)&.id
-
-    # Another run whose `on_fail` retry or token budget hold waits for +pane+ (a dead or reused id holds nothing).
-    def backoff_on(pane, run_id) = @store.backoff_on(pane, except: run_id, same_pane: ->(each, identity) { @panes.same_pane?(each, identity) })&.id
+    # +run_id+ is the run asking, which a park of its own can't refuse; see {WorkflowDispatch#check_pane}.
+    def check_pane(pane, run_id: nil) = @dispatch.check_pane(pane, run_id: run_id)
 
     def active?(run_id) = @store.going?(run_id)
 
@@ -1119,168 +1067,13 @@ module Workspace
       run.dig("reason", "details", "message").to_s.sub(/\.\z/, "")
     end
 
-    # Starts the current step: takes its resources, writes its instructions,
-    # binds the pane and stores the attempt as running and `delivering`. The
-    # line that points the agent at the instructions is typed by {#deliver}
-    # after the run's lock is given up, so a process that dies while the
-    # daemon answers leaves an attempt a turn's end can decide.
-    def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
-      drop_park(run, "moved_on")
-      step = step_def(run)
-      state = step_state(run)
-      return hold_for_budget(run, context, retry_of) if budgeted && budget_holds?(run)
-      # A rejected gate stays marked for the first run of the step again, and no longer.
-      gate = state["gate"]
-      state.delete("gate") unless gate && gate["state"] == "rejected" && gate["attempt"] == state["attempts"].last&.fetch("n", nil)
-      run["artifacts_dir"] ||= @prompt.artifacts_dir(run["worktree"], run["id"])
-      # Before anything is written: a removed checkout must not come back as a directory.
-      raise Workspace::Error, "the checkout #{run["worktree"]} is gone" unless File.directory?(run["worktree"])
-      pane = bound_pane(run)
-      # A binding made for another pane (a tmux restart reuses pane ids) is not typed into.
-      if @panes.pane_of(run["id"]) && !@panes.alive?(run["id"])
-        return not_delivered(run, state, nil, {code: "pane_gone", message: "pane #{pane} is no longer the pane the run was bound in"})
-      end
-      waiting = acquire(run, step, pane)
-      return wait_for_lock(run, state, waiting) if waiting
-
-      # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
-      attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
-                 "delivery" => "delivering"}
-      pending = state.delete("redelivery_pending")
-      attempt["redelivery"] = pending if pending
-      run["pending_context"] = []
-      attempt["prompt_file"], composed = @prompt.write(run, step, attempt["n"], attempt["context"])
-      attempt.replace(@attempt_record.start(run: run, attempt: attempt, composed: composed).to_mutable_h)
-      state["attempts"] << attempt
-      @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
-        instructions: attempt["prompt_file"], artifacts: run["artifacts_dir"])
-      run["pane"] = pane
-      state["state"] = "running"
-      run["state"] = "running"
-      run["reason"] = nil
-      event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane)
-      ctx.deliver({"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
-                   "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
-                   "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"]})
-    rescue Workspace::Error, SystemCallError, EncodingError => e
-      # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
-      not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
+    # Starts the current step in the stored run; see {WorkflowDispatch#dispatch}.
+    def dispatch(run, ctx:, **options)
+      run.replace(@dispatch.dispatch(run, ctx: ctx, **options).to_mutable_h)
     end
 
-    # Types the line of an attempt {#dispatch} stored, then records the
-    # daemon's answer under the run's lock, if the run is still on that
-    # attempt and nothing else (a turn's end, a cancel, a resume) has
-    # settled it meanwhile. A line that could not be typed makes the run wait
-    # as before; a late answer for an attempt already settled changes nothing.
-    def deliver(run_id, delivery)
-      record_remote(run_id, delivery) if delivery["remote_baseline"]
-      kick = begin
-        @panes.kick(workspace: delivery["workspace"], pane: delivery["pane"], text: delivery["text"], fresh: delivery["fresh"], run_id: run_id)
-      rescue => e
-        # Whatever went wrong, the mark is settled here: left set, it would hold off `resume` for nothing.
-        {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
-      end
-      @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
-        "pane" => delivery["pane"], "delivered" => kick[:ok], **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
-      @change.call(run_id) do |stored|
-        state = stored["steps"].fetch(delivery["step"])
-        attempt = state["attempts"].last
-        after = (attempt["n"] == delivery["attempt"]) ? attempt.delete("after_park") : nil
-        next unless stored["current"] == delivery["step"] && attempt["n"] == delivery["attempt"] && attempt["delivery"] == "delivering"
-        attempt.delete("delivery")
-        next if kick[:ok]
-        not_delivered(stored, state, attempt, kick)
-        park_again(stored, after, kick)
-      end
-    rescue Workspace::Error => e
-      # Cancelled while the line was on its way: the cancel stands.
-      raise unless e.code == "run_not_active"
-      @store.find(run_id)
-    end
-
-    # The reading `remote_unchanged` compares with. It is taken here, the one place every attempt passes with the
-    # lock given up and the agent not yet told: `dispatch` runs inside a transition, from many callers. It may take
-    # {WorkflowGuard::REMOTE_READ_LIMIT} seconds, which {DELIVERY_WINDOW} has room for. A process that dies here
-    # leaves an attempt with no reading, which that proof fails as unproven.
-    def record_remote(run_id, delivery)
-      reading = @guard.remote_head(delivery["worktree"])
-      @change.call(run_id) do |stored|
-        attempt = stored["steps"].fetch(delivery["step"])["attempts"].last
-        attempt["remote"] = reading if stored["current"] == delivery["step"] && attempt["n"] == delivery["attempt"]
-      end
-    rescue Workspace::Error => e
-      # Only a cancel stops the line; otherwise the attempt goes on with no reading, which that proof fails as unproven.
-      raise if e.code == "run_not_active"
-    end
-
-    def not_delivered(run, state, attempt, kick)
-      attempt&.delete("delivery")
-      attempt&.merge!("ended_at" => now_iso, "outcome" => "not_delivered")
-      attempt["code"] = kick[:code].to_s if attempt && kick[:code]
-      # The next attempt is told what this one would have been.
-      run["pending_context"] = attempt["context"] + run["pending_context"] if attempt
-      release(run)
-      state["state"] = "waiting"
-      run["state"] = "waiting"
-      gone = PANE_GONE_CODES.include?(kick[:code].to_s)
-      run["reason"] = reason(gone ? "pane_gone" : "waiting_you",
-        {"kind" => "dispatch", "step" => run["current"], "pane" => run["pane"], "workspace" => run["workspace"],
-         "error" => kick[:code].to_s, "message" => kick[:message]&.to_s&.scrub, "reason" => kick[:reason]&.to_s,
-         "proof_missing" => kick[:proof_missing]&.to_s}.compact)
-    end
-
-    # @return [Hash, nil] the lock the run has to wait for; nil when it holds everything the step uses
-    def acquire(run, step, pane)
-      result = @resources.acquire(run_id: run["id"], step: step["id"], uses: step["uses"], worktree: run["worktree"],
-        workflow: run["workflow"], workspace: run["workspace"], pane: pane)
-      raise Workspace::Error, "run #{run["id"]} has no run file, so it can hold no lock" if result[:status] == :not_alive
-      waited = (run.dig("reason", "code") == "waiting_lock") ? run["reason"] : nil
-      result[:released].each { |name| lock_event(run, "lock_released", name) }
-      result[:acquired].each do |name|
-        was_waiting = waited && waited.dig("details", "resource") == name
-        lock_event(run, "lock_acquired", name, was_waiting ? {"waited_seconds" => (@clock.call - Time.iso8601(waited["since"])).round} : {})
-      end
-      stop_environment(run) if result[:handed_over].include?(DevRunner::LOCK_NAME)
-      waiting = result[:waiting]
-      return nil unless waiting
-      unless waited && waited.dig("details", "resource") == waiting[:name]
-        lock_event(run, "lock_wait_started", waiting[:name], "position" => waiting[:position],
-          "holder" => waiting[:holder]&.slice("pane", "pid", "worktree", "task", "run_id", "step")&.compact)
-      end
-      waiting
-    end
-
-    # An environment that can't be stopped keeps the lock, as `dev down`
-    # leaves it; the step goes on with the locks it has.
-    def stop_environment(run)
-      @env_stopper&.call(run_id: run["id"], worktree: run["worktree"])
-    rescue Workspace::Error, SystemCallError
-      nil
-    end
-
-    def wait_for_lock(run, state, waiting)
-      holder = waiting[:holder] || {}
-      details = {"resource" => waiting[:name], "step" => run["current"], "position" => waiting[:position], "total" => waiting[:total],
-                 "holder" => {"run_id" => holder["run_id"], "step" => holder["step"], "workspace" => holder["workspace"],
-                              "worktree" => holder["worktree"], "pid" => holder["pid"], "kind" => holder["kind"]}.compact}
-      since = (run.dig("reason", "code") == "waiting_lock" && run.dig("reason", "details", "resource") == waiting[:name]) ? run["reason"]["since"] : now_iso
-      state["state"] = "waiting"
-      run["state"] = "waiting"
-      run["reason"] = {"code" => "waiting_lock", "since" => since, "details" => details}
-    end
-
-    def lock_event(run, type, name, data = {})
-      @event_log&.record(type: type, project: run["project"],
-        data: {"lock" => name, "run_id" => run["id"], "step" => run["current"], "workspace" => run["workspace"]}.merge(data))
-    end
-
-    # Gives up everything the run holds. A checkout that is gone can't name
-    # its lock store; the store drops a finished run's holds by itself.
-    def release(run)
-      @resources.release(run_id: run["id"], worktree: run["worktree"]).each { |name| lock_event(run, "lock_released", name) }
-    rescue Workspace::Error, SystemCallError
-      nil
-    end
+    # Gives up everything the run holds; see {WorkflowDispatch#release}.
+    def release(run) = @dispatch.release(run)
 
     def reason(code, details)
       {"code" => code, "since" => now_iso, "details" => details}

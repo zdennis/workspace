@@ -281,4 +281,31 @@ RSpec.describe Workspace::WorkflowRun do
       expect(changed.step("build").attempts.map(&:to_h)).to eq([{"n" => 1}])
     end
   end
+
+  describe "#with_park" do
+    it "parks the request under the id and times given, as a new run, keeping the request first" do
+      given = described_class.from_h("id" => "wr_1", "current" => "plan")
+
+      parked = given.with_park({"from" => nil, "note" => "hi", "pane" => "%3", "turn_over" => nil}, id: "p1", requested_at: "t0", expires_at: "t1", retries: 2)
+
+      expect(parked.parked).to eq("from" => nil, "note" => "hi", "pane" => "%3", "turn_over" => nil, "id" => "p1", "requested_at" => "t0", "expires_at" => "t1", "retries" => 2)
+      expect(parked.to_h.keys).to eq(%w[id current parked])
+      expect(given.parked).to be_nil
+    end
+  end
+
+  describe "#drop_park" do
+    it "takes the park off and carries its note to the pending context, leaving the run it was called on alone" do
+      given = described_class.from_h("id" => "wr_1", "parked" => {"id" => "p1", "note" => "look at the flaky spec"}, "pending_context" => ["earlier"])
+
+      dropped = given.drop_park
+
+      expect(dropped.to_h).to eq("id" => "wr_1", "pending_context" => ["earlier", "Note from the person who resumed the run: look at the flaky spec"])
+      expect(given.parked).to include("id" => "p1")
+    end
+
+    it "adds nothing for a park with no note" do
+      expect(described_class.from_h("parked" => {"id" => "p1"}, "pending_context" => []).drop_park.to_h).to eq("pending_context" => [])
+    end
+  end
 end
