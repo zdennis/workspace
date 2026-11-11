@@ -174,8 +174,8 @@ module Workspace
         check_checkout(worktree)
       }) { |created| created["artifacts_dir"] = @prompt.artifacts_dir(worktree, created["id"]) })
       @change.event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
-      return WorkflowRun.from_h(@change.call(run.id) { |_stored| }) unless dispatch
-      WorkflowRun.from_h(@change.call(run.id) { |stored, ctx| stored.replace(@dispatch.dispatch(stored, ctx: ctx).to_mutable_h) })
+      return @change.call(run.id) { |_run| } unless dispatch
+      @change.call(run.id) { |read, ctx| @dispatch.dispatch(read, ctx: ctx) }
     end
 
     private

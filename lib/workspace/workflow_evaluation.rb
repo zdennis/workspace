@@ -51,17 +51,19 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def turn_ended(run_id, pane: nil, turn_started: nil, stopped_at: nil, background: [])
       check = nil
-      run = @change.call(run_id) do |stored, ctx|
+      run = @change.call(run_id) do |read, ctx|
+        stored = read.to_h
         next if stored["parked"]
         state = step_state(stored)
         next unless state["state"] == "running"
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
-        judge(stored, ctx, turn_started, background)
+        judged = evaluate(read, ctx: ctx, turn_started: turn_started, background: background)
         check = ctx.check
+        judged
       end
-      check ? finish_check(run_id, check) : WorkflowRun.from_h(run)
+      check ? finish_check(run_id, check) : run
     end
 
     # Records what the agent says about its current attempt. Nothing moves until the turn ends.
@@ -74,7 +76,8 @@ module Workspace
     # @raise [Workspace::Error] code `step_not_running` when the run's step is not being worked on
     def report(run_id, status:, summary: nil, code: nil)
       result = nil
-      @change.call(run_id) do |stored|
+      @change.call(run_id) do |read|
+        stored = read.to_mutable_h
         state = step_state(stored)
         unless %w[running checking].include?(state["state"])
           raise Workspace::Error.new("Step #{stored["current"]} of run #{run_id} is #{state["state"]}, so there is nothing to report on.",
@@ -84,6 +87,7 @@ module Workspace
         attempt["reported"] = {"status" => status, "summary" => summary, "code" => code, "at" => now_iso}.reject { |key, value| key == "code" && value.nil? }
         event(stored, "step_reported", "step" => stored["current"], "attempt" => attempt["n"], "status" => status)
         result = Reported.new(run_id: run_id, step: stored["current"], attempt: attempt["n"], reported: attempt["reported"])
+        WorkflowRun.from_h(stored)
       end
       result
     end
@@ -113,7 +117,7 @@ module Workspace
     def finish_check(run_id, check)
       run = nil
       run, check = apply_check(run_id, check, run_check(run_id, check)) while check
-      WorkflowRun.from_h(run)
+      run
     rescue Workspace::Error => e
       # Cancelled while the check ran: there is nothing left to decide.
       raise unless e.code == "run_not_active"
@@ -245,8 +249,9 @@ module Workspace
     # @return [Array] the run afterwards, and what to run next outside the lock, or nil
     def apply_check(run_id, check, result)
       following = nil
-      run = @change.call(run_id) do |stored, ctx|
-        next if stored["parked"]
+      run = @change.call(run_id) do |read, ctx|
+        next if read.parked
+        stored = read.to_mutable_h
         state = step_state(stored)
         attempt = state["attempts"].last
         # The run moved on while the check ran (a resume, a reject): its result decides nothing.
@@ -254,26 +259,23 @@ module Workspace
         if check["proof"]
           apply_proof(stored, attempt, check, result, ctx)
           following = ctx.check
-          next
+          next WorkflowRun.from_h(stored)
         end
         attempt["check"].merge!("ended_at" => now_iso, "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
           "error" => result[:error]).compact!
         event(stored, "check_finished", "step" => check["step"], "attempt" => check["attempt"], "exit_code" => result[:exit_code])
-        if result[:exit_code] == 0
-          stored.replace(@progress.pass_step(stored, ctx: ctx).to_mutable_h)
+        next @progress.pass_step(stored, ctx: ctx) if result[:exit_code] == 0
+        code = if result[:timed_out]
+          "check_timed_out"
         else
-          code = if result[:timed_out]
-            "check_timed_out"
-          else
-            result[:error] ? "check_error" : "check_failed"
-          end
-          failure = {"cause" => "check", "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
-                     "error" => result[:error], "log" => check["log"]}.compact.merge(code_for(code, nil))
-          if code == "check_failed"
-            failure = failure.merge(reported_check_code(step_def(stored)["status"], check["log"]) || {})
-          end
-          fail_step(stored, failure, ctx)
+          result[:error] ? "check_error" : "check_failed"
         end
+        failure = {"cause" => "check", "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
+                   "error" => result[:error], "log" => check["log"]}.compact.merge(code_for(code, nil))
+        if code == "check_failed"
+          failure = failure.merge(reported_check_code(step_def(stored)["status"], check["log"]) || {})
+        end
+        @progress.fail_step(stored, failure, ctx: ctx)
       end
       [run, following]
     end

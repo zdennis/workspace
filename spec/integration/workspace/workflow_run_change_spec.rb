@@ -35,38 +35,75 @@ RSpec.describe Workspace::WorkflowRunChange do
                   "steps" => {"a" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => now.iso8601}]}}})["id"]
   end
 
+  # The run with the change +edit+ makes to a working copy of it, as a block returns it.
+  def edited(run)
+    work = run.to_mutable_h
+    yield work
+    Workspace::WorkflowRun.from_h(work)
+  end
+
   # Whether another change of the run would have to wait: the run's lock is held.
   def locked?(id)
     store.update(id, nonblocking: true) { true }.nil?
   end
 
   describe "#call" do
-    it "writes the block's change under the run's lock and returns the run as stored" do
+    it "writes the run the block returns under the run's lock and returns it as stored" do
       held = nil
-      result = change.call(run_id) do |stored, _ctx|
+      result = change.call(run_id) do |run, _ctx|
         held = locked?(run_id)
-        stored["note"] = "changed"
+        edited(run) { |work| work["note"] = "changed" }
       end
 
       expect(held).to be(true)
-      expect(result["note"]).to eq("changed")
+      expect(result).to be_a(Workspace::WorkflowRun)
+      expect(result.note).to eq("changed")
       expect(store.find(run_id)["note"]).to eq("changed")
+    end
+
+    it "gives the block the stored run as a frozen WorkflowRun, and stores it as read when the block returns nil" do
+      given = nil
+      before = File.read(File.join(@dir, "runs", "#{run_id}.json"))
+      result = change.call(run_id) do |run, _ctx|
+        given = run
+        nil
+      end
+
+      expect(given).to be_a(Workspace::WorkflowRun)
+      expect(given).to be_frozen
+      expect(given.to_h).to be_frozen
+      expect(result.to_h).to eq(given.to_h)
+      expect(File.read(File.join(@dir, "runs", "#{run_id}.json"))).to eq(before)
+    end
+
+    it "refuses a block that returns something other than a run, and writes nothing" do
+      before = File.read(File.join(@dir, "runs", "#{run_id}.json"))
+
+      expect { change.call(run_id) { |run, _ctx| run.to_mutable_h } }.to raise_error(TypeError, /returned Hash/)
+      expect(File.read(File.join(@dir, "runs", "#{run_id}.json"))).to eq(before)
     end
 
     it "gives every call a Context of its own" do
       contexts = []
-      change.call(run_id) do |_stored, ctx|
+      change.call(run_id) do |_run, ctx|
         ctx.deliver({"pane" => "%1"})
         contexts << ctx
+        nil
       end
-      change.call(run_id) { |_stored, ctx| contexts << ctx }
+      change.call(run_id) do |_run, ctx|
+        contexts << ctx
+        nil
+      end
 
       expect(contexts.uniq(&:object_id).size).to eq(2)
       expect(contexts.last.delivery).to be_nil
     end
 
     it "types a registered line through deliver once the lock is given up, and returns what deliver returns" do
-      result = change.call(run_id) { |_stored, ctx| ctx.deliver({"step" => "a", "pane" => "%1"}) }
+      result = change.call(run_id) do |_run, ctx|
+        ctx.deliver({"step" => "a", "pane" => "%1"})
+        nil
+      end
 
       expect(result).to eq(:typed)
       expect(delivered).to eq([[run_id, {"step" => "a", "pane" => "%1"}, false]])
@@ -75,34 +112,36 @@ RSpec.describe Workspace::WorkflowRunChange do
     it "lets deliver make a change of its own after the first one is written" do
       nested = nil
       nested = described_class.new(store: store, attempt_record: attempt_record, alerts: alerts, event_log: event_log,
-        deliver: ->(id, _delivery) { nested.call(id) { |stored, _ctx| stored["typed"] = true } })
+        deliver: ->(id, _delivery) { nested.call(id) { |run, _ctx| edited(run) { |work| work["typed"] = true } } })
 
-      result = nested.call(run_id) do |stored, ctx|
-        stored["dispatched"] = true
+      result = nested.call(run_id) do |run, ctx|
         ctx.deliver({"step" => "a"})
+        edited(run) { |work| work["dispatched"] = true }
       end
 
-      expect(result.values_at("dispatched", "typed")).to eq([true, true])
+      expect(result.to_h.values_at("dispatched", "typed")).to eq([true, true])
       expect(store.find(run_id).values_at("dispatched", "typed")).to eq([true, true])
     end
 
     it "never runs a check: one registered is only handed back through the Context" do
       registered = nil
-      result = change.call(run_id) do |_stored, ctx|
+      result = change.call(run_id) do |_run, ctx|
         ctx.check({"step" => "a", "command" => "true"})
         registered = ctx.check
+        nil
       end
 
       expect(registered).to eq({"step" => "a", "command" => "true"})
-      expect(result["id"]).to eq(run_id)
+      expect(result.id).to eq(run_id)
       expect(delivered).to be_empty
     end
 
     it "returns nil and runs no block when nonblocking finds the run busy" do
       ran = false
       inner = :not_called
-      change.call(run_id) do |_stored, _ctx|
+      change.call(run_id) do |_run, _ctx|
         inner = change.call(run_id, nonblocking: true) { ran = true }
+        nil
       end
 
       expect(inner).to be_nil
@@ -110,8 +149,8 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "writes workflow_changed when what a reader sees moved, and nothing when it did not" do
-      change.call(run_id) { |stored, _ctx| stored["state"] = "waiting" }
-      change.call(run_id) { |stored, _ctx| stored["note"] = "unseen" }
+      change.call(run_id) { |run, _ctx| edited(run) { |work| work["state"] = "waiting" } }
+      change.call(run_id) { |run, _ctx| edited(run) { |work| work["note"] = "unseen" } }
 
       expect(event_log.events).to eq([{"type" => "workflow_changed", "project" => "app",
                                        "data" => {"run_id" => run_id, "workflow" => "wf", "workspace" => "app", "state" => "waiting", "step" => "a", "reason" => nil}}])
@@ -128,7 +167,7 @@ RSpec.describe Workspace::WorkflowRunChange do
         original.call(before, run)
       end
 
-      change.call(run_id) { |stored, _ctx| stored["steps"]["a"]["gate"] = {"state" => "waiting"} }
+      change.call(run_id) { |run, _ctx| edited(run) { |work| work["steps"]["a"]["gate"] = {"state" => "waiting"} } }
 
       expect(seen.first(2)).to eq([[:marks, true], [:fire, false, nil]])
       expect(spawned.size).to eq(1)
@@ -136,9 +175,11 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "keeps the attempt's reasons: a reason the block sets opens on the attempt that is open" do
-      change.call(run_id) do |stored, _ctx|
-        stored["state"] = "waiting"
-        stored["reason"] = {"code" => "waiting_you", "since" => now.iso8601, "details" => {}}
+      change.call(run_id) do |run, _ctx|
+        edited(run) do |work|
+          work["state"] = "waiting"
+          work["reason"] = {"code" => "waiting_you", "since" => now.iso8601, "details" => {}}
+        end
       end
 
       expect(store.find(run_id)["steps"]["a"]["attempts"].last["reasons"]).to eq([{"code" => "waiting_you", "since" => now.iso8601, "until" => nil}])
@@ -148,9 +189,10 @@ RSpec.describe Workspace::WorkflowRunChange do
   describe "#event" do
     it "appends the line to the run's history at once, under the lock" do
       lines = nil
-      change.call(run_id) do |stored, _ctx|
-        change.event(stored, "step_reported", "step" => "a")
+      change.call(run_id) do |run, _ctx|
+        change.event(run, "step_reported", "step" => "a")
         lines = File.readlines(store.events_path(run_id)).map { |line| JSON.parse(line) }
+        nil
       end
 
       expect(lines).to eq([{"ts" => now.iso8601, "type" => "step_reported", "step" => "a"}])

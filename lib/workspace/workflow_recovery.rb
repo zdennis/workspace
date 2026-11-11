@@ -37,7 +37,8 @@ module Workspace
     def tick(run_id)
       check = nil
       acted = false
-      run = @change.call(run_id, nonblocking: true) do |stored, ctx|
+      run = @change.call(run_id, nonblocking: true) do |read, ctx|
+        stored = read.to_mutable_h
         case WorkflowTransitions.wakeable?(stored, @clock.call)
         when :backoff
           acted = true
@@ -53,9 +54,10 @@ module Workspace
           evaluate(stored, ctx)
         end
         check = ctx.check
+        WorkflowRun.from_h(stored)
       end
       return nil unless run && acted
-      check ? @evaluation.finish_check(run_id, check) : WorkflowRun.from_h(run)
+      check ? @evaluation.finish_check(run_id, check) : run
     end
 
     # Records that the step stands in a stall the sweep found, once for each attempt and cause, and changes
@@ -140,7 +142,8 @@ module Workspace
     # @return [Symbol] :redelivered, :waiting_lock, :not_delivered, :moved_on or :busy
     def redeliver(run_id, step:, attempt:)
       outcome = :moved_on
-      run = @change.call(run_id, nonblocking: true) do |stored, ctx|
+      run = @change.call(run_id, nonblocking: true) do |read, ctx|
+        stored = read.to_mutable_h
         next unless sweep_target?(stored, step, attempt, false)
         info = WorkflowTransitions.redelivery(stored, @clock.call)
         next unless info && info[:state] == :due
@@ -148,15 +151,14 @@ module Workspace
         step_state(stored)["attempts"].last["redelivered"] = true
         # Stamped on the next attempt by {WorkflowDispatch#dispatch}, which may be one `tick` starts after a lock wait.
         step_state(stored)["redelivery_pending"] = info[:retries] + 1
-        dispatch(stored, ctx, budgeted: false)
         outcome = :started
+        @dispatch.dispatch(stored, ctx: ctx, budgeted: false)
       end
       return :busy unless run
       return outcome unless outcome == :started
       # The line has been typed (or refused) by now: say what became of it.
-      last = run.dig("steps", step)["attempts"].last
-      return :waiting_lock if run.dig("reason", "code") == "waiting_lock"
-      return :not_delivered if last["outcome"] == "not_delivered"
+      return :waiting_lock if run.reason&.dig("code") == "waiting_lock"
+      return :not_delivered if run.step(step).last_attempt.outcome == "not_delivered"
       @store.record_event(run_id, "step_recovered", "step" => step, "attempt" => attempt, "action" => "redelivered")
       :redelivered
     end
@@ -172,14 +174,15 @@ module Workspace
     #   spent), :held (the token budget is used; the run waits for a person), :moved_on or :busy
     def retry_backoff(run_id, step:, attempt:)
       outcome = :moved_on
-      run = @change.call(run_id, nonblocking: true) do |stored, ctx|
-        next unless sweep_target?(stored, step, attempt, false)
-        next unless WorkflowTransitions.backoff(stored, @clock.call)&.fetch(:state) == :due
-        start_retry(stored, ctx)
-        outcome = if stored.dig("backoff", "blocked") then :blocked
-        elsif stored["budget_hold"] then :held
+      run = @change.call(run_id, nonblocking: true) do |read, ctx|
+        next unless sweep_target?(read.to_h, step, attempt, false)
+        next unless WorkflowTransitions.backoff(read.to_h, @clock.call)&.fetch(:state) == :due
+        retried = @progress.start_retry(read, ctx: ctx)
+        outcome = if retried.backoff&.dig("blocked") then :blocked
+        elsif retried.budget_hold then :held
         else :retried
         end
+        retried
       end
       run ? outcome : :busy
     end
@@ -241,10 +244,12 @@ module Workspace
     def sweep_change(run_id, step:, attempt:, running:, blocking: false)
       outcome = :moved_on
       check = nil
-      run = @change.call(run_id, nonblocking: !blocking) do |stored, ctx|
-        next unless sweep_target?(stored, step, attempt, running)
+      run = @change.call(run_id, nonblocking: !blocking) do |read, ctx|
+        next unless sweep_target?(read.to_h, step, attempt, running)
+        stored = read.to_mutable_h
         outcome = yield stored, ctx
         check = ctx.check
+        WorkflowRun.from_h(stored)
       end
       return :busy unless run
       @evaluation.finish_check(run_id, check) if check

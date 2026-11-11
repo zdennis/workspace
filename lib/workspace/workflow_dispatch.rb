@@ -81,7 +81,7 @@ module Workspace
       end
       @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
         "pane" => delivery["pane"], "delivered" => kick[:ok], **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
-      WorkflowRun.from_h(@change.call(run_id) { |stored| stored.replace(settle(WorkflowRun.from_h(stored), delivery, kick).to_mutable_h) })
+      @change.call(run_id) { |run| settle(run, delivery, kick) }
     rescue Workspace::Error => e
       # Cancelled while the line was on its way: the cancel stands.
       raise unless e.code == "run_not_active"
@@ -198,11 +198,10 @@ module Workspace
     # that dies here leaves an attempt with no reading, which that proof fails as unproven.
     def record_remote(run_id, delivery)
       reading = @guard.remote_head(delivery["worktree"])
-      @change.call(run_id) do |stored|
-        run = WorkflowRun.from_h(stored)
+      @change.call(run_id) do |run|
         attempt = run.step(delivery["step"]).last_attempt
         next unless run.current == delivery["step"] && attempt.n == delivery["attempt"]
-        stored.replace(run.with_attempt(delivery["step"], WorkflowRun::Attempt.from_h(attempt.to_h.merge("remote" => reading))).to_mutable_h)
+        run.with_attempt(delivery["step"], WorkflowRun::Attempt.from_h(attempt.to_h.merge("remote" => reading)))
       end
     rescue Workspace::Error => e
       # Only a cancel stops the line; otherwise the attempt goes on with no reading, which that proof fails as unproven.

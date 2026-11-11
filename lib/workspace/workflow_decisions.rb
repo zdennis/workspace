@@ -51,7 +51,8 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `gate_not_waiting`, `stale_revision`, `gate_note_unreadable`, and what +guard+ raises
     def approve(run_id, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
-      run = @change.call(run_id) do |stored, ctx|
+      @change.call(run_id) do |read, ctx|
+        stored = read.to_mutable_h
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         file = gate_file(stored, note_sha256)
@@ -60,9 +61,8 @@ module Workspace
         event(stored, "gate_approved", with_note({"step" => stored["current"]}, note).merge(file ? {"sha256" => file["sha256"]} : {}))
         stored["pending_context"] << "The #{stored["current"]} step was approved with this note: #{note}" if note
         stored["pending_context"] << "The approved note is #{file["path"]}, sha256 #{file["sha256"]}." if file
-        stored.replace(@progress.advance(stored, ctx: ctx).to_mutable_h)
+        @progress.advance(stored, ctx: ctx)
       end
-      WorkflowRun.from_h(run)
     end
 
     # Turns a gate down: the gated step, or an earlier one, runs again with the note.
@@ -79,7 +79,8 @@ module Workspace
     # @raise [Workspace::Error] code `gate_not_waiting`, `attempts_spent`, `budget_spent`, and what +guard+ raises
     # @raise [Workspace::UsageError] when +to+ is not the gated step or one before it
     def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil)
-      run = @change.call(run_id) do |stored, ctx|
+      @change.call(run_id) do |read, ctx|
+        stored = read.to_mutable_h
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         target = to || stored["current"]
@@ -94,9 +95,8 @@ module Workspace
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
         stored["current"] = target
-        dispatch(stored, ctx)
+        @dispatch.dispatch(stored, ctx: ctx)
       end
-      WorkflowRun.from_h(run)
     end
 
     # Gets a run that is not moving going again: asks for its lock again, runs a failed or undelivered step
@@ -120,13 +120,13 @@ module Workspace
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       check = nil
       unchanged = nil
-      run = @change.call(run_id) do |stored, ctx|
-        resumed = apply_resume(stored, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
-        stored.replace(resumed.run.to_mutable_h)
+      run = @change.call(run_id) do |read, ctx|
+        resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
         unchanged = resumed.unchanged
         check = ctx.check
+        resumed.run
       end
-      Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : WorkflowRun.from_h(run), unchanged: unchanged)
+      Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : run, unchanged: unchanged)
     end
 
     # Stores a resume for later, with the same arguments as {#resume}: no attempt, no binding, no new lock. What the
@@ -145,7 +145,8 @@ module Workspace
     #   `attempts_spent` or `budget_spent` as {#resume}
     def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       unchanged = nil
-      run = @change.call(run_id) do |stored|
+      run = @change.call(run_id) do |read|
+        stored = read.to_mutable_h
         refuse_resume(stored, from: from)
         if WorkflowTransitions.parked(stored, @clock.call) == :waiting
           unchanged = "a resume is already parked for pane #{park_target(stored)}"
@@ -158,8 +159,9 @@ module Workspace
         drop_park(stored, "expired")
         store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}),
           expires_at: (@clock.call + PARK_SECONDS).utc.iso8601)
+        WorkflowRun.from_h(stored)
       end
-      Resumed.new(run: WorkflowRun.from_h(run), unchanged: unchanged)
+      Resumed.new(run: run, unchanged: unchanged)
     end
 
     # Carries out a parked resume, in one change with taking it off the run. A park typed again after a busy pane
@@ -172,22 +174,25 @@ module Workspace
     def release_park(run_id, id)
       check = nil
       unchanged = nil
-      run = @change.call(run_id) do |stored, ctx|
-        parked = stored["parked"]
+      run = @change.call(run_id) do |read, ctx|
+        parked = read.parked
         next unless parked && parked["id"] == id
+        stored = read.to_mutable_h
         stored.delete("parked")
         resumed = apply_resume(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"],
           extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], budget: parked["retries"].to_i.zero?)
-        stored.replace(resumed.run.to_mutable_h)
+        stored = resumed.run.to_mutable_h
         unchanged = resumed.unchanged
         check = ctx.check
         stored["pending_context"] << WorkflowRun.resume_note(parked["note"]) if unchanged && parked["note"]
         event(stored, "resume_parked_ended", {"step" => stored["current"], "how" => unchanged ? "unchanged" : "released"}
           .merge(unchanged ? {"detail" => unchanged} : {}))
-        next unless ctx.delivery
-        step_state(stored)["attempts"].last["after_park"] = {"expires_at" => parked["expires_at"], "pane" => ctx.delivery["pane"], "retries" => parked["retries"]}
+        if ctx.delivery
+          step_state(stored)["attempts"].last["after_park"] = {"expires_at" => parked["expires_at"], "pane" => ctx.delivery["pane"], "retries" => parked["retries"]}
+        end
+        WorkflowRun.from_h(stored)
       end
-      Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : WorkflowRun.from_h(run), unchanged: unchanged)
+      Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : run, unchanged: unchanged)
     end
 
     # Ends a park that can't be released, and leaves the run waiting for a person. The step and what it holds stay,
@@ -202,11 +207,12 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def park_failed(run_id, id, code:, message:)
-      run = @change.call(run_id) do |stored|
+      @change.call(run_id) do |read|
+        stored = read.to_mutable_h
         next unless stored.dig("parked", "id") == id
         if step_state(stored).dig("gate", "state") == "waiting"
           drop_park(stored, "failed", "error" => code, "message" => message)
-          next
+          next WorkflowRun.from_h(stored)
         end
         target = park_target(stored)
         case stored.dig("reason", "code")
@@ -217,8 +223,8 @@ module Workspace
         stored["state"] = "waiting"
         stored["reason"] = {"code" => WorkflowDispatch::PANE_GONE_CODES.include?(code) ? "pane_gone" : "waiting_you", "since" => now_iso,
                             "details" => {"kind" => "dispatch", "step" => stored["current"], "pane" => target, "workspace" => stored["workspace"], "error" => code, "message" => message}}
+        WorkflowRun.from_h(stored)
       end
-      WorkflowRun.from_h(run)
     end
 
     # What {#resume} refuses, checked without changing anything, so a caller can refuse before it starts a daemon
@@ -247,13 +253,12 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, cause: "cancel")
-      run = @change.call(run_id) do |stored|
-        ended = @progress.finish(@attempt_record.abandon(stored), "cancelled").to_mutable_h
+      @change.call(run_id) do |read|
+        ended = @progress.finish(@attempt_record.abandon(read), "cancelled").to_mutable_h
         ended["cancelled_by"] = cause
-        stored.replace(ended)
-        event(stored, "run_cancelled", "cause" => cause)
+        event(ended, "run_cancelled", "cause" => cause)
+        WorkflowRun.from_h(ended)
       end
-      WorkflowRun.from_h(run)
     end
 
     # Ends every run of a workspace that was killed, so none of them goes on holding a lock for a checkout that

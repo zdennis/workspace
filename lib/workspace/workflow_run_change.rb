@@ -42,26 +42,27 @@ module Workspace
     #
     # @param run_id [String]
     # @param nonblocking [Boolean] return nil at once when another process is changing the run
-    # @yieldparam stored [Hash{String=>Object}] the stored run, to change in place
+    # @yieldparam run [WorkflowRun] the stored run, with its reason history kept
     # @yieldparam ctx [Context] this change's follow-ups
-    # @return [Hash{String=>Object}, Object, nil] the run afterwards, or what +deliver+ returned when a line was
+    # @yieldreturn [WorkflowRun, nil] the run to store; nil stores the run as given
+    # @return [WorkflowRun, Object, nil] the run afterwards, or what +deliver+ returned when a line was
     #   registered; nil when +nonblocking+ and the run is busy
     # @raise [Workspace::Error] code `unknown_run`, `run_not_active`, and what the block raises
     def call(run_id, nonblocking: false)
       ctx = Context.new
       before = nil
       alert_before = nil
-      run = @store.update(run_id, nonblocking: nonblocking) do |stored|
-        before = WorkflowTransitions.fingerprint(stored)
-        alert_before = @alerts&.marks(stored)
-        was_open = @attempt_record.open_attempt(stored)
-        keep(stored, @attempt_record.reasons(run: stored))
-        yield stored, ctx
-        keep(stored, @attempt_record.reasons(run: stored, was_open: was_open))
-        stored
+      run = @store.change(run_id, nonblocking: nonblocking) do |read|
+        before = WorkflowTransitions.fingerprint(read.to_h)
+        alert_before = @alerts&.marks(read)
+        was_open = @attempt_record.open_attempt(read.to_h)
+        given = @attempt_record.reasons(run: read)
+        changed = yield(given, ctx) || given
+        raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(WorkflowRun)
+        @attempt_record.reasons(run: changed, was_open: was_open)
       end
       return nil unless run
-      changed(run) unless before == WorkflowTransitions.fingerprint(run)
+      changed(run.to_h) unless before == WorkflowTransitions.fingerprint(run.to_h)
       @alerts&.fire(alert_before, run)
       ctx.delivery ? @deliver.call(run_id, ctx.delivery) : run
     end
@@ -77,11 +78,6 @@ module Workspace
     end
 
     private
-
-    # The stored Hash stays the one the store writes, so the reason history comes back into it.
-    def keep(stored, run)
-      stored.replace(run.to_mutable_h) unless run.to_h == stored
-    end
 
     def changed(run)
       @event_log&.record(type: "workflow_changed", project: run["workspace"],

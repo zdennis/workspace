@@ -44,8 +44,9 @@ class RecordingGitExclude
   end
 end
 
-# Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored
-# Hash and a real Context, keeps the line a block registered in +deliveries+ (it types nothing) and returns the run;
+# Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored run
+# as a frozen WorkflowRun and a real Context, writes the run the block returns (the one read for nil) back into the Hash,
+# keeps the line a block registered in +deliveries+ (it types nothing) and returns the run;
 # a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
   CONTROL_METHODS = %i[calls events deliveries].freeze
@@ -71,15 +72,12 @@ class RecordingRunChange
     return nil if nonblocking && @busy.include?(run_id)
     stored = @runs.fetch(run_id)
     ctx = Workspace::WorkflowRunChange::Context.new
-    before = Marshal.load(Marshal.dump(stored))
-    begin
-      yield stored, ctx
-    rescue Exception # standard:disable Lint/RescueException
-      stored.replace(before)
-      raise
-    end
+    read = Workspace::WorkflowRun.from_h(stored)
+    changed = yield(read, ctx) || read
+    raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
+    stored.replace(changed.to_mutable_h)
     @deliveries << ctx.delivery if ctx.delivery
-    stored
+    changed
   end
 
   def event(run, type, data = {})

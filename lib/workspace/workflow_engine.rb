@@ -121,7 +121,7 @@ module Workspace
         commands_config: commands_config, checker: checker)
       prompt = WorkflowPrompt.new(composer: composer, git: git, excludes: excludes, prompt_writer: prompt_writer)
       # The change types a step's line through Dispatch, which is built after it.
-      @change = WorkflowRunChange.new(store: store, attempt_record: attempt_record, deliver: ->(run_id, delivery) { @dispatch.deliver(run_id, delivery)&.to_mutable_h },
+      @change = WorkflowRunChange.new(store: store, attempt_record: attempt_record, deliver: ->(run_id, delivery) { @dispatch.deliver(run_id, delivery) },
         alerts: alerts, event_log: event_log)
       @dispatch = WorkflowDispatch.new(change: @change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
         guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
