@@ -473,7 +473,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(parse(versioned('schema_version: "0.1"')).to_h).to eq(parse(versioned("")).to_h)
     end
 
-    {"2" => "2", "0.2" => "0.2", '"1.0"' => '"1.0"', "1.0" => "1.0", '"1"' => '"1"', "true" => "true"}.each do |written, shown|
+    {"2" => "2", "0.2" => "0.2", '"1.0"' => '"1.0"', "1.0" => "1.0", '"1"' => '"1"', "true" => "true", "" => "nil"}.each do |written, shown|
       it "refuses schema_version #{written}" do
         expect(problems(versioned("schema_version: #{written}"))).to eq(["schema_version must be one of 0.1, got #{shown}"])
       end
