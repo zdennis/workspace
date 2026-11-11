@@ -774,6 +774,15 @@ RSpec.describe Workspace::WorkflowStatus do
           action("workflow resume", "wr_1", "--from", "plan", needs: extra), action("workflow cancel", "wr_1")])
       end
 
+      it "asks for the step's shortfall when only the step has spent its own cap" do
+        steps = [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil, "max_attempts" => 1}]
+        create(state: "waiting", step_state: "failed", reason: {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check"}},
+          bound: false, definition: {"max_attempts" => 9, "steps" => steps})
+
+        resume = current["reason"]["actions"].find { |each| each["action"] == "workflow resume" }
+        expect(resume["needs"]).to eq([{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 2}])
+      end
+
       it "stops asking once the allowance was raised" do
         run = spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check", "attempts" => 3, "max_attempts" => 3}})
         edit_run(store, run["id"]) { |stored| stored["extra_attempts"] = 1 }

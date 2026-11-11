@@ -87,7 +87,7 @@ module Workspace
           raise UsageError, "--to must be #{stored["current"]} or a step before it (#{ids.first(ids.index(stored["current"]) + 1).join(", ")}), got #{target.to_s[0, 60].inspect}."
         end
         # The step runs again, which is a new attempt.
-        spend_attempts(stored, extra_attempts)
+        spend_attempts(stored, extra_attempts, target: target)
         spend_tokens(stored, extra_tokens)
         gate.merge!("state" => "rejected", "at" => now_iso, "note" => note, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil))
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
@@ -145,7 +145,7 @@ module Workspace
         unchanged = from ? nil : left_alone(stored, step_state(stored), pane, turn_over)
         next if unchanged
         check_pane(pane, run_id) if pane && @panes.run_on(pane) != run_id
-        refuse_budget(stored, extra_attempts: extra_attempts, extra_tokens: extra_tokens) if WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
+        refuse_budget(stored, extra_attempts: extra_attempts, extra_tokens: extra_tokens, from: from) if WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
         drop_park(stored, "expired")
         store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}),
           expires_at: (@clock.call + PARK_SECONDS).utc.iso8601)
@@ -277,11 +277,11 @@ module Workspace
       Resumed.new(run: WorkflowRun.from_h(work), unchanged: unchanged)
     end
 
-    # Refuses an attempt the run has no allowance left for (`attempts_spent`, then `budget_spent`) unless the extras
-    # cover the overrun. Changes nothing.
-    def refuse_budget(run, extra_attempts:, extra_tokens:)
+    # Refuses an attempt the run has no allowance left for (`attempts_spent`, then `step_attempts_spent` for the target step's own cap,
+    # then `budget_spent`) unless the extras cover the overrun. Changes nothing.
+    def refuse_budget(run, extra_attempts:, extra_tokens:, from: nil)
       run = WorkflowRun.from_h(run).to_h
-      refuse_spent(run, extra_attempts)
+      refuse_spent(run, extra_attempts, target: WorkflowTransitions.target_step(run, from: from))
       refuse_over_budget(run, extra_tokens)
     end
 
@@ -299,7 +299,7 @@ module Workspace
       # Only a resume that starts an attempt is held to the budget (not a parked one typed again after a
       # busy pane: its attempt was counted then); decided before anything is written.
       starting = budget && WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
-      spend_attempts(stored, extra_attempts, needed: starting)
+      spend_attempts(stored, extra_attempts, needed: starting, target: WorkflowTransitions.target_step(stored, from: from))
       spend_tokens(stored, extra_tokens, needed: starting)
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
@@ -354,23 +354,40 @@ module Workspace
       run["pending_context"].delete_at(index) if index
     end
 
-    # Refuses with `attempts_spent` when the allowance is used up and +extra+ is under made minus allowed plus one.
-    def refuse_spent(run, extra)
+    # Refuses with `attempts_spent` when the allowance is used up and +extra+ is under made minus allowed plus one, then with
+    # `step_attempts_spent` when +target+'s own cap is used up and +extra+ does not cover it.
+    def refuse_spent(run, extra, target: nil)
       made = WorkflowTransitions.attempts_made(run)
       allowed = WorkflowTransitions.attempt_allowance(run)
       needed = WorkflowTransitions.extra_attempts_needed(run)
-      return if made < allowed || (extra && extra >= needed)
-      raise Workspace::Error.new("Run #{run["id"]} has spent max_attempts (#{made} of #{allowed}). Pass --extra-attempts #{needed} to continue.",
-        code: "attempts_spent", details: {"run_id" => run["id"], "attempts" => made, "max_attempts" => allowed, "step" => run["current"], "needed" => needed})
+      covered = extra && extra >= needed
+      unless made < allowed || covered
+        raise Workspace::Error.new("Run #{run["id"]} has spent max_attempts (#{made} of #{allowed}). Pass --extra-attempts #{needed} to continue.",
+          code: "attempts_spent", details: {"run_id" => run["id"], "attempts" => made, "max_attempts" => allowed, "step" => run["current"], "needed" => needed})
+      end
+      return unless target && WorkflowTransitions.step_attempts_spent?(run, target)
+      step_needed = WorkflowTransitions.step_extra_attempts_needed(run, target)
+      return if extra && extra >= step_needed
+      step_made = WorkflowTransitions.step_attempts_made(run, target)
+      step_allowed = WorkflowTransitions.step_allowance(run, target)
+      raise Workspace::Error.new("Step #{target} of run #{run["id"]} has spent its max_attempts (#{step_made} of #{step_allowed}). Pass --extra-attempts #{step_needed} to continue.",
+        code: "step_attempts_spent", details: {"run_id" => run["id"], "step" => target, "attempts" => step_made, "max_attempts" => step_allowed, "needed" => step_needed})
     end
 
-    # The attempt step of a person's resume or reject: refused before anything changes, else +extra+ added and recorded.
-    def spend_attempts(run, extra, needed: true)
+    # The attempt step of a person's resume or reject: refused before anything changes, else +extra+ added to the run's
+    # allowance and +target+'s own one (when it has a cap) and recorded.
+    def spend_attempts(run, extra, needed: true, target: nil)
       return unless needed
-      refuse_spent(run, extra)
+      refuse_spent(run, extra, target: target)
       return unless extra
       run["extra_attempts"] = run["extra_attempts"].to_i + extra
-      event(run, "attempts_extended", "extra" => extra, "extra_attempts" => run["extra_attempts"], "max_attempts" => WorkflowTransitions.attempt_allowance(run))
+      payload = {"extra" => extra, "extra_attempts" => run["extra_attempts"], "max_attempts" => WorkflowTransitions.attempt_allowance(run)}
+      if target && WorkflowTransitions.step_allowance(run, target)
+        state = run["steps"][target]
+        state["extra_attempts"] = state["extra_attempts"].to_i + extra
+        payload.merge!("step" => target, "step_extra_attempts" => state["extra_attempts"], "step_max_attempts" => WorkflowTransitions.step_allowance(run, target))
+      end
+      event(run, "attempts_extended", payload)
     end
 
     # Refuses with `budget_spent` when the token budget is used up and +extra+ does not cover the overrun. A run without a budget is never refused.

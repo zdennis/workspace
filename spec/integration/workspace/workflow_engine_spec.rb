@@ -4673,6 +4673,29 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["state"]).to eq("completed")
     end
 
+    it "refuses a resume at a step that spent its own max_attempts, accepts --extra-attempts once and names the new need after" do
+      capped = definition("max_attempts: 9\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n    max_attempts: 1\n")
+      start(capped, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error, /Step a of run wr_1 has spent its max_attempts \(1 of 1\)/) { |error|
+        expect(error.code).to eq("step_attempts_spent")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "a", "attempts" => 1, "max_attempts" => 1, "needed" => 1)
+      }
+
+      run = engine.resume("wr_1", extra_attempts: 1)
+      expect(run["extra_attempts"]).to eq(1)
+      expect(run["steps"]["a"]["extra_attempts"]).to eq(1)
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error|
+        expect(error.code).to eq("step_attempts_spent")
+        expect(error.details).to include("attempts" => 2, "max_attempts" => 2, "needed" => 1)
+      }
+    end
+
     it "refuses a reject once max_attempts is spent, and goes on with --extra-attempts" do
       gated = definition("max_attempts: 1\nsteps:\n  plan:\n    prompt: P\n    produces: [plan.md]\n    gate: approve\n")
       start(gated, inputs: {})

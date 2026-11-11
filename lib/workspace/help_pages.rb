@@ -278,7 +278,7 @@ module Workspace
     }.freeze
 
     WORKFLOW_NOTE = ["--note TEXT", "Added to the next attempt's instructions"].freeze
-    EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
+    EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run or step that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
 
     EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
 
@@ -869,7 +869,8 @@ module Workspace
           "input box nothing is typed and the draft stays (pane_busy, input_not_empty).",
           "",
           "A resume that would start an attempt is refused (attempts_spent) when the run has made all its",
-          "max_attempts; --extra-attempts N adds N to the run's allowance and goes on. N must cover the overrun",
+          "max_attempts, or (step_attempts_spent) when the step it would run has made all its own max_attempts;",
+          "--extra-attempts N adds N to the run's allowance and to that step's, and goes on. N must cover the overrun",
           "(1 for a run exactly spent; the refusal names the least). It is ignored when the resume starts no attempt.",
           "",
           "A run held by its definition's budget (reason budget_spent) is refused the same way (budget_spent)",
@@ -925,9 +926,9 @@ module Workspace
           "",
           "The gated step (or --to an earlier one) runs again with the note. Refused from a pane a run is bound",
           "to and from a process under the run's own pane, as approve is. It is refused (attempts_spent) when",
-          "the run has made all its max_attempts, unless --extra-attempts N adds to the allowance; N must cover the",
-          "overrun (1 for a run exactly spent). The same goes for a spent token budget (budget_spent) and",
-          "--extra-tokens N."
+          "the run, or the step it would run, has made all its max_attempts (step_attempts_spent), unless",
+          "--extra-attempts N adds to the allowances; N must cover the overrun (1 for a run exactly spent). The",
+          "same goes for a spent token budget (budget_spent) and --extra-tokens N."
         ],
         options: [["--note TEXT", "Why; given to the next attempt"],
           ["--to STEP", "The step to run again (the gated step, or one before it)"],

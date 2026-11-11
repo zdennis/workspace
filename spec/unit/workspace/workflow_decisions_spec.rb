@@ -139,6 +139,76 @@ RSpec.describe Workspace::WorkflowDecisions do
     end
   end
 
+  describe "a step's own max_attempts" do
+    def capped(state:, run_cap: 5, **opts)
+      hash = run_hash(state: state, max_attempts: run_cap, **opts)
+      hash["definition"]["steps"][0]["max_attempts"] = 1
+      stored(hash)
+    end
+
+    it "refuses a reject to the spent step with step_attempts_spent, and --extra-attempts raises both caps once" do
+      capped(state: "passed", gate: waiting_gate)
+
+      error = error_for { decisions.reject("wr_1", note: "again") }
+      expect(error.code).to eq("step_attempts_spent")
+      expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempts" => 1, "max_attempts" => 1, "needed" => 1)
+
+      run = decisions.reject("wr_1", note: "again", extra_attempts: 1)
+      expect(run.extra_attempts).to eq(1)
+      expect(run.steps["plan"].to_h["extra_attempts"]).to eq(1)
+      expect(change.events.first).to eq(["wr_1", "attempts_extended", {"extra" => 1, "extra_attempts" => 1, "max_attempts" => 6, "step" => "plan", "step_extra_attempts" => 1, "step_max_attempts" => 2}])
+    end
+
+    it "does not refuse a reject to an earlier step that has no cap" do
+      hash = run_hash(state: "passed", current: "build", gate: waiting_gate, max_attempts: 5)
+      hash["definition"]["steps"][1]["max_attempts"] = 1
+      stored(hash)
+
+      expect(decisions.reject("wr_1", note: "again", to: "plan")).to be_a(Workspace::WorkflowRun)
+    end
+
+    it "names the run's cap first when both are spent" do
+      capped(state: "passed", gate: waiting_gate, run_cap: 1)
+
+      expect(error_for { decisions.reject("wr_1", note: "x") }.code).to eq("attempts_spent")
+    end
+
+    it "names the step's need when --extra-attempts covers only the run's cap" do
+      hash = run_hash(state: "failed", reason: failed_check, max_attempts: 2)
+      hash["definition"]["steps"][0]["max_attempts"] = 1
+      hash["steps"]["plan"]["attempts"] << {"n" => 2}
+      hash["steps"]["plan"]["attempts"] << {"n" => 3}
+      stored(hash)
+
+      expect(error_for { decisions.resume("wr_1") }.code).to eq("attempts_spent")
+      error = error_for { decisions.resume("wr_1", extra_attempts: 2) }
+      expect(error.code).to eq("step_attempts_spent")
+      expect(error.details["needed"]).to eq(3)
+      expect(decisions.resume("wr_1", extra_attempts: 3).run.extra_attempts).to eq(3)
+    end
+
+    it "refuses a resume of the spent step and accepts it once with --extra-attempts, naming the new need after" do
+      capped(state: "failed", reason: failed_check)
+
+      error = error_for { decisions.resume("wr_1") }
+      expect(error.code).to eq("step_attempts_spent")
+      expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempts" => 1, "max_attempts" => 1, "needed" => 1)
+      expect(decisions.resume("wr_1", extra_attempts: 1).run.steps["plan"].to_h["extra_attempts"]).to eq(1)
+    end
+
+    it "checks --from against the step it goes to" do
+      capped(state: "failed", reason: failed_check, current: "build")
+
+      expect(error_for { decisions.resume("wr_1", from: "plan") }.details).to include("step" => "plan")
+    end
+
+    it "refuses a park for the spent step" do
+      capped(state: "failed", reason: failed_check)
+
+      expect(error_for { decisions.park("wr_1") }.code).to eq("step_attempts_spent")
+    end
+  end
+
   describe "#resume" do
     it "leaves alone a step an agent is working on and says why, in a frozen Resumed" do
       before = deep_copy(stored)
@@ -384,6 +454,21 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "failed"}],
         ["wr_1", "resume_parked_ended", {"step" => "plan", "how" => "released"}]])
       expect(resumed.run.steps["plan"].last_attempt.to_h["after_park"]).to eq("expires_at" => "2026-11-10T13:00:00Z", "pane" => nil, "retries" => 0)
+    end
+
+    it "raises the step and run allowances by exactly the parked --extra-attempts, once, and writes attempts_extended once" do
+      hash = run_hash(state: "failed", reason: failed_check, max_attempts: 5, extra: {"state" => "waiting"})
+      hash["definition"]["steps"][0]["max_attempts"] = 1
+      stored(hash)
+      parked_resume = decisions.park("wr_1", extra_attempts: 1)
+      expect(parked_resume.run.parked).to include("extra_attempts" => 1)
+      expect(store.runs["wr_1"]).not_to have_key("extra_attempts")
+
+      resumed = decisions.release_park("wr_1", parked_resume.run.parked["id"])
+
+      expect(resumed.run.extra_attempts).to eq(1)
+      expect(resumed.run.steps["plan"].to_h["extra_attempts"]).to eq(1)
+      expect(change.events.count { |each| each[1] == "attempts_extended" }).to eq(1)
     end
 
     it "does not hold a park typed again after a busy pane to the allowance, since its attempt was counted then" do

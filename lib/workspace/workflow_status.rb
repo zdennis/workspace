@@ -467,17 +467,24 @@ module Workspace
       cancel = action("workflow cancel", id)
       # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
       # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
-      spent = WorkflowEngine.attempts_spent?(run.to_h)
-      extra = spent ? [need("extra_attempts", "--extra-attempts").merge("min" => WorkflowEngine.extra_attempts_needed(run.to_h))] : []
       budget = WorkflowBudget.reading(run.to_h)
-      extra += [need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"])] if budget && budget["spent"]
-      plain = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: nil) ? extra : []
-      with_pane = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: "%0") ? extra : []
+      # "min" is the larger of the run's shortfall and the shortfall of the step the action would start an attempt of.
+      extra = lambda do |target|
+        shortfalls = []
+        shortfalls << WorkflowEngine.extra_attempts_needed(run.to_h) if WorkflowEngine.attempts_spent?(run.to_h)
+        shortfalls << WorkflowTransitions.step_extra_attempts_needed(run.to_h, target) if WorkflowTransitions.step_attempts_spent?(run.to_h, target)
+        needs = shortfalls.empty? ? [] : [need("extra_attempts", "--extra-attempts").merge("min" => shortfalls.max)]
+        needs += [need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"])] if budget && budget["spent"]
+        needs
+      end
+      here = WorkflowTransitions.target_step(run.to_h)
+      plain = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: nil) ? extra.call(here) : []
+      with_pane = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: "%0") ? extra.call(here) : []
       resume = action("workflow resume", id, needs: plain)
-      from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra) }
+      from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra.call(step.to_s)) }
       focus = action("focus", run.workspace, "--pane", pane) if pane
       # A held retry would block again on the same pane: the resume has to name another one.
-      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
+      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra.call(here)), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}
@@ -489,7 +496,7 @@ module Workspace
         case reason.dig("details", "kind")
         when "gate"
           at = ["--step", run.current, "--attempt", run.steps.fetch(run.current).last_attempt&.n.to_s]
-          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")] + extra), cancel]
+          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")] + extra.call(run.current)), cancel]
         when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run.workspace, needs: [need("answer", nil)]), focus]
         when "prompt" then [focus]
         # Resume decides the step as a turn's end would; --from types the line again.
