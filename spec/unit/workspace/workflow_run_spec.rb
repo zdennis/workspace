@@ -18,7 +18,7 @@ RSpec.describe Workspace::WorkflowRun do
   end
 
   it "has a fixture for each state a run is stored in" do
-    expect(names).to include("waiting_gate", "running_attempt", "parked", "retry_backoff", "budget_spent", "budget_hold_extended",
+    expect(names).to include("waiting_gate", "running_attempt", "parked", "retry_backoff", "budget_spent", "run_timed_out", "budget_hold_extended",
       "swept_stall", "attempt_detail", "completed", "cancelled", "legacy_minimal", "unknown_keys")
   end
 

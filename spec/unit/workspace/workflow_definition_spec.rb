@@ -139,6 +139,38 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "the run timeout" do
+    it "reads timeout and timeout_action, and stores them only when written" do
+      data = parse("timeout: 8h\ntimeout_action: interrupt\n#{minimal}").to_h
+      expect(data).to include("timeout" => 28_800.0, "timeout_action" => "interrupt")
+      expect(parse("timeout: 90m\n#{minimal}").to_h).to include("timeout" => 5400.0, "timeout_action" => "hold")
+      expect(parse(minimal).to_h.keys).not_to include("timeout", "timeout_action")
+    end
+
+    it "reads an absent or bad stored timeout as none" do
+      expect(described_class.run_timeout({"timeout" => 60.0, "timeout_action" => "interrupt"})).to eq("seconds" => 60.0, "action" => "interrupt")
+      expect(described_class.run_timeout({"timeout" => 60.0})).to eq("seconds" => 60.0, "action" => "hold")
+      expect(described_class.run_timeout({"steps" => []})).to be_nil
+      expect(described_class.run_timeout({"timeout" => "soon"})).to be_nil
+      expect(described_class.run_timeout(nil)).to be_nil
+    end
+
+    it "refuses a bad duration or action" do
+      expect(problems("timeout: soon\n#{minimal}")).to include(a_string_matching(/timeout: expected a duration/))
+      expect(problems("timeout: 0\n#{minimal}")).to include(a_string_matching(/timeout: must be greater than 0/))
+      expect(problems("timeout: 1#{"0" * 400}\n#{minimal}")).to include(a_string_matching(/timeout: must be greater than 0 and at most 31536000s/))
+      expect(problems("timeout: 8761h\n#{minimal}")).to include(a_string_matching(/at most 31536000s/))
+      expect(parse("timeout: 8760h\n#{minimal}").to_h["timeout"]).to eq(31_536_000.0)
+      expect(described_class.run_timeout({"timeout" => Float::INFINITY})).to be_nil
+      expect(problems("timeout: 1h\ntimeout_action: stop\n#{minimal}")).to include(a_string_matching(/timeout_action must be hold or interrupt/))
+    end
+
+    it "warns on timeout_action without a timeout, and not otherwise" do
+      expect(parse("timeout_action: interrupt\n#{minimal}").warnings).to include(a_hash_including("code" => "timeout_action_without_timeout"))
+      expect(parse("timeout: 1h\ntimeout_action: interrupt\n#{minimal}").warnings.map { |w| w["code"] }).not_to include("timeout_action_without_timeout")
+    end
+  end
+
   describe "a step's max_attempts" do
     def step_problems(value)
       problems("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    max_attempts: #{value}\n")
@@ -564,7 +596,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, steps)",
       "schema_version must be one of 0.1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",

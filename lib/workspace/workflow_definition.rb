@@ -34,7 +34,7 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget deny steps].freeze
+    TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts after].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
@@ -70,6 +70,13 @@ module Workspace
     BUDGET_KEYS = %w[tokens action].freeze
     BUDGET_ACTIONS = %w[stop].freeze
     MAX_BUDGET_TOKENS = 1_000_000_000_000
+
+    # What the run `timeout_action:` may be: hold the next attempt start (the default), or also interrupt the
+    # step under way once `workflow sweep` sees the deadline pass.
+    TIMEOUT_ACTIONS = %w[hold interrupt].freeze
+
+    # The most seconds a run `timeout:` may name (365 days).
+    MAX_RUN_TIMEOUT = 365 * 86_400
 
     # The kinds of ref `workflow start` can be given (`StartRef`'s kinds), which `applies_to:` may list.
     REF_KINDS = %w[jira github_pr github_issue branch].freeze
@@ -210,7 +217,13 @@ module Workspace
         {"code" => "on_timeout_without_timeout", "step" => step["id"],
          "message" => "step #{step["id"]} sets on_timeout: #{step["on_timeout"]} but has no timeout:, so it never applies. Add timeout: (such as 2h) or remove on_timeout."}
       end
-      missing + idle + retry_warnings + step_attempt_warnings
+      unused_action = if @data.key?("timeout_action") && !@data.key?("timeout")
+        [{"code" => "timeout_action_without_timeout",
+          "message" => "timeout_action: #{@data["timeout_action"]} is set but the workflow has no timeout:, so it never applies. Add timeout: (such as 8h) or remove timeout_action."}]
+      else
+        []
+      end
+      missing + idle + retry_warnings + step_attempt_warnings + unused_action
     end
 
     # Every project command a definition checks with: each step's `status: command:` and each `require: command:` not marked optional.
@@ -299,6 +312,18 @@ module Workspace
       value = definition.is_a?(Hash) ? definition["budget"] : nil
       return nil unless value.is_a?(Hash) && value["tokens"].is_a?(Integer) && value["tokens"].between?(1, MAX_BUDGET_TOKENS)
       {"tokens" => value["tokens"], "action" => BUDGET_ACTIONS.first}
+    end
+
+    # The run `timeout` of a definition hash: the machine time a run may use before the next attempt is held.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Hash{String=>Object}, nil] "seconds" and "action" (`hold` unless stored `interrupt`); nil for a
+    #   definition that declares none, one stored before the key existed, or a bad stored value
+    def self.run_timeout(definition)
+      value = definition.is_a?(Hash) ? definition["timeout"] : nil
+      return nil unless value.is_a?(Numeric) && value.finite? && value > 0 && value <= MAX_RUN_TIMEOUT
+      action = definition["timeout_action"]
+      {"seconds" => value, "action" => TIMEOUT_ACTIONS.include?(action) ? action : TIMEOUT_ACTIONS.first}
     end
 
     # The `redeliver` of a definition hash: how many times `workflow sweep` retries a step's undelivered line.
@@ -447,6 +472,9 @@ module Workspace
       instructions = text_or_nil(raw["instructions"], "instructions")
       placeholders(instructions, inputs, "instructions")
       budget = budget_from(raw["budget"])
+      timeout = capped_duration_from(raw["timeout"], "timeout", MAX_RUN_TIMEOUT)
+      timeout_action = raw.fetch("timeout_action", TIMEOUT_ACTIONS.first)
+      problem "timeout_action must be #{TIMEOUT_ACTIONS.join(" or ")}, got #{timeout_action.inspect[0, 40]}" unless TIMEOUT_ACTIONS.include?(timeout_action)
       {
         "id" => id,
         "title" => text_or_nil(raw["title"], "title") || id,
@@ -462,6 +490,8 @@ module Workspace
         "deny" => deny_from(raw["deny"]),
         "steps" => steps_from(raw["steps"], inputs)
       }.merge(budget ? {"budget" => budget} : {})
+        .merge(timeout ? {"timeout" => timeout} : {})
+        .merge(((timeout || raw.key?("timeout_action")) && TIMEOUT_ACTIONS.include?(timeout_action)) ? {"timeout_action" => timeout_action} : {})
     end
 
     def unknown_keys(mapping, allowed, where)
@@ -875,6 +905,13 @@ module Workspace
     def context_from(value, where)
       return value if CONTEXTS.include?(value)
       problem "#{where} must be one of #{CONTEXTS.join(", ")}, got #{value.inspect}"
+    end
+
+    def capped_duration_from(value, where, max)
+      return nil if value.nil?
+      Duration.parse_capped(value, max: max)
+    rescue ArgumentError => e
+      problem "#{where}: #{e.message}"
     end
 
     def duration_from(value, where)
