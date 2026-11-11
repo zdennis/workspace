@@ -473,7 +473,17 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(parse(versioned('schema_version: "0.1"')).to_h).to eq(parse(versioned("")).to_h)
     end
 
-    {"2" => "2", "0.2" => "0.2", '"1.0"' => '"1.0"', "1.0" => "1.0", '"1"' => '"1"', "true" => "true", "" => "nil"}.each do |written, shown|
+    it "takes the last of duplicate keys, as written" do
+      expect(problems(versioned("schema_version: 0.1\nschema_version: 0.10"))).to eq(["schema_version must be one of 0.1, got 0.10"])
+      expect(problems(versioned("schema_version: 0.10\nschema_version: 0.1"))).to eq([])
+    end
+
+    it "refuses a version it can't read as written, such as one from a merge key" do
+      expect(problems(versioned("<<: {schema_version: 0.10}"))).to eq(["schema_version must be one of 0.1, got 0.1"])
+    end
+
+    {"2" => "2", "0.2" => "0.2", '"1.0"' => '"1.0"', "1.0" => "1.0", '"1"' => '"1"', "true" => "true", "" => "nil",
+     "0.10" => "0.10", '"0.10"' => '"0.10"', ".1" => ".1", "01" => "01", "0x1" => "0x1"}.each do |written, shown|
       it "refuses schema_version #{written}" do
         expect(problems(versioned("schema_version: #{written}"))).to eq(["schema_version must be one of 0.1, got #{shown}"])
       end

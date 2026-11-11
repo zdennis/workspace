@@ -15,8 +15,8 @@ module Workspace
     # Every `schema_version` a definition may name.
     SCHEMA_VERSIONS = %w[0.1].freeze
 
-    # Old integer `schema_version` values, read as the version they became.
-    LEGACY_SCHEMA_VERSIONS = {1 => "0.1"}.freeze
+    # Old integer `schema_version` values, as written, read as the version they became.
+    LEGACY_SCHEMA_VERSIONS = {"1" => "0.1"}.freeze
 
     # What `step done --code` accepts.
     CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
@@ -367,6 +367,7 @@ module Workspace
         return {}
       end
       parsed = YAML.safe_load(text)
+      @schema_version_text = top_scalar_text(text, "schema_version") if parsed.is_a?(Hash)
       return parsed if parsed.is_a?(Hash)
       problem "the file must be a YAML mapping"
       {}
@@ -380,16 +381,25 @@ module Workspace
       nil
     end
 
+    # A top-level key's value as written in the file, so a version such as `0.10` is never read as the Float 0.1.
+    def top_scalar_text(text, key)
+      root = Psych.parse(text)&.root
+      return nil unless root.is_a?(Psych::Nodes::Mapping)
+      found = root.children.each_slice(2).select { |k, v| k.is_a?(Psych::Nodes::Scalar) && k.value == key && v.is_a?(Psych::Nodes::Scalar) }
+      found.last&.last&.value
+    end
+
     def schema_version_from(raw)
       return SCHEMA_VERSION unless raw.key?("schema_version")
       value = raw["schema_version"]
+      written = (value.is_a?(Numeric) && @schema_version_text) || value.inspect
       version = case value
       when String then value
-      when Float then value.to_s
-      when Integer then LEGACY_SCHEMA_VERSIONS[value]
+      when Float then @schema_version_text
+      when Integer then LEGACY_SCHEMA_VERSIONS[@schema_version_text]
       end
       return version if SCHEMA_VERSIONS.include?(version)
-      problem "schema_version must be one of #{SCHEMA_VERSIONS.join(", ")}, got #{value.inspect}"
+      problem "schema_version must be one of #{SCHEMA_VERSIONS.join(", ")}, got #{written}"
     end
 
     def build(raw)
