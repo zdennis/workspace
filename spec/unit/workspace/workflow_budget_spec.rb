@@ -24,6 +24,12 @@ RSpec.describe Workspace::WorkflowBudget do
     expect(described_class.reading(run([ended(usage)]))).to include("used" => 175, "counted" => 1, "uncounted" => 0, "spent" => false, "needed" => nil, "allowance" => 1000)
   end
 
+  it "sums an attempt's usage as recorded, which includes its sub-agents' tokens" do
+    usage = {"input_tokens" => 130, "output_tokens" => 52}
+
+    expect(described_class.reading(run([ended(usage)]))).to include("used" => 182, "counted" => 1, "uncounted" => 0)
+  end
+
   it "counts a null or malformed usage as uncounted, not as zero, and leaves out attempts that ran nothing" do
     attempts = [ended({"input_tokens" => 300}), ended(nil), ended({"input_tokens" => "x"}), ended({"input_tokens" => -1}), ended("lots"),
       ended(nil, outcome: "not_delivered")]

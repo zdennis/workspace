@@ -20,8 +20,8 @@ module Workspace
   # `unattributed_resumes`. A history is read for every run in the window; a resume does not say whether
   # it followed a failed delivery.
   #
-  # Tokens follow {WorkflowBudget}: input, output and cache creation tokens of the main thread, never cache
-  # reads or sub-agents. For each run, a step's figure is the sum over the attempts the budget counts: `passed`,
+  # Tokens follow {WorkflowBudget}: input, output and cache creation tokens of the main thread and its in-step
+  # sub-agents, never cache reads. For each run, a step's figure is the sum over the attempts the budget counts: `passed`,
   # `failed` and also `unfinished` ones that ended without an outcome (a cancel, a `resume --from`), so the tokens
   # spent on a cancelled attempt are not lost; not an attempt still going, and not an undelivered one.
   # A run where any of those attempts has a null `usage` is `runs_uncounted` for that step, not a smaller

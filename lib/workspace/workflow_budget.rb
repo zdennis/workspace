@@ -6,8 +6,8 @@ module Workspace
   # What counts is each attempt's (one still in progress is left out until it ends; one that was replaced without
   # ending, by a resume over it, counts when it has usage and is uncounted when it has none) `usage` ({WorkflowAttemptRecord}): `input_tokens`, `output_tokens` and
   # `cache_creation_input_tokens`. `cache_read_input_tokens` is left out, since a cache read re-reads context
-  # already paid for and would make any long turn look huge. Two things are never counted: sub-agents (the
-  # recorded `usage` is the main thread's) and an attempt whose `usage` is null (another agent than Claude
+  # already paid for and would make any long turn look huge. Sub-agents are counted: the recorded
+  # `usage` includes each in-step sub-agent's own transcript. An attempt whose `usage` is null (another agent than Claude
   # Code, or a heavy attempt the transcript tail could not cover). The second kind is reported as `uncounted`,
   # so the total is a minimum, never a figure that reads null as zero.
   #

@@ -29,7 +29,12 @@ module Workspace
     MODEL = /\A[A-Za-z0-9._:\/\[\]-]{1,100}\z/
     KIND = /\A[a-z][a-z0-9_-]{0,31}\z/
     USAGE_KEYS = %w[input_tokens output_tokens cache_creation_input_tokens cache_read_input_tokens].freeze
-    private_constant :START_SLACK, :SESSION_ID, :TRANSCRIPT_PATH, :VERSION, :MODEL, :KIND, :USAGE_KEYS
+    # A sub-agent transcript's file name, and the most of them one attempt reads (more is uncounted).
+    SUBAGENT_FILE = /\Aagent-[A-Za-z0-9._-]{1,128}\.jsonl\z/
+    MAX_SUBAGENT_FILES = 64
+    # The most directory entries looked at before the attempt gives up as uncounted.
+    MAX_SUBAGENT_ENTRIES = 4096
+    private_constant :SUBAGENT_FILE, :MAX_SUBAGENT_FILES, :MAX_SUBAGENT_ENTRIES, :START_SLACK, :SESSION_ID, :TRANSCRIPT_PATH, :VERSION, :MODEL, :KIND, :USAGE_KEYS
 
     # @param guard [Workspace::WorkflowGuard] reads the checkout's HEAD
     # @param ledger [Workspace::SessionLedger, nil] finds an attempt's session; nil records none
@@ -234,9 +239,10 @@ module Workspace
         read_transcript(path, started, ended, new_file ? time(entry["at"]) : nil)
       end
       return none if carried?(entry, started, server) && !ended_session && !(read && read[:seen])
+      usage = (read && read[:ok]) ? with_subagents(read, path, entry["session_id"], started, ended) : nil
       {"session" => {"id" => entry["session_id"], "transcript" => path},
        "agent" => {"kind" => kind, "version" => read && read[:version], "model" => read && read[:model]},
-       "usage" => read && read[:usage]}
+       "usage" => usage}
     rescue
       {"agent" => nil, "session" => nil, "usage" => nil}
     end
@@ -282,7 +288,11 @@ module Workspace
     # the tail starts after the window does (it must reach the attempt's start, or the chosen session's
     # first line when that came later), a usage line has no readable time, or a count is not a whole number
     # at least 0. Sub-agent (`isSidechain`) lines are left out.
-    def read_transcript(path, from, to, session_at)
+    #
+    # With `sidechain` true the file is a sub-agent's own transcript: its lines are all sidechain and all
+    # count, and the answer's `ok` says whether it can be trusted. A file with nothing in the window is `ok` with no `records`
+    # (and a nil `usage`).
+    def read_transcript(path, from, to, session_at, sidechain: false)
       return nil unless File.lstat(path).file?
       lines, complete = tail_lines(path)
       floor = (session_at && session_at >= from) ? session_at : from
@@ -292,7 +302,7 @@ module Workspace
       unreadable = seen = false
       lines.each_with_index do |line, index|
         entry = parse_line(line) or next
-        next if entry["isSidechain"] == true
+        next if entry["isSidechain"] == true && !sidechain
         message = (entry["type"] == "assistant" && entry["message"].is_a?(Hash)) ? entry["message"] : nil
         at = time(entry["timestamp"])
         unless at
@@ -310,8 +320,47 @@ module Workspace
         record[:model] = message["model"] if message["model"].is_a?(String) && MODEL.match?(message["model"]) && message["model"] != "<synthetic>"
       end
       counted = messages.values.select { |record| record[:usage] && record[:first] >= from && record[:first] <= to }
-      {usage: (reached && !unreadable) ? total(counted.map { |record| record[:usage] }) : nil,
+      records = counted.map { |record| record[:usage] }
+      {usage: (reached && !unreadable) ? total(records) : nil, records: records, ok: reached && !unreadable,
        model: counted.reverse_each.find { |record| record[:model] }&.fetch(:model), version: version, seen: seen}
+    rescue SystemCallError, IOError
+      nil
+    end
+
+    # The attempt's usage with its sub-agents': each `agent-*.jsonl` under `<transcript dir>/<session id>/subagents/`
+    # is read with the main transcript's window and tail rules and summed with the main thread's. The
+    # directory is derived from the session's own transcript path, never from a hook payload, and no link is
+    # followed. The session id must be the transcript file's own name (so it can never be `.` or `..` or
+    # name another directory); when it is not, the usage is nil (uncounted), as it is for a sub-agent file
+    # that can't be read whole enough, a link, a directory with too many entries or one that can't be listed.
+    # A file last written before the attempt began can't hold a line inside it and is not read or counted
+    # toward the cap of {MAX_SUBAGENT_FILES}. No such directory adds nothing.
+    def with_subagents(main, path, session_id, from, to)
+      return nil unless session_id.is_a?(String) && SESSION_ID.match?(session_id) && !%w[. ..].include?(session_id) &&
+        session_id == File.basename(path, ".jsonl")
+      session_dir = File.join(File.dirname(path), session_id)
+      dir = File.join(session_dir, "subagents")
+      [session_dir, dir].each do |each|
+        return nil unless File.lstat(each).directory?
+      end
+      seen = 0
+      names = []
+      Dir.each_child(dir) do |name|
+        return nil if (seen += 1) > MAX_SUBAGENT_ENTRIES
+        next unless SUBAGENT_FILE.match?(name)
+        next if File.lstat(File.join(dir, name)).mtime < from - START_SLACK
+        names << name
+        return nil if names.size > MAX_SUBAGENT_FILES
+      end
+      records = main[:records].dup
+      names.sort.each do |name|
+        read = read_transcript(File.join(dir, name), from, to, nil, sidechain: true)
+        return nil unless read && read[:ok]
+        records.concat(read[:records])
+      end
+      total(records)
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      main[:usage]
     rescue SystemCallError, IOError
       nil
     end

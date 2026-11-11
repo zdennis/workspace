@@ -411,6 +411,117 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(second["usage"]).to eq("input_tokens" => 20, "output_tokens" => 7)
     end
 
+    context "with sub-agent transcript files" do
+      let(:subdir) { File.join(@dir, "s1", "subagents") }
+
+      def write_sub(name, *lines)
+        FileUtils.mkdir_p(subdir)
+        File.write(File.join(subdir, name), lines.join("\n") + "\n")
+      end
+
+      def sub(at, id, input, output) = assistant(at, id, input, output, "isSidechain" => true, "agentId" => "a1")
+
+      def usage_after = record.finish(run: run, step: step, attempt: attempt).to_mutable_h["usage"]
+
+      it "sums a sub-agent's own file with the main thread's, inside the window only" do
+        write_sub("agent-a1.jsonl", sub("2026-10-04T11:59:00Z", "x0", 7000, 700), sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+        write_sub("agent-a1.meta.json", "{}")
+
+        expect(usage_after).to eq("input_tokens" => 130, "output_tokens" => 52)
+      end
+
+      it "leaves out a sub-agent file wholly outside the window" do
+        write_sub("agent-a2.jsonl", sub("2026-10-04T12:08:00Z", "x1", 100, 40))
+
+        expect(usage_after).to eq("input_tokens" => 30, "output_tokens" => 12)
+      end
+
+      it "adds nothing without a subagents directory" do
+        expect(usage_after).to eq("input_tokens" => 30, "output_tokens" => 12)
+      end
+
+      it "is nil when one sub-agent file has a usage line with no readable time" do
+        write_sub("agent-a1.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+        write_sub("agent-a2.jsonl", JSON.generate({"type" => "assistant", "message" => {"id" => "y", "usage" => {"input_tokens" => 1}}}))
+
+        expect(usage_after).to be_nil
+      end
+
+      it "is nil when a sub-agent file is a link" do
+        write_sub("agent-real.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+        File.symlink(File.join(subdir, "agent-real.jsonl"), File.join(subdir, "agent-a1.jsonl"))
+
+        expect(usage_after).to be_nil
+      end
+
+      it "is nil when the subagents directory is a link" do
+        elsewhere = File.join(@dir, "elsewhere")
+        FileUtils.mkdir_p(elsewhere)
+        File.write(File.join(elsewhere, "agent-a1.jsonl"), sub("2026-10-04T12:03:00Z", "x1", 100, 40) + "\n")
+        FileUtils.mkdir_p(File.join(@dir, "s1"))
+        File.symlink(elsewhere, subdir)
+
+        expect(usage_after).to be_nil
+      end
+
+      it "counts a sub-agent's lines when the main thread has none in the window" do
+        write_transcript(assistant("2026-10-04T11:30:00Z", "m0", 1000, 100))
+        write_sub("agent-a1.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+
+        expect(usage_after).to eq("input_tokens" => 100, "output_tokens" => 40)
+      end
+
+      it "is nil, and reads no directory, when the session id is not the transcript file's name" do
+        write_sub("agent-a1.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+        File.write(ledger_path, "")
+        start_line("other", "2026-10-04T12:00:01Z")
+        FileUtils.mkdir_p(File.join(@dir, "other", "subagents"))
+
+        expect(usage_after).to be_nil
+      end
+
+      it "is nil for a session id of .." do
+        File.write(ledger_path, "")
+        start_line("..", "2026-10-04T12:00:01Z")
+        FileUtils.mkdir_p(File.join(@dir, "..", "subagents"))
+
+        expect(usage_after).to be_nil
+      end
+
+      it "skips files older than the attempt before the cap, so 65 old files and one current one count" do
+        65.times do |i|
+          write_sub("agent-old#{i}.jsonl", sub("2026-10-04T11:00:00Z", "o#{i}", 1, 1))
+          File.utime(Time.utc(2026, 10, 4, 11, 0), Time.utc(2026, 10, 4, 11, 0), File.join(subdir, "agent-old#{i}.jsonl"))
+        end
+        write_sub("agent-new.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+
+        expect(usage_after).to eq("input_tokens" => 130, "output_tokens" => 52)
+      end
+
+      it "is nil with 65 sub-agent files written since the attempt began" do
+        65.times { |i| write_sub("agent-n#{i}.jsonl", sub("2026-10-04T12:03:00Z", "n#{i}", 1, 1)) }
+
+        expect(usage_after).to be_nil
+      end
+
+      context "with a short transcript read" do
+        let(:max_transcript_bytes) { 400 }
+
+        it "is nil when a sub-agent file's tail does not reach the attempt's start" do
+          write_transcript(assistant("2026-10-04T12:01:00Z", "m1", 10, 1))
+          write_sub("agent-a1.jsonl", *Array.new(6) { |i| sub("2026-10-04T12:03:0#{i}Z", "x#{i}", 100, 40) })
+
+          expect(usage_after).to be_nil
+        end
+      end
+
+      it "reads only the files named agent-<id>.jsonl" do
+        write_sub("notes.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+
+        expect(usage_after).to eq("input_tokens" => 30, "output_tokens" => 12)
+      end
+    end
+
     it "leaves out sub-agent lines (U5)" do
       write_transcript(assistant("2026-10-04T12:01:00Z", "m1", 10, 1), assistant("2026-10-04T12:02:00Z", "side", 9000, 900, "isSidechain" => true))
       attempt.replace(record.finish(run: run, step: step, attempt: attempt).thawed)
