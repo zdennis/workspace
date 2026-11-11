@@ -20,6 +20,9 @@ module Workspace
     # to the attempt's start, `usage` is recorded as nil rather than a count that leaves tokens out.
     MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024
 
+    # Evidence entries {#finish} keeps from before it copies: the prompt, and a review round's verdicts.
+    KEPT_EVIDENCE = %w[prompt review].freeze
+
     # An attempt's start is recorded a moment before its session's hook may have been.
     START_SLACK = 5
 
@@ -34,7 +37,7 @@ module Workspace
     MAX_SUBAGENT_FILES = 64
     # The most directory entries looked at before the attempt gives up as uncounted.
     MAX_SUBAGENT_ENTRIES = 4096
-    private_constant :SUBAGENT_FILE, :MAX_SUBAGENT_FILES, :MAX_SUBAGENT_ENTRIES, :START_SLACK, :SESSION_ID, :TRANSCRIPT_PATH, :VERSION, :MODEL, :KIND, :USAGE_KEYS
+    private_constant :KEPT_EVIDENCE, :SUBAGENT_FILE, :MAX_SUBAGENT_FILES, :MAX_SUBAGENT_ENTRIES, :START_SLACK, :SESSION_ID, :TRANSCRIPT_PATH, :VERSION, :MODEL, :KIND, :USAGE_KEYS
 
     # @param guard [Workspace::WorkflowGuard] reads the checkout's HEAD
     # @param ledger [Workspace::SessionLedger, nil] finds an attempt's session; nil records none
@@ -91,7 +94,7 @@ module Workspace
       copies = @evidence ? @evidence.copy(run: run, step: step, attempt: attempt) : []
       attempt["outputs"] = outputs(step, run.to_h, copies)
       attempt.merge!(agent_facts(run.to_h, attempt))
-      attempt["evidence"] = Array(attempt["evidence"]).select { |each| each["kind"] == "prompt" } + copies if @evidence
+      attempt["evidence"] = Array(attempt["evidence"]).select { |each| KEPT_EVIDENCE.include?(each["kind"]) } + copies if @evidence
       WorkflowRun::Attempt.from_h(attempt)
     end
 
@@ -167,25 +170,55 @@ module Workspace
       WorkflowRun.from_h(run)
     end
 
+    # How the verdicts a review round read were made: by sub-agents of the round's own review pane. Every row of a
+    # round's `reviews` carries it as `isolation`, so a later reader can tell these verdicts from any other kind.
+    ISOLATION = "review_pane"
+
     # What an ended review round records about itself: its pane, the session that ran in that pane during the
     # round, and that session's usage over the round's time (main thread and sub-agents, by {#finish}'s rules).
+    # A round that read verdicts (its `reviews`) gives each row `isolation` ({ISOLATION}) and copies each verdict file
+    # it read to the evidence directory ({WorkflowEvidence#review}); the copies come back as `evidence`, which the
+    # caller adds to the reviewed attempt's own `evidence`, never in place of it.
     # Never raises: what can't be told is nil, and a round that never recorded a pane has no session or usage.
     #
-    # @param run [WorkflowRun, Hash{String=>Object}] left as it is
-    # @param round [Hash{String=>Object}] the step's `review` ("round", "pane", "started_at", ...)
-    # @return [Hash{String=>Object}] "round", "pane", "started_at", "ended_at", "session", "agent" and "usage"
+    # @param run [WorkflowRun, Hash{String=>Object}] left as it is; on the step being reviewed
+    # @param round [Hash{String=>Object}] the step's `review` ("round", "pane", "started_at", "reviews", ...)
+    # @return [Hash{String=>Object}] "round", "pane", "started_at", "ended_at", "session", "agent" and "usage"; when the
+    #   round read verdicts, also "reviews" and "evidence" (the copies; empty with no evidence collaborator)
     def finish_round(run:, round:)
       ended_at = round["ended_at"] || @clock.call.utc.iso8601
-      record = {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at}
+      record = {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at,
+                "session" => nil, "agent" => nil, "usage" => nil}
+      reviews = marked_reviews(round["reviews"])
+      if reviews
+        record["reviews"] = reviews
+        record["evidence"] = []
+      end
+      value = WorkflowRun.from_h(run)
       pane = round["pane"]
-      facts = (pane.is_a?(String) && !pane.empty?) ? agent_facts(WorkflowRun.from_h(run).to_h, record, pane: pane) : {}
-      record.merge("session" => facts["session"], "agent" => facts["agent"], "usage" => facts["usage"])
+      facts = (pane.is_a?(String) && !pane.empty?) ? agent_facts(value.to_h, record, pane: pane) : {}
+      record.merge!("session" => facts["session"], "agent" => facts["agent"], "usage" => facts["usage"])
+      record["evidence"] = verdict_copies(value, round, reviews) if reviews
+      record
     rescue
-      {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at,
-       "session" => nil, "agent" => nil, "usage" => nil}
+      record || {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => nil,
+                 "session" => nil, "agent" => nil, "usage" => nil}
     end
 
     private
+
+    def marked_reviews(rows)
+      return nil unless rows.is_a?(Array)
+      rows.map { |row| row.is_a?(Hash) ? row.merge("isolation" => ISOLATION) : row }
+    end
+
+    def verdict_copies(run, round, reviews)
+      attempt = run.current_step&.last_attempt
+      return [] unless @evidence && attempt
+      @evidence.review(run: run, step_id: run.current, attempt: attempt.to_h, round: round["round"], reviews: reviews)
+    rescue
+      []
+    end
 
     def effective_reason(run)
       parked = run["parked"]

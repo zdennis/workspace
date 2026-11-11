@@ -8,12 +8,14 @@ module Workspace
   # `changed`, `missing` (the copy is gone) and `replaced` (it is now a link or not a regular file) mean the
   # copy no longer holds what was recorded. `not_copied` (the entry has a `problem`) and `too_large`
   # mean nothing was copied, which is not tampering, unless a copy is there anyway (`changed`, `unexpected_copy`).
+  # A review verdict copied after it was rewritten (`problem` `changed_since_read`) is `changed`
+  # (`changed_since_read`, the round's hash as `recorded_sha256`, the copy's as `now_sha256`): the copy is not what was counted.
   # An entry with no hash, no `problem` and no `too_large` is `changed` (`no_recorded_hash`). The check always uses the entry's own
   # `sha256`, never the attempt's `prompt_sha256`, which hashes the composed text and may differ from the file.
   #
   # The stored `name` and `source` are data from the run file: a copy is read only when its name is a plain
-  # file name, directly inside the run's own evidence directory, and is never read through a link. A prompt
-  # or check log's source in the checkout is also compared with the copy (`source`: `same`, `differs`,
+  # file name, directly inside the run's own evidence directory, and is never read through a link. A prompt,
+  # check log or review verdict's source in the checkout is also compared with the copy (`source`: `same`, `differs`,
   # `gone`, `outside`); that is a note, because a cancelled check can legitimately keep writing its log.
   # The run file is the trust root: an edit to both a copy and its recorded hash is not detected.
   class WorkflowAudit
@@ -21,7 +23,7 @@ module Workspace
     MISMATCHES = %w[changed missing replaced].freeze
 
     # Entry kinds whose source file in the checkout is compared with the copy.
-    SOURCE_KINDS = %w[prompt check_log].freeze
+    SOURCE_KINDS = %w[prompt check_log review].freeze
 
     NAME = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
 
@@ -67,6 +69,10 @@ module Workspace
       result = {"step" => row["step"], "attempt" => row["attempt"], "name" => entry["name"], "kind" => entry["kind"],
                 "source" => entry["source"], "status" => nil, "reason" => nil, "recorded_sha256" => entry["sha256"],
                 "now_sha256" => nil, "bytes" => nil, "source_status" => nil}
+      # A verdict copied after it was rewritten: the copy is not the bytes the round counted.
+      if entry["problem"] == "changed_since_read"
+        return result.merge("status" => "changed", "reason" => "changed_since_read", "recorded_sha256" => entry["read_sha256"], "now_sha256" => entry["sha256"])
+      end
       if entry["problem"]
         return unexpected_copy(run, entry, result) || result.merge("status" => "not_copied", "reason" => entry["problem"].to_s[0, 40])
       end

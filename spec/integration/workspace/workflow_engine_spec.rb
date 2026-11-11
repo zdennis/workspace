@@ -5691,7 +5691,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["current"]).to eq("build")
       expect(run["steps"]["plan"]["state"]).to eq("passed")
       expect(run["steps"]["plan"]["attempts"].map { |each| each["outcome"] }).to eq(["passed"])
-      expect(run["steps"]["plan"]["attempts"].last).to include("review_outcome" => {"round" => 1, "approvals" => nil, "need" => nil, "must" => nil, "passed" => true}, "reviews" => [{"reviewer" => "skeptic", "verdict" => "approved"}])
+      expect(run["steps"]["plan"]["attempts"].last).to include("review_outcome" => {"round" => 1, "approvals" => nil, "need" => nil, "must" => nil, "passed" => true}, "reviews" => [{"reviewer" => "skeptic", "verdict" => "approved", "isolation" => "review_pane"}])
       expect(run["steps"]["build"]["state"]).to eq("running")
     end
 
@@ -5786,7 +5786,8 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(run["current"]).to eq("build")
         expect(attempt["review_outcome"]).to eq("round" => 1, "approvals" => 1, "need" => 1, "must" => [], "passed" => true)
         expect(attempt["reviews"]).to eq([{"reviewer" => "skeptic", "path" => "reviews/plan.1.r1/skeptic.md", "verdict" => "approve", "revision" => "rev1",
-                                           "agent_id" => "agent-1", "sha256" => Digest::SHA256.file(File.join(round_dir, "skeptic.md")).hexdigest, "counted" => true, "problem" => nil}])
+                                           "agent_id" => "agent-1", "sha256" => Digest::SHA256.file(File.join(round_dir, "skeptic.md")).hexdigest, "counted" => true, "problem" => nil,
+                                           "isolation" => "review_pane"}])
       end
 
       it "stops review_incomplete for a verdict another pane wrote, never rejecting" do

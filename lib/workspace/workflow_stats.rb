@@ -21,10 +21,10 @@ module Workspace
   # it followed a failed delivery.
   #
   # Tokens follow {WorkflowBudget}: input, output and cache creation tokens of the main thread and its in-step
-  # sub-agents, never cache reads. For each run, a step's figure is the sum over the attempts the budget counts: `passed`,
+  # sub-agents, and of each review round the attempt went through, never cache reads. For each run, a step's figure is the sum over the attempts the budget counts: `passed`,
   # `failed` and also `unfinished` ones that ended without an outcome (a cancel, a `resume --from`), so the tokens
   # spent on a cancelled attempt are not lost; not an attempt still going, and not an undelivered one.
-  # A run where any of those attempts has a null `usage` is `runs_uncounted` for that step, not a smaller
+  # A run where any of those attempts (or their rounds) has a null `usage` is `runs_uncounted` for that step, not a smaller
   # number; `mean` is over `runs_counted` only and is nil when there are none.
   class WorkflowStats
     # @param store [Workspace::WorkflowRunStore] reads the run files and their histories
@@ -141,8 +141,8 @@ module Workspace
           end
           paid << attempt if tokens_count?(run, id, attempts, attempt, kind)
         end
-        t["unfinished_tokens"] = paid.count { |attempt| kind_of(attempt) == :unfinished && WorkflowBudget.tokens_of(attempt.usage) }
-        sums = paid.map { |attempt| WorkflowBudget.tokens_of(attempt.usage) }
+        t["unfinished_tokens"] = paid.count { |attempt| kind_of(attempt) == :unfinished && WorkflowBudget.attempt_tokens(attempt) }
+        sums = paid.map { |attempt| WorkflowBudget.attempt_tokens(attempt) }
         t["tokens"] = if paid.empty? then nil
         elsif sums.all? then sums.sum
         else :uncounted

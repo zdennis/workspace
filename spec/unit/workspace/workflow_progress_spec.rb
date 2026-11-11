@@ -353,6 +353,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
     it "rewrites an approved round's attempt as passed, without finishing it again, and goes on to the next step" do
       reviews = [{"reviewer" => "skeptic", "verdict" => "approve"}]
+      recorded = [{"reviewer" => "skeptic", "verdict" => "approve", "isolation" => "review_pane"}]
       context = ctx
 
       run = progress.decide_review(reviewing_hash, {outcome: :approved, reviews: reviews, approvals: 2, need: 2, must: []}, ctx: context)
@@ -360,10 +361,10 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.step("plan").state).to eq("passed")
       expect(run.step("plan").review).to be_nil
       expect(run.step("plan").review_rounds).to eq(1)
-      expect(run.step("plan").last_attempt.to_h).to include("outcome" => "passed", "reviews" => reviews, "ended_at" => "2026-11-10T11:20:00Z",
+      expect(run.step("plan").last_attempt.to_h).to include("outcome" => "passed", "reviews" => recorded, "ended_at" => "2026-11-10T11:20:00Z",
         "review_outcome" => {"round" => 1, "approvals" => 2, "need" => 2, "must" => [], "passed" => true})
       expect(run.step("plan").last_attempt.to_h["rounds"]).to eq([{"round" => 1, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "ended_at" => "2026-11-10T12:00:00Z",
-                                                                   "session" => nil, "agent" => nil, "usage" => nil, "ended" => "approved", "reviews" => reviews}])
+                                                                   "session" => nil, "agent" => nil, "usage" => nil, "ended" => "approved", "reviews" => recorded}])
       # The round is recorded; the attempt is not finished a second time.
       expect(attempt_record.calls).to eq([[:finish_round, "wr_1", 1]])
       expect(run.current).to eq("build")
@@ -384,9 +385,9 @@ RSpec.describe Workspace::WorkflowProgress do
     end
 
     it "fails a rejected round's attempt and step and stops the run with review_rejected" do
-      reviews = [{"reviewer" => "skeptic", "verdict" => "reject"}]
+      reviews = [{"reviewer" => "skeptic", "verdict" => "reject", "isolation" => "review_pane"}]
 
-      run = progress.decide_review(reviewing_hash, {outcome: :rejected, reviews: reviews}, ctx: ctx)
+      run = progress.decide_review(reviewing_hash, {outcome: :rejected, reviews: [{"reviewer" => "skeptic", "verdict" => "reject"}]}, ctx: ctx)
 
       expect(run.step("plan").state).to eq("failed")
       expect(run.step("plan").review).to be_nil
@@ -457,9 +458,33 @@ RSpec.describe Workspace::WorkflowProgress do
 
         run = progress.end_round(given, how: "resumed", ctx: ctx, close: false)
 
-        expect(run.step("plan").last_attempt.to_h["rounds"].last).to include("ended" => "resumed", "reviews" => [{"reviewer" => "skeptic", "verdict" => "approve"}])
+        expect(run.step("plan").last_attempt.to_h["rounds"].last).to include("ended" => "resumed",
+          "reviews" => [{"reviewer" => "skeptic", "verdict" => "approve", "isolation" => "review_pane"}])
         expect(change.events).to be_empty
         expect(panes.calls).to be_empty
+      end
+
+      it "adds the verdict copies to the reviewed attempt's evidence after what is there, and keeps them out of the round record" do
+        copy = {"name" => "plan.1.r1.review.skeptic.md", "kind" => "review", "sha256" => "abc", "bytes" => 3}
+        progress = described_class.new(change: change, store: store, dispatch: dispatch, panes: panes, log_tail: log_tail, clock: -> { now },
+          attempt_record: RecordingAttemptRecord.new(round_evidence: [copy]))
+        given = reviewing_hash
+        prompt = {"name" => "plan.1.prompt.md", "kind" => "prompt", "sha256" => "def", "bytes" => 9}
+        given["steps"]["plan"]["attempts"][0]["evidence"] = [prompt]
+
+        run = progress.decide_review(given, {outcome: :approved, reviews: [{"reviewer" => "skeptic", "verdict" => "approve"}]}, ctx: ctx)
+
+        attempt = run.step("plan").last_attempt.to_h
+        expect(attempt["evidence"]).to eq([prompt, copy])
+        expect(attempt["rounds"].last).not_to have_key("evidence")
+      end
+
+      it "leaves the attempt's evidence alone for a round that copied nothing" do
+        given = reviewing_hash
+
+        run = progress.end_round(given, how: "cancelled", ctx: ctx)
+
+        expect(run.step("plan").last_attempt.to_h).not_to have_key("evidence")
       end
 
       it "adds no second record for a round its tally already recorded" do

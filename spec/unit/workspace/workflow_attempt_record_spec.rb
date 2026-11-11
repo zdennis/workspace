@@ -81,6 +81,48 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(attempt["evidence"].map { |e| e["name"] }).to eq(%w[plan.1.prompt.md plan.1.out.0.plan.md])
     end
 
+    describe "a review round's verdicts" do
+      let(:verdict) { "reviewer: skeptic\nverdict: approve\nrevision: r1\n" }
+      let(:rows) do
+        [{"reviewer" => "skeptic", "path" => "reviews/plan.1.r2/skeptic.md", "verdict" => "approve", "sha256" => Digest::SHA256.hexdigest(verdict), "counted" => true},
+          {"reviewer" => "tester", "path" => "reviews/plan.1.r2/tester.md", "verdict" => nil, "sha256" => nil, "counted" => false, "problem" => "missing"}]
+      end
+      let(:round) { {"round" => 2, "started_at" => "2026-10-04T12:00:00Z", "ended_at" => "2026-10-04T12:05:00Z", "reviews" => rows} }
+
+      before do
+        FileUtils.mkdir_p(File.join(run["artifacts_dir"], "reviews", "plan.1.r2"))
+        put("reviews/plan.1.r2/skeptic.md", verdict)
+      end
+
+      it "marks every row review_pane and copies each verdict file it read" do
+        found = record.finish_round(run: run, round: round)
+
+        expect(found["reviews"].map { |row| row["isolation"] }).to eq(%w[review_pane review_pane])
+        expect(found["reviews"].map { |row| row.except("isolation") }).to eq(rows)
+        expect(found["evidence"]).to eq([{"name" => "plan.1.r2.review.skeptic.md", "kind" => "review", "source" => File.join(run["artifacts_dir"], "reviews/plan.1.r2/skeptic.md"),
+                                          "sha256" => Digest::SHA256.hexdigest(verdict), "bytes" => verdict.bytesize}])
+        expect(File.read(File.join(@dir, "ev", "wr_1", "plan.1.r2.review.skeptic.md"))).to eq(verdict)
+      end
+
+      it "records no reviews or evidence for a round that read no verdicts" do
+        expect(record.finish_round(run: run, round: round.except("reviews")).keys).not_to include("reviews", "evidence")
+      end
+
+      it "still marks the rows with no evidence collaborator, and copies nothing" do
+        found = described_class.new(guard: guard).finish_round(run: run, round: round)
+
+        expect(found["reviews"].map { |row| row["isolation"] }).to eq(%w[review_pane review_pane])
+        expect(found["evidence"]).to eq([])
+      end
+
+      it "keeps the verdict copies when the attempt is finished again" do
+        attempt = {"n" => 1, "evidence" => record.finish_round(run: run, round: round)["evidence"]}
+        attempt.replace(record.finish(run: run, step: step, attempt: attempt).thawed)
+
+        expect(attempt["evidence"].map { |e| e["name"] }).to eq(%w[plan.1.r2.review.skeptic.md plan.1.out.0.plan.md])
+      end
+    end
+
     it "takes each output's hash from the one copy" do
       put("plan.md", "o")
       attempt = {"n" => 1}

@@ -252,7 +252,9 @@ module Workspace
       decided = {"round" => round["round"], "approvals" => tally[:approvals], "need" => tally[:need], "must" => tally[:must], "passed" => outcome == :approved}
       # Every round that ends, decided or not, adds one record to the attempt's `rounds`: the one list its usage is read from.
       ended = round.merge("delivery" => nil, "ended_at" => now_iso, "reviews" => reviews)
-      attempt = attempt.merge("rounds" => Array(attempt["rounds"]) + [round_record(run, ended, outcome.to_s)])
+      attempt = with_round(run, attempt, ended, outcome.to_s)
+      # The rows as recorded, each with its `isolation`.
+      reviews = attempt["rounds"].last.fetch("reviews", reviews)
       case outcome
       when :approved
         state.delete("review")
@@ -312,18 +314,20 @@ module Workspace
       ctx.close_review({"step" => run["current"], "round" => round["round"], "pane" => round["pane"]})
     end
 
-    # The record of a round that ended (or a delivery of it that lapsed): {WorkflowAttemptRecord#finish_round} with
-    # how it ended, and the verdict rows the round read when there are any.
-    def round_record(run, round, how)
+    # The attempt with the record of a round that ended (or a delivery of it that lapsed) added to its `rounds`:
+    # {WorkflowAttemptRecord#finish_round} with how it ended, and the verdict rows the round read when there are any.
+    # The verdict copies it made are added to the attempt's `evidence`, after what is there, never in its place.
+    def with_round(run, attempt, round, how)
       record = @attempt_record.finish_round(run: run, round: round).merge("ended" => how)
-      record["reviews"] = round["reviews"] if round["reviews"]
-      record
+      copies = Array(record.delete("evidence"))
+      record["reviews"] = round["reviews"] if round["reviews"] && !record.key?("reviews")
+      attempt = attempt.merge("rounds" => Array(attempt["rounds"]) + [record])
+      copies.empty? ? attempt : attempt.merge("evidence" => Array(attempt["evidence"]) + copies)
     end
 
     def add_round_record(run, round, how)
       state = step_state(run)
-      attempt = state["attempts"].last
-      state["attempts"][-1] = attempt.merge("rounds" => Array(attempt["rounds"]) + [round_record(run, round, how)])
+      state["attempts"][-1] = with_round(run, state["attempts"].last, round, how)
     end
 
     def stop_review(run, code, details)

@@ -1,8 +1,8 @@
 require "fileutils"
 
 module Workspace
-  # Copies what an attempt left in the checkout (its prompt, its check log and each declared `produces`
-  # file) into the state directory, `<dir>/<run id>/<name>`, with the SHA-256 of the bytes copied. The
+  # Copies what an attempt left in the checkout (its prompt, its check log, each declared `produces`
+  # file and the verdicts each of its review rounds read) into the state directory, `<dir>/<run id>/<name>`, with the SHA-256 of the bytes copied. The
   # checkout is the agent's to edit and `git worktree remove` deletes it; the copy outlives both. It runs
   # under the run's lock, so a file past {MAX_BYTES}, or past {BUDGET} for one attempt, is not copied, and a
   # problem is a note on the entry, never an error.
@@ -86,6 +86,36 @@ module Workspace
       end
       used = Array(attempt["evidence"]).grep(Hash).sum { |each| (each["kind"] == "prompt") ? each["bytes"].to_i : 0 }
       batch(run, attempt, wanted, used)
+    end
+
+    # Copies the verdict files an ended review round read, as the round is recorded: one entry of kind `review` per
+    # verdict row whose file was read (it has a `sha256`), named `<step>.<n>.r<round>.review.<reviewer>.md`. Each
+    # round has a byte budget of its own, so a large round never takes from the attempt's files or from another round.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run; its `artifacts_dir` holds the round directories
+    # @param step_id [String] the reviewed step
+    # @param attempt [Hash{String=>Object}] the reviewed attempt, with `n`
+    # @param round [Integer] the round
+    # @param reviews [Array<Hash{String=>Object}>] the round's verdict rows ("reviewer", "path" under the run's
+    #   directory, "sha256")
+    # @return [Array<Hash{String=>Object}>] entries as {#copy} gives them; a copy whose bytes hash differently from
+    #   the row's `sha256` (the file was rewritten after the round read it) is kept, with `problem`
+    #   `changed_since_read` and the hash the round read as `read_sha256`; never raises
+    def review(run:, step_id:, attempt:, round:, reviews:)
+      run = WorkflowRun.from_h(run)
+      artifacts = run.artifacts_dir.to_s
+      read = []
+      wanted = Array(reviews).grep(Hash).filter_map do |row|
+        path = row["path"]
+        next unless row["sha256"] && path.is_a?(String) && !path.empty? && !path.start_with?("/")
+        read << row["sha256"]
+        ["review", "#{base(step_id, attempt)}.r#{round.to_i}.review.#{safe(row["reviewer"])}.md", File.join(artifacts, path)]
+      end
+      batch(run, attempt, wanted, 0).each_with_index.map do |entry, index|
+        next entry unless entry["sha256"] && entry["sha256"] != read[index]
+        # The file was rewritten after the round read it: the copy holds bytes no tally counted.
+        entry.merge("problem" => "changed_since_read", "read_sha256" => read[index])
+      end
     end
 
     # Removes a finished run's evidence directory.

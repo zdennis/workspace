@@ -46,6 +46,54 @@ RSpec.describe Workspace::WorkflowEvidence do
     expect(File.stat(copies).mode & 0o777).to eq(0o700)
   end
 
+  describe "#review" do
+    def row(reviewer, text = nil)
+      path = "reviews/report.1.r2/#{reviewer}.md"
+      put(path, text) if text
+      {"reviewer" => reviewer, "path" => path, "sha256" => text && sha(text)}
+    end
+
+    it "copies each verdict the round read as kind review, named for the step, attempt, round and reviewer" do
+      rows = [row("skeptic", "approve"), row("tester")]
+
+      entries = evidence.review(run: run, step_id: "report", attempt: {"n" => 1}, round: 2, reviews: rows)
+
+      expect(entries).to eq([{"name" => "report.1.r2.review.skeptic.md", "kind" => "review", "source" => File.join(art, "reviews/report.1.r2/skeptic.md"),
+                              "sha256" => sha("approve"), "bytes" => 7}])
+      expect(File.read(File.join(copies, "report.1.r2.review.skeptic.md"))).to eq("approve")
+    end
+
+    it "gives each round a budget of its own, so the attempt's files take nothing from it" do
+      evidence = described_class.new(dir: evidence_dir, max_bytes: max_bytes, budget: 10)
+      rows = [row("skeptic", "123456"), row("tester", "abcdef")]
+
+      first = evidence.review(run: run, step_id: "report", attempt: {"n" => 1, "evidence" => [{"kind" => "prompt", "bytes" => 9}]}, round: 2, reviews: rows)
+      second = evidence.review(run: run, step_id: "report", attempt: {"n" => 1}, round: 3, reviews: [rows.first])
+
+      expect(first.map { |e| [e["name"], e["sha256"] ? :copied : e["budget"]] }).to eq([["report.1.r2.review.skeptic.md", :copied], ["report.1.r2.review.tester.md", true]])
+      expect(second.first["sha256"]).to eq(sha("123456"))
+    end
+
+    it "keeps a copy of a verdict rewritten after the round read it, marked changed_since_read with both hashes" do
+      rows = [row("skeptic", "approve")]
+      put("reviews/report.1.r2/skeptic.md", "reject")
+
+      entries = evidence.review(run: run, step_id: "report", attempt: {"n" => 1}, round: 2, reviews: rows)
+
+      expect(entries.first).to include("sha256" => sha("reject"), "read_sha256" => sha("approve"), "problem" => "changed_since_read")
+      expect(File.read(File.join(copies, "report.1.r2.review.skeptic.md"))).to eq("reject")
+    end
+
+    it "refuses a row whose path leaves the run's directory" do
+      put("../outside.md", "x")
+      rows = [{"reviewer" => "skeptic", "path" => "../outside.md", "sha256" => sha("x")}, {"reviewer" => "tester", "path" => "/etc/hosts", "sha256" => "y"}]
+
+      entries = evidence.review(run: run, step_id: "report", attempt: {"n" => 1}, round: 2, reviews: rows)
+
+      expect(entries.map { |e| e["problem"] }).to eq(["outside_artifacts"])
+    end
+  end
+
   describe "#prompt" do
     it "copies the prompt file as written and names it for the step and attempt" do
       path = put("steps/report.1.prompt.md", "prompt")

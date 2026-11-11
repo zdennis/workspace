@@ -79,6 +79,20 @@ RSpec.describe Workspace::WorkflowStats do
       expect(row(stats.read(workflow: "rpiv"), "plan")["tokens"]).to eq("mean" => nil, "runs_counted" => 0, "runs_uncounted" => 1)
     end
 
+    it "adds a reviewed attempt's rounds to its tokens, as the budget does, and is uncounted when a round has no usage" do
+      rounds = [{"round" => 1, "pane" => "%9", "usage" => {"input_tokens" => 40}}, {"round" => 2, "pane" => "%9", "usage" => {"output_tokens" => 2}}]
+      put("wr_1", steps: {"plan" => [attempt(1, "passed", rounds: rounds)]})
+      put("wr_2", steps: {"plan" => [attempt(1, "passed", rounds: [{"round" => 1, "pane" => "%9", "usage" => nil}])]})
+
+      expect(row(stats.read(workflow: "rpiv"), "plan")["tokens"]).to eq("mean" => 202, "runs_counted" => 1, "runs_uncounted" => 1)
+    end
+
+    it "keeps a run counted when its only round without usage never had a pane" do
+      put("wr_1", steps: {"plan" => [attempt(1, "passed", rounds: [{"round" => 1, "pane" => nil, "ended" => "review_tampered", "usage" => nil}])]})
+
+      expect(row(stats.read(workflow: "rpiv"), "plan")["tokens"]).to eq("mean" => 160, "runs_counted" => 1, "runs_uncounted" => 0)
+    end
+
     it "makes a run uncounted when any one of its attempts has no usage" do
       put("wr_1", steps: {"plan" => [attempt(1, "failed", usage: nil), attempt(2, "passed")]})
       expect(row(stats.read(workflow: "rpiv"), "plan")["tokens"]).to include("mean" => nil, "runs_uncounted" => 1)

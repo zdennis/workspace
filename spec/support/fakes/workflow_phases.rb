@@ -345,15 +345,17 @@ end
 # Fake of Workspace::WorkflowAttemptRecord#start, #finish, #abandon and #finish_round: the attempt as given, with a stand-in hash of the
 # composed text at its start and an empty +outputs+ at its end; +abandon+ marks the current step's last attempt
 # `abandoned` when it is still open (no `ended_at`); +finish_round+ answers the round's number, pane and times with
-# the usage it was given.
+# the usage it was given and, for a round that read verdicts, its rows with `isolation` and the evidence it was given.
 class RecordingAttemptRecord
   CONTROL_METHODS = %i[calls].freeze
 
   attr_reader :calls
 
   # @param round_usage [Hash, nil] the usage +finish_round+ records
-  def initialize(round_usage: nil)
+  # @param round_evidence [Array<Hash>] the verdict copies +finish_round+ answers for a round that read verdicts
+  def initialize(round_usage: nil, round_evidence: [])
     @round_usage = round_usage
+    @round_evidence = round_evidence
     @calls = []
   end
 
@@ -378,7 +380,11 @@ class RecordingAttemptRecord
   def finish_round(run:, round:)
     @calls << [:finish_round, Workspace::WorkflowRun.from_h(run).id, round["round"]]
     {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00Z",
-     "session" => nil, "agent" => nil, "usage" => @round_usage}
+     "session" => nil, "agent" => nil, "usage" => @round_usage}.tap do |record|
+      next unless round["reviews"].is_a?(Array)
+      record["reviews"] = round["reviews"].map { |row| row.merge("isolation" => "review_pane") }
+      record["evidence"] = @round_evidence
+    end
   end
 end
 

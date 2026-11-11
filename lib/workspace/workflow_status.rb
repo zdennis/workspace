@@ -244,7 +244,7 @@ module Workspace
     end
 
     # The token budget as it stands, only for a run whose definition declares one. `used` is a minimum: it leaves
-    # out sub-agents and any ended attempt whose `usage` is null (`uncounted`), and `minimum` says so.
+    # out any ended attempt or review round whose `usage` is null (`uncounted`), and `minimum` says so.
     def budget_row(run)
       reading = WorkflowBudget.reading(run.to_h)
       return {} unless reading

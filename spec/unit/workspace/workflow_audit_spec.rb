@@ -59,6 +59,52 @@ RSpec.describe Workspace::WorkflowAudit do
     expect(audit.read(run)["clean"]).to be(false)
   end
 
+  describe "a review round's verdict" do
+    def reviewed_run
+      run = recorded_run
+      put("reviews/implement.1.r1/skeptic.md", "verdict: approve")
+      rows = [{"reviewer" => "skeptic", "path" => "reviews/implement.1.r1/skeptic.md", "sha256" => sha("verdict: approve")}]
+      run["steps"]["implement"]["attempts"][0]["evidence"] += recorder.review(run: run, step_id: "implement", attempt: {"n" => 1}, round: 1, reviews: rows)
+      run
+    end
+
+    def verdict(result) = result["files"].find { |each| each["kind"] == "review" }
+
+    it "finds the copy intact and compares the verdict in the checkout with it" do
+      expect(verdict(audit.read(reviewed_run))).to include("name" => "implement.1.r1.review.skeptic.md", "status" => "ok", "source_status" => "same")
+    end
+
+    it "reports an edited copy as changed" do
+      run = reviewed_run
+      File.write(File.join(copies, "implement.1.r1.review.skeptic.md"), "verdict: reject")
+
+      result = audit.read(run)
+
+      expect(verdict(result)).to include("status" => "changed", "recorded_sha256" => sha("verdict: approve"), "now_sha256" => sha("verdict: reject"))
+      expect(result["clean"]).to be(false)
+    end
+
+    it "reports a verdict copied after it was rewritten, since the round read it, as a changed mismatch" do
+      run = recorded_run
+      put("reviews/implement.1.r1/skeptic.md", "verdict: reject")
+      rows = [{"reviewer" => "skeptic", "path" => "reviews/implement.1.r1/skeptic.md", "sha256" => sha("verdict: approve")}]
+      run["steps"]["implement"]["attempts"][0]["evidence"] += recorder.review(run: run, step_id: "implement", attempt: {"n" => 1}, round: 1, reviews: rows)
+
+      result = audit.read(run)
+
+      expect(verdict(result)).to include("status" => "changed", "reason" => "changed_since_read", "recorded_sha256" => sha("verdict: approve"),
+        "now_sha256" => sha("verdict: reject"))
+      expect(result["clean"]).to be(false)
+    end
+
+    it "notes a verdict rewritten in the checkout after it was copied" do
+      run = reviewed_run
+      put("reviews/implement.1.r1/skeptic.md", "verdict: reject")
+
+      expect(verdict(audit.read(run))).to include("status" => "ok", "source_status" => "differs")
+    end
+  end
+
   it "reports a deleted copy, and every copy when the evidence directory is gone" do
     run = recorded_run
     File.delete(File.join(copies, "implement.1.prompt.md"))

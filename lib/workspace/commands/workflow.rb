@@ -1578,7 +1578,7 @@ module Workspace
       end
 
       def budget_sentence(details)
-        minimum = details["uncounted"].to_i.positive? ? " (at least; #{details["uncounted"]} ended attempt#{"s" unless details["uncounted"] == 1} not counted)" : ""
+        minimum = details["uncounted"].to_i.positive? ? " (at least; #{details["uncounted"]} ended attempt#{"s" unless details["uncounted"] == 1} or review round#{"s" unless details["uncounted"] == 1} not counted)" : ""
         "#{delimit(details["used"])} of #{delimit(details["allowance"])} tokens#{minimum}  (resume --extra-tokens #{details["suggested"]}#{" --extra-time #{Duration.flag(details["run_timed_out"]["suggested"])}" if details["run_timed_out"].is_a?(Hash)})"
       end
 

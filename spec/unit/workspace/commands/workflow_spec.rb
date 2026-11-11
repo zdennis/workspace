@@ -514,7 +514,7 @@ RSpec.describe Workspace::Commands::Workflow do
         reason("budget_spent", {"step" => "build", "used" => 4_120_000, "allowance" => 4_000_000, "uncounted" => 0, "suggested" => 1_000_000}) =>
           "budget_spent: step build was not started: 4,120,000 of 4,000,000 tokens  (resume --extra-tokens 1000000)",
         reason("budget_spent", {"step" => "build", "used" => 950, "allowance" => 900, "uncounted" => 2, "suggested" => 100_000}) =>
-          "budget_spent: step build was not started: 950 of 900 tokens (at least; 2 ended attempts not counted)  (resume --extra-tokens 100000)",
+          "budget_spent: step build was not started: 950 of 900 tokens (at least; 2 ended attempts or review rounds not counted)  (resume --extra-tokens 100000)",
         reason("retry_backoff", {"step" => "verify", "to" => "build", "until" => "2026-10-04T12:02:00Z", "seconds" => 120.0}) =>
           "retry_backoff: step verify failed; step build starts again at 2026-10-04T12:02:00Z (after 120 seconds), or sooner with a resume",
         reason("waiting_you", {"kind" => "prompt", "pane" => "%5", "message" => "Claude needs your permission"}) =>
