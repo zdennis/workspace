@@ -483,6 +483,7 @@ module Workspace
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
       def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false)
         definition = @catalog.find(id, project: project)
+        warn_sweep_missing(definition)
         filled, from = (fill_from_branch && @branch_inputs) ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
         if dry_run
           pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace, start_daemon: false)
@@ -892,6 +893,19 @@ module Workspace
       end
 
       private
+
+      # Says on stderr that no sweep will check a time limit when the definition has a run `timeout` or a step
+      # `timeout` and the sweep schedule is not installed. Reads the schedule's state only; with no schedule wired
+      # or one that cannot answer it says nothing.
+      def warn_sweep_missing(definition)
+        return unless @schedule
+        data = definition.to_h
+        return unless data["timeout"] || Array(data["steps"]).any? { |step| step["timeout"] }
+        return if @schedule.status["installed"]
+        @error_output.puts "Warning: #{data["id"]} sets a timeout, but the workflow sweep is not installed, so nothing enforces the timeout while no agent is working the run. Run `workspace workflow sweep --install` to install it."
+      rescue Workspace::Error
+        nil
+      end
 
       # The last {CHECK_TAIL_LINES} lines of a check log, read from its last 64 KiB.
       def log_tail(path)
