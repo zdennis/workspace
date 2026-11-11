@@ -1,15 +1,20 @@
+require "securerandom"
 require "time"
 
 module Workspace
   # A person's commands on a run: passing or turning down a gate ({#approve}, {#reject}), getting a run that is
   # not moving going again ({#resume}, refused first by {#refuse_resume}), and ending it ({#cancel},
-  # {#workspace_killed}). A command that starts an attempt is held to the run's attempt allowance and token
-  # budget, which `--extra-attempts` and `--extra-tokens` raise ({#refuse_budget}). What follows goes through
+  # {#workspace_killed}). A resume that can't be typed yet is parked on the run ({#park}), then carried out
+  # ({#release_park}) or ended ({#park_failed}). A command that starts an attempt is held to the run's attempt
+  # allowance and token budget, which `--extra-attempts` and `--extra-tokens` raise. What follows goes through
   # {WorkflowProgress}, {WorkflowDispatch} and {WorkflowEvaluation}. Each method that takes a run leaves it as it
   # is and returns the run afterwards.
   class WorkflowDecisions
-    # What a resume did: the run afterwards, and why nothing was done (a sentence), or nil when it acted.
+    # What a resume or a park did: the run afterwards, and why nothing was done (a sentence), or nil when it acted.
     Resumed = Data.define(:run, :unchanged)
+
+    # Seconds a parked resume waits for the turn to end.
+    PARK_SECONDS = 3600
 
     # @param change [Workspace::WorkflowRunChange] changes the run under its lock and writes its history
     # @param store [Workspace::WorkflowRunStore] lists the runs going, for {#workspace_killed}
@@ -124,25 +129,96 @@ module Workspace
       Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : WorkflowRun.from_h(run), unchanged: unchanged)
     end
 
-    # The body of {#resume}, inside a change the caller holds (a released park is one). Refusals come first, so a
-    # refused resume leaves the run and its pane as they were. A check to run outside the lock is registered on +ctx+.
+    # Stores a resume for later, with the same arguments as {#resume}: no attempt, no binding, no new lock. What the
+    # run already has stays, and {#release_park} carries it out. A live park stays as it is, so repeating the call
+    # can't extend the wait; one past its limit is replaced.
     #
-    # @param run [WorkflowRun, Hash{String=>Object}] the stored run; left as it is
-    # @param ctx [Workspace::WorkflowRunChange::Context] the change's context
+    # @param run_id [String]
     # @param from [String, nil] see {#resume}
-    # @param note [String, nil] see {#resume}
+    # @param note [String, nil] see {#resume}; stored in the run, never in an event
     # @param pane [String, nil] see {#resume}
     # @param turn_over [Hash{String=>Object}, nil] see {#resume}
-    # @param extra_attempts [Integer, nil] see {#resume}
-    # @param extra_tokens [Integer, nil] see {#resume}
-    # @param budget [Boolean] false for a parked resume typed again after a busy pane: its attempt was counted then,
-    #   so the allowance and budget are not asked again
-    # @return [Resumed] the run afterwards, and why nothing was done, or nil
-    # @raise [Workspace::Error] as {#resume}
-    def apply_resume(run, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, budget: true)
-      work = WorkflowRun.from_h(run).to_mutable_h
-      unchanged = resume_in(work, ctx, from, note, pane, turn_over, extra_attempts, extra_tokens, budget)
-      Resumed.new(run: WorkflowRun.from_h(work), unchanged: unchanged)
+    # @param extra_attempts [Integer, nil] see {#resume}; applied when the park is released
+    # @param extra_tokens [Integer, nil] see {#resume}; applied when the park is released
+    # @return [Resumed] the run afterwards, and why nothing was stored when nothing was
+    # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has;
+    #   `attempts_spent` or `budget_spent` as {#resume}
+    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
+      unchanged = nil
+      run = @change.call(run_id) do |stored|
+        refuse_resume(stored, from: from)
+        if WorkflowTransitions.parked(stored, @clock.call) == :waiting
+          unchanged = "a resume is already parked for pane #{park_target(stored)}"
+          next
+        end
+        unchanged = from ? nil : left_alone(stored, step_state(stored), pane, turn_over)
+        next if unchanged
+        check_pane(pane, run_id) if pane && @panes.run_on(pane) != run_id
+        refuse_budget(stored, extra_attempts: extra_attempts, extra_tokens: extra_tokens) if WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
+        drop_park(stored, "expired")
+        store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}),
+          expires_at: (@clock.call + PARK_SECONDS).utc.iso8601)
+      end
+      Resumed.new(run: WorkflowRun.from_h(run), unchanged: unchanged)
+    end
+
+    # Carries out a parked resume, in one change with taking it off the run. A park typed again after a busy pane
+    # (`retries` above 0) is not held to the allowance and budget a second time: its attempt was counted then.
+    #
+    # @param run_id [String]
+    # @param id [String] the park's id; any other changes nothing
+    # @return [Resumed] the run afterwards, and why the resume did nothing (its note kept for the next attempt), or nil
+    # @raise [Workspace::Error] see {#resume}; the run stays parked
+    def release_park(run_id, id)
+      check = nil
+      unchanged = nil
+      run = @change.call(run_id) do |stored, ctx|
+        parked = stored["parked"]
+        next unless parked && parked["id"] == id
+        stored.delete("parked")
+        resumed = apply_resume(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"],
+          extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], budget: parked["retries"].to_i.zero?)
+        stored.replace(resumed.run.to_mutable_h)
+        unchanged = resumed.unchanged
+        check = ctx.check
+        stored["pending_context"] << WorkflowRun.resume_note(parked["note"]) if unchanged && parked["note"]
+        event(stored, "resume_parked_ended", {"step" => stored["current"], "how" => unchanged ? "unchanged" : "released"}
+          .merge(unchanged ? {"detail" => unchanged} : {}))
+        next unless ctx.delivery
+        step_state(stored)["attempts"].last["after_park"] = {"expires_at" => parked["expires_at"], "pane" => ctx.delivery["pane"], "retries" => parked["retries"]}
+      end
+      Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : WorkflowRun.from_h(run), unchanged: unchanged)
+    end
+
+    # Ends a park that can't be released, and leaves the run waiting for a person. The step and what it holds stay,
+    # so a `running` step keeps its attempt and a later resume decides it. A lock the run queued for is given up,
+    # since the run would no longer use it. A run waiting at a gate keeps its gate reason, so approve and reject stay
+    # open; the failure is in the `resume_parked_ended` event.
+    #
+    # @param run_id [String]
+    # @param id [String] the park's id; any other changes nothing
+    # @param code [String] why, stored as the reason's `error`
+    # @param message [String]
+    # @return [WorkflowRun] the run afterwards
+    # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
+    def park_failed(run_id, id, code:, message:)
+      run = @change.call(run_id) do |stored|
+        next unless stored.dig("parked", "id") == id
+        if step_state(stored).dig("gate", "state") == "waiting"
+          drop_park(stored, "failed", "error" => code, "message" => message)
+          next
+        end
+        target = park_target(stored)
+        case stored.dig("reason", "code")
+        when "waiting_lock" then @dispatch.release(stored)
+        when "failed_check" then stored["pending_context"].unshift(last_failure(stored))
+        end
+        drop_park(stored, "failed")
+        stored["state"] = "waiting"
+        stored["reason"] = {"code" => WorkflowDispatch::PANE_GONE_CODES.include?(code) ? "pane_gone" : "waiting_you", "since" => now_iso,
+                            "details" => {"kind" => "dispatch", "step" => stored["current"], "pane" => target, "workspace" => stored["workspace"], "error" => code, "message" => message}}
+      end
+      WorkflowRun.from_h(run)
     end
 
     # What {#resume} refuses, checked without changing anything, so a caller can refuse before it starts a daemon
@@ -162,21 +238,6 @@ module Workspace
       return unless step_state(run).dig("gate", "state") == "waiting"
       raise Workspace::Error.new("Run #{run["id"]} is waiting at the #{run["current"]} gate. Approve or reject it, or pass --from STEP.",
         code: "gate_waiting", details: {"run_id" => run["id"], "step" => run["current"]})
-    end
-
-    # Refuses an attempt the run has no allowance left for: `attempts_spent` when +extra_attempts+ does not cover
-    # the overrun, then `budget_spent` when the token budget is used up and +extra_tokens+ does not cover it.
-    # Changes nothing.
-    #
-    # @param run [WorkflowRun, Hash{String=>Object}]
-    # @param extra_attempts [Integer, nil]
-    # @param extra_tokens [Integer, nil]
-    # @return [void]
-    # @raise [Workspace::Error] code `attempts_spent` or `budget_spent`
-    def refuse_budget(run, extra_attempts:, extra_tokens:)
-      run = WorkflowRun.from_h(run).to_h
-      refuse_spent(run, extra_attempts)
-      refuse_over_budget(run, extra_tokens)
     end
 
     # Ends a run: closes its open attempt, gives up its resources and frees its pane.
@@ -216,7 +277,43 @@ module Workspace
 
     private
 
-    def resume_in(stored, ctx, from, note, pane, turn_over, extra_attempts, extra_tokens, budget)
+    # The body of {#resume}, inside a change the caller holds (a released park is one). Refusals come first, so a
+    # refused resume leaves the run and its pane as they were. A check to run outside the lock is registered on +ctx+.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run; left as it is
+    # @param ctx [Workspace::WorkflowRunChange::Context] the change's context
+    # @param from [String, nil] see {#resume}
+    # @param note [String, nil] see {#resume}
+    # @param pane [String, nil] see {#resume}
+    # @param turn_over [Hash{String=>Object}, nil] see {#resume}
+    # @param extra_attempts [Integer, nil] see {#resume}
+    # @param extra_tokens [Integer, nil] see {#resume}
+    # @param budget [Boolean] false for a parked resume typed again after a busy pane: its attempt was counted then,
+    #   so the allowance and budget are not asked again
+    # @return [Resumed] the run afterwards, and why nothing was done, or nil
+    # @raise [Workspace::Error] as {#resume}
+    def apply_resume(run, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, budget: true)
+      work = WorkflowRun.from_h(run).to_mutable_h
+      unchanged = resume_in(work, ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, budget: budget)
+      Resumed.new(run: WorkflowRun.from_h(work), unchanged: unchanged)
+    end
+
+    # Refuses an attempt the run has no allowance left for: `attempts_spent` when +extra_attempts+ does not cover
+    # the overrun, then `budget_spent` when the token budget is used up and +extra_tokens+ does not cover it.
+    # Changes nothing.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}]
+    # @param extra_attempts [Integer, nil]
+    # @param extra_tokens [Integer, nil]
+    # @return [void]
+    # @raise [Workspace::Error] code `attempts_spent` or `budget_spent`
+    def refuse_budget(run, extra_attempts:, extra_tokens:)
+      run = WorkflowRun.from_h(run).to_h
+      refuse_spent(run, extra_attempts)
+      refuse_over_budget(run, extra_tokens)
+    end
+
+    def resume_in(stored, ctx, from:, note:, pane:, turn_over:, extra_attempts:, extra_tokens:, budget:)
       refuse_resume(stored, from: from)
       state = step_state(stored)
       # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
@@ -235,7 +332,7 @@ module Workspace
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
-      stored.replace(@dispatch.drop_park(stored, "taken_over").to_mutable_h) if stored.key?("parked")
+      drop_park(stored, "taken_over")
       # Dropping a park replaces the run's nested Hashes.
       state = step_state(stored)
       stored["pending_context"] << WorkflowRun.resume_note(note) if note
@@ -411,6 +508,22 @@ module Workspace
     # A gate event carries the person's note only when one was given.
     def with_note(data, note)
       note.to_s.strip.empty? ? data : data.merge("note" => note)
+    end
+
+    def park_target(run)
+      run["parked"]["pane"] || bound_pane(run)
+    end
+
+    # +request+ is what a resume would be given: "from", "note", "pane", "turn_over".
+    def store_park(run, request, expires_at:)
+      run.replace(WorkflowRun.from_h(run).with_park(request, id: SecureRandom.hex(8), requested_at: now_iso, expires_at: expires_at, retries: 0).to_mutable_h)
+      event(run, "resume_parked", {"step" => run["current"], "pane" => request["pane"] || bound_pane(run), "from" => request["from"],
+                                   "has_note" => !request["note"].nil?})
+    end
+
+    # Takes a park off the run however it ended; see {WorkflowDispatch#drop_park}.
+    def drop_park(run, how, extra = {})
+      run.replace(@dispatch.drop_park(run, how, extra).to_mutable_h) if run.key?("parked")
     end
 
     def dispatch(run, ctx, **options)

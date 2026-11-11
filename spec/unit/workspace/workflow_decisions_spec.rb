@@ -251,21 +251,6 @@ RSpec.describe Workspace::WorkflowDecisions do
     end
   end
 
-  describe "#apply_resume" do
-    it "leaves the run it is given as it is and registers the line on the context" do
-      hash = stored(run_hash(state: "failed", reason: failed_check))
-      before = deep_copy(hash)
-      ctx = Workspace::WorkflowRunChange::Context.new
-
-      resumed = decisions.apply_resume(hash, ctx: ctx, from: nil, note: "try again", pane: nil, turn_over: nil, budget: false)
-
-      expect(hash).to eq(before)
-      expect(resumed.run.pending_context.last).to eq("Note from the person who resumed the run: try again")
-      expect(ctx.delivery).to eq("step" => "plan")
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}])
-    end
-  end
-
   describe "#refuse_resume" do
     it "refuses a run at a gate when no step is named" do
       error = error_for { decisions.refuse_resume(Workspace::WorkflowRun.from_h(run_hash(state: "passed", gate: waiting_gate))) }
@@ -280,26 +265,206 @@ RSpec.describe Workspace::WorkflowDecisions do
     end
   end
 
-  describe "#refuse_budget" do
-    let(:spent) do
-      run_hash(state: "failed").tap do |hash|
-        hash["definition"]["budget"] = {"tokens" => 100}
-        hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:10:00Z", "usage" => {"input_tokens" => 150})
+  describe "#park" do
+    def park_of(at, pane: "%5") = {"id" => "p0", "pane" => pane, "requested_at" => "2026-11-10T11:00:00Z", "expires_at" => at, "retries" => 0}
+
+    it "stores the resume on the run for later, as a frozen Resumed, and types nothing" do
+      stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"}))
+
+      resumed = decisions.park("wr_1", note: "later", extra_tokens: 10)
+
+      expect(resumed).to be_a(described_class::Resumed)
+      expect(resumed).to be_frozen
+      expect(resumed.unchanged).to be_nil
+      expect(resumed.run.parked).to include("from" => nil, "note" => "later", "pane" => nil, "turn_over" => nil, "extra_tokens" => 10,
+        "requested_at" => "2026-11-10T12:00:00Z", "expires_at" => "2026-11-10T13:00:00Z", "retries" => 0)
+      expect(resumed.run.parked).not_to have_key("extra_attempts")
+      expect(change.events).to eq([["wr_1", "resume_parked", {"step" => "plan", "pane" => "%3", "from" => nil, "has_note" => true}]])
+      expect(dispatch.calls).to be_empty
+    end
+
+    it "leaves a live park as it is and says which pane it waits for" do
+      before = deep_copy(stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => park_of("2026-11-10T12:30:00Z")})))
+
+      resumed = decisions.park("wr_1", from: "build")
+
+      expect(resumed.unchanged).to eq("a resume is already parked for pane %5")
+      expect(resumed.run.to_h).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    it "replaces a park past its limit" do
+      stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => park_of("2026-11-10T11:30:00Z")}))
+
+      resumed = decisions.park("wr_1", pane: "%8")
+
+      expect(dispatch.calls).to eq([[:check_pane, "%8", {run_id: "wr_1"}], [:drop_park, "wr_1", "expired", {}]])
+      expect(resumed.run.parked).to include("pane" => "%8", "expires_at" => "2026-11-10T13:00:00Z")
+      expect(resumed.run.parked["id"]).not_to eq("p0")
+      expect(change.events).to eq([["wr_1", "resume_parked", {"step" => "plan", "pane" => "%8", "from" => nil, "has_note" => false}]])
+    end
+
+    it "stores nothing for a step an agent is working on, and says why" do
+      before = deep_copy(stored)
+
+      resumed = decisions.park("wr_1")
+
+      expect(resumed.unchanged).to eq("an agent is working on step plan")
+      expect(resumed.run.to_h).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    it "refuses what a resume refuses, and a pane another run has, before storing anything" do
+      before = deep_copy(stored)
+
+      expect(error_for { decisions.park("wr_1", from: "ship") }).to be_a(Workspace::UsageError)
+      expect(error_for { decisions.park("wr_1", pane: "%9") }.code).to eq("pane_has_run")
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    context "when the resume would start an attempt" do
+      let(:spent) do
+        run_hash(state: "failed", reason: failed_check).tap do |hash|
+          hash["definition"]["budget"] = {"tokens" => 100}
+          hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:10:00Z", "usage" => {"input_tokens" => 150})
+        end
+      end
+
+      it "refuses a run whose token budget is used up unless --extra-tokens covers it" do
+        stored(spent)
+
+        error = error_for { decisions.park("wr_1", extra_tokens: 50) }
+        expect(error.code).to eq("budget_spent")
+        expect(error.message).to include("(150 of 100 tokens)", "(51 is the least)")
+        expect(store.runs["wr_1"]).not_to have_key("parked")
+
+        expect(decisions.park("wr_1", extra_tokens: 51).run.parked).to include("extra_tokens" => 51)
+      end
+
+      it "refuses spent attempts first" do
+        spent["definition"]["max_attempts"] = 1
+        stored(spent)
+
+        expect(error_for { decisions.park("wr_1") }.code).to eq("attempts_spent")
       end
     end
+  end
 
-    it "refuses a run whose token budget is used up unless --extra-tokens covers it" do
-      error = error_for { decisions.refuse_budget(spent, extra_attempts: nil, extra_tokens: 50) }
-
-      expect(error.code).to eq("budget_spent")
-      expect(error.message).to include("(150 of 100 tokens)", "(51 is the least)")
-      expect { decisions.refuse_budget(spent, extra_attempts: nil, extra_tokens: 51) }.not_to raise_error
+  describe "#release_park" do
+    def parked(retries: 0, note: nil, id: "p1")
+      {"id" => id, "from" => nil, "note" => note, "pane" => nil, "turn_over" => nil, "requested_at" => "2026-11-10T11:00:00Z",
+       "expires_at" => "2026-11-10T13:00:00Z", "retries" => retries}
     end
 
-    it "refuses spent attempts first" do
-      spent["definition"]["max_attempts"] = 1
+    it "carries out the parked resume in the same change, and marks the attempt it started" do
+      stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting", "parked" => parked}))
 
-      expect(error_for { decisions.refuse_budget(spent, extra_attempts: nil, extra_tokens: nil) }.code).to eq("attempts_spent")
+      resumed = decisions.release_park("wr_1", "p1")
+
+      expect(resumed).to be_a(described_class::Resumed)
+      expect(resumed.unchanged).to be_nil
+      expect(resumed.run.parked).to be_nil
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "failed"}],
+        ["wr_1", "resume_parked_ended", {"step" => "plan", "how" => "released"}]])
+      expect(resumed.run.steps["plan"].last_attempt.to_h["after_park"]).to eq("expires_at" => "2026-11-10T13:00:00Z", "pane" => nil, "retries" => 0)
+    end
+
+    it "does not hold a park typed again after a busy pane to the allowance, since its attempt was counted then" do
+      stored(run_hash(state: "failed", reason: failed_check, max_attempts: 1, extra: {"parked" => parked(retries: 1, note: "try again")}))
+
+      resumed = decisions.release_park("wr_1", "p1")
+
+      expect(resumed.run.pending_context.last).to eq("Note from the person who resumed the run: try again")
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}]])
+    end
+
+    it "keeps the note for the next attempt when the resume does nothing, and says why" do
+      stored(run_hash(extra: {"parked" => parked(note: "look again")}))
+
+      resumed = decisions.release_park("wr_1", "p1")
+
+      expect(resumed.unchanged).to eq("an agent is working on step plan")
+      expect(resumed.run.parked).to be_nil
+      expect(resumed.run.pending_context).to eq(["Note from the person who resumed the run: look again"])
+      expect(change.events).to eq([["wr_1", "resume_parked_ended", {"step" => "plan", "how" => "unchanged", "detail" => "an agent is working on step plan"}]])
+      expect(dispatch.calls).to be_empty
+    end
+
+    it "runs the check the resume registers once the change is done" do
+      evaluation = RecordingEvaluation.new(store.runs, check: {"step" => "plan", "attempt" => 1})
+      stored(run_hash(state: "checking", extra: {"parked" => parked}))
+
+      resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).release_park("wr_1", "p1")
+
+      expect(evaluation.calls).to eq([[:evaluate, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1}]])
+      expect(resumed.unchanged).to be_nil
+    end
+
+    it "changes nothing for a park of another id" do
+      before = deep_copy(stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => parked})))
+
+      resumed = decisions.release_park("wr_1", "p2")
+
+      expect(resumed.unchanged).to be_nil
+      expect(resumed.run.to_h).to eq(before)
+      expect(change.events).to be_empty
+      expect(dispatch.calls).to be_empty
+    end
+  end
+
+  describe "#park_failed" do
+    def parked = {"id" => "p1", "pane" => "%5", "requested_at" => "2026-11-10T11:00:00Z", "expires_at" => "2026-11-10T13:00:00Z", "retries" => 0}
+
+    it "ends the park, gives up a lock the run queued for and leaves the run waiting for a person, as a WorkflowRun" do
+      waiting_lock = {"code" => "waiting_lock", "since" => "2026-11-10T11:55:00Z", "details" => {}}
+      stored(run_hash(state: "pending", reason: waiting_lock, extra: {"parked" => parked}))
+
+      run = decisions.park_failed("wr_1", "p1", code: "parked_timeout", message: "too long")
+
+      expect(run).to be_a(Workspace::WorkflowRun)
+      expect(dispatch.calls).to eq([[:release, "wr_1"], [:drop_park, "wr_1", "failed", {}]])
+      expect(run.parked).to be_nil
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to eq("code" => "waiting_you", "since" => "2026-11-10T12:00:00Z",
+        "details" => {"kind" => "dispatch", "step" => "plan", "pane" => "%5", "workspace" => "app", "error" => "parked_timeout", "message" => "too long"})
+    end
+
+    it "names a gone pane as pane_gone" do
+      stored(run_hash(state: "failed", extra: {"parked" => parked.merge("pane" => nil)}))
+
+      run = decisions.park_failed("wr_1", "p1", code: "no_such_pane", message: "gone")
+
+      expect(run.reason["code"]).to eq("pane_gone")
+      expect(run.reason["details"]["pane"]).to eq("%3")
+    end
+
+    it "tells a failed step's next attempt what failed" do
+      stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => parked}))
+
+      run = decisions.park_failed("wr_1", "p1", code: "pane_busy", message: "busy")
+
+      expect(run.pending_context.first).to start_with("The last attempt of this step failed: ")
+    end
+
+    it "keeps a gate's reason, so approve and reject stay open, and names the failure in the park's end" do
+      gate_reason = {"code" => "waiting_you", "since" => "2026-11-10T11:50:00Z", "details" => {"kind" => "gate"}}
+      stored(run_hash(state: "passed", gate: waiting_gate, reason: gate_reason, extra: {"parked" => parked}))
+
+      run = decisions.park_failed("wr_1", "p1", code: "pane_gone", message: "gone")
+
+      expect(dispatch.calls).to eq([[:drop_park, "wr_1", "failed", {"error" => "pane_gone", "message" => "gone"}]])
+      expect(run.reason).to eq(gate_reason)
+      expect(run.state).to eq("running")
+    end
+
+    it "changes nothing for a park of another id" do
+      before = deep_copy(stored(run_hash(state: "failed", extra: {"parked" => parked})))
+
+      expect(decisions.park_failed("wr_1", "p2", code: "pane_gone", message: "gone").to_h).to eq(before)
+      expect(dispatch.calls).to be_empty
     end
   end
 
@@ -315,6 +480,25 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(run.state).to eq("cancelled")
       expect(run.cancelled_by).to eq("cancel")
       expect(run.steps["plan"].last_attempt.outcome).to eq("abandoned")
+      expect(change.events).to eq([["wr_1", "run_cancelled", {"cause" => "cancel"}]])
+    end
+
+    it "ends the run that the attempt record closed, not the one it was given" do
+      stored
+
+      decisions.cancel("wr_1")
+
+      expect(progress.finished.map { |run| run.steps["plan"].last_attempt.outcome }).to eq(["abandoned"])
+    end
+
+    it "ends a run with no open attempt" do
+      stored(run_hash.tap { |hash| hash["steps"]["plan"]["attempts"] = [] })
+
+      run = decisions.cancel("wr_1")
+
+      expect(attempt_record.calls).to eq([[:abandon, "wr_1"]])
+      expect(run.state).to eq("cancelled")
+      expect(run.steps["plan"].attempts).to be_empty
       expect(change.events).to eq([["wr_1", "run_cancelled", {"cause" => "cancel"}]])
     end
   end

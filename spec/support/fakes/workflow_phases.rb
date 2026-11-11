@@ -350,16 +350,18 @@ end
 # Fake of Workspace::WorkflowProgress for the evaluation and decision phases: +pass_step+ and +fail_step+ mark the
 # current step passed or failed, +advance+ answers the run as given, +finish+ sets the run's end state,
 # +start_retry+ moves the run to the wait's step, +hold_retry+ marks the wait blocked with the problem's message as
-# the reason, and +retry_pane_problem+ answers the problem it was given. Each records its call.
+# the reason, and +retry_pane_problem+ answers the problem it was given. Each records its call; +finished+ keeps
+# each run +finish+ was given, as a WorkflowRun.
 class RecordingProgress
-  CONTROL_METHODS = %i[calls].freeze
+  CONTROL_METHODS = %i[calls finished].freeze
 
-  attr_reader :calls
+  attr_reader :calls, :finished
 
   # @param pane_problem [Hash{Symbol=>String}, nil] what +retry_pane_problem+ answers
   def initialize(pane_problem: nil)
     @pane_problem = pane_problem
     @calls = []
+    @finished = []
   end
 
   def pass_step(run, ctx:)
@@ -378,6 +380,7 @@ class RecordingProgress
   end
 
   def finish(run, state)
+    @finished << Workspace::WorkflowRun.from_h(run)
     hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
     @calls << [:finish, hash["id"], state]
     Workspace::WorkflowRun.from_h(hash.merge("state" => state))
