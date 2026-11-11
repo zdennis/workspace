@@ -18,7 +18,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:lock_dir) { File.join(@dir, "state", "locks", "ns") }
   let(:now) { [Time.utc(2026, 10, 4, 12, 0, 0)] }
   let(:ids) { %w[wr_1 wr_2 wr_3] }
-  let(:store) { Interceptable.subclass(Workspace::WorkflowRunStore, :update, :find).new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
+  let(:store) { Interceptable.subclass(Workspace::WorkflowRunStore, :change, :run).new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
   let(:liveness) { RunFileLiveness.new(runs_dir) }
   let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
   let(:resources) { Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: liveness, wall_clock: -> { now.first.to_i }) }
@@ -30,7 +30,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:checker) do
     lambda do |stop_when:, **args|
       stop_whens << stop_when
-      check_calls << args.merge(state_during: store.find("wr_1")["steps"][store.find("wr_1")["current"]]["state"])
+      check_calls << args.merge(state_during: stored_run(store, "wr_1")["steps"][stored_run(store, "wr_1")["current"]]["state"])
       check_results.shift || {exit_code: 0, timed_out: false}
     end
   end
@@ -204,7 +204,7 @@ RSpec.describe Workspace::WorkflowEngine do
         run = start
 
         expect(run["base_sha"]).to eq(`git -C #{worktree} rev-parse HEAD`.strip)
-        expect(store.find("wr_1")["base_sha"]).to eq(run["base_sha"])
+        expect(stored_run(store, "wr_1")["base_sha"]).to eq(run["base_sha"])
       end
 
       it "runs the step's check with the project's command while the step is `checking`, outside the run's lock" do
@@ -224,7 +224,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "gives a check an empty WORKSPACE_RUN_BASE_SHA for a run made before base_sha was kept" do
       to_verify
-      store.update("wr_1") { |stored| stored.delete("base_sha") }
+      edit_run(store, "wr_1") { |stored| stored.delete("base_sha") }
 
       engine.turn_ended("wr_1", pane: "%5")
 
@@ -241,7 +241,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(lock_holder("test-db")).to be_nil
       expect(panes.bound).to eq({})
       expect(Dir.children(runs_dir)).to eq([])
-      expect(store.find("wr_1")["state"]).to eq("completed")
+      expect(stored_run(store, "wr_1")["state"]).to eq("completed")
       expect(events.map(&:first)).to eq(%w[workflow_changed lock_released workflow_changed])
       expect(events[1]).to eq(["lock_released", "app", {"lock" => "test-db", "run_id" => "wr_1", "step" => "verify", "workspace" => "app.worktree-x"}])
       expect(history.last(3)).to eq(%w[check_finished step_passed run_completed])
@@ -493,7 +493,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect(run["base_sha"]).to eq(`git -C #{worktree} rev-parse HEAD`.strip)
       expect(run["base_guard"].keys).to eq(%w[config_sha256 hooks_sha256 hidden_sha256 config_format filter_sha256])
-      expect(store.find("wr_1")["base_guard"]).to eq(run["base_guard"])
+      expect(stored_run(store, "wr_1")["base_guard"]).to eq(run["base_guard"])
     end
 
     it "fails a guarded step with the guard's code before it looks for the step's files" do
@@ -655,7 +655,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "warns at most for a run whose digest was made the old way" do
         start(guarded, inputs: {})
-        store.update("wr_1") { |run| run["base_guard"] = run["base_guard"].except("config_format").merge("config_sha256" => "0" * 64) }
+        edit_run(store, "wr_1") { |run| run["base_guard"] = run["base_guard"].except("config_format").merge("config_sha256" => "0" * 64) }
 
         run = to_second_step
 
@@ -782,7 +782,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       engine.resume("wr_1")
 
-      expect(store.find("wr_1")["base_sha"]).to eq(base)
+      expect(stored_run(store, "wr_1")["base_sha"]).to eq(base)
     end
 
     describe "#preflight" do
@@ -837,7 +837,7 @@ RSpec.describe Workspace::WorkflowEngine do
         File.write(File.join(worktree, ".git", "MERGE_HEAD"), "x\n")
 
         expect { start(guarded, inputs: {}) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("dirty_worktree") }
-        expect(store.active).to eq([])
+        expect(going_runs(store)).to eq([])
       end
     end
   end

@@ -44,7 +44,7 @@ RSpec.describe Workspace::WorkflowRunChange do
 
   # Whether another change of the run would have to wait: the run's lock is held.
   def locked?(id)
-    store.update(id, nonblocking: true) { true }.nil?
+    edit_run(store, id, nonblocking: true) { true }.nil?
   end
 
   describe "#call" do
@@ -58,7 +58,7 @@ RSpec.describe Workspace::WorkflowRunChange do
       expect(held).to be(true)
       expect(result).to be_a(Workspace::WorkflowRun)
       expect(result.note).to eq("changed")
-      expect(store.find(run_id)["note"]).to eq("changed")
+      expect(stored_run(store, run_id)["note"]).to eq("changed")
     end
 
     it "gives the block the stored run as a frozen WorkflowRun, and stores it as read when the block returns nil" do
@@ -120,7 +120,7 @@ RSpec.describe Workspace::WorkflowRunChange do
       end
 
       expect(result.to_h.values_at("dispatched", "typed")).to eq([true, true])
-      expect(store.find(run_id).values_at("dispatched", "typed")).to eq([true, true])
+      expect(stored_run(store, run_id).values_at("dispatched", "typed")).to eq([true, true])
     end
 
     it "never runs a check: one registered is only handed back through the Context" do
@@ -182,7 +182,7 @@ RSpec.describe Workspace::WorkflowRunChange do
         end
       end
 
-      expect(store.find(run_id)["steps"]["a"]["attempts"].last["reasons"]).to eq([{"code" => "waiting_you", "since" => now.iso8601, "until" => nil}])
+      expect(stored_run(store, run_id)["steps"]["a"]["attempts"].last["reasons"]).to eq([{"code" => "waiting_you", "since" => now.iso8601, "until" => nil}])
     end
   end
 
