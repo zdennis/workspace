@@ -86,7 +86,7 @@ RSpec.describe "session alerts: concurrency and signals (adversarial)" do
     end
 
     before do
-      allow(tmux).to receive(:pane_details).with("proj").and_return(panes)
+      allow(tmux).to receive(:pane_details).with("proj", window: nil).and_return(panes)
       allow(process_tree).to receive(:snapshot).and_return(snapshot)
       allow(snapshot).to receive(:find_descendant).and_return(nil)
       allow(tmux).to receive(:capture_pane_by_id).and_return("output")

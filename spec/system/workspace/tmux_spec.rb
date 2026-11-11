@@ -1747,6 +1747,19 @@ RSpec.describe Workspace::Tmux do
       end
     end
 
+    it "lists panes of every window with their window index and review mark, so a monitor can keep window 0 and marked windows" do
+      opened = tmux.open_window(name, name: "review", cwd: "/tmp", command: ["sh", "-c", "sleep 30"], env: {}, option: "wr_1:review:1")
+      private_tmux("new-window", "-d", "-t", "=#{name}:", "-n", "plain")
+
+      details = tmux.pane_details(name, window: nil)
+      kept = details.select { |d| d[:window].zero? || d[:review] }
+
+      expect(details.map { |d| d[:window] }.uniq.size).to eq(3)
+      expect(kept.map { |d| d[:window] }.uniq.size).to eq(2)
+      expect(kept.find { |d| d[:review] }).to include(id: opened[:pane], review: "wr_1:review:1")
+      expect(details.count { |d| d[:review].nil? && !d[:window].zero? }).to eq(1)
+    end
+
     it "opens a marked review window, finds it, captures it by id and kills it" do
       opened = tmux.open_window(name, name: "review", cwd: "/tmp", command: ["sh", "-c", "echo review-ready; sleep 30"],
         env: {"WORKSPACE_REVIEW_RUN" => "wr_1"}, option: "wr_1:review:1")

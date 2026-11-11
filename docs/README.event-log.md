@@ -45,7 +45,7 @@ The same log records what agents and pipelines do. `reconstruct` ignores these e
 | `stage_timed_out` | agent daemon, stage ran past its `timeout` | `work_item_ref`, `pane`, `message` |
 | `stage_failed` | agent daemon, stage's watch died, its pane was lost, the hand-off failed, or the coordinator aborted it | `work_item_ref`, `pane`, `message` |
 | `pipeline_dropped` | agent daemon, coordinator has no record of the work item | `work_item_ref`, `message` |
-| `agent_state` | agent daemon's session monitor, on each change | `pane_id`, `pane_pid`, `index`, `kind`, `state` (`working`, `idle`, `waiting`, `done`, `exited`, `closed`), `since`, and `stop_reason` for `done` |
+| `agent_state` | agent daemon's session monitor, on each change | `pane_id`, `pane_pid`, `window` (the tmux window index; 0 for the main window), `review` (the mark of a review window, left out for other panes), `index`, `kind`, `state` (`working`, `idle`, `waiting`, `done`, `exited`, `closed`), `since`, and `stop_reason` for `done` |
 | `agent_alert` | agent daemon's session monitor, once the notify command accepts an alert | `pane_id`, `pane_pid`, `kind` (`idle` or `waiting`; missing means `idle`); for `idle`: `idle_since` (when the output went quiet); for `waiting`: `agent_id` (`null` for the main agent), `waiting_since` |
 | `prompt_refused` | agent daemon, a queued `agent-run send --when-idle` prompt the pane would not take (a draft in the input line, say) | `id`, `pane_id`, `reason`, `message`. Written when the reason first appears or changes, not on every retry. See [`events`](README.events.md#queued-prompt-lines) |
 | `lock_wait_started` | `lock acquire --wait`, `dev up` | `lock`, `pid`, `holder`; for `lock`: `task`, `position` |

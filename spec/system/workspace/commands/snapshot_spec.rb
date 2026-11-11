@@ -87,7 +87,7 @@ RSpec.describe Workspace::Commands::Snapshot do
   end
 
   def pane(id, state, **extra)
-    {"pane_id" => id, "index" => 1, "kind" => "claude", "title" => "Claude Code", "display_label" => "Fix login", "state" => state,
+    {"pane_id" => id, "window" => 0, "review" => nil, "index" => 1, "kind" => "claude", "title" => "Claude Code", "display_label" => "Fix login", "state" => state,
      "state_since" => "2026-10-02T20:00:00Z", "waiting_message" => nil, "context_pct" => 71, "agents" => [{"name" => "reviewer", "state" => "working"}],
      "lock_name" => "edit", "lock_state" => "held", "open_questions" => 1}.merge(extra)
   end
@@ -235,7 +235,7 @@ RSpec.describe Workspace::Commands::Snapshot do
 
       expect(row["daemon"]).to eq("up" => true, "pid" => nil, "log_path" => "/logs/workspace-app.worktree-fix.log")
       expect(row["panes"]).to eq([{
-        "pane_id" => "%19", "index" => 1, "kind" => "claude", "title" => "Claude Code", "display_label" => "Fix login", "state" => "waiting",
+        "pane_id" => "%19", "window" => 0, "review" => nil, "index" => 1, "kind" => "claude", "title" => "Claude Code", "display_label" => "Fix login", "state" => "waiting",
         "state_since" => "2026-10-02T20:00:00Z", "stop_reason" => nil, "waiting_message" => "Allow Bash?", "waiting_tool" => nil, "waiting_input" => nil, "context_pct" => 71,
         "agents" => [{"name" => "reviewer", "state" => "working"}], "lock" => "edit", "lock_state" => "held", "open_questions" => 1
       }])

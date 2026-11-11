@@ -101,6 +101,10 @@ Limits:
 - `state` can read `done` during a background sub-agent's prompt, as it did before; test `waiting_tool` instead.
 - Hooks installed before `PermissionRequest` was added leave the fields `null`. Run `workspace init --install-hooks` or `workspace doctor --fix`.
 
+### Window and review
+
+Every pane row carries `window` (the tmux window index, `0` for the main window) and `review` (the mark of a [review window](README.workflow.md), `null` for any other pane). The monitor scans window 0 and any other window marked as a review window; panes of other windows, such as a `dev` window, are not listed. Rows are sorted by `window`, then `index`.
+
 ### Hook mode
 
 Each coding-agent pane also says how the daemon knows what its agent is doing, so a reader can tell a pane that can report `waiting` from one that can't without going by its `kind` (capability `agent_hooks` 1). A shell pane carries neither field.
@@ -200,7 +204,7 @@ The command runs through `/bin/sh -c`, in its own process group, with stdin and 
 |----------|-------|
 | `WORKSPACE_ALERT` | `waiting`, `idle`, `handoff_stalled` or `workflow` |
 | `WORKSPACE_ALERT_WORKSPACE` | The workspace (tmux session) name |
-| `WORKSPACE_ALERT_PANE` | Pane as shown in the PANE column, e.g. `0.1` |
+| `WORKSPACE_ALERT_PANE` | `window.index` of the pane, e.g. `0.1`; a pane in a review window reads like `1.0` |
 | `WORKSPACE_ALERT_PANE_ID` | tmux pane id, e.g. `%12` |
 | `WORKSPACE_ALERT_KIND` | Agent kind, e.g. `claude` |
 | `WORKSPACE_ALERT_SECONDS` | Seconds the pane has been waiting or idle (for `handoff_stalled`, since the handoff watch began) |

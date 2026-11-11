@@ -37,7 +37,7 @@ The daemons are read in parallel, one second each: a daemon serves one connectio
            "unpushed_commits":0,"unsaved":"no",
            "pr":{"available":true,"found":true,"number":812,"url":"https://github.com/o/api/pull/812","state":"open","draft":false,
                  "review_decision":null,"checks":"failing"}},
-    "panes":[{"pane_id":"%19","index":1,"kind":"claude","title":"Claude Code","display_label":"Fix login","state":"waiting",
+    "panes":[{"pane_id":"%19","window":0,"review":null,"index":1,"kind":"claude","title":"Claude Code","display_label":"Fix login","state":"waiting",
               "state_since":"2026-10-02T20:00:00Z","stop_reason":null,"waiting_message":"Allow Bash(rm -rf tmp)?","context_pct":71,
               "agents":[],"lock":"edit","lock_state":"held","open_questions":1}],
     "task":{"id":"t1","title":"Fix login"},

@@ -89,7 +89,7 @@ RSpec.describe Workspace::PaneStates do
     it "logs a new state once, with its since, and keeps the pane's record of it" do
       change = described_class.state_change(pane, now, 30)
 
-      expect(change).to eq("pane_id" => "%2", "pane_pid" => 200, "index" => 1, "kind" => "claude",
+      expect(change).to eq("pane_id" => "%2", "pane_pid" => 200, "window" => 0, "index" => 1, "kind" => "claude",
         "state" => "working", "since" => (now - 10).utc.iso8601(3))
       expect(pane).to include(logged_state: "working", state_since: now - 10)
       expect(described_class.state_change(pane, now, 30)).to be_nil

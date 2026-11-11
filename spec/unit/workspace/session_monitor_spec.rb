@@ -245,7 +245,7 @@ RSpec.describe Workspace::SessionMonitor do
 
     it "drops panes that have closed, along with their history" do
       monitor.scan
-      allow(tmux).to receive(:pane_details).with("proj").and_return([panes.first])
+      allow(tmux).to receive(:pane_details).with("proj", window: nil).and_return([panes.first])
 
       monitor.scan
 
@@ -257,7 +257,7 @@ RSpec.describe Workspace::SessionMonitor do
       monitor.record("event" => "subagent_start", "pane_id" => "%2",
         "agent" => {"name" => "reviewer"})
       # A pane was closed ahead of %2, so tmux now reports it at index 0.
-      allow(tmux).to receive(:pane_details).with("proj")
+      allow(tmux).to receive(:pane_details).with("proj", window: nil)
         .and_return([panes.last.merge(index: 0)])
 
       monitor.scan
@@ -1177,6 +1177,23 @@ RSpec.describe Workspace::SessionMonitor do
       allow(clock).to receive(:now).and_return(now + seconds)
     end
 
+    context "with a review pane in window 1" do
+      let(:panes) do
+        [{id: "%2", window: 0, index: 1, pid: 200, command: "node", cwd: "/project", title: "Claude"},
+          {id: "%7", window: 1, index: 0, pid: 200, command: "node", cwd: "/project", title: "review", review: "wr_1"}]
+      end
+
+      it "words the alert as window.index" do
+        monitor.record("event" => "notification", "pane_id" => "%7", "message" => "ok?")
+        at(4)
+
+        alert = monitor.send_alerts.first
+
+        expect(alert).to include("WORKSPACE_ALERT_PANE" => "1.0", "WORKSPACE_ALERT_PANE_ID" => "%7")
+        expect(alert["WORKSPACE_ALERT_TEXT"]).to start_with("proj pane 1.0 (")
+      end
+    end
+
     it "alerts once when an agent pane starts waiting, with the details in env vars" do
       monitor.record("event" => "notification", "pane_id" => "%2", "message" => "Claude needs your permission to use Bash")
       at(4)
@@ -1311,7 +1328,7 @@ RSpec.describe Workspace::SessionMonitor do
 
     it "retries an alert the notifier skipped for having too many runs going, once a run finishes" do
       agents = (2..6).map { |n| {id: "%#{n}", index: n, pid: n * 100, command: "claude", cwd: "/project", title: "Claude"} }
-      allow(tmux).to receive(:pane_details).with("proj").and_return(agents)
+      allow(tmux).to receive(:pane_details).with("proj", window: nil).and_return(agents)
       monitor.scan
       agents.each { |a| monitor.record("event" => "notification", "pane_id" => a[:id]) }
       free_slots = 4
@@ -1932,6 +1949,55 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "review windows" do
+    let(:panes) do
+      [
+        {id: "%1", window: 0, index: 0, pid: 100, command: "zsh", cwd: "/project", title: "shell"},
+        {id: "%2", window: 0, index: 1, pid: 200, command: "node", cwd: "/project", title: "Claude"},
+        {id: "%7", window: 1, index: 0, pid: 700, command: "zsh", cwd: "/project", title: "review", review: "wr_1"},
+        {id: "%8", window: 2, index: 0, pid: 800, command: "zsh", cwd: "/project", title: "dev"}
+      ]
+    end
+
+    it "lists every window, keeps window 0 and marked review panes, and drops other windows' panes" do
+      monitor.scan
+
+      expect(tmux).to have_received(:pane_details).with("proj", window: nil).once
+      expect(monitor.snapshot["panes"].map { |p| p["pane_id"] }).to eq(%w[%1 %2 %7])
+    end
+
+    it "carries window and review in rows, sorted by window then index" do
+      allow(tmux).to receive(:pane_details).and_return([panes[2], panes[1], panes[0]])
+      monitor.scan
+
+      expect(monitor.snapshot["panes"].map { |p| [p["window"], p["index"], p["review"]] })
+        .to eq([[0, 0, nil], [0, 1, nil], [1, 0, "wr_1"]])
+    end
+
+    it "treats a detail with no window as window 0" do
+      allow(tmux).to receive(:pane_details).and_return([{id: "%1", index: 0, pid: 100, command: "zsh", cwd: "/project", title: "s"}])
+      monitor.scan
+
+      expect(pane("%1")["window"]).to eq(0)
+    end
+
+    it "lets rescan_pane find a review pane" do
+      allow(tmux).to receive(:pane_details).and_return(panes.first(1))
+      monitor.scan
+      allow(tmux).to receive(:pane_details).and_return(panes)
+      monitor.rescan_pane("%7")
+
+      expect(tmux).to have_received(:pane_details).with("proj", window: nil).twice
+      expect(pane("%7")).to include("window" => 1, "review" => "wr_1")
+    end
+
+    it "does not rescan an unmarked pane in another window" do
+      monitor.rescan_pane("%8")
+
+      expect(pane("%8")).to be_nil
+    end
+  end
+
   describe "state history in the event log" do
     let(:tmpdir) { Dir.mktmpdir }
     let(:log_config) do
@@ -1968,6 +2034,20 @@ RSpec.describe Workspace::SessionMonitor do
       expect(event_log.events.last["data"]).to include("pane_pid" => 200, "index" => 1, "kind" => "claude")
     end
 
+    it "logs window and review for a review pane, and window 0 with no review key for a main pane" do
+      both = [
+        {id: "%2", window: 0, index: 1, pid: 200, command: "node", cwd: "/p", title: "Claude"},
+        {id: "%7", window: 1, index: 0, pid: 200, command: "node", cwd: "/p", title: "review", review: "wr_1:review:1"}
+      ]
+      allow(tmux).to receive(:pane_details).with("proj-session", window: nil).and_return(both)
+      logging_monitor.scan
+
+      rows = event_log.events.select { |e| e["type"] == "agent_state" }.to_h { |e| [e["data"]["pane_id"], e["data"]] }
+      expect(rows["%7"]).to include("window" => 1, "review" => "wr_1:review:1")
+      expect(rows["%2"]).to include("window" => 0)
+      expect(rows["%2"]).not_to have_key("review")
+    end
+
     it "records waiting from when the agent asked, and closed when the pane goes" do
       monitor = logging_monitor
       monitor.scan
@@ -1975,7 +2055,7 @@ RSpec.describe Workspace::SessionMonitor do
       monitor.record("event" => "notification", "pane_id" => "%2", "message" => "May I?")
       allow(clock).to receive(:now).and_return(now + 7)
       monitor.scan
-      allow(tmux).to receive(:pane_details).with("proj-session").and_return([panes.first])
+      allow(tmux).to receive(:pane_details).with("proj-session", window: nil).and_return([panes.first])
       monitor.scan
 
       expect(logged_states.map { |_, state, since| [state, since] }).to eq([
@@ -2222,7 +2302,7 @@ RSpec.describe Workspace::SessionMonitor do
 
     it "does not restore a pane id that now belongs to a different pane process" do
       logging_monitor.scan
-      allow(tmux).to receive(:pane_details).with("proj-session").and_return([panes.last.merge(pid: 999)])
+      allow(tmux).to receive(:pane_details).with("proj-session", window: nil).and_return([panes.last.merge(pid: 999)])
       allow(snapshot).to receive(:find_descendant).with(999, ["claude"], hash_including(include_root: true))
         .and_return({pid: 1000, command: "claude", args: "claude"})
 

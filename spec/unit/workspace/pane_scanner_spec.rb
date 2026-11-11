@@ -33,7 +33,7 @@ RSpec.describe Workspace::PaneScanner do
 
   describe "#pane_details and #process_snapshot" do
     it "lists the session's panes and snapshots the process table" do
-      allow(tmux).to receive(:pane_details).with("proj").and_return([detail])
+      allow(tmux).to receive(:pane_details).with("proj", window: nil).and_return([detail])
       allow(process_tree).to receive(:snapshot).and_return(snapshot)
 
       expect(scanner.pane_details).to eq([detail])

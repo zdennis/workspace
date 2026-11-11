@@ -183,8 +183,8 @@ module Workspace
 
     # Whether a resume from the pane itself can be parked: starts the daemon,
     # which must be one that can release a park, and the pane must run Claude
-    # Code. A pane the daemon has no row for yet counts only in window 0, the one
-    # it scans; a pane elsewhere would never get a row.
+    # Code. A pane the daemon has no row for yet counts only in window 0; a pane
+    # elsewhere gets a row only in a marked review window.
     #
     # @param workspace [String]
     # @param pane [String] a pane id

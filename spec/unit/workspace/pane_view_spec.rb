@@ -29,7 +29,7 @@ RSpec.describe Workspace::PaneView do
 
   describe ".row" do
     it "builds the row in the order sessions prints it" do
-      expect(row(agent, context: reading).keys).to eq(%w[pane_id index kind label title cwd state state_since
+      expect(row(agent, context: reading).keys).to eq(%w[pane_id window review index kind label title cwd state state_since
         activity_state main_turn_over_since transcript_path open_tools idle_seconds waiting_since waiting_seconds
         waiting_message waiting_tool waiting_input waits stop_reason turn_failed session_id display_label agents
         context_pct context_error context_updated_at last_event_at current_tool current_tool_since subagents
