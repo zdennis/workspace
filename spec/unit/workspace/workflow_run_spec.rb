@@ -130,6 +130,18 @@ RSpec.describe Workspace::WorkflowRun do
       end
     end
 
+    it "reads the review keys of an attempt and a step, nil when absent" do
+      given = described_class.from_h({"steps" => {"a" => {"review" => {"round" => 2}, "review_rounds" => 2,
+                                                          "attempts" => [{"n" => 1, "reviews" => [{"reviewer" => "x"}], "review_outcome" => "passed", "retry_of" => 1}]}, "b" => {}}})
+
+      expect(given.step("a").review).to eq("round" => 2)
+      expect(given.step("a").review_rounds).to eq(2)
+      expect(given.step("a").last_attempt.reviews).to eq([{"reviewer" => "x"}])
+      expect(given.step("a").last_attempt.review_outcome).to eq("passed")
+      expect(given.step("a").last_attempt.retry_of).to eq(1)
+      expect([given.step("b").review, given.step("b").review_rounds]).to eq([nil, nil])
+    end
+
     it "reads nil for every key of an empty run" do
       given = described_class.from_h({})
 

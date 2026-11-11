@@ -93,6 +93,18 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(progress.calls).to be_empty
     end
 
+    it "follows up a review round the passing step registered, once the change is done" do
+      rounds = []
+      stored
+      produce
+      progress = RecordingProgress.new(review: {"round" => 1})
+
+      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).turn_ended("wr_1")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+      expect(rounds).to eq([["wr_1", {"round" => 1}]])
+    end
+
     it "holds the step on turn_ended_incomplete when a file it produces is missing" do
       stored
 
@@ -299,6 +311,56 @@ RSpec.describe Workspace::WorkflowEvaluation do
     end
   end
 
+  describe "#finish_follow_ups" do
+    let(:check) { {"step" => "plan", "attempt" => 1, "command" => "rake test", "timeout" => 60, "log" => File.join(artifacts, "c.log")} }
+
+    it "answers the run as given when the change registered nothing, or did not run" do
+      stored
+      given = Workspace::WorkflowRun.from_h(run_hash)
+
+      expect(evaluation.finish_follow_ups("wr_1", ctx, given)).to equal(given)
+      expect(evaluation.finish_follow_ups("wr_1", nil, given)).to equal(given)
+    end
+
+    it "hands a registered review round to the round runner and answers the run it returns" do
+      stored
+      after = Workspace::WorkflowRun.from_h(run_hash.merge("note" => "after"))
+      rounds = []
+      runner = ->(run_id, review) { rounds << [run_id, review] && after }
+      context = ctx
+      context.review({"round" => 1})
+
+      result = evaluation(review_round: runner).finish_follow_ups("wr_1", context, Workspace::WorkflowRun.from_h(run_hash))
+
+      expect(rounds).to eq([["wr_1", {"round" => 1}]])
+      expect(result).to equal(after)
+    end
+
+    it "keeps the run as given when the round runner answers nil, or when there is no runner" do
+      stored
+      given = Workspace::WorkflowRun.from_h(run_hash)
+      context = ctx
+      context.review({"round" => 1})
+
+      expect(evaluation(review_round: ->(_id, _review) {}).finish_follow_ups("wr_1", context, given)).to equal(given)
+      expect(evaluation.finish_follow_ups("wr_1", context, given)).to equal(given)
+    end
+
+    it "runs a registered check before a registered review round" do
+      stored
+      order = []
+      context = ctx
+      context.check(check)
+      context.review({"round" => 1})
+      subject = evaluation(review_round: ->(*) { order << :review && nil })
+      allow(subject).to receive(:finish_check) { order << :check && Workspace::WorkflowRun.from_h(run_hash) }
+
+      subject.finish_follow_ups("wr_1", context, Workspace::WorkflowRun.from_h(run_hash))
+
+      expect(order).to eq(%i[check review])
+    end
+  end
+
   describe "#finish_check" do
     let(:pending) { {"index" => 0, "proof" => "command", "token" => "t1"} }
     let(:check) { {"step" => "plan", "attempt" => 1, "cwd" => dir, "proof" => pending} }
@@ -319,6 +381,29 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(run.step("plan").last_attempt.proofs.last).to include("token" => "t1", "exit_code" => 0, "ended_at" => "2026-11-10T12:00:00Z")
       expect(change.events).to eq([["wr_1", "proof_finished", {"step" => "plan", "attempt" => 1, "proof" => "command", "passed" => true}]])
       expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
+    it "runs the review round a step registered when a proof chain ends in its pass" do
+      rounds = []
+      stored(checking_run)
+      progress = RecordingProgress.new(review: {"round" => 1})
+      require_check = RecordingRequire.new(outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
+
+      evaluation(progress: progress, require_check: require_check, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", check)
+
+      expect(rounds).to eq([["wr_1", {"round" => 1}]])
+    end
+
+    it "runs the review round a step registered when its status check passes" do
+      rounds = []
+      stored(checking_run.tap { |run| run["steps"]["plan"]["attempts"].last["check"] = {"started_at" => "2026-11-10T11:30:00Z", "log" => "/tmp/x.log"} })
+      progress = RecordingProgress.new(review: {"round" => 1})
+      status_check = {"step" => "plan", "attempt" => 1, "command" => "rake", "timeout" => 5, "log" => "/tmp/x.log", "cwd" => dir, "role" => "test"}
+
+      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", status_check)
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+      expect(rounds).to eq([["wr_1", {"round" => 1}]])
     end
 
     it "fails the step on a proof found unmet outside the lock" do

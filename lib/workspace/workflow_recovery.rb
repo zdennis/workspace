@@ -35,7 +35,7 @@ module Workspace
     # @param run_id [String]
     # @return [WorkflowRun, nil] the run afterwards; nil when nothing was done
     def tick(run_id)
-      check = nil
+      follow = nil
       acted = false
       run = @change.call(run_id, nonblocking: true) do |read, ctx|
         stored = read.thawed
@@ -53,11 +53,11 @@ module Workspace
           acted = true
           evaluate(stored, ctx)
         end
-        check = ctx.check
+        follow = ctx
         WorkflowRun.from_h(stored)
       end
       return nil unless run && acted
-      check ? @evaluation.finish_check(run_id, check) : run
+      @evaluation.finish_follow_ups(run_id, follow, run)
     end
 
     # Records that the step stands in a stall the sweep found, once for each attempt and cause, and changes
@@ -251,16 +251,16 @@ module Workspace
     # process is changing is :busy.
     def sweep_change(run_id, step:, attempt:, running:, blocking: false)
       outcome = :moved_on
-      check = nil
+      follow = nil
       run = @change.call(run_id, nonblocking: !blocking) do |read, ctx|
         next unless sweep_target?(read.to_h, step, attempt, running)
         stored = read.thawed
         outcome = yield stored, ctx
-        check = ctx.check
+        follow = ctx
         WorkflowRun.from_h(stored)
       end
       return :busy unless run
-      @evaluation.finish_check(run_id, check) if check
+      @evaluation.finish_follow_ups(run_id, follow, run)
       outcome
     end
 

@@ -46,12 +46,12 @@ end
 
 # Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored run
 # as a frozen WorkflowRun and a real Context, writes the run the block returns (the one read for nil) back into the Hash,
-# keeps the line a block registered in +deliveries+ (it types nothing) and returns the run;
+# keeps the line a block registered in +deliveries+ (it types nothing) and the review round in +reviews+ and returns the run;
 # a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
-  CONTROL_METHODS = %i[calls events deliveries].freeze
+  CONTROL_METHODS = %i[calls events deliveries reviews].freeze
 
-  attr_reader :calls, :events, :deliveries
+  attr_reader :calls, :events, :deliveries, :reviews
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
@@ -64,6 +64,7 @@ class RecordingRunChange
     @calls = []
     @events = []
     @deliveries = []
+    @reviews = []
   end
 
   def call(run_id, nonblocking: false)
@@ -77,6 +78,7 @@ class RecordingRunChange
     raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
     stored.replace(changed.thawed)
     @deliveries << ctx.delivery if ctx.delivery
+    @reviews << ctx.review if ctx.review
     changed
   end
 
@@ -381,14 +383,17 @@ class RecordingProgress
   attr_reader :calls, :finished
 
   # @param pane_problem [Hash{Symbol=>String}, nil] what +retry_pane_problem+ answers
-  def initialize(pane_problem: nil)
+  # @param review [Hash, nil] the review round +pass_step+ registers on its context
+  def initialize(pane_problem: nil, review: nil)
     @pane_problem = pane_problem
+    @review = review
     @calls = []
     @finished = []
   end
 
   def pass_step(run, ctx:)
     @calls << [:pass_step, Workspace::WorkflowRun.from_h(run).current]
+    ctx.review(@review) if @review
     marked(run, "passed")
   end
 
@@ -543,9 +548,10 @@ class RecordingInbox
   end
 end
 
-# Fake of Workspace::WorkflowEvaluation#evaluate and #finish_check for the decision and recovery phases: +evaluate+
+# Fake of Workspace::WorkflowEvaluation#evaluate, #finish_check and #finish_follow_ups for the decision and recovery phases: +evaluate+
 # registers the check it was given on +ctx+ and answers the run as given (with the reason it was given, when one
-# was); +finish_check+ answers the stored run.
+# was); +finish_check+ answers the stored run; +finish_follow_ups+ runs the check registered on a context through +finish_check+
+# and keeps a registered review in the calls as +:review_round+.
 class RecordingEvaluation
   CONTROL_METHODS = %i[calls].freeze
 
@@ -554,9 +560,11 @@ class RecordingEvaluation
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param check [Hash, nil] what +evaluate+ registers on its context
   # @param reason [Hash, nil] the reason +evaluate+ leaves on the run
-  def initialize(runs, check: nil, reason: nil)
+  # @param review [Hash, nil] the review round +evaluate+ registers on its context
+  def initialize(runs, check: nil, reason: nil, review: nil)
     @runs = runs
     @check = check
+    @review = review
     @reason = reason
     @calls = []
   end
@@ -565,12 +573,20 @@ class RecordingEvaluation
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:evaluate, run.current]
     ctx.check(@check) if @check
+    ctx.review(@review) if @review
     @reason ? Workspace::WorkflowRun.from_h(run.thawed.merge("reason" => @reason)) : run
   end
 
   def finish_check(run_id, check)
     @calls << [:finish_check, run_id, check]
     Workspace::WorkflowRun.from_h(@runs.fetch(run_id))
+  end
+
+  def finish_follow_ups(run_id, ctx, run)
+    return run unless ctx
+    run = finish_check(run_id, ctx.check) if ctx.check
+    @calls << [:review_round, run_id, ctx.review] if ctx.review
+    run
   end
 end
 

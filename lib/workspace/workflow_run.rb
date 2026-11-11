@@ -169,6 +169,16 @@ module Workspace
         to_h["gate"]
       end
 
+      # @return [Hash, nil] the review round now under way, when the step is being reviewed
+      def review
+        to_h["review"]
+      end
+
+      # @return [Integer, nil] the review rounds the step has spent
+      def review_rounds
+        to_h["review_rounds"]
+      end
+
       # @return [Object, nil]
       def redelivery_pending
         to_h["redelivery_pending"]
@@ -202,7 +212,7 @@ module Workspace
       KEYS = %w[
         n started_at ended_at outcome context prompt_file head definition_sha256 prompt_sha256 packs outputs
         agent session usage reasons check code proofs reported evidence remote warnings redelivered redelivery
-        delivery after_park
+        delivery after_park reviews review_outcome retry_of
       ].freeze
 
       # @param hash [Hash{String=>Object}, nil]

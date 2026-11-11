@@ -1,10 +1,11 @@
 module Workspace
   # The one way a workflow run changes: under the run's lock, with the attempt record's reasons kept before and
   # after the change, `workflow_changed` written when what a reader sees moved, alerts fired once the lock is given
-  # up, and then the line of a step the change started typed, through +deliver+. It never runs a check: a block that
-  # registers one reads it back from its {Context} and the caller runs it.
+  # up, and then the line of a step the change started typed, through +deliver+. It never runs a check or a review round: a
+  # block that registers one reads it back from its {Context} and the caller runs it through
+  # {WorkflowEvaluation#finish_follow_ups}.
   class WorkflowRunChange
-    # What one change hands out of its block: the step line to type after the lock, and the check to run.
+    # What one change hands out of its block: the step line to type after the lock, the check to run and the review round to run.
     # A new one is made for every {WorkflowRunChange#call}, so no follow-up outlives the change that made it.
     class Context
       # @return [Hash{String=>Object}, nil] the step line registered with {#deliver}
@@ -22,6 +23,14 @@ module Workspace
       # @return [Hash{String=>Object}, nil]
       def check(found = nil)
         found ? @check = found : @check
+      end
+
+      # With an argument, registers the review round to run once the lock is given up; without, the one registered.
+      #
+      # @param found [Hash{String=>Object}, nil]
+      # @return [Hash{String=>Object}, nil]
+      def review(found = nil)
+        found ? @review = found : @review
       end
     end
 

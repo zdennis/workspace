@@ -234,6 +234,16 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
     end
 
+    it "follows up a review round the change registered, once the change is done" do
+      evaluation = RecordingEvaluation.new(store.runs, review: {"round" => 1})
+      stored(run_hash(reason: {"code" => "turn_ended_incomplete", "since" => "2026-11-10T11:58:00Z", "details" => {}}))
+
+      described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).resume("wr_1")
+
+      expect(evaluation.calls).to eq([[:evaluate, "plan"], [:review_round, "wr_1", {"round" => 1}]])
+    end
+
     it "decides a running step whose turn ended, and runs the check it registers once the change is done" do
       evaluation = RecordingEvaluation.new(store.runs, check: {"step" => "plan", "attempt" => 1})
       stored(run_hash(reason: {"code" => "turn_ended_incomplete", "since" => "2026-11-10T11:58:00Z", "details" => {}}))
@@ -494,6 +504,16 @@ RSpec.describe Workspace::WorkflowDecisions do
     def parked(retries: 0, note: nil, id: "p1")
       {"id" => id, "from" => nil, "note" => note, "pane" => nil, "turn_over" => nil, "requested_at" => "2026-11-10T11:00:00Z",
        "expires_at" => "2026-11-10T13:00:00Z", "retries" => retries}
+    end
+
+    it "follows up a review round the released resume registered" do
+      evaluation = RecordingEvaluation.new(store.runs, review: {"round" => 1})
+      stored(run_hash(state: "checking", extra: {"parked" => parked}))
+
+      described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).release_park("wr_1", "p1")
+
+      expect(evaluation.calls).to eq([[:evaluate, "plan"], [:review_round, "wr_1", {"round" => 1}]])
     end
 
     it "carries out the parked resume in the same change, and marks the attempt it started" do

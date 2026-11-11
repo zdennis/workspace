@@ -25,8 +25,9 @@ module Workspace
     # @param guard [Workspace::WorkflowGuard] checks a guarded step against the run's base and reads config changes
     # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
     # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
+    # @param review_round [#call, nil] given the run id and the review round a change registered, runs it with the lock given up and answers the run afterwards (default: nothing runs)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, clock: -> { Time.now })
+    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, review_round: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -36,6 +37,7 @@ module Workspace
       @guard = guard
       @commands_config = commands_config
       @inbox_for = inbox_for
+      @review_round = review_round
       @clock = clock
     end
 
@@ -50,7 +52,7 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def turn_ended(run_id, pane: nil, turn_started: nil, stopped_at: nil, background: [])
-      check = nil
+      follow = nil
       run = @change.call(run_id) do |read, ctx|
         stored = read.to_h
         next if stored["parked"]
@@ -60,10 +62,10 @@ module Workspace
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
         judged = evaluate(read, ctx: ctx, turn_started: turn_started, background: background)
-        check = ctx.check
+        follow = ctx
         judged
       end
-      check ? finish_check(run_id, check) : run
+      finish_follow_ups(run_id, follow, run)
     end
 
     # Records what the agent says about its current attempt. Nothing moves until the turn ends.
@@ -108,16 +110,36 @@ module Workspace
       WorkflowRun.from_h(work)
     end
 
+    # The one place a change's follow-ups run, once its lock is given up: the check or proof it registered, then the
+    # review round it registered. Every caller of {WorkflowRunChange#call} whose block can register one ends with it.
+    #
+    # @param run_id [String]
+    # @param ctx [WorkflowRunChange::Context, nil] the change's context; nil when the change did not run
+    # @param run [WorkflowRun] the run the change returned
+    # @return [WorkflowRun] the run afterwards
+    def finish_follow_ups(run_id, ctx, run)
+      return run unless ctx
+      run = finish_check(run_id, ctx.check) if ctx.check
+      review = ctx.review
+      run = @review_round.call(run_id, review) || run if review && @review_round
+      run
+    end
+
     # Runs what {#evaluate} registered with the run's lock given up, and whatever comes after it: a proof can be
-    # followed by another proof or the `status:` check.
+    # followed by another proof or the `status:` check. A review round the chain's last change registered (a passed
+    # step that has reviewers) runs once the chain ends.
     #
     # @param run_id [String]
     # @param check [Hash{String=>Object}] the proof or check {#evaluate} registered on its context
     # @return [WorkflowRun] the run afterwards; as stored when it was cancelled while the check ran
     def finish_check(run_id, check)
       run = nil
-      run, check = apply_check(run_id, check, run_check(run_id, check)) while check
-      run
+      review = nil
+      while check
+        run, check, registered = apply_check(run_id, check, run_check(run_id, check))
+        review = registered if registered
+      end
+      (review && @review_round) ? (@review_round.call(run_id, review) || run) : run
     rescue Workspace::Error => e
       # Cancelled while the check ran: there is nothing left to decide.
       raise unless e.code == "run_not_active"
@@ -252,6 +274,7 @@ module Workspace
     # @return [Array] the run afterwards, and what to run next outside the lock, or nil
     def apply_check(run_id, check, result)
       following = nil
+      review = nil
       run = @change.call(run_id) do |read, ctx|
         next if read.parked
         stored = read.thawed
@@ -262,12 +285,17 @@ module Workspace
         if check["proof"]
           apply_proof(stored, attempt, check, result, ctx)
           following = ctx.check
+          review = ctx.review
           next WorkflowRun.from_h(stored)
         end
         attempt["check"].merge!("ended_at" => now_iso, "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
           "error" => result[:error]).compact!
         event(stored, "check_finished", "step" => check["step"], "attempt" => check["attempt"], "exit_code" => result[:exit_code])
-        next @progress.pass_step(stored, ctx: ctx) if result[:exit_code] == 0
+        if result[:exit_code] == 0
+          passed = @progress.pass_step(stored, ctx: ctx)
+          review = ctx.review
+          next passed
+        end
         code = if result[:timed_out]
           "check_timed_out"
         else
@@ -280,7 +308,7 @@ module Workspace
         end
         @progress.fail_step(stored, failure, ctx: ctx)
       end
-      [run, following]
+      [run, following, review]
     end
 
     # Records a proof's result; a passed one goes on to the next `require:` entry. A proof run again (a tick or a

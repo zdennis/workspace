@@ -118,15 +118,15 @@ module Workspace
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
     #   start an attempt the run has no allowance left for
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
-      check = nil
+      follow = nil
       unchanged = nil
       run = @change.call(run_id) do |read, ctx|
         resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         unchanged = resumed.unchanged
-        check = ctx.check
+        follow = ctx
         resumed.run
       end
-      Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : run, unchanged: unchanged)
+      Resumed.new(run: @evaluation.finish_follow_ups(run_id, follow, run), unchanged: unchanged)
     end
 
     # Stores a resume for later, with the same arguments as {#resume}: no attempt, no binding, no new lock. What the
@@ -172,7 +172,7 @@ module Workspace
     # @return [Resumed] the run afterwards, and why the resume did nothing (its note kept for the next attempt), or nil
     # @raise [Workspace::Error] see {#resume}; the run stays parked
     def release_park(run_id, id)
-      check = nil
+      follow = nil
       unchanged = nil
       run = @change.call(run_id) do |read, ctx|
         parked = read.parked
@@ -183,7 +183,7 @@ module Workspace
           extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], extra_seconds: parked["extra_seconds"], budget: parked["retries"].to_i.zero?)
         stored = resumed.run.thawed
         unchanged = resumed.unchanged
-        check = ctx.check
+        follow = ctx
         stored["pending_context"] << WorkflowRun.resume_note(parked["note"]) if unchanged && parked["note"]
         event(stored, "resume_parked_ended", {"step" => stored["current"], "how" => unchanged ? "unchanged" : "released"}
           .merge(unchanged ? {"detail" => unchanged} : {}))
@@ -192,7 +192,7 @@ module Workspace
         end
         WorkflowRun.from_h(stored)
       end
-      Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : run, unchanged: unchanged)
+      Resumed.new(run: @evaluation.finish_follow_ups(run_id, follow, run), unchanged: unchanged)
     end
 
     # Ends a park that can't be released; the run waits for a person. The step and what it holds stay (a `running`
