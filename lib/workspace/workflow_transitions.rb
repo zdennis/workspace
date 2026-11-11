@@ -63,6 +63,49 @@ module Workspace
       attempts_made(run) - attempt_allowance(run) + 1
     end
 
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Integer] the step's attempts that count against its own cap: all but those the sweep typed again
+    def self.step_attempts_made(run, step)
+      Array(run.dig("steps", step, "attempts")).count { |earlier| !earlier["redelivered"] }
+    end
+
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @param step [String] a step id
+    # @return [Integer, nil] the step's `max_attempts` plus its `extra_attempts`; nil when it has no cap (an old run, or no key)
+    def self.step_allowance(run, step)
+      cap = WorkflowDefinition.step_max_attempts(run.dig("definition", "steps")&.find { |each| each["id"] == step })
+      cap && cap + run.dig("steps", step, "extra_attempts").to_i
+    end
+
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Boolean] whether the step has made all the attempts its own cap allows; false for a step with no cap
+    def self.step_attempts_spent?(run, step)
+      allowance = step_allowance(run, step)
+      !allowance.nil? && step_attempts_made(run, step) >= allowance
+    end
+
+    # The least `--extra-attempts` that lets one more attempt of the step fit its own cap.
+    #
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @param step [String] a step id
+    # @return [Integer, nil] attempts made minus the allowance, plus one; nil for a step with no cap
+    def self.step_extra_attempts_needed(run, step)
+      allowance = step_allowance(run, step)
+      allowance && (step_attempts_made(run, step) - allowance + 1)
+    end
+
+    # The step a resume or reject would start an attempt of: `from` (`resume --from`, or the `to` of a
+    # reject), else the step a waiting retry goes to, else the current step.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param from [String, nil]
+    # @return [String]
+    def self.target_step(run, from: nil)
+      from || run.dig("backoff", "to") || run["current"]
+    end
+
     # Whether a resume would start a new attempt: `--from`, a run held for its token budget, a retry's wait, a step that failed or never
     # got its line, or a running step given a pane. Not a check or a turn left to decide (a failure there goes
     # through the `on_fail` budget), a passed step moving on, or a lock wait (the attempt was allowed when the
@@ -322,7 +365,8 @@ module Workspace
 
     # Where a failed step goes, read once its failed attempt is stored: back along its `on_fail` (`to` its goto,
     # `count` the edge's loop count after this one, `wait` the backoff seconds or nil), or `:stop` for a person when it has
-    # none, its loops or the run's attempts are used up, or the failure's code or cause is one of its `except:`
+    # none, its loops or the run's attempts are used up, its goto step's own cap is spent (`limit: :step`,
+    # `step:` the goto; only that step is checked, though a loop re-runs every step from it to the failing one), or the failure's code or cause is one of its `except:`
     # (so a run is never sent into a step that cannot pass against the same facts).
     #
     # @param run [Hash{String=>Object}] a stored run at the failed step
@@ -336,6 +380,7 @@ module Workspace
       count = run["loops"].fetch(edge, 0)
       excepted = Array(on_fail["except"]).any? { |name| name == failure["code"] || name == failure["cause"] }
       return {kind: :stop} if excepted || count >= on_fail["max"] || attempts_made(run) >= attempt_allowance(run)
+      return {kind: :stop, limit: :step, step: on_fail["goto"]} if step_attempts_spent?(run, on_fail["goto"])
       {kind: :loop, edge: edge, to: on_fail["goto"], count: count + 1, wait: WorkflowDefinition.backoff(on_fail)}
     end
 

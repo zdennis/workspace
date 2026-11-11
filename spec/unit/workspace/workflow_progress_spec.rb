@@ -142,6 +142,21 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(panes.calls).to eq([[:unbind, "wr_1"]])
     end
 
+    it "stops with details.limit step when the loop's target step has spent its own cap" do
+      definition = [{"id" => "plan", "max_attempts" => 1, "produces" => []}, {"id" => "build", "produces" => [], "on_fail" => {"goto" => "plan", "max" => 3}}]
+      run = run_hash(:definition_steps => definition, "current" => "build")
+      run["steps"]["plan"]["attempts"] = [{"n" => 1, "ended_at" => "2026-11-10T11:00:00Z"}]
+      run["steps"]["build"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:30:00.000Z"}]}
+
+      run = progress.fail_step(run, failure, ctx: ctx)
+
+      expect(run.state).to eq("waiting")
+      expect(run.reason["code"]).to eq("failed_check")
+      expect(run.reason["details"]).to include("step" => "build", "limit" => "step", "limit_step" => "plan")
+      expect(run.to_h["loops"]).to eq({})
+      expect(dispatch.calls).to eq([[:release, "wr_1"]])
+    end
+
     it "stops instead of looping on a code on_fail excepts" do
       on_fail = {"goto" => "plan", "max" => 2, "except" => ["check_failed"]}
 

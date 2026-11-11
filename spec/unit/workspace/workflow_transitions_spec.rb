@@ -101,6 +101,45 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "step attempt counts" do
+    let(:run) do
+      run_with(steps: {"a" => step("failed", {"n" => 1}, {"n" => 2, "redelivered" => true}, {"n" => 3}), "b" => step("pending")}).tap do |run|
+        run["definition"]["steps"].first["max_attempts"] = 2
+        run["steps"]["a"]["extra_attempts"] = 1
+      end
+    end
+
+    it "counts a step's attempts but those the sweep typed again" do
+      expect(described_class.step_attempts_made(run, "a")).to eq(2)
+      expect(described_class.step_attempts_made(run, "b")).to eq(0)
+    end
+
+    it "adds the step's extra attempts to its cap, and has no allowance without a cap" do
+      expect(described_class.step_allowance(run, "a")).to eq(3)
+      expect(described_class.step_allowance(run, "b")).to be_nil
+    end
+
+    it "is spent at the allowance, and never for a step with no cap or an old run" do
+      expect(described_class.step_attempts_spent?(run, "a")).to be(false)
+      run["steps"]["a"]["extra_attempts"] = 0
+      expect(described_class.step_attempts_spent?(run, "a")).to be(true)
+      expect(described_class.step_attempts_spent?(run, "b")).to be(false)
+      expect(described_class.step_attempts_spent?(run.merge("definition" => {}), "a")).to be(false)
+    end
+
+    it "needs one more than the shortfall" do
+      run["steps"]["a"]["extra_attempts"] = 0
+      expect(described_class.step_extra_attempts_needed(run, "a")).to eq(1)
+      expect(described_class.step_extra_attempts_needed(run, "b")).to be_nil
+    end
+
+    it "targets from, else a waiting retry's step, else the current step" do
+      expect(described_class.target_step(run, from: "b")).to eq("b")
+      expect(described_class.target_step(run.merge("backoff" => {"to" => "b"}))).to eq("b")
+      expect(described_class.target_step(run)).to eq("a")
+    end
+  end
+
   describe ".starts_attempt?" do
     let(:running) { run_with(steps: {"a" => step("running")}) }
 
@@ -273,6 +312,36 @@ RSpec.describe Workspace::WorkflowTransitions do
     it "stops on a code or cause on_fail excepts" do
       expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check_failed"]}), failure)).to eq(kind: :stop)
       expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check"]}), failure)).to eq(kind: :stop)
+    end
+  end
+
+  describe ".after_failure with a step cap" do
+    let(:failure) { {"cause" => "check", "code" => "check_failed"} }
+
+    def two_steps(cap, made, extra: 0)
+      run = run_with(steps: {"implement" => step("passed", *Array.new(made) { |index| {"n" => index + 1} }), "verify" => step("failed", {"n" => 1})}, current: "verify")
+        .merge("loops" => {})
+      run["definition"]["max_attempts"] = 20
+      run["definition"]["steps"][0]["max_attempts"] = cap
+      run["definition"]["steps"][1]["on_fail"] = {"goto" => "implement", "max" => 5}
+      run["steps"]["implement"]["extra_attempts"] = extra
+      run
+    end
+
+    it "loops into a target with attempts left" do
+      expect(described_class.after_failure(two_steps(2, 1), failure)).to include(kind: :loop, to: "implement")
+    end
+
+    it "stops, naming the step and limit, when the target's cap is spent" do
+      expect(described_class.after_failure(two_steps(2, 2), failure)).to eq(kind: :stop, limit: :step, step: "implement")
+    end
+
+    it "loops again once extra attempts cover it" do
+      expect(described_class.after_failure(two_steps(2, 2, extra: 1), failure)).to include(kind: :loop)
+    end
+
+    it "ignores a target with no cap" do
+      expect(described_class.after_failure(two_steps(nil, 4), failure)).to include(kind: :loop)
     end
   end
 

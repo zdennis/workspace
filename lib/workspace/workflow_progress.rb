@@ -182,8 +182,13 @@ module Workspace
       end
       @dispatch.release(run)
       run["state"] = "waiting"
-      run["reason"] = reason("failed_check", {"step" => step["id"], "attempt" => attempt["n"], "loops" => run["loops"],
-                                              "attempts" => attempts, "max_attempts" => WorkflowTransitions.attempt_allowance(run)}.merge(failure))
+      details = {"step" => step["id"], "attempt" => attempt["n"], "loops" => run["loops"],
+                 "attempts" => attempts, "max_attempts" => WorkflowTransitions.attempt_allowance(run)}
+      if next_move[:limit] == :step
+        details["limit"] = "step"
+        details["limit_step"] = next_move[:step]
+      end
+      run["reason"] = reason("failed_check", details.merge(failure))
     end
 
     # No attempt, pane binding or lock is held while the retry waits: the run reads `waiting` with the reason

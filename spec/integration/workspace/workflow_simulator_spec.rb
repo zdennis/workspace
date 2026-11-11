@@ -19,7 +19,7 @@ RSpec.describe Workspace::WorkflowSimulator do
 
   after { FileUtils.rm_rf(base) }
 
-  def definition(extra: "", test_extra: "")
+  def definition(extra: "", test_extra: "", build_extra: "")
     Workspace::WorkflowDefinition.parse(<<~YAML, id: "demo", source: "file", path: nil)
       schema_version: 1
       id: demo
@@ -30,6 +30,7 @@ RSpec.describe Workspace::WorkflowSimulator do
         build:
           prompt: build it
           produces: [build.md]
+          #{build_extra}
         test:
           prompt: test it
           produces: [test.md]
@@ -64,6 +65,16 @@ RSpec.describe Workspace::WorkflowSimulator do
 
     stops = play("steps:\n  test: [{check: fail}, {check: fail}, {check: fail}, {check: fail}]\n")
     expect(stops).to include("outcome" => "stopped", "stopped" => {"step" => "test", "attempt" => 4, "reason" => "failed_check"})
+  end
+
+  it "stops an on_fail loop at the third build when build sets max_attempts: 2, rather than a third attempt" do
+    capped = definition(build_extra: "max_attempts: 2")
+
+    result = play("steps:\n  test: [{check: fail}, {check: fail}, {check: fail}]\n", definition: capped)
+
+    expect(result["outcome"]).to eq("stopped")
+    expect(result["stopped"]).to include("step" => "test", "reason" => "failed_check")
+    expect(result["steps"].first["attempts"].size).to eq(2)
   end
 
   it "fails a step the agent reports as failed, with the agent's code" do
