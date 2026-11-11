@@ -390,6 +390,22 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    it "passes --extra-time to resume and reject in whole seconds, and refuses a bad one or another verb" do
+      cli.run(["workflow", "resume", "wr_1", "--extra-time", "2h"])
+      cli.run(["workflow", "reject", "wr_1", "--note", "No.", "--extra-time=90"])
+      cli.run(["workflow", "resume", "wr_1", "--extra-time", "0.2s"])
+
+      expect(workflow_command.calls.map { |call| [call.first, call.last[:extra_seconds]] }).to eq([[:resume, 7200], [:reject, 90], [:resume, 1]])
+      {["workflow", "resume", "wr_1", "--extra-time", "0"] => /--extra-time must be a duration such as 30m or 2h, got "0"/,
+       ["workflow", "resume", "wr_1", "--extra-time", "soon"] => /--extra-time must be a duration such as 30m or 2h, got "soon"/,
+       ["workflow", "resume", "wr_1", "--extra-time", "9000h"] => /--extra-time is at most 365 days/,
+       ["workflow", "approve", "wr_1", "--extra-time", "1h"] => /--extra-time is for `workflow resume` and `workflow reject`/}.each do |argv, message|
+        cli, _, error_output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+      end
+    end
+
     it "passes --extra-attempts to resume and reject, and refuses a bad one or another verb" do
       cli.run(["workflow", "resume", "wr_1", "--extra-attempts", "2"])
       cli.run(["workflow", "reject", "wr_1", "--note", "No.", "--extra-attempts=3"])

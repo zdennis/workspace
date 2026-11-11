@@ -282,6 +282,8 @@ module Workspace
 
     EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
 
+    EXTRA_TIME_OPT = ["--extra-time DURATION", "Add DURATION (30m, 2h, or seconds) to the run's timeout, for a run that has used its timeout:; DURATION must cover the overrun, and the refusal names the least and a round figure"].freeze
+
     WORKFLOW = {
       "list" => {
         usage: ["workflow list [--json]"],
@@ -849,7 +851,7 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--json]"],
+        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Get a run going again",
         about: [
           RUN_ID,
@@ -875,9 +877,14 @@ module Workspace
           "",
           "A run held by its definition's budget (reason budget_spent) is refused the same way (budget_spent)",
           "until --extra-tokens N adds N to its token budget; the total counted is a minimum, since sub-agents",
-          "and attempts with no usage are left out."
+          "and attempts with no usage are left out.",
+          "",
+          "A run held by its definition's timeout: (reason run_timed_out) is refused the same way (run_timed_out)",
+          "until --extra-time DURATION adds to its timeout. Only machine time counts against it: time a person",
+          "is waited on (a gate, a parked resume, a held budget, a failed check) does not. With the budget and",
+          "the timeout both spent, pass both flags."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, JSON_OPT],
+        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT, JSON_OPT],
         examples: [
           ["workspace workflow resume RUN", "pick a stuck run up again: its lock is asked for again, a failed step runs again"],
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
@@ -919,7 +926,7 @@ module Workspace
         ]
       },
       "reject" => {
-        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--json]"],
+        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Turn a run's gate down",
         about: [
           RUN_ID,
@@ -928,12 +935,13 @@ module Workspace
           "to and from a process under the run's own pane, as approve is. It is refused (attempts_spent) when",
           "the run, or the step it would run, has made all its max_attempts (step_attempts_spent), unless",
           "--extra-attempts N adds to the allowances; N must cover the overrun (1 for a run exactly spent). The",
-          "same goes for a spent token budget (budget_spent) and --extra-tokens N."
+          "same goes for a spent token budget (budget_spent) and --extra-tokens N, and a spent run timeout",
+          "(run_timed_out) and --extra-time DURATION."
         ],
         options: [["--note TEXT", "Why; given to the next attempt"],
           ["--to STEP", "The step to run again (the gated step, or one before it)"],
           ["--step STEP", "The gated step you saw (current.step in status --json); refused unless the run waits there"],
-          ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, JSON_OPT],
+          ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT, JSON_OPT],
         examples: [
           ["workspace workflow reject RUN --note \"Too big; split it.\"", "send the gated step back; it runs again with the note"],
           ["workspace workflow reject RUN --note \"Research the API first.\" --to research", "go back to an earlier step of rpiv instead"],

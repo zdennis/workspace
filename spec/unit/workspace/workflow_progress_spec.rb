@@ -85,9 +85,9 @@ RSpec.describe Workspace::WorkflowProgress do
 
   describe "#finish" do
     it "drops the park, the retry wait and the budget hold, gives up the locks and frees the pane" do
-      run = progress.finish(run_hash("parked" => {"id" => "p1"}, "backoff" => {"to" => "plan"}, "budget_hold" => {}, "reason" => {"code" => "waiting_you"}), "cancelled")
+      run = progress.finish(run_hash("parked" => {"id" => "p1"}, "backoff" => {"to" => "plan"}, "budget_hold" => {}, "timeout_hold" => {}, "reason" => {"code" => "waiting_you"}), "cancelled")
 
-      expect(run.to_h).not_to include("parked", "backoff", "budget_hold")
+      expect(run.to_h).not_to include("parked", "backoff", "budget_hold", "timeout_hold")
       expect(run.to_h).to include("state" => "cancelled", "reason" => nil, "ended_at" => "2026-11-10T12:00:00Z")
       expect(dispatch.calls).to eq([[:drop_park, "wr_1", "ended", {}], [:release, "wr_1"]])
       expect(panes.calls).to eq([[:unbind, "wr_1"]])

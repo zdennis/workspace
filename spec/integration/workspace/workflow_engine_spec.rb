@@ -5050,6 +5050,57 @@ RSpec.describe Workspace::WorkflowEngine do
     end
   end
 
+  describe "the run timeout" do
+    let(:two_steps) { definition("timeout: 1h\nsteps:\n  a:\n    prompt: A\n    status: bin/check\n  b:\n    prompt: B\n    status: bin/check\n") }
+
+    def kinds = history_lines.map { |line| line["type"] }
+
+    def held_at_b
+      start(two_steps, inputs: {})
+      now[0] += 2 * 3600
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    it "holds the next step once the machine time is used, starts nothing, and keeps the step as it was" do
+      run = held_at_b
+
+      expect(run).to include("state" => "waiting", "current" => "b")
+      expect(run["reason"]).to include("code" => "run_timed_out")
+      expect(run["reason"]["details"]).to include("kind" => "timeout", "step" => "b", "limit" => 3600, "needed" => 3601, "suggested" => 4500)
+      expect(run["steps"]["b"]).to eq("state" => "pending", "attempts" => [])
+      expect(run["timeout_hold"]).to eq("pane" => "%5", "identity" => {"session" => "app", "pane_slot" => "app:0.1"})
+      expect(panes.kicks.size).to eq(1)
+      expect(kinds).to include("run_timed_out")
+    end
+
+    it "lets the next step start while time is left" do
+      start(two_steps, inputs: {})
+      now[0] += 600
+
+      expect(engine.turn_ended("wr_1", pane: "%5")).to include("state" => "running", "current" => "b")
+    end
+
+    it "refuses a resume until --extra-time covers the overrun, then starts the held step" do
+      held_at_b
+      before = stored_run(store, "wr_1")
+      lines = history_lines.size
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error, /used its timeout \(7200s of 3600s of machine time\)\. Pass --extra-time 4500s to continue \(3601s is the least\)/) { |error|
+        expect(error.code).to eq("run_timed_out")
+      }
+      expect { engine.resume("wr_1", extra_seconds: 3600) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_timed_out") }
+      expect(stored_run(store, "wr_1")).to eq(before)
+      expect(history_lines.size).to eq(lines)
+
+      run = engine.resume("wr_1", extra_seconds: 3601)
+
+      expect(run).to include("state" => "running", "current" => "b", "extra_seconds" => 3601, "reason" => nil)
+      expect(run).not_to have_key("timeout_hold")
+      expect(panes.kicks.size).to eq(2)
+      expect(history_lines.find { |line| line["type"] == "time_extended" }).to include("extra" => 3601, "extra_seconds" => 3601, "limit" => 7201)
+    end
+  end
+
   describe "the token budget" do
     let(:usages) { [] }
     let(:recorder) do

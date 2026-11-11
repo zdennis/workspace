@@ -179,7 +179,7 @@ module Workspace
         next unless WorkflowTransitions.backoff(read.to_h, @clock.call)&.fetch(:state) == :due
         retried = @progress.start_retry(read, ctx: ctx)
         outcome = if retried.backoff&.dig("blocked") then :blocked
-        elsif retried.budget_hold then :held
+        elsif retried.budget_hold || retried.timeout_hold then :held
         else :retried
         end
         retried

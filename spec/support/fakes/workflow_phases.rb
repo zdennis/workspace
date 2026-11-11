@@ -135,7 +135,7 @@ class RecordingRunStore
     @calls << [:backoff_on, pane, {except: except}]
     found = @backoff_on[pane]
     return nil unless found && found["id"] != except
-    same_pane.call(pane, (found["backoff"] || found["budget_hold"] || {})["identity"]) ? Workspace::WorkflowRun.from_h(found) : nil
+    same_pane.call(pane, (found["backoff"] || found["budget_hold"] || found["timeout_hold"] || {})["identity"]) ? Workspace::WorkflowRun.from_h(found) : nil
   end
 
   def record_event(id, type, data = {})

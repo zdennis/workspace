@@ -106,7 +106,7 @@ module Workspace
       from || run.dig("backoff", "to") || run["current"]
     end
 
-    # Whether a resume would start a new attempt: `--from`, a run held for its token budget, a retry's wait, a step that failed or never
+    # Whether a resume would start a new attempt: `--from`, a run held for its token budget or its timeout, a retry's wait, a step that failed or never
     # got its line, or a running step given a pane. Not a check or a turn left to decide (a failure there goes
     # through the `on_fail` budget), a passed step moving on, or a lock wait (the attempt was allowed when the
     # step was reached).
@@ -117,7 +117,7 @@ module Workspace
     # @return [Boolean]
     def self.starts_attempt?(run, from:, pane:)
       return true if from
-      return true if run["budget_hold"].is_a?(Hash)
+      return true if run["budget_hold"].is_a?(Hash) || run["timeout_hold"].is_a?(Hash)
       return true if run["backoff"].is_a?(Hash) && run["backoff"]["to"].is_a?(String)
       return false if run.dig("reason", "code") == "waiting_lock"
       case run["steps"].fetch(run["current"])["state"]
@@ -392,6 +392,16 @@ module Workspace
     def self.budget_details(run, reading)
       {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "needed", "suggested"))
         .merge("tokens" => reading["tokens"], "extra_tokens" => reading["extra_tokens"])
+    end
+
+    # The `details` of a `run_timed_out` refusal or hold.
+    #
+    # @param run [Hash] a stored run
+    # @param reading [Hash] its {WorkflowDeadline.reading}
+    # @return [Hash]
+    def self.deadline_details(run, reading)
+      {"run_id" => run["id"], "step" => run["current"], "kind" => "timeout"}
+        .merge(reading.slice("used", "limit", "needed", "suggested", "timeout", "extra_seconds"))
     end
 
     # The one code key of a failed step: an agent's word when it gave one, else the engine's.

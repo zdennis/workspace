@@ -40,7 +40,7 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def advance(run, ctx:) = over(run) { |work| go_on(work, ctx) }
 
-    # Ends the run: drops its park, retry wait and budget hold, gives up its locks and frees its pane.
+    # Ends the run: drops its park, retry wait and budget and timeout holds, gives up its locks and frees its pane.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] left as it is
     # @param state [String] the run's end state, "completed" or "cancelled"
@@ -151,6 +151,7 @@ module Workspace
       adopt(run, @dispatch.drop_park(run, "ended")) if run.key?("parked")
       run.delete("backoff")
       run.delete("budget_hold")
+      run.delete("timeout_hold")
       @dispatch.release(run)
       @panes.unbind(run["id"])
       run["state"] = state

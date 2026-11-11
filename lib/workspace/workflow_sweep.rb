@@ -122,7 +122,7 @@ module Workspace
       backoff = WorkflowEngine.backoff(run.to_h, @clock.call)
       return sweep_backoff(run, backoff, pass) if backoff
       return blocked_row(run) if run.backoff&.dig("blocked") && run.state == "waiting"
-      return budget_row(run) if run.budget_hold && run.state == "waiting"
+      return budget_row(run) if (run.budget_hold || run.timeout_hold) && run.state == "waiting"
       daemon_needed = running || state.state == "checking" || run.parked || run.reason&.dig("code") == "waiting_lock"
       if running && !@panes.alive?(run.id)
         pane = run.pane
@@ -164,7 +164,10 @@ module Workspace
 
     # The retry's wait is over but the token budget is used: not a failure, and the sweep cannot raise the budget.
     def budget_row(run, **rest)
-      row(run, "nothing", reason: "budget_spent", message: "step #{run.current} was not started: the run's token budget is used. Resume it with --extra-tokens N (see `workspace workflow status #{run.id}`) or cancel it", **rest)
+      if run.reason&.dig("code") == "run_timed_out"
+        return row(run, "nothing", reason: "run_timed_out", message: "step #{run.current} was not started: the run's timeout is used. Resume it with --extra-time DURATION (see `workspace workflow status #{run.id}`) or cancel it", **rest)
+      end
+      row(run, "nothing", reason: "budget_spent", message: "step #{run.current} was not started: the run's token budget is used. Resume it with --extra-tokens N#{" and --extra-time DURATION" if run.reason&.dig("details", "run_timed_out")} (see `workspace workflow status #{run.id}`) or cancel it", **rest)
     end
 
     # The pane the retry would type into is no longer the run's. Not a failure: the sweep cannot fix it, and a person can.

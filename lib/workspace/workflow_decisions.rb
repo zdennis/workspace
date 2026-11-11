@@ -71,12 +71,13 @@ module Workspace
     # @param step [String, nil] the gated step the caller saw; refused when the run is elsewhere
     # @param attempt [Integer, nil] that step's attempt the caller saw (needs +step+)
     # @param guard [#call, nil] called with the stored run after the step checks; raises to refuse
-    # @param extra_attempts [Integer, nil] see {#resume}
-    # @param extra_tokens [Integer, nil] see {#resume}
+    # @param extra_attempts [Integer, nil] added to the run's attempt allowance (see {#resume})
+    # @param extra_tokens [Integer, nil] added to the run's token budget (see {#resume})
+    # @param extra_seconds [Integer, nil] added to the run's timeout (see {#resume})
     # @return [WorkflowRun] the run afterwards
-    # @raise [Workspace::Error] code `gate_not_waiting`, `attempts_spent`, `budget_spent`, and what +guard+ raises
+    # @raise [Workspace::Error] code `gate_not_waiting`, `attempts_spent`, `budget_spent`, `run_timed_out`, and what +guard+ raises
     # @raise [Workspace::UsageError] when +to+ is not the gated step or one before it
-    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil)
+    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
       @change.call(run_id) do |read, ctx|
         stored = read.thawed
         gate = waiting_gate(stored, step: step, attempt: attempt)
@@ -88,7 +89,7 @@ module Workspace
         end
         # The step runs again, which is a new attempt.
         spend_attempts(stored, extra_attempts, target: target)
-        spend_tokens(stored, extra_tokens)
+        spend_limits(stored, extra_tokens, extra_seconds)
         gate.merge!("state" => "rejected", "at" => now_iso, "note" => note, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil))
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
@@ -105,17 +106,22 @@ module Workspace
     # @param from [String, nil] start again at this step instead
     # @param note [String, nil] added to the next attempt's instructions
     # @param pane [String, nil] the pane to use from now on (when the old one is gone)
-    # @param turn_over [Hash{String=>Object}, nil] "step" and "attempt" the pane's agent was seen to end its turn
-    #   on; a `running` step still on that attempt is decided now
-    # @param extra_attempts [Integer, nil] added to the attempt allowance (`attempts_extended`) when an attempt starts
-    # @param extra_tokens [Integer, nil] added to the token budget (`budget_extended`) when an attempt starts
+    # @param turn_over [Hash{String=>Object}, nil] "step" and "attempt": the pane's agent was seen to have ended
+    #   its turn on that attempt, so the step, if the run is still on that attempt and it reads `running`, is decided now
+    # @param extra_attempts [Integer, nil] raises the run's attempt allowance by this much, kept in the run and
+    #   recorded as `attempts_extended`; applied only when the resume starts an attempt
+    # @param extra_tokens [Integer, nil] raises the run's token budget by this much, kept in the run and recorded
+    #   as `budget_extended`; applied only when the resume starts an attempt
+    # @param extra_seconds [Integer, nil] raises the run's timeout by this many seconds, kept in the run (`extra_seconds`)
+    #   and recorded as `time_extended`; applied only when the resume starts an attempt
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
-    # @raise [Workspace::Error] see {#refuse_resume}; `attempts_spent` or `budget_spent` for an attempt not covered
-    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
+    # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
+    #   start an attempt the run has no allowance left for
+    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
       check = nil
       unchanged = nil
       run = @change.call(run_id) do |read, ctx|
-        resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
+        resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         unchanged = resumed.unchanged
         check = ctx.check
         resumed.run
@@ -127,13 +133,18 @@ module Workspace
     # run already has stays, and {#release_park} carries it out. A live park stays as it is, so repeating the call
     # can't extend the wait; one past its limit is replaced.
     #
-    # The arguments are {#resume}'s: the note is stored in the run, never in an event, and +extra_attempts+ and
-    # +extra_tokens+ are applied when the park is released.
-    #
+    # @param run_id [String]
+    # @param from [String, nil] see {#resume}
+    # @param note [String, nil] see {#resume}; stored in the run, never in an event
+    # @param pane [String, nil] see {#resume}
+    # @param turn_over [Hash{String=>Object}, nil] see {#resume}
+    # @param extra_attempts [Integer, nil] see {#resume}; applied when the park is released
+    # @param extra_tokens [Integer, nil] see {#resume}; applied when the park is released
+    # @param extra_seconds [Integer, nil] see {#resume}; applied when the park is released
     # @return [Resumed] the run afterwards, and why nothing was stored when nothing was
     # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has;
     #   `attempts_spent` or `budget_spent` as {#resume}
-    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
+    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
       unchanged = nil
       run = @change.call(run_id) do |read|
         stored = read.thawed
@@ -145,9 +156,9 @@ module Workspace
         unchanged = from ? nil : left_alone(stored, step_state(stored), pane, turn_over)
         next if unchanged
         check_pane(pane, run_id) if pane && @panes.run_on(pane) != run_id
-        refuse_budget(stored, extra_attempts: extra_attempts, extra_tokens: extra_tokens, from: from) if WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
+        refuse_budget(stored, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, from: from) if WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
         drop_park(stored, "expired")
-        store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}),
+        store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}).merge(extra_seconds ? {"extra_seconds" => extra_seconds} : {}),
           expires_at: (@clock.call + PARK_SECONDS).utc.iso8601)
         WorkflowRun.from_h(stored)
       end
@@ -169,7 +180,7 @@ module Workspace
         stored = read.thawed
         stored.delete("parked")
         resumed = apply_resume(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"],
-          extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], budget: parked["retries"].to_i.zero?)
+          extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], extra_seconds: parked["extra_seconds"], budget: parked["retries"].to_i.zero?)
         stored = resumed.run.thawed
         unchanged = resumed.unchanged
         check = ctx.check
@@ -264,32 +275,53 @@ module Workspace
 
     private
 
-    # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
     def adopt(run, changed) = run.replace(changed.thawed)
 
-    # The body of {#resume} (arguments as there), inside a change the caller holds (a released park is one), over a
-    # copy of +run+. Refusals come first, so a refused resume leaves the run and its pane as they were; a check to run
-    # outside the lock is registered on +ctx+. +budget+ is false for a parked resume typed again after a busy pane:
-    # its attempt was counted then. Answers a {Resumed}.
-    def apply_resume(run, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, budget: true)
+    # The body of {#resume}, inside a change the caller holds (a released park is one). Refusals come first, so a
+    # refused resume leaves the run and its pane as they were. A check to run outside the lock is registered on +ctx+.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run; left as it is
+    # @param ctx [Workspace::WorkflowRunChange::Context] the change's context
+    # @param from [String, nil] see {#resume}
+    # @param note [String, nil] see {#resume}
+    # @param pane [String, nil] see {#resume}
+    # @param turn_over [Hash{String=>Object}, nil] see {#resume}
+    # @param extra_attempts [Integer, nil] see {#resume}
+    # @param extra_tokens [Integer, nil] see {#resume}
+    # @param extra_seconds [Integer, nil] see {#resume}
+    # @param budget [Boolean] false for a parked resume typed again after a busy pane: its attempt was counted then,
+    #   so the allowance and budget are not asked again
+    # @return [Resumed] the run afterwards, and why nothing was done, or nil
+    # @raise [Workspace::Error] as {#resume}
+    def apply_resume(run, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, budget: true)
       work = WorkflowRun.from_h(run).thawed
-      unchanged = resume_in(work, ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, budget: budget)
+      unchanged = resume_in(work, ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, budget: budget)
       Resumed.new(run: WorkflowRun.from_h(work), unchanged: unchanged)
     end
 
-    # Refuses an attempt the run has no allowance left for (`attempts_spent`, then `step_attempts_spent` for the target step's own cap,
-    # then `budget_spent`) unless the extras cover the overrun. Changes nothing.
-    def refuse_budget(run, extra_attempts:, extra_tokens:, from: nil)
+    # Refuses an attempt the run has no allowance left for: `attempts_spent` when +extra_attempts+ does not cover
+    # the run's overrun, then `step_attempts_spent` for the target step's own cap, then `budget_spent` when the
+    # token budget is used up and +extra_tokens+ does not cover it, or `run_timed_out` likewise for the timeout and
+    # +extra_seconds+. Changes nothing.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}]
+    # @param extra_attempts [Integer, nil]
+    # @param extra_tokens [Integer, nil]
+    # @param extra_seconds [Integer, nil]
+    # @param from [String, nil] the step a resume would start again at
+    # @return [void]
+    # @raise [Workspace::Error] code `attempts_spent`, `step_attempts_spent`, `budget_spent` or `run_timed_out`
+    def refuse_budget(run, extra_attempts:, extra_tokens:, extra_seconds: nil, from: nil)
       run = WorkflowRun.from_h(run).to_h
       refuse_spent(run, extra_attempts, target: WorkflowTransitions.target_step(run, from: from))
-      refuse_over_budget(run, extra_tokens)
+      refuse_over_limits(run, extra_tokens, extra_seconds)
     end
 
-    def resume_in(stored, ctx, from:, note:, pane:, turn_over:, extra_attempts:, extra_tokens:, budget:)
+    def resume_in(stored, ctx, from:, note:, pane:, turn_over:, extra_attempts:, extra_tokens:, extra_seconds:, budget:)
       refuse_resume(stored, from: from)
       state = step_state(stored)
       # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
-      unchanged = (from || stored["budget_hold"]) ? nil : left_alone(stored, state, pane, turn_over)
+      unchanged = (from || hold_of(stored)) ? nil : left_alone(stored, state, pane, turn_over)
       return unchanged if unchanged
       # A wait whose pane would not take the retry is held before anything is written: no rebind, note, event or reset.
       held = held_by_pane(stored, pane, from)
@@ -300,7 +332,7 @@ module Workspace
       # busy pane: its attempt was counted then); decided before anything is written.
       starting = budget && WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
       spend_attempts(stored, extra_attempts, needed: starting, target: WorkflowTransitions.target_step(stored, from: from))
-      spend_tokens(stored, extra_tokens, needed: starting)
+      spend_limits(stored, extra_tokens, extra_seconds, needed: starting)
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
@@ -309,6 +341,8 @@ module Workspace
       state = step_state(stored)
       stored["pending_context"] << WorkflowRun.resume_note(note) if note
       held = stored.delete("budget_hold")
+      time_held = stored.delete("timeout_hold")
+      held ||= time_held
       drop_retry_text(stored, held) if held && from
       if held && !from
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
@@ -390,27 +424,78 @@ module Workspace
       event(run, "attempts_extended", payload)
     end
 
-    # Refuses with `budget_spent` when the token budget is used up and +extra+ does not cover the overrun. A run without a budget is never refused.
-    def refuse_over_budget(run, extra)
+    # The hold a resume ends: the token budget's, else the timeout's (both hold the same record).
+    def hold_of(run)
+      [run["budget_hold"], run["timeout_hold"]].find { |hold| hold.is_a?(Hash) }
+    end
+
+    # What a spent token budget refuses with, or nil: not spent, or +extra+ covers the overrun (the least is used
+    # minus the allowance plus one). A run without a budget is never refused.
+    def budget_shortfall(run, extra)
       reading = WorkflowBudget.reading(run, live: false)
-      return unless reading && reading["spent"]
-      return if extra && extra >= reading["needed"]
-      raise Workspace::Error.new("Run #{run["id"]} has used its token budget (#{reading["used"]} of #{reading["allowance"]} tokens#{" at least" if reading["uncounted"].positive?}). Pass --extra-tokens #{reading["suggested"]} to continue (#{reading["needed"]} is the least).",
-        code: "budget_spent", details: WorkflowTransitions.budget_details(run, reading))
+      return nil unless reading && reading["spent"]
+      return nil if extra && extra >= reading["needed"]
+      reading
     end
 
-    # The token step of a person's resume or reject, as {#spend_attempts} is for attempts.
-    def spend_tokens(run, extra, needed: true)
+    # What a spent run timeout refuses with, or nil: not spent, or +extra+ seconds cover the overrun.
+    def deadline_shortfall(run, extra)
+      reading = WorkflowDeadline.reading(run, @clock.call)
+      return nil unless reading && reading["spent"]
+      return nil if extra && extra >= reading["needed"]
+      reading
+    end
+
+    # Refuses with `budget_spent` when the token budget is used up and +extra_tokens+ does not cover it, and with
+    # `run_timed_out` when the run's timeout is used up and +extra_seconds+ does not cover it. With both short the
+    # refusal is `budget_spent` and names both needs (the time one under `details.run_timed_out`).
+    def refuse_over_limits(run, extra_tokens, extra_seconds)
+      reading = budget_shortfall(run, extra_tokens)
+      deadline = deadline_shortfall(run, extra_seconds)
+      return unless reading || deadline
+      used = []
+      pass = []
+      least = []
+      if reading
+        used << "its token budget (#{reading["used"]} of #{reading["allowance"]} tokens#{" at least" if reading["uncounted"].positive?})"
+        pass << "--extra-tokens #{reading["suggested"]}"
+        least << [reading["needed"].to_s, "--extra-tokens"]
+      end
+      if deadline
+        used << "its timeout (#{deadline["used"].to_i}s of #{deadline["limit"].to_i}s of machine time)"
+        pass << "--extra-time #{deadline["suggested"]}s"
+        least << ["#{deadline["needed"]}s", "--extra-time"]
+      end
+      needs = (least.size == 1) ? "(#{least[0][0]} is the least)" : "(the least is #{least.map { |amount, flag| "#{amount} for #{flag}" }.join(", ")})"
+      message = "Run #{run["id"]} has used #{used.join(" and ")}. Pass #{pass.join(" and ")} to continue #{needs}."
+      if reading
+        details = WorkflowTransitions.budget_details(run, reading)
+        details["run_timed_out"] = WorkflowTransitions.deadline_details(run, deadline) if deadline
+        raise Workspace::Error.new(message, code: "budget_spent", details: details)
+      end
+      raise Workspace::Error.new(message, code: "run_timed_out", details: WorkflowTransitions.deadline_details(run, deadline))
+    end
+
+    # The limits step of a person's resume or reject, as {#spend_attempts} is for attempts: refused first, then
+    # +extra_tokens+ is added to the run's token budget and +extra_seconds+ to its timeout (each only when the run has
+    # one) and recorded.
+    def spend_limits(run, extra_tokens, extra_seconds, needed: true)
       return unless needed
-      refuse_over_budget(run, extra)
-      return unless extra && WorkflowBudget.reading(run)
-      run["extra_tokens"] = run["extra_tokens"].to_i + extra
-      event(run, "budget_extended", "extra" => extra, "extra_tokens" => run["extra_tokens"], "allowance" => WorkflowBudget.reading(run, live: false)["allowance"])
+      refuse_over_limits(run, extra_tokens, extra_seconds)
+      if extra_tokens && WorkflowBudget.reading(run)
+        run["extra_tokens"] = run["extra_tokens"].to_i + extra_tokens
+        event(run, "budget_extended", "extra" => extra_tokens, "extra_tokens" => run["extra_tokens"], "allowance" => WorkflowBudget.reading(run, live: false)["allowance"])
+      end
+      return unless extra_seconds && WorkflowDeadline.reading(run, @clock.call)
+      run["extra_seconds"] = run["extra_seconds"].to_i + extra_seconds
+      event(run, "time_extended", "extra" => extra_seconds, "extra_seconds" => run["extra_seconds"],
+        "limit" => WorkflowDeadline.reading(run, @clock.call)["limit"])
     end
 
-    # A run held by its budget types into the pane it had then, which must still be the run's (a person's +pane+ is the proof). Writes nothing.
-    def held_budget_pane(stored, pane)
-      hold = stored["budget_hold"]
+    # A run held by its budget types into the pane it had when the attempt would have started. As for a retry's wait,
+    # that pane must still be the run's (a person's +pane+ is the proof); nothing is written, so a refusal costs nothing.
+    def held_attempt_pane(stored, pane)
+      hold = hold_of(stored)
       check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
       problem = @progress.retry_pane_problem(stored, hold, pane: pane || @panes.pane_of(stored["id"]) || hold["pane"], proven: !pane.nil?)
       problem && problem[:message].sub(/\.\z/, "")
@@ -419,7 +504,7 @@ module Workspace
     # Why a retry's wait can't start in the pane it would use (an explicit +pane+ is proven), after recording the
     # hold once; nil when it can start or the run waits out no (readable) backoff.
     def held_by_pane(stored, pane, from)
-      return held_budget_pane(stored, pane) if stored["budget_hold"].is_a?(Hash)
+      return held_attempt_pane(stored, pane) if hold_of(stored)
       waiting = stored["backoff"]
       return nil if from || !(waiting.is_a?(Hash) && waiting["to"].is_a?(String))
       check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]

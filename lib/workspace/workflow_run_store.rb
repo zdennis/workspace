@@ -127,7 +127,7 @@ module Workspace
       end
     end
 
-    # A run whose `on_fail` retry waits, or that a token budget holds before an attempt: the wait unbinds the pane,
+    # A run whose `on_fail` retry waits, or that a token budget or timeout holds before an attempt: the wait unbinds the pane,
     # but the retry types into it. The wait holds the pane only while it is still the pane the wait began in.
     #
     # @param pane [String] a pane id
@@ -136,7 +136,7 @@ module Workspace
     # @return [WorkflowRun, nil] the first run going, oldest first, whose unblocked wait holds +pane+
     def backoff_on(pane, except:, same_pane:)
       going.find do |run|
-        waiting = run.backoff || run.budget_hold
+        waiting = run.backoff || run.budget_hold || run.timeout_hold
         run.id != except && run.state == "waiting" && waiting.is_a?(Hash) && !waiting["blocked"] &&
           (waiting["pane"] || run.pane) == pane && same_pane.call(pane, waiting["identity"])
       end

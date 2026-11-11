@@ -10,7 +10,7 @@ module Workspace
     KEYS = %w[
       id schema_version workflow title definition definition_source definition_path definition_sha256
       workspace project worktree base_sha base_guard task inputs note state created_at started_at ended_at
-      current pane loops pending_context reason reasons artifacts_dir parked backoff budget_hold sweep
+      current pane loops pending_context reason reasons artifacts_dir parked backoff budget_hold timeout_hold sweep
       extra_tokens extra_attempts extra_seconds guard_config_seen cancelled_by
     ].freeze
 
@@ -344,6 +344,20 @@ module Workspace
       # @return [Integer]
       def hash
         [BudgetHold, to_h].hash
+      end
+    end
+
+    # The attempt held back because the run's timeout is spent (+timeout_hold+): the same record as {BudgetHold}.
+    class TimeoutHold < BudgetHold
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(TimeoutHold) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [TimeoutHold, to_h].hash
       end
     end
 

@@ -112,6 +112,45 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run.state).to eq("running")
     end
 
+    context "with a run timeout" do
+      let(:timed) do
+        run_hash("definition" => run_hash["definition"].merge("timeout" => 3600),
+          "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "started_at" => "2026-11-10T10:00:00.000Z"}]}})
+      end
+
+      it "holds the attempt once the machine time is used, keeping the context for the resume" do
+        run = dispatch.dispatch(timed, ctx: ctx, context: "fresh")
+
+        expect(run.timeout_hold).to eq("context" => "fresh", "pane" => "%3", "identity" => "identity-of-wr_1")
+        expect(run.budget_hold).to be_nil
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to include("code" => "run_timed_out")
+        expect(run.reason["details"]).to include("kind" => "timeout", "run_id" => "wr_1", "step" => "plan", "used" => 7200, "limit" => 3600, "needed" => 3601, "suggested" => 4500)
+        expect(run.step("plan").attempts.size).to eq(1)
+        expect(change.events.last).to eq(["wr_1", "run_timed_out", {"used" => 7200.0, "limit" => 3600, "timeout" => 3600, "extra_seconds" => 0, "step" => "plan"}])
+      end
+
+      it "starts the attempt when told not to hold it (a redelivery), when the lock wait it ends was allowed, or when --extra-time covers it" do
+        expect(dispatch.dispatch(timed, ctx: ctx, budgeted: false).step("plan").attempts.map(&:n)).to eq([1, 2])
+        waited = timed.merge("reason" => {"code" => "waiting_lock", "since" => "2026-11-10T11:00:00Z", "details" => {}})
+        expect(dispatch.dispatch(waited, ctx: ctx).timeout_hold).to be_nil
+        extended = timed.merge("extra_seconds" => 3601)
+        expect(dispatch.dispatch(extended, ctx: ctx).state).to eq("running")
+      end
+
+      it "holds under both limits when the token budget is spent too, naming the budget and carrying the timeout's details" do
+        both = timed.merge("definition" => timed["definition"].merge("budget" => {"tokens" => 100}))
+        both["steps"]["plan"]["attempts"][0]["usage"] = {"input_tokens" => 150}
+
+        run = dispatch.dispatch(both, ctx: ctx, context: "fresh")
+
+        expect(run.reason).to include("code" => "budget_spent")
+        expect(run.reason["details"]["run_timed_out"]).to include("kind" => "timeout", "limit" => 3600)
+        expect(run.budget_hold).to eq(run.timeout_hold)
+        expect(change.events.map { |event| event[1] }.last(2)).to eq(%w[budget_spent run_timed_out])
+      end
+    end
+
     it "leaves the run waiting for a person when the checkout is gone" do
       run = dispatch.dispatch(run_hash("worktree" => File.join(@dir, "gone")), ctx: ctx)
 

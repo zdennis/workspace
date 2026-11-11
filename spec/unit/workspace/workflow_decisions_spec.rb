@@ -291,6 +291,48 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: nil}])
     end
 
+    it "releases a run its timeout held into its step, with the held context, and with --extra-time records the extension" do
+      timed = run_hash(state: "failed", extra: {"timeout_hold" => {"context" => "fresh", "pane" => "%3"}, "state" => "waiting"})
+      timed["definition"]["timeout"] = 1800
+      stored(timed)
+
+      error = error_for { decisions.resume("wr_1") }
+      expect(error.code).to eq("run_timed_out")
+      expect(error.message).to include("(3600s of 1800s of machine time)", "--extra-time 2700s", "(1801s is the least)")
+      expect(error.details).to include("run_id" => "wr_1", "step" => "plan", "needed" => 1801, "suggested" => 2700, "limit" => 1800, "kind" => "timeout")
+      expect(error_for { decisions.resume("wr_1", extra_seconds: 1800) }.code).to eq("run_timed_out")
+      expect(change.events).to be_empty
+
+      resumed = decisions.resume("wr_1", extra_seconds: 1801)
+
+      expect(resumed.run.timeout_hold).to be_nil
+      expect(resumed.run.extra_seconds).to eq(1801)
+      expect(change.events).to eq([["wr_1", "time_extended", {"extra" => 1801, "extra_seconds" => 1801, "limit" => 3601}],
+        ["wr_1", "run_resumed", {"step" => "plan", "budget" => "released"}]])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: nil}])
+    end
+
+    it "names both needs when the token budget and the timeout are both spent, and clears both holds with both flags" do
+      held = {"context" => "fresh", "pane" => "%3"}
+      both = run_hash(state: "failed", extra: {"budget_hold" => held, "timeout_hold" => held, "state" => "waiting"})
+      both["definition"].merge!("timeout" => 1800, "budget" => {"tokens" => 100})
+      both["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:10:00Z", "usage" => {"input_tokens" => 150})
+      stored(both)
+
+      error = error_for { decisions.resume("wr_1", extra_tokens: 51) }
+      expect(error.code).to eq("run_timed_out")
+      error = error_for { decisions.resume("wr_1") }
+      expect(error.code).to eq("budget_spent")
+      expect(error.message).to include("token budget (150 of 100 tokens) and its timeout", "--extra-tokens 100000 and --extra-time 2700s", "the least is 51 for --extra-tokens, 1801s for --extra-time")
+      expect(error.details["run_timed_out"]).to include("needed" => 1801)
+
+      resumed = decisions.resume("wr_1", extra_tokens: 51, extra_seconds: 1801)
+
+      expect(resumed.run.budget_hold).to be_nil
+      expect(resumed.run.timeout_hold).to be_nil
+      expect(resumed.run).to have_attributes(extra_tokens: 51, extra_seconds: 1801)
+    end
+
     it "moves the run to a pane a person names, and refuses one another run has before writing anything" do
       before = deep_copy(stored)
 
@@ -412,6 +454,18 @@ RSpec.describe Workspace::WorkflowDecisions do
         expect(decisions.park("wr_1", extra_tokens: 51).run.parked).to include("extra_tokens" => 51)
       end
 
+      it "refuses a run whose timeout is used up unless --extra-time covers it, storing the seconds in the park" do
+        timed = run_hash(state: "failed", reason: failed_check)
+        timed["definition"]["timeout"] = 1800
+        stored(timed)
+
+        error = error_for { decisions.park("wr_1", extra_seconds: 100) }
+        expect(error.code).to eq("run_timed_out")
+        expect(store.runs["wr_1"]).not_to have_key("parked")
+
+        expect(decisions.park("wr_1", extra_seconds: 1801).run.parked).to include("extra_seconds" => 1801)
+      end
+
       it "refuses spent attempts first" do
         spent["definition"]["max_attempts"] = 1
         stored(spent)
@@ -495,6 +549,19 @@ RSpec.describe Workspace::WorkflowDecisions do
         expect(error_for { decisions.release_park("wr_1", "p1") }.code).to eq("attempts_spent")
         expect(store.runs["wr_1"]["parked"]).to eq(before)
         expect(dispatch.calls).to be_empty
+      end
+
+      it "holds a run past its timeout on its first release, and starts the attempt unheld when typed again after a busy pane" do
+        timed = spent_run
+        timed["definition"]["timeout"] = 1800
+        expect(error_for { decisions.release_park("wr_1", "p1") }.code).to eq("run_timed_out")
+        expect(dispatch.calls).to be_empty
+
+        timed["parked"]["retries"] = 1
+        resumed = decisions.release_park("wr_1", "p1")
+
+        expect(resumed.unchanged).to be_nil
+        expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}]])
       end
 
       it "refuses with budget_spent and leaves the run parked" do
