@@ -1736,4 +1736,614 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "no_daemon", "message" => "socket gone")
     end
   end
+
+  describe "#turn_ended" do
+    it "leaves the step when a file it produces is missing, and says which" do
+      start
+      now[0] += 60
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["steps"]["plan"]["state"]).to eq("running")
+      expect(run["reason"]).to eq("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:01:00Z",
+        "details" => {"step" => "plan", "attempt" => 1, "missing" => [File.join(worktree, ".workflow", "wr_1", "plan.md")], "stale" => []})
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "passes the step at a later turn's end, once the file is there" do
+      start
+      engine.turn_ended("wr_1", pane: "%5")
+      artifact("plan.md")
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["steps"]["plan"]).to include("state" => "passed")
+      expect(run["steps"]["plan"]["attempts"].last).to include("outcome" => "passed")
+    end
+
+    it "ignores a turn that ended in a pane the run is not bound to" do
+      start
+      artifact("plan.md")
+
+      expect(engine.turn_ended("wr_1", pane: "%9")["steps"]["plan"]["state"]).to eq("running")
+    end
+
+    it "ignores a turn that ends while the run waits at a gate" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      events.clear
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["reason"]["details"]["kind"]).to eq("gate")
+      expect(events).to eq([])
+      expect(history.count("step_passed")).to eq(1)
+      expect(history.count("gate_waiting")).to eq(1)
+    end
+
+    describe "told when the turn that ended began" do
+      # The bare `build` step of three_steps: nothing but the turn's end decides it.
+      before do
+        to_build
+        now[0] += 30
+      end
+
+      it "ignores the end of a turn that was already under way when the step's line was typed" do
+        before = history
+
+        run = engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 11, 59, 59, 999_000))
+
+        expect(run).to include("current" => "build", "state" => "running", "reason" => nil)
+        expect(run["steps"]["build"]["state"]).to eq("running")
+        expect(panes.kicks.size).to eq(2)
+        expect(history).to eq(before)
+      end
+
+      it "counts the end of a turn that began when the step's attempt did, or after" do
+        started = Time.iso8601(store.find("wr_1")["steps"]["build"]["attempts"].last["started_at"])
+
+        expect(engine.turn_ended("wr_1", pane: "%5", turn_started: started)["current"]).to eq("verify")
+      end
+
+      it "counts a turn's end the daemon names no start for, as a daemon from before the upgrade sends it" do
+        expect(engine.turn_ended("wr_1", pane: "%5")["current"]).to eq("verify")
+      end
+
+      it "leaves a step whose own turn's end was dropped to `resume`, which decides it once the pane's agent is seen idle" do
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 11, 0, 0))
+        expect(store.find("wr_1")).to include("state" => "running", "reason" => nil)
+
+        run = engine.resume("wr_1", turn_over: {"step" => "build", "attempt" => 1})
+
+        expect(run).to include("current" => "verify", "state" => "running")
+      end
+    end
+
+    describe "a repeat of one stop" do
+      let(:first_since) { "2026-10-04T12:01:00Z" }
+
+      before do
+        start
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5")
+        events.clear
+        now[0] += 60
+      end
+
+      it "keeps the reason's since and announces nothing when the daemon names no turn start" do
+        before = store.find("wr_1")["reason"]
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(store.find("wr_1")["reason"]).to eq(before)
+        expect(before["since"]).to eq(first_since)
+        expect(events).to eq([])
+      end
+
+      it "keeps the since when the turn began before the stop was recorded" do
+        before = store.find("wr_1")["reason"]
+
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 0, 30))
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 0, 500_000))
+
+        expect(store.find("wr_1")["reason"]).to eq(before)
+        expect(events).to eq([])
+      end
+
+      it "gives a stop after a later turn a since of its own" do
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 30))
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(events.map(&:first)).to eq(["workflow_changed"])
+      end
+
+      it "gives a new attempt a new since" do
+        engine.resume("wr_1", from: "plan", pane: "%5")
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(store.find("wr_1")["reason"]).to include("since" => "2026-10-04T12:03:00Z")
+        expect(store.find("wr_1")["reason"]["details"]["attempt"]).to eq(2)
+      end
+
+      it "gives a stop after a pane-less resume a new since" do
+        engine.resume("wr_1")
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+      end
+
+      it "stores a changed missing list and keeps the since" do
+        File.utime(Time.utc(2026, 10, 4, 11, 0, 0), Time.utc(2026, 10, 4, 11, 0, 0), artifact("plan.md"))
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        reason = store.find("wr_1")["reason"]
+        expect(reason["since"]).to eq(first_since)
+        expect(reason["details"]).to include("missing" => [], "stale" => [File.join(worktree, ".workflow", "wr_1", "plan.md")])
+      end
+    end
+
+    describe "a step with require:" do
+      let(:flow) do
+        definition(<<~YAML)
+          steps:
+            prep:
+              prompt: Prepare.
+            build:
+              prompt: Build it.
+              produces: [build.md]
+              require:
+                - commits: 1
+                - tracked_clean: true
+              status: {run: "true"}
+              on_fail: {goto: prep, max: 1}
+        YAML
+      end
+      let(:commit_counts) { [1] }
+
+      before do
+        allow(guard).to receive(:commits_since) { commit_counts.first }
+        allow(guard).to receive(:dirty_paths).and_return([])
+        allow(guard).to receive(:operation_in_progress?).and_return(false)
+        start(flow, inputs: {})
+        engine.turn_ended("wr_1", pane: "%5")
+        artifact("build.md")
+      end
+
+      it "passes to the status check once every proof holds, counting from the attempt's recorded HEAD" do
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(guard).to have_received(:commits_since).with(worktree, "1" * 40)
+        expect(run["steps"]["build"]["state"]).to eq("passed")
+        expect(check_calls.size).to eq(1)
+      end
+
+      it "fails the step as require_commits from the engine, sends it along on_fail and skips the status check" do
+        commit_counts[0] = 0
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run).to include("current" => "prep", "loops" => {"build->prep" => 1})
+        expect(run["steps"]["build"]["attempts"].last).to include("outcome" => "failed", "code" => "require_commits")
+        expect(run["steps"]["prep"]["attempts"].last["context"].join).to include("a required proof failed (commits): required 1 commit since 1111111, found 0")
+        expect(check_calls).to eq([])
+      end
+
+      it "keeps the failed attempt's code when the retry begins, and the retry has none" do
+        commit_counts[0] = 0
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["steps"]["build"]["attempts"].last["code"]).to eq("require_commits")
+        expect(run["steps"]["prep"]["attempts"].last).not_to have_key("code")
+      end
+
+      it "stops the run with the code, source and what was found when no loop is left" do
+        store.update("wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
+        commit_counts[0] = 0
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]["details"]).to include("code" => "require_commits", "code_source" => "engine", "cause" => "require", "require" => "commits",
+          "required" => 1, "found" => 0, "detail" => "required 1 commit since 1111111, found 0")
+      end
+
+      it "fails as unproven when the attempt has no recorded starting commit" do
+        store.update("wr_1") do |stored|
+          stored["definition"]["steps"][1]["on_fail"] = nil
+          stored["steps"]["build"]["attempts"].last.delete("head")
+        end
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]["details"]).to include("code" => "require_commits", "unproven" => true)
+        expect(guard).not_to have_received(:commits_since)
+      end
+
+      it "fails on a dirty tracked tree with the paths" do
+        store.update("wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
+        allow(guard).to receive(:dirty_paths).and_return(["a.rb"])
+
+        expect(engine.turn_ended("wr_1", pane: "%5")["reason"]["details"]).to include("code" => "require_tracked_clean", "paths" => ["a.rb"])
+      end
+
+      it "lets a reported failure win and checks no proof" do
+        engine.report("wr_1", status: "fail", summary: "gave up")
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(guard).not_to have_received(:commits_since)
+        expect(run["steps"]["build"]["attempts"].last["outcome"]).to eq("failed")
+      end
+
+      it "holds on a missing produces file before looking at any proof" do
+        FileUtils.rm(File.join(worktree, ".workflow", "wr_1", "build.md"))
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(guard).not_to have_received(:commits_since)
+      end
+
+      it "does not apply to a run stored before require existed" do
+        store.update("wr_1") { |stored| stored["definition"]["steps"][1].delete("require") }
+        commit_counts[0] = 0
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(guard).not_to have_received(:commits_since)
+        expect(check_calls.size).to eq(1)
+      end
+
+      it "reserves the require codes so step done --code can't forge them" do
+        expect(described_class::ENGINE_CODES).to include("require_commits", "require_nonempty", "require_plan_status", "require_tracked_clean", "require_command", "require_inbox_item", "require_remote_unchanged", "require_remote_unreachable", "require_exec")
+      end
+    end
+
+    describe "a produces file that is not a non-empty regular file" do
+      let(:plan) { File.join(worktree, ".workflow", "wr_1", "plan.md") }
+
+      def invalid_details
+        store.find("wr_1")["reason"]["details"]["invalid"]
+      end
+
+      before do
+        start
+        FileUtils.mkdir_p(File.dirname(plan))
+        now[0] += 60
+      end
+
+      it "marks a new run strict in its stored definition" do
+        expect(store.find("wr_1")["definition"]).to include("produces_check" => "strict")
+      end
+
+      it "holds the step on an empty file, naming the rule and the file" do
+        File.write(plan, "")
+        File.utime(now.first, now.first, plan)
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["steps"]["plan"]["state"]).to eq("running")
+        expect(run["reason"]).to include("code" => "turn_ended_incomplete")
+        expect(run["reason"]["details"]).to include("missing" => [], "stale" => [])
+        expect(invalid_details).to eq([{"file" => plan, "rule" => "empty"}])
+      end
+
+      it "holds the step on a directory" do
+        FileUtils.mkdir_p(plan)
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(invalid_details).to eq([{"file" => plan, "rule" => "not_regular_file"}])
+      end
+
+      it "holds the step on a symlink to a real file, never following it" do
+        target = File.join(worktree, "elsewhere.md")
+        File.write(target, "content\n")
+        File.symlink(target, plan)
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(invalid_details).to eq([{"file" => plan, "rule" => "symlink"}])
+      end
+
+      it "holds the step on a dangling symlink as a link, not as missing" do
+        File.symlink(File.join(worktree, "nowhere.md"), plan)
+
+        engine.turn_ended("wr_1", pane: "%5")
+
+        expect(invalid_details).to eq([{"file" => plan, "rule" => "symlink"}])
+        expect(store.find("wr_1")["reason"]["details"]["missing"]).to eq([])
+      end
+
+      it "passes once the file is a regular file with content" do
+        File.write(plan, "")
+        engine.turn_ended("wr_1", pane: "%5")
+        artifact("plan.md")
+
+        expect(engine.turn_ended("wr_1", pane: "%5")["steps"]["plan"]["state"]).to eq("passed")
+      end
+
+      it "keeps the exists-only check for a run stored without the marker" do
+        store.update("wr_1") { |run| run["definition"].delete("produces_check") }
+        File.write(plan, "")
+        File.utime(now.first, now.first, plan)
+
+        expect(engine.turn_ended("wr_1", pane: "%5")["steps"]["plan"]["state"]).to eq("passed")
+      end
+
+      it "keeps invalid in the turn_ended_incomplete stop a background hold expires into" do
+        File.write(plan, "")
+        tasks = [{"id" => "b1a2c3d4e", "type" => "shell"}]
+        engine.turn_ended("wr_1", pane: "%5", background: tasks)
+        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+        now[0] += 91 * 60
+
+        run = engine.tick("wr_1")
+
+        expect(run["reason"]["code"]).to eq("turn_ended_incomplete")
+        expect(run["reason"]["details"]).to include("invalid" => [{"file" => plan, "rule" => "empty"}], "background_tasks" => tasks)
+      end
+
+      it "lists a missing, a stale and an invalid file once each, in the right list" do
+        store.update("wr_1") { |run| run["definition"]["steps"].find { |step| step["id"] == "plan" }["produces"] = %w[missing.md stale.md empty.md link.md] }
+        dir = File.join(worktree, ".workflow", "wr_1")
+        FileUtils.mkdir_p(dir)
+        old = Time.utc(2026, 10, 4, 11, 0, 0)
+        File.write(File.join(dir, "stale.md"), "old\n")
+        File.write(File.join(dir, "empty.md"), "")
+        File.symlink(File.join(dir, "stale.md"), File.join(dir, "link.md"))
+        [File.join(dir, "stale.md"), File.join(dir, "empty.md")].each { |file| File.utime(old, old, file) }
+
+        details = engine.turn_ended("wr_1", pane: "%5")["reason"]["details"]
+
+        expect(details["missing"]).to eq([File.join(dir, "missing.md")])
+        expect(details["stale"]).to eq([File.join(dir, "stale.md")])
+        expect(details["invalid"]).to eq([{"file" => File.join(dir, "empty.md"), "rule" => "empty"}, {"file" => File.join(dir, "link.md"), "rule" => "symlink"}])
+      end
+    end
+
+    describe "a turn that ended with background tasks listed" do
+      let(:tasks) { [{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k12345678", "type" => "subagent"}] }
+
+      before do
+        start
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: tasks)
+      end
+
+      it "holds the step as turn_ended_background with the tasks and when they were seen" do
+        expect(store.find("wr_1")["reason"]).to eq("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:01:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "missing" => [File.join(worktree, ".workflow", "wr_1", "plan.md")], "stale" => [], "tasks" => tasks})
+        expect(store.find("wr_1")["state"]).to eq("waiting")
+      end
+
+      it "announces one workflow_changed across three Stops that list the same tasks" do
+        events.clear
+        2.times do
+          now[0] += 60
+          engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+        end
+
+        reason = store.find("wr_1")["reason"]
+        expect(reason).to include("since" => "2026-10-04T12:01:00Z", "seen_at" => "2026-10-04T12:03:00Z")
+        expect(events).to eq([])
+      end
+
+      it "announces one workflow_changed across Stops whose task lists shrink and reorder" do
+        events.clear
+        [[tasks.last], [tasks.last, tasks.first], tasks].each do |listed|
+          now[0] += 60
+          engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: listed)
+        end
+
+        expect(store.find("wr_1")["reason"]["details"]["tasks"]).to eq(tasks)
+        expect(events).to eq([])
+      end
+
+      it "fires no event when the missing list of a hold changes" do
+        store.update("wr_1") { |run| run["reason"]["details"]["missing"] = [] }
+        events.clear
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+
+        expect(store.find("wr_1")["reason"]["details"]["missing"]).not_to eq([])
+        expect(events).to eq([])
+      end
+
+      it "announces a hold as running with the turn_ended_background reason" do
+        events.clear
+        store.update("wr_1") { |run| run["reason"] = nil }
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+
+        expect(events.map(&:last)).to include(a_hash_including("state" => "running", "reason" => "turn_ended_background"))
+        expect(store.find("wr_1")["state"]).to eq("waiting")
+      end
+
+      it "drops the hold on a pane-less resume and re-evaluates with nothing listed" do
+        engine.resume("wr_1")
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete")
+      end
+
+      it "shows turn_ended_incomplete once, with a since of its own, on a Stop with no tasks" do
+        events.clear
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: [])
+        engine.turn_ended("wr_1", pane: "%5", background: [])
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_incomplete", "since" => "2026-10-04T12:02:00Z")
+        expect(events.map(&:first).count("workflow_changed")).to eq(1)
+      end
+
+      describe "from a recorded Stop payload, through the hook boundary and the CLI's flags" do
+        def background_from(payload)
+          env = {"TMUX_PANE" => "%5"}
+          sent = nil
+          server_path = File.join(@dir, "agent.sock")
+          server = UNIXServer.new(server_path)
+          config = instance_double(Workspace::Config, agent_socket_path: server_path)
+          tmux = instance_double(Workspace::Tmux, session_name_for_pane: "app", pane_layout: nil, server_pid_for_pane: nil)
+          listener = Thread.new do
+            client = server.accept
+            sent = JSON.parse(client.gets)
+            client.puts(JSON.generate("ok" => true))
+            client.close
+          end
+          Workspace::Commands::SessionEvent.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)), env: env).call(workspace: nil, agent: nil)
+          listener.join(2)
+          sent["background_tasks"]
+        ensure
+          server&.close
+        end
+
+        let(:stop) do
+          {"hook_event_name" => "Stop", "session_id" => "s1", "cwd" => "/x", "background_tasks" => [
+            {"id" => "b1a2c3d4e", "type" => "shell", "description" => "dev server", "command" => "bin/dev"},
+            {"id" => "k12345678", "type" => "subagent", "description" => "reviewer"},
+            {"id" => "d1", "type" => "dream"}
+          ]}
+        end
+
+        it "holds across several turn ends with no reason shown" do
+          background = background_from(stop)
+          expect(background).to eq([{"id" => "b1a2c3d4e", "type" => "shell"}, {"id" => "k12345678", "type" => "subagent"}])
+
+          3.times do
+            now[0] += 60
+            engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: background)
+          end
+
+          expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
+          expect(store.find("wr_1")["reason"]["details"]["tasks"]).to eq(background)
+        end
+
+        it "shows turn_ended_incomplete when the Stop lists an empty array" do
+          background = background_from(stop.merge("background_tasks" => []))
+          engine.turn_ended("wr_1", pane: "%5", background: background)
+
+          expect(background).to eq([])
+          expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+        end
+      end
+
+      it "keeps the since when the turn began after it" do
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 1, 30), background: tasks)
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T12:01:00Z")
+      end
+
+      it "leaves a hold 89 minutes old alone" do
+        now[0] += 88 * 60
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+      end
+
+      it "turns a hold 91 minutes old into a turn_ended_incomplete stop that shows, with the tasks" do
+        now[0] += 91 * 60
+        run = engine.tick("wr_1")
+
+        expect(run["reason"]).to eq("code" => "turn_ended_incomplete", "since" => "2026-10-04T13:32:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "missing" => [File.join(worktree, ".workflow", "wr_1", "plan.md")], "stale" => [], "background_tasks" => tasks})
+        expect(run["state"]).to eq("waiting")
+        expect(run["steps"]["plan"]["state"]).to eq("running")
+        expect(events.map(&:first)).to include("workflow_changed")
+      end
+
+      it "expires a hold whose seen_at can't be read" do
+        store.update("wr_1") { |run| run["reason"]["seen_at"] = "t" }
+
+        expect(engine.tick("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+      end
+
+      it "pushes the expiry out when a Stop at minute 80 lists tasks again" do
+        now[0] += 79 * 60
+        engine.turn_ended("wr_1", pane: "%5", turn_started: now[0] - 10, background: tasks)
+        now[0] += 11 * 60
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(store.find("wr_1")["reason"]["code"]).to eq("turn_ended_background")
+
+        now[0] += 80 * 60
+        expect(engine.tick("wr_1")["reason"]["code"]).to eq("turn_ended_incomplete")
+      end
+
+      it "holds again, with the reason hidden, on a Stop that lists tasks after expiry" do
+        now[0] += 91 * 60
+        engine.tick("wr_1")
+        now[0] += 60
+        engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(store.find("wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T13:33:00Z")
+      end
+
+      it "passes the step when its files exist, whatever is listed" do
+        artifact("plan.md")
+        now[0] += 60
+        run = engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(run["steps"]["plan"]["state"]).to eq("passed")
+        expect(run["reason"]).not_to include("code" => "turn_ended_background")
+      end
+
+      it "fails the step on a reported fail, whatever is listed" do
+        engine.report("wr_1", status: "fail", summary: "no")
+        run = engine.turn_ended("wr_1", pane: "%5", background: tasks)
+
+        expect(run["reason"]).not_to include("code" => "turn_ended_background")
+      end
+    end
+
+    it "ignores a turn that ends while the run waits for a lock" do
+      locked = definition("steps:\n  verify:\n    prompt: P\n    uses: [test-db]\n")
+      start(locked, inputs: {}, pane: "%5", workspace: "app.worktree-a")
+      start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+
+      run = engine.turn_ended("wr_2", pane: "%6")
+
+      expect(run["reason"]["code"]).to eq("waiting_lock")
+      expect(run["steps"]["verify"]).to eq("state" => "waiting", "attempts" => [])
+    end
+
+    it "keeps the step's locks while it waits for a file the turn did not leave" do
+      holding = definition("steps:\n  a:\n    prompt: P\n    uses: [test-db]\n    produces: [a.md]\n")
+      start(holding, inputs: {})
+
+      run = engine.turn_ended("wr_1")
+
+      expect(run["reason"]["code"]).to eq("turn_ended_incomplete")
+      expect(lock_holder("test-db")).to include("run_id" => "wr_1")
+    end
+
+    it "does not count a file an earlier attempt left: the step has to write it again" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      now[0] += 60
+      engine.reject("wr_1", note: "Too big; split it.")
+      plan = File.join(worktree, ".workflow", "wr_1", "plan.md")
+
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["reason"]).to include("code" => "turn_ended_incomplete")
+      expect(run["reason"]["details"]).to include("attempt" => 2, "missing" => [], "stale" => [plan])
+      expect(File.read(run["steps"]["plan"]["attempts"].last["prompt_file"])).to include("written during this attempt")
+
+      artifact("plan.md")
+      expect(engine.turn_ended("wr_1", pane: "%5")["steps"]["plan"]).to include("state" => "passed")
+    end
+
+    it "takes the next step's resources before typing its line, and continues the conversation when the step says so" do
+      to_build
+
+      expect(lock_holder("test-db")).to include("kind" => "run", "run_id" => "wr_1", "step" => "build", "workflow" => "flow",
+        "workspace" => "app.worktree-x", "pane" => "%5")
+      expect(panes.kicks.last).to include(fresh: false, text: "Read #{File.join(worktree, ".workflow", "wr_1", "steps", "build.1.prompt.md")} and follow it.")
+      expect(panes.bound["%5"]).to include(step: "build", attempt: 1)
+    end
+  end
 end
