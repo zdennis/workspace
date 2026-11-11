@@ -270,6 +270,8 @@ module Workspace
         # Named only for an agent other than Claude Code, as before other agents
         # had hooks; `restore` resumes Claude Code sessions only.
         entry["kind"] = @agent unless claude?
+        # A workflow step review's reviewer: `restore` must not resume its conversation.
+        entry["role"] = "reviewer" unless @env["WORKSPACE_REVIEW_RUN"].to_s.empty?
         @session_ledger.record(entry)
       rescue => e
         @logger.debug { "session-event: ledger write failed (#{e.class}: #{e.message})" }

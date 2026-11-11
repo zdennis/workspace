@@ -109,9 +109,12 @@ module Workspace
 
       # The hook records a pane under its tmux session's name, which for a
       # worktree workspace differs from the workspace's. Only slots of the
-      # workspace's own session are kept.
+      # workspace's own session are kept, and a reviewer's session (`role`
+      # `reviewer`) is never one: a review is redelivered in a new window.
       def slots_for(name, session)
         @ledger.slots_for(name, session).filter_map do |record|
+          next if record["role"] == "reviewer"
+
           match = SLOT.match(record["pane_slot"].to_s)
           record.merge(window: match[2].to_i, index: match[3].to_i) if match && match[1] == session
         end.sort_by { |slot| [slot[:window], slot[:index]] }

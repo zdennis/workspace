@@ -29,6 +29,7 @@ Run `workspace restore --dry-run` first. It prints what would happen and changes
 - A pane that already runs a coding agent. Running `restore` twice does not type twice.
 - A pane running another program (an editor, a server). It is reported as not matched (`pane_busy`), and nothing is typed.
 - A session whose transcript file is gone (`transcript_missing`). Claude Code no longer has the conversation, so no pane is made for it.
+- A review session (a reviewer of a workflow step's review). Its ledger entries carry `role: "reviewer"`, and restore skips the slot without a row: a review is delivered again in a new window, never resumed.
 - A session of an agent other than Claude Code (`other_agent`). A Codex session's ledger entry names its `kind`, and only Claude Code sessions are resumed.
 - A session you ended yourself. A `SessionEnd` with any reason other than `other` (`prompt_input_exit`, `logout`, `clear`) means the session is over. `other` is what a closed terminal, a killed tmux server and a shutdown record, so those sessions are restored.
 

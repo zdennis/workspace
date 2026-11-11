@@ -1028,6 +1028,22 @@ RSpec.describe Workspace::Commands::SessionEvent do
       )
     end
 
+    it "marks both events of a review session with the reviewer role when WORKSPACE_REVIEW_RUN is set" do
+      env["WORKSPACE_REVIEW_RUN"] = "wr_1"
+
+      invoke_with_ledger({"hook_event_name" => "SessionStart", "session_id" => "s1"})
+      invoke_with_ledger({"hook_event_name" => "SessionEnd", "session_id" => "s1"})
+
+      expect(ledger).to have_received(:record).with(hash_including("event" => "session_start", "role" => "reviewer"))
+      expect(ledger).to have_received(:record).with(hash_including("event" => "session_end", "role" => "reviewer"))
+    end
+
+    it "leaves the role out without WORKSPACE_REVIEW_RUN" do
+      invoke_with_ledger({"hook_event_name" => "SessionStart", "session_id" => "s1"})
+
+      expect(ledger).to have_received(:record).with(hash_excluding("role"))
+    end
+
     it "records the layout of the pane's window with both events, so restore can put a pane back" do
       allow(tmux).to receive(:pane_layout).with("%2").and_return("b25f,80x24,0,0[80x12,0,0,1,80x11,0,13,2]")
 
