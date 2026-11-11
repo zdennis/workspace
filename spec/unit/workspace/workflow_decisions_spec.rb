@@ -349,6 +349,21 @@ RSpec.describe Workspace::WorkflowDecisions do
         expect(error_for { decisions.park("wr_1") }.code).to eq("attempts_spent")
       end
     end
+
+    context "when the resume would not start an attempt" do
+      it "asks nothing of the allowance or the token budget" do
+        waiting_lock = {"code" => "waiting_lock", "since" => "2026-11-10T11:55:00Z", "details" => {}}
+        hash = run_hash(state: "pending", reason: waiting_lock, max_attempts: 1)
+        hash["definition"]["budget"] = {"tokens" => 100}
+        hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:10:00Z", "usage" => {"input_tokens" => 150})
+        stored(hash)
+
+        resumed = decisions.park("wr_1")
+
+        expect(resumed.unchanged).to be_nil
+        expect(resumed.run.parked).to include("retries" => 0)
+      end
+    end
   end
 
   describe "#release_park" do
@@ -378,6 +393,33 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       expect(resumed.run.pending_context.last).to eq("Note from the person who resumed the run: try again")
       expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}]])
+    end
+
+    context "on its first try, when the resume would start an attempt" do
+      def spent_run(max_attempts: 5, tokens: nil)
+        hash = run_hash(state: "failed", reason: failed_check, max_attempts: max_attempts, extra: {"state" => "waiting", "parked" => parked})
+        hash["definition"]["budget"] = {"tokens" => tokens} if tokens
+        hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:10:00Z", "usage" => {"input_tokens" => 150})
+        stored(hash)
+      end
+
+      it "refuses with attempts_spent and leaves the run parked" do
+        spent_run(max_attempts: 1)
+        before = deep_copy(store.runs["wr_1"]["parked"])
+
+        expect(error_for { decisions.release_park("wr_1", "p1") }.code).to eq("attempts_spent")
+        expect(store.runs["wr_1"]["parked"]).to eq(before)
+        expect(dispatch.calls).to be_empty
+      end
+
+      it "refuses with budget_spent and leaves the run parked" do
+        spent_run(tokens: 100)
+        before = deep_copy(store.runs["wr_1"]["parked"])
+
+        expect(error_for { decisions.release_park("wr_1", "p1") }.code).to eq("budget_spent")
+        expect(store.runs["wr_1"]["parked"]).to eq(before)
+        expect(dispatch.calls).to be_empty
+      end
     end
 
     it "keeps the note for the next attempt when the resume does nothing, and says why" do
@@ -458,6 +500,16 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(dispatch.calls).to eq([[:drop_park, "wr_1", "failed", {"error" => "pane_gone", "message" => "gone"}]])
       expect(run.reason).to eq(gate_reason)
       expect(run.state).to eq("running")
+    end
+
+    context "when the run has finished" do
+      let(:finished) { ["wr_1"] }
+
+      it "raises run_not_active" do
+        stored(run_hash(state: "failed", extra: {"parked" => parked}))
+
+        expect(error_for { decisions.park_failed("wr_1", "p1", code: "pane_gone", message: "gone") }.code).to eq("run_not_active")
+      end
     end
 
     it "changes nothing for a park of another id" do

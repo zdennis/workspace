@@ -53,6 +53,7 @@ class RecordingRunChange
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
+  # A block that raises leaves the stored run as it was, as the real store writes only when the block returns.
   def initialize(runs, finished: [])
     @runs = runs
     @finished = finished
@@ -66,7 +67,13 @@ class RecordingRunChange
     raise Workspace::Error.new("run #{run_id} has ended", code: "run_not_active") if @finished.include?(run_id)
     stored = @runs.fetch(run_id)
     ctx = Workspace::WorkflowRunChange::Context.new
-    yield stored, ctx
+    before = Marshal.load(Marshal.dump(stored))
+    begin
+      yield stored, ctx
+    rescue Exception # standard:disable Lint/RescueException
+      stored.replace(before)
+      raise
+    end
     @deliveries << ctx.delivery if ctx.delivery
     stored
   end
