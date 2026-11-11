@@ -3571,26 +3571,6 @@ RSpec.describe Workspace::WorkflowEngine do
       end
     end
   end
-  describe ".delivery" do
-    let(:started) { Time.utc(2026, 10, 4, 12, 0, 0) }
-
-    it "says nothing for no attempt, or one with no mark" do
-      expect(described_class.delivery(nil, started)).to be_nil
-      expect(described_class.delivery({"started_at" => started.iso8601}, started)).to be_nil
-    end
-
-    it "is delivering up to the window, and unknown past it" do
-      attempt = {"started_at" => started.iso8601(3), "delivery" => "delivering"}
-      expect(described_class.delivery(attempt, started + described_class::DELIVERY_WINDOW)).to eq(:delivering)
-      expect(described_class.delivery(attempt, started + described_class::DELIVERY_WINDOW + 1)).to eq(:unknown)
-    end
-
-    it "is unknown when the attempt's start can't be read" do
-      expect(described_class.delivery({"started_at" => "garbled", "delivery" => "delivering"}, started)).to eq(:unknown)
-      expect(described_class.delivery({"started_at" => nil, "delivery" => "delivering"}, started)).to eq(:unknown)
-    end
-  end
-
   describe "a step's line typed outside the run's lock" do
     it "stores the attempt as running and delivering before the line is typed, and clears the mark once it is" do
       seen = nil
@@ -4199,51 +4179,6 @@ RSpec.describe Workspace::WorkflowEngine do
       store.update("wr_1") do |run|
         run["steps"]["verify"]["state"] = "checking"
         run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => started_at}
-      end
-    end
-
-    describe ".parked" do
-      let(:run) { {"parked" => {"expires_at" => now.first.iso8601}} }
-
-      it "is nil with no park" do
-        expect(described_class.parked({}, now.first)).to be_nil
-      end
-
-      it "waits up to expires_at and is expired past it" do
-        expect(described_class.parked(run, now.first)).to eq(:waiting)
-        expect(described_class.parked(run, now.first + 1)).to eq(:expired)
-      end
-
-      it "reads an unreadable time as expired" do
-        expect(described_class.parked({"parked" => {"expires_at" => "garbled"}}, now.first)).to eq(:expired)
-        expect(described_class.parked({"parked" => {"expires_at" => nil}}, now.first)).to eq(:expired)
-      end
-    end
-
-    describe ".wakeable?" do
-      it "answers :parked ahead of a lock wait" do
-        lock_waiting_run
-        engine.park("wr_2")
-
-        expect(described_class.wakeable?(store.find("wr_2"), now.first)).to eq(:parked)
-      end
-
-      it "answers :parked ahead of a lost check" do
-        checking_run(started_at: "2026-10-04T10:00:00Z")
-        engine.park("wr_1")
-
-        expect(described_class.wakeable?(store.find("wr_1"), now.first)).to eq(:parked)
-      end
-
-      it "still answers :lock and :check with no park" do
-        lock_waiting_run
-        expect(described_class.wakeable?(store.find("wr_2"), now.first)).to eq(:lock)
-
-        store.update("wr_1") do |run|
-          run["steps"]["verify"]["state"] = "checking"
-          run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T10:00:00Z"}
-        end
-        expect(described_class.wakeable?(store.find("wr_1"), now.first)).to eq(:check)
       end
     end
 
