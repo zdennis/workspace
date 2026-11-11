@@ -126,6 +126,8 @@ module Workspace
       #   nil skips enforcement
       # @param workflow_deny [Workspace::WorkflowDeny, nil] denies a Bash command the bound run's
       #   definition lists under `deny:`; nil skips it
+      # @param review_write_guard [Workspace::ReviewWriteGuard, nil] denies a file write in a review pane
+      #   that is not a sub-agent's write of its round's verdict file; nil skips it
       # @param session_ledger [Workspace::SessionLedger, nil] records each
       #   SessionStart and SessionEnd; nil skips the ledger
       # @param pane_bindings [Workspace::PaneBindings, nil] looked up on SessionStart to
@@ -142,7 +144,7 @@ module Workspace
       # @param connect_timeout [Numeric] seconds to wait for the daemon's socket to take the connection
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
+        lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, review_write_guard: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
         workspace_for_session: ->(session) { session }, delivery_log: nil,
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
         @workspace_for_session = workspace_for_session
@@ -160,6 +162,7 @@ module Workspace
         @lock_idle_tracker = lock_idle_tracker
         @lock_enforcer = lock_enforcer
         @workflow_deny = workflow_deny
+        @review_write_guard = review_write_guard
         @session_ledger = session_ledger
         @pane_bindings = pane_bindings
         @instruction_composer = instruction_composer
@@ -188,6 +191,7 @@ module Workspace
 
         if hook == "PreToolUse"
           deny = @lock_enforcer&.check(tool_name: payload["tool_name"], cwd: cwd) ||
+            @review_write_guard&.check(tool_name: payload["tool_name"], tool_input: payload["tool_input"], cwd: cwd, agent_id: agent_id_for(payload)) ||
             @workflow_deny&.check(tool_name: payload["tool_name"], tool_input: payload["tool_input"])
           if deny
             @error_output.puts deny
@@ -406,38 +410,10 @@ module Workspace
       def verdict_sha256(payload)
         return nil unless VERDICT_TOOLS.include?(payload["tool_name"]) && @pane_bindings
         entry = @pane_bindings.binding_for(@env["TMUX_PANE"].to_s)
-        return nil unless entry.is_a?(Hash) && entry["kind"] == "run" && entry["role"] == "reviewer"
-        return nil unless entry["id"].is_a?(String) && entry["step"].is_a?(String) && entry["attempt"].is_a?(Integer) && entry["round"].is_a?(Integer)
+        return nil unless ReviewRoundPath.reviewer?(entry)
         input = payload["tool_input"]
-        cwd = text_field(payload, "cwd")
-        raw = input.is_a?(Hash) ? input["file_path"] : nil
-        return nil unless cwd && raw.is_a?(String) && !raw.empty? && !raw.match?(/[[:cntrl:]]/)
-        round = "reviews/#{entry["step"]}.#{entry["attempt"]}.r#{entry["round"]}"
-        # The binding's `artifacts` is the run's directory. T30 records it on the reviewer
-        # binding; until then (no value) the checkout found above the hook's cwd stands in.
-        artifacts = entry["artifacts"]
-        if artifacts.is_a?(String) && artifacts.start_with?("/") && !artifacts.match?(/[[:cntrl:]]/)
-          base = File.expand_path(artifacts)
-          linked = [base]
-        else
-          root = checkout_root(File.expand_path(cwd))
-          return nil unless root
-          base = File.join(root, ".workflow", entry["id"])
-          linked = []
-        end
-        dir = File.join(base, round)
-        path = File.expand_path(raw, cwd)
-        return nil unless path.start_with?("#{dir}/")
-        # No link on the way from the run's directory (or the checkout) down to the file, or
-        # the write would land elsewhere. The checkout's own path may hold links.
-        start = linked.empty? ? File.dirname(File.dirname(base)) : File.dirname(base)
-        walked = linked.empty? ? start : base
-        walk = (linked.empty? ? path.delete_prefix("#{start}/") : path.delete_prefix("#{base}/")).split("/")
-        linked.each { |own| return nil if File.lstat(own).symlink? }
-        walk.each do |part|
-          walked = File.join(walked, part)
-          return nil if File.lstat(walked).symlink?
-        end
+        path = ReviewRoundPath.verdict_path(entry, input.is_a?(Hash) ? input["file_path"] : nil, text_field(payload, "cwd"))
+        return nil unless path
         WorkflowProduced.digest(path, max_bytes: VERDICT_MAX_BYTES)&.sha256
       rescue
         nil
@@ -485,12 +461,7 @@ module Workspace
       end
 
       def checkout_root(dir)
-        loop do
-          return dir if File.exist?(File.join(dir, ".git"))
-          parent = File.dirname(dir)
-          return nil if parent == dir
-          dir = parent
-        end
+        ReviewRoundPath.checkout_root(dir)
       end
 
       def name_field(payload, key)

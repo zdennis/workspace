@@ -822,6 +822,57 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(error_output.string).to include("denied by workflow x")
     end
 
+    context "with a review write guard over a real reviewer binding" do
+      let(:checkout) { File.join(tmpdir, "repo") }
+      let(:round_dir) { File.join(checkout, ".workflow", "wr_1", "reviews", "review.1.r2") }
+      let(:bindings) { Workspace::PaneBindings.new(path: File.join(tmpdir, "bindings.json")) }
+      let(:guard) { Workspace::ReviewWriteGuard.new(pane_bindings: bindings, tmux: tmux, env: env) }
+
+      before do
+        FileUtils.mkdir_p(round_dir)
+        FileUtils.mkdir_p(File.join(checkout, ".git"))
+        allow(tmux).to receive(:pane_slot).with("%2").and_return("proj:0.1")
+      end
+
+      def pre(tool, path, agent_id: nil)
+        payload = {"hook_event_name" => "PreToolUse", "tool_name" => tool, "cwd" => checkout, "tool_input" => {"file_path" => path}}
+        payload["agent_id"] = agent_id if agent_id
+        error_output = StringIO.new
+        result = described_class.new(config: config, tmux: tmux, env: env, error_output: error_output, review_write_guard: guard,
+          input: StringIO.new(JSON.generate(payload))).call
+        [result, error_output.string]
+      end
+
+      context "in a reviewer pane" do
+        before do
+          bindings.bind("%2", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "step" => "review", "attempt" => 1, "round" => 2,
+            "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+        end
+
+        it "refuses the main thread's Write inside the round directory" do
+          result, stderr = pre("Write", File.join(round_dir, "skeptic.md"))
+
+          expect(result).to eq(exit_code: 2)
+          expect(stderr).to include("main thread")
+        end
+
+        it "allows a sub-agent's Write of a verdict file" do
+          expect(pre("Write", File.join(round_dir, "skeptic.md"), agent_id: "sub1").first).to eq(exit_code: 0)
+        end
+
+        it "refuses a sub-agent's Edit elsewhere" do
+          result, stderr = pre("Edit", File.join(checkout, "lib.rb"), agent_id: "sub1")
+
+          expect(result).to eq(exit_code: 2)
+          expect(stderr).to include("verdict files")
+        end
+      end
+
+      it "leaves an unbound pane alone" do
+        expect(pre("Write", File.join(checkout, "lib.rb")).first).to eq(exit_code: 0)
+      end
+    end
+
     context "events it must not forward" do
       it "ignores a hook event it does not subscribe to" do
         expect(Socket).not_to receive(:new)
