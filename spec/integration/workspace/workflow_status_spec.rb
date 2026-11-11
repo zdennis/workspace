@@ -62,7 +62,7 @@ RSpec.describe Workspace::WorkflowStatus do
     create
     expect(current).not_to have_key("proofs")
     proofs = [{"proof" => "command", "log" => "/l", "exit_code" => 3}]
-    store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last["proofs"] = proofs }
+    edit_run(store, "wr_1") { |run| run["steps"]["plan"]["attempts"].last["proofs"] = proofs }
     expect(current["proofs"]).to eq(proofs)
   end
 
@@ -85,7 +85,7 @@ RSpec.describe Workspace::WorkflowStatus do
 
   it "lists the guard's warnings of every attempt, oldest first" do
     create
-    store.update("wr_1") do |run|
+    edit_run(store, "wr_1") do |run|
       run["steps"]["research"]["attempts"].last["warnings"] = [{"code" => "config_changed", "at" => "2026-10-04T12:10:00Z", "message" => "m"}]
       run["steps"]["plan"]["attempts"].last["warnings"] = [{"code" => "config_changed", "at" => "2026-10-04T12:20:00Z", "message" => "n"}]
     end
@@ -322,7 +322,7 @@ RSpec.describe Workspace::WorkflowStatus do
   it "offers a resume that names a pane for a retry held because its pane is no longer the run's" do
     held = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "dispatch", "step" => "plan", "error" => "pane_has_run", "pane" => "%5"}}
     create(state: "waiting", step_state: "failed", reason: held, bound: false)
-    store.update("wr_1") { |run| run["backoff"] = {"until" => "t", "to" => "plan", "blocked" => "pane_has_run"} }
+    edit_run(store, "wr_1") { |run| run["backoff"] = {"until" => "t", "to" => "plan", "blocked" => "pane_has_run"} }
 
     expect(current("wr_1")["reason"]["actions"]).to eq(
       [action("workflow resume", "wr_1", needs: [{"name" => "pane", "flag" => "--pane"}]), action("workflow cancel", "wr_1")]
@@ -386,7 +386,7 @@ RSpec.describe Workspace::WorkflowStatus do
   describe "an attempt whose line was on its way to the agent" do
     def delivering
       create
-      store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last["delivery"] = "delivering" }
+      edit_run(store, "wr_1") { |run| run["steps"]["plan"]["attempts"].last["delivery"] = "delivering" }
     end
 
     it "flags it delivering, and not idle, while the line may still be on its way" do
@@ -460,7 +460,7 @@ RSpec.describe Workspace::WorkflowStatus do
     snapshot["panes"].first.merge!("state" => "idle", "turn_failed" => true)
     expect(current["flags"]).to eq([])
 
-    store.update("wr_1") { |run| run["steps"]["plan"]["attempts"].last["delivery"] = "delivering" }
+    edit_run(store, "wr_1") { |run| run["steps"]["plan"]["attempts"].last["delivery"] = "delivering" }
     now[0] = Time.utc(2026, 10, 4, 12, 40, 1) + Workspace::WorkflowEngine::DELIVERY_WINDOW
     expect(current).to include("state" => "running", "reason" => nil, "flags" => [])
   end
@@ -512,7 +512,7 @@ RSpec.describe Workspace::WorkflowStatus do
     it "does not warn for a run that waits for a person, or a finished one" do
       create(state: "waiting", step_state: "passed", bound: false, reason: {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "artifacts" => []}})
       create(pane: "%6")
-      store.update("wr_2") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T12:59:00Z") }
+      edit_run(store, "wr_2") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T12:59:00Z") }
 
       expect(status.runs(all: true)["warnings"]).to eq([])
     end
@@ -530,7 +530,7 @@ RSpec.describe Workspace::WorkflowStatus do
 
   it "shows a finished run with no reason and no pane" do
     create
-    store.update("wr_1") { |run| run.merge!("state" => "cancelled", "ended_at" => "2026-10-04T12:59:00Z", "cancelled_by" => "kill", "reason" => nil) }
+    edit_run(store, "wr_1") { |run| run.merge!("state" => "cancelled", "ended_at" => "2026-10-04T12:59:00Z", "cancelled_by" => "kill", "reason" => nil) }
 
     run = status.run("wr_1")["runs"].first
 
@@ -542,10 +542,10 @@ RSpec.describe Workspace::WorkflowStatus do
     create
     expect(status.run("wr_1")["runs"].first["worktree"]).to eq("/src/app")
 
-    store.update("wr_1") { |run| run.merge!("state" => "cancelled", "ended_at" => "2026-10-04T12:59:00Z", "reason" => nil) }
+    edit_run(store, "wr_1") { |run| run.merge!("state" => "cancelled", "ended_at" => "2026-10-04T12:59:00Z", "reason" => nil) }
     expect(status.run("wr_1")["runs"].first["worktree"]).to eq("/src/app")
 
-    create.tap { |r| store.update(r["id"]) { |run| run.delete("worktree") } }
+    create.tap { |r| edit_run(store, r["id"]) { |run| run.delete("worktree") } }
     expect(status.run("wr_2")["runs"].first["worktree"]).to be_nil
   end
 
@@ -554,7 +554,7 @@ RSpec.describe Workspace::WorkflowStatus do
       create
       create(workspace: "other", pane: "%7")
       create(pane: "%8")
-      store.update("wr_3") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T12:59:00Z") }
+      edit_run(store, "wr_3") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T12:59:00Z") }
       allow(snapshot_client).to receive(:fetch).with("other", timeout: 1.0).and_return("panes" => [])
     end
 
@@ -612,7 +612,7 @@ RSpec.describe Workspace::WorkflowStatus do
       File.write(File.join(artifacts, "triage.md"), "#{first_line}\nfix 1\n")
       File.write(note_path, "# Triage\n")
       run = create(state: "waiting", step_state: "passed", reason: gate, bound: false)
-      store.update(run["id"]) do |stored|
+      edit_run(store, run["id"]) do |stored|
         stored["artifacts_dir"] = artifacts
         stored["definition"]["steps"].last["produces"] = ["triage.md", "other.md"]
         stored["steps"]["plan"]["gate"] = gate_state
@@ -651,16 +651,16 @@ RSpec.describe Workspace::WorkflowStatus do
     it "shows the text the person gave to approve a gate as gate_note, null for a run stored without one" do
       gated("note: 2026-10-29-pr-7-feedback.md")
       row = -> { status.run("wr_1")["runs"].first["steps"].find { |step| step["id"] == "plan" } }
-      store.update("wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved", "note" => "Cut gap 3.\nKeep the rest."} }
+      edit_run(store, "wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved", "note" => "Cut gap 3.\nKeep the rest."} }
       expect(row.call).to include("gate" => "approved", "gate_note" => "Cut gap 3.\nKeep the rest.", "gate_file" => nil)
-      store.update("wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved"} }
+      edit_run(store, "wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved"} }
       expect(row.call).to include("gate" => "approved", "gate_note" => nil)
     end
 
     it "shows the hash approve recorded on the step's row, and note_changed once the note's bytes differ" do
       gated("note: 2026-10-29-pr-7-feedback.md")
       recorded = {"path" => note_path, "sha256" => Digest::SHA256.hexdigest("# Triage\n")}
-      store.update("wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved", "file" => recorded} }
+      edit_run(store, "wr_1") { |run| run["steps"]["plan"]["gate"] = {"state" => "approved", "file" => recorded} }
 
       row = -> { status.run("wr_1")["runs"].first["steps"].find { |step| step["id"] == "plan" } }
 
@@ -730,7 +730,7 @@ RSpec.describe Workspace::WorkflowStatus do
 
       it "asks for --extra-tokens on a failed step's resume too, and reports uncounted attempts" do
         budgeted(0, state: "waiting", usage: nil, reason: {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check"}})
-        store.update("wr_1") { |stored| stored["steps"]["plan"] = {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 2000}}]} }
+        edit_run(store, "wr_1") { |stored| stored["steps"]["plan"] = {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 2000}}]} }
         row = status.run("wr_1")["runs"].first
 
         expect(row["budget"]).to include("used" => 2000, "counted" => 1, "uncounted" => 1, "spent" => true)
@@ -776,7 +776,7 @@ RSpec.describe Workspace::WorkflowStatus do
 
       it "stops asking once the allowance was raised" do
         run = spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check", "attempts" => 3, "max_attempts" => 3}})
-        store.update(run["id"]) { |stored| stored["extra_attempts"] = 1 }
+        edit_run(store, run["id"]) { |stored| stored["extra_attempts"] = 1 }
 
         expect(current["reason"]["actions"].first).to eq(action("workflow resume", "wr_1"))
       end
@@ -798,7 +798,7 @@ RSpec.describe Workspace::WorkflowStatus do
 
       it "asks for it on a held retry, which also needs a pane" do
         run = spent_run(3, {"code" => "retry_backoff", "since" => "t", "details" => {"step" => "plan"}})
-        store.update(run["id"]) { |stored| stored["backoff"] = {"blocked" => "pane_gone", "to" => "research"} }
+        edit_run(store, run["id"]) { |stored| stored["backoff"] = {"blocked" => "pane_gone", "to" => "research"} }
 
         expect(current["reason"]["actions"].first["needs"]).to eq([{"name" => "pane", "flag" => "--pane"}] + extra)
       end
@@ -817,7 +817,7 @@ RSpec.describe Workspace::WorkflowStatus do
       def actions_of(reason, step_state, bound: true)
         run = spent_run(3, reason)
         panes.bind(workspace: "app", pane: "%5", run_id: run["id"]) if bound
-        store.update(run["id"]) { |stored| stored["steps"]["plan"]["state"] = step_state }
+        edit_run(store, run["id"]) { |stored| stored["steps"]["plan"]["state"] = step_state }
         status.run(run["id"])["runs"].first.dig("current", "reason", "actions").select { |each| each["action"] == "workflow resume" }
       end
 
@@ -843,13 +843,13 @@ RSpec.describe Workspace::WorkflowStatus do
 
       it "takes the minimum from the overrun and from a stored extra_attempts" do
         run = spent_run(3, {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check"}})
-        store.update(run["id"]) { |stored| stored["extra_attempts"] = 2 }
+        edit_run(store, run["id"]) { |stored| stored["extra_attempts"] = 2 }
         expect(current["reason"]["actions"].first["needs"]).to eq([])
 
-        store.update(run["id"]) { |stored| stored["steps"]["plan"]["attempts"] += [{"n" => 3}, {"n" => 4}, {"n" => 5}] }
+        edit_run(store, run["id"]) { |stored| stored["steps"]["plan"]["attempts"] += [{"n" => 3}, {"n" => 4}, {"n" => 5}] }
         # made 6 of 5: one below the minimum of 2 is refused by the engine, exactly at it is not
         expect(current["reason"]["actions"].first["needs"].first).to include("min" => 2)
-        expect(Workspace::WorkflowEngine.extra_attempts_needed(store.find("wr_1"))).to eq(2)
+        expect(Workspace::WorkflowEngine.extra_attempts_needed(stored_run(store, "wr_1"))).to eq(2)
       end
 
       it "does not ask while attempts are left" do
@@ -979,7 +979,7 @@ RSpec.describe Workspace::WorkflowStatus do
   describe "a rejected gate" do
     it "shows as rejected on the step's row" do
       run = create(state: "running", step_state: "running")
-      store.update(run["id"]) { |stored| stored["steps"]["plan"]["gate"] = {"state" => "rejected", "attempt" => 1} }
+      edit_run(store, run["id"]) { |stored| stored["steps"]["plan"]["gate"] = {"state" => "rejected", "attempt" => 1} }
 
       expect(status.run("wr_1")["runs"].first["steps"].last["gate"]).to eq("rejected")
     end
@@ -994,7 +994,7 @@ RSpec.describe Workspace::WorkflowStatus do
     end
 
     def finish(id, ended_at)
-      store.update(id) { |run| run.merge!("state" => "completed", "ended_at" => ended_at) }
+      edit_run(store, id) { |run| run.merge!("state" => "completed", "ended_at" => ended_at) }
     end
 
     def ids_in(project)
@@ -1076,7 +1076,7 @@ RSpec.describe Workspace::WorkflowStatus do
   end
   describe "current.stuck" do
     def mark(stalled: {}, recovered: {}, step: "plan", attempt: 2)
-      store.update("wr_1") { |run| run["sweep"] = {"step" => step, "attempt" => attempt, "stalled" => stalled, "recovered" => recovered} }
+      edit_run(store, "wr_1") { |run| run["sweep"] = {"step" => step, "attempt" => attempt, "stalled" => stalled, "recovered" => recovered} }
     end
 
     let(:stall) { {"agent_gone" => "2026-10-04T12:41:00Z"} }
@@ -1114,7 +1114,7 @@ RSpec.describe Workspace::WorkflowStatus do
       create(step_state: "checking")
       mark(stalled: stall)
       expect(current).not_to have_key("stuck")
-      store.update("wr_1") { |run| run["steps"]["plan"]["state"] = "running" }
+      edit_run(store, "wr_1") { |run| run["steps"]["plan"]["state"] = "running" }
       allow(Workspace::WorkflowEngine).to receive(:delivery).and_return(:delivering)
       expect(current).not_to have_key("stuck")
     end

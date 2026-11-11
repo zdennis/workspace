@@ -61,7 +61,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       workflow: workflow, readiness: readiness, tmux: tmux, agent_commands: agent_commands, excludes: excludes, ssh_hosts: ssh_hosts, router: router, output: output)
   end
 
-  def build_engine(store: instance_double(Workspace::WorkflowRunStore, active: []), commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
+  def build_engine(store: instance_double(Workspace::WorkflowRunStore, going: []), commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
     Workspace::WorkflowEngine.new(
       store: store, resources: instance_double(Workspace::RunResources), composer: instance_double(Workspace::InstructionComposer, compose: {"packs" => []}),
       panes: nil, checker: instance_double(Workspace::WorkflowCheck), commands_config: commands_config, lineage: lineage, git: git,
@@ -71,7 +71,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
 
   def real_engine(active: [])
     runs = active.map { |run| Workspace::WorkflowRun.from_h(run) }
-    store = instance_double(Workspace::WorkflowRunStore, active: active)
+    store = instance_double(Workspace::WorkflowRunStore, going: runs)
     allow(store).to receive(:on_checkout) { |path| runs.find { |run| File.realpath(run.worktree) == File.realpath(path) } }
     build_engine(store: store)
   end

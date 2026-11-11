@@ -620,7 +620,7 @@ RSpec.describe Workspace::InboxDerived do
       it "keeps the gate row, not this one, for a park expired at a waiting gate" do
         gate = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "plan", "artifacts" => []}}
         run = stored_run(reason: gate, parked: park)
-        run_store.update(run["id"]) { |r| r["steps"]["plan"].merge!("state" => "passed", "gate" => {"state" => "waiting"}) }
+        edit_run(run_store, run["id"]) { |r| r["steps"]["plan"].merge!("state" => "passed", "gate" => {"state" => "waiting"}) }
         run_clock[0] += 3600
 
         expect(undelivered).to be_empty

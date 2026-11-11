@@ -630,7 +630,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     def finish(id)
-      store.update(id) do |run|
+      edit_run(store, id) do |run|
         run["state"] = "completed"
         run["ended_at"] = "2026-10-04T12:59:00Z"
       end
@@ -731,7 +731,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     def finish(id)
-      store.update(id) do |run|
+      edit_run(store, id) do |run|
         run["state"] = "completed"
         run["ended_at"] = "2026-10-04T12:59:00Z"
       end
@@ -1980,7 +1980,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "marks an attempt the sweep typed again, in the table and as redelivered in json" do
       create_run
-      real_store.update("wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][0].merge!("outcome" => "not_delivered", "redelivered" => true) }
+      edit_run(real_store, "wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][0].merge!("outcome" => "not_delivered", "redelivered" => true) }
 
       attempts_command.attempts(run: "wr_2611010900abcd")
 
@@ -2014,7 +2014,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "reads a run that finished and was archived" do
       create_run
-      real_store.update("wr_2611010900abcd") { |run| run.merge!("state" => "completed", "ended_at" => "2026-11-01T10:00:00Z") }
+      edit_run(real_store, "wr_2611010900abcd") { |run| run.merge!("state" => "completed", "ended_at" => "2026-11-01T10:00:00Z") }
 
       attempts_command.attempts(run: "wr_2611010900abcd", json: true)
 
@@ -2035,7 +2035,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "escapes stored text in the table" do
       create_run
-      real_store.update("wr_2611010900abcd") { |run| run["steps"]["implement"]["attempts"][0]["code"] = "x\e[2Jy" }
+      edit_run(real_store, "wr_2611010900abcd") { |run| run["steps"]["implement"]["attempts"][0]["code"] = "x\e[2Jy" }
 
       attempts_command.attempts(run: "wr_2611010900abcd")
 
@@ -2079,7 +2079,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "shows the end fields of a cancelled run's open attempt, and a resumed attempt's two reasons" do
       create_run
-      real_store.update("wr_2611010900abcd") do |run|
+      edit_run(real_store, "wr_2611010900abcd") do |run|
         run["steps"]["implement"]["attempts"][1].merge!("head" => {"before" => "a" * 40, "after" => "b" * 40}, "outputs" => [{"file" => "x.md", "sha256" => nil, "bytes" => nil}],
           "reasons" => [{"code" => "waiting_lock", "since" => "s1", "until" => "u1"}, {"code" => "turn_ended_incomplete", "since" => "s2", "until" => nil}])
         run.merge!("state" => "cancelled", "ended_at" => "2026-11-01T10:00:00Z")
@@ -2093,7 +2093,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "carries check.log, reported and proofs" do
       create_run
-      real_store.update("wr_2611010900abcd") do |run|
+      edit_run(real_store, "wr_2611010900abcd") do |run|
         run["steps"]["implement"]["attempts"][0].merge!("reported" => {"status" => "fail", "code" => "x"}, "proofs" => [{"proof" => "command", "exit_code" => 0}])
       end
 
@@ -2110,7 +2110,7 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(rows[0].keys).to include("agent", "session", "head", "definition_sha256", "prompt_sha256", "packs", "outputs", "check", "usage", "evidence", "reasons", "reported", "proofs", "code", "outcome", "redelivered")
       expect(rows[1]["check"]).to be_nil
 
-      stored = real_store.find("wr_2611010900abcd")
+      stored = stored_run(real_store, "wr_2611010900abcd")
       stored.delete("definition")
       expect(Workspace::WorkflowAttempts.new.read(stored)["attempts"].map { |row| row["step"] }).to eq(%w[a a])
     end
@@ -3097,7 +3097,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "reads a run stored without reasons history or sweep marks" do
       create(reason: failed("a", "2026-10-04T12:22:00Z"))
-      store.update("wr_1") { |run| run.delete("sweep") && run.delete("reasons") }
+      edit_run(store, "wr_1") { |run| run.delete("sweep") && run.delete("reasons") }
       command.status(scope: scope)
       expect(lines.size).to eq(2)
     end
