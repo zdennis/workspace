@@ -31,6 +31,72 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "review rounds" do
+    let(:started) { Time.utc(2026, 10, 4, 12, 0, 0) }
+    let(:window) { described_class::DELIVERY_WINDOW }
+
+    def round(**fields)
+      {"round" => 1, "delivery" => "delivering", "started_at" => started.iso8601(3), "redeliveries" => 0}.merge(fields.transform_keys(&:to_s))
+    end
+
+    def reviewing(round_fields = {}, **fields)
+      run_with(steps: {"plan" => step("reviewing", {"n" => 1, "outcome" => "checks_passed"}).merge("review" => round(**round_fields))}, **fields).tap do |run|
+        run["definition"]["redeliver"] = 2
+      end
+    end
+
+    it "is delivering within the window and, past it, while its holder is alive" do
+      expect(described_class.round_delivery(round, started + window)).to eq(:delivering)
+      holder = {"pid" => 41, "started_at" => "x"}
+      expect(described_class.round_delivery(round(holder: holder), started + window + 1, alive: ->(found) { found == holder })).to eq(:delivering)
+      expect(described_class.round_delivery(round(holder: holder), started + window + 1)).to eq(:delivering)
+    end
+
+    it "is unknown past the window with its holder gone or none recorded, and failed once a failure is stored" do
+      expect(described_class.round_delivery(round(holder: {"pid" => 41}), started + window + 1, alive: ->(_) { false })).to eq(:unknown)
+      expect(described_class.round_delivery(round, started + window + 1)).to eq(:unknown)
+      expect(described_class.round_delivery(round(started_at: "garbled"), started)).to eq(:unknown)
+      expect(described_class.round_delivery(round(delivery: "failed"), started)).to eq(:failed)
+    end
+
+    it "says nothing for a delivered round or none" do
+      expect(described_class.round_delivery(round(delivery: nil), started + window + 1)).to be_nil
+      expect(described_class.round_delivery(nil, started)).to be_nil
+    end
+
+    it "is due for a lapsed or failed delivery while redeliveries last, exhausted after" do
+      expect(described_class.round_redelivery(reviewing, started)).to be_nil
+      expect(described_class.round_redelivery(reviewing, started + window + 1)).to eq(state: :due, round: 1, retries: 0, limit: 2, mark: :unknown)
+      expect(described_class.round_redelivery(reviewing({delivery: "failed", redeliveries: 2}), started)).to eq(state: :exhausted, round: 1, retries: 2, limit: 2, mark: :failed)
+    end
+
+    it "is nil for a stopped round, a parked run or a step not being reviewed" do
+      expect(described_class.round_redelivery(reviewing({delivery: "failed"}, "reason" => {"code" => "review_incomplete"}), started)).to be_nil
+      expect(described_class.round_redelivery(reviewing({delivery: "failed"}, "parked" => {"expires_at" => started.iso8601}), started)).to be_nil
+      expect(described_class.round_redelivery(run_with(steps: {"plan" => step("running")}), started)).to be_nil
+    end
+
+    it "does not wake a run whose round has to be delivered again, since nothing on a tick redelivers it yet" do
+      expect(described_class.wakeable?(reviewing, started)).to be_nil
+      expect(described_class.wakeable?(reviewing, started + window + 1)).to be_nil
+      expect(described_class.wakeable?(reviewing({delivery: "failed"}), started)).to be_nil
+    end
+
+    it "starts no attempt on a resume of a step being reviewed" do
+      expect(described_class.starts_attempt?(reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"}), from: nil, pane: nil)).to be(false)
+      expect(described_class.starts_attempt?(reviewing, from: "plan", pane: nil)).to be(true)
+    end
+
+    it "leaves a live round alone and lets a stopped or lapsed one be acted on" do
+      run = reviewing(delivery: nil)
+      expect(described_class.left_alone(run, run["steps"]["plan"], nil, nil, started, -> { "%3" })).to eq("the review round of step plan is still running")
+      stopped = reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"})
+      expect(described_class.left_alone(stopped, stopped["steps"]["plan"], nil, nil, started, -> { "%3" })).to be_nil
+      lapsed = reviewing
+      expect(described_class.left_alone(lapsed, lapsed["steps"]["plan"], nil, nil, started + window + 1, -> { "%3" })).to be_nil
+    end
+  end
+
   describe ".parked" do
     let(:run) { {"parked" => {"expires_at" => now.iso8601}} }
 

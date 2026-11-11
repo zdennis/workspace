@@ -244,4 +244,116 @@ RSpec.describe Workspace::WorkflowProgress do
         .retry_pane_problem(run_hash, {"pane" => "%3", "identity" => "id-3"})).to be_nil
     end
   end
+
+  describe "a step with a review" do
+    let(:review) { {"from" => %w[skeptic tester], "need" => 2, "must" => [], "max_rounds" => 6} }
+
+    def reviewing_hash(**overrides)
+      run_hash(:definition_steps => steps("review" => review), "state" => "running").tap do |hash|
+        hash["steps"]["plan"] = {"state" => "reviewing", "review_rounds" => 1,
+                                 "review" => {"round" => 1, "delivery" => nil, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "pending" => %w[skeptic tester], "redeliveries" => 0},
+                                 "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:20:00Z", "outcome" => "checks_passed", "outputs" => []}]}
+      end.merge(overrides)
+    end
+
+    it "ends the attempt as checks_passed and starts round 1 of the review instead of passing" do
+      context = ctx
+
+      run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: context)
+
+      state = run.step("plan")
+      expect(run.current).to eq("plan")
+      expect(run.state).to eq("running")
+      expect(run.reason).to be_nil
+      expect(state.state).to eq("reviewing")
+      expect(state.last_attempt.to_h).to eq("n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T12:00:00Z",
+        "outcome" => "checks_passed", "outputs" => [])
+      expect(state.review_rounds).to eq(1)
+      expect(state.review).to eq("round" => 1, "delivery" => "delivering", "started_at" => "2026-11-10T12:00:00.000Z", "pending" => %w[skeptic tester], "redeliveries" => 0)
+      expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
+      expect(context.delivery).to be_nil
+      expect(attempt_record.calls).to eq([[:finish, "wr_1", "plan", 1]])
+      expect(dispatch.calls).to be_empty
+      expect(change.events.map { |event| event[1] }).to eq(%w[step_checks_passed review_started])
+    end
+
+    it "counts each round the step starts, never resetting" do
+      given = run_hash(definition_steps: steps("review" => review))
+      given["steps"]["plan"]["review_rounds"] = 2
+
+      run = progress.pass_step(given, ctx: ctx)
+
+      expect(run.step("plan").review_rounds).to eq(3)
+      expect(run.step("plan").review["round"]).to eq(3)
+    end
+
+    it "passes an attempt a round already decided without reviewing it again" do
+      given = run_hash(definition_steps: steps("review" => review))
+      given["steps"]["plan"]["attempts"][0]["review_outcome"] = {"round" => 1, "passed" => true}
+      context = ctx
+
+      run = progress.pass_step(given, ctx: context)
+
+      expect(run.step("plan").state).to eq("passed")
+      expect(run.current).to eq("build")
+      expect(context.review).to be_nil
+    end
+
+    it "rewrites an approved round's attempt as passed, without finishing it again, and goes on to the next step" do
+      reviews = [{"reviewer" => "skeptic", "verdict" => "approve"}]
+      context = ctx
+
+      run = progress.decide_review(reviewing_hash, {outcome: :approved, reviews: reviews, approvals: 2, need: 2, must: []}, ctx: context)
+
+      expect(run.step("plan").state).to eq("passed")
+      expect(run.step("plan").review).to be_nil
+      expect(run.step("plan").review_rounds).to eq(1)
+      expect(run.step("plan").last_attempt.to_h).to include("outcome" => "passed", "reviews" => reviews, "ended_at" => "2026-11-10T11:20:00Z",
+        "review_outcome" => {"round" => 1, "approvals" => 2, "need" => 2, "must" => [], "passed" => true})
+      expect(attempt_record.calls).to be_empty
+      expect(run.current).to eq("build")
+      expect(context.delivery).to eq("step" => "build")
+      expect(change.events.map { |event| event[1] }).to eq(%w[review_ended step_passed])
+      expect(change.events.first).to eq(["wr_1", "review_ended", {"step" => "plan", "attempt" => 1, "round" => 1, "outcome" => "approved"}])
+    end
+
+    it "waits at the gate after an approved round" do
+      given = reviewing_hash
+      given["definition"]["steps"][0]["gate"] = "approve"
+
+      run = progress.decide_review(given, {outcome: :approved, reviews: []}, ctx: ctx)
+
+      expect(run.state).to eq("waiting")
+      expect(run.reason["code"]).to eq("waiting_you")
+      expect(run.step("plan").to_h["gate"]).to eq("state" => "waiting", "since" => "2026-11-10T12:00:00Z")
+    end
+
+    it "fails a rejected round's attempt and step and stops the run with review_rejected" do
+      reviews = [{"reviewer" => "skeptic", "verdict" => "reject"}]
+
+      run = progress.decide_review(reviewing_hash, {outcome: :rejected, reviews: reviews}, ctx: ctx)
+
+      expect(run.step("plan").state).to eq("failed")
+      expect(run.step("plan").review).to be_nil
+      expect(run.step("plan").last_attempt.to_h).to include("outcome" => "failed", "code" => "review_rejected", "reviews" => reviews,
+        "review_outcome" => {"round" => 1, "approvals" => nil, "need" => nil, "must" => nil, "passed" => false})
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to eq("code" => "review_rejected", "since" => "2026-11-10T12:00:00Z",
+        "details" => {"step" => "plan", "attempt" => 1, "round" => 1, "reviews" => reviews})
+      expect(dispatch.calls).to eq([[:release, "wr_1"]])
+      expect(attempt_record.calls).to be_empty
+    end
+
+    it "keeps an incomplete round's step reviewing and its attempt checks_passed, and stops with review_incomplete" do
+      run = progress.decide_review(reviewing_hash, {outcome: :incomplete, reviews: [], problem: "no verdict from tester"}, ctx: ctx)
+
+      state = run.step("plan")
+      expect(state.state).to eq("reviewing")
+      expect(state.last_attempt.outcome).to eq("checks_passed")
+      expect(state.review).to include("round" => 1, "delivery" => nil, "ended_at" => "2026-11-10T12:00:00Z", "reviews" => [])
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to eq("code" => "review_incomplete", "since" => "2026-11-10T12:00:00Z",
+        "details" => {"step" => "plan", "attempt" => 1, "round" => 1, "reviews" => [], "problem" => "no verdict from tester"})
+    end
+  end
 end

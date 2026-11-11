@@ -223,6 +223,22 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(dispatch.calls).to be_empty
     end
 
+    it "leaves a live review round alone, and never starts the author again on a step being reviewed" do
+      live = run_hash(state: "reviewing")
+      live["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "started_at" => "2026-11-10T11:50:00.000Z"}
+      stored(live)
+
+      expect(decisions.resume("wr_1").unchanged).to eq("the review round of step plan is still running")
+
+      stopped = deep_copy(live).merge("state" => "waiting", "reason" => {"code" => "review_incomplete", "since" => "2026-11-10T11:55:00Z", "details" => {}})
+      stored(stopped)
+      decisions.resume("wr_1")
+
+      expect(dispatch.calls).to be_empty
+      expect(evaluation.calls).to be_empty
+      expect(progress.calls).to be_empty
+    end
+
     it "runs a failed step again, telling it what failed" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"}))
 

@@ -210,6 +210,7 @@ module Workspace
       state = run.steps.fetch(run.current)
       finished = WorkflowRunStore::TERMINAL_STATES.include?(run.state)
       pane = finished ? nil : (run.parked&.dig("pane") || @panes.pane_of(run.id) || run.pane)
+      # A reviewing step is not read from the author's pane, whose turn is over; its stored reason is shown.
       working = !finished && %w[running checking].include?(state.state)
       daemon_warning(run, working, warnings) unless finished
       # What the pane shows matters only while an agent should be working in it, or a parked resume waits on
@@ -444,6 +445,7 @@ module Workspace
       flags = []
       timeout = run.definition["steps"].find { |step| step["id"] == run.current }["timeout"]
       started = state.last_attempt&.started_at
+      # A reviewing step's attempt has ended, so the step timeout no longer runs.
       if timeout && started && %w[running checking].include?(state.state) && @clock.call - Time.iso8601(started) > timeout
         flags << "timed_out"
       end

@@ -131,7 +131,7 @@ module Workspace
       return sweep_backoff(run, backoff, pass) if backoff
       return blocked_row(run) if run.backoff&.dig("blocked") && run.state == "waiting"
       return budget_row(run) if (run.budget_hold || run.timeout_hold) && run.state == "waiting"
-      daemon_needed = running || state.state == "checking" || run.parked || run.reason&.dig("code") == "waiting_lock"
+      daemon_needed = running || %w[checking reviewing].include?(state.state) || run.parked || run.reason&.dig("code") == "waiting_lock"
       if running && !@panes.alive?(run.id)
         pane = run.pane
         return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", "pane" => pane)
@@ -141,6 +141,7 @@ module Workspace
       return respawn(run, pass) if daemon_needed && daemon_down?(run.workspace, pass)
       return row(run, "nothing", reason: "parked", message: "a resume is parked; it is carried out when the pane's turn ends") if run.parked
       return row(run, "nothing", reason: "checking", message: "the step's check is running") if state.state == "checking"
+      return row(run, "nothing", reason: "reviewing", message: "step #{run.current} is being reviewed") if state.state == "reviewing"
       return row(run, "nothing", reason: "not_running", message: "no agent is working on step #{run.current} (#{state.state})") unless running
       sweep_running(run, state, pass)
     rescue Workspace::Error => e

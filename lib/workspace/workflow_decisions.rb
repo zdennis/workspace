@@ -376,6 +376,8 @@ module Workspace
           evaluate(stored, ctx)
         end
       when "checking" then evaluate(stored, ctx)
+      # A round is not an attempt: a resume never starts the author again on a step being reviewed.
+      when "reviewing" then nil
       when "passed" then adopt(stored, @progress.advance(stored, ctx: ctx))
       else dispatch(stored, ctx, budgeted: budget)
       end

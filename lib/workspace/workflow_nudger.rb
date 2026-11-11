@@ -37,7 +37,8 @@ module Workspace
     # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
     # @return [String, nil] the run that was woken; nil for a pane bound to none
     def turn_ended(workspace, pane_id, turn_started: nil, background: nil)
-      run_id = @panes.run_on(pane_id)
+      # A review pane's turn ends its round, so a pane bound in any role wakes its run.
+      run_id = @panes.bound_on(pane_id)&.fetch(:run_id)
       return nil unless run_id
       started = turn_started ? ["--turn-started", turn_started.utc.iso8601(3)] : []
       tasks = Array(background).flat_map { |task| ["--background-task", "#{task["type"]}:#{task["id"]}"] }

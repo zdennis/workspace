@@ -3,7 +3,7 @@ require "json"
 
 # The fixtures in spec/fixtures/workflow_runs are run files the real engine wrote under the simulator (fixed
 # clock and run id, the temporary directory replaced by /tmp/workspace-simulate, each prompt_sha256 by a token).
-# parked, swept_stall, budget_hold_extended, attempt_detail, cancelled, legacy_minimal and unknown_keys are those
+# reviewing, parked, swept_stall, budget_hold_extended, attempt_detail, cancelled, legacy_minimal and unknown_keys are those
 # files with the keys the simulator never writes added or removed by hand, in the shapes the engine writes them.
 RSpec.describe Workspace::WorkflowRun do
   let(:dir) { File.join(PROJECT_ROOT, "spec", "fixtures", "workflow_runs") }
@@ -19,7 +19,7 @@ RSpec.describe Workspace::WorkflowRun do
 
   it "has a fixture for each state a run is stored in" do
     expect(names).to include("waiting_gate", "running_attempt", "parked", "retry_backoff", "budget_spent", "run_timed_out", "budget_hold_extended",
-      "swept_stall", "attempt_detail", "completed", "cancelled", "legacy_minimal", "unknown_keys")
+      "swept_stall", "attempt_detail", "completed", "cancelled", "legacy_minimal", "unknown_keys", "reviewing")
   end
 
   it "gives back every fixture byte for byte" do
@@ -40,6 +40,16 @@ RSpec.describe Workspace::WorkflowRun do
   end
 
   describe "readers" do
+    it "read a step being reviewed: its round, the rounds spent and the attempt that ended checks_passed" do
+      step = run("reviewing").step("build")
+
+      expect(step.state).to eq("reviewing")
+      expect(step.review).to eq("round" => 1, "delivery" => "delivering", "started_at" => "2026-01-01T00:00:00.000Z", "pending" => ["skeptic"], "redeliveries" => 0)
+      expect(step.review_rounds).to eq(1)
+      expect(step.last_attempt.outcome).to eq("checks_passed")
+      expect(step.last_attempt.review_outcome).to be_nil
+    end
+
     it "read the run's own keys" do
       given = run("running_attempt")
 

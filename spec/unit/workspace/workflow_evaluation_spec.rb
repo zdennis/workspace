@@ -78,6 +78,12 @@ RSpec.describe Workspace::WorkflowEvaluation do
       }
       expect(change.events).to be_empty
     end
+
+    it "refuses a step being reviewed, since its attempt has ended" do
+      stored(run_hash(state: "reviewing"))
+
+      expect { evaluation.report("wr_1", status: "pass") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("step_not_running") }
+    end
   end
 
   describe "#turn_ended" do
@@ -204,6 +210,64 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(checker.calls).to be_empty
       expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "check", "timed_out" => false, "error" => "the project's lint command is not set",
                                                           "log" => File.join(artifacts, "steps", "plan.1.check.log"), "code" => "check_error", "code_source" => "engine"}]])
+    end
+  end
+
+  describe "a step being reviewed" do
+    let(:tally) { RecordingReviewTally.new(outcome: :approved, reviews: [{"reviewer" => "skeptic"}]) }
+    let(:round) { {"round" => 1, "delivery" => nil, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "pending" => ["skeptic"], "redeliveries" => 0} }
+
+    def reviewing(**overrides)
+      run_hash(definition_step: step("review" => {"from" => ["skeptic"]}), state: "reviewing", **overrides).tap do |hash|
+        hash["steps"]["plan"]["review"] = round
+        hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:20:00Z", "outcome" => "checks_passed")
+      end
+    end
+
+    it "decides the round when the review pane's turn ends, through the tally" do
+      stored(reviewing)
+
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 31))
+
+      expect(tally.calls).to eq([[:call, "wr_1", "plan", round]])
+      expect(progress.calls).to eq([[:decide_review, "plan", {outcome: :approved, reviews: [{"reviewer" => "skeptic"}]}]])
+      expect(store.runs["wr_1"]["steps"]["plan"]["state"]).to eq("passed")
+    end
+
+    it "ignores a turn's end in the author's pane, a turn begun before the round, and a stopped round" do
+      stored(reviewing)
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%3")
+      evaluation(review_tally: tally).turn_ended("wr_1")
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 29))
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 29))
+      stored(reviewing("reason" => {"code" => "review_incomplete"}))
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+
+      expect(tally.calls).to be_empty
+      expect(progress.calls).to be_empty
+    end
+
+    it "takes a round as incomplete when no tally is set up" do
+      stored(reviewing)
+
+      evaluation.turn_ended("wr_1", pane: "%9")
+
+      expect(progress.calls.first[2]).to include(outcome: :incomplete, reviews: [])
+    end
+
+    it "follows up the next round a decision registers" do
+      rounds = []
+      stored(reviewing)
+      decided = Class.new(RecordingProgress) do
+        def decide_review(run, tally, ctx:)
+          ctx.review({"round" => 2})
+          super
+        end
+      end.new
+
+      evaluation(progress: decided, review_tally: tally, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).turn_ended("wr_1", pane: "%9")
+
+      expect(rounds).to eq([["wr_1", {"round" => 2}]])
     end
   end
 

@@ -373,7 +373,7 @@ class RecordingLogTail
 end
 
 # Fake of Workspace::WorkflowProgress for the evaluation and decision phases: +pass_step+ and +fail_step+ mark the
-# current step passed or failed, +advance+ answers the run as given, +finish+ sets the run's end state,
+# current step passed or failed, +decide_review+ marks it with the tally's outcome, +advance+ answers the run as given, +finish+ sets the run's end state,
 # +start_retry+ moves the run to the wait's step, +hold_retry+ marks the wait blocked with the problem's message as
 # the reason, and +retry_pane_problem+ answers the problem it was given. Each records its call; +finished+ keeps
 # each run +finish+ was given, as a WorkflowRun.
@@ -400,6 +400,11 @@ class RecordingProgress
   def fail_step(run, failure, ctx:)
     @calls << [:fail_step, Workspace::WorkflowRun.from_h(run).current, failure]
     marked(run, "failed")
+  end
+
+  def decide_review(run, tally, ctx:)
+    @calls << [:decide_review, Workspace::WorkflowRun.from_h(run).current, tally]
+    marked(run, {approved: "passed", rejected: "failed"}.fetch(tally[:outcome], "reviewing"))
   end
 
   def advance(run, ctx:)
@@ -439,6 +444,27 @@ class RecordingProgress
     hash = Workspace::WorkflowRun.from_h(run).thawed
     hash["steps"][hash["current"]]["state"] = state
     Workspace::WorkflowRun.from_h(hash)
+  end
+end
+
+# Fake of a review round's tally (Workspace::WorkflowEvaluation::NoReviewTally until the real one): answers the
+# outcome it was given and records the step and round it was asked about.
+class RecordingReviewTally
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param outcome [Symbol] :approved, :rejected or :incomplete
+  # @param reviews [Array<Hash>] the review rows it answers
+  # @param problem [String, nil] why an incomplete round is incomplete
+  def initialize(outcome: :approved, reviews: [], problem: nil)
+    @answer = {outcome: outcome, reviews: reviews, problem: problem}.compact
+    @calls = []
+  end
+
+  def call(run:, step:, round:)
+    @calls << [:call, Workspace::WorkflowRun.from_h(run).id, step["id"], round]
+    @answer
   end
 end
 

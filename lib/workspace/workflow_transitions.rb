@@ -108,8 +108,8 @@ module Workspace
 
     # Whether a resume would start a new attempt: `--from`, a run held for its token budget or its timeout, a retry's wait, a step that failed or never
     # got its line, or a running step given a pane. Not a check or a turn left to decide (a failure there goes
-    # through the `on_fail` budget), a passed step moving on, or a lock wait (the attempt was allowed when the
-    # step was reached).
+    # through the `on_fail` budget), a review round (its attempt has ended; a round is not an attempt), a passed
+    # step moving on, or a lock wait (the attempt was allowed when the step was reached).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param from [String, nil] the step a resume would start again at
@@ -122,7 +122,7 @@ module Workspace
       return false if run.dig("reason", "code") == "waiting_lock"
       case run["steps"].fetch(run["current"])["state"]
       when "running" then !pane.nil?
-      when "checking", "passed" then false
+      when "checking", "reviewing", "passed" then false
       else true
       end
     end
@@ -141,6 +141,48 @@ module Workspace
       (now - Time.iso8601(attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
     rescue ArgumentError, TypeError
       :unknown
+    end
+
+    # Where the delivery of a review round stands. A round is stored `delivering` when it starts, under the run's
+    # lock, and its delivery (window, agent, revision, typing) runs outside it and can outlast {DELIVERY_WINDOW}; so
+    # time alone does not end the mark: past the window it still holds while the process that delivers it (its
+    # `holder`, a pid and start time) is alive.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param now [Time]
+    # @param alive [#call, nil] given the holder, whether that process still runs; nil takes a holder as alive
+    # @return [Symbol, nil] :delivering, :failed (the delivering process stored a failure), :unknown (the mark lapsed
+    #   with no live holder), or nil when the round was delivered or holds no delivery
+    def self.round_delivery(round, now, alive: nil)
+      return nil unless round.is_a?(Hash)
+      return :failed if round["delivery"] == "failed"
+      return nil unless round["delivery"] == "delivering"
+      return :delivering unless now - Time.iso8601(round["started_at"].to_s) > DELIVERY_WINDOW
+      holder = round["holder"]
+      (holder && (alive.nil? || alive.call(holder))) ? :delivering : :unknown
+    rescue ArgumentError, TypeError
+      :unknown
+    end
+
+    # Where a review round that has to be delivered again stands: the current step is `reviewing` with no stored
+    # reason and no park, and its round's delivery failed or lapsed ({.round_delivery}). Each delivery again spends
+    # one of the round's `redeliveries`, capped by the definition's `redeliver`.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @param alive [#call, nil] see {.round_delivery}
+    # @return [Hash, nil] nil when no delivery again applies; else :state (`:due` or `:exhausted`), :round,
+    #   :retries (spent), :limit and :mark (`:failed` or `:unknown`)
+    def self.round_redelivery(run, now, alive: nil)
+      return nil if run["parked"] || run["reason"]
+      state = run.dig("steps", run["current"])
+      return nil unless state.is_a?(Hash) && state["state"] == "reviewing"
+      round = state["review"]
+      mark = round_delivery(round, now, alive: alive)
+      return nil unless %i[failed unknown].include?(mark)
+      retries = round["redeliveries"].is_a?(Integer) ? round["redeliveries"] : 0
+      limit = WorkflowDefinition.redeliver(run["definition"])
+      {state: (retries >= limit) ? :exhausted : :due, round: round["round"], retries: retries, limit: limit, mark: mark}
     end
 
     # Where the sweep's retry of an undelivered line stands. The step must wait on a failed delivery (reason
@@ -223,7 +265,7 @@ module Workspace
     # an `on_fail` retry's backoff is over,
     # it waits for a lock, its check was started and never reported back
     # (the process running it died), judged by the check's time limit plus a
-    # minute, or it has been held for background tasks longer than
+    # minute, it has been held for background tasks longer than
     # {BACKGROUND_HOLD}.
     #
     # @param run [Hash{String=>Object}] a stored run
@@ -235,6 +277,8 @@ module Workspace
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
+      # A review round due again ({.round_redelivery}) is not woken here until WorkflowRecovery#tick can redeliver it (T32);
+      # woken now, every tick would start an advance that does nothing.
       :check if run["reason"].nil? && lost_check?(run, now)
     end
 
@@ -344,6 +388,11 @@ module Workspace
         "an agent is working on step #{run["current"]}" unless pane || run["reason"] || over
       when "checking"
         "the check of step #{run["current"]} is still running" unless lost_check?(run, now)
+      when "reviewing"
+        # A round stopped for a person, or one whose delivery failed or lapsed, is the resume's to act on.
+        unless run["reason"] || %i[failed unknown].include?(round_delivery(state["review"], now))
+          "the review round of step #{run["current"]} is still running"
+        end
       end
     end
 

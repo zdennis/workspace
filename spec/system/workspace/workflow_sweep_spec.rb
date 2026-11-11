@@ -277,6 +277,16 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "checking")
     end
 
+    it "leaves a step being reviewed alone, and does not read the author's idle pane as a stall" do
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["state"] = "reviewing" }
+      advance(1500)
+      before = stored_run(store, "wr_1")
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "reviewing")
+      expect(stored_run(store, "wr_1")).to eq(before)
+      expect(types).not_to include("step_stalled")
+    end
+
     it "leaves a run waiting at a gate alone" do
       definition = Workspace::WorkflowDefinition.parse("stall: 20m\nsteps:\n  build:\n    prompt: B\n    gate: approve\n", id: "g", source: "global", path: "/d/g.yml")
       engine.cancel("wr_1")

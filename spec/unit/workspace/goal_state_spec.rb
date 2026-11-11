@@ -168,6 +168,7 @@ RSpec.describe Workspace::GoalState do
     expect(goal(run: run(reason: {"code" => "pane_gone"})).state).to eq("stuck")
     expect(goal(member: member_row(plan: "stalled")).state).to eq("stuck")
     expect(goal(member: member_row(daemon_up: false), run: run).state).to eq("stuck")
+    expect(goal(member: member_row(daemon_up: false), run: run(state: "reviewing")).state).to eq("stuck")
     expect(goal(run: run(flags: ["idle"])).next_step).to include("event" => "workflow_resumed")
     expect(goal(member: member_row(plan: "stalled")).next_step).to include("event" => "agent_restarted")
   end

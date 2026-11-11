@@ -5625,4 +5625,105 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(engine.resume("wr_1", extra_tokens: 5)).not_to have_key("extra_tokens")
     end
   end
+
+  describe "a step with a review" do
+    let(:gate) { "" }
+    let(:rounds) { [] }
+    # Stands in for the round's delivery: it records the round it was given and the review pane on it, as the
+    # runner's own second change will.
+    let(:round_runner) do
+      lambda do |run_id, review|
+        rounds << [run_id, review]
+        store.change(run_id) do |run|
+          hash = run.thawed
+          hash["steps"][hash["current"]]["review"].merge!("pane" => "%9", "delivery" => nil)
+          Workspace::WorkflowRun.from_h(hash)
+        end
+      end
+    end
+
+    def reviewed_engine(outcome)
+      build_engine(review_round: round_runner, review_tally: RecordingReviewTally.new(outcome: outcome, reviews: [{"reviewer" => "skeptic", "verdict" => outcome.to_s}]))
+    end
+
+    def reviewed_yaml
+      <<~YAML
+        reviewers:
+          skeptic: {prompt: Find what is wrong.}
+        steps:
+          plan:
+            prompt: Write {{artifacts}}/plan.md.
+            produces: [plan.md]
+            review: [skeptic]
+        #{gate}
+          build:
+            prompt: Build it.
+      YAML
+    end
+
+    def start_reviewed(engine)
+      engine.start(definition: definition(reviewed_yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    it "ends the author's attempt as checks_passed and runs round 1 once the lock is given up" do
+      run = start_reviewed(reviewed_engine(:approved))
+
+      plan = run["steps"]["plan"]
+      expect(plan["state"]).to eq("reviewing")
+      expect(plan["attempts"].last["outcome"]).to eq("checks_passed")
+      expect(plan["review_rounds"]).to eq(1)
+      expect(plan["review"]).to include("round" => 1, "pane" => "%9", "pending" => ["skeptic"], "redeliveries" => 0)
+      expect(rounds).to eq([["wr_1", {"step" => "plan", "attempt" => 1, "round" => 1}]])
+      expect(run["state"]).to eq("running")
+      expect(history).to include("step_checks_passed", "review_started")
+    end
+
+    it "ignores the author's turn ending while the round runs, and goes on to the next step when the round approves" do
+      engine = reviewed_engine(:approved)
+      start_reviewed(engine)
+      now[0] += 60
+
+      expect(engine.turn_ended("wr_1", pane: "%5")["steps"]["plan"]["state"]).to eq("reviewing")
+      run = engine.turn_ended("wr_1", pane: "%9")
+
+      expect(run["current"]).to eq("build")
+      expect(run["steps"]["plan"]["state"]).to eq("passed")
+      expect(run["steps"]["plan"]["attempts"].map { |each| each["outcome"] }).to eq(["passed"])
+      expect(run["steps"]["plan"]["attempts"].last).to include("review_outcome" => {"round" => 1, "approvals" => nil, "need" => nil, "must" => nil, "passed" => true}, "reviews" => [{"reviewer" => "skeptic", "verdict" => "approved"}])
+      expect(run["steps"]["build"]["state"]).to eq("running")
+    end
+
+    it "stops the run with review_rejected when the round rejects, in the run's own reasons" do
+      engine = reviewed_engine(:rejected)
+      start_reviewed(engine)
+      now[0] += 60
+
+      run = engine.turn_ended("wr_1", pane: "%9")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]["code"]).to eq("review_rejected")
+      expect(run["steps"]["plan"]["state"]).to eq("failed")
+      expect(run["steps"]["plan"]["attempts"].last).to include("outcome" => "failed", "review_outcome" => include("passed" => false))
+      expect(run["steps"]["plan"]["attempts"].last["reasons"].to_a.map { |each| each["code"] }).not_to include("review_rejected")
+      expect(run["reasons"].last).to include("code" => "review_rejected", "step" => "plan", "until" => nil)
+    end
+
+    context "with a gate" do
+      let(:gate) { "    gate: approve" }
+
+      it "waits at the gate after the round approves, and the approval does not review the step again" do
+        engine = reviewed_engine(:approved)
+        start_reviewed(engine)
+        waiting = engine.turn_ended("wr_1", pane: "%9")
+        expect(waiting["reason"]).to include("code" => "waiting_you")
+
+        run = engine.approve("wr_1")
+
+        expect(run["current"]).to eq("build")
+        expect(rounds.size).to eq(1)
+      end
+    end
+  end
 end

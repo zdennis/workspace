@@ -5,6 +5,8 @@ module Workspace
   # ({#pass_step}, {#advance}) and completes after the last; a failed step goes back along its `on_fail`,
   # at once or after a backoff, or stops the run for a person ({#fail_step}); a backoff's retry starts
   # ({#start_retry}) or is held when its pane is no longer the run's ({#hold_retry}); {#finish} ends a run.
+  # A step with a `review:` does not pass on its own checks: its attempt ends `checks_passed` and the step is
+  # `reviewing` while a review round runs ({#pass_step}); the round's outcome decides it ({#decide_review}).
   # Each method takes the stored run, leaves it as it is and returns the run afterwards; a step it starts
   # goes through {WorkflowDispatch#dispatch}.
   class WorkflowProgress
@@ -26,12 +28,28 @@ module Workspace
     end
 
     # Ends the current attempt as passed. A gated step then waits for a person with its locks given up;
-    # any other goes on ({#advance}).
+    # any other goes on ({#advance}). A step with a `review:` whose attempt no round has decided ends the attempt
+    # `checks_passed` instead and starts a review round: the step reads `reviewing`, its `review` holds the round
+    # ("round", "delivery", "started_at", "pending", "redeliveries"), and the round is registered on +ctx+ to run
+    # once the lock is given up.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being checked; left as it is
     # @param ctx [Workspace::WorkflowRunChange::Context] the change's context, which gets the next step's line
     # @return [WorkflowRun] the run afterwards
     def pass_step(run, ctx:) = over(run) { |work| pass(work, ctx) }
+
+    # Decides the review round of the step being reviewed. The attempt the round reviewed already ended
+    # (`checks_passed`); its outcome is rewritten, with no second {WorkflowAttemptRecord#finish}, and
+    # `review_outcome` (`round`, `approvals`, `need`, `must`, `passed`) and `reviews` added. Approved: the step passes, as {#pass_step} would pass it, to its gate or
+    # the next step. Rejected: the attempt and step fail and the run stops for a person with `review_rejected`.
+    # Incomplete: the step stays `reviewing`, the round is marked ended, and the run stops with `review_incomplete`.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being reviewed; left as it is
+    # @param tally [Hash{Symbol=>Object}] the round's tally: :outcome (`:approved`, `:rejected` or `:incomplete`),
+    #   :reviews (the rows it read), :approvals, :need and :must when it counted them, and, for an incomplete one, :problem
+    # @param ctx [Workspace::WorkflowRunChange::Context]
+    # @return [WorkflowRun] the run afterwards
+    def decide_review(run, tally, ctx:) = over(run) { |work| decide_in(work, tally, ctx) }
 
     # Starts the step after the current one, or completes the run after the last.
     #
@@ -119,8 +137,15 @@ module Workspace
     end
 
     def pass(run, ctx)
-      ended = step_state(run)["attempts"].last.merge("ended_at" => now_iso, "outcome" => "passed")
-      record_end(run, ended)
+      last = step_state(run)["attempts"].last
+      # An attempt a round already decided (a gate approved after it, a resume) is never reviewed again.
+      return begin_review(run, ctx) if WorkflowDefinition.review(step_def(run)) && !last.key?("review_outcome")
+      record_end(run, last.merge("ended_at" => now_iso, "outcome" => "passed"))
+      passed(run, ctx)
+    end
+
+    # The step passed: its gate, else the next step.
+    def passed(run, ctx)
       state = step_state(run)
       state["state"] = "passed"
       event(run, "step_passed", "step" => run["current"], "attempt" => state["attempts"].last["n"])
@@ -132,6 +157,63 @@ module Workspace
       run["reason"] = reason("waiting_you", "kind" => "gate", "step" => run["current"],
         "artifacts" => step_def(run)["produces"].map { |file| File.join(run["artifacts_dir"], file) })
       event(run, "gate_waiting", "step" => run["current"])
+    end
+
+    # The author's turn passed every check; the attempt ends now, so its usage counts and its step timeout stops.
+    def begin_review(run, ctx)
+      record_end(run, step_state(run)["attempts"].last.merge("ended_at" => now_iso, "outcome" => "checks_passed"))
+      state = step_state(run)
+      state["state"] = "reviewing"
+      event(run, "step_checks_passed", "step" => run["current"], "attempt" => state["attempts"].last["n"])
+      begin_round(run, ctx)
+    end
+
+    # The one start of a review round: the round is spent here, and its delivery is registered on +ctx+.
+    def begin_round(run, ctx)
+      state = step_state(run)
+      round = state["review_rounds"].to_i + 1
+      state["review_rounds"] = round
+      state["review"] = {"round" => round, "delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3),
+                         "pending" => WorkflowDefinition.review(step_def(run))["from"].dup, "redeliveries" => 0}
+      run["state"] = "running"
+      run["reason"] = nil
+      attempt = state["attempts"].last["n"]
+      event(run, "review_started", "step" => run["current"], "attempt" => attempt, "round" => round)
+      ctx.review({"step" => run["current"], "attempt" => attempt, "round" => round})
+    end
+
+    def decide_in(run, tally, ctx)
+      state = step_state(run)
+      round = state["review"] || {}
+      attempt = state["attempts"].last
+      reviews = Array(tally[:reviews])
+      details = {"step" => run["current"], "attempt" => attempt["n"], "round" => round["round"]}
+      outcome = tally[:outcome]
+      event(run, "review_ended", details.merge("outcome" => outcome.to_s))
+      decided = {"round" => round["round"], "approvals" => tally[:approvals], "need" => tally[:need], "must" => tally[:must], "passed" => outcome == :approved}
+      case outcome
+      when :approved
+        # The round record goes here; T27 must copy its started_at, ended_at and usage onto the attempt first.
+        state.delete("review")
+        state["attempts"][-1] = attempt.merge("outcome" => "passed", "review_outcome" => decided, "reviews" => reviews)
+        passed(run, ctx)
+      when :rejected
+        # As above: T27 copies the round's started_at, ended_at and usage onto the attempt before this delete.
+        state.delete("review")
+        state["attempts"][-1] = attempt.merge("outcome" => "failed", "code" => "review_rejected", "review_outcome" => decided, "reviews" => reviews)
+        state["state"] = "failed"
+        event(run, "step_failed", "step" => run["current"], "attempt" => attempt["n"], "cause" => "review")
+        stop_review(run, "review_rejected", details.merge("reviews" => reviews))
+      else
+        state["review"] = round.merge("delivery" => nil, "ended_at" => now_iso, "reviews" => reviews)
+        stop_review(run, "review_incomplete", details.merge("reviews" => reviews, "problem" => tally[:problem]).compact)
+      end
+    end
+
+    def stop_review(run, code, details)
+      @dispatch.release(run)
+      run["state"] = "waiting"
+      run["reason"] = reason(code, details)
     end
 
     def go_on(run, ctx)
