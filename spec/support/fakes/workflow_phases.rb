@@ -45,7 +45,8 @@ class RecordingGitExclude
 end
 
 # Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored
-# Hash and a real Context, keeps the line a block registered in +deliveries+ (it types nothing) and returns the run.
+# Hash and a real Context, keeps the line a block registered in +deliveries+ (it types nothing) and returns the run;
+# a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
   CONTROL_METHODS = %i[calls events deliveries].freeze
 
@@ -53,10 +54,12 @@ class RecordingRunChange
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
+  # @param busy [Array<String>] ids another process is changing, so a +nonblocking+ call answers nil
   # A block that raises leaves the stored run as it was, as the real store writes only when the block returns.
-  def initialize(runs, finished: [])
+  def initialize(runs, finished: [], busy: [])
     @runs = runs
     @finished = finished
+    @busy = busy
     @calls = []
     @events = []
     @deliveries = []
@@ -65,6 +68,7 @@ class RecordingRunChange
   def call(run_id, nonblocking: false)
     @calls << [:call, run_id, {nonblocking: nonblocking}]
     raise Workspace::Error.new("run #{run_id} has ended", code: "run_not_active") if @finished.include?(run_id)
+    return nil if nonblocking && @busy.include?(run_id)
     stored = @runs.fetch(run_id)
     ctx = Workspace::WorkflowRunChange::Context.new
     before = Marshal.load(Marshal.dump(stored))
@@ -192,7 +196,8 @@ class RecordingWorkflowPrompt
 end
 
 # Fake of Workspace::WorkflowDispatch for the phases above it: +dispatch+ registers a line naming the run's step on
-# +ctx+ and returns the run as it was given; +check_pane+ refuses the panes it was told are busy; +release+ records
+# +ctx+ and returns the run as it was given (with +appends+, with a new attempt on the current step and no reason);
+# +check_pane+ refuses the panes it was told are busy; +release+ records
 # the run's id; +drop_park+ returns the run without its park.
 class RecordingDispatch
   CONTROL_METHODS = %i[calls].freeze
@@ -200,8 +205,10 @@ class RecordingDispatch
   attr_reader :calls
 
   # @param busy [Array<String>] the panes +check_pane+ refuses with `pane_has_run`
-  def initialize(busy: [])
+  # @param appends [Boolean] whether +dispatch+ starts a new attempt, as a delivered line does
+  def initialize(busy: [], appends: false)
     @busy = busy
+    @appends = appends
     @calls = []
   end
 
@@ -209,7 +216,11 @@ class RecordingDispatch
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:dispatch, run.id, {context: context, budgeted: budgeted, retry_of: retry_of}]
     ctx.deliver("step" => run.current)
-    run
+    return run unless @appends
+    hash = run.to_mutable_h
+    attempts = hash["steps"][hash["current"]]["attempts"]
+    attempts << {"n" => attempts.size + 1}
+    Workspace::WorkflowRun.from_h(hash.merge("reason" => nil))
   end
 
   def check_pane(pane, run_id: nil)
@@ -527,8 +538,9 @@ class RecordingInbox
   end
 end
 
-# Fake of Workspace::WorkflowEvaluation#evaluate and #finish_check for the decision phase: +evaluate+ registers the
-# check it was given on +ctx+ and answers the run as given; +finish_check+ answers the stored run.
+# Fake of Workspace::WorkflowEvaluation#evaluate and #finish_check for the decision and recovery phases: +evaluate+
+# registers the check it was given on +ctx+ and answers the run as given (with the reason it was given, when one
+# was); +finish_check+ answers the stored run.
 class RecordingEvaluation
   CONTROL_METHODS = %i[calls].freeze
 
@@ -536,9 +548,11 @@ class RecordingEvaluation
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param check [Hash, nil] what +evaluate+ registers on its context
-  def initialize(runs, check: nil)
+  # @param reason [Hash, nil] the reason +evaluate+ leaves on the run
+  def initialize(runs, check: nil, reason: nil)
     @runs = runs
     @check = check
+    @reason = reason
     @calls = []
   end
 
@@ -546,7 +560,7 @@ class RecordingEvaluation
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:evaluate, run.current]
     ctx.check(@check) if @check
-    run
+    @reason ? Workspace::WorkflowRun.from_h(run.to_mutable_h.merge("reason" => @reason)) : run
   end
 
   def finish_check(run_id, check)
