@@ -421,7 +421,7 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
 
       def sub(at, id, input, output) = assistant(at, id, input, output, "isSidechain" => true, "agentId" => "a1")
 
-      def usage_after = record.finish(run: run, step: step, attempt: attempt).to_mutable_h["usage"]
+      def usage_after = record.finish(run: run, step: step, attempt: attempt).thawed["usage"]
 
       it "sums a sub-agent's own file with the main thread's, inside the window only" do
         write_sub("agent-a1.jsonl", sub("2026-10-04T11:59:00Z", "x0", 7000, 700), sub("2026-10-04T12:03:00Z", "x1", 100, 40))

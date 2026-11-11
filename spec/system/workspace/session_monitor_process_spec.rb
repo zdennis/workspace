@@ -24,7 +24,7 @@ RSpec.describe Workspace::SessionMonitor do
     allow(snapshot).to receive(:find_descendant)
       .with(200, ["claude"], hash_including(include_root: true))
       .and_return({pid: 250, command: "claude", args: "claude"})
-    allow(tmux).to receive(:capture_pane).and_return("output")
+    allow(tmux).to receive(:capture_pane_by_id).and_return("output")
   end
 
   def pane(id)

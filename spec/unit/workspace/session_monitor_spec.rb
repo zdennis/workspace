@@ -24,11 +24,18 @@ RSpec.describe Workspace::SessionMonitor do
     allow(snapshot).to receive(:find_descendant)
       .with(200, ["claude"], hash_including(include_root: true))
       .and_return({pid: 250, command: "claude", args: "claude"})
-    allow(tmux).to receive(:capture_pane).and_return("output")
+    allow(tmux).to receive(:capture_pane_by_id).and_return("output")
   end
 
   def pane(id)
     monitor.snapshot["panes"].find { |p| p["pane_id"] == id }
+  end
+
+  it "captures each pane by its pane id, never by index" do
+    monitor.scan
+
+    expect(tmux).to have_received(:capture_pane_by_id).with("%1")
+    expect(tmux).to have_received(:capture_pane_by_id).with("%2")
   end
 
   describe "#main_turn_evidence" do
@@ -305,7 +312,7 @@ RSpec.describe Workspace::SessionMonitor do
       slotted.scan
       allow(clock).to receive(:now).and_return(now + 31)
       allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
-      allow(tmux).to receive(:capture_pane).and_return("new output")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("new output")
 
       slotted.scan
 
@@ -370,7 +377,7 @@ RSpec.describe Workspace::SessionMonitor do
       monitor.scan
       allow(clock).to receive(:now).and_return(now + 31)
       monitor.scan
-      allow(tmux).to receive(:capture_pane).and_return("new output")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("new output")
 
       monitor.scan
 
@@ -580,7 +587,7 @@ RSpec.describe Workspace::SessionMonitor do
 
     it "reports waiting even while the pane's output keeps changing" do
       notify
-      allow(tmux).to receive(:capture_pane).and_return("spinner frame")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("spinner frame")
 
       monitor.scan
 
@@ -1233,7 +1240,7 @@ RSpec.describe Workspace::SessionMonitor do
       at(600)
       monitor.scan
       monitor.send_alerts
-      allow(tmux).to receive(:capture_pane).and_return("new output")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("new output")
       at(700)
       monitor.scan
       at(1300)
@@ -1458,7 +1465,7 @@ RSpec.describe Workspace::SessionMonitor do
 
     %w[approval_command approval_patch trust_folder trust_restricted sign_in sign_in_browser sign_in_api_key].each do |name|
       it "reports #{name} as waiting, with a message, though no hook fired" do
-        allow(tmux).to receive(:capture_pane).and_return(screen(name))
+        allow(tmux).to receive(:capture_pane_by_id).and_return(screen(name))
 
         monitor.scan
 
@@ -1468,7 +1475,7 @@ RSpec.describe Workspace::SessionMonitor do
     end
 
     it "does not report ordinary output that quotes the screens' text" do
-      allow(tmux).to receive(:capture_pane).and_return(screen("ordinary_output"))
+      allow(tmux).to receive(:capture_pane_by_id).and_return(screen("ordinary_output"))
 
       monitor.scan
 
@@ -1476,7 +1483,7 @@ RSpec.describe Workspace::SessionMonitor do
     end
 
     it "ignores a prompt that scrolled out of the last lines" do
-      allow(tmux).to receive(:capture_pane).and_return(screen("approval_command") + ("output\n" * 60))
+      allow(tmux).to receive(:capture_pane_by_id).and_return(screen("approval_command") + ("output\n" * 60))
 
       monitor.scan
 
@@ -1484,9 +1491,9 @@ RSpec.describe Workspace::SessionMonitor do
     end
 
     it "stops waiting once the screen changes" do
-      allow(tmux).to receive(:capture_pane).and_return(screen("trust_folder"))
+      allow(tmux).to receive(:capture_pane_by_id).and_return(screen("trust_folder"))
       monitor.scan
-      allow(tmux).to receive(:capture_pane).and_return("working on it\n")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("working on it\n")
 
       monitor.scan
 
@@ -1494,7 +1501,7 @@ RSpec.describe Workspace::SessionMonitor do
     end
 
     it "keeps the first start time while the same screen stays" do
-      allow(tmux).to receive(:capture_pane).and_return(screen("sign_in"))
+      allow(tmux).to receive(:capture_pane_by_id).and_return(screen("sign_in"))
       monitor.scan
       allow(clock).to receive(:now).and_return(now + 60)
       monitor.scan
@@ -1503,19 +1510,19 @@ RSpec.describe Workspace::SessionMonitor do
     end
 
     it "keeps one wait, the hook's, when both the hook and the screen report the prompt" do
-      allow(tmux).to receive(:capture_pane).and_return(screen("approval_command"))
+      allow(tmux).to receive(:capture_pane_by_id).and_return(screen("approval_command"))
       monitor.scan
       monitor.record("event" => "notification", "pane_id" => "%3", "message" => "Approval requested")
-      allow(tmux).to receive(:capture_pane).and_return(screen("approval_command") + "\n")
+      allow(tmux).to receive(:capture_pane_by_id).and_return(screen("approval_command") + "\n")
       monitor.scan
-      allow(tmux).to receive(:capture_pane).and_return("approved\n")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("approved\n")
       monitor.scan
 
       expect(codex_pane).to include("state" => "waiting", "waiting_message" => "Approval requested")
     end
 
     it "does not match a quoted browser or API key heading alone" do
-      allow(tmux).to receive(:capture_pane).and_return("  Finish signing in via your browser\n  Paste or type your API key\n")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("  Finish signing in via your browser\n  Paste or type your API key\n")
 
       monitor.scan
 
@@ -1525,7 +1532,7 @@ RSpec.describe Workspace::SessionMonitor do
     it "does not look for these screens in a Claude Code pane" do
       claude = {id: "%2", index: 1, pid: 200, command: "node", cwd: "/project", title: "Claude"}
       allow(tmux).to receive(:pane_details).and_return([claude])
-      allow(tmux).to receive(:capture_pane).and_return(screen("approval_command"))
+      allow(tmux).to receive(:capture_pane_by_id).and_return(screen("approval_command"))
 
       monitor.scan
 
@@ -2082,7 +2089,7 @@ RSpec.describe Workspace::SessionMonitor do
         first = alerting_monitor
         first.scan
         at(100)
-        allow(tmux).to receive(:capture_pane).and_return("new output")
+        allow(tmux).to receive(:capture_pane_by_id).and_return("new output")
         first.scan
         at(140)
         first.scan
@@ -2286,7 +2293,7 @@ RSpec.describe Workspace::SessionMonitor do
       it "starts counting again when the screen changes" do
         restarted = restored_done
         allow(clock).to receive(:now).and_return(now + 120)
-        allow(tmux).to receive(:capture_pane).and_return("moved")
+        allow(tmux).to receive(:capture_pane_by_id).and_return("moved")
         restarted.scan
         allow(clock).to receive(:now).and_return(now + 140)
         restarted.scan
@@ -2602,7 +2609,7 @@ RSpec.describe Workspace::SessionMonitor, "display_label" do
     allow(snapshot).to receive(:find_descendant)
       .with(200, ["claude"], hash_including(include_root: true))
       .and_return({pid: 250, command: "claude", args: "claude"})
-    allow(tmux).to receive(:capture_pane).and_return("output")
+    allow(tmux).to receive(:capture_pane_by_id).and_return("output")
     allow(label_reader).to receive(:read).and_return(title: nil, last_prompt: nil)
     monitor.scan
   end
@@ -2746,7 +2753,7 @@ RSpec.describe Workspace::SessionMonitor, "task" do
     allow(snapshot).to receive(:find_descendant)
       .with(200, ["claude"], hash_including(include_root: true))
       .and_return({pid: 250, command: "claude", args: "claude"})
-    allow(tmux).to receive(:capture_pane).and_return("output")
+    allow(tmux).to receive(:capture_pane_by_id).and_return("output")
     allow(label_reader).to receive(:read).and_return(title: "Transcript title", last_prompt: nil)
     monitor.scan
   end

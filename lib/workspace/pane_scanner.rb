@@ -166,7 +166,7 @@ module Workspace
     # Output is hashed rather than compared: a pane's scrollback is large, and
     # only the fact that it changed matters.
     def refresh_activity(pane, now)
-      screen = @tmux.capture_pane(@session_name, pane[:index]).to_s
+      screen = @tmux.capture_pane_by_id(pane[:pane_id]).to_s
       digest = Digest::SHA256.hexdigest(screen)
 
       if pane[:digest] != digest

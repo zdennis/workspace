@@ -840,7 +840,7 @@ RSpec.describe Workspace::AgentRestart do
 
   context "when the agent restarts itself (Stop event, screen quiet, idle_after not yet elapsed)" do
     let(:wall_clock_source) { Struct.new(:wall) { def now = wall[0] }.new(wall) }
-    let(:session_tmux) { instance_double(Workspace::Tmux, pane_details: [{id: "%18", index: 1, pid: 1, command: "node", cwd: "/p", title: "Claude"}], capture_pane: "output") }
+    let(:session_tmux) { instance_double(Workspace::Tmux, pane_details: [{id: "%18", index: 1, pid: 1, command: "node", cwd: "/p", title: "Claude"}], capture_pane_by_id: "output") }
     let(:process_tree) do
       tree = instance_double(Workspace::ProcessTree)
       snap = instance_double(Workspace::ProcessTree::Snapshot)

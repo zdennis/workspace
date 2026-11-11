@@ -125,7 +125,7 @@ RSpec.describe "EventLog adversarial concurrency" do
       allow(tmux).to receive(:pane_details).and_return([{id: "%2", index: 1, pid: 200, command: "node", cwd: "/p", title: "Claude"}])
       allow(process_tree).to receive(:snapshot).and_return(snapshot)
       allow(snapshot).to receive(:find_descendant).and_return({pid: 250, command: "claude", args: "claude"})
-      allow(tmux).to receive(:capture_pane).and_return("output")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("output")
     end
 
     def monitor
