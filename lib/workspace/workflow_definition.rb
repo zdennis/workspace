@@ -9,8 +9,14 @@ module Workspace
   # Every problem in a file is collected and reported at once, with code
   # `invalid_workflow`, so a definition is fixed in one pass.
   class WorkflowDefinition
-    # The only `schema_version` a definition may name.
-    SCHEMA_VERSION = 1
+    # The current `schema_version`, and the one a definition without the key gets.
+    SCHEMA_VERSION = "0.1"
+
+    # Every `schema_version` a definition may name.
+    SCHEMA_VERSIONS = %w[0.1].freeze
+
+    # Old integer `schema_version` values, read as the version they became.
+    LEGACY_SCHEMA_VERSIONS = {1 => "0.1"}.freeze
 
     # What `step done --code` accepts.
     CODE_PATTERN = /\A[a-z][a-z0-9_]{0,39}\z/
@@ -374,10 +380,21 @@ module Workspace
       nil
     end
 
+    def schema_version_from(raw)
+      return SCHEMA_VERSION unless raw.key?("schema_version")
+      value = raw["schema_version"]
+      version = case value
+      when String then value
+      when Float then value.to_s
+      when Integer then LEGACY_SCHEMA_VERSIONS[value]
+      end
+      return version if SCHEMA_VERSIONS.include?(version)
+      problem "schema_version must be one of #{SCHEMA_VERSIONS.join(", ")}, got #{value.inspect}"
+    end
+
     def build(raw)
       unknown_keys(raw, TOP_KEYS, "the workflow")
-      version = raw.fetch("schema_version", SCHEMA_VERSION)
-      problem "schema_version must be #{SCHEMA_VERSION}, got #{version.inspect}" unless version == SCHEMA_VERSION
+      schema_version_from(raw)
       problem "id must be #{id.inspect}, the name of its file, got #{raw["id"].inspect}" if raw.key?("id") && raw["id"] != id
       problem "the workflow id #{id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(id)
       inputs = inputs_from(raw["inputs"])
