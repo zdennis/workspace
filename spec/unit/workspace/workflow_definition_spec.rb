@@ -139,6 +139,53 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "a step's max_attempts" do
+    def step_problems(value)
+      problems("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    max_attempts: #{value}\n")
+    end
+
+    it "reads a whole number of 1 or more and defaults to none" do
+      definition = parse("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    max_attempts: 3\n  b:\n    prompt: P\n    produces: [b.md]\n")
+      expect(definition.steps.map { |step| step["max_attempts"] }).to eq([3, nil])
+      expect(described_class.step_max_attempts(definition.steps[0])).to eq(3)
+      expect(described_class.step_max_attempts(definition.steps[1])).to be_nil
+      expect(described_class.step_max_attempts({"id" => "x"})).to be_nil
+    end
+
+    it "accepts an explicit nil as none" do
+      expect(step_problems("~")).to eq([])
+    end
+
+    it "refuses 0, a string and a fraction" do
+      ["0", "\"3\"", "1.5", "-1"].each do |value|
+        expect(step_problems(value)).to include(a_string_matching(/step a: max_attempts must be a whole number of 1 or more, got/))
+      end
+    end
+  end
+
+  describe "step attempt warnings" do
+    def found(yaml, code)
+      parse(yaml).warnings.select { |w| w["code"] == code }
+    end
+
+    let(:looping) { "max_attempts: 10\nsteps:\n  a:\n    prompt: P\n    produces: [a.md]\n    max_attempts: 2\n  b:\n    prompt: P\n    produces: [b.md]\n    on_fail: {goto: a, max: 2}\n" }
+
+    it "warns when on_fail.max + 1 is above the target's cap" do
+      expect(found(looping, "on_fail_exceeds_step_attempts")).to match([include("step" => "b", "message" => /up to 3 times.*max_attempts: 2/)])
+    end
+
+    it "is quiet when the cap holds every run of the target or the target has none" do
+      expect(found(looping.sub("max_attempts: 2", "max_attempts: 3"), "on_fail_exceeds_step_attempts")).to eq([])
+      expect(found(looping.sub("    max_attempts: 2\n", ""), "on_fail_exceeds_step_attempts")).to eq([])
+    end
+
+    it "warns when a step's cap is above the run's" do
+      yaml = looping.sub("max_attempts: 10", "max_attempts: 2").sub("max_attempts: 2\n  b", "max_attempts: 5\n  b")
+      expect(found(yaml, "step_attempts_exceed_run")).to match([include("step" => "a", "message" => /max_attempts: 5.*max_attempts: 2/)])
+      expect(found(looping, "step_attempts_exceed_run")).to eq([])
+    end
+  end
+
   describe "on_fail_exceeds_max_attempts" do
     def retry_warnings(attempts, *steps)
       body = steps.map { |id, extra| "  #{id}:\n    prompt: P\n    produces: [#{id}.md]\n#{extra}" }.join
@@ -263,7 +310,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "id" => "demo", "title" => "demo", "description" => nil, "use_when" => nil, "applies_to" => [], "inputs" => {}, "include" => [], "instructions" => nil,
       "max_attempts" => 6, "stall" => nil, "redeliver" => 3, "deny" => [],
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
-                   "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn"}]
+                   "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn", "max_attempts" => nil}]
     )
   end
 
@@ -526,7 +573,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, after)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, max_attempts, after)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",

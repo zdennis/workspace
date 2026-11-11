@@ -35,7 +35,7 @@ module Workspace
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
     TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget deny steps].freeze
-    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout after].freeze
+    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts after].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
     ON_TIMEOUT_ACTIONS = %w[warn interrupt fail].freeze
@@ -210,7 +210,7 @@ module Workspace
         {"code" => "on_timeout_without_timeout", "step" => step["id"],
          "message" => "step #{step["id"]} sets on_timeout: #{step["on_timeout"]} but has no timeout:, so it never applies. Add timeout: (such as 2h) or remove on_timeout."}
       end
-      missing + idle + retry_warnings
+      missing + idle + retry_warnings + step_attempt_warnings
     end
 
     # Every project command a definition checks with: each step's `status: command:` and each `require: command:` not marked optional.
@@ -328,7 +328,35 @@ module Workspace
       (value.is_a?(Integer) && value.between?(1, MAX_LOG_TAIL)) ? value : nil
     end
 
+    # @return [Integer, nil] a step's own attempt cap, nil when it has none (an absent key counts as none)
+    def self.step_max_attempts(step)
+      value = step.is_a?(Hash) ? step["max_attempts"] : nil
+      value.is_a?(Integer) ? value : nil
+    end
+
     private
+
+    # Step caps that can't hold: the step an `on_fail` goes back to runs once and then once per
+    # retry, so `max + 1` above its cap means a retry that can never start; and a step cap
+    # above the run's `max_attempts` never applies, since the run cap is spent first.
+    def step_attempt_warnings
+      by_id = steps.to_h { |step| [step["id"], step] }
+      loops = steps.filter_map do |step|
+        on_fail = step["on_fail"] or next
+        cap = self.class.step_max_attempts(by_id[on_fail["goto"]]) or next
+        next if on_fail["max"] + 1 <= cap
+        {"code" => "on_fail_exceeds_step_attempts", "step" => step["id"],
+         "message" => "step #{step["id"]} sets on_fail max: #{on_fail["max"]}, which runs step #{on_fail["goto"]} up to #{on_fail["max"] + 1} times, but step #{on_fail["goto"]} sets max_attempts: #{cap}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
+      end
+      run_cap = @data["max_attempts"]
+      over = steps.filter_map do |step|
+        cap = self.class.step_max_attempts(step)
+        next if cap.nil? || cap <= run_cap
+        {"code" => "step_attempts_exceed_run", "step" => step["id"],
+         "message" => "step #{step["id"]} sets max_attempts: #{cap}, above the workflow's max_attempts: #{run_cap}, so the run stops first. Lower the step's cap or raise the workflow's."}
+      end
+      loops + over
+    end
 
     # An `on_fail` whose retries can never all start. The run spends one attempt per step it
     # delivers, so step N (1-based) fails for the first time on attempt N, and each retry
@@ -584,8 +612,15 @@ module Workspace
         "on_fail" => on_fail_from(raw["on_fail"], earlier, where),
         "context" => context_from(raw.fetch("context", "fresh"), "#{where}: context"),
         "timeout" => duration_from(raw["timeout"], "#{where}: timeout"),
-        "on_timeout" => on_timeout_from(raw.fetch("on_timeout", DEFAULT_ON_TIMEOUT), where)
+        "on_timeout" => on_timeout_from(raw.fetch("on_timeout", DEFAULT_ON_TIMEOUT), where),
+        "max_attempts" => step_attempts_from(raw["max_attempts"], where)
       }
+    end
+
+    def step_attempts_from(value, where)
+      return nil if value.nil?
+      return value if value.is_a?(Integer) && value >= 1
+      problem "#{where}: max_attempts must be a whole number of 1 or more, got #{value.inspect}"
     end
 
     def prompt_from(raw, where)
