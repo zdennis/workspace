@@ -18,7 +18,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:lock_dir) { File.join(@dir, "state", "locks", "ns") }
   let(:now) { [Time.utc(2026, 10, 4, 12, 0, 0)] }
   let(:ids) { %w[wr_1 wr_2 wr_3] }
-  let(:store) { Interceptable.subclass(Workspace::WorkflowRunStore, :update, :find).new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
+  let(:store) { Interceptable.subclass(Workspace::WorkflowRunStore, :change, :run).new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
   let(:liveness) { RunFileLiveness.new(runs_dir) }
   let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
   let(:resources) { Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: liveness, wall_clock: -> { now.first.to_i }) }
@@ -2590,7 +2590,7 @@ RSpec.describe Workspace::WorkflowEngine do
         armed = true
         baseline
       end
-      store.on(:update) do |original, *args, **options, &block|
+      store.on(:change) do |original, *args, **options, &block|
         if armed
           armed = false
           raise Workspace::Error.new("the run file can't be written", code: "run_file_unreadable")
@@ -2763,7 +2763,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "is not stopped for a run file that can't be read just then" do
       to_verify
       engine.turn_ended("wr_1", pane: "%5")
-      allow(store).to receive(:find).and_raise(Workspace::Error, "Could not access the workflow run store")
+      allow(store).to receive(:run).and_raise(Workspace::Error, "Could not access the workflow run store")
 
       expect(stop_whens.last.call).to be false
     end
@@ -3554,7 +3554,7 @@ RSpec.describe Workspace::WorkflowEngine do
       it "refuses a pane another run has, now and not an hour from now" do
         undelivered
         panes.bind(workspace: "other", pane: "%9", run_id: "wr_2")
-        store.on(:find) { |original, id| (id == "wr_2") ? {"state" => "running"} : original.call(id) }
+        store.on(:run) { |original, id| (id == "wr_2") ? Workspace::WorkflowRun.from_h({"state" => "running"}) : original.call(id) }
 
         expect { engine.park("wr_1", pane: "%9") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
         expect(parked).to be_nil
@@ -4937,7 +4937,7 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     it "does not raise when the run store can't be read" do
-      allow(store).to receive(:active).and_raise(NoMethodError, "undefined method for nil")
+      allow(store).to receive(:going).and_raise(NoMethodError, "undefined method for nil")
 
       expect(engine.workspace_killed("app")).to eq("cancelled" => [], "failed" => [])
     end
@@ -4945,7 +4945,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "ends the other runs, and names the one it could not end, when ending one raises" do
       start(workspace: "app.worktree-a", pane: "%5")
       start(workspace: "app.worktree-a", pane: "%6")
-      store.on(:update) do |original, id, **options, &block|
+      store.on(:change) do |original, id, **options, &block|
         raise NoMethodError, "undefined method 'fetch' for nil" if id == "wr_1"
         original.call(id, **options, &block)
       end

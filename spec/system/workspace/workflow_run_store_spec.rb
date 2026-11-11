@@ -569,22 +569,22 @@ RSpec.describe Workspace::WorkflowRunStore do
       expect(asked).to eq([["%1", "a"], ["%2", "b"]])
     end
 
-    it "reads through the Hash methods" do
+    it "is what the Hash methods read and write through" do
       create
       calls = []
       probe = Class.new(described_class) do
-        define_method(:find) { |id| (calls << :find) && super(id) }
-        define_method(:active) { (calls << :active) && super() }
-        define_method(:archived) { (calls << :archived) && super() }
-        define_method(:update) { |id, **kw, &block| (calls << :update) && super(id, **kw, &block) }
+        define_method(:run) { |id| (calls << :run) && super(id) }
+        define_method(:going) { (calls << :going) && super() }
+        define_method(:finished) { (calls << :finished) && super() }
+        define_method(:change) { |id, **kw, &block| (calls << :change) && super(id, **kw, &block) }
       end.new(dir: runs_dir, archive_dir: archive_dir)
 
-      probe.run("wr_1")
-      probe.going
-      probe.finished
-      probe.change("wr_1") { |run| run }
+      probe.find("wr_1")
+      probe.active
+      probe.archived
+      probe.update("wr_1") { |run| run }
 
-      expect(calls).to eq(%i[find active archived update])
+      expect(calls).to eq(%i[run going finished change])
     end
 
     it "stores the run the block returns and returns it" do

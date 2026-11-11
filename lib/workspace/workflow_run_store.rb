@@ -11,7 +11,7 @@ module Workspace
   # is what keeps its locks alive (see {RunLiveness}); a finished run is moved
   # to the archive, so listing the runs still going reads only those.
   #
-  # Every change to a run happens in {#update}, under an exclusive lock on the
+  # Every change to a run happens in {#change}, under an exclusive lock on the
   # run's own lock file, and the state file is replaced whole, so a reader
   # needs no lock and never sees a torn write.
   class WorkflowRunStore
@@ -42,8 +42,8 @@ module Workspace
     #
     # The store-wide create lock (`.create.lock` beside the runs directory) is held
     # from +check+ to the write, so two creations can't both pass a check on
-    # the runs going. Nothing under it takes a run's own lock ({#update}), and
-    # {#update} never takes this one, so the two can't deadlock.
+    # the runs going. Nothing under it takes a run's own lock ({#change}), and
+    # {#change} never takes this one, so the two can't deadlock.
     #
     # @param run [Hash{String=>Object}] the run, without an id
     # @param check [#call, nil] (positional, so a run hash is never read as keywords) called under the lock before anything is written; it raises to refuse
@@ -64,20 +64,20 @@ module Workspace
     end
 
     # @param id [String] a run id
-    # @return [Hash{String=>Object}] the run, going or finished
+    # @return [WorkflowRun] the run, going or finished
     # @raise [Workspace::Error] code `unknown_run` when no run has that id
-    def find(id)
-      read(path_for(@dir, id)) || read(path_for(@archive_dir, id)) || raise_unknown(id)
+    def run(id)
+      WorkflowRun.from_h(read(path_for(@dir, id)) || read(path_for(@archive_dir, id)) || raise_unknown(id))
     end
 
-    # @return [Array<Hash>] every run that has not finished, oldest first
-    def active
-      runs_in(@dir).reject { |run| TERMINAL_STATES.include?(run["state"]) }.sort_by { |run| run["created_at"].to_s }
+    # @return [Array<WorkflowRun>] every run that has not finished, oldest first
+    def going
+      runs_in(@dir).reject { |run| TERMINAL_STATES.include?(run.state) }.sort_by { |run| run.to_h["created_at"].to_s }
     end
 
-    # @return [Array<Hash>] finished runs, newest first
-    def archived
-      runs_in(@archive_dir).sort_by { |run| run["ended_at"].to_s }.reverse
+    # @return [Array<WorkflowRun>] finished runs, newest first
+    def finished
+      runs_in(@archive_dir).sort_by { |run| run.to_h["ended_at"].to_s }.reverse
     end
 
     # Run files among the runs still going that can't be read as a run: not
@@ -91,64 +91,6 @@ module Workspace
       # A run that finished between the listing and the read is gone, not unreadable.
       dirs = archived ? [@dir, @archive_dir] : [@dir]
       dirs.flat_map { |dir| @globber.call(File.join(dir, "*.json")) }.reject { |path| read(path) }.select { |path| File.exist?(path) }.sort
-    end
-
-    # Changes one run: yields it under the run's lock, then stores what the
-    # block left in it. A run the block finished is moved to the archive.
-    #
-    # @param id [String] a run id
-    # @param nonblocking [Boolean] return nil at once when another process is changing the run
-    # @yieldparam run [Hash{String=>Object}] the stored run, to change in place
-    # @return [Object, nil] what the block returned; nil when `nonblocking` and the run is busy
-    # @raise [Workspace::Error] code `unknown_run`, or `run_not_active` for a finished run
-    def update(id, nonblocking: false)
-      raise_unknown(id) unless valid_id?(id)
-      lock_path = File.join(@dir, "#{id}.lock")
-      FileLock.new(lock_path).hold(nonblocking: nonblocking) do
-        run = read(path_for(@dir, id))
-        unless run
-          finished = read(path_for(@archive_dir, id))
-          # An unreadable run file keeps its lock file; anything else leaves none behind.
-          FileUtils.rm_f(lock_path) unless File.exist?(path_for(@dir, id))
-          raise finished ? not_active(finished) : raise_unknown(id)
-        end
-        if TERMINAL_STATES.include?(run["state"])
-          # A finished run still here: the move to the archive failed, so it is tried again.
-          begin
-            archive(run, lock_path)
-          rescue SystemCallError
-            nil
-          end
-          raise not_active(run)
-        end
-        result = yield run
-        write(run)
-        archive(run, lock_path) if TERMINAL_STATES.include?(run["state"])
-        result
-      end
-    rescue SystemCallError, JSON::GeneratorError, EncodingError => e
-      raise store_error(e)
-    end
-
-    # The typed reads and the typed write are built over {#find}, {#active},
-    # {#archived} and {#update}, so every read and write still passes through
-    # those until they become wrappers.
-
-    # @param id [String] a run id
-    # @return [WorkflowRun] the run, going or finished
-    # @raise [Workspace::Error] code `unknown_run` when no run has that id
-    def run(id)
-      WorkflowRun.from_h(find(id))
-    end
-
-    # @return [Array<WorkflowRun>] every run that has not finished, oldest first
-    def going
-      active.map { |run| WorkflowRun.from_h(run) }
-    end
-
-    # @return [Array<WorkflowRun>] finished runs, newest first
-    def finished
-      archived.map { |run| WorkflowRun.from_h(run) }
     end
 
     # @param path [String] a checkout path
@@ -200,8 +142,9 @@ module Workspace
       end
     end
 
-    # Changes one run as {#update} does (same lock, errors, retried archive and
-    # archive of a run the block finished), with the run as a frozen value.
+    # Changes one run: yields it under the run's lock, then stores the run the
+    # block returns. A block that returns nil changes nothing: the run as read
+    # is stored again. A run the block finished is moved to the archive.
     #
     # @param id [String] a run id
     # @param nonblocking [Boolean] return nil at once when another process is changing the run
@@ -210,12 +153,71 @@ module Workspace
     # @return [WorkflowRun, nil] the run stored; nil when `nonblocking` and the run is busy
     # @raise [Workspace::Error] code `unknown_run`, or `run_not_active` for a finished run
     def change(id, nonblocking: false)
-      update(id, nonblocking: nonblocking) do |hash|
+      raise_unknown(id) unless valid_id?(id)
+      lock_path = File.join(@dir, "#{id}.lock")
+      FileLock.new(lock_path).hold(nonblocking: nonblocking) do
+        hash = read(path_for(@dir, id))
+        unless hash
+          ended = read(path_for(@archive_dir, id))
+          # An unreadable run file keeps its lock file; anything else leaves none behind.
+          FileUtils.rm_f(lock_path) unless File.exist?(path_for(@dir, id))
+          raise ended ? not_active(ended) : raise_unknown(id)
+        end
+        if TERMINAL_STATES.include?(hash["state"])
+          # A finished run still here: the move to the archive failed, so it is tried again.
+          begin
+            archive(hash, lock_path)
+          rescue SystemCallError
+            nil
+          end
+          raise not_active(hash)
+        end
         read_value = WorkflowRun.from_h(hash)
         stored = yield(read_value) || read_value
-        hash.replace(stored.to_h)
+        write(stored.to_h)
+        archive(stored.to_h, lock_path) if TERMINAL_STATES.include?(stored.state)
         stored
       end
+    rescue SystemCallError, JSON::GeneratorError, EncodingError => e
+      raise store_error(e)
+    end
+
+    # The Hash methods below are wrappers over {#run}, {#going}, {#finished}
+    # and {#change}, kept only for the specs that still read and change runs
+    # as Hashes.
+
+    # @param id [String] a run id
+    # @return [Hash{String=>Object}] the run, going or finished, as a mutable copy
+    # @raise [Workspace::Error] code `unknown_run` when no run has that id
+    def find(id)
+      run(id).to_mutable_h
+    end
+
+    # @return [Array<Hash>] every run that has not finished, oldest first
+    def active
+      going.map(&:to_mutable_h)
+    end
+
+    # @return [Array<Hash>] finished runs, newest first
+    def archived
+      finished.map(&:to_mutable_h)
+    end
+
+    # Changes one run through {#change}, with the run as a Hash the block changes in place.
+    #
+    # @param id [String] a run id
+    # @param nonblocking [Boolean] return nil at once when another process is changing the run
+    # @yieldparam run [Hash{String=>Object}] the stored run, to change in place
+    # @return [Object, nil] what the block returned; nil when `nonblocking` and the run is busy
+    # @raise [Workspace::Error] code `unknown_run`, or `run_not_active` for a finished run
+    def update(id, nonblocking: false)
+      result = nil
+      stored = change(id, nonblocking: nonblocking) do |read|
+        hash = read.to_mutable_h
+        result = yield hash
+        WorkflowRun.from_h(hash)
+      end
+      stored && result
     end
 
     # Appends one line to a run's history. Never raises: the history is a
@@ -253,7 +255,7 @@ module Workspace
     #   newline yet is being written, so it is left for the next call)
     # @raise [Workspace::Error] code `unknown_run` when no run has that id
     def events(id, since: 0, limit: EVENTS_LIMIT)
-      find(id)
+      run(id)
       result = {"events" => [], "truncated" => false, "next_since" => since, "warnings" => []}
       File.open(events_path(id), "r") do |file|
         file.each_line.with_index(1) do |line, n|
@@ -336,7 +338,7 @@ module Workspace
     end
 
     def runs_in(dir)
-      @globber.call(File.join(dir, "*.json")).filter_map { |path| read(path) }
+      @globber.call(File.join(dir, "*.json")).filter_map { |path| read(path) }.map { |run| WorkflowRun.from_h(run) }
     end
 
     def write(run)
@@ -352,10 +354,10 @@ module Workspace
       File.rename(events, File.join(@archive_dir, File.basename(events))) if File.exist?(events)
       File.rename(File.join(@dir, "#{run["id"]}.json"), File.join(@archive_dir, "#{run["id"]}.json"))
       FileUtils.rm_f(lock_path)
-      archived.drop(@archive_limit).each do |old|
+      finished.drop(@archive_limit).each do |old|
         # Evidence first: a crash between the two leaves a run that is still pruned next time.
-        @evidence&.remove(old["id"])
-        FileUtils.rm_f([File.join(@archive_dir, "#{old["id"]}.json"), File.join(@archive_dir, "#{old["id"]}.events.jsonl")])
+        @evidence&.remove(old.id)
+        FileUtils.rm_f([File.join(@archive_dir, "#{old.id}.json"), File.join(@archive_dir, "#{old.id}.events.jsonl")])
       end
     end
 

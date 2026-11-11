@@ -44,7 +44,7 @@ module Workspace
     # @param nonblocking [Boolean] return nil at once when another process is changing the run
     # @yieldparam run [WorkflowRun] the stored run, with its reason history kept
     # @yieldparam ctx [Context] this change's follow-ups
-    # @yieldreturn [WorkflowRun, nil] the run to store; nil stores the run as given
+    # @yieldreturn [WorkflowRun, nil] the run to store; nil means no change: the run as given is stored
     # @return [WorkflowRun, Object, nil] the run afterwards, or what +deliver+ returned when a line was
     #   registered; nil when +nonblocking+ and the run is busy
     # @raise [Workspace::Error] code `unknown_run`, `run_not_active`, and what the block raises
