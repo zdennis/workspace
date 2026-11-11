@@ -177,14 +177,14 @@ module Workspace
 
     # Takes the right to interrupt a step past its `timeout:`. See {WorkflowRecovery#claim_interrupt}.
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`]; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, step:, attempt:, elapsed:, timeout:)
-      @recovery.claim_interrupt(run_id, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout)
+    def claim_interrupt(run_id, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
+      @recovery.claim_interrupt(run_id, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout, cause: cause)
     end
 
     # Ends a {#claim_interrupt}. See {WorkflowRecovery#interrupt_sent}.
     # @return [Symbol] :recorded, :released, :taken_over or :moved_on
-    def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true)
-      @recovery.interrupt_sent(run_id, step: step, attempt: attempt, claim_at: claim_at, sent: sent, record: record)
+    def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true, cause: "timed_out")
+      @recovery.interrupt_sent(run_id, step: step, attempt: attempt, claim_at: claim_at, sent: sent, record: record, cause: cause)
     end
 
     private

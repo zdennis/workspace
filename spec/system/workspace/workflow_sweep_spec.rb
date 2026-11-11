@@ -52,9 +52,11 @@ RSpec.describe Workspace::WorkflowSweep do
     allow(lock_namespace).to receive(:resolve).with(cwd: worktree).and_return(key: "ns", display: "app", dir: lock_dir)
   end
 
-  def flow(stall: "20m", timeout: "1h", on_timeout: "warn", on_fail: nil)
+  def flow(stall: "20m", timeout: "1h", on_timeout: "warn", on_fail: nil, run_timeout: nil, run_action: nil)
     Workspace::WorkflowDefinition.parse(<<~YAML, id: "flow", source: "global", path: "/defs/flow.yml")
       #{"stall: #{stall}" if stall}
+      #{"timeout: #{run_timeout}" if run_timeout}
+      #{"timeout_action: #{run_action}" if run_action}
       steps:
         build:
           prompt: Build it.
@@ -449,6 +451,121 @@ RSpec.describe Workspace::WorkflowSweep do
       end
 
       expect(only_row(sweep.call)).to include("outcome" => "respawned")
+    end
+  end
+
+  describe "a run past its timeout with timeout_action: interrupt" do
+    def run_flow(**options) = begin_run(flow(timeout: nil, run_timeout: "30m", run_action: "interrupt", **options))
+
+    it "interrupts the working agent once under its own cause, and leaves the run going" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+
+      first = only_row(sweep.call)
+      second = only_row(sweep.call)
+
+      expect(first).to include("outcome" => "interrupted", "action" => "interrupt", "cause" => "run_timed_out")
+      expect(pressed).to eq([["app.worktree-x", "%5", Workspace::AgentProvider.find("claude").interrupt_keys]])
+      expect(second).to include("outcome" => "nothing", "reason" => "already_interrupted", "cause" => "run_timed_out")
+      expect(events.count { |each| each["type"] == "step_stalled" && each["cause"] == "run_timed_out" }).to eq(1)
+      expect(events.last).to include("type" => "step_recovered", "action" => "interrupted")
+      run = stored_run(store, "wr_1")
+      expect(run["sweep"]["run_interrupt"]["state"]).to eq("sent")
+      expect(run["sweep"]).not_to have_key("interrupt")
+      expect(run["state"]).to eq("running")
+    end
+
+    it "decides the step once the interrupted agent is idle" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+      sweep.call
+      artifact
+      pane_shows("idle", idle_seconds: 30)
+
+      expect(only_row(sweep.call)).to include("outcome" => "evaluated", "cause" => "interrupted")
+    end
+
+    it "ends held as run_timed_out, not failed or cancelled, when the next attempt would start" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+      sweep.call
+      artifact
+      pane_shows("idle", idle_seconds: 30)
+      sweep.call
+
+      run = stored_run(store, "wr_1")
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "run_timed_out")
+      expect(run["current"]).to eq("verify")
+      expect(types).to include("run_timed_out")
+    end
+
+    it "decides a turn that ended on its own past the deadline, with no stall and either action" do
+      %w[hold interrupt].each do |action|
+        ids.replace(%w[wr_1])
+        FileUtils.rm_rf(runs_dir)
+        begin_run(flow(stall: nil, timeout: nil, run_timeout: "30m", run_action: action))
+        advance(1900)
+        artifact
+        pane_shows("idle", idle_seconds: 300)
+
+        expect(only_row(sweep.call)).to include("outcome" => "evaluated", "cause" => "idle_turn_over")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "run_timed_out")
+        now[0] = Time.utc(2026, 10, 4, 12, 0, 0)
+      end
+    end
+
+    it "does nothing while the run is within its limit" do
+      run_flow
+      advance(600)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "healthy")
+      expect(pressed).to be_empty
+    end
+
+    it "does not press for timeout_action: hold" do
+      begin_run(flow(timeout: nil, run_timeout: "30m"))
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "healthy")
+      expect(pressed).to be_empty
+    end
+
+    it "reports the plan on a dry run and writes nothing" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "dry_run", "cause" => "run_timed_out", "action" => "interrupt")
+      expect(pressed).to be_empty
+      expect(stored_run(store, "wr_1")["sweep"]).to be_nil
+    end
+
+    it "presses once when a step timeout with its own interrupt is due on the same attempt" do
+      begin_run(flow(timeout: "10m", on_timeout: "interrupt", run_timeout: "30m", run_action: "interrupt"))
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call)).to include("outcome" => "interrupted", "cause" => "timed_out")
+      expect(only_row(sweep.call)).to include("reason" => "already_interrupted", "cause" => "timed_out")
+      expect(pressed.size).to eq(1)
+    end
+
+    it "keeps the marks apart: a step's interrupt already sent does not stop the run's own claim" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+      claim, at = engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 1900, timeout: 1800, cause: "run_timed_out")
+      expect(claim).to eq(:claimed)
+      other, = engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 1900, timeout: 600)
+      expect(other).to eq(:claimed)
+      expect(engine.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: at, sent: true, cause: "run_timed_out")).to eq(:recorded)
+      expect(stored_run(store, "wr_1")["sweep"].keys).to include("interrupt", "run_interrupt")
     end
   end
 

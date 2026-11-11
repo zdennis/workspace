@@ -196,15 +196,18 @@ module Workspace
     # @param attempt [Integer, nil]
     # @param elapsed [Numeric] seconds since the attempt began
     # @param timeout [Numeric] the step's `timeout:`
+    # @param cause [String] `timed_out` (the step's `timeout:`) or `run_timed_out` (the run's `timeout_action: interrupt`);
+    #   each keeps its own mark, so both may be due on one attempt and each presses once
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`] to hand to {#interrupt_sent}; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, step:, attempt:, elapsed:, timeout:)
+    def claim_interrupt(run_id, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
       at = nil
+      key = interrupt_key(cause)
       outcome = sweep_change(run_id, step: step, attempt: attempt, running: true) do |stored|
         marks = sweep_marks_for(stored)
-        next :repeat if interrupt_held?(marks["interrupt"])
+        next :repeat if interrupt_held?(marks[key])
         at = now_iso
-        marks["interrupt"] = {"state" => "pending", "at" => at}
-        mark_stall(stored, "timed_out", {"elapsed" => elapsed.round, "timeout" => timeout})
+        marks[key] = {"state" => "pending", "at" => at}
+        mark_stall(stored, cause, {"elapsed" => elapsed.round, "timeout" => timeout})
         :claimed
       end
       (outcome == :claimed) ? [:claimed, at] : outcome
@@ -219,17 +222,19 @@ module Workspace
     # @param claim_at [String] the `at` {#claim_interrupt} gave; a claim another process took over since is left as it is
     # @param sent [Boolean] whether the keys were pressed
     # @param record [Boolean] write `step_recovered` (false when a {#time_out} follows and writes its own)
+    # @param cause [String] the cause given to {#claim_interrupt}
     # @return [Symbol] :recorded, :released, :taken_over or :moved_on
-    def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true)
+    def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true, cause: "timed_out")
+      key = interrupt_key(cause)
       sweep_change(run_id, step: step, attempt: attempt, running: false, blocking: true) do |stored|
         marks = sweep_marks_for(stored)
-        next :taken_over unless marks.dig("interrupt", "at") == claim_at
+        next :taken_over unless marks.dig(key, "at") == claim_at
         unless sent
-          marks.delete("interrupt")
+          marks.delete(key)
           next :released
         end
-        marks["interrupt"] = {"state" => "sent", "at" => now_iso}
-        mark_recovery(stored, "timed_out", "interrupted") if record
+        marks[key] = {"state" => "sent", "at" => now_iso}
+        mark_recovery(stored, cause, "interrupted") if record
         :recorded
       end
     end
@@ -266,6 +271,8 @@ module Workspace
       return marks unless marks.empty?
       run["sweep"] = {"step" => run["current"], "attempt" => step_state(run)["attempts"].last&.fetch("n", nil), "stalled" => {}, "recovered" => {}}
     end
+
+    def interrupt_key(cause) = (cause == "run_timed_out") ? "run_interrupt" : "interrupt"
 
     def interrupt_held?(claim)
       return false unless claim

@@ -25,7 +25,9 @@ module Workspace
   # - the agent's turn is over (the daemon says so, read again just before the
   #   change, and idle for a few seconds) and the pane has been idle for the
   #   definition's `stall`, or the step is past its `timeout` and has
-  #   `on_timeout` `interrupt` or `fail`, or the sweep interrupted it earlier:
+  #   `on_timeout` `interrupt` or `fail`, or the run has used its `timeout:` (either
+  #   `timeout_action`, since the hold only comes at the next attempt's start), or
+  #   the sweep interrupted it earlier:
   #   decides the step as {WorkflowEngine#resume} does when given the same proof
   #   (`step_stalled` cause `idle_turn_over`, `step_recovered` action
   #   `evaluated`); with `on_timeout: fail`, a decision that is a
@@ -36,6 +38,12 @@ module Workspace
   #   `interrupted`); `fail` does the same and then fails the step (action
   #   `failed`, `details.code` `step_timed_out`); `warn` does nothing, and writes
   #   nothing, as before
+  # - the agent is working and the run has used its definition's `timeout:` with
+  #   `timeout_action: interrupt` (and no step timeout is due with an action of
+  #   its own, which presses once for both): the same claim, press and confirm
+  #   under the cause `run_timed_out` and its own mark, never failing the step;
+  #   the turn then ends and the next attempt's start holds the run as
+  #   `run_timed_out`
   #
   # For a run whose step waits on a line that was never delivered (`not_delivered`, a failure a later try can
   # get past), see {WorkflowEngine.redelivery}: once the backoff (1, 5, then 15 minutes after the failed attempt
@@ -239,15 +247,24 @@ module Workspace
 
       stall = WorkflowDefinition.stall(run.definition)
       idle_for = shown["idle_seconds"].to_i
+      deadline = WorkflowDeadline.reading(run, @clock.call)
+      run_spent = deadline && deadline["spent"]
+      run_due = run_spent && deadline["action"] == "interrupt"
       if WorkflowPanes.turn_over?(shown, @clock.call) && elapsed >= IDLE_GRACE && idle_for >= IDLE_FLOOR
-        cause = if WorkflowEngine.sweep_marks(run.to_h).dig("interrupt", "state") == "sent" then "interrupted"
-        elsif (stall && idle_for >= stall) || (timed_out && on_timeout != "warn") then "idle_turn_over"
+        marks = WorkflowEngine.sweep_marks(run.to_h)
+        cause = if marks.dig("interrupt", "state") == "sent" || marks.dig("run_interrupt", "state") == "sent" then "interrupted"
+        elsif (stall && idle_for >= stall) || (timed_out && on_timeout != "warn") || run_spent then "idle_turn_over"
         end
         return row(run, "nothing", reason: "idle", message: "the agent's turn is over; the step is decided once it has been idle for the definition's stall") unless cause
         return evaluate(run, attempt, pass, pane, shown, cause, idle_for, (timed_out && on_timeout == "fail") ? {"elapsed" => elapsed, "timeout" => timeout} : nil)
       end
-      return row(run, "nothing", reason: "healthy", message: nil) unless timed_out
-      return row(run, "nothing", reason: "timed_out", message: "step #{run.current} is past its #{timeout} second timeout (on_timeout: warn)") if on_timeout == "warn"
+      return row(run, "nothing", reason: "healthy", message: nil) unless timed_out || run_due
+      if timed_out && on_timeout == "warn" && !run_due
+        return row(run, "nothing", reason: "timed_out", message: "step #{run.current} is past its #{timeout} second timeout (on_timeout: warn)")
+      end
+      unless timed_out && on_timeout != "warn"
+        return press_for_run_deadline(run, attempt, pass, shown, pane, deadline)
+      end
       return row(run, "nothing", reason: "not_working", message: "step #{run.current} is past its timeout, but pane #{pane} does not show the agent working") unless shown["state"] == "working"
       press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail: on_timeout == "fail")
     end
@@ -294,33 +311,47 @@ module Workspace
     end
 
     # Claims under the run's lock, presses with it given up, confirms under it. For `fail` the confirmation is the failure itself.
-    def press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail:)
-      message = "step #{run.current} is #{elapsed.round} seconds in, past its #{timeout} second timeout"
+    # With +cause+ `run_timed_out` it is the run's `timeout_action: interrupt`: its own mark and cause, so a step's
+    # `on_timeout: interrupt` on the same attempt does not collide; +elapsed+ is the machine time used and +timeout+
+    # the run's limit. It never fails the step, and the run is held by the next attempt's start, as for `hold`.
+    def press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail:, cause: "timed_out")
+      message = if cause == "run_timed_out"
+        "the run has used #{elapsed.round} seconds of its #{timeout} second time limit"
+      else
+        "step #{run.current} is #{elapsed.round} seconds in, past its #{timeout} second timeout"
+      end
       action = then_fail ? "fail" : "interrupt"
-      held = WorkflowEngine.sweep_marks(run.to_h)["interrupt"]
+      held = WorkflowEngine.sweep_marks(run.to_h)[(cause == "run_timed_out") ? "run_interrupt" : "interrupt"]
       return time_out(run, attempt, pass, elapsed, timeout, nil) if then_fail && held && held["state"] == "sent"
       keys = AgentProvider.find(shown["kind"].to_s)&.interrupt_keys.to_a
       if keys.empty?
-        return row(run, "nothing", reason: "no_interrupt_key", cause: "timed_out", message: "#{message}, and workspace knows no interrupt key for #{shown["kind"] || "this agent"}")
+        return row(run, "nothing", reason: "no_interrupt_key", cause: cause, message: "#{message}, and workspace knows no interrupt key for #{shown["kind"] || "this agent"}")
       end
-      return row(run, "dry_run", message: message, cause: "timed_out", action: action) if pass[:dry_run]
+      return row(run, "dry_run", message: message, cause: cause, action: action) if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
-      return row(run, "nothing", reason: "refused", message: refusal, cause: "timed_out") if refusal
+      return row(run, "nothing", reason: "refused", message: refusal, cause: cause) if refusal
       step_ref = {step: run.current, attempt: attempt.n}
-      claim, claim_at = @engine.claim_interrupt(run.id, **step_ref, elapsed: elapsed, timeout: timeout)
+      claim, claim_at = @engine.claim_interrupt(run.id, **step_ref, elapsed: elapsed, timeout: timeout, cause: cause)
       unless claim == :claimed
-        return row(run, "nothing", reason: "already_interrupted", message: message, cause: "timed_out") if claim == :repeat
-        return engine_row(run, claim, "interrupted", cause: "timed_out", message: message, action: action)
+        return row(run, "nothing", reason: "already_interrupted", message: message, cause: cause) if claim == :repeat
+        return engine_row(run, claim, "interrupted", cause: cause, message: message, action: action)
       end
       unless still_working?(run, pane, shown)
-        @engine.interrupt_sent(run.id, **step_ref, claim_at: claim_at, sent: false)
-        return row(run, "nothing", reason: "pane_changed", message: "pane #{pane} no longer shows the agent working in this run; nothing was pressed", cause: "timed_out")
+        @engine.interrupt_sent(run.id, **step_ref, claim_at: claim_at, sent: false, cause: cause)
+        return row(run, "nothing", reason: "pane_changed", message: "pane #{pane} no longer shows the agent working in this run; nothing was pressed", cause: cause)
       end
       failure = press(run, pane, keys)
-      @engine.interrupt_sent(run.id, **step_ref, claim_at: claim_at, sent: failure.nil?, record: !then_fail)
-      return row(run, "failed", reason: "interrupt_failed", message: "could not interrupt pane #{pane}: #{failure}", cause: "timed_out", action: action) if failure
-      return row(run, "interrupted", message: message, cause: "timed_out", action: action) unless then_fail
+      @engine.interrupt_sent(run.id, **step_ref, claim_at: claim_at, sent: failure.nil?, record: !then_fail, cause: cause)
+      return row(run, "failed", reason: "interrupt_failed", message: "could not interrupt pane #{pane}: #{failure}", cause: cause, action: action) if failure
+      return row(run, "interrupted", message: message, cause: cause, action: action) unless then_fail
       time_out(run, attempt, pass, elapsed, timeout, "the agent was interrupted")
+    end
+
+    def press_for_run_deadline(run, attempt, pass, shown, pane, deadline)
+      unless shown["state"] == "working"
+        return row(run, "nothing", reason: "not_working", cause: "run_timed_out", message: "the run's time limit is used, but pane #{pane} does not show the agent working")
+      end
+      press_and_confirm(run, attempt, pass, shown, pane, deadline["used"], deadline["limit"], then_fail: false, cause: "run_timed_out")
     end
 
     # Read just before the press: the same agent still works in the pane, and the pane is still this run's.

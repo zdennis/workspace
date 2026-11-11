@@ -269,7 +269,8 @@ module Workspace
     private_class_method :background_expired?
 
     # The marks the sweep left on the run's current attempt: "stalled" and "recovered" (cause => time) and
-    # "interrupt" (`state` `pending` or `sent`, and `at`). Empty once the run is on another step or attempt.
+    # "interrupt" (a step timeout's press) and "run_interrupt" (the run timeout's press), each `state` `pending`
+    # or `sent` and `at`. Empty once the run is on another step or attempt.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @return [Hash{String=>Object}]

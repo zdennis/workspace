@@ -269,6 +269,22 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(event_types.map(&:first)).to eq(%w[step_stalled step_recovered])
     end
 
+    it "keeps the run's own cause apart from the step's" do
+      stored
+      step_claim = recovery.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 700, timeout: 600)
+      run_claim = recovery.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 700, timeout: 650, cause: "run_timed_out")
+      expect(run_claim.first).to eq(:claimed)
+      expect(recovery.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 700, timeout: 650, cause: "run_timed_out")).to eq(:repeat)
+
+      expect(recovery.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: run_claim.last, sent: true, cause: "run_timed_out")).to eq(:recorded)
+      marks = store.runs["wr_1"]["sweep"]
+      expect(marks["run_interrupt"]["state"]).to eq("sent")
+      expect(marks["interrupt"]["state"]).to eq("pending")
+      expect(marks["stalled"].keys).to eq(%w[timed_out run_timed_out])
+      expect(marks["recovered"].keys).to eq(%w[run_timed_out])
+      expect(step_claim.first).to eq(:claimed)
+    end
+
     it "lets a later sweep take over a pending claim past its hold" do
       stored
       recovery.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 700, timeout: 600)
