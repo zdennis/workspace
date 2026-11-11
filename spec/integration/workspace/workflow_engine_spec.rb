@@ -4076,4 +4076,768 @@ RSpec.describe Workspace::WorkflowEngine do
       end
     end
   end
+
+  describe "a gate" do
+    before do
+      start
+      artifact("plan.md")
+    end
+
+    it "holds the run after the step passes, with what to read, until a person approves" do
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run).to include("state" => "waiting", "current" => "plan")
+      expect(run["steps"]["plan"]).to include("state" => "passed", "gate" => {"state" => "waiting", "since" => "2026-10-04T12:00:00Z"})
+      expect(run["reason"]).to eq("code" => "waiting_you", "since" => "2026-10-04T12:00:00Z",
+        "details" => {"kind" => "gate", "step" => "plan", "artifacts" => [File.join(worktree, ".workflow", "wr_1", "plan.md")]})
+      expect(panes.kicks.size).to eq(1)
+      expect(history.last(2)).to eq(%w[step_passed gate_waiting])
+    end
+
+    it "gives up the step's locks while it waits at the gate" do
+      gated = definition("steps:\n  a:\n    prompt: P\n    uses: [test-db]\n    gate: approve\n")
+      engine.cancel("wr_1")
+      start(gated, inputs: {})
+      events.clear
+
+      run = engine.turn_ended("wr_2")
+
+      expect(run["reason"]["details"]).to include("kind" => "gate")
+      expect(lock_holder("test-db")).to be_nil
+      expect(events.map(&:first)).to eq(%w[lock_released workflow_changed])
+    end
+
+    it "goes on to the next step when approved, with the note in its instructions" do
+      engine.turn_ended("wr_1", pane: "%5")
+
+      run = engine.approve("wr_1", note: "Skip the migration.")
+
+      expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
+      expect(run["steps"]["plan"]["gate"]).to include("state" => "approved", "note" => "Skip the migration.")
+      expect(run["steps"]["build"]["attempts"].last["context"]).to eq(["The plan step was approved with this note: Skip the migration."])
+      expect(history_lines.find { |line| line["type"] == "gate_approved" }).to include("step" => "plan", "note" => "Skip the migration.")
+    end
+
+    it "leaves note off the gate_approved event when the note is blank" do
+      engine.turn_ended("wr_1", pane: "%5")
+
+      engine.approve("wr_1", note: "  ")
+
+      expect(history_lines.find { |line| line["type"] == "gate_approved" }).not_to have_key("note")
+    end
+
+    it "refuses to approve or reject a run that is not at a gate" do
+      [-> { engine.approve("wr_1") }, -> { engine.reject("wr_1", note: "no") }].each do |call|
+        expect(&call).to raise_error(Workspace::Error, "Run wr_1 is not waiting at a gate (step plan is running).") { |error|
+          expect(error.code).to eq("gate_not_waiting")
+          expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempt" => 1, "state" => "running",
+            "expected_step" => nil, "expected_attempt" => nil)
+        }
+      end
+    end
+
+    it "runs the gated step again when rejected, with the note" do
+      engine.turn_ended("wr_1", pane: "%5")
+
+      run = engine.reject("wr_1", note: "Too big; split it.")
+
+      expect(run).to include("state" => "running", "current" => "plan", "reason" => nil)
+      expect(run["steps"]["plan"]["gate"]).to include("state" => "rejected", "attempt" => 1)
+      expect(run["steps"]["plan"]["attempts"].last).to include("n" => 2, "context" => ["The plan step was rejected at its gate: Too big; split it."])
+      expect(File.read(run["steps"]["plan"]["attempts"].last["prompt_file"])).to include("The plan step was rejected at its gate: Too big; split it.")
+      expect(history_lines.find { |line| line["type"] == "gate_rejected" }).to include("step" => "plan", "to" => "plan", "note" => "Too big; split it.")
+    end
+
+    it "refuses to reject to a step after the gated one" do
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect { engine.reject("wr_1", note: "no", to: "build") }
+        .to raise_error(Workspace::UsageError, '--to must be plan or a step before it (plan), got "build".')
+      expect(store.find("wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
+    end
+  end
+
+  describe "a gate's guards" do
+    let(:run_file) { File.join(runs_dir, "wr_1.json") }
+    let(:note_path) { File.join(notes_dir, "2026-10-29-pr-7-feedback.md") }
+    let(:note_sha) { Digest::SHA256.hexdigest("# Triage\n\nF1: fix.\n") }
+
+    # The gated step's first file names the note on its first line, as the pr-feedback triage step writes it.
+    def gate_at(first_line = "note: 2026-10-29-pr-7-feedback.md")
+      start
+      File.write(artifact("plan.md"), "#{first_line}\nfix 1, answer 0\n")
+      FileUtils.mkdir_p(notes_dir)
+      File.write(note_path, "# Triage\n\nF1: fix.\n")
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    def unchanged
+      before = File.binread(run_file)
+      yield
+      expect(File.binread(run_file)).to eq(before)
+    end
+
+    it "approves at the step and attempt the caller saw" do
+      gate_at
+
+      run = engine.approve("wr_1", step: "plan", attempt: 1)
+
+      expect(run).to include("current" => "build", "state" => "running")
+    end
+
+    it "refuses a wrong step or attempt with gate_not_waiting, naming both, and leaves the run file as it was" do
+      gate_at
+
+      {["build", nil] => ["build", nil], ["plan", 2] => ["plan", 2]}.each do |(step, attempt), (expected_step, expected_attempt)|
+        unchanged do
+          expect { engine.approve("wr_1", step: step, attempt: attempt) }
+            .to raise_error(Workspace::Error, /Run wr_1 is not waiting at the gate of step #{expected_step}/) { |error|
+              expect(error.code).to eq("gate_not_waiting")
+              expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempt" => 1, "state" => "passed",
+                "expected_step" => expected_step, "expected_attempt" => expected_attempt)
+            }
+          expect { engine.reject("wr_1", note: "no", step: step, attempt: attempt) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_not_waiting") }
+        end
+      end
+    end
+
+    it "refuses an approval from before a reject once the gate waits again, on a later attempt" do
+      gate_at
+      engine.reject("wr_1", note: "Again.", step: "plan", attempt: 1)
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(store.find("wr_1")["steps"]["plan"]["gate"]["state"]).to eq("waiting")
+
+      unchanged do
+        expect { engine.approve("wr_1", step: "plan", attempt: 1) }.to raise_error(Workspace::Error) { |error|
+          expect(error.code).to eq("gate_not_waiting")
+          expect(error.details).to include("step" => "plan", "attempt" => 2, "expected_attempt" => 1)
+        }
+      end
+      expect(engine.approve("wr_1", step: "plan", attempt: 2)).to include("current" => "build")
+    end
+
+    it "rejects at the step and attempt the caller saw, back to the step it names" do
+      gated = definition("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n    gate: approve\n")
+      start(gated, inputs: {})
+      engine.turn_ended("wr_1")
+      engine.turn_ended("wr_1")
+
+      run = engine.reject("wr_1", note: "Start over.", to: "a", step: "b", attempt: 1)
+
+      expect(run["current"]).to eq("a")
+      expect(run["steps"]["a"]["attempts"].size).to eq(2)
+    end
+
+    it "asks the guard after the step checks, under the run's lock, and changes nothing when it refuses" do
+      gate_at
+      seen = []
+      refuse = ->(stored) {
+        seen << stored["current"]
+        raise Workspace::Error.new("refused", code: "bound_pane")
+      }
+
+      expect { engine.approve("wr_1", step: "build", guard: refuse) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_not_waiting") }
+      expect(seen).to eq([])
+      unchanged do
+        expect { engine.approve("wr_1", step: "plan", attempt: 1, guard: refuse) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("bound_pane") }
+        expect { engine.reject("wr_1", note: "no", guard: refuse) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("bound_pane") }
+      end
+      expect(seen).to eq(%w[plan plan])
+    end
+
+    it "records the note's sha256 with the approval, and names it in the next step's instructions" do
+      gate_at
+
+      run = engine.approve("wr_1", note: "Skip F2.")
+
+      expect(run["steps"]["plan"]["gate"]).to include("state" => "approved", "file" => {"path" => note_path, "sha256" => note_sha})
+      expect(run["steps"]["build"]["attempts"].last["context"]).to eq(["The plan step was approved with this note: Skip F2.",
+        "The approved note is #{note_path}, sha256 #{note_sha}."])
+      expect(history_lines.find { |line| line["type"] == "gate_approved" }).to include("sha256" => note_sha)
+    end
+
+    it "approves a gate whose first file names no note as before, recording no file" do
+      gate_at("fix 1")
+
+      run = engine.approve("wr_1")
+
+      expect(run["steps"]["plan"]["gate"]).not_to have_key("file")
+      expect(run["steps"]["build"]["attempts"].last["context"]).to eq([])
+    end
+
+    it "refuses with gate_note_unreadable a note that is missing, a link, or not a plain file name, and leaves the run file as it was" do
+      gate_at
+      File.delete(note_path)
+      unchanged do
+        expect { engine.approve("wr_1") }.to raise_error(Workspace::Error, /The gate of step plan in run wr_1 has no note that can be read/) { |error|
+          expect(error.code).to eq("gate_note_unreadable")
+          expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempt" => 1, "name" => "2026-10-29-pr-7-feedback.md", "path" => note_path)
+        }
+      end
+
+      File.write(File.join(notes_dir, "real.md"), "x")
+      File.symlink(File.join(notes_dir, "real.md"), note_path)
+      unchanged { expect { engine.approve("wr_1") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_note_unreadable") } }
+
+      File.write(File.join(worktree, ".workflow", "wr_1", "plan.md"), "note: sub/2026-10-29-pr-7-feedback.md\n")
+      unchanged { expect { engine.approve("wr_1") }.to raise_error(Workspace::Error, /is not a plain file name/) { |e| expect(e.code).to eq("gate_note_unreadable") } }
+    end
+
+    it "approves with --note-sha256 when the note still has that hash, recording that hash" do
+      gate_at
+
+      run = engine.approve("wr_1", step: "plan", attempt: 1, note_sha256: note_sha)
+
+      expect(run["steps"]["plan"]["gate"]["file"]).to eq("path" => note_path, "sha256" => note_sha)
+    end
+
+    it "refuses --note-sha256 for a note that changed with stale_revision, naming its hash now, and leaves the run file as it was" do
+      gate_at
+      File.write(note_path, "# Triage\n\nF1: decline.\n")
+      now_sha = Digest::SHA256.hexdigest("# Triage\n\nF1: decline.\n")
+
+      unchanged do
+        expect { engine.approve("wr_1", note_sha256: note_sha) }.to raise_error(Workspace::Error, /The note #{Regexp.escape(note_path)} changed since that revision/) { |error|
+          expect(error.code).to eq("stale_revision")
+          expect(error.details).to eq("revision" => now_sha, "path" => note_path, "run_id" => "wr_1", "step" => "plan", "attempt" => 1)
+        }
+      end
+    end
+
+    it "refuses --note-sha256 on a gate that names no note with gate_note_unreadable" do
+      gate_at("fix 1")
+
+      unchanged do
+        expect { engine.approve("wr_1", note_sha256: note_sha) }.to raise_error(Workspace::Error, /has no `note:` line/) { |error|
+          expect(error.code).to eq("gate_note_unreadable")
+        }
+      end
+    end
+
+    it "checks the step before the note: a stale button on a changed note is gate_not_waiting" do
+      gate_at
+      File.write(note_path, "changed")
+
+      expect { engine.approve("wr_1", step: "plan", attempt: 3, note_sha256: note_sha) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("gate_not_waiting") }
+    end
+  end
+
+  describe "#reject to an earlier step" do
+    it "goes back to that step" do
+      gated = definition("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n    gate: approve\n")
+      start(gated, inputs: {})
+      engine.turn_ended("wr_1")
+      engine.turn_ended("wr_1")
+
+      run = engine.reject("wr_1", note: "Start over.", to: "a")
+
+      expect(run["current"]).to eq("a")
+      expect(run["steps"]["a"]["attempts"].size).to eq(2)
+    end
+  end
+
+  describe "#resume" do
+    it "refuses a run at a gate, which is approved or rejected instead" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error, /waiting at the plan gate\. Approve or reject it, or pass --from STEP/) { |error|
+        expect(error.code).to eq("gate_waiting")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "plan")
+      }
+    end
+
+    it "leaves the run in its pane when it refuses, though another pane was named" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect { engine.resume("wr_1", pane: "%8") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("gate_waiting") }
+      expect { engine.resume("wr_1", pane: "%8", from: "deploy") }.to raise_error(Workspace::UsageError)
+
+      expect(panes.bound.keys).to eq(["%5"])
+      expect(store.find("wr_1")).to include("pane" => "%5", "pending_context" => [])
+    end
+
+    it "runs a failed step again, with the note" do
+      plain = definition("steps:\n  a:\n    prompt: P\n    uses: [test-db]\n    status: bin/check\n")
+      start(plain, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      run = engine.resume("wr_1", note: "The fixture was stale; fixed.")
+
+      expect(run).to include("state" => "running", "reason" => nil)
+      expect(run["steps"]["a"]["attempts"].last).to include("n" => 2, "context" => [
+        "The last attempt of this step failed: its check exited 1 (log: #{File.join(worktree, ".workflow", "wr_1", "steps", "a.1.check.log")}).",
+        "Note from the person who resumed the run: The fixture was stale; fixed."
+      ])
+      expect(lock_holder("test-db")).to include("run_id" => "wr_1")
+    end
+
+    it "types an undelivered step's line again" do
+      panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+      start
+      panes.kick_result = {ok: true}
+
+      run = engine.resume("wr_1")
+
+      expect(run).to include("state" => "running", "reason" => nil)
+      expect(run["steps"]["plan"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2])
+    end
+
+    it "tells the next attempt what an undelivered one would have been told" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+      engine.approve("wr_1", note: "Skip the migration.")
+      panes.kick_result = {ok: true}
+
+      attempts = engine.resume("wr_1")["steps"]["build"]["attempts"]
+
+      expect(attempts.map { |attempt| attempt["context"] }).to eq([["The plan step was approved with this note: Skip the migration."]] * 2)
+      expect(attempts.first["outcome"]).to eq("not_delivered")
+    end
+
+    it "looks again at a step whose turn ended without its files" do
+      start
+      engine.turn_ended("wr_1", pane: "%5")
+      artifact("plan.md")
+
+      expect(engine.resume("wr_1")["steps"]["plan"]["state"]).to eq("passed")
+    end
+
+    it "leaves alone a step an agent is working on" do
+      start
+      events.clear
+
+      before = history
+
+      run = engine.resume("wr_1")
+
+      expect(run["unchanged"]).to eq("an agent is working on step plan")
+      expect(run["steps"]["plan"]["attempts"].size).to eq(1)
+      expect(panes.kicks.size).to eq(1)
+      expect(events).to eq([])
+      expect(history).to eq(before)
+      expect(store.find("wr_1")).not_to have_key("unchanged")
+    end
+
+    describe "a step that reads running while its pane's agent is idle (the turn ended unseen)" do
+      it "passes the step when its files are there" do
+        start
+        artifact("plan.md")
+
+        run = engine.resume("wr_1", turn_over: {"step" => "plan", "attempt" => 1})
+
+        expect(run).not_to have_key("unchanged")
+        expect(run["steps"]["plan"]).to include("state" => "passed")
+        expect(history).to include("run_resumed")
+      end
+
+      it "says which file is missing when one is" do
+        start
+
+        expect(engine.resume("wr_1", turn_over: {"step" => "plan", "attempt" => 1})["reason"]).to include("code" => "turn_ended_incomplete")
+      end
+
+      it "runs the step's check" do
+        to_verify
+
+        expect(engine.resume("wr_1", turn_over: {"step" => "verify", "attempt" => 1})["state"]).to eq("completed")
+        expect(check_calls.size).to eq(1)
+      end
+
+      it "decides nothing when the run has moved to another step or attempt since the turn's end was seen" do
+        to_build
+
+        [{"step" => "plan", "attempt" => 1}, {"step" => "build", "attempt" => 2}].each do |seen|
+          run = engine.resume("wr_1", turn_over: seen)
+
+          expect(run["unchanged"]).to eq("an agent is working on step build")
+          expect(run).to include("current" => "build")
+        end
+        expect(panes.kicks.size).to eq(2)
+      end
+    end
+
+    it "leaves a check that is still running alone, and starts no second one" do
+      to_verify
+      store.update("wr_1") do |run|
+        run["steps"]["verify"]["state"] = "checking"
+        run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T12:00:00Z"}
+      end
+      before = history
+
+      run = engine.resume("wr_1")
+
+      expect(run["unchanged"]).to eq("the check of step verify is still running")
+      expect(check_calls).to eq([])
+      expect(history).to eq(before)
+    end
+
+    it "moves no pane and keeps no note when it does nothing" do
+      to_verify
+      store.update("wr_1") do |run|
+        run["steps"]["verify"]["state"] = "checking"
+        run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T12:00:00Z"}
+      end
+
+      expect(engine.resume("wr_1", pane: "%9", note: "hello")["unchanged"]).to eq("the check of step verify is still running")
+      expect(store.find("wr_1")).to include("pane" => "%5", "pending_context" => [])
+      expect(panes.bound.keys).to eq(["%5"])
+
+      store.update("wr_1") { |run| run["steps"]["verify"]["state"] = "running" }
+      expect(engine.resume("wr_1", note: "hello")["unchanged"]).to eq("an agent is working on step verify")
+      expect(store.find("wr_1")["pending_context"]).to eq([])
+    end
+
+    it "goes on from a step that passed and never got its next step started" do
+      to_build
+      store.update("wr_1") { |run| run["steps"]["build"]["state"] = "passed" }
+
+      expect(engine.resume("wr_1")).to include("current" => "verify", "state" => "running")
+    end
+
+    it "leaves a waiting gate when a step is named" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+
+      expect(engine.resume("wr_1", from: "build")).to include("current" => "build", "state" => "running")
+    end
+
+    it "starts a run whose `workflow run` was interrupted before its first step was under way" do
+      panes.bind_error = Interrupt
+      expect { start }.to raise_error(Interrupt)
+      left = store.find("wr_1")
+      expect(left).to include("state" => "waiting", "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"))
+      expect(left["reason"]).to include("code" => "waiting_you")
+      expect(left["reason"]["details"]).to include("kind" => "dispatch", "error" => "not_started")
+      panes.bind_error = nil
+
+      run = engine.resume("wr_1")
+
+      expect(run).to include("state" => "running", "reason" => nil)
+      expect(run["steps"]["plan"]["state"]).to eq("running")
+    end
+
+    it "starts a run whose file has no artifacts directory, as an older interrupted start left it" do
+      start
+      store.update("wr_1") do |run|
+        run.delete("artifacts_dir")
+        run["steps"]["plan"] = {"state" => "pending", "attempts" => []}
+      end
+
+      run = engine.resume("wr_1")
+
+      expect(run).to include("state" => "running", "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"))
+    end
+
+    it "tells the next attempt that the last one's check ran past its time limit" do
+      plain = definition("steps:\n  a:\n    prompt: P\n    status: bin/check\n")
+      start(plain, inputs: {})
+      check_results << {exit_code: nil, timed_out: true}
+      engine.turn_ended("wr_1")
+
+      context = engine.resume("wr_1")["steps"]["a"]["attempts"].last["context"]
+
+      expect(context).to eq(["The last attempt of this step failed: its check ran past its time limit " \
+        "(log: #{File.join(worktree, ".workflow", "wr_1", "steps", "a.1.check.log")})."])
+    end
+
+    it "moves the run to another pane and starts the step there" do
+      start
+
+      run = engine.resume("wr_1", pane: "%8")
+
+      expect(run["pane"]).to eq("%8")
+      expect(events.last.first).to eq("workflow_changed")
+      expect(panes.bound.keys).to eq(["%8"])
+      expect(panes.kicks.last).to include(pane: "%8")
+      expect(run["steps"]["plan"]["attempts"].size).to eq(2)
+    end
+
+    it "refuses to move the run to a pane another run is using" do
+      start
+      start(definition("steps:\n  a:\n    prompt: P\n"), inputs: {}, pane: "%6")
+
+      expect { engine.resume("wr_1", pane: "%6") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
+      expect(panes.bound.keys).to eq(%w[%5 %6])
+    end
+
+    it "starts again from a named step, and refuses one the workflow doesn't have" do
+      to_verify
+
+      expect { engine.resume("wr_1", from: "deploy") }.to raise_error(Workspace::UsageError, 'No step "deploy" in workflow flow (plan, build, verify).')
+      expect(engine.resume("wr_1", from: "build")).to include("current" => "build", "state" => "running")
+    end
+
+    it "runs a check again whose result never came back" do
+      to_verify
+      store.update("wr_1") do |run|
+        run["steps"]["verify"]["state"] = "checking"
+        run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => "2026-10-04T11:00:00Z"}
+      end
+
+      expect(engine.resume("wr_1")["state"]).to eq("completed")
+    end
+  end
+
+  describe "the attempt budget on resume and reject" do
+    let(:one_attempt) { definition("max_attempts: 1\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n") }
+
+    def failed_run
+      start(one_attempt, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+    end
+
+    it "refuses a resume that would start an attempt once max_attempts is spent, and changes nothing" do
+      failed_run
+      before = store.find("wr_1")
+      lines = history_lines.size
+
+      expect { engine.resume("wr_1", note: "again") }.to raise_error(Workspace::Error, /spent max_attempts \(1 of 1\)\. Pass --extra-attempts 1 to continue/) { |error|
+        expect(error.code).to eq("attempts_spent")
+        expect(error.details).to eq("run_id" => "wr_1", "attempts" => 1, "max_attempts" => 1, "step" => "a", "needed" => 1)
+      }
+
+      expect(store.find("wr_1")).to eq(before)
+      expect(history_lines.size).to eq(lines)
+    end
+
+    it "refuses --from the same way" do
+      failed_run
+
+      expect { engine.resume("wr_1", from: "a") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+    end
+
+    it "goes on with --extra-attempts, keeps the allowance in the run and records it" do
+      failed_run
+
+      run = engine.resume("wr_1", extra_attempts: 1)
+
+      expect(run).to include("state" => "running", "extra_attempts" => 1)
+      expect(run["definition"]["max_attempts"]).to eq(1)
+      expect(history_lines.find { |line| line["type"] == "attempts_extended" }).to include("extra" => 1, "extra_attempts" => 1, "max_attempts" => 2)
+    end
+
+    it "makes a later failure check the raised allowance" do
+      failed_run
+      engine.resume("wr_1", extra_attempts: 1)
+      check_results << {exit_code: 1, timed_out: false}
+
+      run = engine.turn_ended("wr_1")
+
+      expect(run["reason"]["details"]).to include("attempts" => 2, "max_attempts" => 2)
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+      expect(engine.resume("wr_1", extra_attempts: 3)["extra_attempts"]).to eq(4)
+    end
+
+    it "adds --extra-attempts even when the budget is not spent" do
+      roomy = definition("max_attempts: 5\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n")
+      start(roomy, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      expect(engine.resume("wr_1", extra_attempts: 2)).to include("extra_attempts" => 2)
+    end
+
+    it "does not count an attempt the sweep typed again" do
+      failed_run
+      store.update("wr_1") { |stored| stored["steps"]["a"]["attempts"].last["redelivered"] = true }
+
+      expect(engine.resume("wr_1")).to include("state" => "running")
+    end
+
+    it "answers unchanged, not a refusal, when the resume starts no attempt" do
+      start(one_attempt, inputs: {})
+
+      run = engine.resume("wr_1")
+
+      expect(run["unchanged"]).to match(/an agent is working on step a/)
+      expect(run).not_to have_key("extra_attempts")
+      expect(engine.resume("wr_1", extra_attempts: 2)).not_to have_key("extra_attempts")
+    end
+
+    it "does not refuse a check being decided from a turn that is over" do
+      start(one_attempt, inputs: {})
+      check_results << {exit_code: 0, timed_out: false}
+
+      run = engine.resume("wr_1", turn_over: {"step" => "a", "attempt" => 1})
+
+      expect(run["state"]).to eq("completed")
+    end
+
+    it "refuses a reject once max_attempts is spent, and goes on with --extra-attempts" do
+      gated = definition("max_attempts: 1\nsteps:\n  plan:\n    prompt: P\n    produces: [plan.md]\n    gate: approve\n")
+      start(gated, inputs: {})
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+      before = store.find("wr_1")
+
+      expect { engine.reject("wr_1", note: "no") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+      expect(store.find("wr_1")).to eq(before)
+
+      run = engine.reject("wr_1", note: "no", extra_attempts: 1)
+
+      expect(run).to include("state" => "running", "extra_attempts" => 1)
+    end
+
+    def two_attempts = definition("max_attempts: 2\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n")
+
+    def add_attempts(count)
+      store.update("wr_1") { |stored| count.times { |n| stored["steps"]["a"]["attempts"] << {"n" => 10 + n, "outcome" => "failed"} } }
+    end
+
+    it "keeps no extra_attempts key on a first attempt or an old run, which is still refused when spent" do
+      start(one_attempt, inputs: {})
+      expect(store.find("wr_1")).not_to have_key("extra_attempts")
+      expect(store.find("wr_1")["steps"]["a"]["attempts"].size).to eq(1)
+
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      expect(store.find("wr_1")).not_to have_key("extra_attempts")
+      expect(described_class.attempts_spent?(store.find("wr_1"))).to be(true)
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+      expect(described_class.attempts_spent?({"definition" => {}, "steps" => {}})).to be(false)
+    end
+
+    it "needs an --extra-attempts that covers the overrun, and says how much" do
+      failed_run
+      add_attempts(2)
+
+      expect { engine.resume("wr_1", extra_attempts: 2) }.to raise_error(Workspace::Error, /\(3 of 1\)\. Pass --extra-attempts 3 to continue/) { |error|
+        expect(error.details).to include("needed" => 3)
+      }
+      expect(store.find("wr_1")).not_to have_key("extra_attempts")
+      expect(engine.resume("wr_1", extra_attempts: 3)).to include("extra_attempts" => 3)
+    end
+
+    it "measures the minimum against a stored extra_attempts: one below is refused, exactly at it goes on" do
+      failed_run
+      engine.resume("wr_1", extra_attempts: 1)
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+      add_attempts(2)
+      # made 4 of an allowance of 2 (1 plus 1 stored): at least 3 more is needed
+      expect(described_class.extra_attempts_needed(store.find("wr_1"))).to eq(3)
+
+      expect { engine.resume("wr_1", extra_attempts: 2) }.to raise_error(Workspace::Error) { |error| expect(error.details).to include("needed" => 3, "max_attempts" => 2) }
+      expect(engine.resume("wr_1", extra_attempts: 3)).to include("extra_attempts" => 4)
+    end
+
+    it "takes --extra-attempts with --from" do
+      failed_run
+
+      expect(engine.resume("wr_1", from: "a", extra_attempts: 1)).to include("state" => "running", "extra_attempts" => 1)
+    end
+
+    it "logs and changes nothing when the named pane belongs to another run" do
+      failed_run
+      start(one_attempt, inputs: {}, pane: "%8", workspace: "app.worktree-b")
+      before = store.find("wr_1")
+      lines = history_lines.size
+
+      expect { engine.resume("wr_1", pane: "%8", extra_attempts: 1) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("pane_has_run") }
+
+      expect(store.find("wr_1")).to eq(before)
+      expect(history_lines.size).to eq(lines)
+    end
+
+    it "holds a resume during an on_fail backoff to the budget, and ends the wait with --extra-attempts" do
+      waiting = definition("max_attempts: 3\nsteps:\n  build:\n    prompt: B\n  verify:\n    prompt: V\n    status: bin/check\n    on_fail: {goto: build, max: 2, backoff: 2m}\n")
+      start(waiting, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", pane: "%5")
+      expect(store.find("wr_1")["reason"]["code"]).to eq("retry_backoff")
+      store.update("wr_1") { |stored| stored["definition"]["max_attempts"] = 2 }
+      before = store.find("wr_1")
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+      expect(store.find("wr_1")).to eq(before)
+
+      run = engine.resume("wr_1", extra_attempts: 1)
+
+      expect(run).to include("state" => "running", "current" => "build", "extra_attempts" => 1)
+      expect(run).not_to have_key("backoff")
+      expect(run["loops"]).to eq("verify->build" => 1)
+    end
+
+    it "lets on_fail retry up to the raised allowance, and no further" do
+      looping = definition("max_attempts: 2\nsteps:\n  build:\n    prompt: B\n  verify:\n    prompt: V\n    status: bin/check\n    on_fail: {goto: build, max: 9}\n")
+      start(looping, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", pane: "%5")
+      expect(run["reason"]["details"]).to include("attempts" => 2, "max_attempts" => 2)
+
+      engine.resume("wr_1", extra_attempts: 2)
+      check_results << {exit_code: 1, timed_out: false}
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
+      engine.turn_ended("wr_1", pane: "%5")
+      check_results << {exit_code: 1, timed_out: false}
+      run = engine.turn_ended("wr_1", pane: "%5")
+      expect(run["reason"]["details"]).to include("attempts" => 5, "max_attempts" => 4)
+      expect(run["state"]).to eq("waiting")
+    end
+
+    describe "a parked resume" do
+      it "keeps the flag in the park, applies it on release, and records it once" do
+        failed_run
+
+        parked = engine.park("wr_1", extra_attempts: 1)
+
+        expect(parked["parked"]).to include("extra_attempts" => 1)
+        expect(parked).not_to have_key("extra_attempts")
+        run = engine.release_park("wr_1", parked["parked"]["id"])
+        expect(run).to include("state" => "running", "extra_attempts" => 1)
+        expect(history_lines.count { |line| line["type"] == "attempts_extended" }).to eq(1)
+      end
+
+      it "is not charged again when the line could not be typed and the park is made again" do
+        failed_run
+        id = engine.park("wr_1", extra_attempts: 1)["parked"]["id"]
+        panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+
+        run = engine.release_park("wr_1", id)
+
+        expect(run["parked"]).to include("retries" => 1)
+        expect(run["parked"]).not_to have_key("extra_attempts")
+        expect(run["extra_attempts"]).to eq(1)
+        panes.kick_result = {ok: true}
+
+        run = engine.release_park("wr_1", run["parked"]["id"])
+
+        expect(run).to include("state" => "running", "extra_attempts" => 1)
+        expect(history_lines.count { |line| line["type"] == "attempts_extended" }).to eq(1)
+      end
+
+      it "raises on release when the budget filled in the meantime, and stays parked" do
+        start(two_attempts, inputs: {})
+        check_results << {exit_code: 1, timed_out: false}
+        engine.turn_ended("wr_1")
+        id = engine.park("wr_1")["parked"]["id"]
+        add_attempts(1)
+
+        expect { engine.release_park("wr_1", id) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+
+        expect(store.find("wr_1")["parked"]["id"]).to eq(id)
+      end
+    end
+
+    it "refuses a resume parked for a spent run, at park time" do
+      failed_run
+
+      expect { engine.park("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("attempts_spent") }
+    end
+  end
 end
